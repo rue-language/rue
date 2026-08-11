@@ -472,7 +472,7 @@ pub struct BodyAnalysisWork {
     /// the per-`Sema` analysis leaves it at zero.
     pub closure_restarts: usize,
     /// Times the coordinator deferred a consumer body behind an as-yet-unreached
-    /// anonymous producer and rescheduled it on the priority stack. Populated
+    /// anonymous producer and returned it to the dependency scheduler. Populated
     /// only by the session coordinator.
     pub deferred_producer_retries: usize,
     /// Distinct bodies in the final published closure (coordinator `visited` set
@@ -487,7 +487,10 @@ pub struct BodyAnalysisWork {
     pub reachability_frontier_scans: usize,
     /// Pending keys examined across those scans.
     pub reachability_frontier_scan_keys: usize,
-    /// Non-empty stable frontiers submitted to structured batch scheduling.
+    /// Non-empty dependency-ready frontiers selected by the scheduler.
+    /// Multi-permit runtimes execute their bounded windows as structured
+    /// batches; a single-permit runtime executes the same logical frontier
+    /// inline so proof state stays in the coordinator task.
     pub reachability_frontier_batches: usize,
     /// Body keys submitted across those non-empty frontiers.
     pub reachability_frontier_keys: usize,
@@ -499,7 +502,7 @@ pub struct BodyAnalysisWork {
     pub reachability_frontier_width_four_to_seven: usize,
     /// Scheduled frontiers containing at least eight body keys.
     pub reachability_frontier_width_eight_or_more: usize,
-    /// Body transactions consumed from a structured frontier prefetch.
+    /// Body transactions consumed from a dependency-ready frontier prefetch.
     pub reachability_transactions_prefetched: usize,
     /// Body transactions demanded on the serial coordinator path.
     pub reachability_transactions_serial: usize,

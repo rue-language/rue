@@ -6469,59 +6469,73 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
     matches!(kind, rue_error::ErrorKind::InternalError(_))
 }
 
-pub(crate) fn collect_instance_anonymous_nominals(
-    function: &crate::FunctionInstanceKey,
-) -> BTreeSet<crate::AnonymousNominalKey> {
-    fn arguments(
-        arguments: &crate::CanonicalArguments,
-        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+fn visit_instance_anonymous_nominals<'a>(
+    function: &'a crate::FunctionInstanceKey,
+    seen: &mut Vec<*const crate::AnonymousNominalKey>,
+    mut visit: impl FnMut(&'a crate::AnonymousNominalKey),
+) {
+    fn arguments<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
+        arguments: &'a crate::CanonicalArguments,
+        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        visit: &mut F,
     ) {
         for ty in arguments.types.iter() {
-            instance_type(ty, output);
+            instance_type(ty, seen, visit);
         }
         for value in arguments.values.iter() {
             match value {
-                crate::CanonicalArgumentValue::Type(ty) => instance_type(ty, output),
+                crate::CanonicalArgumentValue::Type(ty) => instance_type(ty, seen, visit),
                 crate::CanonicalArgumentValue::Function(function) => {
-                    instance_function(function, output);
+                    instance_function(function, seen, visit);
                 }
                 _ => {}
             }
         }
     }
 
-    fn anonymous(
-        identity: &crate::AnonymousNominalKey,
-        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    fn anonymous<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
+        identity: &'a crate::AnonymousNominalKey,
+        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        visit: &mut F,
     ) {
-        if !output.insert(identity.clone()) {
+        // Canonical argument slices are shared through `Arc`, so one instance
+        // key can reach the same nested identity through several paths. Track
+        // those shared objects by address: structural equality is unnecessary
+        // for traversal, and a reusable flat scratch buffer avoids one tree
+        // allocation per visited anonymous identity.
+        let identity_pointer = std::ptr::from_ref(identity);
+        if seen.contains(&identity_pointer) {
             return;
         }
+        seen.push(identity_pointer);
+        visit(identity);
         if let crate::StableProducerId::Function(function) = &identity.producer {
-            instance_function(function, output);
+            instance_function(function, seen, visit);
         }
-        arguments(&identity.arguments, output);
+        arguments(&identity.arguments, seen, visit);
     }
 
-    fn instance_type(
-        ty: &crate::TypeInstanceKey,
-        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    fn instance_type<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
+        ty: &'a crate::TypeInstanceKey,
+        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        visit: &mut F,
     ) {
         match ty {
             crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
-                anonymous(identity, output);
+                anonymous(identity, seen, visit);
             }
             crate::TypeInstanceKey::Array { element, .. }
             | crate::TypeInstanceKey::Slice { element, .. }
             | crate::TypeInstanceKey::PtrConst(element)
-            | crate::TypeInstanceKey::PtrMut(element) => instance_type(element, output),
+            | crate::TypeInstanceKey::PtrMut(element) => instance_type(element, seen, visit),
             _ => {}
         }
     }
 
-    fn instance_function(
-        function: &crate::FunctionInstanceKey,
-        output: &mut BTreeSet<crate::AnonymousNominalKey>,
+    fn instance_function<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
+        function: &'a crate::FunctionInstanceKey,
+        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        visit: &mut F,
     ) {
         match function {
             crate::FunctionInstanceKey::Definition(_) => {}
@@ -6529,17 +6543,75 @@ pub(crate) fn collect_instance_anonymous_nominals(
                 base,
                 arguments: values,
             } => {
-                instance_function(base, output);
-                arguments(values, output);
+                instance_function(base, seen, visit);
+                arguments(values, seen, visit);
             }
             crate::FunctionInstanceKey::AnonymousMember { owner, .. }
-            | crate::FunctionInstanceKey::DropGlue(owner) => instance_type(owner, output),
+            | crate::FunctionInstanceKey::DropGlue(owner) => instance_type(owner, seen, visit),
         }
     }
 
+    seen.clear();
+    instance_function(function, seen, &mut visit);
+}
+
+pub(crate) fn collect_instance_anonymous_nominals(
+    function: &crate::FunctionInstanceKey,
+) -> BTreeSet<crate::AnonymousNominalKey> {
     let mut output = BTreeSet::new();
-    instance_function(function, &mut output);
+    let mut seen = Vec::new();
+    visit_instance_anonymous_nominals(function, &mut seen, |identity| {
+        output.insert(identity.clone());
+    });
     output
+}
+
+fn schedule_body_instance<V>(
+    pending: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, usize>,
+    ready: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, usize>,
+    prefetched: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, (usize, V)>,
+    visited: &BTreeSet<Arc<crate::FunctionInstanceKey>>,
+    instance: &crate::FunctionInstanceKey,
+    depth: usize,
+) -> Option<(Arc<crate::FunctionInstanceKey>, bool)> {
+    if visited.contains(instance) {
+        return None;
+    }
+
+    if let Some(existing_depth) = ready.get_mut(instance) {
+        let changed = depth < *existing_depth;
+        *existing_depth = (*existing_depth).min(depth);
+        let instance = ready
+            .get_key_value(instance)
+            .expect("the ready instance remains present after its depth update")
+            .0
+            .clone();
+        return Some((instance, changed));
+    }
+    if let Some((existing_depth, _)) = prefetched.get_mut(instance) {
+        let changed = depth < *existing_depth;
+        *existing_depth = (*existing_depth).min(depth);
+        let instance = prefetched
+            .get_key_value(instance)
+            .expect("the prefetched instance remains present after its depth update")
+            .0
+            .clone();
+        return Some((instance, changed));
+    }
+    if let Some(existing_depth) = pending.get_mut(instance) {
+        let changed = depth < *existing_depth;
+        *existing_depth = (*existing_depth).min(depth);
+        let instance = pending
+            .get_key_value(instance)
+            .expect("the pending instance remains present after its depth update")
+            .0
+            .clone();
+        return Some((instance, changed));
+    }
+
+    let instance = Arc::new(instance.clone());
+    pending.insert(instance.clone(), depth);
+    Some((instance, true))
 }
 
 pub(crate) fn durable_type_from_instance_key(
@@ -15265,17 +15337,28 @@ impl RevisionedQueryDatabase {
                         .filter(|module| module.is_trusted_standard_library())
                         .map(|module| Arc::<str>::from(module.as_str()))
                         .collect::<BTreeSet<_>>();
-                    let roots = key.roots.iter().cloned().collect::<BTreeSet<_>>();
-                    let mut pending = roots.clone();
-                    let mut priority_pending = Vec::new();
-                    let mut deferred_dependency_chain = BTreeSet::new();
-                    let mut visited = BTreeSet::new();
-                    let mut failed_instances = BTreeSet::new();
-                    let mut instance_depth = roots
+                    let roots = key
+                        .roots
+                        .iter()
+                        .cloned()
+                        .map(Arc::new)
+                        .collect::<BTreeSet<_>>();
+                    let mut pending = roots
                         .iter()
                         .cloned()
                         .map(|root| (root, 0usize))
                         .collect::<BTreeMap<_, _>>();
+                    let mut blocked_on_anonymous = BTreeMap::<
+                        Arc<crate::FunctionInstanceKey>,
+                        BTreeSet<Arc<crate::FunctionInstanceKey>>,
+                    >::new();
+                    let mut visited = BTreeSet::new();
+                    let mut failed_instances = BTreeSet::new();
+                    let mut anonymous_dependency_pending = roots
+                        .iter()
+                        .cloned()
+                        .map(|root| (root, 0usize))
+                        .collect::<Vec<_>>();
                     let mut reached_body_keys = Vec::new();
                     let mut demanded_drop_glue = BTreeSet::new();
                     let mut demanded_drop_glue_plans = BTreeMap::new();
@@ -15285,14 +15368,70 @@ impl RevisionedQueryDatabase {
                     let mut fatal = None;
                     let mut parked_toolchain = None;
                     let mut produced_anonymous = BTreeMap::new();
-                    let mut prefetched_transactions = BTreeMap::new();
-                    loop {
-                        // Only the ordinary stable frontier is batched. An
-                        // anonymous producer priority chain stays on the exact
-                        // serial path below, preserving producer-before-consumer
-                        // semantics while ordinary call SCCs remain graph edges
-                        // in BodyReferences rather than recursive queries.
-                        if priority_pending.is_empty() && prefetched_transactions.is_empty() {
+                    let mut ready_frontier = BTreeMap::new();
+                    let mut pending_frontier_metrics = None;
+                    let mut prefetched_transactions = BTreeMap::<
+                        Arc<crate::FunctionInstanceKey>,
+                        (
+                            usize,
+                            Option<
+                                Arc<
+                                    rue_query::QueryTerminal<
+                                        crate::body_query::BodyTransaction,
+                                    >,
+                                >,
+                            >,
+                        ),
+                    >::new();
+                    let mut anonymous_visit_seen = Vec::new();
+                    let concurrency = context.max_concurrency();
+                    let body_query_prefetch_window = if concurrency == 1 {
+                        1
+                    } else {
+                        concurrency.saturating_mul(2).min(64)
+                    };
+                    'schedule: loop {
+                        pending.retain(|instance, _| !visited.contains(instance));
+                        if ready_frontier.is_empty() && prefetched_transactions.is_empty() {
+                            // Close the statically encoded anonymous-producer
+                            // graph before selecting a ready frontier. A body
+                            // can name a producer through its instance key
+                            // before BodyTransaction has a chance to publish a
+                            // dynamic DeferredAnonymousProducers edge. The old
+                            // serial stack discovered those producers while
+                            // popping one body; the frontier scheduler makes
+                            // the same dependency graph explicit first.
+                            while let Some((instance, current_depth)) =
+                                anonymous_dependency_pending.pop()
+                            {
+                                context.check_canceled()?;
+                                visit_instance_anonymous_nominals(
+                                    instance.as_ref(),
+                                    &mut anonymous_visit_seen,
+                                    |identity| {
+                                        let crate::StableProducerId::Function(producer) =
+                                            &identity.producer
+                                        else {
+                                            return;
+                                        };
+                                        let depth = current_depth
+                                            + usize::from(matches!(
+                                                producer.as_ref(),
+                                                crate::FunctionInstanceKey::Specialization { .. }
+                                            ));
+                                        if let Some((producer, true)) = schedule_body_instance(
+                                            &mut pending,
+                                            &mut ready_frontier,
+                                            &mut prefetched_transactions,
+                                            &visited,
+                                            producer.as_ref(),
+                                            depth,
+                                        ) {
+                                            anonymous_dependency_pending.push((producer, depth));
+                                        }
+                                    },
+                                );
+                            }
                             context.record_work(rue_query::WorkItem::new(
                                 "reachability.frontier.scans",
                                 1,
@@ -15301,126 +15440,209 @@ impl RevisionedQueryDatabase {
                                 "reachability.frontier.scan-keys",
                                 pending.len() as u64,
                             ));
-                            let frontier = pending
-                                .iter()
-                                .filter(|instance| {
-                                        !visited.contains(*instance)
-                                        && !prefetched_transactions.contains_key(*instance)
-                                        && collect_instance_anonymous_nominals(instance)
-                                            .into_iter()
-                                            .all(|identity| match identity.producer {
-                                                crate::StableProducerId::Function(producer) => {
-                                                    visited.contains(producer.as_ref())
-                                                }
-                                                crate::StableProducerId::Definition(_) => true,
-                                            })
-                                        && (!matches!(
-                                            instance,
-                                            crate::FunctionInstanceKey::Specialization { .. }
-                                        ) || instance_depth
-                                            .get(*instance)
-                                            .copied()
-                                            .unwrap_or(0)
-                                            <= rue_air::specialize::MAX_SPECIALIZATION_ROUNDS)
-                                })
+                            let mut frontier = Vec::new();
+                            let mut blocked_pending = BTreeMap::new();
+                            for (instance, depth) in std::mem::take(&mut pending) {
+                                let mut all_producers_visited = true;
+                                visit_instance_anonymous_nominals(
+                                    instance.as_ref(),
+                                    &mut anonymous_visit_seen,
+                                    |identity| {
+                                        if let crate::StableProducerId::Function(producer) =
+                                            &identity.producer
+                                            && !visited.contains(producer.as_ref())
+                                        {
+                                            all_producers_visited = false;
+                                        }
+                                    },
+                                );
+                                let ready = !visited.contains(&instance)
+                                    && !prefetched_transactions.contains_key(&instance)
+                                    && blocked_on_anonymous
+                                        .get(&instance)
+                                        .is_none_or(|producers| {
+                                            producers
+                                                .iter()
+                                                .all(|producer| visited.contains(producer))
+                                        })
+                                    && all_producers_visited
+                                    && (!matches!(
+                                        instance.as_ref(),
+                                        crate::FunctionInstanceKey::Specialization { .. }
+                                    ) || depth <= rue_air::specialize::MAX_SPECIALIZATION_ROUNDS);
+                                if ready {
+                                    frontier.push((instance, depth));
+                                } else {
+                                    blocked_pending.insert(instance, depth);
+                                }
+                            }
+                            pending = blocked_pending;
+                            if !frontier.is_empty() {
+                                let frontier_len = frontier.len();
+                                ready_frontier.extend(frontier);
+                                let width_bucket = match frontier_len {
+                                    1 => "reachability.frontier.width-1",
+                                    2..=3 => "reachability.frontier.width-2-3",
+                                    4..=7 => "reachability.frontier.width-4-7",
+                                    _ => "reachability.frontier.width-8-plus",
+                                };
+                                pending_frontier_metrics = Some((frontier_len, width_bucket));
+                            }
+                        }
+
+                        if prefetched_transactions.is_empty() && !ready_frontier.is_empty() {
+                            if concurrency == 1 {
+                                // Preserve the logical frontier, but avoid
+                                // manufacturing a second deep BodyQueryKey and
+                                // one-element result vectors merely to execute
+                                // its bounded window inline. The coordinator
+                                // performs the same demand-before-transaction
+                                // sequence below.
+                                let (instance, depth) = ready_frontier
+                                    .pop_first()
+                                    .expect("a non-empty ready frontier has a first instance");
+                                prefetched_transactions.insert(instance, (depth, None));
+                                continue;
+                            }
+                            // Keep the retained result window bounded. A wide
+                            // ready frontier can contain thousands of bodies;
+                            // scheduling it all at once retains every completed
+                            // transaction until the coordinator reaches it.
+                            // Two tasks per worker leave scheduling headroom;
+                            // the fixed ceiling bounds transient memory
+                            // independently of source size.
+                            let instances = ready_frontier
+                                .keys()
+                                .take(body_query_prefetch_window)
                                 .cloned()
                                 .collect::<Vec<_>>();
-                            if !frontier.is_empty() {
-                                let frontier_keys = frontier
-                                    .iter()
-                                    .cloned()
-                                    .map(|instance| crate::body_query::BodyQueryKey {
-                                        instance,
-                                        configuration: key.configuration.clone(),
-                                    })
-                                    .collect::<Vec<_>>();
-                                let demands = context.query_registered_batch(
-                                    &toolchain_for_body_closure,
-                                    frontier_keys.clone(),
-                                )?;
-                                let mut batch_modules = BTreeSet::new();
-                                let mut batch_requesters = BTreeSet::new();
-                                for demand in demands {
-                                    let rue_query::QueryOutcome::Success(demand) =
-                                        demand.outcome()
+                            let frontier_keys = instances
+                                .iter()
+                                .map(|instance| crate::body_query::BodyQueryKey {
+                                    instance: instance.as_ref().clone(),
+                                    configuration: key.configuration.clone(),
+                                })
+                                .collect::<Vec<_>>();
+                            let demands = context.query_registered_batch(
+                                &toolchain_for_body_closure,
+                                frontier_keys.clone(),
+                            )?;
+                            let mut batch_modules = BTreeSet::new();
+                            let mut batch_requesters = BTreeSet::new();
+                            for demand in demands {
+                                let rue_query::QueryOutcome::Success(demand) = demand.outcome()
+                                else {
+                                    unreachable!("BodyToolchainDemands publishes typed values")
+                                };
+                                let mut any_absent = false;
+                                for module in demand.modules() {
+                                    if !present_trusted_modules.contains(module.logical_path()) {
+                                        batch_modules.insert(module.clone());
+                                        any_absent = true;
+                                    }
+                                }
+                                if any_absent
+                                    && let Some(requester) = demand.requester()
+                                {
+                                    batch_requesters.insert(requester.clone());
+                                }
+                            }
+                            if !batch_modules.is_empty() {
+                                for remaining_instance in
+                                    ready_frontier.keys().chain(pending.keys())
+                                {
+                                    let remaining_demand = context.query_registered(
+                                        &toolchain_for_body_closure,
+                                        crate::body_query::BodyQueryKey {
+                                            instance: remaining_instance.as_ref().clone(),
+                                            configuration: key.configuration.clone(),
+                                        },
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(remaining_demand) =
+                                        remaining_demand.outcome()
                                     else {
                                         unreachable!(
                                             "BodyToolchainDemands publishes typed values"
                                         )
                                     };
                                     let mut any_absent = false;
-                                    for module in demand.modules() {
-                                        if !present_trusted_modules.contains(module.logical_path()) {
+                                    for module in remaining_demand.modules() {
+                                        if !present_trusted_modules
+                                            .contains(module.logical_path())
+                                        {
                                             batch_modules.insert(module.clone());
                                             any_absent = true;
                                         }
                                     }
                                     if any_absent
-                                        && let Some(requester) = demand.requester()
+                                        && let Some(requester) = remaining_demand.requester()
                                     {
                                         batch_requesters.insert(requester.clone());
                                     }
                                 }
-                                if !batch_modules.is_empty() {
-                                    parked_toolchain =
-                                        Some(crate::ParkedToolchainModules::new(
-                                            batch_modules,
-                                            batch_requesters,
-                                        ));
-                                    break;
-                                }
-                                let transactions = context.query_registered_batch(
-                                    &transactions_for_body_reachability,
-                                    frontier_keys,
-                                )?;
+                                parked_toolchain = Some(crate::ParkedToolchainModules::new(
+                                    batch_modules,
+                                    batch_requesters,
+                                ));
+                                break 'schedule;
+                            }
+                            if let Some((frontier_len, width_bucket)) =
+                                pending_frontier_metrics.take()
+                            {
                                 context.record_work(rue_query::WorkItem::new(
                                     "reachability.frontier.batches",
                                     1,
                                 ));
                                 context.record_work(rue_query::WorkItem::new(
                                     "reachability.frontier.keys",
-                                    frontier.len() as u64,
+                                    frontier_len as u64,
                                 ));
-                                let width_bucket = match frontier.len() {
-                                    1 => "reachability.frontier.width-1",
-                                    2..=3 => "reachability.frontier.width-2-3",
-                                    4..=7 => "reachability.frontier.width-4-7",
-                                    _ => "reachability.frontier.width-8-plus",
-                                };
                                 context.record_work(rue_query::WorkItem::new(width_bucket, 1));
-                                for (instance, transaction) in
-                                    frontier.into_iter().zip(transactions)
-                                {
-                                    prefetched_transactions.insert(instance, transaction);
-                                }
+                            }
+                            let transactions = context.query_registered_batch(
+                                &transactions_for_body_reachability,
+                                frontier_keys,
+                            )?;
+                            for (instance, transaction) in instances.into_iter().zip(transactions) {
+                                let depth = ready_frontier
+                                    .remove(&instance)
+                                    .expect("prefetched ready instances retain their depth");
+                                prefetched_transactions.insert(instance, (depth, Some(transaction)));
                             }
                         }
 
-                        let Some(instance) =
-                            priority_pending.pop().or_else(|| pending.pop_first())
+                        let Some(instance) = prefetched_transactions
+                            .first_key_value()
+                            .map(|(instance, _)| instance.clone())
                         else {
-                            break;
-                        };
-                        context.check_canceled()?;
-                        let current_depth = instance_depth.get(&instance).copied().unwrap_or(0);
-                        let deferred_producers = collect_instance_anonymous_nominals(&instance)
-                            .into_iter()
-                            .filter_map(|identity| match identity.producer {
-                                crate::StableProducerId::Function(producer)
-                                    if !visited.contains(producer.as_ref()) =>
-                                {
-                                    Some(*producer)
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>();
-                        if !deferred_producers.is_empty() {
-                            if deferred_producers
-                                .iter()
-                                .any(|producer| deferred_dependency_chain.contains(producer))
+                            let Some((instance, current_depth)) = pending.pop_first() else {
+                                break;
+                            };
+                            if matches!(
+                                instance.as_ref(),
+                                crate::FunctionInstanceKey::Specialization { .. }
+                            ) && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
                             {
+                                let name = function_definition_key(&instance)
+                                    .map(crate::StableDefinitionKey::name)
+                                    .unwrap_or("<anonymous>")
+                                    .to_owned();
                                 scheduling_errors.insert(
-                                    instance.clone(),
+                                    instance.as_ref().clone(),
+                                    crate::CompileErrors::from(
+                                        crate::CompileError::without_span(
+                                            rue_error::ErrorKind::ComptimeEvaluationFailed {
+                                                reason: format!(
+                                                    "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
+                                                    rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
+                                                ),
+                                            },
+                                        ),
+                                    ),
+                                );
+                            } else {
+                                scheduling_errors.insert(
+                                    instance.as_ref().clone(),
                                     crate::CompileErrors::from(
                                         crate::CompileError::without_span(
                                             rue_error::ErrorKind::InternalError(format!(
@@ -15429,30 +15651,19 @@ impl RevisionedQueryDatabase {
                                         ),
                                     ),
                                 );
-                                break;
                             }
-                            deferred_dependency_chain.insert(instance.clone());
-                            for producer in deferred_producers.iter() {
-                                let depth = current_depth
-                                    + usize::from(matches!(
-                                        producer,
-                                        crate::FunctionInstanceKey::Specialization { .. }
-                                    ));
-                                instance_depth
-                                    .entry(producer.clone())
-                                    .and_modify(|existing| *existing = (*existing).min(depth))
-                                    .or_insert(depth);
-                            }
-                            priority_pending.push(instance);
-                            priority_pending.extend(deferred_producers);
-                            continue;
-                        }
-                        deferred_dependency_chain.remove(&instance);
+                            break;
+                        };
+                        context.check_canceled()?;
+                        let current_depth = prefetched_transactions
+                            .get(&instance)
+                            .map(|(depth, _)| *depth)
+                            .expect("selected prefetched instances retain their depth");
                         if !visited.insert(instance.clone()) {
                             continue;
                         }
                         if matches!(
-                            instance,
+                            instance.as_ref(),
                             crate::FunctionInstanceKey::Specialization { .. }
                         ) && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
                         {
@@ -15460,7 +15671,7 @@ impl RevisionedQueryDatabase {
                                 .map(crate::StableDefinitionKey::name)
                                 .unwrap_or("<anonymous>");
                             scheduling_errors.insert(
-                                instance.clone(),
+                                instance.as_ref().clone(),
                                 crate::CompileErrors::from(
                                     crate::CompileError::without_span(
                                         rue_error::ErrorKind::ComptimeEvaluationFailed {
@@ -15476,7 +15687,7 @@ impl RevisionedQueryDatabase {
                         }
 
                         let body_key = crate::body_query::BodyQueryKey {
-                            instance: instance.clone(),
+                            instance: instance.as_ref().clone(),
                             configuration: key.configuration.clone(),
                         };
                         let demand = context
@@ -15498,14 +15709,12 @@ impl RevisionedQueryDatabase {
                                 .cloned()
                                 .into_iter()
                                 .collect::<BTreeSet<_>>();
-                            let mut remaining = pending.clone();
-                            remaining.extend(priority_pending.iter().cloned());
-                            for pending_instance in remaining {
-                                if visited.contains(&pending_instance) {
+                            for pending_instance in pending.keys() {
+                                if visited.contains(pending_instance) {
                                     continue;
                                 }
                                 let pending_key = crate::body_query::BodyQueryKey {
-                                    instance: pending_instance,
+                                    instance: pending_instance.as_ref().clone(),
                                     configuration: key.configuration.clone(),
                                 };
                                 let pending_demand = context.query_registered(
@@ -15536,20 +15745,39 @@ impl RevisionedQueryDatabase {
                             ));
                             break;
                         }
+                        if let Some((frontier_len, width_bucket)) =
+                            pending_frontier_metrics.take()
+                        {
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.frontier.batches",
+                                1,
+                            ));
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.frontier.keys",
+                                frontier_len as u64,
+                            ));
+                            context.record_work(rue_query::WorkItem::new(width_bucket, 1));
+                        }
 
                         // The ordinary frontier prefetches the expensive
                         // BodyTransaction computations. Control outcomes must
                         // remain transaction-only (they publish no
                         // BodyReferences terminal), so interpret the exact
                         // transaction before projecting schedulable references.
-                        let transaction_terminal = if let Some(transaction) =
+                        let transaction_terminal = if let Some((_, transaction)) =
                             prefetched_transactions.remove(&instance)
                         {
                             context.record_work(rue_query::WorkItem::new(
                                 "reachability.transactions.prefetched",
                                 1,
                             ));
-                            transaction
+                            match transaction {
+                                Some(transaction) => transaction,
+                                None => context.query_registered(
+                                    &transactions_for_body_reachability,
+                                    body_key.clone(),
+                                )?,
+                            }
                         } else {
                             context.record_work(rue_query::WorkItem::new(
                                 "reachability.transactions.serial",
@@ -15588,32 +15816,36 @@ impl RevisionedQueryDatabase {
                                 {
                                     continue;
                                 }
-                                let mut scheduled = false;
-                                priority_pending.push(instance.clone());
+                                let mut blockers = BTreeSet::new();
                                 for producer in producers.iter() {
-                                    if !visited.contains(producer) {
-                                        let depth = current_depth
-                                            + usize::from(matches!(
-                                                producer,
-                                                crate::FunctionInstanceKey::Specialization { .. }
-                                            ));
-                                        instance_depth
-                                            .entry(producer.clone())
-                                            .and_modify(|existing| {
-                                                *existing = (*existing).min(depth)
-                                            })
-                                            .or_insert(depth);
-                                        priority_pending.push(producer.clone());
-                                        scheduled = true;
+                                    let depth = current_depth
+                                        + usize::from(matches!(
+                                            producer,
+                                            crate::FunctionInstanceKey::Specialization { .. }
+                                        ));
+                                    if let Some((producer, depth_changed)) = schedule_body_instance(
+                                        &mut pending,
+                                        &mut ready_frontier,
+                                        &mut prefetched_transactions,
+                                        &visited,
+                                        producer,
+                                        depth,
+                                    ) {
+                                        if depth_changed {
+                                            anonymous_dependency_pending
+                                                .push((producer.clone(), depth));
+                                        }
+                                        blockers.insert(producer.clone());
                                     }
                                 }
-                                if scheduled {
+                                if !blockers.is_empty() {
                                     visited.remove(&instance);
+                                    pending.insert(instance.clone(), current_depth);
+                                    blocked_on_anonymous.insert(instance, blockers);
                                     continue;
                                 }
-                                priority_pending.pop();
                                 scheduling_errors.insert(
-                                    instance.clone(),
+                                    instance.as_ref().clone(),
                                     crate::CompileErrors::from(
                                         crate::CompileError::without_span(
                                             rue_error::ErrorKind::InternalError(format!(
@@ -15631,7 +15863,7 @@ impl RevisionedQueryDatabase {
                             ) => {
                                 fatal = Some(
                                     crate::body_query::BodyClosureFatal::ProducerFailed {
-                                        instance,
+                                        instance: instance.as_ref().clone(),
                                         failure: failure.clone(),
                                     },
                                 );
@@ -15644,7 +15876,7 @@ impl RevisionedQueryDatabase {
                             ) => {
                                 fatal = Some(
                                     crate::body_query::BodyClosureFatal::WellKnownOptionResolution {
-                                        instance,
+                                        instance: instance.as_ref().clone(),
                                         failure: failure.clone(),
                                     },
                                 );
@@ -15653,6 +15885,7 @@ impl RevisionedQueryDatabase {
                             crate::body_query::BodyTransaction::Success { .. }
                             | crate::body_query::BodyTransaction::DeterministicFailure { .. } => {}
                         }
+                        blocked_on_anonymous.remove(&instance);
 
                         let references_terminal = context.query_registered(
                             &references_for_body_closure,
@@ -15694,7 +15927,7 @@ impl RevisionedQueryDatabase {
                                 };
                                 fatal =
                                     Some(crate::body_query::BodyClosureFatal::ProducerFailed {
-                                        instance,
+                                        instance: instance.as_ref().clone(),
                                         failure: failure.clone(),
                                     });
                                 break;
@@ -15740,19 +15973,23 @@ impl RevisionedQueryDatabase {
                                                     callable,
                                                     crate::FunctionInstanceKey::Specialization { .. }
                                                 ));
-                                            instance_depth
-                                                .entry(callable.clone())
-                                                .and_modify(|existing| {
-                                                    *existing = (*existing).min(depth)
-                                                })
-                                                .or_insert(depth);
-                                            pending.insert(callable.clone());
+                                            if let Some((callable, true)) = schedule_body_instance(
+                                                &mut pending,
+                                                &mut ready_frontier,
+                                                &mut prefetched_transactions,
+                                                &visited,
+                                                callable,
+                                                depth,
+                                            ) {
+                                                anonymous_dependency_pending
+                                                    .push((callable.clone(), depth));
+                                            }
                                         }
                                         Ok(false) => {}
                                         Err(detail) => {
                                             fatal = Some(
                                                 crate::body_query::BodyClosureFatal::BodyAvailability {
-                                                    instance,
+                                                    instance: instance.as_ref().clone(),
                                                     detail,
                                                 },
                                             );
@@ -15818,7 +16055,19 @@ impl RevisionedQueryDatabase {
                                         demanded_drop_glue.insert(ty);
                                         pending_drop_glue.extend(glue.nested.iter().cloned());
                                         if let Some(destructor) = &glue.destructor {
-                                            pending.insert(destructor.clone());
+                                            if let Some((destructor, true)) = schedule_body_instance(
+                                                &mut pending,
+                                                &mut ready_frontier,
+                                                &mut prefetched_transactions,
+                                                &visited,
+                                                destructor,
+                                                current_depth,
+                                            ) {
+                                                anonymous_dependency_pending.push((
+                                                    destructor.clone(),
+                                                    current_depth,
+                                                ));
+                                            }
                                         }
                                     }
                                     crate::type_queries::DropGlueValue::Failure(failure) => {
@@ -38034,6 +38283,63 @@ fn main() -> i32 {
             work("reachability.transactions.prefetched"),
             (CALLEES + 1) as u64
         );
+        assert_eq!(work("reachability.transactions.serial"), 0);
+    }
+
+    #[test]
+    fn ready_anonymous_producers_share_one_structured_frontier() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn L() -> type { struct { x: i32 } }\n\
+                 fn R() -> type { struct { x: i32 } }\n\
+                 fn main() -> i32 {\n\
+                     let TL = L();\n\
+                     let TR = R();\n\
+                     let a: TL = TL { x: 40 };\n\
+                     let b: TR = TR { x: 2 };\n\
+                     a.x + b.x\n\
+                 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            let request = database
+                .body_closure(revision, key.clone(), CancellationToken::new())
+                .expect("branching anonymous producers publish one body closure");
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            assert!(output.fatal.is_none());
+            assert!(output.scheduling_errors.is_empty());
+            (output.reached.to_vec(), request.work)
+        };
+        let one_worker = run(1);
+        let many_workers = run(4);
+        assert_eq!(one_worker, many_workers);
+        assert_eq!(one_worker.0.len(), 3);
+        let work = |expected: &str| {
+            one_worker
+                .1
+                .iter()
+                .find_map(|(label, amount)| (label.as_ref() == expected).then_some(*amount))
+                .unwrap_or(0)
+        };
+        assert_eq!(work("reachability.frontier.batches"), 2);
+        assert_eq!(work("reachability.frontier.keys"), 3);
+        assert_eq!(work("reachability.frontier.width-1"), 1);
+        assert_eq!(work("reachability.frontier.width-2-3"), 1);
+        assert_eq!(work("reachability.transactions.prefetched"), 3);
         assert_eq!(work("reachability.transactions.serial"), 0);
     }
 

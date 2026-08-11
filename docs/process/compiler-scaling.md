@@ -45,8 +45,11 @@ into many repeated validation visits merely because elapsed time still looks
 plausible on one host.
 
 The semantic-reachability table reports average scheduled keys per non-empty
-frontier, fixed width buckets, and body transactions consumed from structured
-prefetch versus demanded on the serial coordinator path. These counters
+dependency-ready logical frontier, fixed width buckets, and body transactions
+consumed from bounded ready-frontier prefetch windows versus demanded on the
+fallback coordinator path. Multi-permit runtimes execute each window as a
+structured batch; a single-permit runtime executes it inline so query-proof
+state stays in the coordinator task. These counters
 distinguish dependency graphs that expose little parallel work from wide
 frontiers whose work remains slow because of allocation, hashing, query-runtime,
 or synchronization overhead. They describe deterministic graph shape and

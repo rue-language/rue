@@ -177,15 +177,21 @@ pub struct CompilerWork {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SemanticReachabilityWork {
+    /// Pending-set scans that discover dependency-ready logical frontiers.
     pub frontier_scans: u64,
+    /// Body keys examined across logical-frontier scans.
     pub frontier_scan_keys: u64,
+    /// Non-empty dependency-ready logical frontiers discovered.
     pub frontier_batches: u64,
+    /// Body keys selected across those logical frontiers.
     pub frontier_keys: u64,
     pub frontier_width_one: u64,
     pub frontier_width_two_to_three: u64,
     pub frontier_width_four_to_seven: u64,
     pub frontier_width_eight_or_more: u64,
+    /// Transactions consumed from bounded windows of a ready frontier.
     pub transactions_prefetched: u64,
+    /// Transactions demanded outside the ready-frontier scheduler.
     pub transactions_serial: u64,
 }
 
