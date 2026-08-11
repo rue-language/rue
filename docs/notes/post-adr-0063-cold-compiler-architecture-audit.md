@@ -818,6 +818,21 @@ medians move from 1,888.37 to 1,823.21 ms. Median peak RSS rises by 1.55 MiB
 (0.35%), within dispersion. Every deterministic compiler-work counter and the
 emitted executable remain identical.
 
+RUE-1382 removes the tree allocation from validation's recursion guard without
+trading it for an unbounded linear scan. Each traversal now retains its first
+eight active runtime incarnations inline and promotes once to a numeric hash set
+when a genuinely deep dependency cone crosses that bound. The ordered tree had
+no semantic consumer: the guard only inserts, tests membership, and removes.
+
+Fixed one-worker cold Lattice performs 154,956 validation traversals and
+614,202 node visits with zero active-cycle prunes. The candidate removes 137,381
+allocator calls (0.83%) and 14,279,424 requested bytes (0.53%); the profiled
+tree-insertion leaf under `validated_stamp` disappears. Sixteen directly
+alternating ordinary-release pairs improve by 0.71% at the paired median.
+Median peak RSS rises by 1.48 MiB (0.33%), within run dispersion. Every
+deterministic compiler-work counter and the emitted executable remain
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

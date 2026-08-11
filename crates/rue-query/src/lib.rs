@@ -4849,6 +4849,81 @@ struct ValidationCertificate {
     registered_only: bool,
 }
 
+const INLINE_ACTIVE_VALIDATIONS: usize = 8;
+
+/// Runtime incarnations on the current validation recursion path.
+///
+/// Validation cones are normally shallow, so retaining the first few entries
+/// inline avoids constructing a tree for every traversal. Unusually deep cones
+/// promote once to a hash set, preserving bounded membership checks instead of
+/// making adversarial dependency depth quadratic.
+#[derive(Debug, Default)]
+enum ActiveValidations {
+    #[default]
+    Empty,
+    Inline {
+        entries: [u64; INLINE_ACTIVE_VALIDATIONS],
+        len: u8,
+    },
+    Hashed(AHashSet<u64>),
+}
+
+impl ActiveValidations {
+    fn insert(&mut self, incarnation: u64) -> bool {
+        match self {
+            Self::Empty => {
+                let mut entries = [0; INLINE_ACTIVE_VALIDATIONS];
+                entries[0] = incarnation;
+                *self = Self::Inline { entries, len: 1 };
+                true
+            }
+            Self::Inline { entries, len } => {
+                let occupied = &entries[..usize::from(*len)];
+                if occupied.contains(&incarnation) {
+                    return false;
+                }
+                if usize::from(*len) < INLINE_ACTIVE_VALIDATIONS {
+                    entries[usize::from(*len)] = incarnation;
+                    *len += 1;
+                    return true;
+                }
+
+                let mut promoted = AHashSet::with_capacity(INLINE_ACTIVE_VALIDATIONS + 1);
+                promoted.extend(occupied.iter().copied());
+                let inserted = promoted.insert(incarnation);
+                assert!(
+                    inserted,
+                    "a distinct incarnation must remain distinct during cycle-set promotion"
+                );
+                *self = Self::Hashed(promoted);
+                true
+            }
+            Self::Hashed(entries) => entries.insert(incarnation),
+        }
+    }
+
+    fn remove(&mut self, incarnation: &u64) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::Inline { entries, len } => {
+                let Some(position) = entries[..usize::from(*len)]
+                    .iter()
+                    .position(|entry| entry == incarnation)
+                else {
+                    return false;
+                };
+                *len -= 1;
+                entries[position] = entries[usize::from(*len)];
+                if *len == 0 {
+                    *self = Self::Empty;
+                }
+                true
+            }
+            Self::Hashed(entries) => entries.remove(incarnation),
+        }
+    }
+}
+
 trait ErasedNode: fmt::Debug + Send + Sync {
     /// Exact runtime-local incarnation represented by this erased handle.
     fn incarnation(&self) -> u64;
@@ -4857,7 +4932,7 @@ trait ErasedNode: fmt::Debug + Send + Sync {
         &self,
         _core: &RuntimeCore,
         task: &Arc<Task>,
-        active: &mut BTreeSet<u64>,
+        active: &mut ActiveValidations,
     ) -> Result<Option<u64>, QueryAbort>;
 
     /// Records one exact validation certificate and reports whether it was new.
@@ -4883,7 +4958,7 @@ where
         &self,
         core: &RuntimeCore,
         task: &Arc<Task>,
-        active: &mut BTreeSet<u64>,
+        active: &mut ActiveValidations,
     ) -> Result<Option<u64>, QueryAbort> {
         task.validation_work
             .node_visits
@@ -9872,7 +9947,11 @@ impl RuntimeCore {
             .traversals
             .fetch_add(1, Ordering::Relaxed);
         let proof = task.begin_validation();
-        let valid = match self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new()) {
+        let valid = match self.valid_for_revision_inner(
+            terminal,
+            task,
+            &mut ActiveValidations::default(),
+        ) {
             Ok(valid) => valid,
             Err(abort) => {
                 task.validation_work
@@ -9932,7 +10011,7 @@ impl RuntimeCore {
         &self,
         terminal: &QueryTerminal<V>,
         task: &Arc<Task>,
-        active: &mut BTreeSet<u64>,
+        active: &mut ActiveValidations,
     ) -> Result<bool, QueryAbort> {
         if !terminal.revision.is_compatible_with(task.revision) {
             return Ok(false);
@@ -10315,6 +10394,32 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn active_validations_stay_inline_and_detect_cycles() {
+        let mut active = ActiveValidations::default();
+        for incarnation in 1..=INLINE_ACTIVE_VALIDATIONS as u64 {
+            assert!(active.insert(incarnation));
+        }
+        assert!(matches!(active, ActiveValidations::Inline { .. }));
+        assert!(!active.insert(4));
+        assert!(active.remove(&4));
+        assert!(active.insert(4));
+        assert!(!active.remove(&99));
+    }
+
+    #[test]
+    fn active_validations_promote_for_deep_cones() {
+        let mut active = ActiveValidations::default();
+        for incarnation in 1..=(INLINE_ACTIVE_VALIDATIONS as u64 + 2) {
+            assert!(active.insert(incarnation));
+        }
+        assert!(matches!(active, ActiveValidations::Hashed(_)));
+        assert!(!active.insert(1));
+        assert!(!active.insert(INLINE_ACTIVE_VALIDATIONS as u64 + 2));
+        assert!(active.remove(&1));
+        assert!(active.insert(1));
+    }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct Key(&'static str);
