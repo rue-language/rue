@@ -95,6 +95,12 @@ impl ErrorCode {
     /// The per-file lexer diagnostic budget was exceeded. The detailed
     /// diagnostics before this summary remain available.
     pub const LEXER_DIAGNOSTICS_OMITTED: Self = Self(10);
+    /// A floating-point literal written with a leading dot (`.5`) or a
+    /// trailing dot (`5.`); ADR-0065 §3 requires `0.5` / `5.0`. Sits in the
+    /// lexical band even though the trailing-dot form is diagnosed by the
+    /// parser — see [`ErrorKind::MalformedFloatLiteral`] for why that half
+    /// cannot be decided from the lexeme alone. (RUE-1068)
+    pub const MALFORMED_FLOAT_LITERAL: Self = Self(11);
 
     // ========================================================================
     // Parser errors (E0100-E0199)
@@ -481,6 +487,11 @@ impl ErrorCode {
     /// beside the other `extern "C"` rules, and is the import-side mirror of
     /// E1106's rejection of a `pub extern "C" fn` export named `main`.
     pub const FOREIGN_ENTRY_POINT_DECLARATION: Self = Self(1108);
+    /// A float literal was used with `--preview floats` enabled, but the
+    /// typing phases of ADR-0065 (Phase 4 onward) are not implemented yet.
+    /// Sits in the preview band beside E1100 because it is the second half of
+    /// the same gate: E1100 fires without the flag, E1109 with it. (RUE-1069)
+    pub const FLOAT_NOT_YET_IMPLEMENTED: Self = Self(1109);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -668,6 +679,14 @@ pub enum PreviewFeature {
     /// of a projection of the receiver. Gated until mutable accessors and std
     /// adoption complete the rollout (RUE-1015).
     BorrowAccessors,
+    /// Floating point: `f32`/`f64`, IEEE-754 arithmetic, and `comptime_float`
+    /// literals (ADR-0065, RUE-714). Gated until every phase of the M9 rollout
+    /// — types and inference, both backends, the dtoa runtime — is complete
+    /// (ADR-0065 Phase 10). The lexer and parser accept a float literal only
+    /// with this flag; the phases that would give it a type do not exist yet,
+    /// so an enabled float literal still stops at
+    /// [`ErrorKind::FloatNotYetImplemented`].
+    Floats,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -691,6 +710,7 @@ impl PreviewFeature {
             PreviewFeature::Slices => "slices",
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::BorrowAccessors => "borrow_accessors",
+            PreviewFeature::Floats => "floats",
         }
     }
 
@@ -702,6 +722,7 @@ impl PreviewFeature {
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::BorrowAccessors => "ADR-0062",
+            PreviewFeature::Floats => "ADR-0065",
         }
     }
 
@@ -712,6 +733,7 @@ impl PreviewFeature {
             PreviewFeature::Slices,
             PreviewFeature::CFfi,
             PreviewFeature::BorrowAccessors,
+            PreviewFeature::Floats,
         ]
     }
 
@@ -738,6 +760,7 @@ impl std::str::FromStr for PreviewFeature {
             "slices" => Ok(PreviewFeature::Slices),
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "borrow_accessors" => Ok(PreviewFeature::BorrowAccessors),
+            "floats" => Ok(PreviewFeature::Floats),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1230,6 +1253,19 @@ pub enum ErrorKind {
     /// single ASCII byte (RUE-1042).
     #[error("{0}")]
     MalformedByteLiteral(String),
+    /// A malformed floating-point literal: a leading dot (`.5`) or a trailing
+    /// dot (`5.`). ADR-0065 §3 rejects both spellings for readability — write
+    /// `0.5` and `5.0`. Carries a specific, already-rendered reason.
+    ///
+    /// The leading-dot form is a lexical decision (`.` immediately followed by
+    /// a digit can never start any other Rue lexeme), so the lexer reports it.
+    /// The trailing-dot form is not decidable from the lexeme alone: `42.` is
+    /// the prefix of the legal method call `42.to_string()`, so the *parser*
+    /// reports it once the token after the `.` proves no member name follows.
+    /// Both share this kind — and E0011 — because both diagnose the same
+    /// numeric-literal spelling rule.
+    #[error("{0}")]
+    MalformedFloatLiteral(String),
     /// Summary emitted after lexing reaches its per-file diagnostic budget.
     /// `limit` is the number of detailed diagnostics retained.
     #[error("additional lexer diagnostics omitted after the first {limit} errors")]
@@ -1941,6 +1977,20 @@ pub enum ErrorKind {
     #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
     SliceNotYetImplemented,
 
+    /// A float literal was written with `--preview floats` enabled, but the
+    /// phases that give it a type do not exist yet (ADR-0065 Phase 4+,
+    /// RUE-714). Phases 2 and 3 land the literal token, the parser node, and
+    /// the untyped RIR node; semantic analysis has no `f32`/`f64` tag and no
+    /// `comptime_float` to coerce it with, so the literal is rejected here
+    /// with a clean diagnostic rather than reaching an unfinished typing path.
+    /// Modelled on [`ErrorKind::SliceNotYetImplemented`], the same
+    /// gate-is-on-but-phase-is-missing marker for ADR-0043.
+    #[error(
+        "floating-point literals are not yet supported at this compilation phase \
+         (ADR-0065 Phase 4, RUE-714)"
+    )]
+    FloatNotYetImplemented,
+
     /// A slice type `[T]` appeared in return position — forbidden because a
     /// slice is second-class (ADR-0037, ADR-0043, RUE-322).
     #[error(
@@ -2035,6 +2085,7 @@ impl ErrorKind {
             ErrorKind::UppercaseBasePrefix(_) => ErrorCode::UPPERCASE_BASE_PREFIX,
             ErrorKind::EmptyBasedLiteral { .. } => ErrorCode::EMPTY_BASED_LITERAL,
             ErrorKind::MalformedByteLiteral(_) => ErrorCode::MALFORMED_BYTE_LITERAL,
+            ErrorKind::MalformedFloatLiteral(_) => ErrorCode::MALFORMED_FLOAT_LITERAL,
             ErrorKind::InvalidDigitForBase { .. } => ErrorCode::INVALID_DIGIT_FOR_BASE,
             ErrorKind::LexerDiagnosticsOmitted { .. } => ErrorCode::LEXER_DIAGNOSTICS_OMITTED,
 
@@ -2220,6 +2271,7 @@ impl ErrorKind {
             ErrorKind::ForeignEntryPointDeclaration => ErrorCode::FOREIGN_ENTRY_POINT_DECLARATION,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
+            ErrorKind::FloatNotYetImplemented => ErrorCode::FLOAT_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
             ErrorKind::SliceEscapesScope => ErrorCode::SLICE_ESCAPES_SCOPE,
@@ -3057,7 +3109,43 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, c_ffi, borrow_accessors");
+        assert_eq!(names, "test_infra, slices, c_ffi, borrow_accessors, floats");
+    }
+
+    #[test]
+    fn test_preview_feature_floats() {
+        // ADR-0065 (RUE-714): the floating-point preview feature, gating the
+        // literal grammar in Phases 2-3 and everything M9 adds after it.
+        let feature: PreviewFeature = "floats".parse().unwrap();
+        assert_eq!(feature, PreviewFeature::Floats);
+        assert_eq!(feature.name(), "floats");
+        assert_eq!(feature.adr(), "ADR-0065");
+        assert!(PreviewFeature::all().contains(&PreviewFeature::Floats));
+    }
+
+    #[test]
+    fn test_float_literal_error_codes() {
+        // The two halves of the float gate: E1100 without `--preview floats`
+        // (the shared preview-gate kind), E1109 with it, plus the E0011
+        // spelling rule from ADR-0065 §3.
+        assert_eq!(
+            ErrorKind::FloatNotYetImplemented.code(),
+            ErrorCode::FLOAT_NOT_YET_IMPLEMENTED
+        );
+        assert_eq!(ErrorCode::FLOAT_NOT_YET_IMPLEMENTED.to_string(), "E1109");
+        assert_eq!(
+            ErrorKind::MalformedFloatLiteral("boom".to_string()).code(),
+            ErrorCode::MALFORMED_FLOAT_LITERAL
+        );
+        assert_eq!(ErrorCode::MALFORMED_FLOAT_LITERAL.to_string(), "E0011");
+        assert_eq!(
+            ErrorKind::PreviewFeatureRequired {
+                feature: PreviewFeature::Floats,
+                what: "a floating-point literal".to_string(),
+            }
+            .code(),
+            ErrorCode::PREVIEW_FEATURE_REQUIRED
+        );
     }
 
     #[test]

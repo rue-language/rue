@@ -82,6 +82,12 @@ pub enum LexError {
     /// A malformed byte literal (`b'ab'`, `b''`, `b'\q'`, non-ASCII `b'é'`, or
     /// an unterminated `b'a`). Carries an already-rendered reason. (RUE-1042)
     MalformedByteLiteral(String),
+    /// A float literal spelling the lexer can reject on its own: a leading dot
+    /// (`.5`) or an exponent marker with no digits (`1e`, `1e+`). Carries an
+    /// already-rendered reason. The trailing-dot form (`5.`) is *not* here —
+    /// `42.` is the legal prefix of `42.to_string()`, so only the parser can
+    /// tell the two apart (ADR-0065 §3, RUE-1068).
+    MalformedFloatLiteral(String),
 }
 
 /// Process a string literal starting from an opening quote.
@@ -283,6 +289,62 @@ fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64
         return Err(LexError::EmptyBasedLiteral { base });
     }
     Ok(value)
+}
+
+/// Callback for the float literal rules on [`LogosTokenKind::Float`]
+/// (ADR-0065 §3, RUE-1068).
+///
+/// A float literal is a digit run followed by a `.` fraction, an exponent, or
+/// both: `1.5`, `1e9`, `1.5e-3`, `6.022e23`. There are no suffixes — the
+/// literal is a `comptime_float` and takes its width from context — so the
+/// only work here is interning the literal's text with `_` separators removed,
+/// leaving a string `str::parse::<f32>()`/`<f64>()` accepts verbatim once the
+/// target width is known. Nothing is rounded at this phase: a
+/// `comptime_float` is arbitrary precision (ADR-0025), and decoding to `f64`
+/// here would round `1.0000000000000000001` before anyone knew whether the
+/// destination was `f32`, `f64`, or a compile error.
+///
+/// The interner can be exhausted like any other interning site (spec C.5:1).
+fn intern_float_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<Spur, LexError> {
+    let slice = lex.slice();
+    // Fast path: most literals have no separators, so avoid the copy.
+    if slice.contains('_') {
+        let digits: String = slice.chars().filter(|c| *c != '_').collect();
+        lex.extras
+            .try_get_or_intern(&digits)
+            .map_err(|_| LexError::InternerExhausted)
+    } else {
+        lex.extras
+            .try_get_or_intern(slice)
+            .map_err(|_| LexError::InternerExhausted)
+    }
+}
+
+/// Callback for the leading-dot float rule: `.5` is rejected, write `0.5`
+/// (ADR-0065 §3).
+///
+/// This is safe to decide lexically because `.` immediately followed by a
+/// digit cannot begin any other Rue lexeme: member access takes an identifier
+/// (`p.x`), Rue has no tuple-index syntax, and there is no range operator.
+fn reject_leading_dot_float(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<Spur, LexError> {
+    Err(LexError::MalformedFloatLiteral(format!(
+        "floating-point literal cannot start with `.`: write `0{}` instead of `{}`",
+        lex.slice(),
+        lex.slice()
+    )))
+}
+
+/// Callback for the empty-exponent rule: `1e`, `1e+` have no exponent digits.
+///
+/// Matching this as one token (rather than letting `1e` split into `1` and the
+/// identifier `e`) is safe for the same reason the based-literal rule swallows
+/// its alphanumeric tail: no grammar production allows an integer literal to
+/// abut an identifier character, so this can never reject a valid program.
+fn reject_empty_exponent(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<Spur, LexError> {
+    Err(LexError::MalformedFloatLiteral(format!(
+        "missing digits in the exponent of floating-point literal `{}`",
+        lex.slice()
+    )))
 }
 
 /// Callback for byte literals `b'a'` (RUE-1042), triggered on the `b'` prefix.
@@ -524,6 +586,37 @@ pub enum LogosTokenKind {
     #[token("b'", process_byte_literal)]
     Int(u64),
 
+    // Float literals (ADR-0065 §3, RUE-1068): a digit run followed by a `.`
+    // fraction, an exponent, or both — `1.5`, `1e9`, `1.5e-3`, `6.022e23` —
+    // with `_` separators legal inside any digit run. There are no `f32`/`f64`
+    // suffixes; a literal is a `comptime_float` and takes its width from
+    // context in a later phase.
+    //
+    // Disambiguation against the existing tokens is by logos' longest match:
+    //   - `1.5`  -> Float, not `Int(1) Dot Int(5)`, because the float rule
+    //     matches three characters where the `Int` rule matches one.
+    //   - `42.to_string()` -> `Int(42) Dot Ident`, because the fraction rule
+    //     requires a *digit* after the `.`, so nothing longer than `42`
+    //     matches. This is why the trailing-dot rejection (`5.`) lives in the
+    //     parser: the lexer cannot commit to it without breaking method calls
+    //     on integer literals.
+    //   - `0x1e9` -> the based-literal rule, which the exponent rule cannot
+    //     reach (its digit run stops at `x`).
+    // The exponent marker accepts `e` and `E`. That is not a departure from
+    // the lowercase-only *base prefix* rule (`0x`, RUE-177): case-insensitivity
+    // inside a numeric body already holds for hex digits (`0xff` == `0xFF`),
+    // and `E` selects nothing, so there is no `0X`-style ambiguity to reject.
+    #[regex(
+        r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?",
+        intern_float_literal
+    )]
+    #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*", intern_float_literal)]
+    // `.5` is rejected: write `0.5` (ADR-0065 §3).
+    #[regex(r"\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?", reject_leading_dot_float)]
+    // `1e`, `1e-` have an exponent marker but no exponent digits.
+    #[regex(r"[0-9][0-9_]*(\.[0-9][0-9_]*)?[eE][+-]?", reject_empty_exponent)]
+    Float(Spur),
+
     // String literals - match opening quote and process content manually
     // This allows detection of unterminated strings
     #[token("\"", process_string_from_quote)]
@@ -696,6 +789,7 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Type => TokenKind::Type,
             LogosTokenKind::Underscore => TokenKind::Underscore,
             LogosTokenKind::Int(n) => TokenKind::Int(n),
+            LogosTokenKind::Float(s) => TokenKind::Float(s),
             LogosTokenKind::String(s) => TokenKind::String(s),
             LogosTokenKind::Ident(s) => TokenKind::Ident(s),
             LogosTokenKind::EqEq => TokenKind::EqEq,
@@ -913,6 +1007,14 @@ impl<'a> LogosLexer<'a> {
                                 ),
                                 LexError::MalformedByteLiteral(message) => (
                                     ErrorKind::MalformedByteLiteral(message),
+                                    Span::with_file(
+                                        self.file_id,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
+                                    ),
+                                ),
+                                LexError::MalformedFloatLiteral(message) => (
+                                    ErrorKind::MalformedFloatLiteral(message),
                                     Span::with_file(
                                         self.file_id,
                                         span_offset(span.start),
@@ -1994,6 +2096,119 @@ mod tests {
         assert!(matches!(kinds[1], TokenKind::LtLt));
         assert!(matches!(kinds[3], TokenKind::LtEq));
         assert!(matches!(kinds[5], TokenKind::EqEq));
+    }
+
+    /// Resolve every float literal in `source` to its interned text, so the
+    /// float tests read as "these characters lexed to this literal".
+    fn float_texts(source: &str) -> Vec<String> {
+        let (tokens, interner) = LogosLexer::new(source)
+            .tokenize()
+            .unwrap_or_else(|error| panic!("`{source}` should lex: {error}"));
+        tokens
+            .iter()
+            .filter_map(|token| match token.kind {
+                TokenKind::Float(sym) => Some(interner.resolve(&sym).to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn float_literal_accepted_forms() {
+        // ADR-0065 §3: a digit run, then a `.` fraction, an exponent, or both.
+        assert_eq!(float_texts("1.5"), vec!["1.5"]);
+        assert_eq!(float_texts("1e9"), vec!["1e9"]);
+        assert_eq!(float_texts("1.5e-3"), vec!["1.5e-3"]);
+        assert_eq!(float_texts("6.022e23"), vec!["6.022e23"]);
+        assert_eq!(float_texts("1E9 2.5E+7"), vec!["1E9", "2.5E+7"]);
+        assert_eq!(
+            float_texts("0.0 1.0 3.14159"),
+            vec!["0.0", "1.0", "3.14159"]
+        );
+    }
+
+    #[test]
+    fn float_literal_separators_are_stripped_for_the_interned_text() {
+        // `_` is legal inside any digit run, and the interned text is what a
+        // later phase hands to `str::parse`, so the separators are removed
+        // here rather than at every consumer.
+        assert_eq!(float_texts("1_000.000_1"), vec!["1000.0001"]);
+        assert_eq!(float_texts("1e1_0"), vec!["1e10"]);
+    }
+
+    #[test]
+    fn float_literal_text_is_exact_not_rounded() {
+        // A `comptime_float` is arbitrary precision until context picks a
+        // width (ADR-0025, ADR-0065 §3): the token must carry the digits the
+        // programmer wrote, not an already-rounded `f64`.
+        let long = "0.1000000000000000000000000000001";
+        assert_eq!(float_texts(long), vec![long]);
+    }
+
+    #[test]
+    fn float_literal_wins_over_int_dot_int() {
+        // `1.5` must NOT lex as `Int(1) Dot Int(5)`.
+        let (tokens, _) = LogosLexer::new("1.5").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Float(_)));
+        assert_eq!(tokens[0].span, Span::new(0, 3));
+        assert!(matches!(tokens[1].kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn integer_member_access_still_lexes_as_int_dot_ident() {
+        // The fraction rule requires a digit after the `.`, so a method call
+        // on an integer literal is untouched. This is the reason the
+        // trailing-dot rejection is a parser rule, not a lexer rule.
+        let (tokens, interner) = LogosLexer::new("42.to_string()").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(42)));
+        assert!(matches!(tokens[1].kind, TokenKind::Dot));
+        assert_eq!(get_ident_str(&tokens[2].kind, &interner), Some("to_string"));
+    }
+
+    #[test]
+    fn trailing_dot_float_is_not_a_lexical_error() {
+        // `5.` lexes as `Int(5) Dot`; the parser turns that into the
+        // "write `5.0`" diagnostic once it sees no member name follows.
+        let (tokens, _) = LogosLexer::new("5.;").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(5)));
+        assert!(matches!(tokens[1].kind, TokenKind::Dot));
+        assert!(matches!(tokens[2].kind, TokenKind::Semi));
+    }
+
+    #[test]
+    fn leading_dot_float_is_rejected() {
+        let error = LogosLexer::new("let x = .5;").tokenize().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "floating-point literal cannot start with `.`: write `0.5` instead of `.5`"
+        );
+        assert_eq!(error.kind.code().to_string(), "E0011");
+        let span = error.span().expect("lexical error must carry a span");
+        assert_eq!((span.start, span.end), (8, 10));
+    }
+
+    #[test]
+    fn exponent_without_digits_is_rejected() {
+        let error = LogosLexer::new("let x = 1e;").tokenize().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "missing digits in the exponent of floating-point literal `1e`"
+        );
+        let error = LogosLexer::new("let x = 2.0e+;").tokenize().unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "missing digits in the exponent of floating-point literal `2.0e+`"
+        );
+    }
+
+    #[test]
+    fn based_integer_literals_are_unaffected_by_the_exponent_rule() {
+        // `0x1e9`'s digit run stops at `x`, so the exponent rule can never
+        // reach it; it stays one hexadecimal literal.
+        let (tokens, _) = LogosLexer::new("0x1e9 0b101 0o17").tokenize().unwrap();
+        assert!(matches!(tokens[0].kind, TokenKind::Int(0x1e9)));
+        assert!(matches!(tokens[1].kind, TokenKind::Int(0b101)));
+        assert!(matches!(tokens[2].kind, TokenKind::Int(0o17)));
     }
 
     #[test]

@@ -912,6 +912,16 @@ impl<'a> AstGen<'a> {
                 data: InstData::IntConst(lit.value),
                 span: lit.span,
             }),
+            // A float literal reaches RIR untyped: the node carries the
+            // literal's exact text and nothing else, because `comptime_float`
+            // has no width until a later phase's context supplies one
+            // (ADR-0065 §3, RUE-1069).
+            Expr::Float(lit) => self.rir.add_inst(Inst {
+                data: InstData::FloatConst {
+                    text: self.symbol(lit.value),
+                },
+                span: lit.span,
+            }),
             Expr::Bool(lit) => self.rir.add_inst(Inst {
                 data: InstData::BoolConst(lit.value),
                 span: lit.span,
@@ -3547,6 +3557,42 @@ mod tests {
         assert_eq!(counts.get("index_get"), Some(&3));
         assert_eq!(counts.get("index_set"), Some(&1));
         assert_eq!(counts.get("field_get"), Some(&4));
+    }
+
+    /// Every float literal in `source`, in RIR order, as its interned text.
+    fn float_consts(source: &str) -> Vec<String> {
+        let (rir, interner) = gen_rir(source);
+        rir.iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::FloatConst { text } => Some(interner.resolve(text).to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn float_literal_lowers_to_an_untyped_float_const() {
+        // ADR-0065 §3 / RUE-1069: the node carries the literal's text and no
+        // type — `comptime_float` has no width until a later phase supplies
+        // one — and `1e9` stays distinguishable from the integer 1000000000.
+        assert_eq!(float_consts("fn f() { 1.5 }"), ["1.5"]);
+        assert_eq!(
+            float_consts("fn f(x: i32) { 1.5e-3 + 6.022e23 }"),
+            ["1.5e-3", "6.022e23"]
+        );
+        assert_eq!(float_consts("fn f() { 1e9 }"), ["1e9"]);
+    }
+
+    #[test]
+    fn float_literal_prints_as_a_distinct_rir_constant() {
+        let (rir, interner) = gen_rir("fn f(x: i32) -> i32 { let y = 1.5e-3 + x; 0 }");
+        let output = RirPrinter::new(&rir, &interner).to_string();
+        assert!(
+            output.contains("const float 1.5e-3"),
+            "float literal missing from the RIR dump:\n{output}"
+        );
+        // The literal is an operand of the addition like any other primary.
+        assert!(output.contains("add "), "{output}");
     }
 
     // RirPrinter integration test with actual generated RIR

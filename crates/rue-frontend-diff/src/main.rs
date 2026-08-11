@@ -404,6 +404,7 @@ impl Shapes<'_> {
     fn expr(&self, expr: &Expr) -> String {
         match expr {
             Expr::Int(_) => leaf("int"),
+            Expr::Float(_) => leaf("float"),
             Expr::String(_) => leaf("string"),
             Expr::Bool(v) => node(
                 "bool",

@@ -141,6 +141,7 @@ fn expr_charge(expr: &ast::Expr) -> u64 {
     use ast::Expr;
     match expr {
         Expr::Int(_)
+        | Expr::Float(_)
         | Expr::String(_)
         | Expr::Bool(_)
         | Expr::Unit(_)
@@ -1307,6 +1308,7 @@ impl RetainedCharge for rue_error::ErrorKind {
         use rue_error::ErrorKind as E;
         match self {
             E::MalformedByteLiteral(value)
+            | E::MalformedFloatLiteral(value)
             | E::ParseError(value)
             | E::UndefinedVariable(value)
             | E::UndefinedFunction(value)
@@ -1582,6 +1584,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ExternVariadicUnsupported
             | E::ForeignEntryPointDeclaration
             | E::SliceNotYetImplemented
+            | E::FloatNotYetImplemented
             | E::SliceReturnNotAllowed
             | E::SliceInAggregateField
             | E::SliceEscapesScope => 0,

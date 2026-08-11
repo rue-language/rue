@@ -1,0 +1,257 @@
+[section]
+id = "cli.float_literals"
+name = "Float literal grammar and the floats preview gate"
+description = """
+ADR-0065 Phases 2-3 (RUE-1068, RUE-1069): the lexer produces a float literal
+token, the parser and RIR carry it untyped, and the whole feature sits behind
+`--preview floats`. Nothing types the literal yet (that is Phase 4), so both
+directions of the gate are diagnostics: E1100 without the flag, E1109 with it.
+These cases pin BOTH directions and the spelling rules, because a gate that
+only ever fails one way is half a gate.
+"""
+
+# ---------------------------------------------------------------------------
+# The gate, both directions (spec 8.4:1: a gated feature must error without
+# its flag).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "float_literal_without_preview_is_gated"
+description = "Without --preview floats a float literal is the standard gated-feature error."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 1.5;
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1100",
+    "a floating-point literal requires preview feature `floats`",
+    "use --preview floats to enable this feature (ADR-0065)",
+]
+
+[[case]]
+name = "float_literal_with_preview_reaches_the_phase_marker"
+description = "With the flag the gate passes and the literal stops at the not-yet-implemented marker (E1109), not an ICE."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 1.5;
+    0
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E1109",
+    "floating-point literals are not yet supported at this compilation phase",
+    "ADR-0065 Phase 4",
+]
+compile_stderr_not_contains = ["internal compiler error", "E1100"]
+
+[[case]]
+name = "float_in_an_operand_position_is_gated_not_ignored"
+description = "A float literal inside a larger expression is diagnosed at the literal, and only once."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let n: i32 = 3;
+    let y = 1.5e-3 + n;
+    0
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1109"]
+compile_stderr_not_contains = ["internal compiler error"]
+
+[[case]]
+name = "float_diagnostic_is_one_clean_json_diagnostic"
+description = "The gated literal is a single, well-formed diagnostic at the literal's own span — not a cascade."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 6.022e23;
+    0
+}
+""" }]
+args = ["--error-format", "json", "--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1109"]
+json_diagnostics = true
+json_diagnostic_order = ["error E1109 main.rue:2:13"]
+
+# ---------------------------------------------------------------------------
+# The literal reaches RIR untyped (Phase 3's actual deliverable).
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "float_literal_reaches_rir_untyped"
+description = "The parser and RIR carry the literal as an untyped float constant holding its exact text."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1.5;
+    let b = 1e9;
+    let c = 6.022e23;
+    let d = 1_000.000_1;
+    0
+}
+""" }]
+args = ["--preview", "floats", "--emit", "rir", "main.rue"]
+compile_only = true
+compile_stdout_contains = [
+    "const float 1.5",
+    "const float 1e9",
+    "const float 6.022e23",
+    "const float 1000.0001",
+]
+
+[[case]]
+name = "integer_literals_are_not_float_literals"
+description = "`1e9` is a float; the integer 1000000000 stays an integer constant. The two are distinguishable in RIR."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1000000000;
+    0
+}
+""" }]
+args = ["--emit", "rir", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["const 1000000000"]
+compile_stdout_not_contains = ["const float"]
+
+[[case]]
+name = "float_literal_survives_module_merge"
+description = """
+The literal's text is a symbol, so merging an imported module into the
+program-wide RIR must translate it into the merged interner. A stale symbol
+would resolve to some other module's string; here the RIR dump proves the
+literal still reads back as itself after the merge, and the diagnostic still
+points into the module that wrote it.
+"""
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let h = @import("helper");
+    h.scale()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn scale() -> i32 {
+    let factor = 6.022e23;
+    0
+}
+""" },
+]
+args = ["--preview", "floats", "--emit", "rir", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["const float 6.022e23"]
+
+[[case]]
+name = "float_literal_in_an_imported_module_is_still_gated"
+description = "The gate follows the literal across the module boundary and reports in the module that wrote it."
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let h = @import("helper");
+    h.scale()
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn scale() -> i32 {
+    let factor = 6.022e23;
+    0
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E1100", "helper.rue", "requires preview feature `floats`"]
+
+# ---------------------------------------------------------------------------
+# Spelling rules (ADR-0065 §3). These are lexical/grammatical, so they fire
+# with or without the preview flag.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "leading_dot_float_is_rejected"
+description = "`.5` is rejected with a spelling diagnostic that names `0.5` (lexer, E0011)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = .5;
+    0
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot start with `.`: write `0.5` instead of `.5`",
+]
+
+[[case]]
+name = "trailing_dot_float_is_rejected"
+description = "`5.` is rejected with a spelling diagnostic that names `5.0` (parser, same E0011)."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 5.;
+    0
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot end with `.`: write `5.0` instead of `5.`",
+]
+
+[[case]]
+name = "empty_exponent_is_rejected"
+description = "An exponent marker with no digits is a spelling error, not an integer followed by an identifier."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x = 1e;
+    0
+}
+""" }]
+args = ["--preview", "floats", "main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+    "E0011",
+    "missing digits in the exponent of floating-point literal `1e`",
+]
+
+# ---------------------------------------------------------------------------
+# Regression guards: the float rules must not disturb the existing lexemes.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "member_access_on_an_integer_literal_still_lexes"
+description = "`42.to_string()` is a method call, not a trailing-dot float: the diagnostic is the ordinary method-resolution one."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let s = 42.to_string();
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0413", "no method named 'to_string'"]
+compile_stderr_not_contains = ["E0011", "E1100", "E1109"]
+
+[[case]]
+name = "based_and_separated_integer_literals_are_unaffected"
+description = "Hex/octal/binary literals and `_` separators keep working: the exponent rule never reaches `0x1e9`."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: i32 = 0x1e9;
+    let b: i32 = 0b101;
+    let c: i32 = 1_000;
+    @dbg(a);
+    @dbg(b);
+    @dbg(c);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "489\n5\n1000\n"
+exit_code = 0

@@ -212,6 +212,7 @@ impl TokenView {
             Type => "TYPE(type)",
             Underscore => "UNDERSCORE",
             Int(_) => "INT",
+            Float(_) => "FLOAT",
             String(_) => "STRING",
             Ident(_) => "IDENT",
             Plus => "PLUS",
@@ -266,7 +267,9 @@ impl TokenView {
 
     pub fn value(&self) -> Option<Cow<'_, str>> {
         match self.token().kind {
-            rue_lexer::TokenKind::Ident(symbol) | rue_lexer::TokenKind::String(symbol) => {
+            rue_lexer::TokenKind::Ident(symbol)
+            | rue_lexer::TokenKind::String(symbol)
+            | rue_lexer::TokenKind::Float(symbol) => {
                 Some(Cow::Borrowed(self.owner.resolve_raw_symbol(symbol)))
             }
             rue_lexer::TokenKind::Int(value) => Some(Cow::Owned(value.to_string())),
@@ -1526,6 +1529,13 @@ fn expr_record(
             Some(literal.value.to_string().into()),
             Vec::new(),
         ),
+        Expr::Float(literal) => syntax_record(
+            "float_literal",
+            span,
+            None,
+            Some(owner.resolve_raw_symbol(literal.value).to_string().into()),
+            Vec::new(),
+        ),
         Expr::String(literal) => syntax_record(
             "string_literal",
             span,
@@ -2012,6 +2022,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
     use rue_rir::InstData::*;
     match data {
         IntConst(_) => "integer_constant",
+        FloatConst { .. } => "float_constant",
         BoolConst(_) => "boolean_constant",
         StringConst { .. } => "string_constant",
         UnitConst => "unit_constant",
@@ -2230,6 +2241,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
             }
         }
         IntConst(_)
+        | FloatConst { .. }
         | BoolConst(_)
         | StringConst { .. }
         | UnitConst

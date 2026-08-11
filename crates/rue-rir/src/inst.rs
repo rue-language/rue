@@ -1535,6 +1535,11 @@ impl RirEditor {
                     InstData::IntConst(value) => {
                         self.add_inst(payload_free(InstData::IntConst(*value)))
                     }
+                    InstData::FloatConst { text } => {
+                        self.add_inst(payload_free(InstData::FloatConst {
+                            text: symbol(*text),
+                        }))
+                    }
                     InstData::BoolConst(value) => {
                         self.add_inst(payload_free(InstData::BoolConst(*value)))
                     }
@@ -2724,6 +2729,7 @@ impl Rir {
                 InstData::StringConst {
                     content: symbol, ..
                 }
+                | InstData::FloatConst { text: symbol }
                 | InstData::VarRef { name: symbol, .. }
                 | InstData::TypeConst { type_name: symbol } => symbols!(*symbol),
                 InstData::Add { lhs, rhs }
@@ -3050,6 +3056,7 @@ impl Rir {
     pub fn child_instructions(&self, instruction: InstRef, out: &mut Vec<InstRef>) {
         match &self.get(instruction).data {
             InstData::IntConst(_)
+            | InstData::FloatConst { .. }
             | InstData::BoolConst(_)
             | InstData::UnitConst
             | InstData::Continue
@@ -4260,6 +4267,19 @@ pub enum InstData {
     /// Integer constant
     IntConst(u64),
 
+    /// Floating-point constant, held as the interned literal *text* with `_`
+    /// separators removed (`1.5`, `1e9`, `6.022e23`).
+    ///
+    /// This node is deliberately untyped and undecoded (ADR-0065 §3,
+    /// RUE-1069). A float literal is a `comptime_float`: an arbitrary-precision
+    /// abstract constant that only becomes `f32` or `f64` when context demands
+    /// one, with round-to-nearest applied at that point and an out-of-range
+    /// magnitude reported as a compile error. Storing an `f64` here would
+    /// perform that rounding before the target width — and therefore the
+    /// range check — was known, so the digits travel intact and the phase that
+    /// resolves the type parses them.
+    FloatConst { text: Spur },
+
     /// Boolean constant
     BoolConst(bool),
 
@@ -4934,6 +4954,12 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
             match &inst.data {
                 // Constants
                 InstData::IntConst(v) => writeln!(out, "const {}", v).unwrap(),
+                // Printed with the `float` tag so a float literal is visibly
+                // distinct from an integer one in a RIR dump: `1e9` and
+                // `1000000000` are different nodes with the same value.
+                InstData::FloatConst { text } => {
+                    writeln!(out, "const float {}", self.interner.resolve(&*text)).unwrap()
+                }
                 InstData::BoolConst(v) => writeln!(out, "const {}", v).unwrap(),
                 InstData::StringConst { content, .. } => {
                     writeln!(out, "const {:?}", self.interner.resolve(&*content)).unwrap()
@@ -6143,6 +6169,83 @@ mod typed_payload_tests {
         assert_eq!(*content, destination_symbol);
         assert_eq!(*remapped_anchor, anchor);
         assert_eq!(instruction.span, Span::with_file(FileId::new(9), 23, 31));
+    }
+
+    #[test]
+    fn float_const_text_is_remapped_across_symbol_domains() {
+        // Module merging re-homes every instruction into the program-wide RIR,
+        // translating owner-local symbols as it goes. A `FloatConst`'s text is
+        // a symbol, so it must be translated rather than copied — a merged
+        // program that kept the source symbol would resolve the literal
+        // against the wrong interner (ADR-0065 §3, RUE-1069).
+        let interner = ThreadedRodeo::new();
+        let source_symbol = interner.get_or_intern("6.022e23");
+        let destination_symbol = interner.get_or_intern("0.5");
+        let mut source = RirEditor::new();
+        source.add_inst(Inst {
+            data: InstData::FloatConst {
+                text: source_symbol,
+            },
+            span: Span::with_file(FileId::new(7), 3, 11),
+        });
+        let source = ValidatedRir::finish(
+            source,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(7), 20)],
+            },
+        )
+        .unwrap();
+
+        let mut destination = RirEditor::new();
+        destination
+            .append_remapped_with_spans(
+                &source,
+                |_| destination_symbol,
+                |span| Span::with_file(FileId::new(9), span.start + 20, span.end + 20),
+            )
+            .unwrap();
+        let destination = ValidatedRir::finish(
+            destination,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(9), 100)],
+            },
+        )
+        .unwrap();
+
+        let (_, instruction) = destination.iter().next().unwrap();
+        let InstData::FloatConst { text } = &instruction.data else {
+            panic!("expected a float const, got {:?}", instruction.data);
+        };
+        assert_eq!(*text, destination_symbol);
+        assert_eq!(instruction.span, Span::with_file(FileId::new(9), 23, 31));
+    }
+
+    #[test]
+    fn float_const_symbol_is_validated_like_every_other_symbol_payload() {
+        // A `FloatConst` whose text symbol is outside the compilation's
+        // interner is a malformed producer request, caught by RIR validation
+        // rather than surfacing as a bogus literal downstream.
+        let mut rir = RirEditor::new();
+        rir.add_inst(Inst {
+            data: InstData::FloatConst {
+                text: Spur::try_from_usize(41).unwrap(),
+            },
+            span: Span::with_file(FileId::new(0), 0, 3),
+        });
+        let error = ValidatedRir::finish(
+            rir,
+            &RirValidationContext {
+                symbol_count: 3,
+                source_lengths: &[(FileId::new(0), 20)],
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("symbol"),
+            "unexpected validation error: {error}"
+        );
     }
 
     #[test]
