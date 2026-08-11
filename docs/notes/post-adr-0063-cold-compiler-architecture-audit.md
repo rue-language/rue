@@ -967,6 +967,20 @@ paired MAD and a -10.12% to +5.07% range. Median peak RSS moves +2.31 MiB within
 dispersion. Every published compiler-work counter and emitted executable byte
 remains identical.
 
+RUE-1394 applies each completed block schedule to the MIR instruction vector in
+place. The scheduler now records the dense old-index-to-new-index permutation
+while it reads the unchanged blocks, then realizes its cycles with swaps. This
+removes the second full-width instruction vector, every instruction clone, and
+the adapter's `Inst: Clone` requirement without changing dependency discovery,
+priority, barriers, or tie-breaking.
+
+Three fixed one-worker Lattice probes keep allocation calls neutral while
+reducing requested bytes by 8.29--8.45 MiB. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral on an unusually noisy host at a
+-0.83% paired median, with 5.99% paired MAD and a -19.89% to +30.97% range.
+Median peak RSS moves +3.05 MiB within dispersion. Every published
+compiler-work counter and emitted executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
