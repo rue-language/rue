@@ -6999,6 +6999,15 @@ impl QueryContext {
         self.task.revision
     }
 
+    /// Maximum number of query evaluators this runtime may execute concurrently.
+    ///
+    /// A scheduler can use this immutable construction-time limit to avoid
+    /// creating structured child tasks when the runtime has only one permit and
+    /// same-task proof sharing is therefore strictly cheaper.
+    pub fn max_concurrency(&self) -> usize {
+        self.task.core.permits.maximum
+    }
+
     /// Fails cooperatively when the request is canceled.
     pub fn check_canceled(&self) -> Result<(), QueryAbort> {
         if self.task.cancellation.is_canceled() {

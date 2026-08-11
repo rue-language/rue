@@ -401,7 +401,7 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Semantic reachability scheduling\n\n");
-    out.push_str("Counts are exact for database-owned body reachability. Width buckets count non-empty frontiers submitted to structured batch scheduling; transaction counts distinguish structured prefetch from serial coordinator demand; `keys/batch` exposes available scheduling breadth independently of clock time.\n\n");
+    out.push_str("Counts are exact for database-owned body reachability. Width buckets count non-empty dependency-ready logical frontiers; multi-permit runtimes execute bounded windows as structured batches while a single-permit runtime executes the same windows inline. Transaction counts distinguish ready-frontier prefetch from fallback coordinator demand; `keys/batch` exposes available scheduling breadth independently of clock time.\n\n");
     out.push_str("| workload | scans | scan keys | batches | scheduled keys | keys/batch | transactions prefetched/serial | width 1 | width 2–3 | width 4–7 | width 8+ |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {

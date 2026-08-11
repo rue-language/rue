@@ -289,6 +289,29 @@ settings. This identifies the producer-before-consumer boundary, rather than
 linking or a compiler-wide lock, as the strongest next cold-performance target;
 RUE-1351 tracks batching ready anonymous-producer body frontiers.
 
+RUE-1351 made that producer ordering explicit as dependency-ready logical
+frontiers. Static instance-key dependencies and dynamically discovered producer
+dependencies now enter one deterministic scheduler; a bounded execution window
+prefetches ready transactions without retaining an unbounded frontier. The same
+logical frontier runs inline with one query permit, so work counters and output
+do not depend on worker count. On the maintained workloads the previous 1,097
+Harbor and 1,088 Lattice serial transactions both fell to zero. Harbor compiler
+time moved from 1,777.56 to 944.35 ms and Lattice from 2,042.64 to 1,110.13 ms
+in the same-host release profiles, while Lattice validation observations fell
+from 628,280 to 614,202. The Lattice executable hash remained
+`3f5ff289241c1fd9019c8a1ef618193458a209e0a83c1eb8d14e0882282a5f59`.
+
+The speedup has an explicit peak-memory tradeoff. Across the final same-source
+runs, Lattice peak RSS rose from about 693.0 to 735--744 MiB with the ordinary
+worker setting and from 686.75 to about 728.5 MiB with one worker, roughly six
+to seven percent. Retained
+query records, retained bytes, dependency pins, task leases and active retained
+pins were exactly unchanged. Allocation instrumentation measured only about
+0.6 percent more requested bytes; the larger RSS high-water change comes from
+the allocator's size-class and lifetime shape around the ready scheduler, not a
+larger retained query graph. Harbor remained approximately memory-neutral. This
+tradeoff is tracked explicitly rather than being inferred from clock noise.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
@@ -299,9 +322,8 @@ Authorized low-risk work:
    already owns the payload.
 3. Clean stale comments and keep phase attribution exhaustive when profiles
    expose unattributed work.
-4. Batch ready anonymous-producer body frontiers behind the existing canonical
-   body-reachability scheduler, preserving deterministic publication and the
-   one-query-graph ownership model (RUE-1351).
+4. Preserve bounded dependency-ready body frontiers and use their exact work
+   counters to identify any remaining fallback coordinator path.
 
 Maintainer review required before implementation:
 
