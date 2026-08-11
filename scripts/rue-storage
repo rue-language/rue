@@ -282,9 +282,12 @@ guard_low_disk() {
     before="$(describe_free)" || return 1
 
     echo "warning: host filesystem has ${before} free; running Rue's host-wide adaptive cleanup before building" >&2
+    # A cleanup error is not by itself fatal: with sibling worktrees mid-build,
+    # their busy Buck daemons legitimately refuse `clean`, which is the same
+    # contention RUE-1331's middle band exists for. The hard floor below still
+    # makes the refusal decision; only measurement failures stay fail-closed.
     if ! stale_all clean 1w; then
-        echo "error: host-wide cleanup failed under disk pressure; build stopped before risking ENOSPC" >&2
-        return 1
+        echo "warning: host-wide cleanup could not run to completion (a sibling worktree's Buck daemon may be busy); deciding on the hard floor instead" >&2
     fi
 
     pressure="$(emergency_pressure)" || return 1
