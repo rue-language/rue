@@ -560,6 +560,38 @@ CFG-materialization counter remained identical, and the Lattice executable
 remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1365 made the largest remaining leaf phase measurable at the same standard
+as query validation and CFG materialization. Provider-native body analysis
+already increments exact production counters for each lookup, candidate query,
+fact-family read, and durable materialization. The one-shot metrics boundary
+and version-nine scaling report now snapshot those counters; measurement adds
+no provider operation to the compile path.
+
+The maintained cold baseline is:
+
+| workload | name lookups | method candidates | identity facts | signature facts | const facts | durable materializations |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ruelex | 8,670 | 892 | 6,667 | 2,014 | 4,012 | 3,148 |
+| Mosaic | 23,443 | 784 | 21,639 | 8,171 | 4,744 | 8,673 |
+| Harbor | 48,756 | 476 | 42,672 | 16,706 | 7,836 | 17,374 |
+| Lattice | 66,324 | 500 | 53,917 | 21,198 | 13,890 | 21,636 |
+
+Import lookups, operator candidates, nominal-well-formedness reads, and
+anonymous-nominal fact reads are all exactly zero on these four successful
+workloads; producer and toolchain reads remain visible in the complete report.
+The next bounded investigation should therefore begin with repeated name and
+identity observation, not with an inactive provider family or linking.
+
+The projection is measurement-neutral. Against the merged RUE-1364 report,
+compiler medians moved 130.38 to 127.83 ms for Ruelex, 343.58 to 352.52 ms for
+Mosaic, 759.58 to 738.34 ms for Harbor, and 864.09 to 862.39 ms for Lattice;
+peak RSS moved +1.5, +0.6, +0.2, and -8.3 MiB respectively. This mixed movement
+is ordinary run noise, not a claimed speedup or regression. The fixed
+single-worker Lattice allocation probe remains effectively identical at
+17,603,205 calls and 2,917,731,831 requested bytes, and the executable remains
+byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

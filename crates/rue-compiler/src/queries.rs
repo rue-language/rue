@@ -1105,6 +1105,7 @@ pub struct CompileOutput {
     /// Live query-runtime work observed after the rooted compiler queries.
     pub(crate) query_runtime: crate::unstable::QueryRuntimeMetrics,
     pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
+    pub(crate) provider_observations: crate::unstable::ProviderObservationMetrics,
 }
 
 impl CompileOutput {
@@ -1116,6 +1117,7 @@ impl CompileOutput {
             self.work,
             self.query_runtime,
             self.semantic_reachability,
+            self.provider_observations,
         )
     }
 }
@@ -1293,6 +1295,7 @@ pub(crate) fn compile_rooted_with_session(
     let metrics = session.unstable_metrics();
     let query_runtime = metrics.query_runtime();
     let semantic_reachability = metrics.semantic_reachability();
+    let provider_observations = crate::unstable::provider_observation_metrics(session);
     let image = crate::program_image_plan::ProgramImage::from_rooted(
         rooted.objects,
         rooted.exports,
@@ -1316,5 +1319,6 @@ pub(crate) fn compile_rooted_with_session(
     };
     output.query_runtime = query_runtime;
     output.semantic_reachability = semantic_reachability;
+    output.provider_observations = provider_observations;
     Ok(output)
 }

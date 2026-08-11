@@ -63,7 +63,7 @@ pub use run::{
 pub use scaling::{
     CfgMaterializationWork, CompilerWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION,
     ScalingIdentity, ScalingManifest, ScalingObservation, ScalingRegime, ScalingReport,
-    ScalingWorkload, SemanticReachabilityWork, WorkloadShape,
+    ScalingWorkload, SemanticProviderWork, SemanticReachabilityWork, WorkloadShape,
 };
 pub use series::{Metric, SeriesId};
 pub use stats::{

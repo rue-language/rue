@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 8;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 9;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,12 +167,50 @@ pub struct ScalingObservation {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerWork {
+    /// Exact semantic facts observed by provider-native body analysis.
+    pub semantic_provider: SemanticProviderWork,
     /// Work performed while discovering and scheduling reachable bodies.
     pub semantic_reachability: SemanticReachabilityWork,
     /// Request-local lookup preparation for exact CFG materialization facts.
     pub cfg_materialization: CfgMaterializationWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
+}
+
+/// Deterministic provider operations performed by semantic body analysis.
+///
+/// These are observations already required by the production provider. The
+/// benchmark merely snapshots them; collecting this report adds no provider
+/// lookup or materialization work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticProviderWork {
+    /// Unqualified, qualified, and language-item name lookups.
+    pub name_lookups: u64,
+    /// Import and module-binding lookups.
+    pub import_lookups: u64,
+    /// Named-method candidate requests.
+    pub method_candidates: u64,
+    /// Operator-method candidate requests.
+    pub operator_candidates: u64,
+    /// All declaration fact reads; exactly partitioned by the four fields below.
+    pub declaration_facts: u64,
+    /// Exact declaration-identity reads.
+    pub identity_facts: u64,
+    /// Exact callable and nominal-signature reads.
+    pub signature_facts: u64,
+    /// Exact nominal well-formedness reads.
+    pub type_facts: u64,
+    /// Exact constant and compile-time reduction reads.
+    pub const_facts: u64,
+    /// Durable facts copied into body-local representations.
+    pub materializations: u64,
+    /// Anonymous-nominal fact reads.
+    pub anonymous_facts: u64,
+    /// Anonymous-producer body fact reads.
+    pub producer_facts: u64,
+    /// Trusted-toolchain fact reads.
+    pub toolchain_facts: u64,
 }
 
 /// Deterministic preparation and selection work for body-local CFG facts.
