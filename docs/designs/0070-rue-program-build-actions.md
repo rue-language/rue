@@ -42,8 +42,9 @@ envelope's absolute paths are re-anchored so that a shared scan-cache hit is not
 build failure on another machine. A granularity
 rule keeps the action count proportionate: a compile becomes its own action when
 it is expensive relative to action overhead, or when more than one scenario
-consumes its output. That yields 13 programs; the 34 auto-discovered example
-smokes and the ~4,050 inline-source corpus cases stay inside their harnesses.
+consumes its output. That yields 12 programs; the 34 auto-discovered example
+smokes, the one-scenario wordfreq root, and the ~4,050 inline-source corpus
+cases stay inside their harnesses.
 
 No compiler change is required. ADR-0047 Phases 3 and 4 (`--source-manifest`,
 `--emit deps`) are implemented and currently unconsumed; this design is their
@@ -68,7 +69,7 @@ pays a cost, not on the absolute seconds.
 | Corpus cases in total | 4,132 (1,778 CLI, 2,109 spec, 245 UI) |
 | CLI cases naming a checked-in root | 73 cases, 13 roots (10 example + 3 fixture), 17 distinct (root, flags, target) tuples |
 | Most-recompiled roots | mosaic 17x, rill 12x, lattice 7x, calculator 7x, meridian 6x, jsonfmt 5x |
-| Distinct `rue_program` targets proposed | 13 (4 large-example + 9 CLI) |
+| Distinct `rue_program` targets proposed | 12 (4 large-example + 8 CLI) |
 
 **Where those costs are actually paid matters, and it is not where you would
 guess.** The 243.0s and 80.7s figures are `main.rue` compiles, which occur only in
@@ -174,9 +175,9 @@ back `absent`, with the path that was requested).
 RueProgramInfo = provider(fields = [
     "executable",      # the compiled artifact
     "root",
-    "rue_target",      # x86-64-linux | aarch64-linux | aarch64-macos
+    "rue_target",      # the RESOLVED target: x86-64-linux | aarch64-linux | aarch64-macos
     "opt_level",
-    "runs_natively",   # False for a cross-target program
+    "runs_natively",   # resolved target == configured platform's target
 ])
 
 # Mechanism internals, deliberately NOT in the consumer-facing provider.
@@ -186,8 +187,10 @@ rue_program(
     name       = "meridian",
     root       = "examples/meridian/main.rue",
     srcs       = glob(["examples/meridian/**/*.rue"]),   # the declared read bound
-    rue_target = "x86-64-linux",
-    # compiler, std and default flags arrive as one resolved unit:
+    # No rue_target: the native target is resolved from the configured platform
+    # via the toolchain. Setting rue_target explicitly means intentional
+    # cross-compilation. Compiler, std, default flags and the platform's native
+    # target arrive as one resolved unit:
     # _toolchain = attrs.toolchain_dep(default = "toolchains//:rue")
 )
 
@@ -208,6 +211,21 @@ deliberately malformed* rather than checked-in files, so the rule needs a `files
 mechanism of its own rather than only a `data` attribute pointing at repository
 paths. And several programs write output through relative paths, so the scenario
 needs a **writable working directory**, which a read-only runfiles tree is not.
+
+**Target resolution is hybrid: platform-derived by default, attribute on
+purpose.** The same target labels must build and run natively on all three CI
+platforms — Linux x86-64, Linux AArch64, macOS AArch64 — exactly as today's
+`sh_test`s do by never passing `--target` at all. A hardcoded
+`rue_target = "x86-64-linux"` (which an earlier draft's example showed) cannot
+run on two of the three, and per-architecture target labels would multiply the
+program count by platform. So: `RueToolchainInfo` carries the configured
+platform's native Rue target, resolved the same way `toolchains//:rust` already
+resolves per platform; a `rue_program` that sets no `rue_target` compiles for
+that native target; setting `rue_target` explicitly is intentional
+cross-compilation. `runs_natively` is computed — resolved target equals the
+configured platform's target — never asserted. The acceptance criterion that the
+target architecture keys the action is met either way, because the resolved
+target appears on the compile command line.
 
 For `test_tiers.bxl` discovery to keep working the rule must satisfy two
 conditions explicitly, not incidentally: its name must keep the `_test` suffix so
@@ -374,7 +392,8 @@ overhead, or when more than one scenario consumes its output.**
 | Work | Scale | Disposition | Why |
 | --- | --- | --- | --- |
 | caldera, meridian — `main` and `canary` roots | 4 roots | `rue_program` | `main` is 81–243s; all four are consumed by several scenarios and by more than one suite |
-| CLI cases naming a checked-in root | 65 cases → 10 roots, **9 new programs** | `rue_program` | 1–17 TOML scenarios each, and every premerge case executes in both its CI shard and the unsharded `//:cli-tests`, so even a one-case root's artifact has more than one consuming action; `examples/meridian/main.rue` is the tenth root and is already declared by the row above |
+| CLI cases naming a checked-in root | 64 cases → 9 roots, **8 new programs** | `rue_program` | 3–17 TOML scenarios each consume one artifact; `examples/meridian/main.rue` is the ninth root and is already declared by the row above |
+| The one-scenario wordfreq root | 1 case | harness | See below — one cheap scenario; shard/monolith is a scheduling alternative, not a second consumer |
 | Auto-discovered `examples/**` roots not already covered | 34 | harness | See below — every one fails the rule on both prongs |
 | Inline-source CLI / spec / UI cases | ~4,050 | harness | Sources live inside TOML; compiles are milliseconds |
 | Cross-target fixture cases (`abi_conformance.toml`, `linker.toml`) | 6 cases | harness | See below — they fail the rule on both prongs |
@@ -396,12 +415,24 @@ own repo-root-relative `source_path` resolution (`source_path.toml:6-10`,
 RUE-495). Rewritten as a `rue_program_test` it would no longer test anything: its
 subject *is* the TOML mechanism it would be leaving.
 
-So 8 of the 73 cases stay in the harness (6 cross-target, 1 repo-relative, 1
-differential), 65 migrate, and they name 10 roots. Only **9** are new programs:
-`examples/meridian/main.rue` is also a large-example root, so one artifact serves
-both the six CLI scenarios and the slow-tier scenarios. That overlap is the design
-working rather than an accounting nuisance — it is exactly the "many scenarios,
-one compile" property, reaching across two suites.
+**wordfreq fell to the same rule on this round's re-check.** An earlier draft
+kept `examples/wordfreq/main.rue` (one case) as a program on the grounds that
+each premerge case appears in both its CI shard and the unsharded `//:cli-tests`.
+Those two targets are scheduling *alternatives* — CI's platform-corpus matrix
+runs the shards, a local `./test.sh` runs the monolith and excludes
+`rue_cli_shard` (`test.sh:108-139`) — so they are one scenario scheduled two
+ways, not two consumers, and counting them as two would silently rewrite the
+rule from "more than one scenario" to "more than one consuming action
+definition". One cheap scenario, one consumer: wordfreq compiles inside the
+corpus action that runs its case, like any other single-scenario root. The
+remaining eight CLI roots all carry 3–17 TOML scenarios against one artifact.
+
+So 9 of the 73 cases stay compile-in-harness (6 cross-target, 1 repo-relative, 1
+differential, 1 wordfreq), 64 migrate, and they name 9 roots. Only **8** are new
+programs: `examples/meridian/main.rue` is also a large-example root, so one
+artifact serves both the six CLI scenarios and the slow-tier scenarios. That
+overlap is the design working rather than an accounting nuisance — it is exactly
+the "many scenarios, one compile" property, reaching across two suites.
 
 **The 34 auto-discovered roots fail the rule the same way, and an earlier draft
 counted them as programs anyway.** `collect_example_files` yields 45 roots; 10
@@ -439,7 +470,8 @@ the comparison, but the suite must own the second compile itself.
 | Source manifest | generated input | scan-derived; changes when any probed path changes |
 | Compiler build | toolchain input | `RueToolchainInfo.compiler`, internally defaulting to `$(exe_target //crates/rue:rue)`; release vs debug already distinct via `//platforms:*` |
 | Standard library | toolchain input | `RueToolchainInfo.std`, internally defaulting to `//:std` |
-| Compiler flags | command line | `-O`, `--preview`, `--target` |
+| Compiler flags | command line | `-O`, `--preview` |
+| Target architecture | command line | `--target`, always passed explicitly with the *resolved* target — platform-derived default or deliberate `rue_target` override — so the key never depends on host detection |
 | Linked archives | **action inputs** | `--link-archive` bytes are read at link time, so the flag must carry a `$(location ...)` input, not a bare path string |
 | Linker | pinned | `rue_program` pins `--linker internal`; see below |
 | Runtime inputs | test-target inputs | `files`, `data`, `stdin`, `program_env` on `rue_program_test` |
@@ -492,10 +524,24 @@ Three constraints on how the comparison is done, all of which matter:
   non-empty per target. The signal worth reporting is directory-scoped: a file
   that no program whose `srcs` contain it ever reads is dead weight in every
   key it touches; a file read by one sibling and carried by another is the
-  glob doing its job.
+  glob doing its job. **A per-target validation cannot compute that signal** —
+  it sees one program's envelope and would report `canary.rue` against `main`
+  as a known false positive — so the directory signal lives on an aggregate.
 
-**Attach it with `ValidationInfo`, marked `optional`, rather than as a separate
-test target.** The pinned 2026-07-15 buck2 ships it and the bundled prelude
+**The aggregate is explicit, not discovered.** Sibling `rue_program`s that share
+a directory glob are declared by one macro call (`rue_program_family`, or simply
+the same BUCK package block), and that call also emits one
+`<dir>-srcs-report` aggregate whose deps are exactly those siblings. The
+aggregate reads each sibling's `_RueProgramInternalInfo.deps_envelope`, unions
+the accepted-read sets, and reports files of the shared glob that **no** sibling
+reads. Ownership is the macro's argument list — a rule cannot discover its
+siblings, and this design does not ask it to. A `rue_program` declared outside
+any family still carries a strictly target-local report, explicitly labelled as
+listing *extras* rather than classifying them as dead weight, since one
+target's view cannot make that call.
+
+**Attach the reports with `ValidationInfo`, marked `optional`, rather than as
+separate test targets.** The pinned 2026-07-15 buck2 ships it and the bundled prelude
 already uses it (java, kotlin, apple); its `ValidationSpec` carries an `optional`
 field, and optional validations do not run by default — they are selected with
 `--enable-optional-validations`. That is exactly the advisory shape: the report
@@ -669,29 +715,24 @@ internal CI scheduling and would not ship in a ruleset.
       relocated or cross-lane second build must show the canary scan and compile
       actions cache-served under multiple consuming scenarios.
 - [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** — the
-      65 cases keep their TOML form and their existing corpus actions; what
-      changes is that each CLI corpus action declares the 10 program artifacts as
+      64 cases keep their TOML form and their existing corpus actions; what
+      changes is that each CLI corpus action declares the 9 program artifacts as
       inputs and the harness runs the prebuilt executable a case names instead of
       compiling it. The wiring already exists: `cached_corpus_suite`'s `env` is
       `attrs.arg()`, so the artifacts arrive through `$(location ...)` exactly
       like every other declared corpus input, and an artifact edit invalidates
       the consuming corpus actions correctly. Meridian's six scenarios come
       first, which is where the disabled coverage is restored. The 6 cross-target
-      fixture cases, the repo-relative fixture case, and the one
-      `differential_opt` case stay compile-in-harness regardless. **This phase
+      fixture cases, the repo-relative fixture case, the one `differential_opt`
+      case, and the one-scenario wordfreq case stay compile-in-harness
+      regardless. **This phase
       requires no sharding change, no TOML migration, and no decision on open
       question 2** — Buck builds each program once, every scenario shares it,
       and warm runs serve the compile from cache, which is RUE-1164's goal met on
       the existing corpus topology.
-- [ ] **Phase 3: Corpus input precision — deliberately not a phase.** Open
-      question 2's per-file proposal is a corpus-topology redesign: it dissolves
-      CLI sharding, reaches into the spec and UI corpora, and modifies the
-      harness's whole-corpus validation. It is filed as its own ADR and issue
-      once this one is accepted, and nothing in Phases 0–2 waits on it or
-      forecloses it — per-file actions would consume the same `RueProgramInfo`
-      artifacts Phase 2 wires in, just from finer-grained consumers.
-- [ ] **Phase 4: Test-result caching decision** — only after the negative controls
-      pass on a real branch. See open question 4.
+- [ ] **Phase 3: Test-result caching decision** — only after the negative controls
+      pass on a real branch. See open question 4. The default — do not enable —
+      stands unless evidence overturns it.
 
 Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 
@@ -769,93 +810,54 @@ way: question 3's recommendation works on the existing corpus actions as they
 stand, and question 2 is a separate, larger decision that can be taken — or
 declined — afterward without reopening it.
 
-1. **Target architecture: attribute or configuration?** Recommendation: **a plain
-   attribute**, on a stronger argument than the one an earlier draft gave. That
-   draft cited the `abi_conformance`/`linker` fixtures as wanting all three
-   targets side by side in one package; the granularity repair moved those to the
-   harness, so no proposed `rue_program` needs side-by-side targets today, and the
-   example is now about keeping the door open rather than serving a consumer.
+1. **Target architecture.** Recommendation, revised once more after review:
+   **hybrid** — platform-derived by default, attribute only for intentional
+   cross-compilation. An earlier draft recommended a bare attribute, and its own
+   example (`rue_target = "x86-64-linux"`) refuted it: the same target labels
+   must build and run natively on all three CI platforms, exactly as today's
+   `sh_test`s do by never passing `--target` at all. A fixed attribute cannot; a
+   per-architecture label triples the program count; leaving the flag off and
+   trusting host detection would leave an acceptance-criterion input implicit.
+   So the platform supplies the default — `RueToolchainInfo` carries the
+   configured platform's native Rue target, resolved like `toolchains//:rust`
+   already is — and the compile always passes the *resolved* target explicitly.
 
-   The principled argument is that **Rue's read closure is target-invariant by
-   construction.** `ImportDiscoveryContext::new` takes epoch, project root, std
-   root and policy revision — and no target (`source_loader.rs:1004-1013`) — and
-   `@import` has no conditional form, so `--target` cannot change which sources a
-   program reads. Buck configurations exist to vary the dependency graph per
-   platform; for `rue_program` there is provably nothing for a configuration to
-   vary, and the whole difference between two targets' compiles is one
-   command-line flag that keys the action as an attribute at zero cost.
+   What survives from the earlier argument, and still matters: **Rue's read
+   closure is target-invariant by construction.** `ImportDiscoveryContext::new`
+   takes epoch, project root, std root and policy revision — and no target
+   (`source_loader.rs:1004-1013`) — and `@import` has no conditional form, so
+   `--target` cannot change which sources a program reads. That is why no
+   configuration *transition* is needed: there is no target-variant dependency
+   graph to request, and it is why one scan action serves every target of a
+   root. The configuration's only job here is supplying the native default,
+   which toolchain resolution already does.
 
-   **The expiry clause has three conditions, not one.** Target-invariance covers
-   the *dependency graph*; it does not by itself cover *inputs*. Revisit if Rue
-   grows target-dependent imports (which ADR-0047's model forbids); if a
-   `rue_program` ever links an archive that another rule **builds**, since a plain
-   attribute cannot request a dep in the matching configuration and that is
-   precisely what transitions are for; or on **publication**, since
-   `platform()`-driven cross-compilation is the idiom external users expect
-   (rules_go spent years migrating off goos/goarch attributes for exactly this).
-   Nothing bites today: the only archive-linking cases are the `c_ffi` inline-source
-   cases, whose archive the harness *synthesizes* per case to match the case's
-   `executable_target` (`crates/rue-cli-tests/src/main.rs:1949-1971`) rather than
-   checking one in. Note that this is already a target-variant generated input —
-   it simply lives inside the harness instead of the build graph, so the day it
-   becomes a Buck-built artifact is the day the second condition fires. The
-   recommendation still stands either way: an internal attribute forecloses
-   nothing, because the attribute can become a transition's output.
+   **The expiry clause: native resolution applies today; two conditions remain
+   for transitions.** Revisit the no-transition stance if a `rue_program` ever
+   links an archive that another rule **builds**, since an attribute cannot
+   request a dep in the matching configuration and that is precisely what
+   transitions are for; or on **publication**, since `platform()`-driven
+   cross-compilation is the idiom external users expect (rules_go spent years
+   migrating off goos/goarch attributes for exactly this). The first is one
+   refactor away, not hypothetical: the `c_ffi` cases' FFI archive is already a
+   target-variant *generated* input, synthesized per case inside the harness to
+   match the case's `executable_target`
+   (`crates/rue-cli-tests/src/main.rs:1949-1971`); the day it becomes a
+   Buck-built artifact is the day the condition fires. The hybrid forecloses
+   nothing either way: the override attribute can become a transition's output.
 
-2. **Corpus input precision — a proposal, replacing the three options an earlier
-   draft could not choose between.** The root problem is that the current design
-   couples a *scheduling* concern (which shard runs a case, a function of
-   `shard-weights.json`) into a *correctness* concern (what keys an action). All
-   three earlier options managed that coupling; none removed it.
-
-   Recommendation: **make the corpus action's unit the case file, and move shard
-   assignment up into the lane planner.**
-
-   - One corpus action per case TOML, comprehended from `glob(["cases/*.toml"])`
-     at load time — derived from the tree, so there is no hand-maintained mapping
-     and nothing to gate, which meets ADR-0069's ledger standard by construction.
-     Each file-target declares its own TOML plus the coarse rare-change inputs
-     (compiler, harness, std, fixture and example trees). A case edit then
-     invalidates exactly one action, while a compiler or fixture change still
-     invalidates everything, which is correct.
-   - **`shard-weights.json` leaves the key domain entirely.** ADR-0069 Phase 2's
-     planner (implemented and gated) generates the lane split by packing the
-     file-targets with the existing weights, regenerated per run and never
-     persisted — so stale weights can only unbalance a lane, never affect
-     correctness. Coverage stays ADR-0069's union gate. RUE-1267's floor-aware
-     packer replaces the interim packing when it lands, and the ordering is
-     consistent with ADR-0069 having deliberately scheduled that packer after the
-     distribution stops changing: this conversion *is* the distribution change.
-   - **What it deletes:** `CliShardPlan` and the LPT code in
-     `crates/rue-cli-tests/src/sharding.rs`, `CLI_TEST_SHARD_COUNT`,
-     `scripts/validate-cli-shard-coverage.py`, and the skew guard ADR-0069 §6
-     proved vacuous. RUE-1222's scheduled weight refresh becomes free: today it
-     would invalidate every shard action; afterward it touches no action key.
-   - A heavyweight file that dominates a lane is RUE-1267's indivisible-item alarm
-     firing with a mechanical remedy — split the TOML, an ordinary authoring act.
-
-   Two costs, both verified, both belonging in the decision rather than in a
-   footnote. **Scale:** ~323 file-actions repo-wide — 214 CLI, 71 spec, 38 UI,
-   since spec and UI declare whole `cases/**` filegroups today too
-   (`crates/rue-spec/BUCK`, `crates/rue-ui-tests/BUCK`) — at roughly 8–13 cases
-   each. That sits above action overhead, and if it is judged too fine the same
-   mechanism works at directory granularity (spec already has 10 subdirectories);
-   the dial is grouping, not design. **One real harness change:** contract-graph
-   validation deliberately runs against the complete unfiltered inventory before
-   any filter is applied (`crates/rue-cli-tests/src/main.rs:2876-2878`), so a
-   per-file action staged with only its own TOML needs a mode that relaxes
-   cross-file checks, with contract completeness, duplicate-name detection and
-   RUE-924-style counting moving to one whole-corpus parse-only validation target
-   whose coarse key is fine because it costs seconds.
-
-   **Scope caveat, and the reason this stays open.** This is a larger change than
-   "a phase of RUE-1164": it dissolves CLI sharding, reaches into the spec and UI
-   corpora, and modifies the harness — roughly 323 actions against the ~13 this
-   ADR otherwise creates. It is a good answer to the question, but it is its own
-   ADR and issue, filed after this one is accepted, and **it does not gate any
-   phase here**: Phase 2 meets RUE-1164 on the existing shard topology, and
-   per-file actions would consume the same artifacts from finer-grained
-   consumers.
+2. **Corpus input precision.** The insight that survived four rounds: a
+   *scheduling* concern — which shard runs a case, a function of
+   `shard-weights.json` — currently keys the corpus actions, and no amount of
+   input-tightening removes that coupling while the shard is the action unit.
+   The concrete proposal (per-file corpus actions; shard assignment moved up
+   into ADR-0069's lane planner) is recorded under **Future Work** rather than
+   here, because it is a corpus-topology redesign — it dissolves CLI sharding,
+   reaches into the spec and UI corpora, and modifies the harness's whole-corpus
+   validation. Recommendation: file it as its own ADR and issue once this one is
+   accepted. Nothing in Phases 0–2 waits on it or forecloses it — per-file
+   actions would consume the same `RueProgramInfo` artifacts Phase 2 wires in,
+   just from finer-grained consumers.
 
 3. **Do the CLI cases migrate out of TOML, or does the harness consume prebuilt
    artifacts?** Recommendation **reversed** after review: **let the harness
@@ -919,6 +921,24 @@ declined — afterward without reopening it.
    to be re-asserted (`--nocache_test_results`) rather than merely maintained.
    Deciding it here does not decide it there, and a port that assumes otherwise
    flips the answer silently.
+
+## Future Work
+
+**Per-file corpus actions (from open question 2 — a separate ADR, not part of
+this one).** Make the corpus action's unit the case TOML file, comprehended from
+`glob(["cases/*.toml"])` at load time, each file-target declaring its own TOML
+plus the coarse rare-change inputs; move shard assignment out of the action-key
+domain entirely by letting ADR-0069's lane planner pack the file-targets per run
+with the existing weights. A case edit then invalidates one action; a stale
+weight can unbalance a lane but never affect correctness; `CliShardPlan`,
+`CLI_TEST_SHARD_COUNT`, `validate-cli-shard-coverage.py` and the vacuous skew
+guard are deleted; RUE-1222's weight refresh stops invalidating anything. Two
+priced costs carry over with it: ~323 file-actions repo-wide (214 CLI, 71 spec,
+38 UI; directory granularity is the dial if too fine), and contract-graph
+validation — which deliberately runs against the complete unfiltered inventory
+(`crates/rue-cli-tests/src/main.rs:2876-2878`) — needs a relaxed per-file mode
+plus one whole-corpus parse-only validation target. Accepting ADR-0070 neither
+approves nor forecloses this; it consumes the same artifacts Phase 2 wires in.
 
 ## Non-Goals
 
