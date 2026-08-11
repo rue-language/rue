@@ -4683,7 +4683,7 @@ fn stable_syntax_candidate_set(
                 K::Enum => C::Enum,
                 _ => return None,
             },
-            name: Arc::from(owner.name()),
+            name: Arc::clone(owner.shared_name()),
         }),
         None => None,
     };
@@ -4695,7 +4695,7 @@ fn stable_syntax_candidate_set(
             |category| crate::declaration_candidate::DeclarationCandidateKey {
                 module: key.module().clone(),
                 category,
-                name: Arc::from(key.name()),
+                name: Arc::clone(key.shared_name()),
                 owner: owner.clone(),
                 duplicate_discriminator: 0,
             },
@@ -25216,11 +25216,18 @@ mod tests {
             for candidate in candidates {
                 assert_eq!(candidate.module, module);
                 assert_eq!(candidate.name.as_ref(), "item");
+                assert!(Arc::ptr_eq(&candidate.name, key.shared_name()));
                 assert_eq!(candidate.duplicate_discriminator, 0);
                 assert_eq!(
                     candidate.owner.as_ref().map(|owner| owner.name.as_ref()),
                     owner.as_ref().map(|(_, name)| name.as_ref())
                 );
+                if let Some(candidate_owner) = &candidate.owner {
+                    assert!(Arc::ptr_eq(
+                        &candidate_owner.name,
+                        key.owner().unwrap().shared_name()
+                    ));
+                }
             }
         }
     }

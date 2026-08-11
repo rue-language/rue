@@ -99,6 +99,9 @@ impl StableNamedTypeKey {
     pub fn name(&self) -> &str {
         &self.name
     }
+    pub(crate) fn shared_name(&self) -> &Arc<str> {
+        &self.name
+    }
 }
 
 #[derive(Debug)]
@@ -191,6 +194,9 @@ impl StableDefinitionKey {
         self.0.kind
     }
     pub fn name(&self) -> &str {
+        &self.0.name
+    }
+    pub(crate) fn shared_name(&self) -> &Arc<str> {
         &self.0.name
     }
     pub fn owner(&self) -> Option<&StableNamedTypeKey> {

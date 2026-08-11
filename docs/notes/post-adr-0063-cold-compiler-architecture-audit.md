@@ -696,6 +696,22 @@ deltas are +0.08% on Ruelex, -1.49% on Harbor, and +0.43% on Lattice, all well
 inside host dispersion. Median peak memory remains within 0.6%. Output sizes
 and SHA-256 hashes are identical for every workload.
 
+RUE-1373 removes equal-string allocations while reconstructing syntax
+candidates from stable definition identities. Stable keys and named owners
+already retain their immutable names in `Arc<str>`; candidate construction now
+clones those pointers instead of allocating new payloads. Ordinary functions
+benefit twice because their function and extern-function candidates share the
+same name allocation. Candidate order, equality, hashing, query ownership, and
+invalidation are unchanged.
+
+The fixed one-worker Lattice allocation probe falls from 17,434,269 to
+17,387,834 allocation calls (-46,435, or -0.27%) and from 2,917,592,451 to
+2,916,549,779 requested bytes (-1,042,672). Every deterministic compiler-work
+counter is byte-for-byte identical. Five directly alternating ordinary-release
+pairs are clock-neutral: median paired deltas are +0.19% on Ruelex, -0.66% on
+Harbor, and -0.51% on Lattice. Median peak RSS is flat to modestly lower, and
+all output sizes and SHA-256 hashes are identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
