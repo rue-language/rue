@@ -4994,7 +4994,7 @@ impl CompilerSession {
                 crate::cfg_query::CfgSemanticInput::Body {
                     input: Arc::new(crate::cfg_query::CfgBodyInput {
                         function: closure_body.key.instance.clone(),
-                        canonical: Arc::new((**body).clone()),
+                        canonical: body.clone(),
                         body_span,
                     }),
                     materialization: Arc::new(materialization),
@@ -12361,6 +12361,65 @@ fn main() -> i32 {
             &first_transaction,
             &relocated_transaction,
         ));
+    }
+
+    #[test]
+    fn canonical_body_projections_share_one_immutable_artifact() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 40 } fn main() -> i32 { helper() + 2 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        let key = body_query_key(&mut session, &options, "main");
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let cancellation = rue_query::CancellationToken::new();
+        let transaction = session
+            .queries
+            .revisioned
+            .body_transaction(revision, key.clone(), cancellation.clone())
+            .unwrap();
+        let projection = session
+            .queries
+            .revisioned
+            .canonical_body_projection(revision, key.clone(), cancellation.clone())
+            .unwrap();
+        let bundle = session
+            .queries
+            .revisioned
+            .body_analysis_bundle(revision, key, cancellation)
+            .unwrap();
+
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
+            body: transaction_body,
+            ..
+        }) = transaction.outcome()
+        else {
+            panic!("body transaction must publish a canonical body");
+        };
+        let rue_query::QueryOutcome::Success(projection_body) = projection.outcome() else {
+            panic!("canonical-body projection must publish a value");
+        };
+        let rue_query::QueryOutcome::Success(bundle) = bundle.outcome() else {
+            panic!("body-analysis bundle must publish a value");
+        };
+        let crate::body_query::BodyTransaction::Success {
+            body: bundle_body, ..
+        } = &bundle.transaction
+        else {
+            panic!("body-analysis bundle must retain the successful transaction");
+        };
+
+        assert!(Arc::ptr_eq(transaction_body, projection_body));
+        assert!(Arc::ptr_eq(transaction_body, bundle_body));
     }
 
     #[test]

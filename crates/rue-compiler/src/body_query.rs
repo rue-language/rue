@@ -167,7 +167,11 @@ impl QueryKey for BodyQueryKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Request-independent semantic body shared by every stamped projection and
+/// downstream CFG input. This type deliberately is not `Clone`: query
+/// boundaries share its immutable allocation through `Arc` instead of copying
+/// instructions, places, and strings.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CanonicalBody {
     Ordinary {
         owner: crate::StableDefinitionKey,
@@ -303,7 +307,7 @@ pub(crate) fn produced_anonymous_equal(
 #[derive(Debug, Clone)]
 pub(crate) enum BodyTransaction {
     Success {
-        body: Box<CanonicalBody>,
+        body: Arc<CanonicalBody>,
         references: BodyReferences,
         produced_anonymous_nominals: BodyProducedAnonymousNominals,
         consulted_anonymous_nominals: BodyConsultedAnonymousNominals,
