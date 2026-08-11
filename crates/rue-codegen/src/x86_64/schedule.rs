@@ -30,7 +30,7 @@
 
 use super::mir::{Operand, Reg, X86Inst, X86Mir};
 use crate::reg_class::RegClass;
-use crate::schedule_core::{self, SchedulerAdapter};
+use crate::schedule_core::{self, RegList, SchedulerAdapter};
 
 struct X86Scheduler;
 
@@ -54,16 +54,16 @@ impl SchedulerAdapter for X86Scheduler {
         accesses_memory(inst)
     }
 
-    fn regs_read(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+    fn regs_read(&self, inst: &Self::Inst) -> RegList<Self::Reg> {
         regs_read(inst)
     }
 
-    fn regs_written(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+    fn regs_written(&self, inst: &Self::Inst) -> RegList<Self::Reg> {
         regs_written(inst)
     }
 
-    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
-        inst.clobbers().to_vec()
+    fn clobbers(&self, inst: &Self::Inst) -> &[Self::Reg] {
+        inst.clobbers()
     }
 
     fn writes_flags(&self, inst: &Self::Inst) -> bool {
@@ -262,12 +262,12 @@ fn accesses_memory(inst: &X86Inst) -> bool {
 }
 
 /// Get registers read by an instruction (for dependency analysis).
-pub(super) fn regs_read(inst: &X86Inst) -> Vec<Reg> {
-    let mut result = Vec::new();
+pub(super) fn regs_read(inst: &X86Inst) -> RegList<Reg> {
+    let mut result = RegList::new();
 
-    let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
+    let add_if_phys = |op: &Operand, regs: &mut RegList<Reg>| {
         if let Operand::Physical(reg) = op {
-            vec.push(*reg);
+            regs.push(*reg);
         }
     };
 
@@ -426,12 +426,12 @@ pub(super) fn regs_read(inst: &X86Inst) -> Vec<Reg> {
 }
 
 /// Get registers written by an instruction (for dependency analysis).
-pub(super) fn regs_written(inst: &X86Inst) -> Vec<Reg> {
-    let mut result = Vec::new();
+pub(super) fn regs_written(inst: &X86Inst) -> RegList<Reg> {
+    let mut result = RegList::new();
 
-    let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
+    let add_if_phys = |op: &Operand, regs: &mut RegList<Reg>| {
         if let Operand::Physical(reg) = op {
-            vec.push(*reg);
+            regs.push(*reg);
         }
     };
 
