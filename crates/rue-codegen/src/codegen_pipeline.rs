@@ -63,7 +63,11 @@ pub(crate) fn plan_frame_pointer(total_slots: u32, is_leaf: bool) -> FramePointe
 pub(crate) struct PreparedMir<M, R> {
     pub(crate) mir: M,
     pub(crate) total_locals: u32,
-    pub(crate) num_locals_original: u32,
+    /// Frame slots the local area occupies after marker-driven slot sharing
+    /// (RUE-768), and therefore the base of the emitted parameter area. This
+    /// is at most `cfg.num_locals()`; spill slots are counted separately in
+    /// `total_locals`.
+    pub(crate) frame_local_slots: u32,
     pub(crate) has_sret: bool,
     pub(crate) used_callee_saved: Vec<R>,
     /// Per-source-parameter prologue homing plan (RUE-1005), covering only
@@ -156,11 +160,11 @@ pub(crate) fn validate_pre_lowering_budget(
 /// The closures monomorphize for each backend; there is no dynamic dispatch or
 /// universal backend trait. Keeping the two slot formulas here is deliberate:
 ///
-/// - `existing_slots` includes locals, the *homed* parameters (RUE-1170), and
-///   the optional incoming sret pointer so register-allocation spills cannot
-///   overlap any of them.
-/// - `total_locals` includes only original locals and new spill slots because
-///   emitters account for parameters and sret separately.
+/// - `existing_slots` includes the shared local area (RUE-768), the *homed*
+///   parameters (RUE-1170), and the optional incoming sret pointer so
+///   register-allocation spills cannot overlap any of them.
+/// - `total_locals` includes only the shared local area and new spill slots
+///   because emitters account for parameters and sret separately.
 ///
 /// Run the canonical backend pipeline while carrying optional diagnostic
 /// observations alongside the same lowering and allocation execution.
@@ -178,6 +182,7 @@ pub(crate) fn prepare_mir_with_artifacts<
 >(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
+    interner: &lasso::ThreadedRodeo,
     arg_reg_count: u32,
     return_reg_count: u32,
     scheme: SavedRegScheme,
@@ -189,14 +194,16 @@ pub(crate) fn prepare_mir_with_artifacts<
     is_leaf: IsLeaf,
 ) -> CompileResult<(PreparedMir<M, R>, D)>
 where
-    Lower: FnOnce(&crate::param_storage::ParamStoragePlan) -> CompileResult<(M, D)>,
+    Lower: FnOnce(
+        &crate::param_storage::ParamStoragePlan,
+        &crate::local_storage::LocalSlotPlan,
+    ) -> CompileResult<(M, D)>,
     Allocate: FnOnce(M, u32, &mut D) -> CompileResult<(M, u32, Vec<R>)>,
     Peephole: FnOnce(&mut M),
     Schedule: FnOnce(&mut M),
     Verify: FnOnce(&M) -> CompileResult<()>,
     IsLeaf: FnOnce(&M) -> bool,
 {
-    let num_locals_original = cfg.num_locals();
     let has_sret =
         validate_pre_lowering_budget(cfg, type_pool, arg_reg_count, return_reg_count, scheme)?;
     // The per-parameter storage decision (RUE-1170) is computed once here and
@@ -207,13 +214,19 @@ where
         crate::param_storage::ParamStoragePlan::plan(cfg, type_pool, has_sret, arg_reg_count);
     let param_homing = param_storage.homing().to_vec();
     let homed_param_slots = param_storage.homed_area_slots();
+    // The local frame-slot decision (RUE-768) is target-independent and is
+    // likewise computed once: lowering addresses through it, the sums below
+    // place the parameter area and the spill floor above it, and the emitters
+    // size the frame from it.
+    let local_storage = crate::local_storage::LocalSlotPlan::plan(cfg, type_pool, interner);
+    let frame_local_slots = local_storage.frame_local_slots();
 
     let (mir, mut artifacts) = {
         let _span = info_span!("mir_lowering").entered();
-        lower(&param_storage)?
+        lower(&param_storage, &local_storage)?
     };
     let existing_slots =
-        checked_slot_sum([num_locals_original, homed_param_slots, u32::from(has_sret)])
+        checked_slot_sum([frame_local_slots, homed_param_slots, u32::from(has_sret)])
             .ok_or_else(|| frame_budget_error(cfg, None))?;
     let (mut mir, num_spills, used_callee_saved) = {
         let _span = info_span!("register_allocation").entered();
@@ -233,7 +246,7 @@ where
         verify(&mir)?;
     }
 
-    let total_locals = num_locals_original
+    let total_locals = frame_local_slots
         .checked_add(num_spills)
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     let total_slots = checked_slot_sum([total_locals, homed_param_slots, u32::from(has_sret)])
@@ -253,7 +266,7 @@ where
         PreparedMir {
             mir,
             total_locals,
-            num_locals_original,
+            frame_local_slots,
             has_sret,
             used_callee_saved,
             param_homing,
@@ -310,11 +323,14 @@ mod tests {
         let (prepared, ()) = prepare_mir_with_artifacts(
             &cfg,
             &type_pool,
+            &lasso::ThreadedRodeo::new(),
             6,
             6,
             SavedRegScheme::X86_64,
-            |_param_storage| {
+            |_param_storage, local_storage| {
                 events.borrow_mut().push("lower");
+                // No storage markers, so the local layout is the identity.
+                assert_eq!(local_storage.frame_local_slots(), 3);
                 Ok((10_u32, ()))
             },
             |mir, existing_slots, _artifacts| {
@@ -351,7 +367,7 @@ mod tests {
         );
         assert_eq!(prepared.mir, 16);
         assert_eq!(prepared.total_locals, 7);
-        assert_eq!(prepared.num_locals_original, 3);
+        assert_eq!(prepared.frame_local_slots, 3);
         assert_eq!(prepared.param_storage.homed_area_slots(), 2);
         assert!(prepared.has_sret);
         assert_eq!(prepared.used_callee_saved, [5]);

@@ -290,7 +290,6 @@ fn generate_x86_64_stack_frame(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
-    let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
     // sret returns reserve one extra frame slot for the incoming buffer
     // pointer and shift user args by one ABI slot (RUE-106).
@@ -302,7 +301,11 @@ fn generate_x86_64_stack_frame(
     )?;
     let has_sret = prepared.has_sret;
     let sret_slots = u32::from(has_sret);
-    let num_spills = prepared.total_locals - prepared.num_locals_original;
+    let num_spills = prepared.total_locals - prepared.frame_local_slots;
+    // Frame slots the local area occupies after marker-driven slot sharing
+    // (RUE-768); locals with provably disjoint storage windows overlay one
+    // another, so this is at most `cfg.num_locals()`.
+    let num_locals = prepared.frame_local_slots;
     let used_callee_saved = &prepared.used_callee_saved;
 
     // Calculate stack layout through the byte-based frame-layout authority
@@ -439,7 +442,6 @@ fn generate_aarch64_stack_frame(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<StackFrameInfo> {
-    let num_locals = cfg.num_locals();
     let num_params = cfg.num_params();
     // sret returns reserve one extra frame slot for the incoming buffer
     // pointer and shift user args by one ABI slot (RUE-106).
@@ -452,7 +454,11 @@ fn generate_aarch64_stack_frame(
     )?;
     let has_sret = prepared.has_sret;
     let sret_slots = u32::from(has_sret);
-    let num_spills = prepared.total_locals - prepared.num_locals_original;
+    let num_spills = prepared.total_locals - prepared.frame_local_slots;
+    // Frame slots the local area occupies after marker-driven slot sharing
+    // (RUE-768); locals with provably disjoint storage windows overlay one
+    // another, so this is at most `cfg.num_locals()`.
+    let num_locals = prepared.frame_local_slots;
     let used_callee_saved = &prepared.used_callee_saved;
 
     // Calculate stack layout for AArch64 through the byte-based frame-layout
@@ -884,6 +890,225 @@ fn main() -> i32 {
         .cfg
         .expect("test function CFG must build");
         (cfg, output.type_pool, interner)
+    }
+
+    /// The marker-driven local frame-slot plan for `name` in `source`, with
+    /// the CFG's own local slot count for comparison (RUE-768).
+    fn local_plan(source: &str, name: &str) -> (crate::local_storage::LocalSlotPlan, u32) {
+        let (cfg, type_pool, interner) = compile_named_fn(source, name);
+        let plan = crate::local_storage::LocalSlotPlan::plan(&cfg, &type_pool, &interner);
+        (plan, cfg.num_locals())
+    }
+
+    /// RUE-768: locals whose storage windows the markers prove disjoint land on
+    /// the same frame cells; a local live across both of them does not.
+    #[test]
+    fn disjoint_storage_windows_share_frame_cells() {
+        let source = "\
+fn main() -> i32 {
+    let mut total = 0;
+    {
+        let a = 1;
+        let b = 2;
+        total = total + a + b;
+    }
+    {
+        let c = 3;
+        let d = 4;
+        total = total + c + d;
+    }
+    0
+}
+";
+        let (plan, num_locals) = local_plan(source, "main");
+        assert_eq!(num_locals, 5, "`total` plus two pairs of block temporaries");
+        assert_eq!(plan.frame_local_slots(), 3);
+        // `total` (slot 0) is live throughout and keeps a cell of its own; the
+        // two pairs overlay each other exactly.
+        assert_eq!(plan.frame_slot(0), 0);
+        assert_eq!(plan.frame_slot(1), plan.frame_slot(3));
+        assert_eq!(plan.frame_slot(2), plan.frame_slot(4));
+        assert_ne!(plan.frame_slot(0), plan.frame_slot(1));
+        assert_ne!(plan.frame_slot(1), plan.frame_slot(2));
+    }
+
+    /// RUE-768: simultaneously live locals must never be merged. This is the
+    /// silent-corruption case, so it is asserted slot by slot rather than only
+    /// through the frame total.
+    #[test]
+    fn overlapping_storage_windows_never_share() {
+        let source = "\
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    a + b + c + d
+}
+";
+        let (plan, num_locals) = local_plan(source, "main");
+        assert_eq!(num_locals, 4);
+        assert_eq!(plan.frame_local_slots(), 4, "nothing may be merged");
+        let cells: Vec<u32> = (0..num_locals).map(|slot| plan.frame_slot(slot)).collect();
+        let mut sorted = cells.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), cells.len(), "every window keeps its own cell");
+    }
+
+    /// RUE-768: a borrow that keeps a local in use after another local's whole
+    /// scope has come and gone holds the first local's storage window open, so
+    /// the two must not share. A last-direct-use analysis would merge them —
+    /// `held`'s last direct read is `held.a`, before `scoped` even exists.
+    #[test]
+    fn borrow_extended_lifetime_keeps_its_own_cells() {
+        let source = "\
+struct Pair { a: i32, b: i32 }
+
+fn total(borrow p: Pair) -> i32 {
+    p.a + p.b
+}
+
+fn main() -> i32 {
+    let held = Pair { a: 1, b: 2 };
+    let direct = held.a;
+    let mut sum = direct;
+    {
+        let scoped = Pair { a: 100, b: 200 };
+        sum = sum + total(borrow scoped);
+    }
+    sum + total(borrow held)
+}
+";
+        let (plan, num_locals) = local_plan(source, "main");
+        // `held` occupies slots 0..2, `direct` 2, `sum` 3, `scoped` 4..6.
+        assert_eq!(num_locals, 6);
+        assert_eq!(
+            plan.frame_local_slots(),
+            6,
+            "the borrow keeps `held` live across `scoped`'s whole scope"
+        );
+        assert_ne!(plan.frame_slot(0), plan.frame_slot(4));
+        assert_ne!(plan.frame_slot(1), plan.frame_slot(5));
+    }
+
+    /// RUE-768: a multi-slot aggregate moves as one contiguous run, so an
+    /// aggregate that overlays another covers exactly its whole span and its
+    /// fields stay in order. A per-slot merge would interleave two structs.
+    #[test]
+    fn multi_slot_aggregates_share_as_whole_runs() {
+        let source = "\
+struct Triple { a: i32, b: i32, c: i32 }
+
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let x = Triple { a: 1, b: 2, c: 3 };
+        sum = sum + x.a + x.b + x.c;
+    }
+    {
+        let y = Triple { a: 4, b: 5, c: 6 };
+        sum = sum + y.a + y.b + y.c;
+    }
+    sum
+}
+";
+        let (plan, num_locals) = local_plan(source, "main");
+        assert_eq!(num_locals, 7, "`sum` plus two three-slot structs");
+        assert_eq!(plan.frame_local_slots(), 4);
+        let x = plan.frame_slot(1);
+        let y = plan.frame_slot(4);
+        assert_eq!(x, y, "the two structs overlay each other");
+        // Each struct stays contiguous and ascending, which is what the
+        // `frame_slot(base) + k` addressing in both backends assumes.
+        for k in 0..3 {
+            assert_eq!(plan.frame_slot(1 + k), x + k);
+            assert_eq!(plan.frame_slot(4 + k), y + k);
+        }
+    }
+
+    /// RUE-768: `@raw_mut` hands out a first-class pointer the planner cannot
+    /// follow, so its operand keeps a private cell even when its storage window
+    /// is disjoint from a later local's.
+    #[test]
+    fn raw_pointer_operands_keep_private_cells() {
+        let source = "\
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let mut probe: i32 = 5;
+        let p: ptr mut i32 = checked { @raw_mut(probe) };
+        checked { @ptr_write(p, 9); };
+        sum = sum + probe;
+    }
+    {
+        let other: i32 = 41;
+        sum = sum + other;
+    }
+    sum
+}
+";
+        let (plan, num_locals) = local_plan(source, "main");
+        // `sum` 0, `probe` 1, `p` 2, `other` 3.
+        assert_eq!(num_locals, 4);
+        assert_ne!(
+            plan.frame_slot(1),
+            plan.frame_slot(3),
+            "an address-escaping local must not be merged"
+        );
+        // The pointer local itself has no escaping address, so it still shares
+        // with the disjoint `other`.
+        assert_eq!(plan.frame_slot(2), plan.frame_slot(3));
+        assert_eq!(plan.frame_local_slots(), 3);
+    }
+
+    /// RUE-768: both backends must agree on the shared layout, and both must
+    /// report only the cells the plan kept. `area`'s per-arm payload bindings
+    /// are the shapes.rue shape that motivated the issue.
+    #[test]
+    fn both_backends_report_the_same_shared_local_area() {
+        let source = "\
+enum Shape {
+    Circle(i32),
+    Rect(i32, i32),
+    Square(i32),
+}
+
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => 3 * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Square(side) => side * side,
+    }
+}
+
+fn main() -> i32 {
+    area(Shape.Circle(2)) + area(Shape.Rect(3, 4)) + area(Shape.Square(5))
+}
+";
+        let (plan, num_locals) = local_plan(source, "area");
+        assert_eq!(
+            num_locals, 4,
+            "one payload binding per arm, plus Rect's two"
+        );
+        assert_eq!(
+            plan.frame_local_slots(),
+            2,
+            "at most two arm bindings are ever live at once"
+        );
+
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let (_, info) = frame_projection(source, "area", target);
+            let locals = info
+                .slots
+                .iter()
+                .filter(|slot| slot.kind == StackSlotKind::Local)
+                .count();
+            assert_eq!(
+                locals, 2,
+                "{target:?} must report the shared local area, not the CFG's slot count"
+            );
+        }
     }
 
     /// RUE-774: the reported AArch64 slots must match the offsets in the emitted

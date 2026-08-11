@@ -374,13 +374,13 @@ pub struct Emitter<'a> {
     fixups: Vec<Fixup>,
     /// Total number of local slots including spills (for stack frame size).
     num_locals: u32,
-    /// Original local count BEFORE regalloc added spill slots. CfgLower
-    /// generates parameter slot numbers against this count, so the prologue's
-    /// param stores must use it too — using the post-spill total stored params
-    /// at deeper slots than the body reads whenever anything spilled (params
-    /// then read uninitialized stack). Mirrors x86's num_locals_original.
-    /// (RUE-129)
-    num_locals_original: u32,
+    /// Frame slots the local area occupies after marker-driven slot sharing
+    /// (RUE-768), BEFORE regalloc added spill slots. CfgLower numbers the
+    /// parameter area from this base, so the prologue's param stores must use
+    /// it too — using the post-spill total stored params at deeper slots than
+    /// the body reads whenever anything spilled (params then read
+    /// uninitialized stack). Mirrors x86's `frame_local_slots`. (RUE-129)
+    frame_local_slots: u32,
     /// Frame slots of the (compacted) parameter area: homed parameters
     /// only — register-only parameters (RUE-1170) reserve no slots.
     num_params: u32,
@@ -429,7 +429,7 @@ impl<'a> Emitter<'a> {
     pub fn new(
         mir: &'a Aarch64Mir,
         num_locals: u32,
-        num_locals_original: u32,
+        frame_local_slots: u32,
         num_params: u32,
         callee_saved: &[Reg],
         strings: &'a [String],
@@ -453,7 +453,7 @@ impl<'a> Emitter<'a> {
             labels: LabelOffsets::with_capacity(estimated_inline_labels, estimated_block_labels),
             fixups: Vec::with_capacity(estimated_fixups),
             num_locals,
-            num_locals_original,
+            frame_local_slots,
             num_params,
             has_sret: false,
             callee_saved: callee_saved.to_vec(),
@@ -776,10 +776,10 @@ impl<'a> Emitter<'a> {
         // `start_slot` already reflects.
         for homing in self.param_homing_or_per_slot() {
             for k in 0..homing.reg_count {
-                // Use num_locals_original (not num_locals, which includes spill
+                // Use frame_local_slots (not num_locals, which includes spill
                 // slots): CfgLower generated the body's param reads against the
                 // pre-spill count. (RUE-129)
-                let slot = self.num_locals_original + homing.start_slot + k;
+                let slot = self.frame_local_slots + homing.start_slot + k;
                 // Slot location past the callee-saved area — the single
                 // AArch64 authority shared with the `--emit stackframe`
                 // reporter (RUE-774).
@@ -808,7 +808,7 @@ impl<'a> Emitter<'a> {
         // dedicated frame slot, one past the param area. The return path
         // loads it back to store the result through.
         if self.has_sret {
-            let slot = self.num_locals_original + self.num_params;
+            let slot = self.frame_local_slots + self.num_params;
             let offset = crate::frame_layout::aarch64_slot_offset(self.callee_saved.len(), slot);
             self.begin_inst();
             self.emit_str(param_regs[0], Reg::Fp, offset);

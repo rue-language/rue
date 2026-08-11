@@ -46,6 +46,7 @@ pub mod call_plan;
 mod codegen_pipeline;
 pub mod export_thunk;
 pub mod foreign_call;
+mod local_storage;
 mod param_storage;
 pub mod runtime_call_plan;
 mod schedule_core;

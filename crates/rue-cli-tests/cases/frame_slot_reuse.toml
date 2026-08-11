@@ -1,0 +1,472 @@
+# Marker-driven frame-slot reuse (RUE-768).
+#
+# The CFG brackets every local's storage with `storage_live`/`storage_dead`.
+# Codegen used to discard both and give every CFG local slot a private frame
+# cell for the whole function, so a temporary confined to one block or one
+# match arm still cost a cell everywhere else. The frame-slot planner now
+# merges locals whose storage windows a may-be-live dataflow proves disjoint,
+# and keeps everything it cannot prove unshared.
+#
+# Two halves are pinned here, and both matter:
+#
+# - BEHAVIOR. Every case asserts exact stdout and exit code across all
+#   optimization levels. A wrongly merged slot is silent data corruption — one
+#   local reading another's bytes — so the values are the real regression net.
+# - LAYOUT. `--emit stackframe` against an explicit `--target` pins the frame
+#   size that reuse (or the deliberate absence of reuse) produces on BOTH
+#   backends. Without these a future change could quietly stop sharing, or
+#   start sharing something it must not, with the behavior cases still green.
+
+[section]
+id = "cli.frame_slot_reuse"
+name = "Marker-driven frame-slot reuse"
+description = "Locals with provably disjoint storage windows share frame cells; overlapping, borrow-extended, and address-escaping locals never do (RUE-768)."
+
+# --- Reuse happens for provably disjoint temporaries ------------------------
+
+# Four sequential blocks, each with two locals that die at the block's end.
+# Nine CFG local slots (`total` plus four pairs) collapse onto three cells.
+[[case]]
+name = "disjoint_block_temporaries_share_cells"
+description = "Sequential scopes whose storage windows never overlap reuse the same two cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut total = 0;
+    {
+        let a = 1;
+        let b = 2;
+        total = total + a + b;
+    }
+    {
+        let c = 3;
+        let d = 4;
+        total = total + c + d;
+    }
+    {
+        let e = 5;
+        let f = 6;
+        total = total + e + f;
+    }
+    {
+        let g = 7;
+        let h = 8;
+        total = total + g + h;
+    }
+    @dbg(total);
+    0
+}
+""" }]
+stdout = "36\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "disjoint_block_temporaries_share_cells_frame_x86_64"
+description = "The nine CFG local slots above occupy three x86-64 frame cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut total = 0;
+    {
+        let a = 1;
+        let b = 2;
+        total = total + a + b;
+    }
+    {
+        let c = 3;
+        let d = 4;
+        total = total + c + d;
+    }
+    {
+        let e = 5;
+        let f = 6;
+        total = total + e + f;
+    }
+    {
+        let g = 7;
+        let h = 8;
+        total = total + g + h;
+    }
+    @dbg(total);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+# One callee-saved push plus three local cells, rounded to 32 bytes. Without
+# reuse the nine slots produced an 80-byte frame.
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 32 bytes"]
+
+[[case]]
+name = "disjoint_block_temporaries_share_cells_frame_aarch64"
+description = "The same nine CFG local slots occupy three AArch64 frame cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut total = 0;
+    {
+        let a = 1;
+        let b = 2;
+        total = total + a + b;
+    }
+    {
+        let c = 3;
+        let d = 4;
+        total = total + c + d;
+    }
+    {
+        let e = 5;
+        let f = 6;
+        total = total + e + f;
+    }
+    {
+        let g = 7;
+        let h = 8;
+        total = total + g + h;
+    }
+    @dbg(total);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+# Without reuse the nine slots produced a 96-byte AArch64 frame.
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+
+# --- Overlapping lifetimes NEVER share --------------------------------------
+
+# The same eight values, all live to the end of the function. Nothing may be
+# merged, and the frame must stay exactly as wide as before RUE-768.
+[[case]]
+name = "overlapping_lifetimes_never_share"
+description = "Eight simultaneously live locals keep eight private cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    @dbg(a + b + c + d + e + f + g + h);
+    0
+}
+""" }]
+stdout = "36\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "overlapping_lifetimes_never_share_frame_x86_64"
+description = "Eight overlapping windows still occupy eight x86-64 cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    @dbg(a + b + c + d + e + f + g + h);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 80 bytes"]
+
+[[case]]
+name = "overlapping_lifetimes_never_share_frame_aarch64"
+description = "Eight overlapping windows still occupy eight AArch64 cells."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    @dbg(a + b + c + d + e + f + g + h);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 96 bytes"]
+
+# --- Multi-slot aggregates move as units ------------------------------------
+
+# Three three-slot structs in disjoint scopes: ten CFG local slots collapse to
+# four cells (`sum` plus one shared three-slot run). A merge that split an
+# aggregate across two regions, or overlaid it by anything other than its whole
+# span, would scramble the digits of the printed sum.
+[[case]]
+name = "multi_slot_aggregates_share_as_whole_runs"
+description = "Three-slot structs in disjoint scopes overlay one three-slot run, field for field."
+files = [{ path = "main.rue", source = """
+struct Triple { a: i32, b: i32, c: i32 }
+
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let x = Triple { a: 1, b: 2, c: 3 };
+        sum = sum + x.a * 100 + x.b * 10 + x.c;
+    }
+    {
+        let y = Triple { a: 4, b: 5, c: 6 };
+        sum = sum + y.a * 100 + y.b * 10 + y.c;
+    }
+    {
+        let z = Triple { a: 7, b: 8, c: 9 };
+        sum = sum + z.a * 100 + z.b * 10 + z.c;
+    }
+    @dbg(sum);
+    0
+}
+""" }]
+stdout = "1368\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "multi_slot_aggregates_share_as_whole_runs_frame_x86_64"
+description = "Ten CFG local slots of three-slot structs occupy four x86-64 cells."
+files = [{ path = "main.rue", source = """
+struct Triple { a: i32, b: i32, c: i32 }
+
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let x = Triple { a: 1, b: 2, c: 3 };
+        sum = sum + x.a * 100 + x.b * 10 + x.c;
+    }
+    {
+        let y = Triple { a: 4, b: 5, c: 6 };
+        sum = sum + y.a * 100 + y.b * 10 + y.c;
+    }
+    {
+        let z = Triple { a: 7, b: 8, c: 9 };
+        sum = sum + z.a * 100 + z.b * 10 + z.c;
+    }
+    @dbg(sum);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+
+[[case]]
+name = "multi_slot_aggregates_share_as_whole_runs_frame_aarch64"
+description = "The same ten CFG local slots occupy four AArch64 cells."
+files = [{ path = "main.rue", source = """
+struct Triple { a: i32, b: i32, c: i32 }
+
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let x = Triple { a: 1, b: 2, c: 3 };
+        sum = sum + x.a * 100 + x.b * 10 + x.c;
+    }
+    {
+        let y = Triple { a: 4, b: 5, c: 6 };
+        sum = sum + y.a * 100 + y.b * 10 + y.c;
+    }
+    {
+        let z = Triple { a: 7, b: 8, c: 9 };
+        sum = sum + z.a * 100 + z.b * 10 + z.c;
+    }
+    @dbg(sum);
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+
+# --- A borrow keeps a slot alive past its last direct use -------------------
+
+# `held`'s last DIRECT read is `held.a`, before `scoped` is even declared. Only
+# the borrow at the end keeps it in use. A last-direct-use analysis would call
+# the two windows disjoint and overlay `scoped` (100, 200) onto `held` (1, 2),
+# printing 601 instead of 304. The storage markers say otherwise, and the
+# markers are what the planner merges on.
+[[case]]
+name = "borrow_extended_lifetime_keeps_its_slot"
+description = "A local borrowed after another local's whole scope keeps a private run."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+
+fn total(borrow p: Pair) -> i32 {
+    p.a + p.b
+}
+
+fn main() -> i32 {
+    let held = Pair { a: 1, b: 2 };
+    let direct = held.a;
+    let mut sum = direct;
+    {
+        let scoped = Pair { a: 100, b: 200 };
+        sum = sum + total(borrow scoped);
+    }
+    @dbg(sum + total(borrow held));
+    0
+}
+""" }]
+stdout = "304\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "borrow_extended_lifetime_keeps_its_slot_frame_x86_64"
+description = "The borrow-extended local and the scoped one keep six separate x86-64 cells."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+
+fn total(borrow p: Pair) -> i32 {
+    p.a + p.b
+}
+
+fn main() -> i32 {
+    let held = Pair { a: 1, b: 2 };
+    let direct = held.a;
+    let mut sum = direct;
+    {
+        let scoped = Pair { a: 100, b: 200 };
+        sum = sum + total(borrow scoped);
+    }
+    @dbg(sum + total(borrow held));
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 64 bytes"]
+
+[[case]]
+name = "borrow_extended_lifetime_keeps_its_slot_frame_aarch64"
+description = "The same six cells on AArch64."
+files = [{ path = "main.rue", source = """
+struct Pair { a: i32, b: i32 }
+
+fn total(borrow p: Pair) -> i32 {
+    p.a + p.b
+}
+
+fn main() -> i32 {
+    let held = Pair { a: 1, b: 2 };
+    let direct = held.a;
+    let mut sum = direct;
+    {
+        let scoped = Pair { a: 100, b: 200 };
+        sum = sum + total(borrow scoped);
+    }
+    @dbg(sum + total(borrow held));
+    0
+}
+""" }]
+args = ["--emit", "stackframe", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Stack Frame (main) ===", "Frame size: 80 bytes"]
+
+# --- Match arms: per-arm bindings share, and the value stays right ----------
+
+# Each arm binds its own payload local; at most two are ever live at once, so
+# `area`'s four CFG local slots become two cells. If an arm read another arm's
+# cell the areas would come out wrong.
+[[case]]
+name = "match_arm_bindings_share_cells"
+description = "Payload bindings confined to one match arm reuse the same cells across arms."
+files = [{ path = "main.rue", source = """
+enum Shape {
+    Circle(i32),
+    Rect(i32, i32),
+    Square(i32),
+}
+
+fn area(s: Shape) -> i32 {
+    match s {
+        Shape.Circle(r) => 3 * r * r,
+        Shape.Rect(w, h) => w * h,
+        Shape.Square(side) => side * side,
+    }
+}
+
+fn main() -> i32 {
+    @dbg(area(Shape.Circle(2)));
+    @dbg(area(Shape.Rect(3, 4)));
+    @dbg(area(Shape.Square(5)));
+    0
+}
+""" }]
+stdout = "12\n12\n25\n"
+exit_code = 0
+differential_opt = true
+
+# --- A raw-pointer address escape keeps its slot private --------------------
+
+# `@raw_mut` produces a first-class pointer the planner cannot follow, so the
+# operand's slot is never merged even though its window is disjoint from the
+# later block's. The write through the pointer must land on `probe`, and
+# `other` must be unaffected by it.
+[[case]]
+name = "raw_pointer_operands_keep_private_cells"
+description = "A local whose address escapes through @raw_mut is never merged with a later disjoint local."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut sum = 0;
+    {
+        let mut probe: i32 = 5;
+        let p: ptr mut i32 = checked { @raw_mut(probe) };
+        checked { @ptr_write(p, 9); };
+        sum = sum + probe;
+    }
+    {
+        let other: i32 = 41;
+        sum = sum + other;
+    }
+    @dbg(sum);
+    0
+}
+""" }]
+stdout = "50\n"
+exit_code = 0
+differential_opt = true
+
+# --- Zero-slot locals stay addressable --------------------------------------
+
+# A zero-sized local reserves no frame cells, so the CFG is allowed to root a
+# reference at `num_locals` itself — the slot one past the local area. The
+# planner must map that slot rather than treat it as out of range (an early
+# RUE-768 draft ICE'd here), and a zero-sized local next to a real one must not
+# disturb the real one's cells.
+[[case]]
+name = "zero_sized_locals_do_not_disturb_the_plan"
+description = "Zero-slot locals are mapped without an out-of-range panic and leave neighbouring cells intact."
+files = [{ path = "main.rue", source = """
+struct Marker {}
+
+fn main() -> i32 {
+    let _only: [Marker; 0] = [];
+    let mut sum = 0;
+    {
+        let _tag = Marker {};
+        let a = 7;
+        sum = sum + a;
+    }
+    {
+        let _other = Marker {};
+        let b = 35;
+        sum = sum + b;
+    }
+    @dbg(sum);
+    0
+}
+""" }]
+stdout = "42\n"
+exit_code = 0
+differential_opt = true
