@@ -312,6 +312,21 @@ the allocator's size-class and lifetime shape around the ready scheduler, not a
 larger retained query graph. Harbor remained approximately memory-neutral. This
 tradeoff is tracked explicitly rather than being inferred from clock noise.
 
+RUE-1354 then tested whether scheduler-container lifetime was the source of
+that peak. Replacing the bounded prefetched-result tree with an ordered FIFO
+removed 4,591 compiler allocations and 211,374 requested bytes from Lattice
+while preserving byte-identical output and every reachability and query-work
+counter. Controlled parent/current release medians were clock-neutral within
+run noise: Ruelex 145.28/140.32 ms, Mosaic 422.53/425.48 ms, Harbor
+953.79/938.11 ms and Lattice 1,143.10/1,150.37 ms. Peak RSS did not materially
+move, confirming that the prefetched tree was bookkeeping churn but not the
+source of the RUE-1351 high-water change. Halving the prefetch window did
+recover Lattice RSS (733.0 versus 731.5 MiB for the parent) but slowed Harbor
+and Lattice by roughly six to seven percent, so that tradeoff was rejected.
+The FIFO remains worthwhile as a representation win, and the one-worker path
+now aggregates missing toolchain modules across the complete ready frontier
+instead of requiring avoidable acquisition rounds.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
