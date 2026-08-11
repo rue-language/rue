@@ -2961,6 +2961,27 @@ impl AtomicValidationWork {
     }
 }
 
+/// Display-only query identities materialized by the runtime.
+///
+/// The byte counters record the UTF-8 length returned by
+/// [`QueryKey::stable_identity`]. Family names are shared separately and are
+/// not included. Typed keys remain authoritative for memo lookup.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisplayIdentityMetrics {
+    /// Identities created once for new memo-node incarnations.
+    pub memo_node_materializations: u64,
+    /// Formatted key bytes retained by new memo-node incarnations.
+    pub memo_node_bytes: u64,
+    /// Identities created to label structured batch wait edges.
+    pub structured_wait_materializations: u64,
+    /// Formatted key bytes used to label structured batch wait edges.
+    pub structured_wait_bytes: u64,
+    /// Identities created lazily when nested requests abort.
+    pub abort_fallback_materializations: u64,
+    /// Formatted key bytes created lazily when nested requests abort.
+    pub abort_fallback_bytes: u64,
+}
+
 /// Deterministic structural execution counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeMetrics {
@@ -2973,6 +2994,8 @@ pub struct RuntimeMetrics {
     pub reuses: u64,
     /// Retained-terminal validation work.
     pub validation: ValidationWork,
+    /// Presentation-only query identity materialization.
+    pub display_identities: DisplayIdentityMetrics,
     /// Query bodies which completed before publication checks.
     pub body_completions: u64,
     /// Recomputations whose observable stamp stayed red.
@@ -3088,6 +3111,12 @@ struct Metrics {
     joins: AtomicU64,
     reuses: AtomicU64,
     validation: AtomicValidationWork,
+    memo_node_identity_materializations: AtomicU64,
+    memo_node_identity_bytes: AtomicU64,
+    structured_wait_identity_materializations: AtomicU64,
+    structured_wait_identity_bytes: AtomicU64,
+    abort_fallback_identity_materializations: AtomicU64,
+    abort_fallback_identity_bytes: AtomicU64,
     body_completions: AtomicU64,
     red_publications: AtomicU64,
     green_publications: AtomicU64,
@@ -3130,6 +3159,20 @@ impl Metrics {
             joins: self.joins.load(Ordering::Relaxed),
             reuses: self.reuses.load(Ordering::Relaxed),
             validation: self.validation.snapshot(),
+            display_identities: DisplayIdentityMetrics {
+                memo_node_materializations: self
+                    .memo_node_identity_materializations
+                    .load(Ordering::Relaxed),
+                memo_node_bytes: self.memo_node_identity_bytes.load(Ordering::Relaxed),
+                structured_wait_materializations: self
+                    .structured_wait_identity_materializations
+                    .load(Ordering::Relaxed),
+                structured_wait_bytes: self.structured_wait_identity_bytes.load(Ordering::Relaxed),
+                abort_fallback_materializations: self
+                    .abort_fallback_identity_materializations
+                    .load(Ordering::Relaxed),
+                abort_fallback_bytes: self.abort_fallback_identity_bytes.load(Ordering::Relaxed),
+            },
             body_completions: self.body_completions.load(Ordering::Relaxed),
             red_publications: self.red_publications.load(Ordering::Relaxed),
             green_publications: self.green_publications.load(Ordering::Relaxed),
@@ -3196,6 +3239,27 @@ impl Metrics {
     fn body_entered(&self) {
         let active = self.active_bodies.fetch_add(1, Ordering::AcqRel) + 1;
         self.peak_active_bodies.fetch_max(active, Ordering::AcqRel);
+    }
+
+    fn record_memo_node_identity(&self, bytes: usize) {
+        self.memo_node_identity_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        self.memo_node_identity_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn record_structured_wait_identity(&self, bytes: usize) {
+        self.structured_wait_identity_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        self.structured_wait_identity_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+
+    fn record_abort_fallback_identity(&self, bytes: usize) {
+        self.abort_fallback_identity_materializations
+            .fetch_add(1, Ordering::Relaxed);
+        self.abort_fallback_identity_bytes
+            .fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
     fn body_left(&self) {
@@ -5310,7 +5374,11 @@ where
         let node = if let Some(node) = nodes.get(&key) {
             node.clone()
         } else {
-            let stable_key: Arc<str> = key.stable_identity().into();
+            let stable_key = key.stable_identity();
+            self.core
+                .metrics
+                .record_memo_node_identity(stable_key.len());
+            let stable_key: Arc<str> = stable_key.into();
             let incarnation = self.core.next_node.fetch_add(1, Ordering::Relaxed);
             let demand = self.inner.evaluator.as_ref().map(|_| {
                 let core = self.core.clone();
@@ -7095,11 +7163,16 @@ impl QueryContext {
             self.task.core.clone(),
             self.task.id,
             items.iter().map(|(_, request_id, key)| {
+                let stable_key = key.stable_identity();
+                self.task
+                    .core
+                    .metrics
+                    .record_structured_wait_identity(stable_key.len());
                 (
                     TaskId(*request_id),
                     NodeIdentity {
                         family: family.inner.name.clone(),
-                        key: key.stable_identity().into(),
+                        key: stable_key.into(),
                     },
                 )
             }),
@@ -8881,6 +8954,9 @@ impl Task {
             TaskQueryResult::Terminal { terminal, .. } => terminal.node.family(),
             TaskQueryResult::Aborted { .. } => {
                 let node = fallback_node();
+                self.core
+                    .metrics
+                    .record_abort_fallback_identity(node.key().len());
                 if !self.records_nested_attempt(node.family()) {
                     return;
                 }
@@ -9942,6 +10018,58 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_owned()
         }
+    }
+
+    #[test]
+    fn display_identity_metrics_attribute_each_materialization_source() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>("identity-child", 8, |_, _, key| {
+                Ok(QueryOutput::success(key.0.len() as u64))
+            })
+            .unwrap();
+        let child_for_root = child.clone();
+        let batch_root = runtime
+            .family_with_evaluator::<Key, u64, _>("identity-batch-root", 8, move |context, _, _| {
+                context.query_registered_batch(&child_for_root, [Key("aa"), Key("bbb")])?;
+                Ok(QueryOutput::success(0))
+            })
+            .unwrap();
+        runtime
+            .request_registered(&batch_root, revision(1), Key("r"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let foreign_runtime = QueryRuntime::new(1);
+        let foreign = foreign_runtime
+            .family::<Key, u64>("identity-foreign", 8)
+            .unwrap();
+        let abort_root = runtime
+            .family_with_evaluator::<Key, u64, _>("identity-abort-root", 8, move |context, _, _| {
+                context.query(&foreign, Key("oops"), |_| Ok(QueryOutput::success(1)))?;
+                Ok(QueryOutput::success(0))
+            })
+            .unwrap();
+        assert_eq!(
+            runtime
+                .request_registered(&abort_root, revision(1), Key("x"), CancellationToken::new(),)
+                .abort(),
+            Some(&QueryAbort::ForeignRuntime)
+        );
+
+        assert_eq!(
+            runtime.metrics().display_identities,
+            DisplayIdentityMetrics {
+                memo_node_materializations: 4,
+                memo_node_bytes: 7,
+                structured_wait_materializations: 2,
+                structured_wait_bytes: 5,
+                abort_fallback_materializations: 1,
+                abort_fallback_bytes: 4,
+            }
+        );
     }
 
     fn assert_validation_work_consistent(work: ValidationWork) {

@@ -1756,10 +1756,86 @@ mod query_validation_metrics_tests {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryRuntimeMetrics {
     pub validation: QueryValidationMetrics,
+    /// Presentation-only query identity materialization.
+    pub display_identities: QueryDisplayIdentityMetrics,
     /// Family-local retention passes run.
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by those passes.
     pub retention_scan_entries: u64,
+}
+
+/// Display-only query identity materialization contained in [`MetricsSnapshot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryDisplayIdentityMetrics {
+    /// New memo-node identity count.
+    pub memo_node_materializations: u64,
+    /// New memo-node formatted key bytes.
+    pub memo_node_bytes: u64,
+    /// Structured batch-wait identity count.
+    pub structured_wait_materializations: u64,
+    /// Structured batch-wait formatted key bytes.
+    pub structured_wait_bytes: u64,
+    /// Abort-fallback identity count.
+    pub abort_fallback_materializations: u64,
+    /// Abort-fallback formatted key bytes.
+    pub abort_fallback_bytes: u64,
+}
+
+impl QueryDisplayIdentityMetrics {
+    /// Saturating addition for aggregation across independent requests.
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        self.memo_node_materializations = self
+            .memo_node_materializations
+            .saturating_add(other.memo_node_materializations);
+        self.memo_node_bytes = self.memo_node_bytes.saturating_add(other.memo_node_bytes);
+        self.structured_wait_materializations = self
+            .structured_wait_materializations
+            .saturating_add(other.structured_wait_materializations);
+        self.structured_wait_bytes = self
+            .structured_wait_bytes
+            .saturating_add(other.structured_wait_bytes);
+        self.abort_fallback_materializations = self
+            .abort_fallback_materializations
+            .saturating_add(other.abort_fallback_materializations);
+        self.abort_fallback_bytes = self
+            .abort_fallback_bytes
+            .saturating_add(other.abort_fallback_bytes);
+    }
+
+    /// Saturating delta between two cumulative runtime snapshots.
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        Self {
+            memo_node_materializations: self
+                .memo_node_materializations
+                .saturating_sub(earlier.memo_node_materializations),
+            memo_node_bytes: self.memo_node_bytes.saturating_sub(earlier.memo_node_bytes),
+            structured_wait_materializations: self
+                .structured_wait_materializations
+                .saturating_sub(earlier.structured_wait_materializations),
+            structured_wait_bytes: self
+                .structured_wait_bytes
+                .saturating_sub(earlier.structured_wait_bytes),
+            abort_fallback_materializations: self
+                .abort_fallback_materializations
+                .saturating_sub(earlier.abort_fallback_materializations),
+            abort_fallback_bytes: self
+                .abort_fallback_bytes
+                .saturating_sub(earlier.abort_fallback_bytes),
+        }
+    }
+}
+
+impl From<rue_query::DisplayIdentityMetrics> for QueryDisplayIdentityMetrics {
+    fn from(metrics: rue_query::DisplayIdentityMetrics) -> Self {
+        Self {
+            memo_node_materializations: metrics.memo_node_materializations,
+            memo_node_bytes: metrics.memo_node_bytes,
+            structured_wait_materializations: metrics.structured_wait_materializations,
+            structured_wait_bytes: metrics.structured_wait_bytes,
+            abort_fallback_materializations: metrics.abort_fallback_materializations,
+            abort_fallback_bytes: metrics.abort_fallback_bytes,
+        }
+    }
 }
 
 impl From<crate::session::FrontendQueryWork> for QueryMetrics {
@@ -2102,6 +2178,7 @@ impl MetricsSnapshot {
     pub fn query_runtime(&self) -> QueryRuntimeMetrics {
         QueryRuntimeMetrics {
             validation: self.inner.runtime.validation.into(),
+            display_identities: self.inner.runtime.display_identities.into(),
             retention_enforcements: self.inner.runtime.retention_enforcements,
             retention_scan_entries: self.inner.runtime.retention_scan_entries,
         }

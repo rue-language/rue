@@ -15,12 +15,13 @@ use rue_compiler::unstable::{
 use rue_compiler::{CompileErrors, CompileOptions, CompileOutput, CompileWarning, OptLevel};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 use rue_perf_schema::{
-    EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditOutcome, EditReport,
-    EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario, ExpectedEditOutcome,
-    FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork,
-    RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, SourceShape,
-    StructuralWork, TransformationIdentity, ValidationWork as ReportValidationWork, WorkerMode,
-    canonical_json, derive_edit_report, render_edit_report_markdown, validate_edit_report,
+    DisplayIdentityWork, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditOutcome,
+    EditReport, EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario,
+    ExpectedEditOutcome, FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity,
+    OutcomeKind, PhaseWork, RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome,
+    SourceShape, StructuralWork, TransformationIdentity, ValidationWork as ReportValidationWork,
+    WorkerMode, canonical_json, derive_edit_report, render_edit_report_markdown,
+    validate_edit_report,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -308,6 +309,9 @@ impl CollectionTiming {
         self.query_runtime
             .validation
             .saturating_add_assign(other.query_runtime.validation);
+        self.query_runtime
+            .display_identities
+            .saturating_add_assign(other.query_runtime.display_identities);
         self.query_runtime.retention_enforcements = self
             .query_runtime
             .retention_enforcements
@@ -853,6 +857,7 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
             outcome,
             work,
             validation,
+            display_identities: report_display_identity_work(query_runtime.display_identities),
             retention,
             oracle,
         },
@@ -872,12 +877,28 @@ fn query_runtime_delta(
 ) -> QueryRuntimeMetrics {
     QueryRuntimeMetrics {
         validation: after.validation.saturating_sub(before.validation),
+        display_identities: after
+            .display_identities
+            .saturating_sub(before.display_identities),
         retention_enforcements: after
             .retention_enforcements
             .saturating_sub(before.retention_enforcements),
         retention_scan_entries: after
             .retention_scan_entries
             .saturating_sub(before.retention_scan_entries),
+    }
+}
+
+fn report_display_identity_work(
+    work: rue_compiler::unstable::QueryDisplayIdentityMetrics,
+) -> DisplayIdentityWork {
+    DisplayIdentityWork {
+        memo_node_materializations: work.memo_node_materializations,
+        memo_node_bytes: work.memo_node_bytes,
+        structured_wait_materializations: work.structured_wait_materializations,
+        structured_wait_bytes: work.structured_wait_bytes,
+        abort_fallback_materializations: work.abort_fallback_materializations,
+        abort_fallback_bytes: work.abort_fallback_bytes,
     }
 }
 

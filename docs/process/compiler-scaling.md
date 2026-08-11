@@ -32,12 +32,19 @@ compilations. The report records:
 - externally observed fresh-process wall time and peak resident memory;
 - the compiler's additive, mutually exclusive phase accounting;
 - query validation, endorsement, lease, demand, and retention-scan work;
+- display-only query identities materialized for memo nodes, structured batch
+  wait edges, and abort fallbacks, with exact counts and formatted key bytes;
 - output binary size.
 
 The Markdown work table includes validation nodes per token. That ratio is a
 clock-independent amplification signal: source growth should not silently turn
 into many repeated validation visits merely because elapsed time still looks
 plausible on one host.
+
+The display-identity table similarly reports formatted key bytes per token.
+These identities label diagnostics and wait-graph edges; typed query keys, not
+the display strings, remain authoritative for memo lookup. Family names are
+shared and therefore excluded from the byte totals.
 
 The compiled examples are never executed. Runtime tests and heavyweight
 example scenarios remain in their existing suites, so a slow example runtime

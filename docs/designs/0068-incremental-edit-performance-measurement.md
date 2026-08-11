@@ -181,6 +181,8 @@ Every raw observation records at least:
   retention-proof-reacquisition misses, registered-cone endorsements,
   exact query-result terminal lease observations and same-task duplicates,
   re-demand outcomes, superseded incarnations, and published certificates;
+- exact counts and formatted key bytes for display-only memo-node, structured
+  batch-wait, and abort-fallback query identities during the warm request;
 - current and peak retained artifact charge, dependency/input observations, and
   configured budgets;
 - diagnostics/warning identity and executable fingerprint;
