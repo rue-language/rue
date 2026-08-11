@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
-use ahash::{AHashMap, RandomState};
+use ahash::{AHashMap, AHashSet, RandomState};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -7678,7 +7678,10 @@ struct TaskId(u64);
 
 #[derive(Debug, Default)]
 struct ValidationEndorsementScope {
-    identities: BTreeSet<(u64, u64, Revision)>,
+    /// Exact terminal identities are tested for membership on every validation
+    /// memo probe. Their runtime-assigned numeric components need no ordering,
+    /// so keep expected lookup constant instead of walking an ordered tree.
+    identities: AHashSet<(u64, u64, Revision)>,
     /// Published pin sets borrowed as retention authority for this lexical
     /// scope. Holding the Arcs here keeps every indexed identity pinned until
     /// the enclosing guard drops.
@@ -7709,7 +7712,7 @@ struct BatchValidationAuthority {
 
 #[derive(Default)]
 struct BatchValidationAuthorityState {
-    endorsements: BTreeSet<(u64, u64, Revision)>,
+    endorsements: AHashSet<(u64, u64, Revision)>,
     fallbacks: Vec<Arc<RetainedPinSet>>,
     leases: BatchValidationLeases,
 }
@@ -8872,7 +8875,7 @@ impl Task {
             validation_endorsements: Mutex::new(
                 inherited_validation_fallbacks
                     .map(|fallbacks| ValidationEndorsementScope {
-                        identities: BTreeSet::new(),
+                        identities: AHashSet::new(),
                         fallbacks,
                     })
                     .into_iter()
@@ -9022,7 +9025,7 @@ impl Task {
             }
         }
         scopes.push(ValidationEndorsementScope {
-            identities: BTreeSet::new(),
+            identities: AHashSet::new(),
             fallbacks: retained_fallbacks,
         });
         Ok(ValidationEndorsementGuard {
@@ -9089,7 +9092,12 @@ impl Task {
     }
 
     #[cfg(test)]
-    fn validation_endorsed_identity(&self, incarnation: u64, stamp: u64) -> bool {
+    fn validation_endorsed_identity(
+        &self,
+        incarnation: u64,
+        stamp: u64,
+        exact_revision: Revision,
+    ) -> bool {
         let scopes = lock(&self.validation_endorsements);
         let Some(scope) = scopes.first() else {
             return false;
@@ -9101,12 +9109,7 @@ impl Task {
             .fetch_add(1, Ordering::Relaxed);
         scope
             .identities
-            .range(
-                (incarnation, stamp, Revision::new(0, 0))
-                    ..=(incarnation, stamp, Revision::new(u64::MAX, u64::MAX)),
-            )
-            .next()
-            .is_some()
+            .contains(&(incarnation, stamp, exact_revision))
     }
 
     #[cfg(test)]
@@ -14562,6 +14565,7 @@ mod tests {
                     assert!(context.task.validation_endorsed_identity(
                         first_terminal_for_root.node_incarnation,
                         first_terminal_for_root.stamp,
+                        first_terminal_for_root.revision,
                     ));
                     let selected = context.query_registered(&value_for_root, Key("value"))?;
                     assert!(Arc::ptr_eq(&selected, &first_terminal_for_root));
@@ -15460,7 +15464,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_endorsement_identity_lookup_uses_one_ordered_index_probe() {
+    fn validation_endorsement_identity_lookup_uses_one_hash_index_probe() {
         const ENDORSEMENTS: u64 = 65_536;
 
         let runtime = QueryRuntime::new(1);
@@ -15501,6 +15505,7 @@ mod tests {
                 assert!(context.task.validation_endorsed_identity(
                     ENDORSEMENTS - 1,
                     (ENDORSEMENTS - 1).wrapping_mul(17),
+                    Revision::new(ENDORSEMENTS - 1, (ENDORSEMENTS - 1).rotate_left(7),),
                 ));
                 assert_eq!(
                     context
@@ -15508,27 +15513,27 @@ mod tests {
                         .validation_endorsement_index_probes
                         .load(Ordering::Relaxed),
                     1,
-                    "lookup work is one ordered-set probe, not one visit per endorsement"
+                    "lookup work is one hash-index probe, not one visit per endorsement"
                 );
 
                 context.task.endorse_validation(&terminal);
-                assert!(
-                    context
-                        .task
-                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
-                );
+                assert!(context.task.validation_endorsed_identity(
+                    terminal.node_incarnation,
+                    terminal.stamp,
+                    terminal.revision,
+                ));
                 drop(inner);
-                assert!(
-                    context
-                        .task
-                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
-                );
+                assert!(context.task.validation_endorsed_identity(
+                    terminal.node_incarnation,
+                    terminal.stamp,
+                    terminal.revision,
+                ));
                 drop(outer);
-                assert!(
-                    !context
-                        .task
-                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
-                );
+                assert!(!context.task.validation_endorsed_identity(
+                    terminal.node_incarnation,
+                    terminal.stamp,
+                    terminal.revision,
+                ));
                 assert_eq!(
                     context
                         .task
