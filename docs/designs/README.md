@@ -232,4 +232,5 @@ The table is generated from ADR frontmatter. Run
 | [0067](0067-compiler-performance-measurement.md) | Compiler performance measurement, epochs, and dashboard | Proposal | tooling, ci, performance, website |
 | [0068](0068-incremental-edit-performance-measurement.md) | Incremental edit-scenario performance measurement | Accepted | tooling, compiler, incremental, performance |
 | [0069](0069-ci-work-scheduling.md) | CI work scheduling for a compiler monorepo | Accepted | process, ci, testing, build, performance |
+| [0070](0070-rue-program-build-actions.md) | Rue program compilation as declared Buck actions | Proposal | build, ci, testing, tooling |
 <!-- ADR-INDEX:END -->
