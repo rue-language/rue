@@ -882,6 +882,18 @@ dispersion. Median peak RSS moves +2.7 MiB (0.6%), also within dispersion.
 Every deterministic compiler-work counter and the emitted executable remain
 identical.
 
+RUE-1388 reuses the same inline ordered accumulator for request-frame work
+contributions. A single structural-work identity now aggregates in the frame
+itself; a second distinct identity promotes to the existing ordered map, so
+terminal publication keeps its canonical metric order. Direct, inherited, and
+aborted-prefix contributions all share that path.
+
+Fixed one-worker Lattice saves another 1,242 allocator calls and 61,452
+requested bytes. Sixteen alternating ordinary-release pairs are clock-neutral
+to modestly faster at -0.78% paired median despite one noisy outlier. Median
+peak RSS moves +0.6 MiB, within dispersion. Every deterministic compiler-work
+counter and the emitted executable remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
