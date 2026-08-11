@@ -802,7 +802,7 @@ const LOOKUP_INCARNATION_HISTORY_BOUND: usize = 4096;
 pub(crate) struct ObservedLookupRoot {
     /// The exact pins, retained past the request through the batched-release set.
     pins: rue_query::RetainedPinSet,
-    /// `(logical key display, node incarnation)` per distinct observed terminal,
+    /// `(typed logical key, node incarnation)` per distinct observed terminal,
     /// so promotion can detect a rederived-after-eviction key by its fresh
     /// incarnation. Parallel to the pins: only terminals newly leased (not
     /// deduplicated re-observations) are recorded.
@@ -813,17 +813,6 @@ pub(crate) struct ObservedLookupRoot {
 pub(crate) enum LookupObservationKey {
     Name(LookupNameKey),
     Import(LookupImportKey),
-}
-
-impl LookupObservationKey {
-    fn display_identity(&self) -> Arc<str> {
-        match self {
-            Self::Name(key) => format!("compiler.lookup-name\u{1}{}", key.stable_identity()).into(),
-            Self::Import(key) => {
-                format!("compiler.lookup-import\u{1}{}", key.stable_identity()).into()
-            }
-        }
-    }
 }
 
 impl RetainedCharge for LookupObservationKey {
@@ -912,12 +901,14 @@ struct PublishedRootLookupLease {
     /// overwriting a newer concurrent successor.
     next_root_publication: u64,
     /// Last observed node incarnation per distinct logical lookup key, bounded
-    /// FIFO, for rederivation-after-eviction detection.
-    incarnations: BTreeMap<Arc<str>, (u64, u64)>,
+    /// FIFO, for rederivation-after-eviction detection. The typed key shares its
+    /// immutable strings with the observation; bookkeeping never materializes a
+    /// presentation identity.
+    incarnations: BTreeMap<LookupObservationKey, (u64, u64)>,
     /// Recency order of `incarnations`, keyed by a monotonic observation
     /// generation. Refreshing a hot key removes its one old order entry in
     /// logarithmic time rather than scanning the full 4096-key history.
-    incarnation_order: BTreeSet<(u64, Arc<str>)>,
+    incarnation_order: BTreeSet<(u64, LookupObservationKey)>,
     next_incarnation_generation: u64,
     /// Cumulative lookup keys re-observed with a changed node incarnation — a
     /// previously seen key whose retained terminal is gone (evicted, or otherwise
@@ -932,7 +923,7 @@ struct PublishedRootLookupLease {
 }
 
 impl PublishedRootLookupLease {
-    fn seen_incarnation(&self, key: &str) -> Option<u64> {
+    fn seen_incarnation(&self, key: &LookupObservationKey) -> Option<u64> {
         self.incarnations
             .get(key)
             .map(|(incarnation, _)| *incarnation)
@@ -944,7 +935,11 @@ impl PublishedRootLookupLease {
     /// exceptional. A per-observation inverse keeps the success path
     /// proportional to the new root instead of snapshotting both bounded
     /// history trees before every commit.
-    fn record_incarnation(&mut self, key: Arc<str>, incarnation: u64) -> LookupIncarnationMutation {
+    fn record_incarnation(
+        &mut self,
+        key: LookupObservationKey,
+        incarnation: u64,
+    ) -> LookupIncarnationMutation {
         let generation = self.next_incarnation_generation;
         self.next_incarnation_generation = self
             .next_incarnation_generation
@@ -1013,10 +1008,10 @@ impl PublishedRootLookupLease {
 
 #[derive(Debug)]
 struct LookupIncarnationMutation {
-    key: Arc<str>,
+    key: LookupObservationKey,
     installed: (u64, u64),
     previous: Option<(u64, u64)>,
-    evicted: Option<(Arc<str>, (u64, u64))>,
+    evicted: Option<(LookupObservationKey, (u64, u64))>,
 }
 
 pub(crate) fn body_lookup_root_identity(key: &crate::body_query::BodyQueryKey) -> String {
@@ -1033,13 +1028,12 @@ fn replace_published_lookup_root(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     for (key, incarnation) in &observed.observed_keys {
-        let identity = key.display_identity();
-        if let Some(previous) = lease.seen_incarnation(&identity)
+        if let Some(previous) = lease.seen_incarnation(key)
             && previous != *incarnation
         {
             lease.rederivations_after_eviction += 1;
         }
-        lease.record_incarnation(identity, *incarnation);
+        lease.record_incarnation(key.clone(), *incarnation);
     }
     let publication = lease.next_root_publication;
     lease.next_root_publication = lease
@@ -1099,13 +1093,12 @@ impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
         let previous_next_root_publication = lease.next_root_publication;
         let mut incarnation_mutations = Vec::with_capacity(observed.observed_keys.len());
         for (key, incarnation) in &observed.observed_keys {
-            let identity = key.display_identity();
-            if let Some(previous) = lease.seen_incarnation(&identity)
+            if let Some(previous) = lease.seen_incarnation(key)
                 && previous != *incarnation
             {
                 lease.rederivations_after_eviction += 1;
             }
-            incarnation_mutations.push(lease.record_incarnation(identity, *incarnation));
+            incarnation_mutations.push(lease.record_incarnation(key.clone(), *incarnation));
         }
         let publication = lease.next_root_publication;
         lease.next_root_publication = lease
@@ -1611,15 +1604,14 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
         };
         for (root, observed) in observed {
             for (key, incarnation) in &observed.observed_keys {
-                let identity = key.display_identity();
-                if let Some(previous) = lease.seen_incarnation(&identity)
+                if let Some(previous) = lease.seen_incarnation(key)
                     && previous != *incarnation
                 {
                     lease.rederivations_after_eviction += 1;
                 }
                 rollback
                     .incarnation_mutations
-                    .push(lease.record_incarnation(identity, *incarnation));
+                    .push(lease.record_incarnation(key.clone(), *incarnation));
             }
             let publication = lease.next_root_publication;
             lease.next_root_publication = lease
@@ -24907,6 +24899,14 @@ mod tests {
     use rue_span::FileId;
     use std::collections::{BTreeSet, HashMap};
 
+    fn lookup_history_key(name: impl Into<Arc<str>>) -> LookupObservationKey {
+        LookupObservationKey::Name(LookupNameKey {
+            module: ModuleId::from_logical_path("history.rue").unwrap(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: name.into(),
+        })
+    }
+
     #[test]
     fn backend_root_publication_gate_serializes_distinct_epochs() {
         let gate = Arc::new(BackendRootPublicationGate::default());
@@ -25036,39 +25036,72 @@ mod tests {
     fn lookup_incarnation_history_refreshes_recency_without_duplicate_order_entries() {
         let mut lease = PublishedRootLookupLease::default();
         for index in 0..LOOKUP_INCARNATION_HISTORY_BOUND {
-            lease.record_incarnation(format!("key-{index}").into(), index as u64);
+            lease.record_incarnation(lookup_history_key(format!("key-{index}")), index as u64);
         }
-        lease.record_incarnation("key-0".into(), 10_000);
-        lease.record_incarnation("newest".into(), 20_000);
+        lease.record_incarnation(lookup_history_key("key-0"), 10_000);
+        lease.record_incarnation(lookup_history_key("newest"), 20_000);
 
         assert_eq!(lease.incarnations.len(), LOOKUP_INCARNATION_HISTORY_BOUND);
         assert_eq!(
             lease.incarnation_order.len(),
             LOOKUP_INCARNATION_HISTORY_BOUND
         );
-        assert_eq!(lease.seen_incarnation("key-0"), Some(10_000));
-        assert_eq!(lease.seen_incarnation("key-1"), None);
-        assert_eq!(lease.seen_incarnation("newest"), Some(20_000));
+        assert_eq!(
+            lease.seen_incarnation(&lookup_history_key("key-0")),
+            Some(10_000)
+        );
+        assert_eq!(lease.seen_incarnation(&lookup_history_key("key-1")), None);
+        assert_eq!(
+            lease.seen_incarnation(&lookup_history_key("newest")),
+            Some(20_000)
+        );
+    }
+
+    #[test]
+    fn lookup_incarnation_history_keeps_name_and_import_families_distinct() {
+        let module = ModuleId::from_logical_path("history.rue").unwrap();
+        let name = LookupObservationKey::Name(LookupNameKey {
+            module: module.clone(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: "shared".into(),
+        });
+        let import = LookupObservationKey::Import(LookupImportKey {
+            module,
+            specifier: "shared".into(),
+        });
+        let mut lease = PublishedRootLookupLease::default();
+        lease.record_incarnation(name.clone(), 41);
+        lease.record_incarnation(import.clone(), 42);
+
+        assert_eq!(lease.seen_incarnation(&name), Some(41));
+        assert_eq!(lease.seen_incarnation(&import), Some(42));
+        assert_eq!(lease.incarnations.len(), 2);
     }
 
     #[test]
     fn lookup_incarnation_history_mutations_roll_back_exactly() {
         let mut lease = PublishedRootLookupLease::default();
         for index in 0..LOOKUP_INCARNATION_HISTORY_BOUND {
-            lease.record_incarnation(format!("key-{index}").into(), index as u64);
+            lease.record_incarnation(lookup_history_key(format!("key-{index}")), index as u64);
         }
         let previous_incarnations = lease.incarnations.clone();
         let previous_incarnation_order = lease.incarnation_order.clone();
         let previous_generation = lease.next_incarnation_generation;
 
         let mutations = vec![
-            lease.record_incarnation("key-0".into(), 10_000),
-            lease.record_incarnation("newest".into(), 20_000),
-            lease.record_incarnation("newest".into(), 30_000),
+            lease.record_incarnation(lookup_history_key("key-0"), 10_000),
+            lease.record_incarnation(lookup_history_key("newest"), 20_000),
+            lease.record_incarnation(lookup_history_key("newest"), 30_000),
         ];
-        assert_eq!(lease.seen_incarnation("key-0"), Some(10_000));
-        assert_eq!(lease.seen_incarnation("key-1"), None);
-        assert_eq!(lease.seen_incarnation("newest"), Some(30_000));
+        assert_eq!(
+            lease.seen_incarnation(&lookup_history_key("key-0")),
+            Some(10_000)
+        );
+        assert_eq!(lease.seen_incarnation(&lookup_history_key("key-1")), None);
+        assert_eq!(
+            lease.seen_incarnation(&lookup_history_key("newest")),
+            Some(30_000)
+        );
 
         lease.rollback_incarnation_mutations(mutations);
         lease.next_incarnation_generation = previous_generation;
@@ -25091,21 +25124,21 @@ mod tests {
             supersession_evictions: 2,
             ..PublishedRootLookupLease::default()
         };
-        initial.record_incarnation("existing".into(), 41);
+        let existing = lookup_history_key("existing");
+        initial.record_incarnation(existing.clone(), 41);
         let lease = Arc::new(Mutex::new(initial));
         let observed_key = LookupObservationKey::Name(LookupNameKey {
             module: ModuleId::from_logical_path("main.rue").unwrap(),
             namespace: DefinitionNamespace::ModuleItem,
             name: "successor".into(),
         });
-        let observed_identity = observed_key.display_identity();
         let mut handoff = PublishedLookupRootHandoff {
             lease: lease.clone(),
             runtime: QueryRuntime::new(1),
             root: "root".to_owned(),
             observed: Some(ObservedLookupRoot {
                 pins: rue_query::RetainedPinSet::new(),
-                observed_keys: vec![(observed_key, 42)],
+                observed_keys: vec![(observed_key.clone(), 42)],
             }),
             rollback: None,
         };
@@ -25113,14 +25146,14 @@ mod tests {
         rue_query::QueryAttemptHandoff::commit(&mut handoff);
         {
             let lease = lease.lock().unwrap();
-            assert_eq!(lease.seen_incarnation(&observed_identity), Some(42));
+            assert_eq!(lease.seen_incarnation(&observed_key), Some(42));
             assert_eq!(lease.roots["root"].publication, 1);
         }
         rue_query::QueryAttemptHandoff::abort(&mut handoff);
         {
             let lease = lease.lock().unwrap();
-            assert_eq!(lease.seen_incarnation("existing"), Some(41));
-            assert_eq!(lease.seen_incarnation(&observed_identity), None);
+            assert_eq!(lease.seen_incarnation(&existing), Some(41));
+            assert_eq!(lease.seen_incarnation(&observed_key), None);
             assert_eq!(lease.incarnations.len(), 1);
             assert_eq!(lease.next_incarnation_generation, 1);
             assert_eq!(lease.next_root_publication, 1);
@@ -25131,7 +25164,7 @@ mod tests {
 
         rue_query::QueryAttemptHandoff::commit(&mut handoff);
         let lease = lease.lock().unwrap();
-        assert_eq!(lease.seen_incarnation(&observed_identity), Some(42));
+        assert_eq!(lease.seen_incarnation(&observed_key), Some(42));
         assert_eq!(lease.roots["root"].publication, 1);
     }
 
@@ -25156,7 +25189,8 @@ mod tests {
             supersession_evictions: 2,
             ..PublishedRootLookupLease::default()
         };
-        initial_lookup_lease.record_incarnation("existing".into(), 41);
+        let existing = lookup_history_key("existing");
+        initial_lookup_lease.record_incarnation(existing.clone(), 41);
         let lookup_lease = Arc::new(Mutex::new(initial_lookup_lease));
         let mut closure_handoff = PublishedBodyClosureTerminalHandoff {
             root: closure_root.clone(),
@@ -25218,7 +25252,7 @@ mod tests {
             assert_eq!(lease.supersession_evictions, 2);
             assert_eq!(lease.next_root_publication, 1);
             assert_eq!(lease.next_incarnation_generation, 1);
-            assert_eq!(lease.seen_incarnation("existing"), Some(41));
+            assert_eq!(lease.seen_incarnation(&existing), Some(41));
             assert_eq!(lease.incarnations.len(), 1);
         }
 
