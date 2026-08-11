@@ -5,15 +5,16 @@
 
 use std::any::Any;
 use std::cell::Cell;
-use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+
+use ahash::{AHashMap, RandomState};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -4664,8 +4665,8 @@ const NODE_INDEX_SHARDS: usize = 32;
 /// space; hits on the *same* key still serialize briefly on one shard, which
 /// preserves the hit/removal race rules unchanged per shard.
 ///
-/// Shard selection hashes with this index's own `RandomState` (SipHash, keyed
-/// per index), and each shard map keeps its own `RandomState` — the
+/// Shard selection hashes with this index's own keyed `RandomState`, and each
+/// shard map keeps its own keyed `RandomState` — the
 /// adversarial-resistance property of the previous single map is preserved,
 /// never weakened to a fixed or truncated hash.
 ///
@@ -4675,7 +4676,7 @@ const NODE_INDEX_SHARDS: usize = 32;
 /// those, and no path holds two shard guards at once.
 struct ShardedNodeIndex<K: QueryKey, V: Clone + Send + Sync + 'static> {
     selector: RandomState,
-    shards: [Mutex<HashMap<K, Arc<Node<K, V>>>>; NODE_INDEX_SHARDS],
+    shards: [Mutex<AHashMap<K, Arc<Node<K, V>>>>; NODE_INDEX_SHARDS],
 }
 
 impl<K, V> ShardedNodeIndex<K, V>
@@ -4686,7 +4687,7 @@ where
     fn new() -> Self {
         Self {
             selector: RandomState::new(),
-            shards: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+            shards: std::array::from_fn(|_| Mutex::new(AHashMap::new())),
         }
     }
 
@@ -4698,7 +4699,7 @@ where
     /// shard: get-miss-insert sequences and the removal re-checks (`users`,
     /// `attempts`, pointer identity) stay atomic under this guard exactly as
     /// they were under the whole-index mutex.
-    fn shard(&self, key: &K) -> MutexGuard<'_, HashMap<K, Arc<Node<K, V>>>> {
+    fn shard(&self, key: &K) -> MutexGuard<'_, AHashMap<K, Arc<Node<K, V>>>> {
         lock(&self.shards[self.shard_index(key)])
     }
 }
@@ -7742,6 +7743,8 @@ impl fmt::Debug for BatchValidationAuthority {
 struct TaskQueryCache {
     /// One type-erased typed-key map per unforgeable family token. The token is
     /// runtime-unique, so the concrete `K` and `V` behind an entry cannot vary.
+    /// Each erased map uses independently keyed AHash: source-derived keys keep
+    /// adversarial collision resistance while exact `Eq` remains authoritative.
     /// A task belongs to exactly one runtime, so its monotonic family id is a
     /// complete local key and can use the runtime-owned integer hasher.
     families: HashMap<u64, Box<dyn Any + Send + Sync>, BuildHasherDefault<IncarnationHasher>>,
@@ -8787,7 +8790,7 @@ impl Task {
         let cache = lock(&self.query_cache);
         let family_cache = cache.families.get(&family.family)?;
         family_cache
-            .downcast_ref::<HashMap<K, Arc<QueryTerminal<V>>>>()
+            .downcast_ref::<AHashMap<K, Arc<QueryTerminal<V>>>>()
             .expect("a family token has one typed task-cache representation")
             .get(key)
             .cloned()
@@ -8802,9 +8805,9 @@ impl Task {
         let family_cache = cache
             .families
             .entry(family.family)
-            .or_insert_with(|| Box::new(HashMap::<K, Arc<QueryTerminal<V>>>::new()));
+            .or_insert_with(|| Box::new(AHashMap::<K, Arc<QueryTerminal<V>>>::new()));
         let family_cache = family_cache
-            .downcast_mut::<HashMap<K, Arc<QueryTerminal<V>>>>()
+            .downcast_mut::<AHashMap<K, Arc<QueryTerminal<V>>>>()
             .expect("a family token has one typed task-cache representation");
         match family_cache.entry(key.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
@@ -10776,8 +10779,8 @@ mod tests {
     }
 
     // Deterministic single-hasher probe used only to demonstrate that two keys
-    // land in the same bucket. The live memo map keys on std `RandomState`
-    // (SipHash); this fixed-seed `DefaultHasher` just makes the collision
+    // land in the same bucket. The live memo map uses independently keyed
+    // AHash; this fixed-seed `DefaultHasher` just makes the collision
     // assertion reproducible.
     fn hash_of<K: std::hash::Hash>(key: &K) -> u64 {
         use std::hash::Hasher;
@@ -14002,6 +14005,33 @@ mod tests {
             .unwrap();
         assert!(Arc::ptr_eq(&first, &reuse));
         assert_eq!(runtime.metrics().claims, 2);
+
+        let family_for_root = family.clone();
+        let root = runtime.family::<Key, u64>("one-bucket-root", 4).unwrap();
+        runtime
+            .query(
+                &root,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let first = context.query(&family_for_root, OneBucketKey(1), |_| {
+                        panic!("colliding key 1 must reuse its retained terminal")
+                    })?;
+                    let second = context.query(&family_for_root, OneBucketKey(2), |_| {
+                        panic!("colliding key 2 must reuse its retained terminal")
+                    })?;
+                    let first_again = context.query(&family_for_root, OneBucketKey(1), |_| {
+                        panic!("the task cache must resolve colliding key 1 through Eq")
+                    })?;
+                    assert_eq!(first.outcome(), &QueryOutcome::Success(10));
+                    assert_eq!(second.outcome(), &QueryOutcome::Success(20));
+                    assert!(Arc::ptr_eq(&first, &first_again));
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+        assert_eq!(runtime.metrics().claims, 3);
     }
 
     #[test]

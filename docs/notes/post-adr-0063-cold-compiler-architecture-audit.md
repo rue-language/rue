@@ -592,6 +592,33 @@ single-worker Lattice allocation probe remains effectively identical at
 byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1366 used that provider baseline to reject two tempting semantic shortcuts
+before following a CPU profile. A request-local name-resolution cache removed
+no query work because the 66,324 Lattice lookups are unique within that cache's
+safe lifetime. Deriving a signature's stable definition key locally likewise
+removed no measured query work and added almost exactly one allocation per
+signature read; the existing identity query already returns a shared key at
+negligible cost. Neither experiment was retained.
+
+The subsequent symbolized Lattice sample instead placed standard SipHash at the
+top of the collapsed compiler stack. Its dominant call paths were the sharded
+typed-key memo index and the task-local typed query cache. Those two indexes now
+use AHash with independent runtime-random keys; exact `Hash` plus `Eq` remains
+authoritative, so collision safety and adversarial resistance are preserved.
+Numeric runtime bookkeeping stays on its existing specialized or standard
+hashers because the profile did not justify broadening the change.
+
+The targeted SipHash leaf fell from 63 to 27 samples (-57 percent). Against the
+merged RUE-1365 report, compiler-root medians moved from 127.83 to 124.91 ms for
+Ruelex, 352.52 to 352.02 ms for Mosaic, 738.34 to 723.54 ms for Harbor, and
+862.39 to 834.20 ms for Lattice. Peak memory moved -0.2, +0.6, -2.5, and +4.0
+MiB respectively, which is mixed and within run noise. Every query,
+reachability, CFG-materialization, and semantic-provider counter remained
+identical. Lattice allocation counts are flat; requested bytes moved about
++0.06 percent, also within measurement noise. The executable remains
+byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

@@ -3,6 +3,12 @@
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
 
+alias(
+    name = "ahash",
+    actual = ":ahash-0.8.12",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "ahash-0.8.12",
     srcs = [
@@ -23,10 +29,17 @@ cargo.rust_library(
     env = {
         "OUT_DIR": "$(location :ahash-0.8.12-build-script-run[out_dir])",
     },
+    features = [
+        "default",
+        "getrandom",
+        "runtime-rng",
+        "std",
+    ],
     rustc_flags = ["@$(location :ahash-0.8.12-build-script-run[rustc_flags])"],
     visibility = [],
     deps = [
         ":cfg-if-1.0.4",
+        ":getrandom-0.3.4",
         ":once_cell-1.21.3",
         ":zerocopy-0.8.31",
     ],
@@ -53,6 +66,12 @@ cargo.rust_binary(
     crate = "build_script_build",
     crate_root = "vendor/ahash-0.8.12/build.rs",
     edition = "2018",
+    features = [
+        "default",
+        "getrandom",
+        "runtime-rng",
+        "std",
+    ],
     visibility = [],
     deps = [":version_check-0.9.5"],
 )
@@ -61,6 +80,12 @@ buildscript_run(
     name = "ahash-0.8.12-build-script-run",
     package_name = "ahash",
     buildscript_rule = ":ahash-0.8.12-build-script-build",
+    features = [
+        "default",
+        "getrandom",
+        "runtime-rng",
+        "std",
+    ],
     version = "0.8.12",
 )
 
