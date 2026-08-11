@@ -435,6 +435,27 @@ query, reachability and materialization counters remain identical, and the
 Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1358 followed the post-RUE-1357 release profile into stable machine-symbol
+encoding. The version-one encoder previously allocated temporary decimal
+strings for every tag, field length, and numeric value, invoked generic
+formatting once per input byte, and allocated a fresh scratch string for every
+sequence element. It now writes integers from stack-backed `itoa` buffers,
+hex-encodes bytes through a fixed lookup table, and reuses one scratch buffer
+per sequence. The wire format and ownership boundary are unchanged; this is a
+local representation improvement rather than a symbol cache or a new shared
+lifetime.
+
+On the fixed one-worker Lattice allocation probe, calls fell from 20,723,870 to
+19,233,621 (-7.19 percent) and requested bytes from 3,535,911,692 to
+3,533,206,987 (-0.08 percent). Every query, reachability, and CFG-materialization
+counter remained exact. Two ordinary-allocator scaling runs had no consistent
+clock or peak-memory direction: the first moved the four compiler medians by
++1.5, +1.5, +0.5, and -2.1 percent, while the repeat was visibly host-noisy and
+bracketed the parent's memory on the two large workloads. The deterministic
+allocation result therefore establishes the win without claiming a clock
+speedup. The Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

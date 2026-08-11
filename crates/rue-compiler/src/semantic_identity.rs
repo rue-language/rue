@@ -361,36 +361,45 @@ pub(crate) fn function_instance_from_specialization(
 
 fn tag(output: &mut String, value: u32) {
     output.push('t');
-    output.push_str(&value.to_string());
+    decimal(output, value);
     output.push('_');
 }
 
-fn number(output: &mut String, value: impl std::fmt::Display) {
-    let value = value.to_string();
+fn number<I: itoa::Integer>(output: &mut String, value: I) {
+    let mut buffer = itoa::Buffer::new();
+    let value = buffer.format(value);
     output.push('n');
-    output.push_str(&value.len().to_string());
+    decimal(output, value.len());
     output.push('_');
-    output.push_str(&value);
+    output.push_str(value);
+}
+
+fn decimal<I: itoa::Integer>(output: &mut String, value: I) {
+    let mut buffer = itoa::Buffer::new();
+    output.push_str(buffer.format(value));
 }
 
 fn bytes(output: &mut String, value: &str) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     output.push('s');
-    output.push_str(&value.len().to_string());
+    decimal(output, value.len());
     output.push('_');
-    for byte in value.as_bytes() {
-        use std::fmt::Write as _;
-        write!(output, "{byte:02x}").expect("writing to String cannot fail");
+    for &byte in value.as_bytes() {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
 }
 
 fn sequence<T>(output: &mut String, values: &[T], mut encode: impl FnMut(&T, &mut String)) {
     output.push('q');
-    output.push_str(&values.len().to_string());
+    decimal(output, values.len());
     output.push('_');
+    let mut field = String::new();
     for value in values {
-        let mut field = String::new();
+        field.clear();
         encode(value, &mut field);
-        output.push_str(&field.len().to_string());
+        decimal(output, field.len());
         output.push('_');
         output.push_str(&field);
     }
@@ -459,49 +468,49 @@ fn encode_anchor(value: &StructuralAnchor, output: &mut String) {
         StructuralPathSegment::Body => tag(output, 0),
         StructuralPathSegment::ParameterType(index) => {
             tag(output, 1);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::ReturnType => tag(output, 2),
         StructuralPathSegment::Statement(index) => {
             tag(output, 3);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::Operand(index) => {
             tag(output, 4);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::Branch(index) => {
             tag(output, 5);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::MatchArm(index) => {
             tag(output, 6);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::FieldType(index) => {
             tag(output, 7);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::VariantPayload { variant, payload } => {
             tag(output, 8);
-            number(output, variant);
-            number(output, payload);
+            number(output, *variant);
+            number(output, *payload);
         }
         StructuralPathSegment::Method(index) => {
             tag(output, 9);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::AnonymousType(index) => {
             tag(output, 10);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::StringLiteral(index) => {
             tag(output, 11);
-            number(output, index);
+            number(output, *index);
         }
         StructuralPathSegment::ReadOnlyData(index) => {
             tag(output, 12);
-            number(output, index);
+            number(output, *index);
         }
     });
 }
@@ -515,7 +524,7 @@ fn encode_argument_value(value: &CanonicalArgumentValue, output: &mut String) {
     match value {
         CanonicalArgumentValue::Integer(value) => {
             tag(output, 0);
-            number(output, value);
+            number(output, *value);
         }
         CanonicalArgumentValue::Bool(value) => {
             tag(output, 1);
@@ -588,7 +597,7 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
         TypeInstanceKey::Array { element, len } => {
             tag(output, 15);
             encode_type(element, output);
-            number(output, len);
+            number(output, *len);
         }
         TypeInstanceKey::PtrConst(value) => {
             tag(output, 16);
@@ -604,7 +613,7 @@ fn encode_type(value: &TypeInstanceKey, output: &mut String) {
         }
         TypeInstanceKey::GenericParameter(value) => {
             tag(output, 19);
-            number(output, value);
+            number(output, *value);
         }
         TypeInstanceKey::Slice { element, name } => {
             tag(output, 20);
@@ -707,6 +716,30 @@ mod tests {
         StableSymbolId::Callable(StableCallableId::Function(FunctionInstanceKey::Definition(
             definition,
         )))
+    }
+
+    #[test]
+    fn framing_helpers_preserve_the_version_one_wire_format() {
+        let mut encoded = String::new();
+        tag(&mut encoded, u32::MAX);
+        assert_eq!(encoded, "t4294967295_");
+
+        encoded.clear();
+        number(&mut encoded, i128::MIN);
+        assert_eq!(encoded, "n40_-170141183460469231731687303715884105728");
+
+        encoded.clear();
+        bytes(&mut encoded, "a_\0é");
+        assert_eq!(encoded, "s5_615f00c3a9");
+
+        encoded.clear();
+        sequence(&mut encoded, &[i128::MIN, 0, 10], |value, output| {
+            number(output, *value);
+        });
+        assert_eq!(
+            encoded,
+            "q3_44_n40_-1701411834604692317316873037158841057284_n1_05_n2_10"
+        );
     }
 
     #[test]

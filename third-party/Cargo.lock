@@ -692,6 +692,7 @@ dependencies = [
  "annotate-snippets",
  "anyhow",
  "fixedbitset",
+ "itoa",
  "lasso",
  "libc",
  "libtest2-mimic",

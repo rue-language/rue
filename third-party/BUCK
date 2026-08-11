@@ -1073,6 +1073,12 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "itoa",
+    actual = ":itoa-1.0.16",
+    visibility = ["PUBLIC"],
+)
+
 cargo.rust_library(
     name = "itoa-1.0.16",
     srcs = [
