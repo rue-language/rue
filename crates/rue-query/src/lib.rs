@@ -2972,9 +2972,9 @@ pub struct DisplayIdentityMetrics {
     pub memo_node_materializations: u64,
     /// Formatted key bytes retained by new memo-node incarnations.
     pub memo_node_bytes: u64,
-    /// Identities created to label structured batch wait edges.
+    /// Structured batch identities materialized only to render wait cycles.
     pub structured_wait_materializations: u64,
-    /// Formatted key bytes used to label structured batch wait edges.
+    /// Formatted structured-batch key bytes used to render wait cycles.
     pub structured_wait_bytes: u64,
     /// Identities created lazily when nested requests abort.
     pub abort_fallback_materializations: u64,
@@ -3297,7 +3297,11 @@ pub struct QueryRuntime {
 struct RuntimeCore {
     identity: u64,
     permits: PermitBudget,
-    wait_graph: Mutex<BTreeMap<TaskId, BTreeMap<TaskId, NodeIdentity>>>,
+    /// Active task-to-task waits. Ordinary joins reuse their memo node's
+    /// materialized identity. Structured edges retain only a shared batch table
+    /// plus an item index, formatting the typed key only if the edge participates
+    /// in a cycle which must be rendered.
+    wait_graph: Mutex<BTreeMap<TaskId, BTreeMap<TaskId, WaitEdgeLabel>>>,
     family_names: Mutex<BTreeSet<Arc<str>>>,
     revisions: RwLock<RevisionStore>,
     nodes: RwLock<NodeRegistry>,
@@ -6023,7 +6027,11 @@ where
         }
         if self
             .core
-            .begin_wait(task.id, owner, node.identity.clone())
+            .begin_wait(
+                task.id,
+                owner,
+                WaitEdgeLabel::Materialized(node.identity.clone()),
+            )
             .is_err()
         {
             // Waiting here would close a wait-graph loop. That loop says two
@@ -6879,16 +6887,79 @@ pub struct QueryContext {
     not_send_or_sync: PhantomData<Rc<()>>,
 }
 
-type BatchCompletion<K, V> = (usize, u64, K, Arc<Task>, TaskQueryResult<V>);
+struct RegisteredBatchItem<K> {
+    request_id: u64,
+    key: K,
+}
+
+struct RegisteredBatchItems<K> {
+    family: Arc<str>,
+    items: Vec<RegisteredBatchItem<K>>,
+}
+
+impl<K> fmt::Debug for RegisteredBatchItems<K> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RegisteredBatchItems")
+            .field("family", &self.family)
+            .field("items", &self.items.len())
+            .finish()
+    }
+}
+
+/// Type-erased view over the one typed key table already owned by a registered
+/// batch. Wait edges keep this table alive through cancellation and completed
+/// children without allocating or formatting one label per edge.
+trait StructuredWaitLabels: fmt::Debug + Send + Sync {
+    fn node_identity(&self, index: usize) -> NodeIdentity;
+}
+
+impl<K: QueryKey> StructuredWaitLabels for RegisteredBatchItems<K> {
+    fn node_identity(&self, index: usize) -> NodeIdentity {
+        let item = self
+            .items
+            .get(index)
+            .expect("a structured wait edge names one live batch item");
+        NodeIdentity {
+            family: self.family.clone(),
+            key: item.key.stable_identity().into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum WaitEdgeLabel {
+    Materialized(NodeIdentity),
+    Structured {
+        labels: Arc<dyn StructuredWaitLabels>,
+        index: usize,
+    },
+}
+
+impl WaitEdgeLabel {
+    fn node_identity(&self, metrics: &Metrics) -> NodeIdentity {
+        match self {
+            Self::Materialized(node) => node.clone(),
+            Self::Structured { labels, index } => {
+                let node = labels.node_identity(*index);
+                metrics.record_structured_wait_identity(node.key().len());
+                node
+            }
+        }
+    }
+}
+
+type BatchCompletion<V> = (usize, Arc<Task>, TaskQueryResult<V>);
 
 fn run_registered_batch_worker<K, V>(
-    queue: Arc<Mutex<VecDeque<(usize, u64, K)>>>,
+    queue: Arc<Mutex<VecDeque<usize>>>,
+    items: Arc<RegisteredBatchItems<K>>,
     family: QueryFamily<K, V>,
     parent: Arc<Task>,
     authority: Arc<BatchValidationAuthority>,
     tracing_dispatch: tracing::Dispatch,
     tracing_parent: tracing::Span,
-) -> std::thread::Result<Vec<BatchCompletion<K, V>>>
+) -> std::thread::Result<Vec<BatchCompletion<V>>>
 where
     K: QueryKey,
     V: Clone + Send + Sync + 'static,
@@ -6898,15 +6969,17 @@ where
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut completed = Vec::new();
             loop {
-                let Some((index, request_id, key)) = lock(&queue).pop_front() else {
+                let Some(index) = lock(&queue).pop_front() else {
                     break;
                 };
-                let child = parent.batch_child(request_id, authority.clone());
-                let result = family.query_task_registered(child.clone(), key.clone(), request_id);
+                let item = &items.items[index];
+                let child = parent.batch_child(item.request_id, authority.clone());
+                let result =
+                    family.query_task_registered(child.clone(), item.key.clone(), item.request_id);
                 if matches!(result, TaskQueryResult::Terminal { .. }) {
                     authority.publish_child(&child);
                 }
-                completed.push((index, request_id, key, child, result));
+                completed.push((index, child, result));
             }
             completed
         }));
@@ -7131,6 +7204,11 @@ impl QueryContext {
     /// without repeating the same recursive validation. The authority is
     /// lexical and moves into the parent before this method returns; unrelated
     /// batches, requests, and revisions share no mutable proof state.
+    ///
+    /// The wait graph stores each child as a compact index into this batch's
+    /// typed key table. The table outlives every registered edge, including
+    /// queued and already-completed children, and produces a display identity
+    /// only if a scheduling cycle needs a diagnostic path.
     pub fn query_registered_batch<K, V>(
         &self,
         family: &QueryFamily<K, V>,
@@ -7147,40 +7225,35 @@ impl QueryContext {
         if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
             return Err(QueryAbort::ForeignRuntime);
         }
-        let items = keys
-            .into_iter()
-            .enumerate()
-            .map(|(index, key)| {
-                let request_id = self.task.next_nested_request();
-                (index, request_id, key)
-            })
-            .collect::<Vec<_>>();
-        if items.is_empty() {
+        let items = Arc::new(RegisteredBatchItems {
+            family: family.inner.name.clone(),
+            items: keys
+                .into_iter()
+                .map(|key| RegisteredBatchItem {
+                    request_id: self.task.next_nested_request(),
+                    key,
+                })
+                .collect(),
+        });
+        if items.items.is_empty() {
             return Ok(Vec::new());
         }
 
+        let wait_labels: Arc<dyn StructuredWaitLabels> = items.clone();
         let structured_waits = StructuredWaitGuard::new(
             self.task.core.clone(),
             self.task.id,
-            items.iter().map(|(_, request_id, key)| {
-                let stable_key = key.stable_identity();
-                self.task
-                    .core
-                    .metrics
-                    .record_structured_wait_identity(stable_key.len());
-                (
-                    TaskId(*request_id),
-                    NodeIdentity {
-                        family: family.inner.name.clone(),
-                        key: stable_key.into(),
-                    },
-                )
-            }),
+            wait_labels,
+            items
+                .items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| (TaskId(item.request_id), index)),
         )
         .map_err(QueryAbort::Cycle)?;
         let worker_claim =
-            BatchWorkerClaim::new(self.task.core.clone(), items.len().saturating_sub(1));
-        let queue = Arc::new(Mutex::new(VecDeque::from(items)));
+            BatchWorkerClaim::new(self.task.core.clone(), items.items.len().saturating_sub(1));
+        let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..items.items.len())));
         let batch_authority = Arc::new(BatchValidationAuthority::new(
             self.task.core.clone(),
             self.task.batch_validation_authority.clone(),
@@ -7201,6 +7274,7 @@ impl QueryContext {
             let mut workers = Vec::with_capacity(worker_claim.count);
             for _ in 0..worker_claim.count {
                 let queue = queue.clone();
+                let items = items.clone();
                 let family = family.clone();
                 let parent = self.task.clone();
                 let authority = batch_authority.clone();
@@ -7213,6 +7287,7 @@ impl QueryContext {
                         .spawn_scoped(scope, move || {
                             run_registered_batch_worker(
                                 queue,
+                                items,
                                 family,
                                 parent,
                                 authority,
@@ -7225,6 +7300,7 @@ impl QueryContext {
             }
             let inline = run_registered_batch_worker(
                 queue.clone(),
+                items.clone(),
                 family.clone(),
                 self.task.clone(),
                 batch_authority.clone(),
@@ -7258,14 +7334,16 @@ impl QueryContext {
 
         completed.sort_unstable_by_key(|(index, ..)| *index);
         let mut terminals = Vec::with_capacity(completed.len());
-        for (_, request_id, key, child, result) in completed {
+        for (index, child, result) in completed {
+            let item = &items.items[index];
             self.task
                 .absorb_batch_child(&child, matches!(&result, TaskQueryResult::Terminal { .. }));
             match &result {
                 TaskQueryResult::Terminal { terminal, work, .. } => {
                     self.task.observe(terminal);
                     self.task.observe_work(work);
-                    self.task.cache_query(family.inner.token, &key, terminal);
+                    self.task
+                        .cache_query(family.inner.token, &item.key, terminal);
                 }
                 TaskQueryResult::Aborted {
                     dependencies,
@@ -7275,10 +7353,10 @@ impl QueryContext {
                 } => self.task.observe_abort_prefix(dependencies, inputs, work),
             }
             self.task.record_nested(
-                request_id,
-                move || NodeIdentity {
-                    family: family.inner.name.clone(),
-                    key: key.stable_identity().into(),
+                item.request_id,
+                || NodeIdentity {
+                    family: items.family.clone(),
+                    key: item.key.stable_identity().into(),
                 },
                 &result,
             );
@@ -7690,15 +7768,23 @@ impl StructuredWaitGuard {
     fn new(
         core: Arc<RuntimeCore>,
         parent: TaskId,
-        children: impl IntoIterator<Item = (TaskId, NodeIdentity)>,
+        labels: Arc<dyn StructuredWaitLabels>,
+        children: impl IntoIterator<Item = (TaskId, usize)>,
     ) -> Result<Self, Arc<[NodeIdentity]>> {
         let mut guard = Self {
             core,
             parent,
             children: Vec::new(),
         };
-        for (child, node) in children {
-            guard.core.begin_wait(parent, child, node)?;
+        for (child, index) in children {
+            guard.core.begin_wait(
+                parent,
+                child,
+                WaitEdgeLabel::Structured {
+                    labels: labels.clone(),
+                    index,
+                },
+            )?;
             guard.children.push(child);
         }
         Ok(guard)
@@ -9764,10 +9850,10 @@ impl RuntimeCore {
         &self,
         waiter: TaskId,
         owner: TaskId,
-        node: NodeIdentity,
+        label: WaitEdgeLabel,
     ) -> Result<(), Arc<[NodeIdentity]>> {
         let mut graph = lock(&self.wait_graph);
-        let previous = graph.entry(waiter).or_default().insert(owner, node.clone());
+        let previous = graph.entry(waiter).or_default().insert(owner, label);
         assert!(
             previous.is_none(),
             "one task cannot register the same wait owner twice"
@@ -9775,13 +9861,20 @@ impl RuntimeCore {
         let mut path = Vec::new();
         let mut visited = BTreeSet::new();
         if wait_path(&graph, owner, waiter, &mut visited, &mut path) {
-            path.push(node);
             let edges = graph.get_mut(&waiter).expect("new wait edge is present");
-            edges.remove(&owner);
+            path.push(
+                edges
+                    .remove(&owner)
+                    .expect("the newly inserted wait edge is present"),
+            );
             if edges.is_empty() {
                 graph.remove(&waiter);
             }
-            return Err(canonical_cycle(path));
+            drop(graph);
+            return Err(canonical_cycle(
+                path.into_iter()
+                    .map(|label| label.node_identity(&self.metrics)),
+            ));
         }
         Ok(())
     }
@@ -9799,11 +9892,11 @@ impl RuntimeCore {
 }
 
 fn wait_path(
-    graph: &BTreeMap<TaskId, BTreeMap<TaskId, NodeIdentity>>,
+    graph: &BTreeMap<TaskId, BTreeMap<TaskId, WaitEdgeLabel>>,
     current: TaskId,
     target: TaskId,
     visited: &mut BTreeSet<TaskId>,
-    path: &mut Vec<NodeIdentity>,
+    path: &mut Vec<WaitEdgeLabel>,
 ) -> bool {
     if !visited.insert(current) {
         return false;
@@ -9811,8 +9904,8 @@ fn wait_path(
     let Some(edges) = graph.get(&current) else {
         return false;
     };
-    for (owner, node) in edges {
-        path.push(node.clone());
+    for (owner, label) in edges {
+        path.push(label.clone());
         if *owner == target || wait_path(graph, *owner, target, visited, path) {
             return true;
         }
@@ -10021,7 +10114,7 @@ mod tests {
     }
 
     #[test]
-    fn display_identity_metrics_attribute_each_materialization_source() {
+    fn display_identity_metrics_attribute_only_materialized_sources() {
         let runtime = QueryRuntime::new(1);
         publish_empty(&runtime, [revision(1)]);
 
@@ -10064,11 +10157,85 @@ mod tests {
             DisplayIdentityMetrics {
                 memo_node_materializations: 4,
                 memo_node_bytes: 7,
-                structured_wait_materializations: 2,
-                structured_wait_bytes: 5,
+                structured_wait_materializations: 0,
+                structured_wait_bytes: 0,
                 abort_fallback_materializations: 1,
                 abort_fallback_bytes: 4,
             }
+        );
+    }
+
+    #[test]
+    fn structured_wait_labels_remain_lazy_and_live_until_cycle_rendering() {
+        let runtime = QueryRuntime::new(1);
+        let items = Arc::new(RegisteredBatchItems {
+            family: Arc::from("lazy-structured"),
+            items: vec![RegisteredBatchItem {
+                request_id: 2,
+                key: Key("child"),
+            }],
+        });
+        let weak_items = Arc::downgrade(&items);
+        let labels: Arc<dyn StructuredWaitLabels> = items.clone();
+        let guard = StructuredWaitGuard::new(
+            runtime.core.clone(),
+            TaskId(1),
+            labels.clone(),
+            [(TaskId(2), 0)],
+        )
+        .expect("an acyclic structured edge is registered");
+
+        assert_eq!(
+            runtime
+                .metrics()
+                .display_identities
+                .structured_wait_materializations,
+            0,
+            "registering an ordinary structured wait never formats its key"
+        );
+        drop(items);
+        drop(labels);
+        assert!(
+            weak_items.upgrade().is_some(),
+            "the live wait edge retains its batch label table"
+        );
+
+        let cycle = runtime
+            .core
+            .begin_wait(
+                TaskId(2),
+                TaskId(1),
+                WaitEdgeLabel::Materialized(NodeIdentity {
+                    family: Arc::from("ordinary"),
+                    key: Arc::from("root"),
+                }),
+            )
+            .expect_err("the reverse wait closes a cycle");
+        assert_eq!(
+            cycle
+                .iter()
+                .map(|node| (node.family(), node.key()))
+                .collect::<Vec<_>>(),
+            vec![("lazy-structured", "child"), ("ordinary", "root")],
+            "lazy rendering preserves the exact canonical cycle text"
+        );
+        assert_eq!(
+            runtime.metrics().display_identities,
+            DisplayIdentityMetrics {
+                structured_wait_materializations: 1,
+                structured_wait_bytes: 5,
+                ..DisplayIdentityMetrics::default()
+            }
+        );
+
+        drop(guard);
+        assert!(
+            lock(&runtime.core.wait_graph).is_empty(),
+            "dropping the batch removes its label table with the wait edge"
+        );
+        assert!(
+            weak_items.upgrade().is_none(),
+            "removing the last wait edge releases its batch label table"
         );
     }
 

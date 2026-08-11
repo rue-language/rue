@@ -211,32 +211,59 @@ The new display-identity counters do identify one concrete representation cost:
 | Harbor | 32,299 / 15,479,840 | 70,671 / 28,402,213 | 0 / 0 | 382.38 |
 | Lattice | 38,380 / 9,494,659 | 89,895 / 33,777,606 | 0 / 0 | 278.30 |
 
-Lattice formats 43.3 MB of presentation-only key text. Structured batch waits
-account for 78 percent of those bytes and 70 percent of materializations. The
-current path formats every child key before scheduling so the global wait graph
-can retain a complete `NodeIdentity` for cycle rendering; a child which creates
-a memo node then formats the key again for that node's retained identity.
-Abort fallback contributes nothing on the maintained successful workloads.
+This was the pre-RUE-1349 baseline. Lattice formatted 43.3 MB of
+presentation-only key text. Structured batch waits accounted for 78 percent of
+those bytes and 70 percent of materializations. The old path formatted every
+child key before scheduling so the global wait graph could retain a complete
+`NodeIdentity` for cycle rendering; a child which created a memo node then
+formatted the key again for that node's retained identity. Abort fallback
+contributed nothing on the maintained successful workloads.
 
 ```text
-parent owns typed child key K
-  -> format K for StructuredWaitGuard
-       -> global wait graph retains NodeIdentity while the batch joins
-  -> schedule K in a child task
-       -> QueryFamily::node(K)
-            -> on a memo miss, format K again for the retained memo node
+before RUE-1349
+  parent owns typed child key K
+    -> format K for StructuredWaitGuard
+         -> global wait graph retains NodeIdentity while the batch joins
+    -> schedule K in a child task
+         -> QueryFamily::node(K)
+              -> on a memo miss, format K again for the retained memo node
+
+after RUE-1349
+  batch owns one typed table [K0, K1, ...]
+    -> wait graph retains (shared table, item index)
+    -> only a rendered wait cycle formats K[index]
+    -> memo misses retain their independently owned NodeIdentity as before
 ```
 
 The typed key controls lookup in both cases. The duplicate text exists because
 cycle presentation and memo-node presentation acquire their labels through
 separate lifetime paths.
 
-The structured-wait formatting is also a serial prefix of each batch: the
-parent constructs every labeled edge before it releases work to child tasks.
-That placement makes it architecturally more interesting than an equal amount
-of perfectly parallel formatting under Amdahl's law. The counters establish
-volume and placement, not a promised speedup; RUE-1349 must still measure any
-replacement against the same workloads and one-/many-worker correctness tests.
+The structured-wait formatting was also a serial prefix of each batch: the
+parent constructed every labeled edge before it released work to child tasks.
+RUE-1349 removed that prefix with one batch-owned typed key table. Detection
+continues to use ordered task edges; cycle presentation resolves only the
+selected path after releasing the global wait-graph mutex. The complete
+ownership and failure analysis is in
+[`structured-wait-label-ownership.md`](structured-wait-label-ownership.md).
+
+The same-host fresh-process comparison used the immediately preceding trunk
+revision as its baseline and repeated the changed build after the first Harbor
+timing pass was noisy:
+
+| workload | structured wait identities/bytes before → after | total identity bytes/token before → after | compiler ms before → after |
+| --- | ---: | ---: | ---: |
+| Ruelex | 8,827 / 2,545,490 → 0 / 0 | 96.15 → 44.37 | 293.38 → 284.62 |
+| Mosaic | 30,979 / 10,414,280 → 0 / 0 | 202.88 → 71.75 | 809.73 → 809.45 |
+| Harbor | 70,671 / 28,402,213 → 0 / 0 | 382.38 → 134.89 | 1,937.37 → 1,929.82 |
+| Lattice | 89,895 / 33,777,606 → 0 / 0 | 278.30 → 61.06 | 2,142.29 → 2,122.68 |
+
+All other deterministic query-work counters were unchanged. Peak RSS moved
+-0.1, -0.7, +0.5 and +4.3 MiB, so this experiment establishes no consistent
+memory result. Compiler medians were neutral to slightly lower, but three
+fresh processes with uncontrolled page-cache state do not justify a clock-time
+speedup claim. The structural result is exact: successful maintained workloads
+perform none of the previous 2.5–33.8 MB of structured-wait formatting.
 
 The measurement overhead is neutral in the clock data: compiler-root medians
 versus the immediately preceding same-host report moved -0.6, -0.6, +1.0 and
@@ -256,16 +283,9 @@ Authorized low-risk work:
 
 Maintainer review required before implementation:
 
-1. Choose how structured waits represent cycle labels (RUE-1349). Viable
-   directions include compact task edges with lazy label recovery, sharing one
-   preformatted label between the wait edge and a newly created memo node, or
-   explicitly retaining the current eager representation. Any change must
-   preserve queued-child cycle detection, cancellation, deterministic path
-   ordering and label lifetime. This is a focused query-runtime representation
-   choice, not evidence for replacing the overall shared-runtime architecture.
-2. Add a retained `LoweredMir` terminal. ADR-0063 deliberately leaves that
+1. Add a retained `LoweredMir` terminal. ADR-0063 deliberately leaves that
    query-granularity choice open pending a direct consumer or reuse result.
-3. Introduce stateful incremental linking. `ProgramImagePlanDelta` is the
+2. Introduce stateful incremental linking. `ProgramImagePlanDelta` is the
    prepared seam, but placement, patching, failure recovery and executable
    publication require their own ADR and joint planning.
 
