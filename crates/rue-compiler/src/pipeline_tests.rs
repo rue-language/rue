@@ -466,6 +466,31 @@ mod tests {
     #[test]
     fn failed_wide_batches_release_their_unpublished_child_cones_under_pressure() {
         const CHAIN_FUNCTIONS: usize = 33;
+        // RUE-1262 ruling on what the pressure compiles buy. They are a witness
+        // generator, not headroom and not sustained contention: a failed batch
+        // that leaks pins onto children it never published keeps those
+        // terminals `protected` in the eviction scan, so they survive at *any*
+        // iteration count and the discriminating check is the re-entry
+        // assertion below. The compiles need only guarantee that a genuinely
+        // released terminal would have gone by then, so that "still present"
+        // means "leaked" rather than "not yet pushed out".
+        //
+        // That is set by the family bound, not by the host. Eviction here is
+        // driven by a per-family retained-*count* watermark, and
+        // `compiler.cfg`, `compiler.optimized-cfg`, and `compiler.codegen-unit`
+        // are all built at BODY_QUERY_MEMO_RETENTION = 8 against the
+        // CHAIN_FUNCTIONS + 1 = 34 terminals one compile publishes into each.
+        // One compile clears every watermark four times over; two are margin.
+        // The byte and pin budgets are a separate mechanism and never bind at
+        // their defaults, so nothing here depends on the allocator or platform.
+        //
+        // This was 16, inherited from the sibling pressure tests in this
+        // module, whose iterations compile a one-function program and are
+        // nearly free. This one compiles a 34-function chain per iteration.
+        // Width is load-bearing — it is what makes the batch wide and puts
+        // terminals-per-compile above the family bound — so the iteration
+        // count is the knob to cut, not CHAIN_FUNCTIONS.
+        const PRESSURE_COMPILES: i32 = 2;
         let options = CompileOptions::default();
         let last_good_source =
             SourceSnapshot::single("<backend-root-failure-pressure>", "fn main() -> i32 { 0 }")
@@ -497,14 +522,22 @@ mod tests {
 
         fail(&mut session, &failed_source);
         let evictions_before_pressure = session.query_evictions_for_test();
-        for value in 101..117 {
+        for value in 101..101 + PRESSURE_COMPILES {
             fail(&mut session, &wide_reached_program(CHAIN_FUNCTIONS, value));
         }
         assert!(
             session.query_evictions_for_test() > evictions_before_pressure,
-            "failed child cones must face real query-family eviction pressure"
+            "the pressure compiles must actually reach eviction; without it the \
+             re-entry assertion below cannot distinguish a released child cone \
+             from one that is merely still sitting under its family's watermark"
         );
 
+        // The discriminating check. `f0` is the only body that differs between
+        // `failed_source` and the pressure programs, so it is the one member of
+        // the failed batch's cone whose recomputation proves the cone was
+        // released: had the failed batch kept its pins, `f0`'s CodegenUnit
+        // terminal would have been protected from the eviction above and this
+        // re-entry would report `Reused`.
         fail(&mut session, &failed_source);
         assert_eq!(
             session.codegen_executions().len(),
