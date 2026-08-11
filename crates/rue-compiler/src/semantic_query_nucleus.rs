@@ -962,6 +962,10 @@ pub(crate) enum SemanticNucleusValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedDeclarationSignature {
+    /// Stable source identity computed with the signature. Consumers which
+    /// already observed this projection must not issue a peer identity query
+    /// merely to recover the same key.
+    pub(crate) definition: StableDefinitionKey,
     pub(crate) signature: DeclarationSignatureProjection,
     pub(crate) anonymous_nominals: Arc<[DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[SemanticDeclarationDependency]>,
@@ -1192,8 +1196,9 @@ impl RetainedCharge for DeclarationSignatureProjection {
 
 impl RetainedCharge for ResolvedDeclarationSignature {
     fn retained_charge(&self) -> u64 {
-        self.signature
+        self.definition
             .retained_charge()
+            .saturating_add(self.signature.retained_charge())
             .saturating_add(self.anonymous_nominals.retained_charge())
             .saturating_add(self.dependencies.retained_charge())
             .saturating_add(self.deferred_ownership.retained_charge())
