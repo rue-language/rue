@@ -6569,7 +6569,7 @@ pub(crate) fn collect_instance_anonymous_nominals(
 fn schedule_body_instance<V>(
     pending: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, usize>,
     ready: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, usize>,
-    prefetched: &mut BTreeMap<Arc<crate::FunctionInstanceKey>, (usize, V)>,
+    prefetched: &mut VecDeque<(Arc<crate::FunctionInstanceKey>, usize, V)>,
     visited: &BTreeSet<Arc<crate::FunctionInstanceKey>>,
     instance: &crate::FunctionInstanceKey,
     depth: usize,
@@ -6588,15 +6588,13 @@ fn schedule_body_instance<V>(
             .clone();
         return Some((instance, changed));
     }
-    if let Some((existing_depth, _)) = prefetched.get_mut(instance) {
+    if let Some((prefetched_instance, existing_depth, _)) = prefetched
+        .iter_mut()
+        .find(|(prefetched_instance, _, _)| prefetched_instance.as_ref() == instance)
+    {
         let changed = depth < *existing_depth;
         *existing_depth = (*existing_depth).min(depth);
-        let instance = prefetched
-            .get_key_value(instance)
-            .expect("the prefetched instance remains present after its depth update")
-            .0
-            .clone();
-        return Some((instance, changed));
+        return Some((prefetched_instance.clone(), changed));
     }
     if let Some(existing_depth) = pending.get_mut(instance) {
         let changed = depth < *existing_depth;
@@ -15370,19 +15368,15 @@ impl RevisionedQueryDatabase {
                     let mut produced_anonymous = BTreeMap::new();
                     let mut ready_frontier = BTreeMap::new();
                     let mut pending_frontier_metrics = None;
-                    let mut prefetched_transactions = BTreeMap::<
+                    let mut prefetched_transactions = VecDeque::<(
                         Arc<crate::FunctionInstanceKey>,
-                        (
-                            usize,
-                            Option<
-                                Arc<
-                                    rue_query::QueryTerminal<
-                                        crate::body_query::BodyTransaction,
-                                    >,
-                                >,
+                        usize,
+                        Option<
+                            Arc<
+                                rue_query::QueryTerminal<crate::body_query::BodyTransaction>,
                             >,
-                        ),
-                    >::new();
+                        >,
+                    )>::new();
                     let mut anonymous_visit_seen = Vec::new();
                     let concurrency = context.max_concurrency();
                     let body_query_prefetch_window = if concurrency == 1 {
@@ -15418,7 +15412,7 @@ impl RevisionedQueryDatabase {
                                             + usize::from(matches!(
                                                 producer.as_ref(),
                                                 crate::FunctionInstanceKey::Specialization { .. }
-                                            ));
+                                        ));
                                         if let Some((producer, true)) = schedule_body_instance(
                                             &mut pending,
                                             &mut ready_frontier,
@@ -15457,7 +15451,6 @@ impl RevisionedQueryDatabase {
                                     },
                                 );
                                 let ready = !visited.contains(&instance)
-                                    && !prefetched_transactions.contains_key(&instance)
                                     && blocked_on_anonymous
                                         .get(&instance)
                                         .is_none_or(|producers| {
@@ -15501,7 +15494,7 @@ impl RevisionedQueryDatabase {
                                 let (instance, depth) = ready_frontier
                                     .pop_first()
                                     .expect("a non-empty ready frontier has a first instance");
-                                prefetched_transactions.insert(instance, (depth, None));
+                                prefetched_transactions.push_back((instance, depth, None));
                                 continue;
                             }
                             // Keep the retained result window bounded. A wide
@@ -15607,13 +15600,17 @@ impl RevisionedQueryDatabase {
                                 let depth = ready_frontier
                                     .remove(&instance)
                                     .expect("prefetched ready instances retain their depth");
-                                prefetched_transactions.insert(instance, (depth, Some(transaction)));
+                                prefetched_transactions.push_back((
+                                    instance,
+                                    depth,
+                                    Some(transaction),
+                                ));
                             }
                         }
 
                         let Some(instance) = prefetched_transactions
-                            .first_key_value()
-                            .map(|(instance, _)| instance.clone())
+                            .front()
+                            .map(|(instance, _, _)| instance.clone())
                         else {
                             let Some((instance, current_depth)) = pending.pop_first() else {
                                 break;
@@ -15656,8 +15653,8 @@ impl RevisionedQueryDatabase {
                         };
                         context.check_canceled()?;
                         let current_depth = prefetched_transactions
-                            .get(&instance)
-                            .map(|(depth, _)| *depth)
+                            .front()
+                            .map(|(_, depth, _)| *depth)
                             .expect("selected prefetched instances retain their depth");
                         if !visited.insert(instance.clone()) {
                             continue;
@@ -15709,7 +15706,7 @@ impl RevisionedQueryDatabase {
                                 .cloned()
                                 .into_iter()
                                 .collect::<BTreeSet<_>>();
-                            for pending_instance in pending.keys() {
+                            for pending_instance in ready_frontier.keys().chain(pending.keys()) {
                                 if visited.contains(pending_instance) {
                                     continue;
                                 }
@@ -15764,29 +15761,20 @@ impl RevisionedQueryDatabase {
                         // remain transaction-only (they publish no
                         // BodyReferences terminal), so interpret the exact
                         // transaction before projecting schedulable references.
-                        let transaction_terminal = if let Some((_, transaction)) =
-                            prefetched_transactions.remove(&instance)
-                        {
-                            context.record_work(rue_query::WorkItem::new(
-                                "reachability.transactions.prefetched",
-                                1,
-                            ));
-                            match transaction {
-                                Some(transaction) => transaction,
-                                None => context.query_registered(
-                                    &transactions_for_body_reachability,
-                                    body_key.clone(),
-                                )?,
-                            }
-                        } else {
-                            context.record_work(rue_query::WorkItem::new(
-                                "reachability.transactions.serial",
-                                1,
-                            ));
-                            context.query_registered(
+                        let (prefetched_instance, _, transaction) = prefetched_transactions
+                            .pop_front()
+                            .expect("the selected prefetched transaction remains queued");
+                        assert_eq!(prefetched_instance, instance);
+                        context.record_work(rue_query::WorkItem::new(
+                            "reachability.transactions.prefetched",
+                            1,
+                        ));
+                        let transaction_terminal = match transaction {
+                            Some(transaction) => transaction,
+                            None => context.query_registered(
                                 &transactions_for_body_reachability,
                                 body_key.clone(),
-                            )?
+                            )?,
                         };
                         let rue_query::QueryOutcome::Success(transaction) =
                             transaction_terminal.outcome()
@@ -15822,7 +15810,7 @@ impl RevisionedQueryDatabase {
                                         + usize::from(matches!(
                                             producer,
                                             crate::FunctionInstanceKey::Specialization { .. }
-                                        ));
+                                    ));
                                     if let Some((producer, depth_changed)) = schedule_body_instance(
                                         &mut pending,
                                         &mut ready_frontier,
@@ -15972,7 +15960,7 @@ impl RevisionedQueryDatabase {
                                                 + usize::from(matches!(
                                                     callable,
                                                     crate::FunctionInstanceKey::Specialization { .. }
-                                                ));
+                                            ));
                                             if let Some((callable, true)) = schedule_body_instance(
                                                 &mut pending,
                                                 &mut ready_frontier,
@@ -38165,6 +38153,60 @@ fn main() -> i32 {
         assert_eq!(output.reached.len(), 3);
         assert!(output.fatal.is_none());
         assert!(output.scheduling_errors.is_empty());
+    }
+
+    #[test]
+    fn single_worker_toolchain_park_aggregates_the_complete_ready_frontier() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn parse() -> i32 { let _value = @parse_u32(\"1\"); 0 }\n\
+                 fn read() -> i32 { let _value = @read_line(); 0 }\n\
+                 fn main() -> i32 { parse() + read() }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(1);
+        let revision = revision_for(&mut database, &snapshot);
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("the closure publishes one aggregate toolchain park");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        let parked = output
+            .parked_toolchain
+            .as_ref()
+            .expect("both ready siblings require absent trusted modules");
+        let paths = parked
+            .demands()
+            .iter()
+            .map(crate::TrustedToolchainModuleDemand::logical_path)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            paths,
+            BTreeSet::from([
+                crate::OPTION_MODULE_LOGICAL_PATH,
+                crate::STRBUF_MODULE_LOGICAL_PATH,
+            ]),
+            "the one-worker path must inspect siblings already promoted out of pending"
+        );
+        assert_eq!(
+            parked.requesters().len(),
+            2,
+            "one park retains both exact requesting bodies"
+        );
     }
 
     #[test]
