@@ -45,6 +45,9 @@ ALLOWANCES = {
     "crates/rue-air/src/sema/ordinary_engine.rs": Allowance(2, "redundant parameter-mode and ABI accounting checks"),
     "crates/rue-air/src/sema/typeck.rs": Allowance(1, "redundant parameter flag cardinality check"),
     "crates/rue-compiler/src/artifact_views.rs": Allowance(7, "redundant typed-view owner and bounds checks"),
+    "crates/rue-compiler/src/body_query.rs": Allowance(
+        1, "redundant canonical body-reference ordering check"
+    ),
     "crates/rue-compiler/src/definition_snapshot.rs": Allowance(1, "redundant definition arena identity check"),
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
     "crates/rue-compiler/src/parsed_modules.rs": Allowance(1, "redundant source ownership check"),
