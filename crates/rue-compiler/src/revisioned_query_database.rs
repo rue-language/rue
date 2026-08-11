@@ -21195,6 +21195,11 @@ pub(crate) struct CompilerBodyDurableSource<'a> {
     source_locators: Rc<std::cell::RefCell<HashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
 
+struct ResolvedDeclarationCandidate {
+    declaration: crate::declaration_candidate::DeclarationCandidateKey,
+    identity: crate::semantic_query_nucleus::DeclarationIdentityProjection,
+}
+
 impl<'a> CompilerBodyDurableSource<'a> {
     #[allow(dead_code)]
     fn with_anonymous(
@@ -21218,18 +21223,17 @@ impl<'a> CompilerBodyDurableSource<'a> {
         }
     }
 
-    fn candidate(
-        &self,
-        key: &crate::StableDefinitionKey,
-    ) -> Option<crate::declaration_candidate::DeclarationCandidateKey> {
+    fn candidate(&self, key: &crate::StableDefinitionKey) -> Option<ResolvedDeclarationCandidate> {
         use rue_air::BodyFactProvider;
         stable_syntax_candidate_set(key)?
             .into_iter()
             .flatten()
-            .find(|candidate| {
-                self.provider
-                    .declaration_identity(candidate)
-                    .is_some_and(|identity| identity.key == *key)
+            .find_map(|declaration| {
+                let identity = self.provider.declaration_identity(&declaration)?;
+                (identity.key == *key).then_some(ResolvedDeclarationCandidate {
+                    declaration,
+                    identity,
+                })
             })
     }
 
@@ -21296,7 +21300,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
         };
         let facts = self
             .candidate(producer)
-            .and_then(|candidate| self.provider.anonymous_facts(&candidate))
+            .and_then(|candidate| self.provider.anonymous_facts(&candidate.declaration))
             .unwrap_or_default();
         let mut dynamic = self.dynamic_anonymous.borrow_mut();
         dynamic.extend(facts.iter().cloned());
@@ -21307,8 +21311,16 @@ impl<'a> CompilerBodyDurableSource<'a> {
         &self,
         key: &crate::StableDefinitionKey,
     ) -> Option<crate::semantic_query_nucleus::ResolvedDeclarationSignature> {
+        let candidate = self.candidate(key)?;
+        self.signature_for_candidate(&candidate.declaration)
+    }
+
+    fn signature_for_candidate(
+        &self,
+        candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Option<crate::semantic_query_nucleus::ResolvedDeclarationSignature> {
         use rue_air::BodyFactProvider;
-        let signature = self.provider.signature(&self.candidate(key)?)?;
+        let signature = self.provider.signature(candidate)?;
         self.dynamic_anonymous
             .borrow_mut()
             .extend(signature.anonymous_nominals.iter().cloned());
@@ -21748,7 +21760,7 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         let Some(candidate) = self.candidate(definition) else {
             return rue_air::DurableComptimeCallOutcome::NotReduced;
         };
-        let declaration = self.provider.declaration_query_key(&candidate);
+        let declaration = self.provider.declaration_query_key(&candidate.declaration);
         let query = crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
             crate::semantic_query_nucleus::ComptimeCallQueryKey {
                 declaration: declaration.clone(),
@@ -21955,13 +21967,12 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         use rue_air::BodyFactProvider;
         let candidate = self.candidate(key)?;
-        let identity = self.provider.declaration_identity(&candidate)?;
         let crate::semantic_query_nucleus::ConstResolutionProjection::Value {
             ty,
             value,
             anonymous_nominals,
             ..
-        } = self.provider.const_comptime(&candidate)?
+        } = self.provider.const_comptime(&candidate.declaration)?
         else {
             return None;
         };
@@ -21969,7 +21980,7 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
             .borrow_mut()
             .extend(anonymous_nominals.iter().cloned());
         Some(rue_air::DurableConst {
-            is_public: identity.is_public,
+            is_public: candidate.identity.is_public,
             ty,
             value: *value,
         })
@@ -22021,8 +22032,7 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
         use rue_air::BodyFactProvider;
 
         let candidate = self.candidate(key)?;
-        let identity = self.provider.declaration_identity(&candidate)?;
-        let signature = self.provider.signature(&candidate)?;
+        let signature = self.provider.signature(&candidate.declaration)?;
         let is_repr_c = matches!(
             signature.signature,
             Projection::Struct {
@@ -22052,7 +22062,7 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
         Some(rue_air::DurableNominal {
             name: Arc::from(key.name()),
             module_path: Arc::from(key.module().logical_path()),
-            is_public: identity.is_public,
+            is_public: candidate.identity.is_public,
             is_builtin: false,
             lang_item: self.provider.language_item(
                 key.module(),
@@ -22086,7 +22096,8 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .meter()
             .materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let signature = self.signature(key)?;
+        let candidate = self.candidate(key)?;
+        let signature = self.signature_for_candidate(&candidate.declaration)?;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,
@@ -22100,15 +22111,13 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         if key.kind().requires_owner() {
             return None;
         }
-        use rue_air::BodyFactProvider;
-        let identity = self.provider.declaration_identity(&self.candidate(key)?)?;
         Some(rue_air::DurableFunction {
             parameters: parameters
                 .iter()
                 .map(provider_signature_parameter)
                 .collect(),
             result,
-            is_public: identity.is_public,
+            is_public: candidate.identity.is_public,
             is_unchecked,
             is_extern,
         })
@@ -22169,7 +22178,8 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         &self,
         key: &crate::StableDefinitionKey,
     ) -> Option<(Vec<Arc<str>>, Arc<str>)> {
-        self.provider.callable_type_syntax(&self.candidate(key)?)
+        self.provider
+            .callable_type_syntax(&self.candidate(key)?.declaration)
     }
 
     fn uses_deferred_body_type_placeholders(&self) -> bool {

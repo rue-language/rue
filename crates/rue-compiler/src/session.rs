@@ -8967,10 +8967,13 @@ mod tests {
         assert_eq!(metrics.import_lookups, 0);
         assert_eq!(metrics.method_candidates, 0);
         assert_eq!(metrics.operator_candidates, 0);
-        assert_eq!(metrics.declaration_facts, 25);
-        assert!(metrics.identity_facts > 0, "{metrics:?}");
-        assert!(metrics.signature_facts > 0, "{metrics:?}");
-        assert!(metrics.materializations > 0, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 13, "{metrics:?}");
+        assert_eq!(
+            metrics.identity_facts, 7,
+            "candidate resolution must reuse the winning declaration identity instead of issuing a peer query: {metrics:?}"
+        );
+        assert_eq!(metrics.signature_facts, 6, "{metrics:?}");
+        assert_eq!(metrics.materializations, 6, "{metrics:?}");
         assert_eq!(
             metrics.declaration_facts,
             metrics.identity_facts
