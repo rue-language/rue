@@ -21300,17 +21300,22 @@ impl<'a> CompilerBodyDurableSource<'a> {
         if cached_has_methods {
             return cached;
         }
-        let body_producer = match &key.producer {
-            crate::StableProducerId::Function(function) => Some(function.as_ref().clone()),
-            crate::StableProducerId::Definition(definition)
-                if definition.kind() == crate::StableDefinitionKind::Function =>
-            {
-                Some(crate::FunctionInstanceKey::Definition(definition.clone()))
-            }
-            crate::StableProducerId::Definition(_) => None,
-        };
+        let body_producer: Option<std::borrow::Cow<'_, crate::FunctionInstanceKey>> =
+            match &key.producer {
+                crate::StableProducerId::Function(function) => {
+                    Some(std::borrow::Cow::Borrowed(function.as_ref()))
+                }
+                crate::StableProducerId::Definition(definition)
+                    if definition.kind() == crate::StableDefinitionKind::Function =>
+                {
+                    Some(std::borrow::Cow::Owned(
+                        crate::FunctionInstanceKey::Definition(definition.clone()),
+                    ))
+                }
+                crate::StableProducerId::Definition(_) => None,
+            };
         if let Some(function) = body_producer {
-            match self.provider.producer_body_facts(&function) {
+            match self.provider.producer_body_facts(function.as_ref()) {
                 Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
                     let mut dynamic = self.dynamic_anonymous.borrow_mut();
                     dynamic.extend(produced.0.iter().cloned());

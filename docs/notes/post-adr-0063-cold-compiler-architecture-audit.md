@@ -857,6 +857,18 @@ pairs are clock-neutral at +0.14%; median peak RSS falls by 3.27 MiB (0.73%).
 Every deterministic compiler-work counter and the emitted executable remain
 identical.
 
+RUE-1386 removes the adjacent recursive producer copy. Anonymous lookup needs
+only to lend a function producer to `producer_body_facts`; it now borrows an
+existing function key and owns only the synthetic definition-producer key that
+must be constructed. The borrowed-or-owned value cannot escape the lookup.
+
+Fixed one-worker Lattice saves another 14,125 allocator calls (0.09%) and
+758,932 requested bytes. The durable `FunctionInstanceKey` clone leaf falls
+from 48 to 32 combined samples (-33%). Sixteen alternating ordinary-release
+pairs improve by 0.62% at the paired median. Median peak RSS rises by 1.54 MiB
+(0.35%), within dispersion. Every deterministic compiler-work counter and the
+emitted executable remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
