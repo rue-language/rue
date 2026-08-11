@@ -249,6 +249,12 @@ impl PartialOrd for StableDefinitionKey {
 
 impl Ord for StableDefinitionKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Stable keys propagate by cloning this immutable identity. Ordered
+        // maps commonly compare a lookup key with that exact clone, so match
+        // equality's constant-time path before walking the shared strings.
+        if Arc::ptr_eq(&self.0, &other.0) {
+            return std::cmp::Ordering::Equal;
+        }
         (
             &self.0.module,
             self.0.namespace,
@@ -1409,6 +1415,21 @@ mod tests {
         );
         let cloned = first.clone();
         assert!(Arc::ptr_eq(&first.0, &cloned.0));
+        assert_eq!(first.cmp(&cloned), std::cmp::Ordering::Equal);
+
+        let independently_issued_equal = StableDefinitionKey::for_test(
+            module.clone(),
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "a_very_long_function_name",
+            None,
+        );
+        assert!(!Arc::ptr_eq(&first.0, &independently_issued_equal.0));
+        assert_eq!(first, independently_issued_equal);
+        assert_eq!(
+            first.cmp(&independently_issued_equal),
+            std::cmp::Ordering::Equal
+        );
 
         let mut hasher = ByteCountingHasher::default();
         first.hash(&mut hasher);
@@ -1423,6 +1444,8 @@ mod tests {
         );
         Arc::get_mut(&mut second.0).unwrap().hash_accelerator = first.0.hash_accelerator;
         assert_ne!(first, second);
+        assert_ne!(first.cmp(&second), std::cmp::Ordering::Equal);
+        assert_eq!(first.cmp(&second), second.cmp(&first).reverse());
 
         let mut colliding = HashMap::new();
         colliding.insert(first, 1);

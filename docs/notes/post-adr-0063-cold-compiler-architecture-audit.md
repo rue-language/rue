@@ -743,6 +743,22 @@ ordinary-release pairs are clock-neutral at a +0.16% median paired delta.
 Median peak RSS moves from 456,433,664 to 457,940,992 bytes (+1.44 MiB, or
 0.33%), within run dispersion.
 
+RUE-1376 gives stable-definition ordering the same shared-allocation shortcut
+as equality. Stable keys are propagated by cloning one immutable identity Arc;
+ordered maps previously walked module, namespace, kind, name, and owner fields
+even when comparing two handles to that exact allocation. Independently issued
+keys still use the authoritative full-field order, including when their cached
+hash accelerators collide.
+
+The post-RUE-1375 Lattice profile placed `StableDefinitionKey::cmp` among the
+hottest compiler leaves. Two independent directly alternating sets total 24
+ordinary-release pairs: their median paired deltas are -3.84% and -2.62%, for a
+combined -3.09%. Separate medians move from 1,399.815 to 1,374.492 ms. Median
+peak RSS moves from 458,235,904 to 454,656,000 bytes (-3.41 MiB). Allocation
+counts and requested bytes vary by less than 0.001% across repeated accounting
+runs; every deterministic compiler-work counter and emitted executable is
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
