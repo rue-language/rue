@@ -36,9 +36,9 @@ than from the `srcs` glob, because a glob provably cannot produce a valid
 manifest; the derivation step is also where the declared boundary is enforced, by
 failing the build when the compiler read anything outside `srcs`. A granularity
 rule keeps the action count proportionate: a compile becomes its own action when
-it is expensive relative to
-action overhead, or when more than one scenario consumes its output. The ~4,050
-inline-source corpus cases stay inside their harnesses.
+it is expensive relative to action overhead, or when more than one scenario
+consumes its output. That yields 47 programs; the ~4,050 inline-source corpus
+cases stay inside their harnesses.
 
 No compiler change is required. ADR-0047 Phases 3 and 4 (`--source-manifest`,
 `--emit deps`) are implemented and currently unconsumed; this design is their
@@ -61,8 +61,9 @@ pays a cost, not on the absolute seconds.
 | `examples/meridian/canary.rue` full compile | 3.1s |
 | `rue --emit deps` on caldera / meridian | 6.7s / 2.2s — 36x cheaper than compiling |
 | Corpus cases in total | 4,132 (1,778 CLI, 2,109 spec, 245 UI) |
-| CLI cases naming a checked-in root | 73 cases, 13 roots, 17 distinct (root, flags, target) tuples — 11 of which become programs |
+| CLI cases naming a checked-in root | 73 cases, 13 roots (10 example + 3 fixture), 17 distinct (root, flags, target) tuples |
 | Most-recompiled roots | mosaic 17x, rill 12x, lattice 7x, calculator 7x, meridian 6x, jsonfmt 5x |
+| Distinct `rue_program` targets proposed | 47 (4 large-example + 9 CLI + 34 auto-discovered) |
 
 **Where those costs are actually paid matters, and it is not where you would
 guess.** The 243.0s and 80.7s figures are `main.rue` compiles, which occur only in
@@ -278,7 +279,7 @@ level down.
 **The derivation step therefore enforces the boundary, not a downstream audit.**
 It already reads the envelope; it fails when any accepted read's canonical path
 lies outside `srcs ∪ std`. Under-declaration is then an in-band build failure on
-every build, local and remote, cold and warm — the property a glob-derived
+every build that re-runs the scan, local and remote — the property a glob-derived
 manifest would have had, recovered on a mechanism that actually works, at the cost
 of a set comparison in a script the rule runs anyway. Remote execution remains a
 second, independent check, because it materializes only declared inputs.
@@ -304,22 +305,37 @@ overhead, or when more than one scenario consumes its output.**
 | Work | Scale | Disposition | Why |
 | --- | --- | --- | --- |
 | caldera, meridian — `main` and `canary` roots | 4 roots | `rue_program` | `main` is 81–243s; all four are consumed by several scenarios and by more than one suite |
-| CLI cases naming a checked-in root | 73 cases → 11 programs | `rue_program` | 11 roots each consumed by 4–17 scenarios |
-| Auto-discovered `examples/**` roots not already covered | ~30 | `rue_program` | Reached again by the automatic-examples pass and by frontend-diff |
+| CLI cases naming a checked-in root | 65 cases → 10 roots, **9 new programs** | `rue_program` | 1–17 TOML scenarios each, *plus* the automatic-examples and frontend-diff passes; `examples/meridian/main.rue` is the tenth root and is already declared by the row above |
+| Auto-discovered `examples/**` roots not already covered | 34 | `rue_program` | Derived exactly: `collect_example_files` yields 45 roots, less the 10 named above and caldera's |
 | Inline-source CLI / spec / UI cases | ~4,050 | harness | Sources live inside TOML; compiles are milliseconds |
 | Cross-target fixture cases (`abi_conformance.toml`, `linker.toml`) | 6 cases | harness | See below — they fail the rule on both prongs |
+| The repo-relative `source_path` fixture case | 1 case | harness | See below — its subject *is* the TOML mechanism |
 | The one `differential_opt` calculator case | 1 case | harness | Four compiles by design; a compile-*time* differential, same family as reproducibility |
-| Reproducibility fixture | 4 roots | harness | See below — modelling these as actions is self-defeating |
+| Reproducibility fixture | — | harness | See below — modelling these as actions is self-defeating |
 
-**The rule is applied to itself, including where that costs a row.** An earlier
-draft kept the `abi_conformance.toml` and `linker.toml` fixture roots as six
-programs because they carry an explicit `--target` each. They fail the rule on
-both prongs: `abi_conformance_smoke.rue` is 75 lines and `cross_runtime_smoke.rue`
-is 22, both compile in milliseconds, and each (root, target) tuple is consumed by
-exactly one case. They belong in the harness, and the count they inflated —
-73 cases into 17 programs — is really **11**. A rule that its own table quietly
-exempts things from is not a rule; a reader applying it strictly must get the same
-table.
+**The rule is applied to itself, including where that costs a row.** Successive
+drafts of this table said 17 programs, then 11, then 10. All three were wrong in
+the same way — the rule was stated and then quietly not applied — so every count
+above has now been re-derived from the tree rather than adjusted.
+
+The three `cli-test-fixtures/` roots all fail the rule on both prongs.
+`abi_conformance_smoke.rue` is 75 lines and `cross_runtime_smoke.rue` is 22; both
+compile in milliseconds, and each (root, target) tuple is consumed by exactly one
+case. `repo_relative_source_path.rue` is one file with one case — and it could not
+migrate even if it were expensive, because that case exists to test the harness's
+own repo-root-relative `source_path` resolution (`source_path.toml:6-10`,
+RUE-495). Rewritten as a `rue_program_test` it would no longer test anything: its
+subject *is* the TOML mechanism it would be leaving.
+
+So 8 of the 73 cases stay in the harness (6 cross-target, 1 repo-relative, 1
+differential), 65 migrate, and they name 10 roots. Only **9** are new programs:
+`examples/meridian/main.rue` is also a large-example root, so one artifact serves
+both the six CLI scenarios and the slow-tier scenarios. That overlap is the design
+working rather than an accounting nuisance — it is exactly the "many scenarios,
+one compile" property, reaching across two suites.
+
+A rule that its own table quietly exempts things from is not a rule; a reader
+applying it strictly must get the same table.
 
 **The reproducibility suite must stay a harness, and the reason is instructive.**
 Its perturbations are compile-*time* (relocated source roots, mtimes, umask, `-j`,
@@ -423,10 +439,12 @@ strictly.
       the scheduled release lane stops paying 243.0s and 80.7s twice when both the
       slow and stress tiers run; and these are the clearest targets on which to
       establish the mechanism.
-- [ ] **Phase 2: CLI cases naming a checked-in root** — 73 cases into 11
-      programs, meridian's six first, which is where the disabled coverage is
-      restored. The six cross-target fixture cases and the one `differential_opt`
-      case stay in the harness. Depends on open question 3.
+- [ ] **Phase 2: CLI cases naming a checked-in root** — 65 of the 73 cases into
+      10 roots (9 new programs; meridian's is already declared by Phase 1),
+      meridian's six scenarios first, which is where the disabled coverage is
+      restored. The 6 cross-target fixture cases, the repo-relative fixture case,
+      and the one `differential_opt` case stay in the harness. Depends on open
+      question 3.
 - [ ] **Phase 3: Corpus input precision** — see open question 2; this phase is
       *not* specified here, because the obvious version of it does not work.
 - [ ] **Phase 4: Test-result caching decision** — only after the negative controls
@@ -442,8 +460,14 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
   result is a real artifact many scenarios consume.
 - Coverage disabled by RUE-1083 becomes affordable again, which is a correctness
   gain rather than a speed one.
-- Undeclared inputs become build failures everywhere rather than only where RE
-  runs — but only because the derivation step enforces `srcs` itself. That
+- Undeclared inputs become build failures on every build that re-runs the scan,
+  rather than only where RE runs — but only because the derivation step enforces
+  `srcs` itself. One window remains open by ordinary action-cache semantics: an
+  absent-arm path outside the `srcs` tree is a declared-*allowed* read, so if a
+  file later materializes there, local rebuilds read it undeclared until some
+  change re-runs derivation. Negative control 3 is precisely the check that
+  covers that window, which is part of why it is a control rather than a nicety.
+  That
   property belonged to the glob-derived manifest of an earlier draft; on the
   scan-derived mechanism it has to be put back deliberately, and it is easy to
   lose again if derivation is ever simplified to "just write what the scan saw".
