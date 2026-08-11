@@ -337,7 +337,7 @@ fn elapsed_ms(duration: Duration) -> u128 {
 
 fn validation_summary(work: QueryValidationMetrics) -> String {
     format!(
-        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle (misses {}/{} certificate/proof-reacquisition), registry {}/{}, demands {}/{}/{}/{}/{}, endorsement skips/probes {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
+        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle (misses {}/{} certificate/proof-reacquisition), registry {}/{}/{} misses/logical/index, demands {}/{}/{}/{}/{}, endorsement skips/probes {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
         work.traversals,
         work.successful_traversals,
         work.dirty_traversals,
@@ -351,6 +351,7 @@ fn validation_summary(work: QueryValidationMetrics) -> String {
         work.proof_reacquisition_misses,
         work.registry_misses,
         work.registry_probes,
+        work.registry_index_lookups,
         work.demand_reuses,
         work.demand_computes,
         work.demand_joins,
@@ -911,6 +912,7 @@ fn report_validation_work(work: QueryValidationMetrics) -> ReportValidationWork 
         input_observations: work.input_observations,
         dependency_observations: work.dependency_observations,
         registry_probes: work.registry_probes,
+        registry_index_lookups: work.registry_index_lookups,
         registry_misses: work.registry_misses,
         node_visits: work.node_visits,
         active_cycle_prunes: work.active_cycle_prunes,

@@ -368,9 +368,9 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Deterministic query work\n\n");
-    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
-    out.push_str("| workload | traversals | input/dependency observations | memo hit/miss | endorsements hit/probe | terminal leases duplicate/total | demands reuse/compute/join/total | retention scan entries | nodes/token |\n");
-    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. Registry logical/index distinguishes requested exact-node resolutions from accesses to the shared incarnation index. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
+    out.push_str("| workload | traversals | input/dependency observations | memo hit/miss | registry logical/index | endorsements hit/probe | terminal leases duplicate/total | demands reuse/compute/join/total | retention scan entries | nodes/token |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
         let runtime = observation.work.query_runtime;
         let validation = runtime.validation;
@@ -380,13 +380,15 @@ fn render(report: &ScalingReport) -> String {
             validation.node_visits as f64 / observation.shape.tokens as f64
         };
         out.push_str(&format!(
-            "| {} | {} | {}/{} | {}/{} | {}/{} | {}/{} | {}/{}/{}/{} | {} | {:.2} |\n",
+            "| {} | {} | {}/{} | {}/{} | {}/{} | {}/{} | {}/{} | {}/{}/{}/{} | {} | {:.2} |\n",
             observation.workload,
             validation.traversals,
             validation.input_observations,
             validation.dependency_observations,
             validation.memo_hits,
             validation.memo_misses,
+            validation.registry_probes,
+            validation.registry_index_lookups,
             validation.endorsement_hits,
             validation.endorsement_probes,
             validation.duplicate_terminal_lease_observations,

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 6;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 7;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -972,6 +972,7 @@ fn benchmark_compiler_work(
                 input_observations: validation.input_observations,
                 dependency_observations: validation.dependency_observations,
                 registry_probes: validation.registry_probes,
+                registry_index_lookups: validation.registry_index_lookups,
                 registry_misses: validation.registry_misses,
                 node_visits: validation.node_visits,
                 active_cycle_prunes: validation.active_cycle_prunes,
