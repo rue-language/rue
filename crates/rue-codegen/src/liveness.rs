@@ -426,12 +426,13 @@ where
     let inst_uses: Vec<VRegList> = instructions.iter().map(&get_uses).collect();
     let inst_defs: Vec<VRegList> = instructions.iter().map(&get_defs).collect();
 
-    // Step 4: Backward dataflow analysis to compute live sets
-    let (live_in, live_out) =
+    // Step 4: Backward dataflow analysis to compute live sets. Without a back
+    // edge, reverse instruction order is already a topological order and one
+    // sweep computes the fixed point exactly.
+    let (live_in, live_out, has_back_edge, _) =
         compute_dataflow(num_insts, vreg_count, &successors, &inst_uses, &inst_defs);
 
     // Step 5: Build live ranges from dataflow results
-    let has_back_edge = has_back_edge(&successors);
     let ranges = build_live_ranges(
         num_insts,
         vreg_count,
@@ -557,14 +558,20 @@ fn has_back_edge(successors: &[SuccessorList]) -> bool {
 /// Uses the standard dataflow equations:
 /// - live_out[i] = union of live_in[s] for all successors s of i
 /// - live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
+#[cfg(test)]
+type DataflowSweepCount = usize;
+#[cfg(not(test))]
+type DataflowSweepCount = ();
+
 fn compute_dataflow(
     num_insts: usize,
     vreg_count: u32,
     successors: &[SuccessorList],
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
-) -> (Vec<FixedBitSet>, Vec<FixedBitSet>) {
+) -> (Vec<FixedBitSet>, Vec<FixedBitSet>, bool, DataflowSweepCount) {
     let vreg_count_usize = vreg_count as usize;
+    let has_back_edge = has_back_edge(successors);
 
     let mut live_in: Vec<FixedBitSet> =
         vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
@@ -575,6 +582,8 @@ fn compute_dataflow(
     // allocating two full-width bitsets for every row on every pass.
     let mut new_live_in = FixedBitSet::with_capacity(vreg_count_usize);
     let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
+    #[cfg(test)]
+    let mut sweeps = 0;
 
     // Iterate until fixed point
     let mut changed = true;
@@ -605,9 +614,24 @@ fn compute_dataflow(
                 live_out[idx].clone_from(&new_live_out);
             }
         }
+
+        #[cfg(test)]
+        {
+            sweeps += 1;
+        }
+        if !has_back_edge {
+            // Every successor has a greater instruction index, so this reverse
+            // sweep visited successors before their predecessors. There can be
+            // no information left to propagate on another sweep.
+            break;
+        }
     }
 
-    (live_in, live_out)
+    #[cfg(test)]
+    let sweep_count = sweeps;
+    #[cfg(not(test))]
+    let sweep_count = ();
+    (live_in, live_out, has_back_edge, sweep_count)
 }
 
 /// Build live ranges from dataflow results.
@@ -1096,7 +1120,8 @@ mod tests {
         // back-edge, so convergence requires another reverse pass. Instruction
         // 0 is processed after those live rows but remains empty, proving one
         // row's scratch bits do not leak to the next row or the next round.
-        let (live_in, live_out) = compute_dataflow(4, 1, &successors, &uses, &defs);
+        let (live_in, live_out, has_back_edge, sweeps) =
+            compute_dataflow(4, 1, &successors, &uses, &defs);
         let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
         assert!(live_in[0].is_clear());
         assert_eq!(ones(&live_in[1]), vec![0]);
@@ -1106,6 +1131,38 @@ mod tests {
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert_eq!(ones(&live_out[2]), vec![0]);
         assert!(live_out[3].is_clear());
+        assert!(has_back_edge);
+        assert_eq!(sweeps, 3, "the back-edge requires fixed-point iteration");
+    }
+
+    #[test]
+    fn acyclic_dataflow_reaches_its_fixed_point_in_one_reverse_sweep() {
+        let successors: Vec<SuccessorList> = [
+            [1].into_iter().collect(),
+            [2].into_iter().collect(),
+            SuccessorList::new(),
+        ]
+        .into();
+        let uses: Vec<VRegList> = [
+            VRegList::new(),
+            VRegList::new(),
+            [VReg::new(0)].into_iter().collect(),
+        ]
+        .into();
+        let defs = vec![VRegList::new(); successors.len()];
+
+        let (live_in, live_out, has_back_edge, sweeps) =
+            compute_dataflow(3, 1, &successors, &uses, &defs);
+        let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
+
+        assert_eq!(ones(&live_in[0]), vec![0]);
+        assert_eq!(ones(&live_in[1]), vec![0]);
+        assert_eq!(ones(&live_in[2]), vec![0]);
+        assert_eq!(ones(&live_out[0]), vec![0]);
+        assert_eq!(ones(&live_out[1]), vec![0]);
+        assert!(live_out[2].is_clear());
+        assert!(!has_back_edge);
+        assert_eq!(sweeps, 1, "forward-only control flow is solved exactly");
     }
 
     // ========================================
