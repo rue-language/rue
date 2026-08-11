@@ -8654,7 +8654,7 @@ struct TaskFrame {
     node: ExactNodeIdentity,
     dependencies: TaskDependencies,
     inputs: InlineOrderedMap<InputIdentity, u64>,
-    work: BTreeMap<Arc<str>, u64>,
+    work: InlineOrderedMap<Arc<str>, u64>,
     handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
     observed_handoffs: Vec<Arc<AttemptHandoffLifecycle>>,
 }
@@ -9615,7 +9615,7 @@ impl Task {
             node,
             dependencies: TaskDependencies::default(),
             inputs: InlineOrderedMap::default(),
-            work: BTreeMap::new(),
+            work: InlineOrderedMap::default(),
             handoffs: Vec::new(),
             observed_handoffs: Vec::new(),
         });
@@ -9636,7 +9636,7 @@ impl Task {
         TaskFrameOutput {
             dependencies,
             inputs,
-            work: frame.work.into_iter().collect(),
+            work: frame.work.into_entries(),
             handoffs: AttemptHandoffs {
                 pending: frame.handoffs,
                 observed: frame.observed_handoffs,
@@ -9661,7 +9661,11 @@ impl Task {
     fn observe_work(&self, work: &[(Arc<str>, u64)]) {
         if let Some(frame) = lock(&self.stack).last_mut() {
             for (identity, amount) in work {
-                *frame.work.entry(identity.clone()).or_default() += amount;
+                frame
+                    .work
+                    .insert_with(identity.clone(), *amount, |previous, current| {
+                        *previous += current;
+                    });
             }
         }
     }
@@ -9671,7 +9675,11 @@ impl Task {
         let frame = stack
             .last_mut()
             .expect("work recording occurs only inside a query computation");
-        *frame.work.entry(item.identity).or_default() += item.amount;
+        frame
+            .work
+            .insert_with(item.identity, item.amount, |previous, current| {
+                *previous += current;
+            });
     }
 
     fn observe_abort_prefix(
@@ -9695,7 +9703,11 @@ impl Task {
                 });
         }
         for (identity, amount) in work {
-            *frame.work.entry(identity.clone()).or_default() += amount;
+            frame
+                .work
+                .insert_with(identity.clone(), *amount, |previous, current| {
+                    *previous += current;
+                });
         }
     }
 
@@ -13955,6 +13967,26 @@ mod tests {
             [
                 (InputIdentity::new("source", "a.rue"), 3),
                 (InputIdentity::new("source", "z.rue"), 7),
+            ]
+        );
+    }
+
+    #[test]
+    fn task_work_inline_one_then_promote_and_aggregate_in_stable_order() {
+        let mut work = InlineOrderedMap::default();
+        let add_amount = |previous: &mut u64, current| *previous += current;
+
+        work.insert_with(Arc::from("visited"), 2, add_amount);
+        work.insert_with(Arc::from("visited"), 3, add_amount);
+        assert!(matches!(work, InlineOrderedMap::One(_, 5)));
+
+        work.insert_with(Arc::from("lowered"), 7, add_amount);
+        work.insert_with(Arc::from("visited"), 11, add_amount);
+        assert_eq!(
+            work.into_entries(),
+            [
+                (Arc::<str>::from("lowered"), 7),
+                (Arc::<str>::from("visited"), 16),
             ]
         );
     }
