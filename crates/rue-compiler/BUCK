@@ -42,6 +42,7 @@ _DEPS = [
     "//crates/rue-span:rue-span",
     "//crates/rue-target:rue-target",
     "//third-party:annotate-snippets",
+    "//third-party:itoa",
     "//third-party:lasso",
     "//third-party:libc",
     "//third-party:sha2",
