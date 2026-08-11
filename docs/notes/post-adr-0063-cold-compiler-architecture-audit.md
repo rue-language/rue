@@ -676,6 +676,26 @@ dispersion, peak memory is flat, and maintained Harbor/Lattice probes are
 neutral to faster. The Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1372 removes repeated declaration-identity queries from durable body-fact
+materialization. Resolving a stable definition already has to inspect each
+syntax candidate's exact identity; the source now carries the winning identity
+projection beside the candidate and consumes it when materializing constants,
+nominals, and free functions. Signature queries and dynamic anonymous-nominal
+registration remain on their existing paths.
+
+The fixed one-worker probes reduce identity facts from 6,667 to 3,743 on
+Ruelex, 21,639 to 10,321 on Mosaic, 42,672 to 20,036 on Harbor, and 53,917 to
+24,837 on Lattice. Total declaration facts fall from 12,693 to 9,769, 34,554
+to 23,236, 67,214 to 44,578, and 89,005 to 59,925 respectively. Query reuses
+fall by the same 2,924, 11,318, 22,636, and 29,080 requests because the removed
+identity lookups were compatible peer queries. Every other semantic-provider
+counter and every query-validation counter is exactly unchanged.
+
+Five directly alternating release pairs are clock-neutral: median paired
+deltas are +0.08% on Ruelex, -1.49% on Harbor, and +0.43% on Lattice, all well
+inside host dispersion. Median peak memory remains within 0.6%. Output sizes
+and SHA-256 hashes are identical for every workload.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
