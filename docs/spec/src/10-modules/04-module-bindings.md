@@ -177,11 +177,13 @@ distinct nominal types (10.5:2).
 {{ rule(id="10.4:18", cat="legality-rule") }}
 
 Privacy of module-qualified access is uniform across item kinds (10.3:7)
-and reports one diagnostic: accessing a private member through a module
-binding from a source file in another directory is a compile-time error
-E0706 — for a struct named in a qualified struct literal or type
-annotation, for an enum's variant, for an associated function's enclosing
-type, and for functions and constants alike.
+and reports one member-access diagnostic: accessing a private member
+through a module binding from a source file in another directory is a
+compile-time error E0706 — for a struct named in a qualified struct
+literal or type annotation, for an enum's variant, for an associated
+function's enclosing type, and for functions and constants alike. The one
+exception is the comptime type-constructor application form in a type
+position (10.4:16), which reports E0460 (10.3:7).
 
 {{ rule(id="10.4:19", cat="legality-rule") }}
 

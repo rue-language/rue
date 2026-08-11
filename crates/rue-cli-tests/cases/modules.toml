@@ -1150,10 +1150,10 @@ error_contains = ["E0704", "til.rue"]
 #
 # Visibility boundaries are DIRECTORIES (ADR-0026, spec 10.3): a private item
 # is reachable from files in the same directory — including through a module
-# object — and rejected from any other directory, whether the call is
-# qualified (E0706) or unqualified (E0460). Privacy is uniform (RUE-180,
-# spec 10.3:7): it applies whether the defining file is imported or only
-# listed explicitly; the flat namespace (10.5:2) only resolves names.
+# object — and rejected from any other directory. Qualified access to a
+# private item is E0706 (spec 10.3:7, 10.4:18); an unqualified reference
+# never resolves into another file at all (spec 10.3:8), so it fails name
+# resolution before privacy applies.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -1307,9 +1307,9 @@ args = ["main.rue", "util.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["unexpected extra source file", "util.rue", "@import"]
 
-# Structs and constants obey the same uniform rule (RUE-183): naming a
-# private struct (annotation or literal) or reading a private constant from
-# another directory is E0460, whether the file was imported or only listed.
+# Structs and constants obey the same module-scoped rule (RUE-183): an
+# unqualified reference to another module's struct or constant fails name
+# resolution regardless of visibility (spec 10.3:8).
 
 [[case]]
 name = "private_struct_cross_dir_unqualified_rejected"
@@ -1484,9 +1484,10 @@ args = ["main.rue", "lib.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["unexpected extra source file", "lib.rue", "@import"]
 
-# Enums obey the same uniform rule (RUE-185): naming a private enum from
-# another directory — annotation, variant construction, or match pattern —
-# is E0460, whether the file was imported or merely listed.
+# Enums obey the same module-scoped rule (RUE-185): an unqualified
+# reference to another module's enum — annotation, variant construction, or
+# match pattern — fails name resolution regardless of visibility (spec
+# 10.3:8).
 [[case]]
 name = "private_enum_cross_dir_unqualified_rejected"
 description = "Unqualified annotation/construction does not see an enum from another module, even when that module is imported."
