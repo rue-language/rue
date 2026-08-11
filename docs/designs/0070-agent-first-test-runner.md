@@ -284,7 +284,13 @@ test "parse_port rejects out-of-range values" {
   (within the `--source-manifest` bound when one is given, else the root's
   directory tree) contains test items but sits outside the closure. The
   bound matters: discovery must never read files the compilation itself may
-  not read.
+  not read. Two edges Phase 2 handles explicitly: a parse failure in an
+  out-of-closure file surfaces inside the warning itself (or the file is
+  skipped with that fact stated), never as a compile error of the request;
+  and a directory tree may legitimately hold test-shaped files belonging
+  to *other* roots, so the warning honors the `--source-manifest` bound as
+  the disciplined multi-root story and grows a per-directory opt-out if
+  that proves insufficient.
 - **The warnings interaction is a Phase 1 decision, taken here.** Unused-item
   warnings in executable requests are filtered through a whole-program
   syntactic reference scan today, so the design must pick: include test
@@ -467,11 +473,41 @@ with no syscall, no FFI, and no entropy intrinsic: `@ptr_to_int` returns the
 raw address of an allocation the kernel placed (`mmap`, ASLR), so
 `checked { @ptr_to_int(@raw(x)) % 2 }` varies run to run. Without this bit
 the hermetic predicate is unsound — the exact failure mode this design
-promised to eject rather than absorb. The bit is precisely `@ptr_to_int`:
-not `checked` blocks (not a lattice input at all), not the raw-pointer
-family, not allocation — `std`'s collections live on `@alloc`/`@ptr_write`,
-and a coarser bit would eject every test that touches `StrBuf` for no
-soundness gain.
+promised to eject rather than absorb. The bit is not `checked` blocks (not
+a lattice input at all), not the raw-pointer family, not allocation.
+
+It also cannot naively be "every `@ptr_to_int` site": today's intrinsic
+conflates true address observation with three deterministic idioms std is
+built on — null testing (`@ptr_to_int(p) == 0` is the spec's own stated
+null test, 9.2), provenance-preserving rebase
+(`@int_to_ptr(@ptr_to_int(p) + off)`, the `StrBuf` byte-copy path), and
+pointee type-punning (documented in `std/rawbuf.rue` as the sanctioned
+cast idiom). Forty-two such sites sit under `StrBuf`, `RawBuf`,
+`ArrayBuf`, `mem.swap`, `sort`, and `binary_heap`; a bit on the bare
+intrinsic would mark nearly every real test `addr` and collapse the
+hermetic set to arithmetic-only. None of those idioms observes an address
+— the integer flows straight back into `@int_to_ptr` or a null comparison;
+the nondeterminism exists only where the integer *escapes* (branched on,
+stored, hashed, printed).
+
+The recommended disposition makes the distinction syntactic rather than
+inferred, by resolving RUE-967 — the strict-provenance intrinsic split
+already deferred from ADR-0059 — with this ADR as its first forcing
+consumer: dedicated intrinsics for pointee casts and null tests, byte
+offsets on `@ptr_offset` over `ptr u8`, and a mechanical migration of
+std's sites. After the split, a surviving `@ptr_to_int` is rare and means
+exactly "observe the address," and `addr` is the plain syntactic leaf this
+section promises; the split also removes integer-roundtrip provenance
+destruction from std ahead of future alias-analysis work, which is why
+Rust made the same move. The fallback, if RUE-967 resolves against the
+split: an escape-scoped `addr` that joins only when a `@ptr_to_int` result
+flows anywhere other than `@int_to_ptr` operands or null/pointer-equality
+comparisons — computed body-locally, any non-local escape joining
+conservatively, no per-call-site special cases. That keeps std unchanged
+at the price of a small soundness-critical dataflow rule where this
+section otherwise promises syntactic leaves. Either way the decision must
+land before Phase 3 ships summaries: the capability system's first visible
+output must not be "everything is `addr`."
 
 Allocation, traps, and the pure helper family (string ops, parsing, memcpy)
 introduce no capability bit. For traps that is because the trap *is* the
@@ -795,7 +831,8 @@ here per docs/designs/README.md).
 - [ ] **Phase 3: `EffectSummary` coordinator** - RUE-TBD. SCC condensation
       over the reached call/drop-glue graph with per-identity stamped
       summary projections (§4.2); leaves from canonical bodies (helper
-      manifest classification, `@syscall`, `@ptr_to_int`, FFI calls);
+      manifest classification, `@syscall`, the `addr` leaf per the ratified
+      §4.1 disposition, FFI calls);
       drop-glue edges included; dispatcher code excluded; summaries surfaced
       in `--list` and `test_finished` events; determinism and cutoff
       behavior pinned by compiler unit tests and two measured gates: an
@@ -804,7 +841,8 @@ here per docs/designs/README.md).
       canonical-bodies family's first production consumer — and a zero-delta
       measurement on executable-request benchmarks (ADR-0067 harness)
       proving the family costs nothing when not demanded (§4.2). No
-      scheduling or caching behavior change.
+      scheduling or caching behavior change. Gated on the §4.1
+      `@ptr_to_int` disposition (RUE-967).
 - [ ] **Phase 4: verdict cache and selection** - RUE-TBD. Closure fingerprints
       for test roots; on-disk verdict cache with documented key composition
       (environment pin set and pinned resource limits included);
@@ -1079,6 +1117,11 @@ Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
   carve-out plus pinned rlimits in the execution contract and cache key,
   versus a coarser observation bit on the raw allocation family (which would
   eject every collection-using test). This ADR recommends the former.
+- **`@ptr_to_int` disposition** (§4.1): resolve RUE-967 — the
+  strict-provenance intrinsic split plus mechanical std migration
+  (recommended) — versus the escape-scoped `addr` recognizer. Gates
+  Phase 3; the split carries independent memory-model and optimizer merit
+  beyond testing.
 - **Structured failure channel mechanism** (§7.1): a dedicated runtime helper
   writing one framed record before the abort (touches the ABI manifest, so it
   is an ABI change under ADR-0055 rules) vs a reserved framed region of
@@ -1105,6 +1148,14 @@ Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
 
 ### Questions that need a spike before their phase is scheduled
 
+- **Provenance-split migration audit** (before the §4.1 disposition is
+  ratified): enumerate std's 42 `@ptr_to_int` sites by idiom (null test /
+  rebase / type-pun / other), and check the `copy_packed_bytes` comment in
+  `std/strbuf.rue` claiming `@ptr_offset` cannot form byte-offset
+  sub-range pointers — its stride argument does not obviously apply to
+  `ptr u8`, where the slot size is 1; if the restriction is real, the
+  split needs a byte-offset primitive as well. Output: the migration list
+  and the final intrinsic set for RUE-967.
 - **Syscall-number classification coverage** (before Phase 6): over
   `std/fs.rue` and `std/net.rue` on all three targets, what fraction of
   `@syscall` sites have comptime-constant numbers under the existing
@@ -1167,7 +1218,7 @@ sugar over the §7.1 failure channel — today's `@assert` carries an optional
 message but no structure; the gap is structure, not messages; the public
 provider protocol's wire format with RUE-505; capability declarations in types
 and at trait boundaries (the future ADR flagged in §4.4); seeded-entropy test
-profile; duration-aware sharding; JUnit and CI-surface adapters; test-aware
+profile; duration-aware sharding; JUnit and CTRF adapters; test-aware
 `--watch` (rerun exactly the dirtied selection on save — the pieces are
 Phase 4 selection plus the existing watch loop).
 
@@ -1176,7 +1227,8 @@ Phase 4 selection plus the existing watch loop).
 - RUE-506 (design capture this ADR supersedes in mechanism), RUE-505, RUE-504,
   RUE-438 (machine-readable interface project); RUE-1369 (`@syscall` checked
   gating defect) and RUE-1370 (signal-handler spec contradiction), both filed
-  from this ADR's adversarial review.
+  from this ADR's adversarial review; RUE-967 (pointer provenance split,
+  gating the `addr` leaf disposition in §4.1).
 - ADR-0063 §1/§3/§8/§15 (roots, fingerprints, reachability, test-selection
   consumer) and its rejected alternative "make body queries depend on callee
   bodies" (the shape §4.2's coordinator design avoids); ADR-0061 §6 (schema
