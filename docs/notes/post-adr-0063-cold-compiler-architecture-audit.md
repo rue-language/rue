@@ -981,6 +981,20 @@ ordinary-release pairs are clock-neutral on an unusually noisy host at a
 Median peak RSS moves +3.05 MiB within dispersion. Every published
 compiler-work counter and emitted executable byte remains identical.
 
+RUE-1395 keeps the common scheduler dependency-edge lists inline. A direct
+one-worker AArch64 Lattice graph-shape probe counted 11,860 scheduled blocks
+and 203,330 MIR nodes: 93.6% of incoming degrees and 88.6% of outgoing degrees
+are at most two. Each shared scheduler node now carries two inline indices for
+each direction while uncommon higher-degree lists retain the same spillable
+representation and edge-linear scheduling behavior.
+
+Three fixed one-worker allocation probes save 390,689--391,167 calls
+(2.46%) and 8.52--8.83 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a +0.19% paired median, with 2.98%
+paired MAD and a -20.15% to +8.39% range on the loaded host. Median peak RSS
+falls by 0.41 MiB within dispersion. Every published compiler-work counter and
+emitted executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
