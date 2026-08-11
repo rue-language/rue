@@ -20,8 +20,9 @@ Proposal. This is the reviewed design RUE-1164 asks for and ADR-0069 Phase 5
 defers to. Nothing here is implemented. The granularity rule under "Which
 compiles become actions" and the four items under "Open questions" are maintainer
 decisions rather than settled design; each open question now carries a
-recommendation and its evidence, but questions 2 and 3 are coupled and question 2
-proposes work large enough to deserve its own ADR.
+recommendation and its evidence. Question 2's proposal is large enough to deserve
+its own ADR and issue, and — after review — it no longer gates any phase here:
+question 3's recommendation stands on the existing corpus actions alone.
 
 ## Summary
 
@@ -41,8 +42,8 @@ envelope's absolute paths are re-anchored so that a shared scan-cache hit is not
 build failure on another machine. A granularity
 rule keeps the action count proportionate: a compile becomes its own action when
 it is expensive relative to action overhead, or when more than one scenario
-consumes its output. That yields 47 programs; the ~4,050 inline-source corpus
-cases stay inside their harnesses.
+consumes its output. That yields 13 programs; the 34 auto-discovered example
+smokes and the ~4,050 inline-source corpus cases stay inside their harnesses.
 
 No compiler change is required. ADR-0047 Phases 3 and 4 (`--source-manifest`,
 `--emit deps`) are implemented and currently unconsumed; this design is their
@@ -67,7 +68,7 @@ pays a cost, not on the absolute seconds.
 | Corpus cases in total | 4,132 (1,778 CLI, 2,109 spec, 245 UI) |
 | CLI cases naming a checked-in root | 73 cases, 13 roots (10 example + 3 fixture), 17 distinct (root, flags, target) tuples |
 | Most-recompiled roots | mosaic 17x, rill 12x, lattice 7x, calculator 7x, meridian 6x, jsonfmt 5x |
-| Distinct `rue_program` targets proposed | 47 (4 large-example + 9 CLI + 34 auto-discovered) |
+| Distinct `rue_program` targets proposed | 13 (4 large-example + 9 CLI) |
 
 **Where those costs are actually paid matters, and it is not where you would
 guess.** The 243.0s and 80.7s figures are `main.rue` compiles, which occur only in
@@ -373,8 +374,8 @@ overhead, or when more than one scenario consumes its output.**
 | Work | Scale | Disposition | Why |
 | --- | --- | --- | --- |
 | caldera, meridian — `main` and `canary` roots | 4 roots | `rue_program` | `main` is 81–243s; all four are consumed by several scenarios and by more than one suite |
-| CLI cases naming a checked-in root | 65 cases → 10 roots, **9 new programs** | `rue_program` | 1–17 TOML scenarios each, *plus* the automatic-examples and frontend-diff passes; `examples/meridian/main.rue` is the tenth root and is already declared by the row above |
-| Auto-discovered `examples/**` roots not already covered | 34 | `rue_program` | Derived exactly: `collect_example_files` yields 45 roots, less the 10 named above and caldera's |
+| CLI cases naming a checked-in root | 65 cases → 10 roots, **9 new programs** | `rue_program` | 1–17 TOML scenarios each, and every premerge case executes in both its CI shard and the unsharded `//:cli-tests`, so even a one-case root's artifact has more than one consuming action; `examples/meridian/main.rue` is the tenth root and is already declared by the row above |
+| Auto-discovered `examples/**` roots not already covered | 34 | harness | See below — every one fails the rule on both prongs |
 | Inline-source CLI / spec / UI cases | ~4,050 | harness | Sources live inside TOML; compiles are milliseconds |
 | Cross-target fixture cases (`abi_conformance.toml`, `linker.toml`) | 6 cases | harness | See below — they fail the rule on both prongs |
 | The repo-relative `source_path` fixture case | 1 case | harness | See below — its subject *is* the TOML mechanism |
@@ -401,6 +402,20 @@ differential), 65 migrate, and they name 10 roots. Only **9** are new programs:
 both the six CLI scenarios and the slow-tier scenarios. That overlap is the design
 working rather than an accounting nuisance — it is exactly the "many scenarios,
 one compile" property, reaching across two suites.
+
+**The 34 auto-discovered roots fail the rule the same way, and an earlier draft
+counted them as programs anyway.** `collect_example_files` yields 45 roots; 10
+are CLI-named and one is caldera's, leaving 34 whose only compilation scenario is
+the RUE-48 automatic smoke — one compile, one run, per corpus execution. The
+claimed second consumer was the frontend differential, and that claim was wrong:
+`rue-frontend-diff` compiles exactly one root, `examples/ruelex/main.rue`, and
+merely lexes and parses the rest of the corpus in-process as comparison input
+(`crates/rue-frontend-diff/src/main.rs:1281-1303`). Sized against the expensive
+prong they are 3–246 lines each, transitively — milliseconds to compile. Single
+consumer, cheap: they stay where they are, inside the automatic pass, which also
+means no phase has to rewire `run_example` to consume artifacts it has no reason
+to consume. A root that later grows expensive or acquires a second scenario
+graduates by being named — the same path the 10 CLI-named roots took.
 
 A rule that its own table quietly exempts things from is not a rule; a reader
 applying it strictly must get the same table.
@@ -443,6 +458,25 @@ a `rue_program` whose `srcs` glob is wider than its real read closure takes cach
 misses on files it never reads, which turns a precise action back into a corpus
 stamp. Left unchecked, a broad glob undoes the whole point of the rule.
 
+**Over-declaration must be advisory, not a required check, and the reason is
+structural rather than a matter of nerve.** An earlier draft made
+`srcs − accepted_reads = ∅` a required validation, and that check fails on this
+ADR's own example target: `examples/meridian/main.rue` does not import
+`canary.rue`, yet `glob(["examples/meridian/**/*.rue"])` contains it — and the
+canary target's glob symmetrically contains all of `main`'s tree. Caldera has the
+same shape, and any directory holding sibling roots reproduces it. The only ways
+to satisfy a required check are all worse than the imprecision: exact per-root
+`srcs` cannot be derived from the scan while remaining a static action input
+without reintroducing the dynamic dependency shaping this design explicitly
+rejected; a hand-maintained exact list duplicates import discovery and rots; and
+per-root directory layouts would let the build graph dictate source organization.
+RUE-1164 requires every real input to key the action — it does not require the
+first implementation to carry a mathematically minimal key. A directory-bounded
+glob delivers the property that matters (one correct, cacheable artifact shared
+by scenarios) at the cost of some spurious invalidation inside the directory,
+and tightening that later should be driven by measured invalidation cost, not
+asserted up front.
+
 Three constraints on how the comparison is done, all of which matter:
 
 - Compare **path and fingerprint sets, never envelope bytes**: the envelope
@@ -454,13 +488,21 @@ Three constraints on how the comparison is done, all of which matter:
 - `accepted_reads` is the observed read set *of that scan*, not a complete
   compile-time read set — trusted-std acquisition is invisible to it, as above.
   Treat std as always-declared rather than inferring it from the envelope.
+- Because sibling roots share a glob, `srcs − accepted_reads` is legitimately
+  non-empty per target. The signal worth reporting is directory-scoped: a file
+  that no program whose `srcs` contain it ever reads is dead weight in every
+  key it touches; a file read by one sibling and carried by another is the
+  glob doing its job.
 
-**Attach it with `ValidationInfo` rather than as a separate test target.** The
-pinned 2026-07-15 buck2 ships it and the bundled prelude already uses it (java,
-kotlin, apple). A validation attached to a target runs whenever that target is
-transitively reachable from any requested build or test, in parallel with the
-build, and a failed required validation fails the build. That is precisely the
-shape of "an assertion over an artifact the rule produces anyway", and it
+**Attach it with `ValidationInfo`, marked `optional`, rather than as a separate
+test target.** The pinned 2026-07-15 buck2 ships it and the bundled prelude
+already uses it (java, kotlin, apple); its `ValidationSpec` carries an `optional`
+field, and optional validations do not run by default — they are selected with
+`--enable-optional-validations`. That is exactly the advisory shape: the report
+travels with the target it describes, costs nothing on ordinary builds, and a CI
+job or a curious maintainer can demand it by name. The derivation step's
+under-declaration check stays where it is, required and in-band, because it is
+correctness; this validation carries only the precision report. It still
 dissolves the question an earlier draft had to ask — which tier do ~50 audit
 targets carry, given every compiler change invalidates all of them — rather than
 answering it. There are no audit targets to schedule.
@@ -472,24 +514,44 @@ claimed all three could be Buck targets; only the first can be, and the honest
 shape matters because the repository has strong precedent for the other two
 living outside the graph.
 
-1. **Under-declared program must fail** — a Buck target. A fixture `rue_program`
-   whose `srcs` omits one imported module, wrapped so that the expected build
-   failure is *contained*: an uncontained failing target breaks
-   `buck2 build //...`. This is the direct test of E1400 enforcement and it runs
-   everywhere.
+1. **Under-declared program must fail at the derivation boundary** — a Buck
+   target, wrapped so that the expected build failure is *contained*: an
+   uncontained failing target breaks `buck2 build //...`. The naive fixture — a
+   `rue_program` whose `srcs` simply omits one imported module — is **not one
+   stable test**, because its failure stage depends on the executor. On a
+   non-sandboxed local run the omitted file is still on disk, the scan reads it,
+   and derivation rejects the out-of-`srcs` read; in a clean root or under RE the
+   file was never materialized, the scan records an absent probe, and the compile
+   fails as an ordinary unresolved import. Both are failures, but only the first
+   exercises the boundary check this control exists to pin. The fixture therefore
+   *materializes* the omitted module deliberately — passed to the scan action as
+   a test-only hidden input so it is present in every execution environment —
+   while excluding it from the `srcs` set the derivation script compares against,
+   and asserts the derivation-specific error, not just any failure.
 2. **Clean-root / remote materialization** — a CI job, not a target. The RUE-320
    merge-group canary is a workflow job that builds only `//crates/rue:rue`
    (`ci.yml`), so covering `rue_program` targets is a workflow change rather than
-   a reuse of an existing target.
+   a reuse of an existing target. This job stays the independent proof that
+   undeclared Buck inputs are simply *unavailable*, which control 1 deliberately
+   no longer demonstrates.
 3. **Digest sensitivity** — a CI script in the `scripts/check-reproducible-compiler.sh`
    mould. Mutating a source and asserting the action re-executes requires driving
    buck2 and reading its event log; every Buck-visible test in this repository
    that touches buck2 stubs it, and the closest precedents deliberately live
    outside the graph.
 
-Remote test-result caching stays off until all three pass on a real branch.
-RUE-1164 makes that ordering an acceptance criterion and this ADR keeps it
-strictly.
+**And one positive control, because RUE-1164's acceptance criteria are not all
+failure-shaped.** "Warm runs show Rue compilation actions served by BuildBuddy
+rather than rerun inside a harness" is an explicit criterion, and the three
+controls above cover failure modes only. Phase 1 therefore owns a success check:
+two builds — across relocated checkout roots, or across the `pull_request` and
+`merge_group` lanes, which is the pair RUE-1118 measured — must show the scan and
+compile actions cache-served while more than one scenario consumes the same
+executable. Phase 2 repeats it for a CLI root.
+
+Remote test-result caching stays off until the three negative controls pass on a
+real branch. RUE-1164 makes that ordering an acceptance criterion and this ADR
+keeps it strictly.
 
 ### Forward positioning: external build systems
 
@@ -603,21 +665,31 @@ internal CI scheduling and would not ship in a ruleset.
       invocation and become shareable between `pull_request` and `merge_group`;
       the scheduled release lane stops paying 243.0s and 80.7s twice when both the
       slow and stress tiers run; and these are the clearest targets on which to
-      establish the mechanism.
-- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** — 65 of
-      the 73 cases against 10 roots (9 new programs; meridian's is already declared
-      by Phase 1), meridian's six scenarios first, which is where the disabled
-      coverage is restored. The 6 cross-target fixture cases, the repo-relative
-      fixture case, and the one `differential_opt` case stay in the harness
-      regardless. **Whether these scenarios stay in TOML consuming a prebuilt
-      executable, or migrate to `rue_program_test` targets, is open question 3 —
-      and it is decided together with question 2.** The current recommendation is
-      that they stay in TOML, which makes this phase considerably smaller than
-      earlier drafts assumed.
-- [ ] **Phase 3: Corpus input precision** — see open question 2. A concrete
-      proposal now exists (per-file corpus actions, shard assignment moved into
-      the lane planner), but it is large enough to warrant its own ADR and issue
-      rather than a phase here, and it gates the shape of Phase 2.
+      establish the mechanism. This phase owns the positive warm-cache check: a
+      relocated or cross-lane second build must show the canary scan and compile
+      actions cache-served under multiple consuming scenarios.
+- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** — the
+      65 cases keep their TOML form and their existing corpus actions; what
+      changes is that each CLI corpus action declares the 10 program artifacts as
+      inputs and the harness runs the prebuilt executable a case names instead of
+      compiling it. The wiring already exists: `cached_corpus_suite`'s `env` is
+      `attrs.arg()`, so the artifacts arrive through `$(location ...)` exactly
+      like every other declared corpus input, and an artifact edit invalidates
+      the consuming corpus actions correctly. Meridian's six scenarios come
+      first, which is where the disabled coverage is restored. The 6 cross-target
+      fixture cases, the repo-relative fixture case, and the one
+      `differential_opt` case stay compile-in-harness regardless. **This phase
+      requires no sharding change, no TOML migration, and no decision on open
+      question 2** — Buck builds each program once, every scenario shares it,
+      and warm runs serve the compile from cache, which is RUE-1164's goal met on
+      the existing corpus topology.
+- [ ] **Phase 3: Corpus input precision — deliberately not a phase.** Open
+      question 2's per-file proposal is a corpus-topology redesign: it dissolves
+      CLI sharding, reaches into the spec and UI corpora, and modifies the
+      harness's whole-corpus validation. It is filed as its own ADR and issue
+      once this one is accepted, and nothing in Phases 0–2 waits on it or
+      forecloses it — per-file actions would consume the same `RueProgramInfo`
+      artifacts Phase 2 wires in, just from finer-grained consumers.
 - [ ] **Phase 4: Test-result caching decision** — only after the negative controls
       pass on a real branch. See open question 4.
 
@@ -642,8 +714,10 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
   property belonged to the glob-derived manifest of an earlier draft; on the
   scan-derived mechanism it has to be put back deliberately, and it is easy to
   lose again if derivation is ever simplified to "just write what the scan saw".
-- Scenarios become individually selectable and schedulable targets, which is the
-  "split" remedy in RUE-1267's alarm.
+- Large-example scenarios become individually selectable and schedulable
+  targets. For corpus cases the "split" remedy in RUE-1267's alarm stays an
+  authoring act (split the TOML file) unless the per-file corpus ADR lands, at
+  which point it becomes target-granular.
 - ADR-0047 Phases 3 and 4 acquire their first consumer, and the design needs both
   of them, not just one.
 
@@ -659,12 +733,19 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
   coverage must include **relocation invariance**: derivation reads absolute
   paths out of the envelope and must emit manifest entries that do not depend on
   the checkout root, or a shared scan-cache hit becomes a build failure.
-- Migrating the 73 cases splits the CLI authoring surface between two mechanisms
-  during Phases 2 and 3.
-- Migrated targets **escape** RUE-924's corpus-omission audit rather than break
-  it: that audit discovers `rue_heavy_suite` labels, so a `rue_program_test` that
-  does not join the discovery set is silently unaudited. Phase 2 must extend the
-  discovery set in the same change.
+- The CLI harness grows a second execution mode: run a staged prebuilt binary
+  rather than compile the case's root. It is a mode of the existing harness, not
+  a parallel mechanism — cases stay in TOML, the corpus targets keep their names,
+  labels and tiers, and RUE-924's corpus-omission audit is untouched — but the
+  harness's compile path and its staged path can now drift and need shared
+  plumbing kept honest.
+- **If open question 3's fallback is ever taken** — migrating scenarios to
+  `rue_program_test` targets — two costs return: the authoring surface splits
+  between TOML and BUCK during the transition, and migrated targets **escape**
+  RUE-924's audit rather than break it (the audit discovers `rue_heavy_suite`
+  labels, so a `rue_program_test` outside the discovery set is silently
+  unaudited; the migrating change must extend discovery in the same change).
+  Under the recommended prebuilt-artifact form, neither cost exists.
 
 ### Neutral
 
@@ -681,9 +762,12 @@ All four carry a recommendation now, and three of them changed after review. The
 remain maintainer decisions: RUE-1164 is labelled `needs-decision`, and questions
 2 and 3 in particular reach beyond what this ADR can settle on its own.
 
-**Decide 2 and 3 together.** They are one decision wearing two numbers — whether
-the corpus stays a scheduling unit or becomes a graph of per-file actions
-determines whether migrating scenarios out of TOML buys anything.
+**Questions 2 and 3 are related but no longer coupled.** An earlier draft
+decided them together, on the theory that per-file corpus actions were what made
+prebuilt-artifact consumption clean. Review showed the dependency runs the other
+way: question 3's recommendation works on the existing corpus actions as they
+stand, and question 2 is a separate, larger decision that can be taken — or
+declined — afterward without reopening it.
 
 1. **Target architecture: attribute or configuration?** Recommendation: **a plain
    attribute**, on a stronger argument than the one an earlier draft gave. That
@@ -766,12 +850,17 @@ determines whether migrating scenarios out of TOML buys anything.
 
    **Scope caveat, and the reason this stays open.** This is a larger change than
    "a phase of RUE-1164": it dissolves CLI sharding, reaches into the spec and UI
-   corpora, and modifies the harness. It is a good answer to the question, but it
-   probably deserves its own ADR and issue rather than living as Phase 3 here.
+   corpora, and modifies the harness — roughly 323 actions against the ~13 this
+   ADR otherwise creates. It is a good answer to the question, but it is its own
+   ADR and issue, filed after this one is accepted, and **it does not gate any
+   phase here**: Phase 2 meets RUE-1164 on the existing shard topology, and
+   per-file actions would consume the same artifacts from finer-grained
+   consumers.
 
 3. **Do the CLI cases migrate out of TOML, or does the harness consume prebuilt
-   artifacts?** Recommendation **reversed** after review: **let the harness consume
-   prebuilt artifacts**, conditional on question 2.
+   artifacts?** Recommendation **reversed** after review: **let the harness
+   consume prebuilt artifacts** — and, after a further round, this stands on the
+   existing corpus actions alone rather than conditionally on question 2.
 
    The defect Phase 2 fixes is the weld between compile and scenario, not the
    TOML. Handing the 65 scenarios a prebuilt executable fixes exactly that;
@@ -789,26 +878,34 @@ determines whether migrating scenarios out of TOML buys anything.
    inline-fixture and writable-cwd machinery, keeps RUE-924's audit unchanged
    rather than extended, and avoids a two-mechanism transition entirely.
 
-   The condition: this is clean *because of* question 2. Under per-file actions,
-   `examples_meridian.toml`'s target declares `:meridian` as an input and runs six
-   scenarios against it — one compile action, one scenario action, selectable at
-   file granularity. The per-file targets naming checked-in roots declare deps on
-   the programs their cases consume; that mapping is small (~14 files, 1–2 roots
-   each) and fails closed, since a case whose program is absent from the staging
-   environment cannot run. If question 2 is decided the other way and the shards
-   stay monolithic, the calculus shifts back toward migration, because per-scenario
-   targets become the only route to individual scheduling.
+   The mechanism needs nothing question 2 would build. Each existing CLI corpus
+   action declares all ten program artifacts through its `attrs.arg()` env — the
+   same `$(location ...)` contract every other corpus input already uses — and
+   the harness runs the artifact a case names. The simplest correct form declares
+   all ten on every CLI corpus action; that is a mild over-declaration of each
+   action's key (an edit to any of the ten roots re-runs all the CLI corpus
+   actions — which is also true today, since the roots live inside the declared
+   `:examples` filegroup), and it fails closed, since a case whose program is
+   missing from the staging environment cannot run. If question 2's per-file
+   redesign later lands, the mapping merely gets finer (~14 files naming 1–2
+   roots each); if it never lands, nothing here is waiting for it.
 
-   Migration stays the fallback if the prebuilt-consuming mode proves ugly — the
-   staging-environment wiring is the risk — and nothing in Phase 0 or 1 is wasted
-   either way, since the large-example scenarios use `rue_program_test` regardless.
+   Migration to `rue_program_test` stays the fallback if the staged-binary mode
+   proves ugly, and remains available later if individual scenario scheduling
+   ever demonstrates real value — RUE-1267's packer naming a single scenario as
+   a binding constraint is what that evidence would look like. Nothing in Phase
+   0 or 1 is wasted either way, since the large-example scenarios use
+   `rue_program_test` regardless.
 
 4. **Test-result caching.** Recommendation unchanged — **don't** — with two
-   reinforcements. Under question 2's proposal the corpus's scenario work is
-   already served by the action cache, because per-file corpus actions are cached
-   actions; the population of uncached test executions shrinks to
-   `rue_program_test` runs and ordinary unit tests, so the toolchain investment
-   buys even less than stated above. And the trust asymmetry deserves saying
+   reinforcements, and RUE-1164's own wording supports the posture: it says
+   caching may be *enabled only after* hermeticity validation, not that it must
+   be enabled. The first reinforcement: the corpus's scenario work is already
+   served by the action cache today, because RUE-1118's corpus suites are cached
+   actions — and Phase 2 moves the compiles into cached actions too. The
+   population of uncached test executions shrinks to `rue_program_test` runs and
+   ordinary unit tests, so the toolchain investment buys even less than stated
+   above. And the trust asymmetry deserves saying
    outright: cache writes are authorized by holding the credential, and enabling
    test-result caching widens what a poisoned entry can fake from an *artifact*,
    which still has to run and pass, to a *verdict*, which does not. That is a
@@ -840,9 +937,10 @@ determines whether migrating scenarios out of TOML buys anything.
 - **External linkers.** `rue_program` pins `--linker internal`. Cases covering
   `clang`/`gcc` linking stay in the harness.
 - **No change to what is tested.** Every scenario that runs today runs after, and
-  Phase 2 restores scenarios that currently run nowhere. The RUE-924 audit and the
-  tier-labelling contracts must survive each phase — see Consequences for how
-  Phase 2 threatens the first.
+  Phase 2 restores scenarios that currently run nowhere. The RUE-924 audit and
+  the tier-labelling contracts must survive each phase; under the recommended
+  Phase 2 both are untouched, and Consequences records the audit-escape hazard
+  that returns if the migration fallback is ever taken.
 - **Not a package system.** ADR-0047 leaves package resolution outside the
   compiler; `rue_program` is a build rule over resolved inputs, not a step toward
   one.
