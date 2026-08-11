@@ -349,7 +349,7 @@ pub(crate) struct RevisionedQueryDatabase {
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
     #[cfg_attr(not(test), allow(dead_code))]
     canonical_bodies:
-        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::CanonicalBody>,
+        QueryFamily<crate::body_query::BodyQueryKey, Arc<crate::body_query::CanonicalBody>>,
     #[allow(dead_code)]
     body_analysis_bundles:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyAnalysisBundle>,
@@ -13022,8 +13022,8 @@ impl RevisionedQueryDatabase {
             .family_with_equality_and_evaluator(
                 "compiler.canonical-body",
                 BODY_QUERY_MEMO_RETENTION,
-                |left: &crate::body_query::CanonicalBody,
-                 right: &crate::body_query::CanonicalBody| left == right,
+                |left: &Arc<crate::body_query::CanonicalBody>,
+                 right: &Arc<crate::body_query::CanonicalBody>| left == right,
                 move |context, _, key: &crate::body_query::BodyQueryKey| {
                     let transaction = context
                         .query_registered(&transactions_for_canonical_bodies, key.clone())?;
@@ -13033,7 +13033,7 @@ impl RevisionedQueryDatabase {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    Ok(QueryOutput::success(body.as_ref().clone()))
+                    Ok(QueryOutput::success(body.clone()))
                 },
             )
             .expect("the CanonicalBody family has one canonical name");
@@ -17556,7 +17556,7 @@ impl BodyTransactionEvaluator {
                             (Ok(body), Ok(_), Ok(produced_anonymous_nominals)) => {
                                 collect_published_body_references(&body, &mut references);
                                 crate::body_query::BodyTransaction::Success {
-                                    body: Box::new(crate::body_query::CanonicalBody::Ordinary {
+                                    body: Arc::new(crate::body_query::CanonicalBody::Ordinary {
                                         owner: definition.clone(),
                                         body,
                                     }),
@@ -17847,7 +17847,7 @@ impl BodyTransactionEvaluator {
                                     .map(|nominal| (nominal.identity.clone(), nominal))
                                     .collect::<BTreeMap<_, _>>();
                                 crate::body_query::BodyTransaction::Success {
-                                    body: Box::new(
+                                    body: Arc::new(
                                         crate::body_query::CanonicalBody::Specialization {
                                             identity,
                                             body,
@@ -18060,7 +18060,7 @@ impl BodyTransactionEvaluator {
                                 );
                                 collect_published_body_references(&body, &mut references);
                                 crate::body_query::BodyTransaction::Success {
-                                    body: Box::new(crate::body_query::CanonicalBody::Anonymous {
+                                    body: Arc::new(crate::body_query::CanonicalBody::Anonymous {
                                         identity,
                                         body_anchor: crate::body_query::BodyRelativeRange {
                                             start: member_input.body_start,
@@ -18381,7 +18381,8 @@ impl RevisionedQueryDatabase {
         revision: Revision,
         key: crate::body_query::BodyQueryKey,
         cancellation: CancellationToken,
-    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::CanonicalBody>>, QueryAbort> {
+    ) -> Result<Arc<rue_query::QueryTerminal<Arc<crate::body_query::CanonicalBody>>>, QueryAbort>
+    {
         self.runtime
             .request_registered(&self.canonical_bodies, revision, key, cancellation)
             .into_result()
