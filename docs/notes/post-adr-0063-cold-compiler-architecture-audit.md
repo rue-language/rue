@@ -940,6 +940,19 @@ call count and add 0.17--0.41 MiB of requested bytes (at most 0.02%). Every
 deterministic compiler-work counter and emitted executable byte remains
 identical.
 
+RUE-1392 removes the liveness solver's redundant convergence sweep for
+forward-only control flow. With no back edge, instruction order is already a
+topological order, so one reverse sweep visits every successor before its
+predecessors and computes the exact fixed point. Looped MIR retains the
+existing iterative solver. Focused work-accounting tests record one sweep for
+acyclic control flow and three for the back-edge fixture.
+
+Sixteen balanced alternating ordinary-release Lattice pairs improve by 0.61%
+at the paired median, with 1.40% paired MAD and a -5.52% to +2.53% range. Median
+peak RSS falls by 0.86 MiB, within dispersion. Three allocation-accounting
+comparisons are neutral, and every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
