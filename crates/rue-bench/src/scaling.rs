@@ -368,7 +368,27 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Deterministic query work\n\n");
-    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. Registry logical/index distinguishes requested exact-node resolutions from accesses to the shared incarnation index. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
+    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. Request outcomes expose all query traffic before validation detail: claims start computations, reuses return compatible retained or task-local terminals, and joins share in-flight work. Declined joins are included in joins and identify wait-graph avoidance.\n\n");
+    out.push_str("| workload | claims | reuses | joins declined/total | body completions | publications red/green | cancellations/cycles |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let runtime = observation.work.query_runtime;
+        out.push_str(&format!(
+            "| {} | {} | {} | {}/{} | {} | {}/{} | {}/{} |\n",
+            observation.workload,
+            runtime.claims,
+            runtime.reuses,
+            runtime.declined_joins,
+            runtime.joins,
+            runtime.body_completions,
+            runtime.red_publications,
+            runtime.green_publications,
+            runtime.cancellations,
+            runtime.cycles,
+        ));
+    }
+
+    out.push_str("\nRegistry logical/index distinguishes requested exact-node resolutions from accesses to the shared incarnation index. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
     out.push_str("| workload | traversals | input/dependency observations | memo hit/miss | registry logical/index | endorsements hit/probe | terminal leases duplicate/total | demands reuse/compute/join/total | retention scan entries | nodes/token |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
@@ -647,6 +667,15 @@ mod tests {
                         fact_selections: 4,
                     },
                     query_runtime: rue_perf_schema::QueryRuntimeWork {
+                        claims: 41,
+                        reuses: 43,
+                        joins: 47,
+                        declined_joins: 2,
+                        body_completions: 53,
+                        red_publications: 59,
+                        green_publications: 61,
+                        cancellations: 67,
+                        cycles: 71,
                         validation: rue_perf_schema::ValidationWork {
                             traversals: 3,
                             node_visits: 7,
@@ -680,6 +709,8 @@ mod tests {
         assert!(rendered.contains("median absolute deviation"));
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
+        assert!(rendered.contains("joins declined/total"));
+        assert!(rendered.contains("| probe | 41 | 43 | 2/47 | 53 | 59/61 | 67/71 |"));
         assert!(rendered.contains("nodes/token"));
         assert!(rendered.contains("Semantic provider observations"));
         assert!(rendered.contains("durable materializations"));

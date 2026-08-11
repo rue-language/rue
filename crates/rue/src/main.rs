@@ -991,6 +991,15 @@ fn benchmark_compiler_work(
             fact_selections: metrics.semantic.cfg.materialization_fact_selections as u64,
         },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
+            claims: runtime.claims,
+            reuses: runtime.reuses,
+            joins: runtime.joins,
+            declined_joins: runtime.declined_joins,
+            body_completions: runtime.body_completions,
+            red_publications: runtime.red_publications,
+            green_publications: runtime.green_publications,
+            cancellations: runtime.cancellations,
+            cycles: runtime.cycles,
             validation: rue_perf_schema::ValidationWork {
                 traversals: validation.traversals,
                 successful_traversals: validation.successful_traversals,
@@ -1552,6 +1561,15 @@ mod tests {
                 ..Default::default()
             },
             query_runtime: rue_compiler::unstable::QueryRuntimeMetrics {
+                claims: 41,
+                reuses: 43,
+                joins: 47,
+                declined_joins: 2,
+                body_completions: 53,
+                red_publications: 59,
+                green_publications: 61,
+                cancellations: 67,
+                cycles: 71,
                 validation: rue_compiler::unstable::QueryValidationMetrics {
                     traversals: 3,
                     dependency_observations: 11,
@@ -1600,6 +1618,15 @@ mod tests {
         assert_eq!(projected.cfg_materialization.type_nodes_scanned, 47);
         assert_eq!(projected.cfg_materialization.fact_selections, 11);
         let runtime = projected.query_runtime;
+        assert_eq!(runtime.claims, 41);
+        assert_eq!(runtime.reuses, 43);
+        assert_eq!(runtime.joins, 47);
+        assert_eq!(runtime.declined_joins, 2);
+        assert_eq!(runtime.body_completions, 53);
+        assert_eq!(runtime.red_publications, 59);
+        assert_eq!(runtime.green_publications, 61);
+        assert_eq!(runtime.cancellations, 67);
+        assert_eq!(runtime.cycles, 71);
         assert_eq!(runtime.validation.traversals, 3);
         assert_eq!(runtime.validation.dependency_observations, 11);
         assert_eq!(runtime.validation.memo_hits, 7);

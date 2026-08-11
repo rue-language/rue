@@ -1723,7 +1723,7 @@ impl From<rue_query::ValidationWork> for QueryValidationMetrics {
 
 #[cfg(test)]
 mod query_validation_metrics_tests {
-    use super::QueryValidationMetrics;
+    use super::{QueryDisplayIdentityMetrics, QueryRuntimeMetrics, QueryValidationMetrics};
 
     #[test]
     fn validation_work_classification_survives_projection_and_deltas() {
@@ -1753,11 +1753,49 @@ mod query_validation_metrics_tests {
         assert_eq!(delta.terminal_lease_observations, 4);
         assert_eq!(delta.duplicate_terminal_lease_observations, 3);
     }
+
+    #[test]
+    fn runtime_work_arithmetic_covers_every_published_counter() {
+        let unit = QueryRuntimeMetrics {
+            claims: 1,
+            reuses: 1,
+            joins: 1,
+            declined_joins: 1,
+            body_completions: 1,
+            red_publications: 1,
+            green_publications: 1,
+            cancellations: 1,
+            cycles: 1,
+            validation: QueryValidationMetrics {
+                traversals: 1,
+                ..Default::default()
+            },
+            display_identities: QueryDisplayIdentityMetrics {
+                memo_node_materializations: 1,
+                ..Default::default()
+            },
+            retention_enforcements: 1,
+            retention_scan_entries: 1,
+        };
+        let mut accumulated = unit;
+        accumulated.saturating_add_assign(unit);
+        assert_eq!(accumulated.saturating_sub(unit), unit);
+    }
 }
 
-/// Query-runtime validation and retention work contained in [`MetricsSnapshot`].
+/// Query-runtime lifecycle, validation, and retention work contained in
+/// [`MetricsSnapshot`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryRuntimeMetrics {
+    pub claims: u64,
+    pub reuses: u64,
+    pub joins: u64,
+    pub declined_joins: u64,
+    pub body_completions: u64,
+    pub red_publications: u64,
+    pub green_publications: u64,
+    pub cancellations: u64,
+    pub cycles: u64,
     pub validation: QueryValidationMetrics,
     /// Presentation-only query identity materialization.
     pub display_identities: QueryDisplayIdentityMetrics,
@@ -1765,6 +1803,83 @@ pub struct QueryRuntimeMetrics {
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by those passes.
     pub retention_scan_entries: u64,
+}
+
+impl QueryRuntimeMetrics {
+    /// Saturating delta between two cumulative runtime snapshots.
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        Self {
+            claims: self.claims.saturating_sub(earlier.claims),
+            reuses: self.reuses.saturating_sub(earlier.reuses),
+            joins: self.joins.saturating_sub(earlier.joins),
+            declined_joins: self.declined_joins.saturating_sub(earlier.declined_joins),
+            body_completions: self
+                .body_completions
+                .saturating_sub(earlier.body_completions),
+            red_publications: self
+                .red_publications
+                .saturating_sub(earlier.red_publications),
+            green_publications: self
+                .green_publications
+                .saturating_sub(earlier.green_publications),
+            cancellations: self.cancellations.saturating_sub(earlier.cancellations),
+            cycles: self.cycles.saturating_sub(earlier.cycles),
+            validation: self.validation.saturating_sub(earlier.validation),
+            display_identities: self
+                .display_identities
+                .saturating_sub(earlier.display_identities),
+            retention_enforcements: self
+                .retention_enforcements
+                .saturating_sub(earlier.retention_enforcements),
+            retention_scan_entries: self
+                .retention_scan_entries
+                .saturating_sub(earlier.retention_scan_entries),
+        }
+    }
+
+    /// Saturating accumulation for collection-level diagnostics.
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        self.claims = self.claims.saturating_add(other.claims);
+        self.reuses = self.reuses.saturating_add(other.reuses);
+        self.joins = self.joins.saturating_add(other.joins);
+        self.declined_joins = self.declined_joins.saturating_add(other.declined_joins);
+        self.body_completions = self.body_completions.saturating_add(other.body_completions);
+        self.red_publications = self.red_publications.saturating_add(other.red_publications);
+        self.green_publications = self
+            .green_publications
+            .saturating_add(other.green_publications);
+        self.cancellations = self.cancellations.saturating_add(other.cancellations);
+        self.cycles = self.cycles.saturating_add(other.cycles);
+        self.validation.saturating_add_assign(other.validation);
+        self.display_identities
+            .saturating_add_assign(other.display_identities);
+        self.retention_enforcements = self
+            .retention_enforcements
+            .saturating_add(other.retention_enforcements);
+        self.retention_scan_entries = self
+            .retention_scan_entries
+            .saturating_add(other.retention_scan_entries);
+    }
+}
+
+impl From<rue_query::RuntimeMetrics> for QueryRuntimeMetrics {
+    fn from(runtime: rue_query::RuntimeMetrics) -> Self {
+        Self {
+            claims: runtime.claims,
+            reuses: runtime.reuses,
+            joins: runtime.joins,
+            declined_joins: runtime.declined_joins,
+            body_completions: runtime.body_completions,
+            red_publications: runtime.red_publications,
+            green_publications: runtime.green_publications,
+            cancellations: runtime.cancellations,
+            cycles: runtime.cycles,
+            validation: runtime.validation.into(),
+            display_identities: runtime.display_identities.into(),
+            retention_enforcements: runtime.retention_enforcements,
+            retention_scan_entries: runtime.retention_scan_entries,
+        }
+    }
 }
 
 /// Database-owned semantic-reachability scheduling work accumulated by the
@@ -2243,12 +2358,7 @@ impl MetricsSnapshot {
         }
     }
     pub fn query_runtime(&self) -> QueryRuntimeMetrics {
-        QueryRuntimeMetrics {
-            validation: self.inner.runtime.validation.into(),
-            display_identities: self.inner.runtime.display_identities.into(),
-            retention_enforcements: self.inner.runtime.retention_enforcements,
-            retention_scan_entries: self.inner.runtime.retention_scan_entries,
-        }
+        self.inner.runtime.query
     }
     pub fn semantic_reachability(&self) -> SemanticReachabilityMetrics {
         self.inner.runtime.semantic_reachability

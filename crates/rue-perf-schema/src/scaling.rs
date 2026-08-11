@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 9;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 10;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +255,24 @@ pub struct SemanticReachabilityWork {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRuntimeWork {
+    /// New query computations claimed by this process.
+    pub claims: u64,
+    /// Compatible retained or task-local terminals reused.
+    pub reuses: u64,
+    /// Compatible in-flight query computations joined.
+    pub joins: u64,
+    /// Joined computations declined to avoid a wait-graph cycle.
+    pub declined_joins: u64,
+    /// Query bodies which completed before publication checks.
+    pub body_completions: u64,
+    /// Publications whose observable stamp stayed unchanged.
+    pub red_publications: u64,
+    /// New or observably changed publications.
+    pub green_publications: u64,
+    /// Query computations or waiters canceled.
+    pub cancellations: u64,
+    /// True query dependency cycles reported.
+    pub cycles: u64,
     /// Retained-terminal validation and proof work.
     pub validation: ValidationWork,
     /// Presentation-only query identity materialization.

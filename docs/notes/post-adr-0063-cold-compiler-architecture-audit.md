@@ -564,7 +564,7 @@ RUE-1365 made the largest remaining leaf phase measurable at the same standard
 as query validation and CFG materialization. Provider-native body analysis
 already increments exact production counters for each lookup, candidate query,
 fact-family read, and durable materialization. The one-shot metrics boundary
-and version-nine scaling report now snapshot those counters; measurement adds
+and the versioned scaling report now snapshot those counters; measurement adds
 no provider operation to the compile path.
 
 The maintained cold baseline is:
@@ -616,6 +616,25 @@ MiB respectively, which is mixed and within run noise. Every query,
 reachability, CFG-materialization, and semantic-provider counter remained
 identical. Lattice allocation counts are flat; requested bytes moved about
 +0.06 percent, also within measurement noise. The executable remains
+byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
+RUE-1367 closes the next measurement gap exposed by a rejected optimization:
+the scaling report previously published validation and retention work but not
+all query request outcomes. The compiler now makes one canonical projection of
+cumulative query-runtime work and schema version ten publishes claims,
+reuses, joins, completed bodies, red/green publications, cancellations, and
+cycles. The report and retained-session runner share one saturating arithmetic
+implementation, so adding a runtime field cannot silently make their deltas
+disagree.
+
+The fresh one-worker baseline records 8,403/68,041 claims/reuses for Ruelex,
+18,602/191,452 for Mosaic, 32,674/382,634 for Harbor, and 39,092/494,426 for
+Lattice. Every claimed body completes and publishes green in these fresh
+probes; joins, cancellations, and cycles are zero. The counters are read only
+at the observation boundary, so production query behavior and the previously
+published deterministic work remain unchanged. Fresh-process timing and peak
+memory remain mixed within run noise, and the Lattice executable remains
 byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
