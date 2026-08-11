@@ -355,6 +355,77 @@ EOF
   rm -rf "$sb"
 }
 
+test_storage_guard_survives_cleanup_failure_between_floors() {
+  # RUE-1331 follow-up: sibling worktrees mid-build make their Buck daemons
+  # refuse `clean`. A cleanup ERROR must not be fatal in the middle band —
+  # the hard floor decides. Observed live: three cycle-5 workers building
+  # blocked the coordinator's build through this exact path.
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+exit 1
+EOF
+  chmod +x "$sb/buck2"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n' "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  # 15 GiB free of 200 GiB: middle band, constant across probes.
+  cat >"$sb/fakebin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'disk 209715200 193986560 15728640 93%% /\n'
+EOF
+  chmod +x "$sb/fakebin/df"
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: cleanup failure between floors still proceeds" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  grep -q 'deciding on the hard floor instead' "$sb/out.log" || \
+    fail "storage: expected the cleanup-failure demotion notice"
+  rm -rf "$sb"
+}
+
+test_storage_guard_still_refuses_below_hard_floor_when_cleanup_fails() {
+  # The safety property survives the demotion: a cleanup error below the hard
+  # floor is still a refusal.
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+exit 1
+EOF
+  chmod +x "$sb/buck2"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n' "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  cat >"$sb/fakebin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'disk 100000 95000 5000 95%% /\n'
+EOF
+  chmod +x "$sb/fakebin/df"
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: cleanup failure below the hard floor still refuses" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  grep -q 'hard floor; build stopped before risking ENOSPC' "$sb/out.log" || \
+    fail "storage: expected the hard-floor refusal notice"
+  rm -rf "$sb"
+}
+
 test_storage_reset_validates_all_targets_first() {
   local sb rc=0; sb="$(make_sandbox rue-storage)"
   setup_storage_root "$sb/root-1"
@@ -388,6 +459,8 @@ test_storage_plans_every_registered_root
 test_storage_guard_is_host_wide_only_under_pressure
 test_storage_guard_blocks_when_pressure_remains_critical
 test_storage_guard_proceeds_between_cleanup_and_hard_floors
+test_storage_guard_survives_cleanup_failure_between_floors
+test_storage_guard_still_refuses_below_hard_floor_when_cleanup_fails
 test_storage_reset_validates_all_targets_first
 
 echo "--------------------------------------------------"
