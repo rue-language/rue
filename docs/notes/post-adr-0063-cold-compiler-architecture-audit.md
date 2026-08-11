@@ -833,6 +833,30 @@ Median peak RSS rises by 1.48 MiB (0.33%), within run dispersion. Every
 deterministic compiler-work counter and the emitted executable remain
 identical.
 
+Two adjacent collection substitutions were measured and rejected. RUE-1383
+changed task-local validation endorsement scopes from a mutex to a read/write
+lock. Thirty-two alternating runs were clock-neutral, but the targeted
+authority leaf grew by 16% across three profiles: the actual task-sharing shape
+did not provide enough concurrent readers to repay the heavier uncontended
+primitive. RUE-1384 changed the canonical anonymous-nominal registry from an
+ordered tree to a hash table. Its recursive identity was more expensive to hash
+than to compare in this registry; the combined 32-pair cold median regressed by
+1.15%. Neither prototype was retained.
+
+RUE-1385 instead removes the owned-value copy at the canonical anonymous
+registry boundary. Registry entries are immutable request-local facts, and the
+body identity pool may ask separately for shape, methods, type captures, and
+value captures. The registry now returns an `Rc` handle, so those lookups share
+the complete nominal and each consumer clones only its required projected
+output.
+
+Fixed one-worker Lattice saves 30,008 allocator calls (0.18%) and 4,469,456
+requested bytes (0.17%). The durable `AnonymousNominalKey` clone leaf falls
+from 105 to 65 combined samples (-38%). Sixteen alternating ordinary-release
+pairs are clock-neutral at +0.14%; median peak RSS falls by 3.27 MiB (0.73%).
+Every deterministic compiler-work counter and the emitted executable remain
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
