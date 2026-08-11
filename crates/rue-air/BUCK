@@ -27,6 +27,7 @@ filegroup(
 rue_crate(
     name = "rue-air",
     deps = [
+        "//third-party:ahash",
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
         "//crates/rue-rir:rue-rir",
@@ -46,6 +47,7 @@ native.rust_library(
     crate = "rue_air_fuzz_support",
     srcs = glob(["src/**/*.rs"]),
     deps = [
+        "//third-party:ahash",
         "//crates/rue-builtins:rue-builtins",
         "//crates/rue-error:rue-error",
         "//crates/rue-lexer:rue-lexer",

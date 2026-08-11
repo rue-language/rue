@@ -80,6 +80,7 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir, RirParamMode, ValidatedRir};
 use rue_span::{FileId, Span};
@@ -338,35 +339,40 @@ enum PoolNominal {
 /// them (`SemanticImportedProgram::new`), so the builtin-nominal arm resolves.
 /// Named nominals are minted on first [`resolve`](Self::resolve) and
 /// deduplicated by durable key thereafter.
+///
+/// The pool registries use independently keyed [`AHashMap`] instances. Their
+/// authority is exact `Hash` + `Eq` lookup; explicit control flow preserves
+/// append/mint order, and hash-table iteration is never an exported semantic
+/// order.
 pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     type_pool: Rc<TypeInternPool>,
     interner: Rc<ThreadedRodeo>,
     source: S,
-    struct_ids: HashMap<K, StructId>,
-    enum_ids: HashMap<K, EnumId>,
+    struct_ids: AHashMap<K, StructId>,
+    enum_ids: AHashMap<K, EnumId>,
     /// Reverse joins used while exporting provider-local types back to their
     /// durable named identities. Kept beside the forward registries so export
     /// never scans every nominal minted for the body.
-    struct_identities: HashMap<StructId, K>,
-    enum_identities: HashMap<EnumId, K>,
+    struct_identities: AHashMap<StructId, K>,
+    enum_identities: AHashMap<EnumId, K>,
     /// Keys whose mint failed after shell registration; repeat consults
     /// re-error rather than exposing the incomplete shell (see `mint_named`).
-    poisoned: HashMap<K, IdentityMintError>,
-    anon_nominals: HashMap<AnonymousNominalKey<K, M>, Type>,
+    poisoned: AHashMap<K, IdentityMintError>,
+    anon_nominals: AHashMap<AnonymousNominalKey<K, M>, Type>,
     /// Reverse join for provider-local anonymous types. Multiple durable keys
     /// may deliberately name one issued type; the first registration remains
     /// the deterministic export identity, matching the append-only mint order.
-    anonymous_identities: HashMap<Type, AnonymousNominalKey<K, M>>,
+    anonymous_identities: AHashMap<Type, AnonymousNominalKey<K, M>>,
     /// Anonymous keys whose mint failed after their recursive shell was
     /// published internally. The incomplete shell remains unreachable.
-    anonymous_poisoned: HashMap<AnonymousNominalKey<K, M>, IdentityMintError>,
+    anonymous_poisoned: AHashMap<AnonymousNominalKey<K, M>, IdentityMintError>,
     /// Fail-closed anonymous-digest ownership registry, the pool analog of the
     /// epoch's `anonymous_digest_owners` (RUE-1089, Theme 4b). Records the exact
     /// producer key that owns each presentation digest so a SECOND distinct key
     /// hashing to an owned digest is refused before any id or symbol is minted.
-    anonymous_digest_owners: HashMap<u128, AnonymousNominalKey<K, M>>,
-    builtins: HashMap<(Arc<str>, SemanticImportNominalKind), PoolNominal>,
-    module_files: HashMap<Arc<str>, FileId>,
+    anonymous_digest_owners: AHashMap<u128, AnonymousNominalKey<K, M>>,
+    builtins: AHashMap<(Arc<str>, SemanticImportNominalKind), PoolNominal>,
+    module_files: AHashMap<Arc<str>, FileId>,
     /// The pool's own parameter arena, the analog of `Sema::param_arena` (which
     /// lives *beside* the type pool, not inside it). Callable identities intern
     /// their durable parameter vocabulary here on first consult, returning a
@@ -375,13 +381,13 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// Minted function signatures, deduplicated by durable callable key: the
     /// arena is append-only, so a repeat consult must return the cached
     /// `ParamRange` rather than re-interning the same parameters.
-    function_sigs: HashMap<K, CallableSignature>,
+    function_sigs: AHashMap<K, CallableSignature>,
     /// Minted method signatures, deduplicated by durable callable key.
-    method_sigs: HashMap<K, MethodSignature>,
+    method_sigs: AHashMap<K, MethodSignature>,
     /// Callable keys whose signature mint failed. A repeat consult re-errors
     /// rather than re-running the partial mint (whose parameters may already sit
     /// orphaned in the append-only arena) — the callable analog of `poisoned`.
-    callable_poisoned: HashMap<K, IdentityMintError>,
+    callable_poisoned: AHashMap<K, IdentityMintError>,
     /// Per-body well-known `Option(payload)` registry (RUE-1112, ported for
     /// RUE-1091 r6c): the pool analog of `Sema::well_known_option_by_payload`.
     /// Maps an expected payload [`Type`] to the trusted standard-library
@@ -389,7 +395,7 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// [`Self::install_well_known_option_types`] before body analysis — never
     /// from the body's own composition/import universe. The provider consumer
     /// is fallible-intrinsic resolution (`resolve_option_result_type`).
-    well_known_option_by_payload: HashMap<Type, Type>,
+    well_known_option_by_payload: AHashMap<Type, Type>,
     /// Anonymous enum identities (canonical producer form) minted by the
     /// well-known `Option` registry install for this body — the pool analog of
     /// `Sema::well_known_option_identities`, which is THE export-as-produced
@@ -421,10 +427,10 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// Minted declaration-level const payloads, deduplicated by durable key.
     /// The request-local declaration span is supplied separately by the RIR
     /// handle and therefore is not cached here.
-    const_values: HashMap<K, ConstIdentity>,
+    const_values: AHashMap<K, ConstIdentity>,
     /// Const keys whose assembly failed after a nested type/value mint began.
     /// Repeat consults re-error instead of exposing or re-running partial state.
-    const_poisoned: HashMap<K, IdentityMintError>,
+    const_poisoned: AHashMap<K, IdentityMintError>,
 }
 
 /// One task-owned identity universe shared by every provider fact driver used
@@ -840,7 +846,7 @@ where
     /// pre-registered, mirroring a fresh import epoch.
     pub(in crate::sema) fn new(source: S, interner: Rc<ThreadedRodeo>) -> Self {
         let type_pool = Rc::new(TypeInternPool::new());
-        let mut builtins = HashMap::new();
+        let mut builtins = AHashMap::new();
 
         for builtin in rue_builtins::BUILTIN_ENUMS {
             let symbol = interner.get_or_intern(builtin.name);
@@ -896,26 +902,26 @@ where
             type_pool,
             interner,
             source,
-            struct_ids: HashMap::new(),
-            enum_ids: HashMap::new(),
-            struct_identities: HashMap::new(),
-            enum_identities: HashMap::new(),
-            poisoned: HashMap::new(),
-            anon_nominals: HashMap::new(),
-            anonymous_identities: HashMap::new(),
-            anonymous_poisoned: HashMap::new(),
-            anonymous_digest_owners: HashMap::new(),
+            struct_ids: AHashMap::new(),
+            enum_ids: AHashMap::new(),
+            struct_identities: AHashMap::new(),
+            enum_identities: AHashMap::new(),
+            poisoned: AHashMap::new(),
+            anon_nominals: AHashMap::new(),
+            anonymous_identities: AHashMap::new(),
+            anonymous_poisoned: AHashMap::new(),
+            anonymous_digest_owners: AHashMap::new(),
             builtins,
-            module_files: HashMap::new(),
+            module_files: AHashMap::new(),
             param_arena: ParamArena::new(),
-            function_sigs: HashMap::new(),
-            method_sigs: HashMap::new(),
-            callable_poisoned: HashMap::new(),
-            well_known_option_by_payload: HashMap::new(),
+            function_sigs: AHashMap::new(),
+            method_sigs: AHashMap::new(),
+            callable_poisoned: AHashMap::new(),
+            well_known_option_by_payload: AHashMap::new(),
             well_known_option_identities: std::collections::BTreeSet::new(),
             well_known_poisoned: None,
-            const_values: HashMap::new(),
-            const_poisoned: HashMap::new(),
+            const_values: AHashMap::new(),
+            const_poisoned: AHashMap::new(),
         }
     }
 
