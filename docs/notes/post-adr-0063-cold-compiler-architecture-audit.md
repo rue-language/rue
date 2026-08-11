@@ -456,6 +456,27 @@ allocation result therefore establishes the win without claiming a clock
 speedup. The Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1359 then specialized the shared instruction scheduler's transient
+bookkeeping to the graph it actually constructs. Machine instructions already
+have dense indices, and every dependency is discovered from an earlier
+instruction to the current one. Edge deduplication therefore uses one dense
+"last target" stamp per predecessor instead of hashing every `(from, to)` pair.
+The same forward-edge invariant makes reverse instruction order a topological
+order, so critical-path priorities no longer need a hash map or an explicit
+DFS stack. The scheduler policy, dependency graph, priority equation, and
+backend fact adapters are unchanged.
+
+The fixed one-worker Lattice allocation probe fell from 19,233,621 to
+19,144,997 calls (-0.46 percent) and from 3,533,206,987 to 3,493,225,879
+requested bytes (-1.13 percent). Every query, reachability, and
+CFG-materialization counter remained identical. Two ordinary-allocator runs
+showed no regression: the first moved compiler medians by +2.4, -0.5, -1.2,
+and -1.0 percent from Ruelex through Lattice, while the repeat moved them by
+-5.0, -1.9, -1.8, and +0.7 percent. Peak memory was neutral on the two smaller
+workloads and about 6 MiB and 2 MiB lower on Harbor and Lattice in both runs.
+The Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

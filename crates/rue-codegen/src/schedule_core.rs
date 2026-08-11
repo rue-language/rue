@@ -5,7 +5,7 @@
 //! traversal used by both machine backends.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
 
 use crate::reg_class::RegClass;
@@ -231,7 +231,11 @@ where
         .iter()
         .map(|inst| SchedNode::new(adapter.latency(inst)))
         .collect();
-    let mut edges = HashSet::new();
+    // Every edge discovered while visiting instruction `to` comes from an
+    // earlier dense instruction index. Remember the most recent target seen
+    // for each predecessor: equal targets are duplicate edges, while a later
+    // target starts a new edge without clearing the whole table.
+    let mut last_edge_target = vec![usize::MAX; block_len];
 
     // Track the last writer and the readers since that write, per register
     // class (see `RegTracker`).
@@ -250,14 +254,14 @@ where
         // RAW (Read After Write): this instruction reads what another wrote.
         for reg in &reads {
             if let Some(writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
-                add_edge(&mut nodes, &mut edges, writer, i);
+                add_edge(&mut nodes, &mut last_edge_target, writer, i);
             }
         }
 
         // WAW (Write After Write): this instruction writes what another wrote.
         for reg in &writes {
             if let Some(prev_writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
-                add_edge(&mut nodes, &mut edges, prev_writer, i);
+                add_edge(&mut nodes, &mut last_edge_target, prev_writer, i);
             }
         }
 
@@ -266,7 +270,7 @@ where
             if let Some(readers) = regs.last_readers(adapter.reg_class(*reg), reg) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, &mut edges, reader, i);
+                        add_edge(&mut nodes, &mut last_edge_target, reader, i);
                     }
                 }
             }
@@ -276,19 +280,19 @@ where
         if adapter.reads_flags(inst)
             && let Some(writer) = last_flags_writer
         {
-            add_edge(&mut nodes, &mut edges, writer, i);
+            add_edge(&mut nodes, &mut last_edge_target, writer, i);
         }
 
         if adapter.writes_flags(inst)
             && let Some(prev_writer) = last_flags_writer
         {
-            add_edge(&mut nodes, &mut edges, prev_writer, i);
+            add_edge(&mut nodes, &mut last_edge_target, prev_writer, i);
         }
 
         if adapter.writes_flags(inst) {
             for &reader in &last_flags_readers {
                 if reader != i {
-                    add_edge(&mut nodes, &mut edges, reader, i);
+                    add_edge(&mut nodes, &mut last_edge_target, reader, i);
                 }
             }
         }
@@ -296,7 +300,7 @@ where
         // Memory dependencies (conservative: order all memory accesses).
         if adapter.accesses_memory(inst) {
             if let Some(prev) = last_memory_access {
-                add_edge(&mut nodes, &mut edges, prev, i);
+                add_edge(&mut nodes, &mut last_edge_target, prev, i);
             }
             last_memory_access = Some(i);
         }
@@ -310,13 +314,13 @@ where
             if let Some(readers) = regs.last_readers(class, &clobbered) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, &mut edges, reader, i);
+                        add_edge(&mut nodes, &mut last_edge_target, reader, i);
                     }
                 }
             }
             // And after the last writer.
             if let Some(writer) = regs.last_writer(class, &clobbered) {
-                add_edge(&mut nodes, &mut edges, writer, i);
+                add_edge(&mut nodes, &mut last_edge_target, writer, i);
             }
         }
 
@@ -345,8 +349,15 @@ where
     nodes
 }
 
-fn add_edge(nodes: &mut [SchedNode], edges: &mut HashSet<(usize, usize)>, from: usize, to: usize) {
-    if edges.insert((from, to)) {
+fn add_edge(nodes: &mut [SchedNode], last_edge_target: &mut [usize], from: usize, to: usize) {
+    #[cfg(test)]
+    assert!(
+        from < to,
+        "dependency edges must follow dense instruction order"
+    );
+
+    if last_edge_target[from] != to {
+        last_edge_target[from] = to;
         nodes[to].deps.push(from);
         nodes[from].users.push(to);
     }
@@ -355,43 +366,25 @@ fn add_edge(nodes: &mut [SchedNode], edges: &mut HashSet<(usize, usize)>, from: 
 /// Calculate priority for each node (critical path length to exit).
 ///
 /// `priority[idx] = latency[idx] + max(priority[u] for u in users[idx])`, i.e.
-/// the longest path from `idx` to any exit node in the dependency DAG. This is
-/// computed with an explicit-stack, memoized post-order traversal rather than
-/// recursion.
+/// the longest path from `idx` to any exit node in the dependency DAG. Every
+/// dependency edge points from an earlier dense instruction index to a
+/// later one, so reverse instruction order is already a topological order.
 pub(crate) fn calculate_priorities(nodes: &mut [SchedNode]) {
-    let mut memo: HashMap<usize, u32> = HashMap::new();
-    let mut stack: Vec<(usize, bool)> = Vec::new();
-
-    for start in 0..nodes.len() {
-        if memo.contains_key(&start) {
-            continue;
-        }
-        stack.push((start, false));
-        while let Some((idx, expanded)) = stack.pop() {
-            if memo.contains_key(&idx) {
-                continue;
-            }
-            if expanded {
-                let max_user = nodes[idx]
-                    .users
-                    .iter()
-                    .map(|&u| memo[&u])
-                    .max()
-                    .unwrap_or(0);
-                memo.insert(idx, nodes[idx].latency + max_user);
-            } else {
-                stack.push((idx, true));
-                for &u in &nodes[idx].users {
-                    if !memo.contains_key(&u) {
-                        stack.push((u, false));
-                    }
-                }
-            }
-        }
-    }
-
-    for i in 0..nodes.len() {
-        nodes[i].priority = memo[&i];
+    for idx in (0..nodes.len()).rev() {
+        let max_user = nodes[idx]
+            .users
+            .iter()
+            .map(|&user| {
+                #[cfg(test)]
+                assert!(
+                    user > idx,
+                    "priority edges must follow dense instruction order"
+                );
+                nodes[user].priority
+            })
+            .max()
+            .unwrap_or(0);
+        nodes[idx].priority = nodes[idx].latency + max_user;
     }
 }
 
@@ -604,20 +597,44 @@ mod tests {
     }
 
     #[test]
+    fn dense_graph_bookkeeping_preserves_edges_and_critical_path_priorities() {
+        let mut nodes = [2, 4, 3, 1]
+            .into_iter()
+            .map(SchedNode::new)
+            .collect::<Vec<_>>();
+        let mut last_edge_target = vec![usize::MAX; nodes.len()];
+
+        add_edge(&mut nodes, &mut last_edge_target, 0, 1);
+        add_edge(&mut nodes, &mut last_edge_target, 0, 2);
+        add_edge(&mut nodes, &mut last_edge_target, 1, 3);
+        add_edge(&mut nodes, &mut last_edge_target, 2, 3);
+        add_edge(&mut nodes, &mut last_edge_target, 1, 3);
+        calculate_priorities(&mut nodes);
+
+        assert_eq!(nodes[0].users, vec![1, 2]);
+        assert_eq!(nodes[3].deps, vec![1, 2]);
+        assert_eq!(
+            nodes.iter().map(|node| node.priority).collect::<Vec<_>>(),
+            vec![7, 5, 4, 1]
+        );
+    }
+
+    #[test]
     fn high_fan_in_readiness_work_is_edge_linear_and_ties_are_stable() {
         const FAN_IN: usize = 4_096;
         let sink = FAN_IN;
         let mut nodes = (0..=sink).map(|_| SchedNode::new(1)).collect::<Vec<_>>();
-        let mut edges = HashSet::new();
+        let mut last_edge_target = vec![usize::MAX; nodes.len()];
         for predecessor in 0..FAN_IN {
-            add_edge(&mut nodes, &mut edges, predecessor, sink);
-            add_edge(&mut nodes, &mut edges, predecessor, sink);
+            add_edge(&mut nodes, &mut last_edge_target, predecessor, sink);
+            add_edge(&mut nodes, &mut last_edge_target, predecessor, sink);
         }
         calculate_priorities(&mut nodes);
 
         let (order, work) = schedule_block_with_work(&nodes);
+        let edge_count = nodes.iter().map(|node| node.users.len()).sum::<usize>();
 
-        assert_eq!(edges.len(), FAN_IN, "duplicate edges are discarded once");
+        assert_eq!(edge_count, FAN_IN, "duplicate edges are discarded once");
         assert_eq!(nodes[sink].deps.len(), FAN_IN);
         assert_eq!(order.len(), FAN_IN + 1);
         assert_eq!(order[..FAN_IN], (0..FAN_IN).collect::<Vec<_>>());
@@ -627,7 +644,7 @@ mod tests {
         assert_eq!(work.dependency_edges_completed, FAN_IN);
         assert_eq!(
             work.nodes_enqueued + work.dependency_edges_completed,
-            nodes.len() + edges.len(),
+            nodes.len() + edge_count,
             "readiness work is one enqueue per vertex and one decrement per edge"
         );
     }
