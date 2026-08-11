@@ -442,13 +442,6 @@ where
         has_back_edge,
     );
 
-    // Step 6: Compute live_at for each instruction (union of live_in and live_out)
-    let live_at = compute_live_at(num_insts, vreg_count, &live_in, &live_out);
-
-    // Step 7: Collect clobbers and the never-returning call sites (RUE-1224)
-    let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
-    let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
-
     let debug = collect_debug.then(|| {
         let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
             bs.ones().map(|idx| VReg::new(idx as u32)).collect()
@@ -468,6 +461,13 @@ where
             vreg_count,
         }
     });
+
+    // Step 6: Compute live_at for each instruction (union of live_in and live_out)
+    let live_at = compute_live_at(live_in, &live_out);
+
+    // Step 7: Collect clobbers and the never-returning call sites (RUE-1224)
+    let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
+    let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
 
     (
         LivenessInfo {
@@ -570,6 +570,11 @@ fn compute_dataflow(
         vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
     let mut live_out: Vec<FixedBitSet> =
         vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
+    // The transfer function needs two temporary sets regardless of instruction
+    // count or convergence rounds. Reuse their backing storage instead of
+    // allocating two full-width bitsets for every row on every pass.
+    let mut new_live_in = FixedBitSet::with_capacity(vreg_count_usize);
+    let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
 
     // Iterate until fixed point
     let mut changed = true;
@@ -579,13 +584,13 @@ fn compute_dataflow(
         // Process instructions in reverse order for faster convergence
         for idx in (0..num_insts).rev() {
             // Compute live_out as union of live_in of all successors
-            let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
+            new_live_out.clear();
             for &succ in &successors[idx] {
                 new_live_out.union_with(&live_in[succ]);
             }
 
             // Compute live_in = uses ∪ (live_out - defs)
-            let mut new_live_in = new_live_out.clone();
+            new_live_in.clone_from(&new_live_out);
             for vreg in &inst_defs[idx] {
                 new_live_in.set(vreg.index() as usize, false);
             }
@@ -596,8 +601,8 @@ fn compute_dataflow(
             // Check if anything changed
             if new_live_in != live_in[idx] || new_live_out != live_out[idx] {
                 changed = true;
-                live_in[idx] = new_live_in;
-                live_out[idx] = new_live_out;
+                live_in[idx].clone_from(&new_live_in);
+                live_out[idx].clone_from(&new_live_out);
             }
         }
     }
@@ -728,22 +733,13 @@ fn build_live_ranges(
 }
 
 /// Compute live_at sets (union of live_in and live_out for each instruction).
-fn compute_live_at(
-    num_insts: usize,
-    vreg_count: u32,
-    live_in: &[FixedBitSet],
-    live_out: &[FixedBitSet],
-) -> Vec<FixedBitSet> {
-    let vreg_count_usize = vreg_count as usize;
-    let mut live_at: Vec<FixedBitSet> =
-        vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-
-    for (idx, (li, lo)) in live_in.iter().zip(live_out.iter()).enumerate() {
-        live_at[idx].union_with(li);
-        live_at[idx].union_with(lo);
+fn compute_live_at(mut live_in: Vec<FixedBitSet>, live_out: &[FixedBitSet]) -> Vec<FixedBitSet> {
+    // `live_in` has no consumer after ranges are built. Turn it into the
+    // retained union in place instead of allocating a third full-width table.
+    for (live_at, live_out) in live_in.iter_mut().zip(live_out) {
+        live_at.union_with(live_out);
     }
-
-    live_at
+    live_in
 }
 
 // ============================================================================
@@ -1070,6 +1066,40 @@ mod tests {
 
         // v0 and v1 should interfere (both live at instruction 2)
         assert!(info.interferes(VReg::new(0), VReg::new(1)));
+    }
+
+    #[test]
+    fn dataflow_scratch_is_cleared_across_rows_and_fixed_point_rounds() {
+        let successors: Vec<SuccessorList> = [
+            SuccessorList::new(),
+            [2].into_iter().collect(),
+            [1, 3].into_iter().collect(),
+            SuccessorList::new(),
+        ]
+        .into();
+        let uses: Vec<VRegList> = [
+            VRegList::new(),
+            [VReg::new(0)].into_iter().collect(),
+            VRegList::new(),
+            VRegList::new(),
+        ]
+        .into();
+        let defs = vec![VRegList::new(); successors.len()];
+
+        // The use at instruction 1 reaches instruction 2 only through the
+        // back-edge, so convergence requires another reverse pass. Instruction
+        // 0 is processed after those live rows but remains empty, proving one
+        // row's scratch bits do not leak to the next row or the next round.
+        let (live_in, live_out) = compute_dataflow(4, 1, &successors, &uses, &defs);
+        let ones = |set: &FixedBitSet| set.ones().collect::<Vec<_>>();
+        assert!(live_in[0].is_clear());
+        assert_eq!(ones(&live_in[1]), vec![0]);
+        assert_eq!(ones(&live_in[2]), vec![0]);
+        assert!(live_in[3].is_clear());
+        assert!(live_out[0].is_clear());
+        assert_eq!(ones(&live_out[1]), vec![0]);
+        assert_eq!(ones(&live_out[2]), vec![0]);
+        assert!(live_out[3].is_clear());
     }
 
     // ========================================
