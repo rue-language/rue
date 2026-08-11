@@ -7,8 +7,78 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::Hash;
+use std::ops::Deref;
+
+use smallvec::{IntoIter, SmallVec};
 
 use crate::reg_class::RegClass;
+
+/// Physical-register facts attached to one scheduled instruction.
+///
+/// Both MIRs name at most three read or written registers on one instruction.
+/// The hard bound prevents this transient per-instruction value from silently
+/// falling back to heap allocation if a future MIR form grows that contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegList<R>(SmallVec<[R; 3]>);
+
+impl<R> RegList<R> {
+    /// Create an empty inline register list.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(SmallVec::new())
+    }
+
+    /// Append one register within the audited MIR bound.
+    ///
+    /// # Panics
+    ///
+    /// Panics when one instruction exposes more than three register facts.
+    pub fn push(&mut self, reg: R) {
+        assert!(
+            self.0.len() < self.0.inline_size(),
+            "inline scheduler register-fact capacity exceeded"
+        );
+        self.0.push(reg);
+    }
+}
+
+impl<R> Default for RegList<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R> Deref for RegList<R> {
+    type Target = [R];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<R> IntoIterator for RegList<R> {
+    type Item = R;
+    type IntoIter = IntoIter<[R; 3]>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<R> From<RegList<R>> for Vec<R> {
+    fn from(regs: RegList<R>) -> Self {
+        regs.0.into_vec()
+    }
+}
+
+impl<'a, R> IntoIterator for &'a RegList<R> {
+    type Item = &'a R;
+    type IntoIter = std::slice::Iter<'a, R>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
 
 /// Backend-specific facts required by the shared scheduler.
 pub trait SchedulerAdapter {
@@ -37,13 +107,13 @@ pub trait SchedulerAdapter {
     fn accesses_memory(&self, inst: &Self::Inst) -> bool;
 
     /// Physical registers read by this instruction.
-    fn regs_read(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+    fn regs_read(&self, inst: &Self::Inst) -> RegList<Self::Reg>;
 
     /// Physical registers written by this instruction.
-    fn regs_written(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+    fn regs_written(&self, inst: &Self::Inst) -> RegList<Self::Reg>;
 
     /// Physical registers clobbered by this instruction.
-    fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+    fn clobbers(&self, inst: &Self::Inst) -> &[Self::Reg];
 
     /// Whether this instruction writes the target's condition flags.
     fn writes_flags(&self, inst: &Self::Inst) -> bool;
@@ -307,7 +377,7 @@ where
 
         let clobbers = adapter.clobbers(inst);
         // Clobber dependencies.
-        for &clobbered in &clobbers {
+        for &clobbered in clobbers {
             let class = adapter.reg_class(clobbered);
             // This instruction clobbers the register, so it must come after
             // any readers.
@@ -327,7 +397,7 @@ where
         // Update tracking. Clobbers count as writes here: a later instruction
         // that writes (WAW) or reads (RAW) a clobbered register must not be
         // scheduled above the clobberer, or the clobber destroys its value.
-        for clobbered in clobbers {
+        for &clobbered in clobbers {
             regs.record_write(adapter.reg_class(clobbered), clobbered, i);
         }
         for reg in writes {
@@ -473,6 +543,26 @@ fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn scheduler_register_facts_stay_inline_through_the_mir_maximum() {
+        let mut regs = RegList::new();
+        regs.push(0u8);
+        regs.push(1);
+        regs.push(2);
+
+        assert_eq!(&*regs, &[0, 1, 2]);
+        assert!(!regs.0.spilled());
+    }
+
+    #[test]
+    #[should_panic(expected = "inline scheduler register-fact capacity exceeded")]
+    fn scheduler_register_facts_fail_loudly_when_the_mir_bound_changes() {
+        let mut regs = RegList::new();
+        for reg in 0u8..4 {
+            regs.push(reg);
+        }
+    }
+
     /// A register named by class and number, so the same number can appear in
     /// two classes — the aliasing case the partitioned [`RegTracker`] rules
     /// out. No backend has such a register type yet.
@@ -508,16 +598,24 @@ mod tests {
             false
         }
 
-        fn regs_read(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
-            inst.reads.clone()
+        fn regs_read(&self, inst: &Self::Inst) -> RegList<Self::Reg> {
+            let mut regs = RegList::new();
+            for &reg in &inst.reads {
+                regs.push(reg);
+            }
+            regs
         }
 
-        fn regs_written(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
-            inst.writes.clone()
+        fn regs_written(&self, inst: &Self::Inst) -> RegList<Self::Reg> {
+            let mut regs = RegList::new();
+            for &reg in &inst.writes {
+                regs.push(reg);
+            }
+            regs
         }
 
-        fn clobbers(&self, _inst: &Self::Inst) -> Vec<Self::Reg> {
-            Vec::new()
+        fn clobbers(&self, _inst: &Self::Inst) -> &[Self::Reg] {
+            &[]
         }
 
         fn writes_flags(&self, _inst: &Self::Inst) -> bool {

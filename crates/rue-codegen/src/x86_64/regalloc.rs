@@ -1430,7 +1430,7 @@ impl RegAllocBackend for X86Backend {
     }
 
     fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg> {
-        let mut regs = super::schedule::regs_read(inst);
+        let mut regs: Vec<_> = super::schedule::regs_read(inst).into();
         regs.extend(super::schedule::regs_written(inst));
         regs
     }

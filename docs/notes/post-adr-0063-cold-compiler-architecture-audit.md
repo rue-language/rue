@@ -953,6 +953,20 @@ peak RSS falls by 0.86 MiB, within dispersion. Three allocation-accounting
 comparisons are neutral, and every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1393 keeps the shared instruction scheduler's bounded physical-register
+facts inline. Each x86-64 and AArch64 MIR instruction reads or writes at most
+three physical registers; a shared hard-bounded list now represents those
+facts without a per-instruction heap allocation. The list panics on a fourth
+entry rather than silently spilling if MIR grows. Static clobber tables are
+borrowed directly instead of copied into another temporary vector.
+
+Three fixed one-worker Lattice probes save 462,033--462,367 allocator calls
+(2.83%) and 3.44--3.62 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.31% paired median, with 1.87%
+paired MAD and a -10.12% to +5.07% range. Median peak RSS moves +2.31 MiB within
+dispersion. Every published compiler-work counter and emitted executable byte
+remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
