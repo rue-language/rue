@@ -1977,6 +1977,11 @@ pub struct SemanticManifestMetrics {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticCfgMetrics {
     pub functions_considered: usize,
+    pub materialization_index_builds: usize,
+    pub materialization_declarations_scanned: usize,
+    pub materialization_anonymous_nominals_scanned: usize,
+    pub materialization_type_nodes_scanned: usize,
+    pub materialization_fact_selections: usize,
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
@@ -2049,6 +2054,13 @@ impl SemanticMetrics {
             },
             cfg: SemanticCfgMetrics {
                 functions_considered: work.cfg.functions_considered,
+                materialization_index_builds: work.cfg.materialization_index_builds,
+                materialization_declarations_scanned: work.cfg.materialization_declarations_scanned,
+                materialization_anonymous_nominals_scanned: work
+                    .cfg
+                    .materialization_anonymous_nominals_scanned,
+                materialization_type_nodes_scanned: work.cfg.materialization_type_nodes_scanned,
+                materialization_fact_selections: work.cfg.materialization_fact_selections,
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,

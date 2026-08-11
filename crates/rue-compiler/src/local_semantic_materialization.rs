@@ -2,8 +2,9 @@
 //!
 //! This adapter joins one query-owned body with exact declaration, anonymous
 //! nominal, nominal-metadata, callable-symbol, and module facts. It deliberately
-//! owns no state: the returned AIR carries its issuing pool/interner and the
-//! temporary import epoch is consumed by the request. Target and preview
+//! owns no retained state: request-local lookup preparation is discarded after
+//! CFG keys are assembled, the returned AIR carries its issuing pool/interner,
+//! and the temporary import epoch is consumed by the request. Target and preview
 //! configuration are absent because relocation of already-analyzed AIR is
 //! configuration-neutral; they remain part of the downstream CFG query key.
 
@@ -21,6 +22,119 @@ use crate::{FunctionInstanceKey, ModuleId, StableDefinitionKey, StableDefinition
 pub(crate) struct LocalCallableFact {
     pub(crate) identity: FunctionInstanceKey,
     pub(crate) symbol: Arc<str>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LocalFactSelectionIndexWork {
+    pub(crate) declarations_scanned: usize,
+    pub(crate) anonymous_nominals_scanned: usize,
+    pub(crate) type_nodes_scanned: usize,
+}
+
+/// Immutable request-local lookup preparation shared by every CFG input.
+///
+/// This is a convenience index over exact query-owned facts, never a semantic
+/// or query authority. Selected facts are still cloned into each CFG memo key.
+pub(crate) struct LocalFactSelectionIndex<'facts> {
+    declarations:
+        std::collections::HashMap<&'facts StableDefinitionKey, &'facts DurableDeclarationSemantic>,
+    destructors: std::collections::HashMap<
+        (&'facts ModuleId, StableDefinitionKind, &'facts str),
+        &'facts DurableDeclarationSemantic,
+    >,
+    anonymous: std::collections::HashMap<
+        &'facts crate::AnonymousNominalKey,
+        &'facts DurableAnonymousNominal,
+    >,
+    slice_sources: std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
+}
+
+impl<'facts> LocalFactSelectionIndex<'facts> {
+    pub(crate) fn new(
+        declarations: &'facts [DurableDeclarationSemantic],
+        anonymous_nominals: &'facts [DurableAnonymousNominal],
+    ) -> (Self, LocalFactSelectionIndexWork) {
+        let mut work = LocalFactSelectionIndexWork::default();
+        let mut declaration_index = std::collections::HashMap::with_capacity(declarations.len());
+        let mut destructors = std::collections::HashMap::new();
+        let mut slice_sources = std::collections::HashMap::new();
+        for declaration in declarations {
+            work.declarations_scanned += 1;
+            match &declaration.payload {
+                DurableDeclarationPayload::Callable {
+                    parameters, result, ..
+                } => {
+                    for parameter in parameters.iter() {
+                        collect_slice_sources(&parameter.ty, &mut slice_sources, &mut work);
+                    }
+                    collect_slice_sources(result, &mut slice_sources, &mut work);
+                }
+                DurableDeclarationPayload::Struct { fields, .. } => {
+                    for (_, ty) in fields.iter() {
+                        collect_slice_sources(ty, &mut slice_sources, &mut work);
+                    }
+                }
+                DurableDeclarationPayload::Enum { variants } => {
+                    for (_, fields) in variants.iter() {
+                        for ty in fields.iter() {
+                            collect_slice_sources(ty, &mut slice_sources, &mut work);
+                        }
+                    }
+                }
+                DurableDeclarationPayload::Const { ty, .. } => {
+                    collect_slice_sources(ty, &mut slice_sources, &mut work);
+                }
+                _ => {}
+            }
+            if matches!(declaration.payload, DurableDeclarationPayload::Destructor)
+                && let Some(owner) = declaration.key.owner()
+            {
+                destructors.insert((owner.module(), owner.kind(), owner.name()), declaration);
+            }
+            declaration_index.insert(&declaration.key, declaration);
+        }
+        let mut anonymous = std::collections::HashMap::with_capacity(anonymous_nominals.len());
+        for nominal in anonymous_nominals {
+            work.anonymous_nominals_scanned += 1;
+            anonymous.insert(&nominal.identity, nominal);
+        }
+        (
+            Self {
+                declarations: declaration_index,
+                destructors,
+                anonymous,
+                slice_sources,
+            },
+            work,
+        )
+    }
+}
+
+fn collect_slice_sources(
+    ty: &crate::durable_semantics::DurableType,
+    output: &mut std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
+    work: &mut LocalFactSelectionIndexWork,
+) {
+    use rue_air::SemanticImportType as T;
+    work.type_nodes_scanned += 1;
+    match ty {
+        T::Slice { element, name } => {
+            if let Some(element) = crate::semantic_identity::type_instance_from_semantic(element) {
+                output.insert(
+                    name.clone(),
+                    crate::TypeInstanceKey::Slice {
+                        element: Box::new(element),
+                        name: name.clone(),
+                    },
+                );
+            }
+            collect_slice_sources(element, output, work);
+        }
+        T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
+            collect_slice_sources(element, output, work)
+        }
+        _ => {}
+    }
 }
 
 /// Exact classification projected from the selected nominal's query-owned
@@ -739,21 +853,13 @@ pub(crate) fn materialize_semantic_body(
 pub(crate) fn select_materialization_facts(
     identity: &FunctionInstanceKey,
     body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
-    declarations: &[DurableDeclarationSemantic],
-    anonymous_nominals: &[DurableAnonymousNominal],
+    index: &LocalFactSelectionIndex<'_>,
     callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     use rue_air::SemanticBodyInstDependency as Dependency;
 
-    struct Selection<'a> {
-        declarations:
-            std::collections::BTreeMap<StableDefinitionKey, &'a DurableDeclarationSemantic>,
-        destructors: std::collections::BTreeMap<
-            (ModuleId, StableDefinitionKind, Arc<str>),
-            &'a DurableDeclarationSemantic,
-        >,
-        anonymous:
-            std::collections::BTreeMap<crate::AnonymousNominalKey, &'a DurableAnonymousNominal>,
+    struct Selection<'index, 'facts> {
+        index: &'index LocalFactSelectionIndex<'facts>,
         selected_declarations:
             std::collections::BTreeMap<StableDefinitionKey, DurableDeclarationSemantic>,
         selected_anonymous:
@@ -764,10 +870,9 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet<FunctionInstanceKey>,
         modules: std::collections::BTreeSet<ModuleId>,
         builtins: std::collections::BTreeSet<LocalBuiltinNominalRequest>,
-        slice_sources: std::collections::BTreeMap<Arc<str>, crate::TypeInstanceKey>,
     }
 
-    impl Selection<'_> {
+    impl Selection<'_, '_> {
         fn builtin(&mut self, kind: crate::AnonymousNominalKind, name: &Arc<str>) {
             // The local semantic epoch owns the canonical fixed builtins and
             // lazily materializes fixed-capacity strings. Supplying query
@@ -784,12 +889,15 @@ pub(crate) fn select_materialization_facts(
             {
                 return;
             }
-            let query_ty = self.slice_sources.get(name).cloned().unwrap_or_else(|| {
-                crate::TypeInstanceKey::BuiltinNominal {
+            let query_ty = self
+                .index
+                .slice_sources
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| crate::TypeInstanceKey::BuiltinNominal {
                     kind,
                     name: name.clone(),
-                }
-            });
+                });
             self.builtins.insert(LocalBuiltinNominalRequest {
                 kind,
                 name: name.clone(),
@@ -964,6 +1072,7 @@ pub(crate) fn select_materialization_facts(
                     crate::NominalInstanceKey::Builtin { .. } => {}
                     crate::NominalInstanceKey::Named(key) => {
                         let declaration = self
+                            .index
                             .declarations
                             .get(&key)
                             .copied()
@@ -979,13 +1088,9 @@ pub(crate) fn select_materialization_facts(
                                 for (_, ty) in fields.iter() {
                                     self.semantic_type(ty);
                                 }
-                                let owner = (
-                                    key.module().clone(),
-                                    key.kind(),
-                                    Arc::<str>::from(key.name()),
-                                );
+                                let owner = (key.module(), key.kind(), key.name());
                                 if let Some(destructor) =
-                                    self.destructors.get(&owner).copied().cloned()
+                                    self.index.destructors.get(&owner).copied().cloned()
                                 {
                                     self.selected_declarations
                                         .insert(destructor.key.clone(), destructor.clone());
@@ -1005,8 +1110,13 @@ pub(crate) fn select_materialization_facts(
                         }
                     }
                     crate::NominalInstanceKey::Anonymous(key) => {
-                        let nominal =
-                            self.anonymous.get(&key).copied().cloned().ok_or_else(|| {
+                        let nominal = self
+                            .index
+                            .anonymous
+                            .get(&key)
+                            .copied()
+                            .cloned()
+                            .ok_or_else(|| {
                                 LocalFactSelectionFailure::MissingAnonymousNominal(key.clone())
                             })?;
                         self.selected_anonymous.insert(key.clone(), nominal.clone());
@@ -1059,7 +1169,7 @@ pub(crate) fn select_materialization_facts(
                     crate::NominalInstanceKey::Builtin { .. } => {}
                     crate::NominalInstanceKey::Named(key) => {
                         let declaration =
-                            self.declarations.get(&key).copied().ok_or_else(|| {
+                            self.index.declarations.get(&key).copied().ok_or_else(|| {
                                 LocalFactSelectionFailure::MissingNamedNominal(key.clone())
                             })?;
                         let payload = match declaration.payload {
@@ -1088,7 +1198,7 @@ pub(crate) fn select_materialization_facts(
                         );
                     }
                     crate::NominalInstanceKey::Anonymous(key) => {
-                        let nominal = self.anonymous.get(&key).copied().ok_or_else(|| {
+                        let nominal = self.index.anonymous.get(&key).copied().ok_or_else(|| {
                             LocalFactSelectionFailure::MissingAnonymousNominal(key.clone())
                         })?;
                         let shape = match nominal.shape {
@@ -1120,87 +1230,8 @@ pub(crate) fn select_materialization_facts(
         }
     }
 
-    fn collect_slice_sources(
-        ty: &crate::durable_semantics::DurableType,
-        output: &mut std::collections::BTreeMap<Arc<str>, crate::TypeInstanceKey>,
-    ) {
-        use rue_air::SemanticImportType as T;
-        match ty {
-            T::Slice { element, name } => {
-                if let Some(element) =
-                    crate::semantic_identity::type_instance_from_semantic(element)
-                {
-                    output.insert(
-                        name.clone(),
-                        crate::TypeInstanceKey::Slice {
-                            element: Box::new(element),
-                            name: name.clone(),
-                        },
-                    );
-                }
-                collect_slice_sources(element, output);
-            }
-            T::Array { element, .. } | T::PtrConst(element) | T::PtrMut(element) => {
-                collect_slice_sources(element, output)
-            }
-            _ => {}
-        }
-    }
-    let mut slice_sources = std::collections::BTreeMap::new();
-    for declaration in declarations {
-        match &declaration.payload {
-            DurableDeclarationPayload::Callable {
-                parameters, result, ..
-            } => {
-                for parameter in parameters.iter() {
-                    collect_slice_sources(&parameter.ty, &mut slice_sources);
-                }
-                collect_slice_sources(result, &mut slice_sources);
-            }
-            DurableDeclarationPayload::Struct { fields, .. } => {
-                for (_, ty) in fields.iter() {
-                    collect_slice_sources(ty, &mut slice_sources);
-                }
-            }
-            DurableDeclarationPayload::Enum { variants } => {
-                for (_, fields) in variants.iter() {
-                    for ty in fields.iter() {
-                        collect_slice_sources(ty, &mut slice_sources);
-                    }
-                }
-            }
-            DurableDeclarationPayload::Const { ty, .. } => {
-                collect_slice_sources(ty, &mut slice_sources);
-            }
-            _ => {}
-        }
-    }
-    let mut destructors = std::collections::BTreeMap::new();
-    let declaration_index = declarations
-        .iter()
-        .map(|declaration| (declaration.key.clone(), declaration))
-        .collect();
-    for declaration in declarations {
-        if matches!(declaration.payload, DurableDeclarationPayload::Destructor)
-            && let Some(owner) = declaration.key.owner()
-        {
-            destructors.insert(
-                (
-                    owner.module().clone(),
-                    owner.kind(),
-                    Arc::<str>::from(owner.name()),
-                ),
-                declaration,
-            );
-        }
-    }
     let mut selection = Selection {
-        declarations: declaration_index,
-        destructors,
-        anonymous: anonymous_nominals
-            .iter()
-            .map(|nominal| (nominal.identity.clone(), nominal))
-            .collect(),
+        index,
         selected_declarations: std::collections::BTreeMap::new(),
         selected_anonymous: std::collections::BTreeMap::new(),
         pending_nominals: Vec::new(),
@@ -1209,7 +1240,6 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet::new(),
         modules: std::collections::BTreeSet::new(),
         builtins: std::collections::BTreeSet::new(),
-        slice_sources,
     };
     selection.callable(identity);
     let mut required_types = Vec::new();
@@ -1328,8 +1358,7 @@ pub(crate) fn select_materialization_facts(
 pub(crate) fn select_drop_glue_materialization_facts(
     owner: &crate::TypeInstanceKey,
     facts: &crate::type_queries::DropGlueFacts,
-    declarations: &[DurableDeclarationSemantic],
-    anonymous_nominals: &[DurableAnonymousNominal],
+    index: &LocalFactSelectionIndex<'_>,
     callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     let identity = FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
@@ -1357,13 +1386,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         warnings: Arc::new([]),
         method_references: Arc::new([]),
     };
-    select_materialization_facts(
-        &identity,
-        &body,
-        declarations,
-        anonymous_nominals,
-        callable_symbols,
-    )
+    select_materialization_facts(&identity, &body, index, callable_symbols)
 }
 
 #[cfg(test)]
@@ -1606,11 +1629,11 @@ mod tests {
         ];
         let mut selection_body = body();
         selection_body.return_type = rue_air::SemanticImportType::Nominal(record);
+        let (index, _) = LocalFactSelectionIndex::new(&declarations, &[]);
         let facts = select_materialization_facts(
             &FunctionInstanceKey::Definition(function.clone()),
             &selection_body,
-            &declarations,
-            &[],
+            &index,
             &std::collections::BTreeMap::from([(
                 FunctionInstanceKey::Definition(function.clone()),
                 Arc::from("probe"),

@@ -963,6 +963,17 @@ fn benchmark_compiler_work(
             transactions_prefetched: reachability.transactions_prefetched,
             transactions_serial: reachability.transactions_serial,
         },
+        cfg_materialization: rue_perf_schema::CfgMaterializationWork {
+            index_builds: metrics.semantic.cfg.materialization_index_builds as u64,
+            declarations_scanned: metrics.semantic.cfg.materialization_declarations_scanned as u64,
+            anonymous_nominals_scanned: metrics
+                .semantic
+                .cfg
+                .materialization_anonymous_nominals_scanned
+                as u64,
+            type_nodes_scanned: metrics.semantic.cfg.materialization_type_nodes_scanned as u64,
+            fact_selections: metrics.semantic.cfg.materialization_fact_selections as u64,
+        },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
             validation: rue_perf_schema::ValidationWork {
                 traversals: validation.traversals,
@@ -1496,8 +1507,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn benchmark_work_projection_preserves_query_runtime_counters() {
+    fn benchmark_work_projection_preserves_structural_counters() {
         let metrics = rue_compiler::unstable::OneShotMetrics {
+            semantic: rue_compiler::unstable::SemanticMetrics {
+                cfg: rue_compiler::unstable::SemanticCfgMetrics {
+                    materialization_index_builds: 1,
+                    materialization_declarations_scanned: 31,
+                    materialization_anonymous_nominals_scanned: 7,
+                    materialization_type_nodes_scanned: 47,
+                    materialization_fact_selections: 11,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
             query_runtime: rue_compiler::unstable::QueryRuntimeMetrics {
                 validation: rue_compiler::unstable::QueryValidationMetrics {
                     traversals: 3,
@@ -1520,31 +1542,32 @@ mod tests {
             },
             ..Default::default()
         };
-        let projected = benchmark_compiler_work(metrics).query_runtime;
-        assert_eq!(projected.validation.traversals, 3);
-        assert_eq!(projected.validation.dependency_observations, 11);
-        assert_eq!(projected.validation.memo_hits, 7);
-        assert_eq!(projected.validation.memo_misses, 2);
+        let projected = benchmark_compiler_work(metrics);
+        assert_eq!(projected.cfg_materialization.index_builds, 1);
+        assert_eq!(projected.cfg_materialization.declarations_scanned, 31);
+        assert_eq!(projected.cfg_materialization.anonymous_nominals_scanned, 7);
+        assert_eq!(projected.cfg_materialization.type_nodes_scanned, 47);
+        assert_eq!(projected.cfg_materialization.fact_selections, 11);
+        let runtime = projected.query_runtime;
+        assert_eq!(runtime.validation.traversals, 3);
+        assert_eq!(runtime.validation.dependency_observations, 11);
+        assert_eq!(runtime.validation.memo_hits, 7);
+        assert_eq!(runtime.validation.memo_misses, 2);
+        assert_eq!(runtime.validation.duplicate_terminal_lease_observations, 5);
+        assert_eq!(runtime.retention_enforcements, 13);
+        assert_eq!(runtime.retention_scan_entries, 17);
+        assert_eq!(runtime.display_identities.memo_node_materializations, 19);
+        assert_eq!(runtime.display_identities.memo_node_bytes, 113);
         assert_eq!(
-            projected.validation.duplicate_terminal_lease_observations,
-            5
-        );
-        assert_eq!(projected.retention_enforcements, 13);
-        assert_eq!(projected.retention_scan_entries, 17);
-        assert_eq!(projected.display_identities.memo_node_materializations, 19);
-        assert_eq!(projected.display_identities.memo_node_bytes, 113);
-        assert_eq!(
-            projected
-                .display_identities
-                .structured_wait_materializations,
+            runtime.display_identities.structured_wait_materializations,
             23
         );
-        assert_eq!(projected.display_identities.structured_wait_bytes, 211);
+        assert_eq!(runtime.display_identities.structured_wait_bytes, 211);
         assert_eq!(
-            projected.display_identities.abort_fallback_materializations,
+            runtime.display_identities.abort_fallback_materializations,
             2
         );
-        assert_eq!(projected.display_identities.abort_fallback_bytes, 17);
+        assert_eq!(runtime.display_identities.abort_fallback_bytes, 17);
     }
     use tracing_subscriber::layer::SubscriberExt as _;
 

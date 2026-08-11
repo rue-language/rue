@@ -543,6 +543,15 @@ pub(crate) fn collect_function_cfg_queries(
             )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
+    let (materialization_index, index_work) =
+        crate::local_semantic_materialization::LocalFactSelectionIndex::new(
+            durable_declarations,
+            durable_anonymous_nominals,
+        );
+    work.materialization_index_builds += 1;
+    work.materialization_declarations_scanned += index_work.declarations_scanned;
+    work.materialization_anonymous_nominals_scanned += index_work.anonymous_nominals_scanned;
+    work.materialization_type_nodes_scanned += index_work.type_nodes_scanned;
 
     // Build the exact accessor subgraph over canonical per-body artifacts.
     // These keys become nested `compiler.cfg` reads of each caller's
@@ -555,11 +564,11 @@ pub(crate) fn collect_function_cfg_queries(
             | crate::body_query::CanonicalBody::Anonymous { body, .. }
             | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
         };
+        work.materialization_fact_selections += 1;
         let materialization = crate::local_semantic_materialization::select_materialization_facts(
             &input.function,
             body,
-            durable_declarations,
-            durable_anonymous_nominals,
+            &materialization_index,
             &callable_symbols,
         )
         .map_err(|error| CfgConstructionFailure {
@@ -656,11 +665,11 @@ pub(crate) fn collect_function_cfg_queries(
                         | crate::body_query::CanonicalBody::Anonymous { body, .. }
                         | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
                     };
+                    work.materialization_fact_selections += 1;
                     let materialization = crate::local_semantic_materialization::select_materialization_facts(
                         &semantic_identity,
                         body,
-                        durable_declarations,
-                        durable_anonymous_nominals,
+                        &materialization_index,
                         &callable_symbols,
                     )
                     .map_err(|error| {
@@ -694,11 +703,11 @@ pub(crate) fn collect_function_cfg_queries(
                             canonical_semantic::CfgConstructionWork::default(),
                         ));
                     };
+                    work.materialization_fact_selections += 1;
                     let materialization = crate::local_semantic_materialization::select_drop_glue_materialization_facts(
                         owner,
                         facts,
-                        durable_declarations,
-                        durable_anonymous_nominals,
+                        &materialization_index,
                         &callable_symbols,
                     )
                     .map_err(|error| {

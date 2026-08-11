@@ -430,6 +430,29 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## CFG materialization preparation\n\n");
+    out.push_str("Counts are exact for construction of the request-local lookup index and selection of body-local fact closures. `selections/build` exposes how broadly one immutable index is shared without conflating lookup preparation with the exact per-body selection that must remain.\n\n");
+    out.push_str("| workload | index builds | declarations scanned | anonymous nominals scanned | type nodes scanned | fact selections | selections/build |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let work = observation.work.cfg_materialization;
+        let selections_per_build = if work.index_builds == 0 {
+            0.0
+        } else {
+            work.fact_selections as f64 / work.index_builds as f64
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {:.2} |\n",
+            observation.workload,
+            work.index_builds,
+            work.declarations_scanned,
+            work.anonymous_nominals_scanned,
+            work.type_nodes_scanned,
+            work.fact_selections,
+            selections_per_build,
+        ));
+    }
+
     out.push_str("\n## Query display identities\n\n");
     out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
     out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
@@ -567,6 +590,13 @@ mod tests {
                         transactions_serial: 0,
                         ..Default::default()
                     },
+                    cfg_materialization: rue_perf_schema::CfgMaterializationWork {
+                        index_builds: 1,
+                        declarations_scanned: 3,
+                        anonymous_nominals_scanned: 1,
+                        type_nodes_scanned: 7,
+                        fact_selections: 4,
+                    },
                     query_runtime: rue_perf_schema::QueryRuntimeWork {
                         validation: rue_perf_schema::ValidationWork {
                             traversals: 3,
@@ -604,6 +634,8 @@ mod tests {
         assert!(rendered.contains("nodes/token"));
         assert!(rendered.contains("Semantic reachability scheduling"));
         assert!(rendered.contains("keys/batch"));
+        assert!(rendered.contains("CFG materialization preparation"));
+        assert!(rendered.contains("selections/build"));
         assert!(rendered.contains("Query display identities"));
         assert!(rendered.contains("bytes/token"));
     }

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 7;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 8;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,8 +169,26 @@ pub struct ScalingObservation {
 pub struct CompilerWork {
     /// Work performed while discovering and scheduling reachable bodies.
     pub semantic_reachability: SemanticReachabilityWork,
+    /// Request-local lookup preparation for exact CFG materialization facts.
+    pub cfg_materialization: CfgMaterializationWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
+}
+
+/// Deterministic preparation and selection work for body-local CFG facts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CfgMaterializationWork {
+    /// Immutable request-local indexes constructed.
+    pub index_builds: u64,
+    /// Durable declarations visited while constructing those indexes.
+    pub declarations_scanned: u64,
+    /// Durable anonymous nominals visited while constructing those indexes.
+    pub anonymous_nominals_scanned: u64,
+    /// Durable type nodes visited while discovering named slice sources.
+    pub type_nodes_scanned: u64,
+    /// Exact body or drop-glue fact closures selected from the shared index.
+    pub fact_selections: u64,
 }
 
 /// Deterministic work performed by database-owned semantic reachability.
