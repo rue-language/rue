@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 10;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 11;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +173,9 @@ pub struct CompilerWork {
     pub semantic_reachability: SemanticReachabilityWork,
     /// Request-local lookup preparation for exact CFG materialization facts.
     pub cfg_materialization: CfgMaterializationWork,
+    /// Logical retained-charge bookkeeping for CFG artifacts.
+    #[serde(default)]
+    pub cfg_retained_charge: CfgRetainedChargeWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
 }
@@ -227,6 +230,18 @@ pub struct CfgMaterializationWork {
     pub type_nodes_scanned: u64,
     /// Exact body or drop-glue fact closures selected from the shared index.
     pub fact_selections: u64,
+}
+
+/// Deterministic logical retained-charge work for CFG artifacts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CfgRetainedChargeWork {
+    /// Body-local symbol tables walked to compute their logical retained charge.
+    pub interner_scans: u64,
+    /// Symbol-table entries visited by those retained-charge walks.
+    pub interner_entries_scanned: u64,
+    /// UTF-8 symbol bytes visited by those retained-charge walks.
+    pub interner_utf8_bytes_scanned: u64,
 }
 
 /// Deterministic work performed by database-owned semantic reachability.
@@ -347,5 +362,19 @@ question = "small maintained compiler frontend"
     fn rejects_unknown_fields_instead_of_guessing() {
         let error = ScalingManifest::parse(&format!("{VALID}\nsurprise = true\n")).unwrap_err();
         assert!(error.contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn older_compiler_work_defaults_the_new_retained_charge_category() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("cfg_retained_charge");
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            decoded.cfg_retained_charge,
+            CfgRetainedChargeWork::default()
+        );
     }
 }

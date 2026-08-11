@@ -835,11 +835,28 @@ pub(crate) fn collect_function_cfg_queries(
                 let import_successes = direct_work("cfg.import.successes");
                 let import_failures = direct_work("cfg.import.failures");
                 let cfg_fallbacks = direct_work("cfg.fallbacks");
-                let cfg_execution = attempt
+                let cfg_attempt = attempt
                     .nested_attempts()
                     .iter()
-                    .find(|attempt| attempt.node().family() == "compiler.cfg")
-                    .map(rue_query::NestedQueryAttempt::execution);
+                    .find(|attempt| attempt.node().family() == "compiler.cfg");
+                let cfg_execution = cfg_attempt.map(rue_query::NestedQueryAttempt::execution);
+                let cfg_work = |name: &str| {
+                    attempt
+                        .nested_attempts()
+                        .iter()
+                        .filter(|attempt| attempt.node().family() == "compiler.cfg")
+                        .flat_map(rue_query::NestedQueryAttempt::work)
+                        .filter_map(|(kind, count)| {
+                            (kind.as_ref() == name).then_some(*count as usize)
+                        })
+                        .sum()
+                };
+                let retained_interner_charge_scans =
+                    cfg_work("cfg.retained-interner-charge-scans");
+                let retained_interner_entries_scanned =
+                    cfg_work("cfg.retained-interner-entries-scanned");
+                let retained_interner_utf8_bytes_scanned =
+                    cfg_work("cfg.retained-interner-utf8-bytes-scanned");
                 let terminal = attempt.into_result().map_err(|abort| {
                     (
                         CompileError::without_span(ErrorKind::InternalError(format!(
@@ -852,7 +869,12 @@ pub(crate) fn collect_function_cfg_queries(
                 let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
                     unreachable!("OptimizedCfg publishes typed values")
                 };
-                let mut function_work = canonical_semantic::CfgConstructionWork::default();
+                let mut function_work = canonical_semantic::CfgConstructionWork {
+                    retained_interner_charge_scans,
+                    retained_interner_entries_scanned,
+                    retained_interner_utf8_bytes_scanned,
+                    ..Default::default()
+                };
                 if cfg_execution == Some(rue_query::RequestExecution::Computed) {
                     function_work.cfg_builds_attempted = 1;
                     function_work.cfg_builds_succeeded =
@@ -1020,6 +1042,10 @@ pub(crate) fn collect_function_cfg_queries(
             }
         };
         work.cfg_builds_attempted += function_work.cfg_builds_attempted;
+        work.retained_interner_charge_scans += function_work.retained_interner_charge_scans;
+        work.retained_interner_entries_scanned += function_work.retained_interner_entries_scanned;
+        work.retained_interner_utf8_bytes_scanned +=
+            function_work.retained_interner_utf8_bytes_scanned;
         work.cfg_builds_succeeded += function_work.cfg_builds_succeeded;
         work.cfg_builds_failed += function_work.cfg_builds_failed;
         work.air_instructions_consumed += function_work.air_instructions_consumed;

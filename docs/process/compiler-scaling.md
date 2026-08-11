@@ -38,6 +38,8 @@ compilations. The report records:
   buckets;
 - request-local CFG-materialization index builds, declaration/anonymous/type
   scans, and exact body-local fact selections;
+- logical CFG retained-charge walks over body-local symbol-table entries and
+  UTF-8 bytes;
 - query validation, endorsement, lease, demand, and retention-scan work;
 - query claims, terminal reuses, joins, body completions, publication
   outcomes, cancellations, and cycles;
@@ -74,6 +76,11 @@ The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build
 ratio makes accidental per-body rebuilding of request-wide declaration,
 anonymous-nominal, destructor, and slice-source indexes directly visible.
+
+The CFG retained-charge table counts the body-local symbol-table entries and
+UTF-8 bytes visited by memory-policy bookkeeping at publication. Keeping this
+separate from materialization shows when accounting work repeats over an
+unchanged artifact, even when host timing noise hides its cost.
 
 The display-identity table similarly reports formatted key bytes per token.
 Memo-node identities and abort fallbacks label diagnostics. Structured-wait

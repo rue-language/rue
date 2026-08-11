@@ -655,6 +655,27 @@ clock result is mixed/neutral rather than a claimed speedup. Peak memory was
 flat within 1.5 MiB, and the Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1371 removes a duplicate retained-memory accounting walk at the CFG
+boundary. A successful raw CFG computes and caches the exact logical charge of
+its body-local symbol interner; the optimized CFG shares that append-only
+interner and reuses the cached charge while its symbol universe is unchanged.
+Accessor import can extend the shared interner, so that path detects actual
+growth, refreshes the shared charge, and records the additional walk.
+
+Scaling schema version eleven publishes this bookkeeping separately from CFG
+materialization. The fixed one-worker probes now perform 216, 630, 1,359, and
+1,280 interner scans across Ruelex through Lattice, visiting 3,544, 13,089,
+32,191, and 41,882 entries and 588,364, 2,839,105, 8,418,806, and 10,887,143
+UTF-8 bytes. The previous source path repeated every walk for the optimized
+terminal, including CFGs whose symbol universe was unchanged. None of the
+maintained workloads extends an interner during accessor import, so all three
+measures are halved exactly across the curve; the accessor corpus separately
+exercises the growth refresh. Directly alternating baseline/final Ruelex
+samples are clock-neutral within host
+dispersion, peak memory is flat, and maintained Harbor/Lattice probes are
+neutral to faster. The Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

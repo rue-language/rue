@@ -507,6 +507,21 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## CFG retained-charge bookkeeping\n\n");
+    out.push_str("Counts are exact for logical retained-charge walks over body-local symbol tables at publication. They expose memory-policy bookkeeping independently of semantic construction and clock noise.\n\n");
+    out.push_str("| workload | interner scans | entries scanned | UTF-8 bytes scanned |\n");
+    out.push_str("| --- | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let work = observation.work.cfg_retained_charge;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            observation.workload,
+            work.interner_scans,
+            work.interner_entries_scanned,
+            work.interner_utf8_bytes_scanned,
+        ));
+    }
+
     out.push_str("\n## Query display identities\n\n");
     out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
     out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
@@ -666,6 +681,11 @@ mod tests {
                         type_nodes_scanned: 7,
                         fact_selections: 4,
                     },
+                    cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
+                        interner_scans: 4,
+                        interner_entries_scanned: 31,
+                        interner_utf8_bytes_scanned: 127,
+                    },
                     query_runtime: rue_perf_schema::QueryRuntimeWork {
                         claims: 41,
                         reuses: 43,
@@ -718,6 +738,8 @@ mod tests {
         assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("CFG materialization preparation"));
         assert!(rendered.contains("selections/build"));
+        assert!(rendered.contains("CFG retained-charge bookkeeping"));
+        assert!(rendered.contains("UTF-8 bytes scanned"));
         assert!(rendered.contains("Query display identities"));
         assert!(rendered.contains("bytes/token"));
     }
