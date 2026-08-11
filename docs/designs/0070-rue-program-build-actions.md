@@ -31,10 +31,12 @@ a side effect hidden inside a test process or an aggregate success stamp.
 This ADR proposes two rules and one provider: `rue_program`, which owns exactly
 one compilation and produces the executable; and `rue_program_test`, which
 consumes that executable and runs one runtime scenario. Many scenarios share one
-compile. The manifest that makes the compile hermetic is derived from a cheap
-`--emit deps` scan rather than from the `srcs` glob, because a glob provably
-cannot produce a valid manifest. A granularity rule keeps the action count
-proportionate: a compile becomes its own action when it is expensive relative to
+compile. The source manifest is derived from a cheap `--emit deps` scan rather
+than from the `srcs` glob, because a glob provably cannot produce a valid
+manifest; the derivation step is also where the declared boundary is enforced, by
+failing the build when the compiler read anything outside `srcs`. A granularity
+rule keeps the action count proportionate: a compile becomes its own action when
+it is expensive relative to
 action overhead, or when more than one scenario consumes its output. The ~4,050
 inline-source corpus cases stay inside their harnesses.
 
@@ -59,7 +61,7 @@ pays a cost, not on the absolute seconds.
 | `examples/meridian/canary.rue` full compile | 3.1s |
 | `rue --emit deps` on caldera / meridian | 6.7s / 2.2s — 36x cheaper than compiling |
 | Corpus cases in total | 4,132 (1,778 CLI, 2,109 spec, 245 UI) |
-| CLI cases naming a checked-in root | 73 cases, 13 roots, 17 distinct (root, flags, target) tuples |
+| CLI cases naming a checked-in root | 73 cases, 13 roots, 17 distinct (root, flags, target) tuples — 11 of which become programs |
 | Most-recompiled roots | mosaic 17x, rill 12x, lattice 7x, calculator 7x, meridian 6x, jsonfmt 5x |
 
 **Where those costs are actually paid matters, and it is not where you would
@@ -235,23 +237,55 @@ the two agree by construction. Manifest entries are written absolute so that the
 manifest-relative resolution rule (entries resolve against the manifest file's
 directory, which for a generated manifest is buck-out) cannot misfire.
 
-**This is where the design's hermeticity actually lives, and it needs stating
-precisely.** The scan reads without a manifest, so on a local build it could in
-principle read a file outside `srcs` and quietly launder it into the manifest.
-Two things prevent that, and both are load-bearing rather than optional:
+**The declared standard library is unioned in unconditionally, and it must be.**
+A scan reports only what resolution probed, and `--emit deps` does no semantic
+work — so trusted-std acquisition for fallible intrinsics, which happens only on
+semantic runs, is invisible to it. A four-line program using one fallible
+intrinsic and importing nothing shows the consequence:
 
-- Under remote execution only declared inputs are materialized, so an undeclared
-  read fails outright.
-- The declaration audit below compares the scan's `accepted_reads` against `srcs`
-  and **fails when the compiler read anything the rule did not declare**. That
-  makes the audit part of the mechanism, not a nicety attached to it.
+```text
+$ cat main.rue
+fn main() -> i32 { let p = @parse_i32("41"); 0 }
 
-The compile action then enforces the manifest in-band on every invocation, local
-and remote, cold and warm. `corpus.bzl`'s header warns that under a cached action
-an undeclared input becomes a false pass rather than an untracked re-run; the
-combination above removes that hazard by construction rather than by scheduling.
-This is deliberately stronger than ADR-0069's proposal to treat remote execution
-as the sole undeclared-input detector, which catches only what RE actually runs.
+$ rue main.rue -o prog                                    # no manifest → exit 0
+
+$ rue --emit deps main.rue | derive-manifest              # reports main.rue alone
+$ rue main.rue --source-manifest derived.manifest -o prog
+Hermetic build configuration error: the trusted standard-library module
+'\0rue-std/option.rue' at '.../std/option.rue' is not permitted by the hermetic
+build configuration: the source manifest does not declare this path.   # exit 1
+
+$ rue main.rue --source-manifest with-std.manifest -o prog             # exit 0
+```
+
+Trusted-module acquisition re-checks the manifest before any probe
+(`source_loader.rs:1574-1667`), so a scan-derived manifest without std rejects a
+program that compiles fine without a manifest. Unioning the declared std in is
+not over-declaration of the action key: manifest membership means "available to
+import", not "read" (ADR-0047), and the std filegroup keys the action either way.
+
+### Where hermeticity actually lives, stated precisely
+
+A glob-derived manifest would have encoded the *declared* boundary, so an
+out-of-`srcs` read failed E1400 in-band. A scan-derived manifest encodes what the
+scan *observed* — so on a local build an out-of-`srcs` read would otherwise pass
+scan, land in the manifest, and compile cleanly. Worse, it would be laundered into
+the cache: the scan's key (`srcs` + std + compiler) never mentions the stray file,
+so a later change to it leaves a stale manifest and a stale binary to be
+cache-served. That is exactly `corpus.bzl`'s false-pass hazard, reproduced one
+level down.
+
+**The derivation step therefore enforces the boundary, not a downstream audit.**
+It already reads the envelope; it fails when any accepted read's canonical path
+lies outside `srcs ∪ std`. Under-declaration is then an in-band build failure on
+every build, local and remote, cold and warm — the property a glob-derived
+manifest would have had, recovered on a mechanism that actually works, at the cost
+of a set comparison in a script the rule runs anyway. Remote execution remains a
+second, independent check, because it materializes only declared inputs.
+
+What is left for the standalone audit is over-declaration only, which is a
+cache-precision concern rather than a correctness one. That distinction matters:
+correctness is enforced by construction, and only precision is advisory.
 
 No compiler change is involved: both flags exist and behave correctly today.
 
@@ -270,10 +304,22 @@ overhead, or when more than one scenario consumes its output.**
 | Work | Scale | Disposition | Why |
 | --- | --- | --- | --- |
 | caldera, meridian — `main` and `canary` roots | 4 roots | `rue_program` | `main` is 81–243s; all four are consumed by several scenarios and by more than one suite |
-| CLI cases naming a checked-in root | 73 cases → 17 programs | `rue_program` | 17 distinct (root, flags, target) tuples; the fixture roots in `abi_conformance.toml` and `linker.toml` compile at three `--target`s each and stay three programs |
+| CLI cases naming a checked-in root | 73 cases → 11 programs | `rue_program` | 11 roots each consumed by 4–17 scenarios |
 | Auto-discovered `examples/**` roots not already covered | ~30 | `rue_program` | Reached again by the automatic-examples pass and by frontend-diff |
 | Inline-source CLI / spec / UI cases | ~4,050 | harness | Sources live inside TOML; compiles are milliseconds |
+| Cross-target fixture cases (`abi_conformance.toml`, `linker.toml`) | 6 cases | harness | See below — they fail the rule on both prongs |
+| The one `differential_opt` calculator case | 1 case | harness | Four compiles by design; a compile-*time* differential, same family as reproducibility |
 | Reproducibility fixture | 4 roots | harness | See below — modelling these as actions is self-defeating |
+
+**The rule is applied to itself, including where that costs a row.** An earlier
+draft kept the `abi_conformance.toml` and `linker.toml` fixture roots as six
+programs because they carry an explicit `--target` each. They fail the rule on
+both prongs: `abi_conformance_smoke.rue` is 75 lines and `cross_runtime_smoke.rue`
+is 22, both compile in milliseconds, and each (root, target) tuple is consumed by
+exactly one case. They belong in the harness, and the count they inflated —
+73 cases into 17 programs — is really **11**. A rule that its own table quietly
+exempts things from is not a rule; a reader applying it strictly must get the same
+table.
 
 **The reproducibility suite must stay a harness, and the reason is instructive.**
 Its perturbations are compile-*time* (relocated source roots, mtimes, umask, `-j`,
@@ -289,6 +335,7 @@ the comparison, but the suite must own the second compile itself.
 | Required in the key | Mechanism | Notes |
 | --- | --- | --- |
 | Root source | action input | `attrs.source()` |
+| Cache upload | `allow_cache_upload = True` | on **both** actions; the compile-once-consume-many property depends on the scan and the compile being uploadable, not merely cacheable locally |
 | Transitive imports | action inputs | declared `srcs`; audited below |
 | Source manifest | generated input | scan-derived; changes when any probed path changes |
 | Compiler build | action input | `$(exe_target //crates/rue:rue)`; release vs debug already distinct via `//platforms:*` |
@@ -304,30 +351,34 @@ genuinely hermetic — in-process, with the runtime embedded via `include_bytes!
 so `rue_program` pins it and external linking stays out of scope. Cases that
 exist to test external linkers remain harness cases.
 
-### `--emit deps` as a declaration auditor
+### The over-declaration audit
 
-The manifest makes under-declaration impossible at compile time; the audit makes
-it impossible at scan time and catches over-declaration besides. A
-`rue_program`'s `srcs` glob that is wider than its real read closure takes cache
+Correctness is handled above, in the derivation step. What remains is precision:
+a `rue_program` whose `srcs` glob is wider than its real read closure takes cache
 misses on files it never reads, which turns a precise action back into a corpus
-stamp.
+stamp. Left unchecked, a broad glob undoes the whole point of the rule.
 
-The audit compares the scan envelope's `accepted_reads` against `srcs` in both
-directions. Three constraints on how, all of which matter:
+Three constraints on how the comparison is done, all of which matter:
 
 - Compare **path and fingerprint sets, never envelope bytes**: the envelope
   embeds device/inode identity and mtimes (`dependency_envelope.rs:320-331`) and
   is not machine-stable.
 - Compare against `srcs`, **not** the generated manifest — the manifest
-  legitimately contains absent-arm entries that are never read.
-- `accepted_reads` is the observed read set *of that run*; trusted-std
-  acquisition for fallible intrinsics happens only on semantic runs, so a program
-  that reaches std without `@import("std")` can read std files at compile time
-  that a scan does not list. The audit is `srcs`-scoped, so this is harmless, but
-  the envelope should not be described as a complete read set.
+  legitimately contains absent-arm entries and the whole std tree, none of which
+  need be read.
+- `accepted_reads` is the observed read set *of that scan*, not a complete
+  compile-time read set — trusted-std acquisition is invisible to it, as above.
+  Treat std as always-declared rather than inferring it from the envelope.
 
-Because the scan is already an action of `rue_program`, the audit is an assertion
-over an artifact the rule produces anyway rather than a separate compile.
+**Attach it with `ValidationInfo` rather than as a separate test target.** The
+pinned 2026-07-15 buck2 ships it and the bundled prelude already uses it (java,
+kotlin, apple). A validation attached to a target runs whenever that target is
+transitively reachable from any requested build or test, in parallel with the
+build, and a failed required validation fails the build. That is precisely the
+shape of "an assertion over an artifact the rule produces anyway", and it
+dissolves the question an earlier draft had to ask — which tier do ~50 audit
+targets carry, given every compiler change invalidates all of them — rather than
+answering it. There are no audit targets to schedule.
 
 ### Negative controls
 
@@ -360,8 +411,9 @@ strictly.
 - [ ] **Phase 0: Rules, scan-derived manifest, audit, controls** — `rue_rules.bzl`
       with `rue_program`, `rue_program_test`, `RueProgramInfo`, the two-action
       scan/compile shape, the declaration audit, and the three controls. Also the
-      stale-`--prefer-remote` documentation fix (see open questions). No existing
-      target changes.
+      stale-`--prefer-remote` documentation fix noted in the References (RUE-320
+      is Done, so `AGENTS.md`'s condition no longer holds). No existing target
+      changes.
 - [ ] **Phase 1: Large examples** — convert the six `large-example-*` `sh_test`s
       over their four roots; each scenario in `scripts/run-large-example.sh`
       becomes its own `rue_program_test`, retiring the script. **The justification
@@ -371,9 +423,10 @@ strictly.
       the scheduled release lane stops paying 243.0s and 80.7s twice when both the
       slow and stress tiers run; and these are the clearest targets on which to
       establish the mechanism.
-- [ ] **Phase 2: CLI cases naming a checked-in root** — 73 cases into 17
+- [ ] **Phase 2: CLI cases naming a checked-in root** — 73 cases into 11
       programs, meridian's six first, which is where the disabled coverage is
-      restored. Depends on open question 3.
+      restored. The six cross-target fixture cases and the one `differential_opt`
+      case stay in the harness. Depends on open question 3.
 - [ ] **Phase 3: Corpus input precision** — see open question 2; this phase is
       *not* specified here, because the obvious version of it does not work.
 - [ ] **Phase 4: Test-result caching decision** — only after the negative controls
@@ -390,7 +443,10 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 - Coverage disabled by RUE-1083 becomes affordable again, which is a correctness
   gain rather than a speed one.
 - Undeclared inputs become build failures everywhere rather than only where RE
-  runs, and the declaration audit closes the scan's laundering hole.
+  runs — but only because the derivation step enforces `srcs` itself. That
+  property belonged to the glob-derived manifest of an earlier draft; on the
+  scan-derived mechanism it has to be put back deliberately, and it is easy to
+  lose again if derivation is ever simplified to "just write what the scan saw".
 - Scenarios become individually selectable and schedulable targets, which is the
   "split" remedy in RUE-1267's alarm.
 - ADR-0047 Phases 3 and 4 acquire their first consumer, and the design needs both
@@ -401,10 +457,9 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 - `rue_program` is two actions and a `dynamic_output`, not one action. The scan is
   36x cheaper than the compile, but it is not free, and it runs on every cache
   miss.
-- The declaration audit is load-bearing rather than advisory, which means a target
-  that must stay green. Each audit is invalidated by every compiler change — the
-  ~74.5% class — so audit tier assignment is a real scheduling question, not a
-  formality.
+- Correctness now depends on a derivation script, not only on rule wiring. A bug
+  there is a hermeticity bug, so it needs its own unit coverage — the negative
+  controls exercise it end to end but will not pin its set arithmetic.
 - Migrating the 73 cases splits the CLI authoring surface between two mechanisms
   during Phases 2 and 3.
 - Migrated targets **escape** RUE-924's corpus-omission audit rather than break
