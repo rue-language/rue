@@ -477,6 +477,25 @@ workloads and about 6 MiB and 2 MiB lower on Harbor and Lattice in both runs.
 The Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1361 removed full-width bitset allocation from the shared liveness
+fixed-point loop. The transfer function now clears and reuses one `live_in` and
+one `live_out` scratch set across every instruction and convergence round.
+After ranges and the optional debug projection consume the final dataflow
+tables, the production `live_in` table becomes the retained `live_at` union in
+place instead of allocating a third table. The equations, reverse visitation
+order, convergence test and backend adapters are unchanged.
+
+On the fixed one-worker Lattice allocation probe, calls fell from 19,144,997 to
+17,700,930 (-7.54 percent) and requested bytes from 3,493,225,879 to
+3,382,572,379 (-3.17 percent). Every query, reachability and CFG-materialization
+counter remained identical. An immediate parent/current ordinary-allocator
+comparison moved compiler medians from 140.87 to 133.36 ms for Ruelex, 369.36
+to 362.58 ms for Mosaic, 830.06 to 784.99 ms for Harbor and 939.84 to 904.37 ms
+for Lattice. Peak memory was neutral on the smaller workloads and fell from
+626.5 to 620.3 MiB for Harbor and from 734.8 to 720.2 MiB for Lattice. The
+Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
