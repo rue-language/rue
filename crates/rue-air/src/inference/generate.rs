@@ -629,6 +629,21 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
+    /// The pointee of a pointer operand whose type is *already* concrete at
+    /// constraint-generation time — an annotated binding, a parameter, a
+    /// pointer-returning intrinsic with a fixed result type. Returns `None` for
+    /// anything still standing on a type variable (`@raw`, `@ptr_offset`,
+    /// `@int_to_ptr`), because this pass has no substitution to consult: the
+    /// unifier has not run yet, so an unresolved operand carries no pointee to
+    /// read and must be left free rather than guessed (RUE-1341).
+    fn concrete_pointee_type(&self, ty: &InferType) -> Option<Type> {
+        match ty.as_concrete()?.kind() {
+            TypeKind::PtrConst(ptr_id) => Some(self.type_pool.ptr_const_def(ptr_id)),
+            TypeKind::PtrMut(ptr_id) => Some(self.type_pool.ptr_mut_def(ptr_id)),
+            _ => None,
+        }
+    }
+
     /// Provide file-level constant types (name -> declared type) for `VarRef`
     /// resolution. See the `const_types` field for details (RUE-142).
     pub fn with_const_types(mut self, const_types: &'a HashMap<(FileId, Spur), Type>) -> Self {
@@ -1871,20 +1886,87 @@ impl<'a> ConstraintGenerator<'a> {
                 } else if intrinsic_name == "ptr_write" || intrinsic_name == "ptr_write_unaligned" {
                     // @ptr_write / @ptr_write_unaligned: takes a pointer and
                     // value, returns unit (ADR-0059 Phase 4, RUE-978).
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                    //
+                    // When the pointer operand is already concrete in this pass
+                    // (an annotated binding, a parameter, anything whose type
+                    // does not depend on later unification), the pointee is the
+                    // value operand's expectation — the same contextual channel
+                    // `@intCast` reads out of HM. Without it `@ptr_write(p,
+                    // @intCast(x))` left the cast's target variable free and
+                    // sema reported E0709 (RUE-1341). The constraint mirrors
+                    // sema's own `types_compatible` check exactly: `never` and
+                    // `<error>` still coerce in `Unifier::unify`.
+                    //
+                    // If the pointer's type is not yet resolved here (e.g. it
+                    // came from `@raw`/`@ptr_offset`, which are themselves
+                    // fresh variables), nothing is added and the value operand
+                    // stays exactly as free as before — sema keeps its own
+                    // pointee reconciliation and its diagnostics are unchanged.
+                    //
+                    // Only a well-formed two-operand call is typed here; a
+                    // wrong-arity call keeps generating its arguments
+                    // unconstrained so sema still owns the arity diagnostic.
+                    let typed_shape = args.len() == 2;
+                    let mut pointee = None;
+                    for (index, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if !typed_shape {
+                            continue;
+                        }
+                        match index {
+                            0 => pointee = self.concrete_pointee_type(&info.ty),
+                            1 => {
+                                // A `str`/`Str(N)`/slice pointee accepts its
+                                // operand by coercion, so it takes the same
+                                // strict-equality exemption as a call argument
+                                // (see `is_slice_struct_type`); sema still
+                                // materializes and checks it.
+                                if let Some(pointee) = pointee
+                                    && !self.is_slice_struct_type(InferType::Concrete(pointee))
+                                {
+                                    self.add_constraint(Constraint::equal(
+                                        info.ty,
+                                        InferType::Concrete(pointee),
+                                        info.span,
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                     InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "ptr_read" || intrinsic_name == "ptr_read_unaligned" {
-                    // @ptr_read / @ptr_read_unaligned: takes ptr const T or ptr mut T, returns T
-                    // The return type depends on the pointee type of the argument.
-                    // We create a fresh type variable that will be resolved during
-                    // semantic analysis when the actual pointer type is known.
-                    for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                    // @ptr_read / @ptr_read_unaligned: takes ptr const T or ptr
+                    // mut T, returns T.
+                    //
+                    // The result is the pointee type. When the pointer operand
+                    // is already concrete in this pass, publish that pointee so
+                    // the read participates in inference like any other typed
+                    // expression: `@ptr_read(p) == 30` then unifies the literal
+                    // against the pointee instead of defaulting it to i32 and
+                    // failing E0206 in sema (RUE-1341).
+                    //
+                    // Otherwise fall back to a fresh variable, exactly as
+                    // before: the pointee is only known in sema, which fixes
+                    // the result type there and reconciles it against whatever
+                    // the annotation constrained the variable to (RUE-244).
+                    // A wrong-arity call stays on that fallback so sema still
+                    // owns the arity diagnostic.
+                    let typed_shape = args.len() == 1;
+                    let mut pointee = None;
+                    for (index, arg_ref) in args.iter().enumerate() {
+                        let info = self.generate(*arg_ref, ctx);
+                        if typed_shape && index == 0 {
+                            pointee = self.concrete_pointee_type(&info.ty);
+                        }
                     }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
+                    match pointee {
+                        Some(pointee) => InferType::Concrete(pointee),
+                        None => {
+                            let result_var = self.fresh_var();
+                            InferType::Var(result_var)
+                        }
+                    }
                 } else if intrinsic_name == "ptr_offset" {
                     // @ptr_offset: takes (ptr T, i64), returns ptr T
                     // The return type is the same as the input pointer type.

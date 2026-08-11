@@ -1,0 +1,236 @@
+# RUE-1341: @ptr_read / @ptr_write pointee types participate in inference.
+#
+# The typed pointer intrinsics used to derive their types only in semantic
+# analysis: inference modeled @ptr_read's result as an unconstrained fresh
+# variable and left @ptr_write's value operand entirely free. Two shapes fell
+# out of that gap whenever the pointee was not the default integer type:
+#
+#   * `@ptr_read(p) == 30` with `p: ptr mut u8` — the read's variable had
+#     nothing to fix it, the literal defaulted to i32, and sema's pointee
+#     reconciliation then reported E0206 "expected i32, found u8".
+#   * `@ptr_write(p, @intCast(x))` — @intCast reads its target out of the
+#     HM-resolved type, which no constraint reached, so it failed E0709.
+#
+# Inference now reads the pointee off the pointer operand whenever that operand
+# is already concrete in the same pass (annotated binding, parameter, struct
+# field). Both aligned and unaligned variants share the machinery, so both are
+# covered here. When the pointer operand is NOT resolvable during constraint
+# generation — `@raw`/`@raw_mut`/`@ptr_offset` are themselves fresh variables —
+# the types stay free exactly as before and the old diagnostics are unchanged;
+# those pins live at the bottom of this file.
+
+[section]
+id = "cli.ptr_pointee_inference"
+name = "Pointee-driven inference for the typed pointer intrinsics"
+description = "@ptr_read's result and @ptr_write's value operand take their type from a resolved pointer operand during inference."
+
+# --- RUE-1341 repro 1: annotation-free comparison against the pointee -------
+[[case]]
+name = "ptr_read_comparison_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 30;
+    let hit: bool = checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_read(p) == 30
+    };
+    @dbg(hit);
+    0
+}
+""" }]
+stdout = "true\n"
+
+# --- RUE-1341 repro 2: @intCast target comes from the pointee ---------------
+[[case]]
+name = "ptr_write_intcast_target_from_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    let x: i32 = 30;
+    checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_write(p, @intCast(x));
+    };
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "30\n"
+
+# --- The unaligned pair shares the sema-side typing and the same channel ----
+[[case]]
+name = "ptr_read_unaligned_comparison_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 30;
+    let hit: bool = checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_read_unaligned(p) == 30
+    };
+    @dbg(hit);
+    0
+}
+""" }]
+stdout = "true\n"
+
+[[case]]
+name = "ptr_write_unaligned_intcast_target_from_pointee"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    let x: i32 = 30;
+    checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_write_unaligned(p, @intCast(x));
+    };
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "30\n"
+
+# --- A parameter is a resolved pointer operand too --------------------------
+# The pointee flows in from the signature rather than a local annotation, and
+# the read's result is consumed by an unannotated `let` that only ever sees the
+# pointee type.
+[[case]]
+name = "ptr_read_through_parameter_infers_pointee"
+files = [{ path = "main.rue", source = """
+fn load(p: ptr const u16) -> bool {
+    checked { @ptr_read(p) == 4097 }
+}
+fn main() -> i32 {
+    let v: u16 = 4097;
+    let hit: bool = checked { load(@raw(v)) };
+    @dbg(hit);
+    0
+}
+""" }]
+stdout = "true\n"
+
+# --- A struct field holding the pointer is resolved in the same pass --------
+[[case]]
+name = "ptr_write_through_struct_field_pointee"
+files = [{ path = "main.rue", source = """
+struct Cell { at: ptr mut u8 }
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    let n: i64 = 200;
+    checked {
+        let c: Cell = Cell { at: @raw_mut(b) };
+        @ptr_write(c.at, @intCast(n));
+    };
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "200\n"
+
+# --- The pointee drives a NON-integer value operand as well -----------------
+# `@ptr_write(p, cond)` used to leave `cond`'s literal-free bool alone; the
+# equality constraint must not disturb an aggregate/bool pointee round-trip.
+[[case]]
+name = "ptr_read_write_bool_pointee_roundtrip"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut flag: bool = false;
+    let seen: bool = checked {
+        let p: ptr mut bool = @raw_mut(flag);
+        @ptr_write(p, true);
+        @ptr_read(p)
+    };
+    @dbg(seen);
+    0
+}
+""" }]
+stdout = "true\n"
+
+# --- A wrong-typed value operand is still a type error ----------------------
+# Inference now catches it instead of sema, and the code stays E0206.
+[[case]]
+name = "ptr_write_value_type_mismatch_is_e0206"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    let x: i32 = 7;
+    checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_write(p, x);
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
+
+# --- An out-of-range literal is still the honest range diagnostic -----------
+# The value operand's constraint must not turn RUE-275's E0800 into a plain
+# unification failure: an integer literal still unifies with any integer type.
+[[case]]
+name = "ptr_write_literal_out_of_range_still_e0800"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_write(p, 300);
+    };
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0800"]
+
+# --- An in-range literal still takes the pointee type, not i32 (RUE-275) ----
+[[case]]
+name = "ptr_write_literal_takes_pointee_type"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    checked {
+        let p: ptr mut u8 = @raw_mut(b);
+        @ptr_write(p, 200);
+    };
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "200\n"
+
+# --- PIN: an unresolvable pointer operand keeps today's behavior ------------
+# `@raw_mut(b)` is itself a fresh inference variable, so the value operand has
+# no expectation to read and @intCast still cannot name a target. Inference
+# never guesses a pointee it cannot see, and this diagnostic is deliberately
+# unchanged by RUE-1341. Widening @raw/@raw_mut/@ptr_offset to publish their
+# own concrete types would retire this pin.
+[[case]]
+name = "ptr_write_unresolved_pointer_operand_still_e0709"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut b: u8 = 0;
+    let x: i32 = 30;
+    checked {
+        @ptr_write(@raw_mut(b), @intCast(x));
+    };
+    @dbg(b);
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0709"]
+
+# --- PIN: sema still owns the pointee reconciliation it always owned --------
+# With an unresolvable pointer operand the read's result is still a fresh
+# variable that the annotation fixes, and sema compares it to the pointee
+# (RUE-244). Unchanged by RUE-1341.
+[[case]]
+name = "ptr_read_unresolved_pointer_operand_still_e0206"
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let v: i64 = 42;
+    let x: i32 = checked { @ptr_read(@raw(v)) };
+    x
+}
+""" }]
+compile_fail = true
+error_contains = ["E0206"]
