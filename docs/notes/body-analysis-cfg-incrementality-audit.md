@@ -1,5 +1,13 @@
 # Body analysis and CFG incrementality audit
 
+> [!WARNING]
+> Historical implementation audit. This note describes the retired durable
+> body/CFG import architecture that preceded ADR-0063's query-native cutover.
+> See the
+> [post-ADR-0063 cold compiler architecture audit](post-adr-0063-cold-compiler-architecture-audit.md)
+> for the current source map; [ADR-0063](../designs/0063-parallel-demand-driven-incremental-compilation.md)
+> remains the architectural authority.
+
 Status: RUE-720 completion audit. `CompilerSession` retains and reuses supported
 per-definition body and CFG artifacts through the canonical semantic query.
 Unsupported surfaces fail closed to the existing analysis/build path.

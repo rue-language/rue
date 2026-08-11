@@ -231,9 +231,10 @@ fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
     );
     let session = include_str!("session.rs");
     assert!(
-        session.contains("RUE-1217 owns replacing this")
+        session.contains("this adapter enumerates the")
+            && session.contains("semantic functions only so focused tests can inspect units")
             && !session.contains("_foreign_symbols: &[String]"),
-        "collection must retain only the explicitly tracked RUE-1217 root adapter"
+        "collection must retain only the test-only pre-object inspection adapter"
     );
 }
 

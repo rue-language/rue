@@ -5606,12 +5606,11 @@ impl CompilerSession {
             .collect())
     }
 
-    /// Collect reached canonical codegen terminals without immediately
-    /// collapsing them into the historical backend-product representation.
-    /// Object and link consumers aggregate this exact result in a
-    /// `ProgramImagePlan`; presentation consumers may still use the thin
-    /// `codegen_products` projection above. RUE-1217 owns replacing this
-    /// remaining semantic root enumeration with query-native image roots.
+    /// Collect reached canonical codegen terminals for tests which inspect the
+    /// pre-object boundary. Production object and link consumers use
+    /// `rooted_codegen`'s query-native image root; this adapter enumerates the
+    /// semantic functions only so focused tests can inspect units without
+    /// constructing a `ProgramImage`.
     #[cfg(test)]
     pub(crate) fn codegen_units(
         &mut self,
