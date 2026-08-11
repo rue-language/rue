@@ -925,6 +925,21 @@ RSS moves +1.53 MiB within dispersion, and repeated allocation-instrumented
 runs are neutral. Every deterministic compiler-work counter and the emitted
 executable remain identical.
 
+RUE-1391 narrows the remaining standard-hasher cost to the body-local identity
+pool. Its 17 durable-key, reverse-identity, poison, and signature registries now
+use independently keyed AHash maps; unrelated provider, inference, query, and
+test maps keep their existing hashers. These registries expose exact `Hash` +
+`Eq` lookup, not iteration order, and the emitted-artifact hash remains exact.
+
+Across three fixed one-worker Lattice profiles, the standard SipHash leaf falls
+from 30--34 samples to 27--28, and the `BodyIdentityPool` paths disappear from
+that leaf. Sixteen balanced alternating release pairs improve by 1.12% at the
+paired median, with 1.14% paired MAD and a -5.62% to +4.55% range. Median peak
+RSS falls by 2.17 MiB. Three allocation-accounting comparisons are neutral in
+call count and add 0.17--0.41 MiB of requested bytes (at most 0.02%). Every
+deterministic compiler-work counter and emitted executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
