@@ -400,6 +400,34 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Semantic reachability scheduling\n\n");
+    out.push_str("Counts are exact for database-owned body reachability. Width buckets count non-empty frontiers submitted to structured batch scheduling; transaction counts distinguish structured prefetch from serial coordinator demand; `keys/batch` exposes available scheduling breadth independently of clock time.\n\n");
+    out.push_str("| workload | scans | scan keys | batches | scheduled keys | keys/batch | transactions prefetched/serial | width 1 | width 2–3 | width 4–7 | width 8+ |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let work = observation.work.semantic_reachability;
+        let keys_per_batch = if work.frontier_batches == 0 {
+            0.0
+        } else {
+            work.frontier_keys as f64 / work.frontier_batches as f64
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {:.2} | {}/{} | {} | {} | {} | {} |\n",
+            observation.workload,
+            work.frontier_scans,
+            work.frontier_scan_keys,
+            work.frontier_batches,
+            work.frontier_keys,
+            keys_per_batch,
+            work.transactions_prefetched,
+            work.transactions_serial,
+            work.frontier_width_one,
+            work.frontier_width_two_to_three,
+            work.frontier_width_four_to_seven,
+            work.frontier_width_eight_or_more,
+        ));
+    }
+
     out.push_str("\n## Query display identities\n\n");
     out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
     out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
@@ -526,6 +554,17 @@ mod tests {
                     functions: 1,
                 },
                 work: rue_perf_schema::CompilerWork {
+                    semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
+                        frontier_scans: 4,
+                        frontier_scan_keys: 7,
+                        frontier_batches: 2,
+                        frontier_keys: 7,
+                        frontier_width_one: 1,
+                        frontier_width_eight_or_more: 1,
+                        transactions_prefetched: 7,
+                        transactions_serial: 0,
+                        ..Default::default()
+                    },
                     query_runtime: rue_perf_schema::QueryRuntimeWork {
                         validation: rue_perf_schema::ValidationWork {
                             traversals: 3,
@@ -561,6 +600,8 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("nodes/token"));
+        assert!(rendered.contains("Semantic reachability scheduling"));
+        assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("Query display identities"));
         assert!(rendered.contains("bytes/token"));
     }
@@ -593,6 +634,7 @@ mod tests {
                 retention_scan_entries: 1,
                 ..Default::default()
             },
+            ..Default::default()
         };
         let error = observe_compiler_work(&mut expected, changed, "probe").unwrap_err();
         assert!(

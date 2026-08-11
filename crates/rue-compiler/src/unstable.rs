@@ -1764,6 +1764,22 @@ pub struct QueryRuntimeMetrics {
     pub retention_scan_entries: u64,
 }
 
+/// Database-owned semantic-reachability scheduling work accumulated by the
+/// session, including acquisition rounds that park before final publication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticReachabilityMetrics {
+    pub frontier_scans: u64,
+    pub frontier_scan_keys: u64,
+    pub frontier_batches: u64,
+    pub frontier_keys: u64,
+    pub frontier_width_one: u64,
+    pub frontier_width_two_to_three: u64,
+    pub frontier_width_four_to_seven: u64,
+    pub frontier_width_eight_or_more: u64,
+    pub transactions_prefetched: u64,
+    pub transactions_serial: u64,
+}
+
 /// Display-only query identity materialization contained in [`MetricsSnapshot`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryDisplayIdentityMetrics {
@@ -1971,6 +1987,16 @@ pub struct SemanticBodyMetrics {
     pub analyses_computed: usize,
     pub analyses_reused: usize,
     pub analyses_invalidated: usize,
+    pub reachability_frontier_scans: usize,
+    pub reachability_frontier_scan_keys: usize,
+    pub reachability_frontier_batches: usize,
+    pub reachability_frontier_keys: usize,
+    pub reachability_frontier_width_one: usize,
+    pub reachability_frontier_width_two_to_three: usize,
+    pub reachability_frontier_width_four_to_seven: usize,
+    pub reachability_frontier_width_eight_or_more: usize,
+    pub reachability_transactions_prefetched: usize,
+    pub reachability_transactions_serial: usize,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticMetrics {
@@ -1997,6 +2023,26 @@ impl SemanticMetrics {
                 analyses_computed: work.body_analysis.body_analyses_computed,
                 analyses_reused: work.body_analysis.body_analyses_reused,
                 analyses_invalidated: work.body_analysis.body_analyses_invalidated,
+                reachability_frontier_scans: work.body_analysis.reachability_frontier_scans,
+                reachability_frontier_scan_keys: work.body_analysis.reachability_frontier_scan_keys,
+                reachability_frontier_batches: work.body_analysis.reachability_frontier_batches,
+                reachability_frontier_keys: work.body_analysis.reachability_frontier_keys,
+                reachability_frontier_width_one: work.body_analysis.reachability_frontier_width_one,
+                reachability_frontier_width_two_to_three: work
+                    .body_analysis
+                    .reachability_frontier_width_two_to_three,
+                reachability_frontier_width_four_to_seven: work
+                    .body_analysis
+                    .reachability_frontier_width_four_to_seven,
+                reachability_frontier_width_eight_or_more: work
+                    .body_analysis
+                    .reachability_frontier_width_eight_or_more,
+                reachability_transactions_prefetched: work
+                    .body_analysis
+                    .reachability_transactions_prefetched,
+                reachability_transactions_serial: work
+                    .body_analysis
+                    .reachability_transactions_serial,
             },
             cfg: SemanticCfgMetrics {
                 functions_considered: work.cfg.functions_considered,
@@ -2022,6 +2068,7 @@ pub struct OneShotMetrics {
     pub lowered: LowerMetrics,
     pub semantic: SemanticMetrics,
     pub query_runtime: QueryRuntimeMetrics,
+    pub semantic_reachability: SemanticReachabilityMetrics,
 }
 
 impl OneShotMetrics {
@@ -2029,6 +2076,7 @@ impl OneShotMetrics {
         stats: crate::SourceStats,
         work: crate::PipelineWork,
         query_runtime: QueryRuntimeMetrics,
+        semantic_reachability: SemanticReachabilityMetrics,
     ) -> Self {
         Self {
             files: stats.files,
@@ -2039,6 +2087,7 @@ impl OneShotMetrics {
             lowered: LowerMetrics::from_work(work.lowered),
             semantic: SemanticMetrics::from_work(work.semantic),
             query_runtime,
+            semantic_reachability,
         }
     }
 }
@@ -2182,6 +2231,9 @@ impl MetricsSnapshot {
             retention_enforcements: self.inner.runtime.retention_enforcements,
             retention_scan_entries: self.inner.runtime.retention_scan_entries,
         }
+    }
+    pub fn semantic_reachability(&self) -> SemanticReachabilityMetrics {
+        self.inner.runtime.semantic_reachability
     }
     pub fn semantic_work_json(&self, from: usize) -> Value {
         semantic_work_json(&self.inner, from)

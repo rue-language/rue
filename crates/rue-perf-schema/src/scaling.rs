@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 5;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 6;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,8 +167,26 @@ pub struct ScalingObservation {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerWork {
+    /// Work performed while discovering and scheduling reachable bodies.
+    pub semantic_reachability: SemanticReachabilityWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
+}
+
+/// Deterministic work performed by database-owned semantic reachability.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticReachabilityWork {
+    pub frontier_scans: u64,
+    pub frontier_scan_keys: u64,
+    pub frontier_batches: u64,
+    pub frontier_keys: u64,
+    pub frontier_width_one: u64,
+    pub frontier_width_two_to_three: u64,
+    pub frontier_width_four_to_seven: u64,
+    pub frontier_width_eight_or_more: u64,
+    pub transactions_prefetched: u64,
+    pub transactions_serial: u64,
 }
 
 /// Deterministic query-runtime work performed by one compiler process.

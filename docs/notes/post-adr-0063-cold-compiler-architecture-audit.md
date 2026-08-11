@@ -270,6 +270,25 @@ versus the immediately preceding same-host report moved -0.6, -0.6, +1.0 and
 +0.7 percent from Ruelex through Lattice. The clock still does not isolate this
 bookkeeping reliably, while the counters prove its scale and source.
 
+RUE-1350 then measured the semantic body scheduler directly after a
+fresh-process one-worker versus ten-worker profile found the semantic/body
+closure phase flat at roughly 1.1 seconds while CFG and backend work scaled.
+The deterministic counters separate transactions reached through a prefetched
+frontier from transactions that still use the exact serial producer path:
+
+| workload | batches | batched keys | keys/batch | prefetched transactions | serial transactions |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Harbor | 3 | 282 | 94.00 | 282 | 1,097 |
+| Lattice | 4 | 175 | 43.75 | 175 | 1,088 |
+
+Every non-root batch on these workloads had at least eight keys, so the batches
+that exist are useful. However, 79.6 percent of Harbor transactions and 86.1
+percent of Lattice transactions still cross the anonymous-producer boundary
+serially. The counts were exact across three repetitions and both worker
+settings. This identifies the producer-before-consumer boundary, rather than
+linking or a compiler-wide lock, as the strongest next cold-performance target;
+RUE-1351 tracks batching ready anonymous-producer body frontiers.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
@@ -280,6 +299,9 @@ Authorized low-risk work:
    already owns the payload.
 3. Clean stale comments and keep phase attribution exhaustive when profiles
    expose unattributed work.
+4. Batch ready anonymous-producer body frontiers behind the existing canonical
+   body-reachability scheduler, preserving deterministic publication and the
+   one-query-graph ownership model (RUE-1351).
 
 Maintainer review required before implementation:
 

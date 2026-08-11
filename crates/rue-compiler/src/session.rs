@@ -132,6 +132,7 @@ pub(crate) struct FrontendRuntimeMetrics {
     pub(crate) display_identities: rue_query::DisplayIdentityMetrics,
     pub(crate) retention_enforcements: u64,
     pub(crate) retention_scan_entries: u64,
+    pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3107,6 +3108,7 @@ impl CompilerSession {
             display_identities: runtime.display_identities,
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
+            semantic_reachability: self.queries.revisioned.body_reachability_metrics(),
         };
         crate::unstable::MetricsSnapshot::new(work)
     }
@@ -3307,6 +3309,7 @@ impl CompilerSession {
             display_identities: runtime.display_identities,
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
+            semantic_reachability: self.queries.revisioned.body_reachability_metrics(),
         });
     }
 
@@ -4588,6 +4591,7 @@ impl CompilerSession {
             return Err(SemanticRequestControl::Parked(Box::new(park.clone())));
         }
         let mut work = crate::CanonicalSemanticWork::default();
+        request.accrue_reachability_work(&mut work.body_analysis);
         work.body_analysis.closure_bodies_visited = closure.bodies.len();
         for closure_body in closure.bodies.iter() {
             match request.execution_for(&closure_body.key) {
@@ -6129,6 +6133,7 @@ impl CompilerSession {
                 Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
             };
             let closure_terminal = &closure_request.terminal;
+            closure_request.accrue_reachability_work(&mut queried_body_work);
             let rue_query::QueryOutcome::Success(closure_output) = closure_terminal.outcome()
             else {
                 unreachable!("BodyClosure publishes typed values")

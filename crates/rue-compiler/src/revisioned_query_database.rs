@@ -13,6 +13,60 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Default)]
+struct BodyReachabilityMeter {
+    frontier_scans: std::sync::atomic::AtomicU64,
+    frontier_scan_keys: std::sync::atomic::AtomicU64,
+    frontier_batches: std::sync::atomic::AtomicU64,
+    frontier_keys: std::sync::atomic::AtomicU64,
+    frontier_width_one: std::sync::atomic::AtomicU64,
+    frontier_width_two_to_three: std::sync::atomic::AtomicU64,
+    frontier_width_four_to_seven: std::sync::atomic::AtomicU64,
+    frontier_width_eight_or_more: std::sync::atomic::AtomicU64,
+    transactions_prefetched: std::sync::atomic::AtomicU64,
+    transactions_serial: std::sync::atomic::AtomicU64,
+}
+
+impl BodyReachabilityMeter {
+    fn accrue(&self, work: &[(Arc<str>, u64)]) {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        for (identity, amount) in work {
+            let counter = match identity.as_ref() {
+                "reachability.frontier.scans" => &self.frontier_scans,
+                "reachability.frontier.scan-keys" => &self.frontier_scan_keys,
+                "reachability.frontier.batches" => &self.frontier_batches,
+                "reachability.frontier.keys" => &self.frontier_keys,
+                "reachability.frontier.width-1" => &self.frontier_width_one,
+                "reachability.frontier.width-2-3" => &self.frontier_width_two_to_three,
+                "reachability.frontier.width-4-7" => &self.frontier_width_four_to_seven,
+                "reachability.frontier.width-8-plus" => &self.frontier_width_eight_or_more,
+                "reachability.transactions.prefetched" => &self.transactions_prefetched,
+                "reachability.transactions.serial" => &self.transactions_serial,
+                _ => continue,
+            };
+            counter.fetch_add(*amount, Relaxed);
+        }
+    }
+
+    fn snapshot(&self) -> crate::unstable::SemanticReachabilityMetrics {
+        use std::sync::atomic::Ordering::Relaxed;
+
+        crate::unstable::SemanticReachabilityMetrics {
+            frontier_scans: self.frontier_scans.load(Relaxed),
+            frontier_scan_keys: self.frontier_scan_keys.load(Relaxed),
+            frontier_batches: self.frontier_batches.load(Relaxed),
+            frontier_keys: self.frontier_keys.load(Relaxed),
+            frontier_width_one: self.frontier_width_one.load(Relaxed),
+            frontier_width_two_to_three: self.frontier_width_two_to_three.load(Relaxed),
+            frontier_width_four_to_seven: self.frontier_width_four_to_seven.load(Relaxed),
+            frontier_width_eight_or_more: self.frontier_width_eight_or_more.load(Relaxed),
+            transactions_prefetched: self.transactions_prefetched.load(Relaxed),
+            transactions_serial: self.transactions_serial.load(Relaxed),
+        }
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct TestBodyClosureAnonymousDigestForcing {
@@ -365,6 +419,7 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::body_query::BodyClosurePublicationKey,
         Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
     >,
+    body_reachability_meter: Arc<BodyReachabilityMeter>,
     #[cfg_attr(not(test), allow(dead_code))]
     body_references:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyReferences>,
@@ -6309,6 +6364,7 @@ pub(crate) struct BodyClosureRequest {
     pub(crate) terminal: Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
     body_executions: BTreeMap<String, rue_query::RequestExecution>,
     retained_before: BTreeSet<String>,
+    work: Vec<(Arc<str>, u64)>,
 }
 
 impl BodyClosureRequest {
@@ -6324,6 +6380,37 @@ impl BodyClosureRequest {
 
     pub(crate) fn was_retained(&self, key: &crate::body_query::BodyQueryKey) -> bool {
         self.retained_before.contains(&key.stable_identity())
+    }
+
+    /// Accrue request-local database-owned reachability scheduling work into
+    /// the canonical semantic request. Query work is already reduced by stable
+    /// identity, so this projection is deterministic across worker schedules.
+    pub(crate) fn accrue_reachability_work(&self, target: &mut rue_air::BodyAnalysisWork) {
+        for (identity, amount) in &self.work {
+            let amount = usize::try_from(*amount).unwrap_or(usize::MAX);
+            let counter = match identity.as_ref() {
+                "reachability.frontier.scans" => &mut target.reachability_frontier_scans,
+                "reachability.frontier.scan-keys" => &mut target.reachability_frontier_scan_keys,
+                "reachability.frontier.batches" => &mut target.reachability_frontier_batches,
+                "reachability.frontier.keys" => &mut target.reachability_frontier_keys,
+                "reachability.frontier.width-1" => &mut target.reachability_frontier_width_one,
+                "reachability.frontier.width-2-3" => {
+                    &mut target.reachability_frontier_width_two_to_three
+                }
+                "reachability.frontier.width-4-7" => {
+                    &mut target.reachability_frontier_width_four_to_seven
+                }
+                "reachability.frontier.width-8-plus" => {
+                    &mut target.reachability_frontier_width_eight_or_more
+                }
+                "reachability.transactions.prefetched" => {
+                    &mut target.reachability_transactions_prefetched
+                }
+                "reachability.transactions.serial" => &mut target.reachability_transactions_serial,
+                _ => continue,
+            };
+            *counter = counter.saturating_add(amount);
+        }
     }
 }
 
@@ -11136,6 +11223,7 @@ impl RevisionedQueryDatabase {
         query_concurrency: usize,
     ) -> Self {
         let runtime = CompilerQueryRuntime(QueryRuntime::new(query_concurrency));
+        let body_reachability_meter = Arc::new(BodyReachabilityMeter::default());
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
         let test_import_store = Arc::new(Mutex::new(TestImportInputStore {
@@ -15286,9 +15374,20 @@ impl RevisionedQueryDatabase {
                                     frontier_keys,
                                 )?;
                                 context.record_work(rue_query::WorkItem::new(
+                                    "reachability.frontier.batches",
+                                    1,
+                                ));
+                                context.record_work(rue_query::WorkItem::new(
                                     "reachability.frontier.keys",
                                     frontier.len() as u64,
                                 ));
+                                let width_bucket = match frontier.len() {
+                                    1 => "reachability.frontier.width-1",
+                                    2..=3 => "reachability.frontier.width-2-3",
+                                    4..=7 => "reachability.frontier.width-4-7",
+                                    _ => "reachability.frontier.width-8-plus",
+                                };
+                                context.record_work(rue_query::WorkItem::new(width_bucket, 1));
                                 for (instance, transaction) in
                                     frontier.into_iter().zip(transactions)
                                 {
@@ -15443,15 +15542,24 @@ impl RevisionedQueryDatabase {
                         // remain transaction-only (they publish no
                         // BodyReferences terminal), so interpret the exact
                         // transaction before projecting schedulable references.
-                        let transaction_terminal =
-                            if let Some(transaction) = prefetched_transactions.remove(&instance) {
-                                transaction
-                            } else {
-                                context.query_registered(
-                                    &transactions_for_body_reachability,
-                                    body_key.clone(),
-                                )?
-                            };
+                        let transaction_terminal = if let Some(transaction) =
+                            prefetched_transactions.remove(&instance)
+                        {
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.transactions.prefetched",
+                                1,
+                            ));
+                            transaction
+                        } else {
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.transactions.serial",
+                                1,
+                            ));
+                            context.query_registered(
+                                &transactions_for_body_reachability,
+                                body_key.clone(),
+                            )?
+                        };
                         let rue_query::QueryOutcome::Success(transaction) =
                             transaction_terminal.outcome()
                         else {
@@ -15941,12 +16049,16 @@ impl RevisionedQueryDatabase {
                     },
                     move |context, _, key: &crate::body_query::BodyClosurePublicationKey| {
                         // The publication request's operational sidecar consumes
-                        // only body-transaction lifecycle rows. Scope the
-                        // closure request itself so both warm validation and
-                        // cold evaluation suppress the much larger descendant
-                        // ledger while preserving query semantics.
-                        let _nested_attempts =
-                            context.retain_nested_attempts_for(&["compiler.body-transaction"]);
+                        // body-transaction lifecycle rows plus the one
+                        // reachability row whose deterministic work describes
+                        // frontier scheduling. Scope the closure request itself
+                        // so both warm validation and cold evaluation suppress
+                        // the much larger descendant ledger while preserving
+                        // query semantics.
+                        let _nested_attempts = context.retain_nested_attempts_for(&[
+                            "compiler.body-transaction",
+                            "compiler.body-reachability",
+                        ]);
                         let closure_fallback = terminal_root_for_closure_publication
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -16161,6 +16273,7 @@ impl RevisionedQueryDatabase {
             body_reachability,
             body_closures,
             body_closure_publications,
+            body_reachability_meter,
             body_references,
             body_produced_anonymous,
             module_rirs,
@@ -18347,6 +18460,24 @@ impl RevisionedQueryDatabase {
                     .or_insert_with(|| attempt.execution());
                 executions
             });
+        let work: Vec<(Arc<str>, u64)> = publication_attempt
+            .nested_attempts()
+            .iter()
+            .filter(|attempt| attempt.node().family() == "compiler.body-reachability")
+            .flat_map(|attempt| attempt.work().iter().cloned())
+            .fold(
+                BTreeMap::<Arc<str>, u64>::new(),
+                |mut reduced, (identity, amount)| {
+                    reduced
+                        .entry(identity)
+                        .and_modify(|total| *total = total.saturating_add(amount))
+                        .or_insert(amount);
+                    reduced
+                },
+            )
+            .into_iter()
+            .collect();
+        self.body_reachability_meter.accrue(&work);
         let publication = publication_attempt.into_result()?;
         let rue_query::QueryOutcome::Success(closure) = publication.outcome() else {
             unreachable!("BodyClosurePublication publishes typed values")
@@ -18355,6 +18486,7 @@ impl RevisionedQueryDatabase {
             terminal: closure.clone(),
             body_executions,
             retained_before,
+            work,
         })
     }
 
@@ -20457,6 +20589,10 @@ impl RevisionedQueryDatabase {
 
     pub(crate) fn runtime_retention_metrics(&self) -> rue_query::RuntimeMetrics {
         self.runtime.metrics()
+    }
+
+    pub(crate) fn body_reachability_metrics(&self) -> crate::unstable::SemanticReachabilityMetrics {
+        self.body_reachability_meter.snapshot()
     }
 
     pub(crate) fn input_stamp_retention_metrics(&self) -> InputStampRetentionMetrics {
@@ -37857,24 +37993,24 @@ fn main() -> i32 {
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
         let revision = revision_for(&mut database, &snapshot);
-        let attempt = database.runtime.request_registered(
-            &database.body_reachability,
-            revision,
-            crate::body_query::BodyClosureQueryKey {
-                modules: Arc::from([module.clone()]),
-                roots: Arc::from([free_function_instance(&module, "main")]),
-                configuration: semantic_configuration(),
-            },
-            CancellationToken::new(),
-        );
-        let terminal = attempt.terminal().expect("reachability publishes");
-        let rue_query::QueryOutcome::Success(output) = terminal.outcome() else {
-            unreachable!("BodyReachability publishes typed values")
+        let request = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("body closure publishes");
+        let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
         };
         assert_eq!(output.reached.len(), CALLEES + 1);
         let work = |expected: &str| {
-            attempt
-                .work()
+            request
+                .work
                 .iter()
                 .find_map(|(label, amount)| (label.as_ref() == expected).then_some(*amount))
                 .unwrap_or(0)
@@ -37888,6 +38024,17 @@ fn main() -> i32 {
             work("reachability.frontier.scan-keys"),
             output.reached.len(),
         );
+        assert_eq!(work("reachability.frontier.batches"), 2);
+        assert_eq!(work("reachability.frontier.keys"), (CALLEES + 1) as u64);
+        assert_eq!(work("reachability.frontier.width-1"), 1);
+        assert_eq!(work("reachability.frontier.width-2-3"), 0);
+        assert_eq!(work("reachability.frontier.width-4-7"), 0);
+        assert_eq!(work("reachability.frontier.width-8-plus"), 1);
+        assert_eq!(
+            work("reachability.transactions.prefetched"),
+            (CALLEES + 1) as u64
+        );
+        assert_eq!(work("reachability.transactions.serial"), 0);
     }
 
     #[test]

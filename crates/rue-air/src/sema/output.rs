@@ -483,6 +483,26 @@ pub struct BodyAnalysisWork {
     /// maximum `instance_depth` value). Snapshot at completion, not a running
     /// total. Populated only by the session coordinator.
     pub max_specialization_depth: usize,
+    /// Pending-set scans performed by database-owned body reachability.
+    pub reachability_frontier_scans: usize,
+    /// Pending keys examined across those scans.
+    pub reachability_frontier_scan_keys: usize,
+    /// Non-empty stable frontiers submitted to structured batch scheduling.
+    pub reachability_frontier_batches: usize,
+    /// Body keys submitted across those non-empty frontiers.
+    pub reachability_frontier_keys: usize,
+    /// Scheduled frontiers containing exactly one body key.
+    pub reachability_frontier_width_one: usize,
+    /// Scheduled frontiers containing two or three body keys.
+    pub reachability_frontier_width_two_to_three: usize,
+    /// Scheduled frontiers containing four through seven body keys.
+    pub reachability_frontier_width_four_to_seven: usize,
+    /// Scheduled frontiers containing at least eight body keys.
+    pub reachability_frontier_width_eight_or_more: usize,
+    /// Body transactions consumed from a structured frontier prefetch.
+    pub reachability_transactions_prefetched: usize,
+    /// Body transactions demanded on the serial coordinator path.
+    pub reachability_transactions_serial: usize,
     /// Demand-driven comparisons between distinct concrete semantic types.
     /// This stays proportional to comparisons requested by body constraints;
     /// it never includes a scan of unrelated types in the global pool.

@@ -575,6 +575,7 @@ pub(crate) fn link_internal_with_warnings(
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
         query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
+        semantic_reachability: crate::unstable::SemanticReachabilityMetrics::default(),
     })
 }
 
@@ -678,6 +679,7 @@ pub(crate) fn link_system_with_warnings(
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
         query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
+        semantic_reachability: crate::unstable::SemanticReachabilityMetrics::default(),
     })
 }
 use std::io::{Read, Write};

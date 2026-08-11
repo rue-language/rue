@@ -949,7 +949,20 @@ fn benchmark_compiler_work(
 ) -> rue_perf_schema::CompilerWork {
     let runtime = metrics.query_runtime;
     let validation = runtime.validation;
+    let reachability = metrics.semantic_reachability;
     rue_perf_schema::CompilerWork {
+        semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
+            frontier_scans: reachability.frontier_scans,
+            frontier_scan_keys: reachability.frontier_scan_keys,
+            frontier_batches: reachability.frontier_batches,
+            frontier_keys: reachability.frontier_keys,
+            frontier_width_one: reachability.frontier_width_one,
+            frontier_width_two_to_three: reachability.frontier_width_two_to_three,
+            frontier_width_four_to_seven: reachability.frontier_width_four_to_seven,
+            frontier_width_eight_or_more: reachability.frontier_width_eight_or_more,
+            transactions_prefetched: reachability.transactions_prefetched,
+            transactions_serial: reachability.transactions_serial,
+        },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
             validation: rue_perf_schema::ValidationWork {
                 traversals: validation.traversals,
