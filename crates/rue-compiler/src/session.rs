@@ -4920,6 +4920,16 @@ impl CompilerSession {
         let _cfg_collection_span =
             tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
                 .entered();
+        let (materialization_index, index_work) =
+            crate::local_semantic_materialization::LocalFactSelectionIndex::new(
+                &graph.declarations,
+                &graph.anonymous_nominals,
+            );
+        work.cfg.materialization_index_builds += 1;
+        work.cfg.materialization_declarations_scanned += index_work.declarations_scanned;
+        work.cfg.materialization_anonymous_nominals_scanned +=
+            index_work.anonymous_nominals_scanned;
+        work.cfg.materialization_type_nodes_scanned += index_work.type_nodes_scanned;
         for closure_body in graph.closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
                 unreachable!("BodyAnalysisBundle publishes typed values")
@@ -4980,12 +4990,12 @@ impl CompilerSession {
                 continue;
             }
             work.cfg.functions_considered += 1;
+            work.cfg.materialization_fact_selections += 1;
             let materialization =
                 crate::local_semantic_materialization::select_materialization_facts(
                     &closure_body.key.instance,
                     semantic_body,
-                    &graph.declarations,
-                    &graph.anonymous_nominals,
+                    &materialization_index,
                     &callable_symbols,
                 )
                 .map_err(|error| {
@@ -5015,13 +5025,13 @@ impl CompilerSession {
             .map_or(rue_span::Span::default(), |(_, _, span)| *span);
         for (owner, facts) in graph.closure.demanded_drop_glue_plans.iter() {
             work.cfg.drop_glue_functions_synthesized += 1;
+            work.cfg.materialization_fact_selections += 1;
             let identity = crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
             let materialization =
                 crate::local_semantic_materialization::select_drop_glue_materialization_facts(
                     owner,
                     facts,
-                    &graph.declarations,
-                    &graph.anonymous_nominals,
+                    &materialization_index,
                     &callable_symbols,
                 )
                 .map_err(|error| {
@@ -5043,6 +5053,9 @@ impl CompilerSession {
                 fallback_span,
             ));
         }
+        // The selected facts now own everything carried by CFG memo keys. Do
+        // not retain the request-wide lookup tables across CFG evaluation.
+        drop(materialization_index);
         cfg_inputs.sort_by(|left, right| left.0.cmp(&right.0));
         let mut raw_accessor_keys = std::collections::BTreeMap::new();
         for (function, semantic_input, _) in &cfg_inputs {
@@ -9378,6 +9391,17 @@ mod tests {
         let semantic = session
             .canonical_semantic(&CompileOptions::default())
             .unwrap();
+        let cfg_work = semantic.work().cfg;
+        assert_eq!(cfg_work.materialization_index_builds, 1, "{cfg_work:?}");
+        assert_eq!(
+            cfg_work.materialization_fact_selections,
+            cfg_work.functions_considered + cfg_work.drop_glue_functions_synthesized,
+            "{cfg_work:?}"
+        );
+        assert!(
+            cfg_work.materialization_declarations_scanned > 0,
+            "{cfg_work:?}"
+        );
         let names = semantic
             .functions()
             .iter()

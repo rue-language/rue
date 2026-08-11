@@ -369,6 +369,44 @@ small owner allocation is preferable to copying and refcounting two fat string
 pointers across the graph. The final Lattice executable remains byte-identical
 to its parent (`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`).
 
+RUE-1356 then removed request-wide lookup preparation from the per-CFG-input
+loop. `LocalFactSelectionIndex` is one immutable, request-scoped convenience
+index over the exact durable declaration and anonymous-nominal slices. It is
+not a query or semantic authority: each body still selects and owns its exact
+transitive fact closure in the CFG memo key. The index borrows its source keys,
+is shared only while CFG inputs are assembled, and is dropped before CFG query
+evaluation begins.
+
+The scaling schema now separates index construction from exact body-local fact
+selection. Every maintained workload builds one index; the prior source
+performed the declaration, anonymous-nominal and recursive slice-type scans
+once per selection. The old work below is the exact source-derived product of
+the same input cardinalities, while the new values are emitted counters:
+
+| workload | index builds old → new | declaration scans old → new | type-node scans old → new | fact selections |
+| --- | ---: | ---: | ---: | ---: |
+| Ruelex | 216 → 1 | 151,848 → 703 | 243,000 → 1,125 | 216 |
+| Mosaic | 630 → 1 | 666,540 → 1,058 | 1,217,160 → 1,932 | 630 |
+| Harbor | 1,359 → 1 | 1,954,242 → 1,438 | 4,305,312 → 3,168 | 1,359 |
+| Lattice | 1,280 → 1 | 2,927,360 → 2,287 | 5,560,320 → 4,344 | 1,280 |
+
+The same-host release comparison against merged RUE-1355 shows the expected
+size-sensitive result. Small workloads are neutral within noise, while the
+larger maintained programs spend materially less time in CFG preparation:
+
+| workload | compiler ms parent → RUE-1356 | peak MiB parent → RUE-1356 |
+| --- | ---: | ---: |
+| Ruelex | 133.77 → 132.05 | 110.7 → 110.1 |
+| Mosaic | 391.91 → 389.20 | 261.4 → 261.8 |
+| Harbor | 883.76 → 804.38 | 625.6 → 629.0 |
+| Lattice | 1,017.15 → 932.14 | 727.4 → 727.6 |
+
+The fixed one-worker Lattice allocation probe fell from 22,297,695 to
+21,842,394 allocations (-2.04 percent) and from 4,524,520,772 to
+3,543,025,272 requested bytes (-21.69 percent). Every pre-existing query and
+reachability counter remains exact, and the Lattice executable hash is still
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

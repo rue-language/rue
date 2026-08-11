@@ -33,6 +33,8 @@ compilations. The report records:
 - the compiler's additive, mutually exclusive phase accounting;
 - semantic-reachability scans, scheduled keys, and fixed frontier-width
   buckets;
+- request-local CFG-materialization index builds, declaration/anonymous/type
+  scans, and exact body-local fact selections;
 - query validation, endorsement, lease, demand, and retention-scan work;
 - display-only query identities materialized for memo nodes, structured batch
   cycle rendering, and abort fallbacks, with exact counts and formatted key
@@ -55,6 +57,11 @@ frontiers whose work remains slow because of allocation, hashing, query-runtime,
 or synchronization overhead. They describe deterministic graph shape and
 scheduler submissions; they are not elapsed-time or worker-utilization
 estimates.
+
+The CFG-materialization table separates immutable lookup preparation from the
+exact fact-closure selections that remain body-local. Its selections-per-build
+ratio makes accidental per-body rebuilding of request-wide declaration,
+anonymous-nominal, destructor, and slice-source indexes directly visible.
 
 The display-identity table similarly reports formatted key bytes per token.
 Memo-node identities and abort fallbacks label diagnostics. Structured-wait
