@@ -712,6 +712,22 @@ pairs are clock-neutral: median paired deltas are +0.19% on Ruelex, -0.66% on
 Harbor, and -0.51% on Lattice. Median peak RSS is flat to modestly lower, and
 all output sizes and SHA-256 hashes are identical.
 
+RUE-1374 removes whole-history snapshots from transactional lookup-root
+publication. The lookup lease retains a bounded 4,096-key incarnation history
+and recency index; both publication handoffs previously deep-cloned both trees
+before every commit solely to support the rare abort path. Publication now
+journals only the keys it refreshes or evicts and replays that journal backward
+on abort. Root replacement, bounded FIFO eviction, rederivation accounting,
+callback rollback, and retry semantics are unchanged.
+
+The fixed one-worker Lattice allocation probe falls from 17,387,834 to
+16,796,147 allocation calls (-591,687, or -3.40%) and from 2,916,549,779 to
+2,723,643,949 requested bytes (-192,905,830, or -6.61%). Every deterministic
+compiler-work counter and the emitted executable are identical. Five directly
+alternating ordinary-release pairs are consistently faster, with a median
+paired delta of -5.43%. Median peak RSS falls from 658,046,976 to 455,131,136
+bytes (-193.52 MiB, or -30.84%).
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
