@@ -128,10 +128,10 @@ pub struct FrontendRetentionMetrics {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FrontendRuntimeMetrics {
-    pub(crate) validation: rue_query::ValidationWork,
-    pub(crate) display_identities: rue_query::DisplayIdentityMetrics,
-    pub(crate) retention_enforcements: u64,
-    pub(crate) retention_scan_entries: u64,
+    /// One canonical projection of cumulative query-runtime work. Live gauges
+    /// and configured budgets remain in `FrontendRetentionMetrics`; keeping
+    /// them out of this snapshot preserves deterministic work equality.
+    pub(crate) query: crate::unstable::QueryRuntimeMetrics,
     pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
 }
 
@@ -3104,10 +3104,7 @@ impl CompilerSession {
         // baseline-to-successor delta cannot inherit late predecessor work.
         let runtime = self.queries.revisioned.runtime_retention_metrics();
         work.runtime = FrontendRuntimeMetrics {
-            validation: runtime.validation,
-            display_identities: runtime.display_identities,
-            retention_enforcements: runtime.retention_enforcements,
-            retention_scan_entries: runtime.retention_scan_entries,
+            query: runtime.into(),
             semantic_reachability: self.queries.revisioned.body_reachability_metrics(),
         };
         crate::unstable::MetricsSnapshot::new(work)
@@ -3305,10 +3302,7 @@ impl CompilerSession {
             diagnostic_source_bytes: diagnostics.source_bytes,
         });
         self.metrics.set_runtime(FrontendRuntimeMetrics {
-            validation: runtime.validation,
-            display_identities: runtime.display_identities,
-            retention_enforcements: runtime.retention_enforcements,
-            retention_scan_entries: runtime.retention_scan_entries,
+            query: runtime.into(),
             semantic_reachability: self.queries.revisioned.body_reachability_metrics(),
         });
     }
@@ -7941,6 +7935,15 @@ mod tests {
         let live = session.queries.revisioned.runtime_metrics_for_test();
         assert!(live.validation.traversals > before.validation.traversals);
         let observed = session.unstable_metrics().query_runtime();
+        assert_eq!(observed.claims, live.claims);
+        assert_eq!(observed.reuses, live.reuses);
+        assert_eq!(observed.joins, live.joins);
+        assert_eq!(observed.declined_joins, live.declined_joins);
+        assert_eq!(observed.body_completions, live.body_completions);
+        assert_eq!(observed.red_publications, live.red_publications);
+        assert_eq!(observed.green_publications, live.green_publications);
+        assert_eq!(observed.cancellations, live.cancellations);
+        assert_eq!(observed.cycles, live.cycles);
         assert_eq!(observed.validation, live.validation.into());
         assert_eq!(observed.retention_enforcements, live.retention_enforcements);
         assert_eq!(observed.retention_scan_entries, live.retention_scan_entries);

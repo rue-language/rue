@@ -710,7 +710,7 @@ impl TimingData {
         };
 
         BenchmarkTiming {
-            schema_version: 9,
+            schema_version: 10,
             timing_model: "inclusive_spans",
             phase_accounting,
             metadata,
@@ -2068,7 +2068,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None, None);
-        assert!(json.contains("\"schema_version\":9"));
+        assert!(json.contains("\"schema_version\":10"));
         assert!(json.contains(&format!(
             "\"compiler_build_profile\":\"{COMPILER_BUILD_PROFILE}\""
         )));
@@ -2730,7 +2730,7 @@ mod phase_accounting_tests {
 
         let timing =
             data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None, None);
-        assert_eq!(timing.schema_version, 9);
+        assert_eq!(timing.schema_version, 10);
         assert_eq!(
             timing.metadata.compiler_build_profile,
             COMPILER_BUILD_PROFILE

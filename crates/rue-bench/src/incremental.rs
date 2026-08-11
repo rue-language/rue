@@ -307,19 +307,7 @@ impl CollectionTiming {
         self.fresh_oracle += other.fresh_oracle;
         self.total += other.total;
         self.query_runtime
-            .validation
-            .saturating_add_assign(other.query_runtime.validation);
-        self.query_runtime
-            .display_identities
-            .saturating_add_assign(other.query_runtime.display_identities);
-        self.query_runtime.retention_enforcements = self
-            .query_runtime
-            .retention_enforcements
-            .saturating_add(other.query_runtime.retention_enforcements);
-        self.query_runtime.retention_scan_entries = self
-            .query_runtime
-            .retention_scan_entries
-            .saturating_add(other.query_runtime.retention_scan_entries);
+            .saturating_add_assign(other.query_runtime);
     }
 
     fn other(self) -> Duration {
@@ -876,18 +864,7 @@ fn query_runtime_delta(
     before: QueryRuntimeMetrics,
     after: QueryRuntimeMetrics,
 ) -> QueryRuntimeMetrics {
-    QueryRuntimeMetrics {
-        validation: after.validation.saturating_sub(before.validation),
-        display_identities: after
-            .display_identities
-            .saturating_sub(before.display_identities),
-        retention_enforcements: after
-            .retention_enforcements
-            .saturating_sub(before.retention_enforcements),
-        retention_scan_entries: after
-            .retention_scan_entries
-            .saturating_sub(before.retention_scan_entries),
-    }
+    after.saturating_sub(before)
 }
 
 fn report_display_identity_work(

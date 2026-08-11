@@ -39,6 +39,8 @@ compilations. The report records:
 - request-local CFG-materialization index builds, declaration/anonymous/type
   scans, and exact body-local fact selections;
 - query validation, endorsement, lease, demand, and retention-scan work;
+- query claims, terminal reuses, joins, body completions, publication
+  outcomes, cancellations, and cycles;
 - display-only query identities materialized for memo nodes, structured batch
   cycle rendering, and abort fallbacks, with exact counts and formatted key
   bytes;
