@@ -129,6 +129,7 @@ pub struct FrontendRetentionMetrics {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FrontendRuntimeMetrics {
     pub(crate) validation: rue_query::ValidationWork,
+    pub(crate) display_identities: rue_query::DisplayIdentityMetrics,
     pub(crate) retention_enforcements: u64,
     pub(crate) retention_scan_entries: u64,
 }
@@ -3103,6 +3104,7 @@ impl CompilerSession {
         let runtime = self.queries.revisioned.runtime_retention_metrics();
         work.runtime = FrontendRuntimeMetrics {
             validation: runtime.validation,
+            display_identities: runtime.display_identities,
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
         };
@@ -3302,6 +3304,7 @@ impl CompilerSession {
         });
         self.metrics.set_runtime(FrontendRuntimeMetrics {
             validation: runtime.validation,
+            display_identities: runtime.display_identities,
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
         });

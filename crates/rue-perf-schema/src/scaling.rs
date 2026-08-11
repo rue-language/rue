@@ -9,10 +9,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EnvironmentFingerprint, Sample, ValidationWork};
+use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 3;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +177,8 @@ pub struct CompilerWork {
 pub struct QueryRuntimeWork {
     /// Retained-terminal validation and proof work.
     pub validation: ValidationWork,
+    /// Presentation-only query identity materialization.
+    pub display_identities: DisplayIdentityWork,
     /// Family-local retention passes run.
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by those passes.

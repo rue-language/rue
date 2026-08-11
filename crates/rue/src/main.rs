@@ -979,6 +979,18 @@ fn benchmark_compiler_work(
                 superseded: validation.superseded,
                 certificates_published: validation.certificates_published,
             },
+            display_identities: rue_perf_schema::DisplayIdentityWork {
+                memo_node_materializations: runtime.display_identities.memo_node_materializations,
+                memo_node_bytes: runtime.display_identities.memo_node_bytes,
+                structured_wait_materializations: runtime
+                    .display_identities
+                    .structured_wait_materializations,
+                structured_wait_bytes: runtime.display_identities.structured_wait_bytes,
+                abort_fallback_materializations: runtime
+                    .display_identities
+                    .abort_fallback_materializations,
+                abort_fallback_bytes: runtime.display_identities.abort_fallback_bytes,
+            },
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
         },
@@ -1481,6 +1493,14 @@ mod tests {
                     duplicate_terminal_lease_observations: 5,
                     ..Default::default()
                 },
+                display_identities: rue_compiler::unstable::QueryDisplayIdentityMetrics {
+                    memo_node_materializations: 19,
+                    memo_node_bytes: 113,
+                    structured_wait_materializations: 23,
+                    structured_wait_bytes: 211,
+                    abort_fallback_materializations: 2,
+                    abort_fallback_bytes: 17,
+                },
                 retention_enforcements: 13,
                 retention_scan_entries: 17,
             },
@@ -1497,6 +1517,20 @@ mod tests {
         );
         assert_eq!(projected.retention_enforcements, 13);
         assert_eq!(projected.retention_scan_entries, 17);
+        assert_eq!(projected.display_identities.memo_node_materializations, 19);
+        assert_eq!(projected.display_identities.memo_node_bytes, 113);
+        assert_eq!(
+            projected
+                .display_identities
+                .structured_wait_materializations,
+            23
+        );
+        assert_eq!(projected.display_identities.structured_wait_bytes, 211);
+        assert_eq!(
+            projected.display_identities.abort_fallback_materializations,
+            2
+        );
+        assert_eq!(projected.display_identities.abort_fallback_bytes, 17);
     }
     use tracing_subscriber::layer::SubscriberExt as _;
 

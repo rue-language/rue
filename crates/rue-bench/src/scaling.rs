@@ -400,6 +400,34 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Query display identities\n\n");
+    out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
+    out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let identities = observation.work.query_runtime.display_identities;
+        let total_bytes = identities
+            .memo_node_bytes
+            .saturating_add(identities.structured_wait_bytes)
+            .saturating_add(identities.abort_fallback_bytes);
+        let bytes_per_token = if observation.shape.tokens == 0 {
+            0.0
+        } else {
+            total_bytes as f64 / observation.shape.tokens as f64
+        };
+        out.push_str(&format!(
+            "| {} | {}/{} | {}/{} | {}/{} | {:.2} |\n",
+            observation.workload,
+            identities.memo_node_materializations,
+            identities.memo_node_bytes,
+            identities.structured_wait_materializations,
+            identities.structured_wait_bytes,
+            identities.abort_fallback_materializations,
+            identities.abort_fallback_bytes,
+            bytes_per_token,
+        ));
+    }
+
     out.push_str("\n## Additive compiler-root phase medians\n\n");
     out.push_str("All values are milliseconds. Bands are mutually exclusive and sum to compiler-root time per raw sample.\n\n");
     out.push_str("| workload | source/parse | program | semantic | CFG/opt | backend | object | linking | mixed | unattributed |\n");
@@ -506,6 +534,13 @@ mod tests {
                             memo_misses: 2,
                             ..Default::default()
                         },
+                        display_identities: rue_perf_schema::DisplayIdentityWork {
+                            memo_node_materializations: 3,
+                            memo_node_bytes: 21,
+                            structured_wait_materializations: 2,
+                            structured_wait_bytes: 14,
+                            ..Default::default()
+                        },
                         retention_enforcements: 1,
                         retention_scan_entries: 4,
                     },
@@ -526,6 +561,8 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("nodes/token"));
+        assert!(rendered.contains("Query display identities"));
+        assert!(rendered.contains("bytes/token"));
     }
 
     #[test]

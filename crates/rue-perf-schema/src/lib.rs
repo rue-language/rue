@@ -42,10 +42,10 @@ mod validate;
 
 pub use canonical::{CanonicalError, canonical_json, content_address};
 pub use incremental::{
-    EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditManifestError, EditOutcome,
-    EditReport, EditReportIdentity, EditReportRegime, EditRow, EditRowSummary, EditSample,
-    EditScenario, EditScenarioDeclaration, EditSummary, EditValidation, EditWorkload,
-    EndpointSummary, ExpectedEditOutcome, FailureStage, HostClass, LinkBandSummary,
+    DisplayIdentityWorkSummary, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest,
+    EditManifestError, EditOutcome, EditReport, EditReportIdentity, EditReportRegime, EditRow,
+    EditRowSummary, EditSample, EditScenario, EditScenarioDeclaration, EditSummary, EditValidation,
+    EditWorkload, EndpointSummary, ExpectedEditOutcome, FailureStage, HostClass, LinkBandSummary,
     OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork, ReferenceHost,
     RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, RotationRule,
     SourceShape, StructuralWork, StructuralWorkSummary, TransformationIdentity, ValidationFinding,
@@ -74,6 +74,27 @@ pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ValidationError, ValidationOutcome,
     validate_run,
 };
+
+/// Deterministic presentation-only query identity materialization.
+///
+/// Byte totals contain the UTF-8 key identity returned by the query family;
+/// shared family names are excluded.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayIdentityWork {
+    /// Identities created once for new memo-node incarnations.
+    pub memo_node_materializations: u64,
+    /// Formatted key bytes retained by new memo-node incarnations.
+    pub memo_node_bytes: u64,
+    /// Identities created to label structured batch wait edges.
+    pub structured_wait_materializations: u64,
+    /// Formatted key bytes used to label structured batch wait edges.
+    pub structured_wait_bytes: u64,
+    /// Identities created lazily when nested requests abort.
+    pub abort_fallback_materializations: u64,
+    /// Formatted key bytes created lazily when nested requests abort.
+    pub abort_fallback_bytes: u64,
+}
 
 /// The schema version of [`RunObject`] as defined by this crate.
 ///

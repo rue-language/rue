@@ -11,10 +11,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EnvironmentFingerprint, median, median_absolute_deviation};
+use crate::{DisplayIdentityWork, EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 5;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 6;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -803,6 +803,8 @@ pub struct EditSample {
     pub work: StructuralWork,
     /// Exact retained-terminal validation work.
     pub validation: ValidationWork,
+    /// Presentation-only query identity materialization during the warm request.
+    pub display_identities: DisplayIdentityWork,
     /// Retained memory and observation gauges at the endpoint.
     pub retention: RetainedGauges,
     /// Fresh-session correctness comparison performed outside timing.
@@ -1609,6 +1611,24 @@ pub struct StructuralWorkSummary {
     pub evicted: EndpointSummary,
 }
 
+/// Derived presentation-only query identity materialization.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisplayIdentityWorkSummary {
+    /// New memo-node identity count.
+    pub memo_node_materializations: EndpointSummary,
+    /// New memo-node formatted key bytes.
+    pub memo_node_bytes: EndpointSummary,
+    /// Structured batch-wait identity count.
+    pub structured_wait_materializations: EndpointSummary,
+    /// Structured batch-wait formatted key bytes.
+    pub structured_wait_bytes: EndpointSummary,
+    /// Abort-fallback identity count.
+    pub abort_fallback_materializations: EndpointSummary,
+    /// Abort-fallback formatted key bytes.
+    pub abort_fallback_bytes: EndpointSummary,
+}
+
 /// Fresh-link band derived from successful cumulative endpoints.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1643,6 +1663,8 @@ pub struct EditRowSummary {
     pub link_band: Option<LinkBandSummary>,
     /// Structural totals across phases.
     pub work: StructuralWorkSummary,
+    /// Presentation-only query identity materialization.
+    pub display_identities: DisplayIdentityWorkSummary,
 }
 
 /// Deterministic derived edit report.
@@ -1693,6 +1715,27 @@ fn derived_work(samples: &[EditSample]) -> StructuralWorkSummary {
         invalidated: summarize(&column(3)),
         canceled: summarize(&column(4)),
         evicted: summarize(&column(5)),
+    }
+}
+
+fn derived_display_identity_work(samples: &[EditSample]) -> DisplayIdentityWorkSummary {
+    let values = |project: fn(&DisplayIdentityWork) -> u64| {
+        samples
+            .iter()
+            .map(|sample| project(&sample.display_identities))
+            .collect::<Vec<_>>()
+    };
+    DisplayIdentityWorkSummary {
+        memo_node_materializations: summarize(&values(|work| work.memo_node_materializations)),
+        memo_node_bytes: summarize(&values(|work| work.memo_node_bytes)),
+        structured_wait_materializations: summarize(&values(|work| {
+            work.structured_wait_materializations
+        })),
+        structured_wait_bytes: summarize(&values(|work| work.structured_wait_bytes)),
+        abort_fallback_materializations: summarize(&values(|work| {
+            work.abort_fallback_materializations
+        })),
+        abort_fallback_bytes: summarize(&values(|work| work.abort_fallback_bytes)),
     }
 }
 
@@ -1772,6 +1815,7 @@ pub fn derive_edit_report(
                         share_basis_points: summarize(&share),
                     }),
                     work: derived_work(&row.samples),
+                    display_identities: derived_display_identity_work(&row.samples),
                 }
             })
             .collect()
@@ -1877,6 +1921,33 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
             ));
         }
         out.push('\n');
+
+        out.push_str("## Query display identities\n\n");
+        out.push_str("Counts and UTF-8 key bytes are median ± MAD for identities the warm request actually formatted. Shared family names are excluded.\n\n");
+        out.push_str("| workload | scenario | workers | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes |\n");
+        out.push_str("| --- | --- | --- | ---: | ---: | ---: |\n");
+        for row in &summary.rows {
+            let work = &row.display_identities;
+            out.push_str(&format!(
+                "| {} | {} | {} | {} ± {}/{} ± {} | {} ± {}/{} ± {} | {} ± {}/{} ± {} |\n",
+                row.workload,
+                row.scenario.wire_name(),
+                row.worker_mode.wire_name(),
+                work.memo_node_materializations.median,
+                work.memo_node_materializations.mad,
+                work.memo_node_bytes.median,
+                work.memo_node_bytes.mad,
+                work.structured_wait_materializations.median,
+                work.structured_wait_materializations.mad,
+                work.structured_wait_bytes.median,
+                work.structured_wait_bytes.mad,
+                work.abort_fallback_materializations.median,
+                work.abort_fallback_materializations.mad,
+                work.abort_fallback_bytes.median,
+                work.abort_fallback_bytes.mad,
+            ));
+        }
+        out.push('\n');
     }
     out.push_str(&format!(
         "Retention sequence: {} revisions; {} query evictions; max current {} bytes; peak {} bytes; final {} bytes.\n",
@@ -1897,7 +1968,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 5
+report_schema_version = 6
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2072,6 +2143,14 @@ minimum_memory_bytes = 15000000000
             },
             work: StructuralWork::default(),
             validation: ValidationWork::default(),
+            display_identities: DisplayIdentityWork {
+                memo_node_materializations: 10 + u64::from(sample_index),
+                memo_node_bytes: 100 + u64::from(sample_index),
+                structured_wait_materializations: 20 + u64::from(sample_index),
+                structured_wait_bytes: 200 + u64::from(sample_index),
+                abort_fallback_materializations: u64::from(sample_index),
+                abort_fallback_bytes: 2 * u64::from(sample_index),
+            },
             retention: gauges(sample_index),
             oracle: OracleComparison::Matched {
                 warm: identity.clone(),
@@ -2215,7 +2294,27 @@ minimum_memory_bytes = 15000000000
         assert_eq!(first.schema_version, 2);
         assert!(first.reference_host_eligible);
         assert_eq!(first.retention_query_evictions, 12);
+        assert_eq!(
+            first.rows[0]
+                .display_identities
+                .memo_node_materializations
+                .median,
+            10
+        );
+        assert_eq!(first.rows[0].display_identities.memo_node_bytes.median, 100);
+        assert_eq!(
+            first.rows[0]
+                .display_identities
+                .structured_wait_materializations
+                .median,
+            20
+        );
+        assert_eq!(
+            first.rows[0].display_identities.abort_fallback_bytes.median,
+            0
+        );
         assert!(render_edit_report_markdown(&first).contains("12 query evictions"));
+        assert!(render_edit_report_markdown(&first).contains("Query display identities"));
         assert_eq!(
             render_edit_report_markdown(&first),
             render_edit_report_markdown(&second)
@@ -2357,8 +2456,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":5",
-            "\"schema_version\":5,\"surprise\":true",
+            "\"schema_version\":6",
+            "\"schema_version\":6,\"surprise\":true",
             1,
         );
         assert!(
