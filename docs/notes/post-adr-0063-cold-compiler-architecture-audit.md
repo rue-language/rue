@@ -869,6 +869,19 @@ pairs improve by 0.62% at the paired median. Median peak RSS rises by 1.54 MiB
 (0.35%), within dispersion. Every deterministic compiler-work counter and the
 emitted executable remain identical.
 
+RUE-1387 removes the ordered-tree allocation from the common one-input query
+frame. Request-local input bookkeeping now keeps zero or one identity inline
+and promotes only a second distinct identity to the existing ordered map. Both
+ordinary and aborted-prefix observations use the same accumulator, and
+multi-input publication retains canonical `InputIdentity` order.
+
+Fixed one-worker Lattice saves 979 allocator calls and 1,146,563 requested
+bytes. Sixteen alternating ordinary-release pairs are clock-neutral on the
+loaded profiling host; the paired median is -2.12%, inside very high run
+dispersion. Median peak RSS moves +2.7 MiB (0.6%), also within dispersion.
+Every deterministic compiler-work counter and the emitted executable remain
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
