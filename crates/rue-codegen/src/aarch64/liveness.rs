@@ -7,10 +7,11 @@ use std::collections::HashMap;
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, ReturnBehavior};
 use crate::liveness::{
-    LivenessAdapter, branch_successor, conditional_successors, fallthrough_successor,
+    LivenessAdapter, SuccessorList, VRegList, branch_successor, conditional_successors,
+    fallthrough_successor,
 };
 use crate::reg_class::VRegClasses;
-use crate::vreg::{LabelId, VReg};
+use crate::vreg::LabelId;
 
 // Re-export shared types from the regalloc module
 pub use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LoopInfo};
@@ -47,15 +48,15 @@ impl LivenessAdapter for Aarch64LivenessAdapter<'_> {
         idx: usize,
         inst: &Self::Inst,
         label_to_idx: &HashMap<LabelId, usize>,
-    ) -> Vec<usize> {
+    ) -> SuccessorList {
         get_successors(idx, inst, label_to_idx, self.instructions().len())
     }
 
-    fn uses(&self, inst: &Self::Inst) -> Vec<VReg> {
+    fn uses(&self, inst: &Self::Inst) -> VRegList {
         uses(inst)
     }
 
-    fn defs(&self, inst: &Self::Inst) -> Vec<VReg> {
+    fn defs(&self, inst: &Self::Inst) -> VRegList {
         defs(inst)
     }
 
@@ -106,7 +107,7 @@ fn get_successors(
     inst: &Aarch64Inst,
     label_to_idx: &HashMap<LabelId, usize>,
     num_insts: usize,
-) -> Vec<usize> {
+) -> SuccessorList {
     match inst {
         // Unconditional branch - only successor is the target
         Aarch64Inst::B { label } => branch_successor(*label, label_to_idx),
@@ -119,14 +120,14 @@ fn get_successors(
             conditional_successors(idx, *label, label_to_idx, num_insts)
         }
         // Return and trap have no successors
-        Aarch64Inst::Ret | Aarch64Inst::Brk => Vec::new(),
+        Aarch64Inst::Ret | Aarch64Inst::Brk => SuccessorList::new(),
         // A call to a helper the runtime ABI manifest declares
         // `ReturnBehavior::Never` aborts the process. Control never comes back,
         // so it has no successors and nothing is live after it (RUE-1224).
         Aarch64Inst::Bl {
             returns: ReturnBehavior::Never,
             ..
-        } => Vec::new(),
+        } => SuccessorList::new(),
         // Ordinary calls fall through (the callee returns)
         Aarch64Inst::Bl { .. } => fallthrough_successor(idx, num_insts),
         // All other instructions fall through to the next
@@ -135,11 +136,10 @@ fn get_successors(
 }
 
 /// Get virtual registers used (read) by an instruction.
-fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
-    // Most instructions have 0-2 operands; pre-allocate for common case
-    let mut result = Vec::with_capacity(2);
+fn uses(inst: &Aarch64Inst) -> VRegList {
+    let mut result = VRegList::new();
 
-    let add_if_virtual = |op: &Operand, vec: &mut Vec<VReg>| {
+    let add_if_virtual = |op: &Operand, vec: &mut VRegList| {
         if let Operand::Virtual(vreg) = op {
             vec.push(*vreg);
         }
@@ -285,11 +285,10 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
 }
 
 /// Get virtual registers defined (written) by an instruction.
-pub(crate) fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
-    // Most instructions define 0-1 registers; pre-allocate for common case
-    let mut result = Vec::with_capacity(1);
+pub(crate) fn defs(inst: &Aarch64Inst) -> VRegList {
+    let mut result = VRegList::new();
 
-    let add_if_virtual = |op: &Operand, vec: &mut Vec<VReg>| {
+    let add_if_virtual = |op: &Operand, vec: &mut VRegList| {
         if let Operand::Virtual(vreg) = op {
             vec.push(*vreg);
         }

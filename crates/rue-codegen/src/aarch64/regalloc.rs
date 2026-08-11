@@ -1290,7 +1290,7 @@ impl RegAllocBackend for Aarch64Backend {
         mir.instructions()
     }
 
-    fn defs(inst: &Self::Inst) -> Vec<VReg> {
+    fn defs(inst: &Self::Inst) -> crate::liveness::VRegList {
         liveness::defs(inst)
     }
 

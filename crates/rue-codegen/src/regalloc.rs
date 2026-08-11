@@ -1240,7 +1240,7 @@ pub trait RegAllocBackend {
 
     fn vreg_count(mir: &Self::Mir) -> u32;
     fn instructions(mir: &Self::Mir) -> &[Self::Inst];
-    fn defs(inst: &Self::Inst) -> Vec<VReg>;
+    fn defs(inst: &Self::Inst) -> crate::liveness::VRegList;
     fn rematerialization(inst: &Self::Inst) -> Option<(VReg, RematerializeOp)>;
     fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg>;
     fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
