@@ -728,6 +728,21 @@ alternating ordinary-release pairs are consistently faster, with a median
 paired delta of -5.43%. Median peak RSS falls from 658,046,976 to 455,131,136
 bytes (-193.52 MiB, or -30.84%).
 
+RUE-1375 keeps typed lookup keys in the bounded incarnation history. The
+published observation already owns a name/import key whose module and payload
+strings are shared; the history previously formatted that key into a new
+presentation string on every publication. The history and RUE-1374 rollback
+journal now clone the typed key directly. Name and import families remain
+distinct variants, and no diagnostic or query identity changes.
+
+The fixed one-worker Lattice allocation probe falls from 16,796,147 to
+16,567,637 allocation calls (-228,510, or -1.36%) and from 2,723,643,949 to
+2,720,491,481 requested bytes (-3,152,468). Every deterministic compiler-work
+counter and the emitted executable are identical. Twelve directly alternating
+ordinary-release pairs are clock-neutral at a +0.16% median paired delta.
+Median peak RSS moves from 456,433,664 to 457,940,992 bytes (+1.44 MiB, or
+0.33%), within run dispersion.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
