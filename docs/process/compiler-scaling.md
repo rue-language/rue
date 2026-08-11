@@ -31,6 +31,9 @@ compilations. The report records:
 - files, modules, source bytes, lines, lexer tokens, and functions considered;
 - externally observed fresh-process wall time and peak resident memory;
 - the compiler's additive, mutually exclusive phase accounting;
+- semantic-provider name/import lookups, method/operator candidates, exact
+  declaration fact-family reads, durable materializations, and
+  anonymous/producer/toolchain facts;
 - semantic-reachability scans, scheduled keys, and fixed frontier-width
   buckets;
 - request-local CFG-materialization index builds, declaration/anonymous/type
@@ -57,6 +60,13 @@ frontiers whose work remains slow because of allocation, hashing, query-runtime,
 or synchronization overhead. They describe deterministic graph shape and
 scheduler submissions; they are not elapsed-time or worker-utilization
 estimates.
+
+The semantic-provider tables snapshot counters already incremented by the
+production body-fact provider. The scaling probe performs no extra lookup or
+materialization to collect them. Keeping lookup demand, exact fact-family
+reads, and durable body-local materializations separate lets a follow-up tell
+whether body analysis is asking for the same fact too often or merely paying
+too much to represent each necessary answer.
 
 The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build

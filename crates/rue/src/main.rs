@@ -950,7 +950,23 @@ fn benchmark_compiler_work(
     let runtime = metrics.query_runtime;
     let validation = runtime.validation;
     let reachability = metrics.semantic_reachability;
+    let provider = metrics.provider_observations;
     rue_perf_schema::CompilerWork {
+        semantic_provider: rue_perf_schema::SemanticProviderWork {
+            name_lookups: provider.name_lookups,
+            import_lookups: provider.import_lookups,
+            method_candidates: provider.method_candidates,
+            operator_candidates: provider.operator_candidates,
+            declaration_facts: provider.declaration_facts,
+            identity_facts: provider.identity_facts,
+            signature_facts: provider.signature_facts,
+            type_facts: provider.type_facts,
+            const_facts: provider.const_facts,
+            materializations: provider.materializations,
+            anonymous_facts: provider.anonymous_facts,
+            producer_facts: provider.producer_facts,
+            toolchain_facts: provider.toolchain_facts,
+        },
         semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
             frontier_scans: reachability.frontier_scans,
             frontier_scan_keys: reachability.frontier_scan_keys,
@@ -1509,6 +1525,21 @@ mod tests {
     #[test]
     fn benchmark_work_projection_preserves_structural_counters() {
         let metrics = rue_compiler::unstable::OneShotMetrics {
+            provider_observations: rue_compiler::unstable::ProviderObservationMetrics {
+                name_lookups: 2,
+                import_lookups: 3,
+                method_candidates: 5,
+                operator_candidates: 7,
+                identity_facts: 11,
+                signature_facts: 13,
+                type_facts: 17,
+                const_facts: 19,
+                materializations: 23,
+                anonymous_facts: 29,
+                producer_facts: 31,
+                toolchain_facts: 37,
+                declaration_facts: 60,
+            },
             semantic: rue_compiler::unstable::SemanticMetrics {
                 cfg: rue_compiler::unstable::SemanticCfgMetrics {
                     materialization_index_builds: 1,
@@ -1543,6 +1574,26 @@ mod tests {
             ..Default::default()
         };
         let projected = benchmark_compiler_work(metrics);
+        assert_eq!(projected.semantic_provider.name_lookups, 2);
+        assert_eq!(projected.semantic_provider.import_lookups, 3);
+        assert_eq!(projected.semantic_provider.method_candidates, 5);
+        assert_eq!(projected.semantic_provider.operator_candidates, 7);
+        assert_eq!(projected.semantic_provider.declaration_facts, 60);
+        assert_eq!(projected.semantic_provider.identity_facts, 11);
+        assert_eq!(projected.semantic_provider.signature_facts, 13);
+        assert_eq!(projected.semantic_provider.type_facts, 17);
+        assert_eq!(projected.semantic_provider.const_facts, 19);
+        assert_eq!(
+            projected.semantic_provider.declaration_facts,
+            projected.semantic_provider.identity_facts
+                + projected.semantic_provider.signature_facts
+                + projected.semantic_provider.type_facts
+                + projected.semantic_provider.const_facts
+        );
+        assert_eq!(projected.semantic_provider.materializations, 23);
+        assert_eq!(projected.semantic_provider.anonymous_facts, 29);
+        assert_eq!(projected.semantic_provider.producer_facts, 31);
+        assert_eq!(projected.semantic_provider.toolchain_facts, 37);
         assert_eq!(projected.cfg_materialization.index_builds, 1);
         assert_eq!(projected.cfg_materialization.declarations_scanned, 31);
         assert_eq!(projected.cfg_materialization.anonymous_nominals_scanned, 7);

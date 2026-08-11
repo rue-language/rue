@@ -402,6 +402,40 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Semantic provider observations\n\n");
+    out.push_str("Counts are exact snapshots of the provider operations already performed by production body analysis; the scaling probe adds no provider lookup or materialization work. Lookup and candidate counts expose demand at the semantic boundary, while exact fact-family reads and durable materializations separate repeated observation from body-local representation work.\n\n");
+    out.push_str("| workload | name/import lookups | method/operator candidates | declaration facts total (identity/signature/type/const) |\n");
+    out.push_str("| --- | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let work = observation.work.semantic_provider;
+        out.push_str(&format!(
+            "| {} | {}/{} | {}/{} | {} ({}/{}/{}/{}) |\n",
+            observation.workload,
+            work.name_lookups,
+            work.import_lookups,
+            work.method_candidates,
+            work.operator_candidates,
+            work.declaration_facts,
+            work.identity_facts,
+            work.signature_facts,
+            work.type_facts,
+            work.const_facts,
+        ));
+    }
+    out.push_str("\n| workload | durable materializations | anonymous facts | producer facts | toolchain facts |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let work = observation.work.semantic_provider;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} |\n",
+            observation.workload,
+            work.materializations,
+            work.anonymous_facts,
+            work.producer_facts,
+            work.toolchain_facts,
+        ));
+    }
+
     out.push_str("\n## Semantic reachability scheduling\n\n");
     out.push_str("Counts are exact for database-owned body reachability. Width buckets count non-empty dependency-ready logical frontiers; multi-permit runtimes execute bounded windows as structured batches while a single-permit runtime executes the same windows inline. Transaction counts distinguish ready-frontier prefetch from fallback coordinator demand; `keys/batch` exposes available scheduling breadth independently of clock time.\n\n");
     out.push_str("| workload | scans | scan keys | batches | scheduled keys | keys/batch | transactions prefetched/serial | width 1 | width 2–3 | width 4–7 | width 8+ |\n");
@@ -579,6 +613,21 @@ mod tests {
                     functions: 1,
                 },
                 work: rue_perf_schema::CompilerWork {
+                    semantic_provider: rue_perf_schema::SemanticProviderWork {
+                        name_lookups: 2,
+                        import_lookups: 3,
+                        method_candidates: 5,
+                        operator_candidates: 7,
+                        declaration_facts: 60,
+                        identity_facts: 11,
+                        signature_facts: 13,
+                        type_facts: 17,
+                        const_facts: 19,
+                        materializations: 23,
+                        anonymous_facts: 29,
+                        producer_facts: 31,
+                        toolchain_facts: 37,
+                    },
                     semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
                         frontier_scans: 4,
                         frontier_scan_keys: 7,
@@ -632,6 +681,8 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("nodes/token"));
+        assert!(rendered.contains("Semantic provider observations"));
+        assert!(rendered.contains("durable materializations"));
         assert!(rendered.contains("Semantic reachability scheduling"));
         assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("CFG materialization preparation"));

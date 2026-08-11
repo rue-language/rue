@@ -2084,6 +2084,7 @@ pub struct OneShotMetrics {
     pub semantic: SemanticMetrics,
     pub query_runtime: QueryRuntimeMetrics,
     pub semantic_reachability: SemanticReachabilityMetrics,
+    pub provider_observations: ProviderObservationMetrics,
 }
 
 impl OneShotMetrics {
@@ -2092,6 +2093,7 @@ impl OneShotMetrics {
         work: crate::PipelineWork,
         query_runtime: QueryRuntimeMetrics,
         semantic_reachability: SemanticReachabilityMetrics,
+        provider_observations: ProviderObservationMetrics,
     ) -> Self {
         Self {
             files: stats.files,
@@ -2103,6 +2105,7 @@ impl OneShotMetrics {
             semantic: SemanticMetrics::from_work(work.semantic),
             query_runtime,
             semantic_reachability,
+            provider_observations,
         }
     }
 }
