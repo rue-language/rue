@@ -401,7 +401,7 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Query display identities\n\n");
-    out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
+    out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
     out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {

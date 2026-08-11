@@ -5,7 +5,7 @@
 # Fixture edits are added under a new `fixture_revision`; raw report syntax
 # advances independently under `report_schema_version`.
 schema_version = 2
-report_schema_version = 6
+report_schema_version = 7
 fixture_revision = 2
 # Two workloads each collect seven one-sample structural rows and one five-
 # sample latency row: 24 independent retained sessions in the scheduled matrix.

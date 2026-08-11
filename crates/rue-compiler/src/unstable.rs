@@ -1771,9 +1771,9 @@ pub struct QueryDisplayIdentityMetrics {
     pub memo_node_materializations: u64,
     /// New memo-node formatted key bytes.
     pub memo_node_bytes: u64,
-    /// Structured batch-wait identity count.
+    /// Structured batch identities materialized to render wait cycles.
     pub structured_wait_materializations: u64,
-    /// Structured batch-wait formatted key bytes.
+    /// Structured batch key bytes formatted to render wait cycles.
     pub structured_wait_bytes: u64,
     /// Abort-fallback identity count.
     pub abort_fallback_materializations: u64,

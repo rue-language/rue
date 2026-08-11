@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 6;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 7;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -1619,9 +1619,9 @@ pub struct DisplayIdentityWorkSummary {
     pub memo_node_materializations: EndpointSummary,
     /// New memo-node formatted key bytes.
     pub memo_node_bytes: EndpointSummary,
-    /// Structured batch-wait identity count.
+    /// Structured batch identities materialized to render wait cycles.
     pub structured_wait_materializations: EndpointSummary,
-    /// Structured batch-wait formatted key bytes.
+    /// Structured batch key bytes formatted to render wait cycles.
     pub structured_wait_bytes: EndpointSummary,
     /// Abort-fallback identity count.
     pub abort_fallback_materializations: EndpointSummary,
@@ -1923,7 +1923,7 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
         out.push('\n');
 
         out.push_str("## Query display identities\n\n");
-        out.push_str("Counts and UTF-8 key bytes are median ± MAD for identities the warm request actually formatted. Shared family names are excluded.\n\n");
+        out.push_str("Counts and UTF-8 key bytes are median ± MAD for identities the warm request actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded.\n\n");
         out.push_str("| workload | scenario | workers | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes |\n");
         out.push_str("| --- | --- | --- | ---: | ---: | ---: |\n");
         for row in &summary.rows {
@@ -1968,7 +1968,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 6
+report_schema_version = 7
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2456,8 +2456,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":6",
-            "\"schema_version\":6,\"surprise\":true",
+            "\"schema_version\":7",
+            "\"schema_version\":7,\"surprise\":true",
             1,
         );
         assert!(

@@ -86,9 +86,9 @@ pub struct DisplayIdentityWork {
     pub memo_node_materializations: u64,
     /// Formatted key bytes retained by new memo-node incarnations.
     pub memo_node_bytes: u64,
-    /// Identities created to label structured batch wait edges.
+    /// Structured batch identities materialized only to render wait cycles.
     pub structured_wait_materializations: u64,
-    /// Formatted key bytes used to label structured batch wait edges.
+    /// Formatted structured-batch key bytes used to render wait cycles.
     pub structured_wait_bytes: u64,
     /// Identities created lazily when nested requests abort.
     pub abort_fallback_materializations: u64,
