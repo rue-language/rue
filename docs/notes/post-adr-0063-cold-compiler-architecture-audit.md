@@ -1026,6 +1026,20 @@ paired MAD and a -12.03% to +10.39% range. Median peak RSS moves +1.56 MiB
 within dispersion. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1399 walks instruction-scheduler basic blocks directly instead of first
+materializing every block start in a temporary vector. Each barrier closes the
+current block, whose non-barrier interior is scheduled immediately while the
+original MIR remains unchanged; the final non-barrier suffix follows the same
+path. The completed dense permutation is still applied only after every block
+has been inspected.
+
+Three fixed one-worker allocation probes save 4,896--5,265 calls and
+0.49--0.83 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.43% paired median, with 0.82%
+paired MAD and a -3.71% to +9.47% range. Median peak RSS falls by 0.73 MiB
+within dispersion. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

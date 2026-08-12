@@ -251,52 +251,62 @@ where
         return;
     }
 
-    // Find basic block boundaries.
-    let mut block_starts = vec![0usize];
-    for (i, inst) in instructions.iter().enumerate() {
-        if adapter.is_barrier(inst) {
-            // The barrier is the last instruction of the current block. The
-            // next block starts after the barrier.
-            if i + 1 < instructions.len() {
-                block_starts.push(i + 1);
-            }
-        }
-    }
-    block_starts.push(instructions.len());
-
     // `destination[old] = new`: build the complete order while every block can
     // still inspect the original instruction slice, then realize that
     // permutation in place. Keeping only dense indices avoids cloning every
     // MIR instruction into a second full-width vector.
     let mut destination = (0..instructions.len()).collect::<Vec<_>>();
+    let mut block_start = 0;
 
-    for window in block_starts.windows(2) {
-        let start = window[0];
-        let end = window[1];
-
-        if end - start <= 2 {
+    for block_end in 0..instructions.len() {
+        if !adapter.is_barrier(&instructions[block_end]) {
             continue;
         }
 
-        // If the block ends with a barrier, exclude it from scheduling and
-        // re-emit it after the scheduled interior.
-        let last_is_barrier = adapter.is_barrier(&instructions[end - 1]);
-        let sched_end = if last_is_barrier { end - 1 } else { end };
+        record_block_permutation(
+            instructions,
+            adapter,
+            block_start,
+            block_end,
+            &mut destination,
+        );
+        block_start = block_end + 1;
+    }
 
-        if sched_end - start <= 2 {
-            continue;
-        }
-
-        let mut nodes = build_dep_graph(instructions, start, sched_end, adapter);
-        calculate_priorities(&mut nodes);
-        let order = schedule_block(&nodes);
-
-        for (new_offset, &old_offset) in order.iter().enumerate() {
-            destination[start + old_offset] = start + new_offset;
-        }
+    if block_start < instructions.len() {
+        record_block_permutation(
+            instructions,
+            adapter,
+            block_start,
+            instructions.len(),
+            &mut destination,
+        );
     }
 
     apply_permutation(instructions, &mut destination);
+}
+
+/// Record the schedule for the non-barrier instructions in one basic block.
+fn record_block_permutation<A>(
+    instructions: &[A::Inst],
+    adapter: &A,
+    start: usize,
+    sched_end: usize,
+    destination: &mut [usize],
+) where
+    A: SchedulerAdapter,
+{
+    if sched_end - start <= 2 {
+        return;
+    }
+
+    let mut nodes = build_dep_graph(instructions, start, sched_end, adapter);
+    calculate_priorities(&mut nodes);
+    let order = schedule_block(&nodes);
+
+    for (new_offset, &old_offset) in order.iter().enumerate() {
+        destination[start + old_offset] = start + new_offset;
+    }
 }
 
 /// Apply an `old index -> new index` permutation in place.
@@ -728,6 +738,25 @@ mod tests {
         assert_eq!(
             instructions.iter().map(|inst| inst.id).collect::<Vec<_>>(),
             vec![2, 1, 0, 99, 5, 4, 3]
+        );
+    }
+
+    #[test]
+    fn direct_block_walk_preserves_leading_adjacent_and_trailing_barriers() {
+        let mut instructions = vec![
+            independent_inst(90, 100, true),
+            independent_inst(91, 100, true),
+            independent_inst(0, 1, false),
+            independent_inst(1, 2, false),
+            independent_inst(2, 3, false),
+            independent_inst(99, 100, true),
+        ];
+
+        schedule_instructions(&mut instructions, &TestAdapter);
+
+        assert_eq!(
+            instructions.iter().map(|inst| inst.id).collect::<Vec<_>>(),
+            vec![90, 91, 2, 1, 0, 99]
         );
     }
 
