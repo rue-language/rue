@@ -285,9 +285,9 @@ not push or synchronize a fork's `origin/trunk`. See
 `docs/process/fork-workflow.md` for machine-local configuration details.
 
 Commit and PR text should be tool-neutral. Do not add agent attribution,
-co-author trailers, or "generated with" boilerplate. Reference `RUE-NN`; see
-"Linear integration" below for exactly which words close an issue and when to
-use them instead of a plain reference.
+co-author trailers, or "generated with" boilerplate. Name the issue the change
+belongs to as `RUE-NN`; see "Linear integration" below, because every magic
+word — including `refs` — changes issue state.
 
 ## Issue tracking
 
@@ -304,17 +304,26 @@ parallel Markdown backlog.
   linked with `relatedTo` or a real `blockedBy` dependency.
 - Priorities are Urgent, High, Medium, and Low. Use `bug`, `feature`, `task`, or
   `chore` labels consistently.
-- A PR body must use at most one closing word per issue, chosen per the rules
-  below, and only when the issue is actually done. After integration, verify
-  the issue actually reached Done; do not rely solely on synchronization.
+- A PR body carries at most one magic word: the closing word for the issue that
+  PR completes, and only when the issue is actually done. Relationships between
+  issues are recorded in Linear, never by citing an ID in a PR — see "Linear
+  integration". After integration, verify the issue actually reached Done; do
+  not rely solely on synchronization.
 
 ## Linear integration
 
-Linear's magic-word list is wider than GitHub's and auto-linking has side
-effects. Automatic closing stays on; the point here is picking the right word
-at the right time, not gating closes on review.
+A magic word in a PR is a command that manipulates issue state. It is never a
+citation. Use one only to drive the state of the single issue that PR
+completes; every other mention of an issue belongs in Linear, not in PR text.
 
-**Closing words** (verbatim — close a linked issue on merge):
+**There is no read-only magic word.** Any word from either list below links the
+issue, and linking alone hands it to status automation that moves it to
+In Progress — including issues that are already Done or Canceled.
+`Refs RUE-NN` does not "just link for context": on 2026-08-12, PR #2318
+carried `refs` for two background issues and dragged one out of Done (finished
+three weeks earlier) and another out of Canceled, back into In Progress.
+
+**Closing words** (verbatim — also close the issue on merge):
 
 ```
 close, closes, closed, closing
@@ -325,7 +334,7 @@ implement, implements, implemented, implementing
 linear issue
 ```
 
-**Non-closing words** (verbatim — link for context, no status change):
+**Linking words** (verbatim — no close, but still link and still move status):
 
 ```
 ref, refs, references
@@ -335,34 +344,44 @@ contributes to
 toward, towards
 ```
 
-`implement*` and `complete*` are the trap: GitHub doesn't treat them as
-closing keywords, so they get used as plain prose, but Linear closes on them.
-"Implements the FFI shim described in RUE-1064" closes RUE-1064. If that's not
-the intent, write "Implements the FFI shim (refs RUE-1064)" instead.
+Rules:
 
-Use a closing word only when the PR meets every acceptance criterion on the
-issue (tests, docs, ADR updates included). Otherwise use a non-closing word
-and note what's left in the PR body.
+- At most one magic word per PR: a closing word for the one issue the PR
+  completes, used only when the PR meets every acceptance criterion on that
+  issue (tests, docs, ADR updates included). If it doesn't, use no magic word
+  at all and say what's left in the PR body.
+- Never use a linking word to cite background, prior, parent, or follow-up
+  issues. Record those relationships in Linear itself — `relatedTo`,
+  `blockedBy`, or a parent issue — where they persist and don't touch state.
+  A PR body is not a tracker.
+- Naming another issue as plain prose is fine ("the meridian coverage disabled
+  under RUE-1083"), but check afterwards that it did not link; if it did, or if
+  an ID must appear anyway (e.g. a carried-over branch name), add
+  `skip RUE-NN` or `ignore RUE-NN` to the PR description to unlink it and
+  suppress status automation.
+- A magic word applies to every ID that follows it — `Fixes RUE-1067, RUE-1068
+  and RUE-1069` closes all three. A PR that genuinely completes several issues
+  needs each ID spelled with its own word; anything it merely touches is not
+  listed at all.
 
-One magic word per ID — `Fixes RUE-1067, RUE-1068 and RUE-1069` closes all
-three. Give each ID its own word: `Fixes RUE-1067. Refs RUE-1068, RUE-1069.`
+`implement*` and `complete*` are the trap word class: GitHub doesn't treat them
+as closing keywords, so they get written as ordinary prose, but Linear closes on
+them. "Implements the FFI shim described in RUE-1064" closes RUE-1064. Reword
+the sentence rather than reaching for `refs`.
 
-An issue ID in a branch name or PR title auto-links the PR, and on-merge
-automation moves linked issues to In Progress — even ones already Done. Use
-at most one ID per branch name (the issue it completes), don't reuse a
-completed ID for follow-up branches, and prefer a non-closing word in the PR
-body over naming a completed issue in the title.
+An issue ID in a branch name or PR title auto-links the PR the same way. Use at
+most one ID per branch name (the issue it completes), and don't reuse a
+completed ID for a follow-up branch.
 
-If an ID must appear anyway (e.g. a carried-over branch name), add
-`skip RUE-NN` or `ignore RUE-NN` to the PR description to unlink it and
-suppress status automation.
+After opening a PR, verify no unintended issue changed state, and restore any
+that did. Automation reversions are silent and easy to leave behind for weeks.
 
 Magic words only work in the PR title and description, not in PR comments;
 commit messages need the magic word immediately before the ID to link at all.
 
 Squash/stacked PRs: merging PRs into an intermediate branch and merging that
-onward does not carry their issue links forward — restate them in the final
-PR into `trunk`.
+onward does not carry the closing word forward — restate it in the final PR
+into `trunk`.
 
 ## Code style and logging
 
