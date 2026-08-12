@@ -5883,7 +5883,7 @@ where
                 }
                 let terminal = pin.terminal().clone();
                 let endorsement_authority = if self.inner.evaluator.is_some() {
-                    task.validation_endorsement_authority_for_terminal(&terminal)
+                    task.validation_candidate_endorsement_authority_for_terminal(&terminal)
                 } else {
                     ValidationEndorsementAuthority::Inactive
                 };
@@ -9266,6 +9266,7 @@ impl Task {
         })
     }
 
+    #[cfg(test)]
     fn validation_endorsement_authority_for_terminal<V>(
         &self,
         terminal: &QueryTerminal<V>,
@@ -9275,6 +9276,37 @@ impl Task {
             terminal.stamp,
             terminal.revision,
         )
+    }
+
+    /// Tests the only retention authority which may bypass validation of a
+    /// candidate root. Published fallback sets retain equal dependency-cone
+    /// representatives, but deliberately do not prove the candidate root's
+    /// own direct observations current. The candidate path therefore needs to
+    /// distinguish exact task-local authority only; scanning fallback indexes
+    /// would produce the same ordinary-validation decision after extra work.
+    fn validation_candidate_endorsement_authority_for_terminal<V>(
+        &self,
+        terminal: &QueryTerminal<V>,
+    ) -> ValidationEndorsementAuthority {
+        let scopes = lock(&self.validation_endorsements);
+        let Some(scope) = scopes.first() else {
+            return ValidationEndorsementAuthority::Inactive;
+        };
+        self.validation_work
+            .endorsement_probes
+            .fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        self.validation_endorsement_index_probes
+            .fetch_add(1, Ordering::Relaxed);
+        if scope.identities.contains(&(
+            terminal.node_incarnation,
+            terminal.stamp,
+            terminal.revision,
+        )) {
+            ValidationEndorsementAuthority::TaskLocal
+        } else {
+            ValidationEndorsementAuthority::Missing
+        }
     }
 
     fn validation_endorsement_authority_at(
@@ -14848,6 +14880,7 @@ mod tests {
             .family::<Key, u64>("borrowed-stale-root-request", 1)
             .unwrap();
         let value_for_root = value.clone();
+        let first_terminal_for_root = first_terminal.clone();
         let retained_for_root = retained.clone();
         let result = runtime
             .request(
@@ -14861,6 +14894,21 @@ mod tests {
                             &retained_for_root,
                         ))
                         .unwrap();
+                    assert_eq!(
+                        context.task.validation_endorsement_authority_for_terminal(
+                            &first_terminal_for_root,
+                        ),
+                        ValidationEndorsementAuthority::Borrowed,
+                    );
+                    assert_eq!(
+                        context
+                            .task
+                            .validation_candidate_endorsement_authority_for_terminal(
+                                &first_terminal_for_root,
+                            ),
+                        ValidationEndorsementAuthority::Missing,
+                        "fallback retention cannot bypass candidate-root validation",
+                    );
                     let terminal = context.query_registered(&value_for_root, Key("value"))?;
                     let QueryOutcome::Success(value) = terminal.outcome() else {
                         unreachable!()

@@ -1185,6 +1185,22 @@ paired MAD and a -3.19% to +1.54% range. Median peak RSS moves +1.02 MiB within
 a 2.51 MiB paired MAD. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1421 separates candidate-root proof from descendant retention authority.
+An exact task-local endorsement can prove a retained candidate root current,
+but a published fallback pin set deliberately cannot prove that root's direct
+inputs and dependency edges. Candidate selection previously scanned every
+fallback anyway, only to send both `Borrowed` and `Missing` through the same
+ordinary validation path. It now tests exact task-local authority alone, while
+recursive certificate validation retains the full fallback-aware lookup where
+borrowed authority can actually skip work.
+
+Four fixed one-worker allocation probes are neutral, with paired medians of
+-38 calls and -0.02 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.38% paired median, with 0.90%
+paired MAD and an outlier-sensitive -11.27% to +6.36% range. Median peak RSS is
+unchanged at -0.03 MiB paired. Every published compiler-work counter and
+emitted executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
