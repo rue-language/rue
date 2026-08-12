@@ -280,17 +280,25 @@ test "parse_port rejects out-of-range values" {
   imports would otherwise simply not exist — no diagnostic, no verdict, the
   same "typo becomes false evidence" failure the empty-filter rule guards
   against, and a trap agents will hit by adding a test file without wiring
-  the import. `rue test` warns when a source file it is permitted to read
-  (within the `--source-manifest` bound when one is given, else the root's
-  directory tree) contains test items but sits outside the closure. The
-  bound matters: discovery must never read files the compilation itself may
-  not read. Two edges Phase 2 handles explicitly: a parse failure in an
-  out-of-closure file surfaces inside the warning itself (or the file is
-  skipped with that fact stated), never as a compile error of the request;
-  and a directory tree may legitimately hold test-shaped files belonging
-  to *other* roots, so the warning honors the `--source-manifest` bound as
-  the disciplined multi-root story and grows a per-directory opt-out if
-  that proves insufficient.
+  the import. But detecting the orphan requires a candidate inventory, and
+  ADR-0063 deliberately gives a compilation no ambient one: imports are
+  lazy, and the host performs only compiler-produced, policy-bounded
+  demands. A driver-side recursive directory walk that parses candidate
+  files would be a second source-discovery computation over files the
+  canonical snapshot never demanded — a peer frontend, with its own
+  parse-failure and multi-root complications as the symptoms of that
+  mismatch. The warning is therefore manifest-gated: when
+  `--source-manifest` supplies an explicit candidate inventory, a canonical
+  compiler query over that inventory (manifest entries are already
+  host-visible inputs, so the check rides revisions like everything else)
+  reports files that contain test items but sit outside the closure, with
+  a parse failure in such a file reported inside the warning itself —
+  never as a compile error of the request. Without a manifest there is no
+  scan and no warning; the run summary instead carries a one-line notice
+  that orphan-test detection needs `--source-manifest`. The manifest is
+  also the disciplined multi-root story: an inventory belongs to one root,
+  so test-shaped files belonging to *other* roots never produce false
+  warnings.
 - **The warnings interaction is a Phase 1 decision, taken here.** Unused-item
   warnings in executable requests are filtered through a whole-program
   syntactic reference scan today, so the design must pick: include test
@@ -343,13 +351,32 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   reproduction argv), `run_finished` (counts, wall time, cache statistics). Verdicts: `pass`, `fail`, `timeout`,
   `crash` (killed by signal), `compile_error`, `skipped`, `cached_pass`. A
   failure record is data: failure kind (`assert` / `trap:<class>` / `exit` /
-  `signal` / `timeout` / `ice`), the pinned runtime message (the abort-only
+  `signal` / `timeout` / `output_overflow` / `ice`), the pinned runtime
+  message (the abort-only
   runtime's fixed stderr strings are machine-recognizable by construction),
   exit code or signal, and a source location — in the MVP, the test
   declaration's span. The record's payload and location fields are extension
   points, not closed shapes: richer expected/actual payloads and
   failing-call-site locations arrive through the structured failure channel
   (§7.1) as additive schema minors, never by parsing prose.
+- **Captured output is bytes, budgeted** — v1 schema obligations, pinned in
+  the Phase 2 schema doc. Rue strings may carry arbitrary non-UTF-8 bytes
+  and the runtime writes them to the pipes raw, so captured streams cannot
+  be assumed to be JSON-safe strings: output fields carry an explicit
+  encoding tag — UTF-8 when the bytes validate, base64 otherwise — and are
+  lossless within the retained window. Capture is bounded per stream *as
+  bytes arrive* (the `rue-test-runner` mechanics already include the
+  limited-drain variant alongside the unbounded one; Phase 2 adopts the
+  limited variant), so a fast writer cannot consume unbounded runner
+  memory inside its wall-clock budget; exceeding the per-stream limit
+  kills the process group and yields a `fail` verdict with failure kind
+  `output_overflow`, retained prefix attached. Verbosity asymmetry (below)
+  applies to payloads too: a failing test's event carries the retained
+  capture inline; a passing test's event carries digests and byte counts
+  only, with a flag to opt passes into inline capture. The §7.1
+  structured failure channel is framed and budgeted separately from user
+  output, so a test that floods its streams cannot truncate its own
+  failure record.
 - **Asymmetric verbosity**: the default human renderer prints failures in
   full — structured failure, captured output, repro line — and passes as a
   count. No wall of green. The human renderer is implemented as a consumer of
@@ -379,10 +406,23 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
 ### 3. Execution is a contract; the MVP mechanism is a test image plus a process per test
 
 The contract every mechanism must honor, current and future: each test
-observes a fresh, isolated execution; has an independent lifecycle (start,
-kill, timeout) enforceable by the runner; gets its stdout/stderr captured and
-attributed exactly; and its failure cannot corrupt, mask, or abort any other
-test's result.
+observes fresh process state; has an independent lifecycle (start, kill,
+timeout) enforceable by the runner; gets its stdout/stderr captured and
+attributed exactly; and receives best-effort process-tree cleanup when it
+ends, however it ends. One clause is deliberately scoped rather than
+universal: **noninterference — a test's execution cannot corrupt, mask, or
+abort any other test's result — is guaranteed only for verified-hermetic
+tests** (§4), whose summaries prove they cannot reach a channel that
+touches another test. A test holding `syscall` or `ffi` can, by
+definition, signal arbitrary processes, mutate shared absolute paths,
+contend on ports, or spawn descendants that outlive it — and a process
+group is not containment, because a child that calls `setsid` leaves it.
+Process isolation plus a private scratch directory narrows the accident
+surface well below every mainstream runner's baseline, but it is not a
+sandbox, and this ADR does not pretend otherwise. Runs that need enforced
+noninterference for unverified tests await a real platform sandbox
+(future work behind this same contract) or the Phase 5 scheduling
+controls.
 
 The MVP mechanism:
 
@@ -403,8 +443,13 @@ The MVP mechanism:
 - **One process per test invocation.** The runner spawns `image --run <id>`
   per test, in its own process group, with a per-test wall-clock timeout
   (default 10 s, matching `rue-test-runner`), SIGKILL to the group on expiry,
-  and reader threads draining both pipes (the mechanics `rue-test-runner`
-  already has; Phase 2 extracts and reuses them rather than reimplementing).
+  and reader threads draining both pipes with the per-stream capture bound
+  of §2 (the mechanics `rue-test-runner` already has, including the
+  limited-drain variant; Phase 2 extracts and reuses them rather than
+  reimplementing). After the leader exits normally, the runner additionally
+  SIGKILLs the remaining process group: lifecycle hygiene that reaps
+  stragglers holding pipe fds, documented as exactly that — the contract
+  above already concedes it is not containment.
   Timeout kills, signal deaths (including SIGPIPE's status 141), and exit 101
   with a pinned trap message are distinguished in the verdict, and ICE
   detection remains a separate failure class no marker can absorb. Two
@@ -417,18 +462,40 @@ The MVP mechanism:
   "exited" (an epilogue sentinel on the structured channel) if it proves
   worth closing.
 - **Execution environment contract** (Bazel's encyclopedia, enforced by
-  construction where possible): pinned minimal environment (a fixed allowlist
-  plus runner-set variables; the pin set is part of the cache key), a fresh
-  private working directory per test, deleted on pass and retained on failure
-  for post-mortem, and a `RUE_TEST_*` namespace reserved for runner-provided
-  variables (seed, scratch dir).
+  construction where possible). The inventory a test can observe is defined
+  separately from the runner's plumbing, because the runtime captures the
+  loader-provided `argc`/`argv`/`envp` unchanged at entry and exposes them
+  through `std.env` — without a defined boundary, a dispatched process
+  would leak the real image path, the internal `--run` selector, and
+  per-run scratch paths into test-visible state: values that vary while
+  the body's closure does not, poisoning either the cache key (if
+  fingerprinted, routine hits vanish) or its soundness (if not, cached
+  verdicts can be stale). The **test-visible inventory** is pinned to
+  exact values: argv is fixed and documented (a stable logical `argv[0]`,
+  no selector, no image path); the environment is a fixed ordered list of
+  exact `KEY=VALUE` entries, with runner-set `RUE_TEST_*` variables
+  carrying stable logical values — the scratch directory is always spelled
+  `.`, which is the fresh private working directory each test starts in
+  (deleted on pass, retained on failure for post-mortem); and stdin is a
+  fixed EOF stream unless a future explicit input joins the test's
+  identity. The dispatcher consumes the selector and replaces the
+  runtime's captured inventory with the pinned one before invoking the
+  body, so `std.env.args()` inside a test observes the contract, not an
+  incidental internal protocol — which is also what makes tests *of*
+  `std.env` meaningful. The exact visible values — ordered environment
+  entries, argv values, stdin policy — participate in the cache key (§5),
+  not merely an allowlist of names: exact values are what keep cached
+  verdicts sound, and their stability is what keeps routine runs
+  cache-hittable.
 - **Parallelism**: the runner schedules up to `--jobs` test processes
-  concurrently. Because isolation is process-level and hermetic tests are
-  verified non-interfering (§4), the default is full parallelism; tests with
-  unverified capabilities still run in parallel by default in the MVP —
-  process isolation plus private scratch directories is already stronger than
-  every mainstream runner — with serialization arriving as declared groups in
-  Phase 5, and only then inference-driven.
+  concurrently. Verified-hermetic tests are non-interfering by proof (§4),
+  so their parallelism is unconditional. Tests with unverified capabilities
+  also run in parallel by default in the MVP — but per the scoped contract
+  above this is a pragmatic default, not a guarantee: such tests *can*
+  interfere through the OS, and a suite that observes it reaches for
+  `--jobs 1` today, declared serial groups in Phase 5, and a platform
+  sandbox eventually. The runner never silently serializes on inference;
+  scheduling changes are always visible policy.
 - **Reproduction as data**: every failure event carries the exact argv to
   reproduce that single test under the same seed, target, opt level, and
   filter — copy-paste (or agent-invoke) ready.
@@ -517,12 +584,39 @@ the finer statement, because machine memory state is genuinely ambient: the
 safe allocation path traps on exhaustion (verdict channel, covered), but the
 raw intrinsics observe pressure as *values* — `@alloc`/`@alloc_zeroed`/
 `@realloc` return null and `@resize` returns `false` (spec 8.6:4) — and
-stack overflow depends on ambient `RLIMIT_STACK`. The posture taken:
-memory-pressure-dependent behavior is inside the hermetic carve-out, and the
-runner pins resource limits (`RLIMIT_STACK`, `RLIMIT_AS`) in the
-execution-environment contract and the cache key exactly as it pins env
-vars. A cached hermetic pass therefore claims determinism *given pinned
-limits on a non-exhausted machine* — stated, bounded, and in the key. One
+stack overflow depends on ambient `RLIMIT_STACK`. Pinning OS resource
+limits is not sufficient to make those values deterministic, and the
+shared test image (§3) is why: under a pinned `RLIMIT_AS`, the address
+space left for the heap is the limit minus everything else mapped —
+including the whole selected image, whose size varies when *unrelated*
+tests are added or filtered. A test that branches on `@alloc` returning
+null near the limit could then change verdict under an unchanged
+per-test closure fingerprint — `RLIMIT_AS` exhaustion on an otherwise
+non-exhausted machine, exactly the stale-cached-verdict shape this design
+exists to eject. The posture taken instead pins the budget where Rue
+already owns the boundary: the runtime heap is a runtime-owned recycling
+allocator over raw page mapping, with an `allocation_permitted` seam at
+precisely this chokepoint today, and test builds enforce a **fixed
+allocation budget** there — raw allocation fails by policy at a pinned
+budget, making `@alloc`-family results a deterministic function of the
+test's own allocation sequence, independent of image size and machine
+state. `RLIMIT_STACK` is pinned (stack consumption is test-local; the
+image does not eat it), and `RLIMIT_AS` survives only as a generous
+out-of-key backstop sized so the allocator budget always fails first; a
+test that hits the backstop anyway is reported as an infrastructure
+defect (§5's hermetic-mismatch shape), never as a cached or cacheable
+verdict. A cached hermetic pass therefore claims determinism *given the
+pinned budget and the §3 visible inventory* — stated, bounded, and in the
+key — at the price of one honest divergence, recorded under Consequences:
+test builds fail allocation at the budget where production would keep
+going. The budget is generous by default, configurable, and part of the
+cache key. This disposition is a maintainer call gating Phase 4 (see Open
+Questions); the rejected shapes are keying every verdict on the whole
+image (forfeits item-granular reuse, the design's central economy),
+per-test or per-shard images (a link per test or a layout policy per
+selection), and an inferred "observes allocation failure" ejection bit
+(a second escape-analysis obligation for a channel the allocator can
+simply close). One
 further channel is closed by spec posture rather than analysis: reading
 uninitialized `@alloc` storage is currently defined-but-unspecified, so this
 ADR adopts "verdict caching is sound for UB-free programs" and asks for
@@ -531,8 +625,8 @@ of that channel the standard way.
 
 `hermetic` is the derived predicate "no `syscall`, no `ffi`, no `random`,
 no `addr`" (`stdio`, `env`, and `args` are compatible with hermeticity
-because the runner pins and captures them — deterministic given the
-runner's controlled inputs, which are part of the cache key).
+because the runner pins and captures them — the §3 test-visible inventory
+fixes their exact values, and those values are part of the cache key).
 
 `syscall` is intentionally the coarse top of the OS hierarchy in v1. Splitting
 it into `fs` / `net` / `clock` / `process` requires classifying syscall
@@ -545,41 +639,74 @@ finer partition.
 #### 4.2 The computation
 
 Effect summaries ride the ADR-0063 graph — but not as per-function queries
-that request their callees' summaries. ADR-0063 explicitly rejected that
-dependency shape ("make body queries depend on callee bodies") because it
-turns legal source recursion into query cycles, and the query engine treats
-a cycle as an unconditional abort: there is no fixpoint iteration anywhere
-in the runtime, and every family that meets a cycle today converts it into a
-diagnostic. Reachability's own design points at the correct shape instead: a
-*coordinator* query over the root set's reference graph. `EffectSummary` is
-therefore an SCC condensation over the reached call/drop-glue graph —
-recursion collapses into components, and the bitset join is computed once
-per component in reverse topological order (bounded, monotone, cheap) —
-publishing **per-identity stamped summary projections** in ADR-0063 §8's
-pattern, so a downstream consumer observes one function's summary stamp
-rather than a whole-closure stamp, and an edit that leaves a summary's
-bitset unchanged stays green for every consumer that observed only that
-projection.
+that request their callees' summaries over the raw call graph. ADR-0063
+explicitly rejected that dependency shape ("make body queries depend on
+callee bodies") because it turns legal source recursion into query cycles,
+and the query engine treats a cycle as an unconditional abort: there is no
+fixpoint iteration anywhere in the runtime, and every family that meets a
+cycle today converts it into a diagnostic. But the opposite shape — one
+coordinator query that observes the reached graph *and* every canonical
+body, condenses, and joins everything — is also wrong, in a subtler way:
+per-identity output projections would keep *downstream* consumers green,
+yet any leaf-only body edit still changes one of the coordinator's
+dependencies and re-runs it over the whole graph. That is narrow
+invalidation without narrow recomputation — the distinction ADR-0063 §8
+itself draws when it notes the baseline reachability evaluator re-derives
+the graph even when it republishes unchanged memberships — and it would
+leave the warm-edit economics this section claims without a mechanism.
+Incremental inference is a central premise inherited from RUE-506, so the
+work is split so each piece re-runs only when its actual inputs change:
 
-Leaves are extracted where they actually live: runtime-helper calls and
-intrinsic uses are explicit instruction payloads in the canonical body
-artifacts, while `BodyReferences` contributes the *edges* — including the
-drop-glue edge, which a naive callee walk would miss. A `drop fn` that
-performs `@syscall` is reached through value destruction, not an ordinary
-call, so destructor effects join the summary of every body that can destroy
-that type; Phase 3 carries this as an explicit obligation. Two accounting
-notes: `EffectSummary` becomes the first production consumer of the
-retained canonical-bodies family, so Phase 3's measurements must price that
-retention into the test-request budget rather than assuming it free; and
-compiler-synthesized dispatcher code is excluded from test summaries by
-construction. Family and key names remain conceptual per ADR-0063 §6; the
-in-tree reachability family is body-reachability over closure keys, and
-exact Rust names follow the implementation.
+1. **`EffectGraph(RootSet)`** observes only the reached set's
+   `BodyReferences` projections — never canonical bodies — and computes
+   SCC membership and the acyclic condensation over the call/drop-glue
+   edges. Component keys are content-derived (a component is keyed by its
+   sorted member identities), and the query publishes per-component
+   projections: membership plus callee-component keys. A body edit that
+   does not change references leaves every input green and the family
+   never runs; a reference-changing edit re-derives the graph in
+   reachability's §8 baseline economics, but components whose membership
+   and edges are unchanged publish unchanged projections under unchanged
+   keys.
+2. **A body-local leaf projection** reads exactly one canonical body and
+   extracts its effect leaves — runtime-helper calls and intrinsic uses
+   are explicit instruction payloads there (helper-manifest classes,
+   `@syscall`, the `addr` leaf per the ratified §4.1 disposition, FFI
+   calls). A body edit recomputes exactly one leaf, with cutoff when the
+   leaf bitset is unchanged — the common case for behavior-preserving
+   edits.
+3. **`ComponentEffect(SccKey)`** joins its members' leaf bitsets with its
+   callee components' summaries. The condensation is acyclic by
+   construction, so these are ordinary query dependencies — source
+   recursion cannot re-enter as a query cycle — and a changed leaf re-runs
+   only its component and that component's reverse callers, stopping at
+   the first unchanged bitset (bounded, monotone, cheap).
+4. **Per-function summary projections** project their component's result,
+   so a downstream consumer observes one function's summary stamp rather
+   than a whole-closure or whole-graph stamp.
 
-Summaries are canonical artifacts with terminal fingerprints: editing a body
-recomputes its component's summaries, and red/green cutoff stops propagation
-when a bitset is unchanged — the common case, exactly the inferred-error-set
-economics RUE-506 predicted. Dependency summaries shipped in library
+The drop-glue edge rides `BodyReferences` like every other edge — a naive
+callee walk would miss it. A `drop fn` that performs `@syscall` is reached
+through value destruction, not an ordinary call, so destructor effects
+join the summary of every body that can destroy that type; Phase 3 carries
+this as an explicit obligation. Two accounting notes: the leaf projection
+becomes the first production consumer of the retained canonical-bodies
+family, so Phase 3's measurements must price that retention into the
+test-request budget rather than assuming it free; and compiler-synthesized
+dispatcher code is excluded from test summaries by construction. Family
+and key names remain conceptual per ADR-0063 §6; the in-tree reachability
+family is body-reachability over closure keys, and exact Rust names follow
+the implementation.
+
+Summaries are canonical artifacts with terminal fingerprints, and the
+economics claim is now mechanism-backed: a leaf-only edit touches one leaf
+projection, one component, and the reverse-caller chain until cutoff —
+near-zero warm work, exactly the inferred-error-set economics RUE-506
+predicted, and what the Phase 3 edit-scenario gate measures. The honest
+residual cost: reference-changing edits pay an `EffectGraph` re-derivation,
+as reachability pays its §8 baseline; if measurement shows that misses the
+warm budget, the same escape hatch applies — incremental SCC maintenance
+behind the same query contract. Dependency summaries shipped in library
 metadata (RUE-506's concern) are moot until Rue has separate compilation;
 whole-program analysis sees every body today.
 
@@ -587,9 +714,11 @@ A test's capability set is the summary of its body instance. It appears in
 `--list` output and on every test event — the analysis is visible from day
 one of Phase 3, before anything acts on it.
 
-Summaries are demanded, never pushed. `EffectSummary` is requested only by
-test requests (`rue test` execution and `--list`); an executable request (or
-any future check-style request) never demands the family, and under
+Summaries are demanded, never pushed. The effect families (`EffectGraph`,
+the leaf projections, `ComponentEffect`, and the summary projections) are
+requested only by test requests (`rue test` execution and `--list`); an
+executable request (or
+any future check-style request) never demands them, and under
 ADR-0063's demand-driven model an undemanded family simply never executes — capability tracking is free for
 every compilation that does not consume it. Two implementation constraints
 preserve that property: leaf extraction reads the canonical body artifacts
@@ -649,9 +778,17 @@ evolution."
   passed under, and the verdict metadata (duration, captured-output digest).
   The closure fingerprint covers the test body's reached artifact fingerprints
   (ADR-0063 terminal fingerprints over the canonical closure), the compiler's
-  own build identity, target, opt level, the runner's pinned environment and
-  resource-limit set, seed policy, and the link-relevant inputs
-  (`--link-archive` contents). A
+  own build identity, target, opt level, the exact test-visible inventory
+  (§3: argv values, ordered environment entries, stdin policy), the pinned
+  allocation budget and stack limit (§4.1), seed policy, and the
+  link-relevant inputs
+  (`--link-archive` contents). Image identity is deliberately *not* in the
+  key: the visible inventory and the allocator budget are what make a
+  hermetic verdict image-independent, so item-granular reuse survives
+  adding or filtering unrelated tests — and demonstrating that
+  independence is an explicit obligation of the Phase 4 key audit, with
+  the §4.1 backstop-limit escape (an infrastructure verdict, never
+  cached) covering what the proof cannot. A
   test is skipped as `cached_pass` only when it is verified hermetic and its
   fingerprint is unchanged. Failures are never cached. `--no-cache` forces
   execution. The cache is a small content-addressed file the runner owns —
@@ -671,8 +808,8 @@ evolution."
   here: fingerprints are byproducts of compilation the test request performs
   anyway, so the marginal collection cost of item granularity is zero.
 - **Flakiness is localized by construction**: a verified-hermetic test is
-  deterministic up to the stated carve-out — pinned environment and resource
-  limits on a non-exhausted machine (§4.1) — so when a hermetic test's
+  deterministic given the pinned visible inventory and allocation budget
+  (§3, §4.1) — so when a hermetic test's
   verdict differs across runs of the same fingerprint, the runner reports it
   as an infrastructure or compiler-determinism defect, not a test defect (and the reproducibility harness's byte-identical-artifact
   guarantees make that report actionable). Rerun-based flake detection
@@ -681,9 +818,9 @@ evolution."
 
 ### 6. Determinism defaults
 
-- The runner pins the child environment to a fixed allowlist plus
-  `RUE_TEST_*`; `env`-capability tests are therefore deterministic given the
-  pin set, which is in the cache key.
+- The runner pins the test-visible inventory (§3) — exact argv values,
+  ordered environment entries, stdin at EOF; `env`- and `args`-capability
+  tests are therefore deterministic given values that are in the cache key.
 - There is no clock to virtualize; the absence is load-bearing. Any future
   time API must arrive behind a `clock` capability so this ADR's guarantees
   survive it ("Constraints on future language evolution" records this and
@@ -719,7 +856,11 @@ can invoke before aborting; a user assertion library emits the same structured
 failure records the built-ins do, and the event stream carries them without
 knowing who produced them. The mechanism (a dedicated runtime helper writing
 one framed record ahead of the abort, vs a reserved framed region of stderr)
-is a Phase 2 design decision listed under maintainer calls. Two consequences
+is a Phase 2 design decision listed under maintainer calls. Whichever wins,
+the channel is framed and budgeted separately from user output (§2):
+structured records are extracted before the per-stream capture limits
+apply and carry their own size cap, so a test that floods its streams
+cannot truncate its own failure record. Two consequences
 are deliberate: the failure payload is an open, versioned field rather than an
 enum of built-in shapes, and location is carried *in* the record — so a
 library can attribute its caller — rather than derived solely from the test
@@ -809,12 +950,19 @@ here per docs/designs/README.md).
       dispatch joining the existing mode-validation path; test-request root
       sets; synthesized dispatcher `main` and per-target test image through
       the image-planning path, plus the ADR-0061 facade work to expose a
-      test-image request; process-per-test execution with process-group
-      timeout/kill, output capture, and pipes held open until child exit
-      (mechanics shared with `rue-test-runner`); the unimported-test-file
+      test-image request, with the dispatcher replacing the runtime's
+      captured argv/env with the pinned test-visible inventory (§3);
+      process-per-test execution with process-group
+      timeout/kill, bounded per-stream capture (the limited-drain
+      variant), post-exit group cleanup, and pipes held open until child
+      exit
+      (mechanics shared with `rue-test-runner`); the manifest-gated
+      unimported-test-file
       warning (§1); `--list`, `--filter`, `--jobs`, `--shard`,
       `--timeout-ms`, `--seed` (shuffle), exit-code contract; NDJSON event
       stream v1.0 with schema doc (docs/process/test-events.md), including
+      the byte-safe output encoding, capture budgets, and pass/fail payload
+      asymmetry (§2),
       the structured failure-record channel contract (§7.1), the reserved
       promotion field, and the reserved identity/sub-result shapes (§7.2),
       with the human renderer as its consumer; repro argv in every failure;
@@ -828,28 +976,35 @@ here per docs/designs/README.md).
       unstructured failure output as the primary agent token sink, and a
       runner that is agent-first in transport but prose in content has not
       met the bar.
-- [ ] **Phase 3: `EffectSummary` coordinator** - RUE-TBD. SCC condensation
-      over the reached call/drop-glue graph with per-identity stamped
-      summary projections (§4.2); leaves from canonical bodies (helper
+- [ ] **Phase 3: effect summary queries** - RUE-TBD. The §4.2 query split:
+      `EffectGraph` SCC condensation over `BodyReferences` with
+      content-derived component keys and per-component projections;
+      body-local leaf projections from canonical bodies (helper
       manifest classification, `@syscall`, the `addr` leaf per the ratified
-      §4.1 disposition, FFI calls);
+      §4.1 disposition, FFI calls); `ComponentEffect` joins along the
+      acyclic condensation; per-identity stamped summary projections;
       drop-glue edges included; dispatcher code excluded; summaries surfaced
       in `--list` and `test_finished` events; determinism and cutoff
       behavior pinned by compiler unit tests and two measured gates: an
       edit-scenario measurement (ADR-0068 harness) proving near-zero warm
-      cost in test mode — including the retention cost of becoming the
+      cost in test mode — leaf-only and reference-changing edits measured
+      separately (the latter pays the §4.2 `EffectGraph` re-derivation),
+      including the retention cost of becoming the
       canonical-bodies family's first production consumer — and a zero-delta
       measurement on executable-request benchmarks (ADR-0067 harness)
-      proving the family costs nothing when not demanded (§4.2). No
+      proving the families cost nothing when not demanded (§4.2). No
       scheduling or caching behavior change. Gated on the §4.1
       `@ptr_to_int` disposition (RUE-967).
 - [ ] **Phase 4: verdict cache and selection** - RUE-TBD. Closure fingerprints
-      for test roots; on-disk verdict cache with documented key composition
-      (environment pin set and pinned resource limits included);
+      for test roots; the test-build allocation budget in the runtime
+      allocator (§4.1, gated on its maintainer call); on-disk verdict cache
+      with documented key composition
+      (exact visible-inventory values, allocation budget, and stack limit
+      included);
       `cached_pass`, `--no-cache`, `--changed-only`; hermetic-only gating with
       eject-on-unknown; per-test `compile_error` verdicts (error-tolerant test
       images); cache-soundness audit checklist executed against the spike
-      findings.
+      findings, including the image-independence demonstration (§5).
 - [ ] **Phase 5: scheduling and flake policy** - RUE-TBD. Declared serial
       groups (`@group("name")` directive) honored by the scheduler;
       `--reruns N` for non-hermetic tests with flake reporting;
@@ -912,6 +1067,13 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   compiler-synthesized artifact to maintain across both backends.
 - Contextual-keyword parsing for `test` adds grammar subtlety (mitigated by
   its restriction to item position followed by a string literal).
+- Test builds diverge from production at the allocation boundary: the §4.1
+  allocator budget makes raw allocation fail by policy at a pinned budget
+  where production would keep going. The divergence is the price of sound,
+  image-independent verdict caching; it is generous by default,
+  configurable, in the cache key, and stated rather than hidden — but it
+  is real, and it would join seedable `@random_*` (§6) in the "test mode
+  differs from production" column this design otherwise avoids.
 - Future language designs inherit obligations from this ADR — capability
   classification for every new effect or dispatch mechanism, summary-bearing
   metadata for any separate-compilation design, a determinism decision for
@@ -1113,10 +1275,16 @@ Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
   fingerprint can see. Moving it to the UB list is a spec change with
   independent merit; the fallback is an `uninit`-observation bit. Call
   needed before Phase 4 turns caching on by default.
-- **Resource-limit pinning posture** (§4.1): ratify the memory-pressure
-  carve-out plus pinned rlimits in the execution contract and cache key,
-  versus a coarser observation bit on the raw allocation family (which would
-  eject every collection-using test). This ADR recommends the former.
+- **Allocation determinism mechanism** (§4.1): ratify the test-build
+  allocator budget (recommended — raw allocation fails by policy at a
+  pinned, keyed budget, making `@alloc`-family results image-independent)
+  versus keying verdicts on the whole image, per-test/per-shard images, an
+  inferred allocation-failure-observation ejection bit, or a coarser
+  observation bit on the raw allocation family (which would eject every
+  collection-using test). Pinned OS limits alone are insufficient: the
+  shared test image makes `RLIMIT_AS` headroom vary with unrelated
+  selection changes (§4.1). Gates Phase 4 caching; the recommended form
+  costs a stated test/production divergence at the budget boundary.
 - **`@ptr_to_int` disposition** (§4.1): resolve RUE-967 — the
   strict-provenance intrinsic split plus mechanical std migration
   (recommended) — versus the escape-scoped `addr` recognizer. Gates
@@ -1175,10 +1343,14 @@ Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
   whether the image-planning path can cheaply emit per-shard images instead.
 - **Verdict-cache key audit** (during Phase 4, before enabling by default):
   enumerate every input that can affect a hermetic test's outcome (compiler
-  build identity, target, opt level, seed policy, env pin set, resource
-  limits, ASLR and address-layout variation, link archives, runner version,
-  image layout?) and pin each as in-key, irrelevant-by-proof, or
-  eject-to-uncacheable. The reproducibility harness's perturbation list is
+  build identity, target, opt level, seed policy, visible-inventory
+  values, allocation budget and pinned limits, ASLR and address-layout
+  variation, link archives, runner version,
+  image identity) and pin each as in-key, irrelevant-by-proof, or
+  eject-to-uncacheable. Image identity is the audit's named hard case: the
+  §4.1 allocator budget and §3 visible inventory are what should make it
+  irrelevant-by-proof, and the audit must demonstrate that proof rather
+  than assume it. The reproducibility harness's perturbation list is
   the starting checklist.
 - **Memo-database pressure under test roots** (during Phase 2): a test request
   roots a strict superset of `main`'s closure; measure the ADR-0063 §14
@@ -1231,7 +1403,8 @@ Phase 4 selection plus the existing watch loop).
   gating the `addr` leaf disposition in §4.1).
 - ADR-0063 §1/§3/§8/§15 (roots, fingerprints, reachability, test-selection
   consumer) and its rejected alternative "make body queries depend on callee
-  bodies" (the shape §4.2's coordinator design avoids); ADR-0061 §6 (schema
+  bodies" (the shape §4.2's component queries avoid by joining along the
+  acyclic condensation); ADR-0061 §6 (schema
   versioning policy); ADR-0058 (canonical artifacts); ADR-0055 (typed runtime
   ABI manifest); ADR-0064 (FFI boundary rules, accepted); ADR-0027 (random
   intrinsics); ADR-0025 (comptime); ADR-0069 (CI scheduling that names a
