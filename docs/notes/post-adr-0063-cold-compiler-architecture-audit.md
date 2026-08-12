@@ -1576,6 +1576,23 @@ retired instructions by 0.1688% (0.0497% MAD), and increased peak RSS by
 source/output, and executable invariant remained exact. The candidate was
 rejected.
 
+RUE-1327 makes body-local provider module publication linear in the number of
+modules. `BodyIdentityPool` now owns exact forward and reverse module/file
+indexes, assigns implicit ids with a monotonic cursor, and incrementally
+publishes each logical path before recursive nominal minting can render a
+qualified symbol. This replaces both the per-provider reverse scan and the
+repeated clone-and-replace of the complete path map. A 256-module regression
+mixes provider-assigned and pool-assigned ids, exercises immediate destructor
+symbol spelling, and verifies that an id reused for another path fails before
+minting a nominal shell.
+
+Against the exact RUE-1446 parent, 16 balanced fixed one-worker cold Lattice
+pairs reduced compiler clock by a 1.3303% paired median (0.4267% MAD) and cycles
+by 1.1103% (0.6636% MAD). Retired instructions and RSS were neutral at -0.0644%
+and -0.3196% respectively. Four allocation-accounting pairs removed a median
+22,420.5 calls and 1,045,227 requested bytes. Every published compiler-work
+counter, source/output metric, and executable byte remained identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
