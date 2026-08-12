@@ -1833,6 +1833,24 @@ End-to-end clock is neutral at -0.5556% (1.6545% MAD), cycles at -0.4915%
 -0.0452% (0.1528% MAD). Every compiler-work counter, source/output metric, and
 executable byte remains identical.
 
+RUE-1468 removes a warning-only quadratic selection path. Each registered
+unused-function call-head projection previously scanned every top-level AST item
+to locate its exact declaration body, and every method projection then scanned
+all sibling methods. The parser already owns exact declaration spans, so the
+projection now binary-searches the source-ordered top-level and member vectors,
+then preserves the existing category, owner, name, and exact-span checks as the
+authority. A focused 128-peer regression bounds each lookup to at most ten
+records and proves a mismatched candidate still fails closed.
+
+Across 16 balanced fixed one-worker cold Lattice pairs, clock is exactly neutral
+at the reported 10 ms resolution (2.4752% paired MAD), retired instructions at
++0.0065% (0.1014% MAD), cycles at -0.2993% (1.6040% MAD), peak RSS at +0.0595%
+(0.2793% MAD), and peak footprint at -0.0703% (0.2378% MAD). Four allocation-
+accounted pairs are neutral. Every compiler-work counter, source/output metric,
+and executable byte remains identical. This is therefore an asymptotic and
+architectural win with no measured cold-time regression on the maintained
+workload.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
