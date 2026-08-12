@@ -372,7 +372,14 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// hashing to an owned digest is refused before any id or symbol is minted.
     anonymous_digest_owners: AHashMap<u128, AnonymousNominalKey<K, M>>,
     builtins: AHashMap<(Arc<str>, SemanticImportNominalKind), PoolNominal>,
+    /// Exact logical-path to body-local file-id registry.
     module_files: AHashMap<Arc<str>, FileId>,
+    /// Reverse registry enforcing the module/file bijection in average O(1)
+    /// time, including provider-assigned ids.
+    file_modules: AHashMap<FileId, Arc<str>>,
+    /// Monotonic candidate for pool-assigned ids. Occupied explicit ids are
+    /// skipped once overall, so admitting all body modules remains linear.
+    next_module_file: u32,
     /// The pool's own parameter arena, the analog of `Sema::param_arena` (which
     /// lives *beside* the type pool, not inside it). Callable identities intern
     /// their durable parameter vocabulary here on first consult, returning a
@@ -913,6 +920,8 @@ where
             anonymous_digest_owners: AHashMap::new(),
             builtins,
             module_files: AHashMap::new(),
+            file_modules: AHashMap::new(),
+            next_module_file: 1,
             param_arena: ParamArena::new(),
             function_sigs: AHashMap::new(),
             method_sigs: AHashMap::new(),
@@ -1262,25 +1271,8 @@ where
             .source
             .nominal(key)
             .ok_or(IdentityMintError::MissingNominal)?;
-        let file_id = if let Some(file_id) = self.source.nominal_file_id(key) {
-            if self
-                .module_files
-                .iter()
-                .any(|(path, file)| *file == file_id && path != &module_path)
-            {
-                return Err(IdentityMintError::InvalidStructuralType);
-            }
-            self.module_files.insert(module_path.clone(), file_id);
-            self.type_pool.set_symbol_paths(
-                self.module_files
-                    .iter()
-                    .map(|(path, id)| (*id, path.to_string()))
-                    .collect(),
-            );
-            file_id
-        } else {
-            self.file_for_module(&module_path)
-        };
+        let requested_file = self.source.nominal_file_id(key);
+        let file_id = self.file_for_module(&module_path, requested_file)?;
         let symbol = self.interner.get_or_intern(name.as_ref());
         let name = name.clone();
         match body {
@@ -1423,7 +1415,7 @@ where
             .nominal(key)
             .ok_or(IdentityMintError::MissingNominal)?;
 
-        let file_id = self.file_for_module(&module_path);
+        let file_id = self.file_for_module(&module_path, None)?;
         let symbol = self.interner.get_or_intern(name.as_ref());
         let name = name.clone();
 
@@ -1534,24 +1526,54 @@ where
     }
 
     /// The body-local [`FileId`] for a module logical path, assigned on first
-    /// sight. Re-publishes the accumulated logical paths so `struct_symbol_name`
-    /// mangles the same module component the epoch does. The numbering is
-    /// body-internal; only the path string a `FileId` maps to is load-bearing
-    /// for display parity.
-    fn file_for_module(&mut self, module_path: &Arc<str>) -> FileId {
+    /// sight or accepted from a provider. Both directions of the bijection are
+    /// registered before nominal minting can render a qualified symbol.
+    fn file_for_module(
+        &mut self,
+        module_path: &Arc<str>,
+        requested_file: Option<FileId>,
+    ) -> Result<FileId, IdentityMintError> {
         if let Some(&file) = self.module_files.get(module_path) {
-            return file;
+            return match requested_file {
+                Some(requested) if requested != file => {
+                    Err(IdentityMintError::InvalidStructuralType)
+                }
+                _ => Ok(file),
+            };
         }
-        let next = u32::try_from(self.module_files.len() + 1).expect("too many body modules");
-        let file = FileId::new(next);
-        self.module_files.insert(module_path.clone(), file);
-        self.type_pool.set_symbol_paths(
-            self.module_files
-                .iter()
-                .map(|(path, id)| (*id, path.to_string()))
-                .collect(),
-        );
-        file
+
+        let file = if let Some(file) = requested_file {
+            if self
+                .file_modules
+                .get(&file)
+                .is_some_and(|path| path != module_path)
+            {
+                return Err(IdentityMintError::InvalidStructuralType);
+            }
+            file
+        } else {
+            loop {
+                let file = FileId::new(self.next_module_file);
+                if !self.file_modules.contains_key(&file) {
+                    self.next_module_file = self.next_module_file.saturating_add(1);
+                    break file;
+                }
+                self.next_module_file = self
+                    .next_module_file
+                    .checked_add(1)
+                    .ok_or(IdentityMintError::InvalidStructuralType)?;
+            }
+        };
+
+        if !self
+            .type_pool
+            .insert_symbol_path(file, module_path.to_string())
+        {
+            return Err(IdentityMintError::InvalidStructuralType);
+        }
+        self.module_files.insert(Arc::clone(module_path), file);
+        self.file_modules.insert(file, Arc::clone(module_path));
+        Ok(file)
     }
 }
 
@@ -3243,6 +3265,7 @@ mod tests {
     /// r4b's stable-keyed provider.
     struct MapSource {
         nominals: HashMap<Key, DurableNominal<Key, Module>>,
+        nominal_file_ids: HashMap<Key, FileId>,
         functions: HashMap<Key, DurableFunction<Key, Module>>,
         methods: HashMap<Key, DurableMethod<Key, Module>>,
         consts: HashMap<Key, DurableConst<Key, Module>>,
@@ -3257,6 +3280,10 @@ mod tests {
     impl DurableNominalSource<Key, Module> for MapSource {
         fn nominal(&self, key: &Key) -> Option<DurableNominal<Key, Module>> {
             self.nominals.get(key).cloned()
+        }
+
+        fn nominal_file_id(&self, key: &Key) -> Option<FileId> {
+            self.nominal_file_ids.get(key).copied()
         }
     }
 
@@ -3302,6 +3329,7 @@ mod tests {
     fn source(nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>) -> MapSource {
         MapSource {
             nominals: nominals.into_iter().collect(),
+            nominal_file_ids: HashMap::new(),
             functions: HashMap::new(),
             methods: HashMap::new(),
             consts: HashMap::new(),
@@ -3326,6 +3354,7 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
+                nominal_file_ids: HashMap::new(),
                 functions: functions.into_iter().collect(),
                 methods: methods.into_iter().collect(),
                 consts: HashMap::new(),
@@ -3344,6 +3373,7 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
+                nominal_file_ids: HashMap::new(),
                 functions: functions.into_iter().collect(),
                 methods: HashMap::new(),
                 consts: consts.into_iter().collect(),
@@ -3364,6 +3394,7 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
+                nominal_file_ids: HashMap::new(),
                 functions: HashMap::new(),
                 methods: HashMap::new(),
                 consts: HashMap::new(),
@@ -5134,6 +5165,86 @@ mod tests {
             a_symbol.contains('$') && b_symbol.contains('$'),
             "{a_symbol} / {b_symbol}"
         );
+    }
+
+    #[test]
+    fn provider_module_paths_publish_once_with_explicit_and_assigned_ids() {
+        const MODULES: Key = 256;
+
+        let nominals = (0..MODULES).map(|key| {
+            let name = format!("Type{key}");
+            let module = format!("pkg/module_{key}.rue");
+            let mut nominal = named(&name, &module, true, struct_body(Vec::new(), false, false));
+            // Destructor spelling consults the path during minting, pinning
+            // immediate publication rather than merely the final registry.
+            nominal.has_destructor = true;
+            (key, nominal)
+        });
+        let mut provider = source(nominals);
+        provider.nominal_file_ids = (0..MODULES)
+            .step_by(2)
+            .map(|key| (key, FileId::new(key + 1)))
+            .collect();
+        let mut pool = BodyIdentityPool::new(provider, Rc::new(ThreadedRodeo::new()));
+
+        for key in 0..MODULES {
+            let ty = pool.resolve_provider_type(&DType::Nominal(key)).unwrap();
+            let id = ty.as_struct().unwrap();
+            let def = pool.type_pool().struct_def(id);
+            let expected_file = FileId::new(key + 1);
+            let expected_path = format!("pkg/module_{key}.rue");
+            assert_eq!(def.file_id, expected_file);
+            assert_eq!(
+                pool.file_modules.get(&expected_file).map(Arc::as_ref),
+                Some(expected_path.as_str())
+            );
+            let path_component = crate::path_norm::mangle_symbol_component(
+                &crate::path_norm::normalize_module_path(&expected_path),
+            );
+            assert_eq!(
+                pool.type_pool().struct_symbol_name(id),
+                format!("Type{key}${path_component}")
+            );
+        }
+
+        assert_eq!(pool.module_files.len(), MODULES as usize);
+        assert_eq!(pool.file_modules.len(), MODULES as usize);
+        assert_eq!(pool.next_module_file, MODULES + 1);
+    }
+
+    #[test]
+    fn provider_module_file_collision_fails_before_nominal_minting() {
+        let mut provider = source([
+            (
+                0,
+                named(
+                    "First",
+                    "pkg/first.rue",
+                    true,
+                    struct_body(Vec::new(), false, false),
+                ),
+            ),
+            (
+                1,
+                named(
+                    "Second",
+                    "pkg/second.rue",
+                    true,
+                    struct_body(Vec::new(), false, false),
+                ),
+            ),
+        ]);
+        provider.nominal_file_ids = HashMap::from([(0, FileId::new(41)), (1, FileId::new(41))]);
+        let mut pool = BodyIdentityPool::new(provider, Rc::new(ThreadedRodeo::new()));
+
+        pool.resolve_provider_type(&DType::Nominal(0)).unwrap();
+        assert_eq!(
+            pool.resolve_provider_type(&DType::Nominal(1)),
+            Err(IdentityMintError::InvalidStructuralType)
+        );
+        assert_eq!(pool.module_files.len(), 1);
+        assert_eq!(pool.file_modules.len(), 1);
+        assert!(!pool.struct_ids.contains_key(&1));
     }
 
     #[test]

@@ -2449,6 +2449,21 @@ impl TypeInternPool {
             .symbol_paths = Arc::new(symbol_paths);
     }
 
+    /// Publish one relocation-stable source identity without rebuilding the
+    /// complete file table. Returns `false` when the file id is already owned
+    /// by a different logical path; publishing the same pair is idempotent.
+    pub(crate) fn insert_symbol_path(&self, file_id: FileId, symbol_path: String) -> bool {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        let symbol_paths = Arc::make_mut(&mut inner.symbol_paths);
+        match symbol_paths.get(&file_id) {
+            Some(existing) => existing == &symbol_path,
+            None => {
+                symbol_paths.insert(file_id, symbol_path);
+                true
+            }
+        }
+    }
+
     /// Apply a type-pool mutation atomically through an isolated snapshot.
     ///
     /// The live write lock remains held while `operation` works on the
