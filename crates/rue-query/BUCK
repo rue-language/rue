@@ -4,6 +4,7 @@ rue_crate(
     name = "rue-query",
     deps = [
         "//third-party:ahash",
+        "//third-party:smallvec",
         "//third-party:tracing",
     ],
 )

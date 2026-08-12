@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use ahash::{AHashMap, AHashSet, RandomState};
+use smallvec::SmallVec;
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -22,6 +23,8 @@ const VALIDATION_PROOF_REGISTERED: u8 = 0;
 const VALIDATION_PROOF_RETRYABLE: u8 = 1;
 const VALIDATION_PROOF_UNREGISTERED: u8 = 2;
 const VALIDATION_PUBLISH_SWEEP_QUANTUM: usize = 64;
+
+type ValidationProofStack = SmallVec<[u8; 8]>;
 
 /// Initial runtime-wide soft budget for deterministic retained terminal charge.
 ///
@@ -4631,7 +4634,7 @@ impl QueryRuntime {
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
             validation_proof_parent: None,
-            validation_proofs: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(ValidationProofStack::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
@@ -8100,7 +8103,7 @@ struct Task {
     /// Active recursive validation certificates local to this task.
     /// Encountering an unregistered node taints these and every enclosing
     /// task's active traversal through `validation_proof_parent`.
-    validation_proofs: Mutex<Vec<u8>>,
+    validation_proofs: Mutex<ValidationProofStack>,
     /// High-frequency validation work accumulated on this rooted request and
     /// merged into the runtime once at task completion.
     validation_work: AtomicValidationWork,
@@ -9327,7 +9330,7 @@ impl Task {
             ),
             batch_validation_authority: Some(authority),
             validation_proof_parent: Some(Arc::downgrade(self)),
-            validation_proofs: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(ValidationProofStack::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
@@ -10790,6 +10793,18 @@ mod tests {
         assert!(!active.insert(INLINE_ACTIVE_VALIDATIONS as u64 + 2));
         assert!(active.remove(&1));
         assert!(active.insert(1));
+    }
+
+    #[test]
+    fn validation_proof_stack_keeps_common_depth_inline_without_growing_tasks() {
+        assert!(std::mem::size_of::<ValidationProofStack>() <= std::mem::size_of::<Vec<u8>>());
+
+        let mut proofs = ValidationProofStack::new();
+        proofs.resize(8, VALIDATION_PROOF_REGISTERED);
+        assert!(!proofs.spilled());
+
+        proofs.push(VALIDATION_PROOF_REGISTERED);
+        assert!(proofs.spilled());
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -13179,7 +13194,7 @@ mod tests {
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
             validation_proof_parent: None,
-            validation_proofs: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(ValidationProofStack::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
@@ -13232,7 +13247,7 @@ mod tests {
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
             validation_proof_parent: None,
-            validation_proofs: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(ValidationProofStack::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
@@ -13507,7 +13522,7 @@ mod tests {
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
             validation_proof_parent: None,
-            validation_proofs: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(ValidationProofStack::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
