@@ -1627,6 +1627,21 @@ clock +0.1361% paired median (0.5372% MAD), retired instructions -0.0111%
 +198 calls and +37,008 requested bytes. Every published compiler-work counter,
 source/output metric, and executable byte remained identical.
 
+RUE-1453 reuses one full-width scratch bitset inside backend liveness dataflow.
+The fixed-point transfer previously built `live_out` in one scratch allocation,
+cloned its complete register width into a second scratch allocation for every
+instruction and sweep, then immediately mutated that clone with defs and uses.
+Building the successor union directly in the reusable `live_in` scratch removes
+the second allocation and the per-row clone without changing the fixed-point
+order, acyclic fast path, or live-set projections.
+
+Against the exact RUE-1452 candidate, 16 balanced fixed one-worker cold Lattice
+pairs reduced retired instructions by a 0.2255% paired median (0.0491% MAD).
+Compiler clock and cycles were neutral at +0.0000% (1.0485% MAD) and -0.1220%
+(0.6329% MAD). Peak RSS improved by 0.4168% (0.2528% MAD), and peak footprint
+improved by 0.2856% (0.1430% MAD). Every published compiler-work counter,
+source/output metric, and executable byte remained identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
