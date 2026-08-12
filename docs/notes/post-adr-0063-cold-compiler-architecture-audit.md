@@ -1012,6 +1012,20 @@ falls by 6.54 MiB, within dispersion. Across three follow-up profiles,
 Every published compiler-work counter and emitted executable byte remains
 identical.
 
+RUE-1398 keeps the common dependency-reader lists in the shared instruction
+scheduler inline. Dependency construction records every instruction that has
+read a physical register or the condition flags since their last write so a
+later write cannot move above those readers. These transient lists now carry
+two instruction indices inline while uncommon longer runs retain the same
+spillable representation and dependency order.
+
+Three fixed one-worker allocation probes save 122,297--122,347 calls (0.79%)
+and 2.32--2.48 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a +0.06% paired median, with 0.84%
+paired MAD and a -12.03% to +10.39% range. Median peak RSS moves +1.56 MiB
+within dispersion. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
