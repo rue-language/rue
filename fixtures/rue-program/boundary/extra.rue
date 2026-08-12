@@ -1,0 +1,3 @@
+pub fn value() -> i32 { 7 }
+
+// digest-sensitivity probe

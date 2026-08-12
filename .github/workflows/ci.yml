@@ -167,6 +167,20 @@ jobs:
           ./buck2 build //crates/rue:rue --prefer-remote --no-remote-cache
           -c build.execution_platforms=root//platforms:remote_execution
 
+      # ADR-0070 negative control 2 (RUE-1404): remote execution materializes
+      # only declared inputs, so building a rue_program here is the standing
+      # proof that its scan/derive/compile chain reads nothing undeclared —
+      # the failure stage control 1 deliberately does not exercise. The hello
+      # fixture needs both hard manifest mechanisms (an absent importer arm
+      # and trusted-std reads), so a pass is meaningful, not vacuous.
+      - name: Build rue_program fixture remotely
+        env:
+          RUE_CI_REQUIRE_REMOTE_ACTIONS: 1
+        run: >-
+          scripts/ci-timed "remote rue_program build" --
+          ./buck2 build //fixtures/rue-program:hello --prefer-remote --no-remote-cache
+          -c build.execution_platforms=root//platforms:remote_execution
+
   rust-project:
     runs-on: ubuntu-latest
     steps:

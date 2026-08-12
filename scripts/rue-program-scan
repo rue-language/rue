@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Scan action of ADR-0070's rue_program (RUE-1404): run `rue --emit deps` and
+# capture the dependency envelope, which `--emit deps` writes to stdout.
+#
+# The scan runs with NO manifest, so resolution reports every arm it probes —
+# present and absent alike — which is exactly what manifest derivation needs
+# (an undeclared absent arm is DeniedLexical-fatal at compile time, ADR-0051).
+# It deliberately carries no -O and no --target: the read closure is
+# target-invariant by construction (ADR-0070 open question 1), so one scan
+# serves every flag set of a root.
+set -euo pipefail
+
+if [[ $# -ne 3 ]]; then
+    echo "usage: rue-program-scan OUT COMPILER ROOT" >&2
+    exit 2
+fi
+
+out="$1"
+compiler="$2"
+root="$3"
+
+"$compiler" --emit deps "$root" > "$out"

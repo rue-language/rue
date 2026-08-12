@@ -1,0 +1,70 @@
+# ADR-0070 Phase 0 (RUE-1404) proving grounds for the rue_program rules. These
+# fixtures are the rules' unit tests: no production target consumes them, and
+# each exists to pin one property of the mechanism.
+#
+#   :hello              the three-action shape end to end, on a program that
+#                       deliberately needs BOTH hard manifest mechanisms — an
+#                       absent importer-relative arm and trusted-std reads the
+#                       scan cannot see.
+#   :hello-runs         a rue_program_test scenario consuming the artifact.
+#   :boundary-control   negative control 1: an out-of-srcs read fails at the
+#                       derive boundary, contained (building the target IS the
+#                       assertion; the sh_test only gives it a test surface).
+#   :family-*           two sibling roots sharing a glob, plus the aggregate
+#                       srcs report that judges unread files family-wide.
+
+load("//:rue_rules.bzl", "rue_program", "rue_program_boundary_control", "rue_program_family", "rue_program_test")
+load("//:test_defs.bzl", "rue_sh_test")
+
+rue_program(
+    name = "hello",
+    root = "fixtures/rue-program/hello/main.rue",
+    srcs = glob(["hello/**/*.rue"]),
+)
+
+rue_program_test(
+    name = "hello-runs-test",
+    program = ":hello",
+    exit_code = 42,
+)
+
+rue_program_test(
+    name = "hello-writable-cwd-test",
+    program = ":hello",
+    # The scenario stages an inline fixture into the writable cwd; the program
+    # ignores it, but the staging path itself is the property under test.
+    files = [{"path": "data/ignored.txt", "source": "staged\n"}],
+    exit_code = 42,
+)
+
+# The compile action never runs for this target: the derive step succeeds —
+# writing the marker the sh_test asserts — if and only if the boundary check
+# rejects exactly the materialized-but-undeclared module.
+rue_program_boundary_control(
+    name = "boundary-control",
+    root = "fixtures/rue-program/boundary/root.rue",
+    srcs = ["boundary/root.rue"],
+    extra_scan_inputs = ["boundary/extra.rue"],
+    violating_path = "fixtures/rue-program/boundary/extra.rue",
+)
+
+rue_sh_test(
+    name = "boundary-control-test",
+    test = "//:corpus-stamp-check",
+    args = ["$(location :boundary-control)"],
+)
+
+rue_program_family(
+    name = "family",
+    srcs = glob(["family/**/*.rue"]),
+    programs = {
+        "family-alpha": {"root": "fixtures/rue-program/family/alpha.rue"},
+        "family-beta": {"root": "fixtures/rue-program/family/beta.rue"},
+    },
+)
+
+rue_program_test(
+    name = "family-alpha-test",
+    program = ":family-alpha",
+    exit_code = 10,
+)

@@ -695,7 +695,7 @@ internal CI scheduling and would not ship in a ruleset.
 
 ## Implementation Phases
 
-- [ ] **Phase 0: Rules, scan-derived manifest, audit, controls** — RUE-1404 —
+- [x] **Phase 0: Rules, scan-derived manifest, audit, controls** — RUE-1404 —
       `rue_rules.bzl`
       with `rue_program`, `rue_program_test`, `RueProgramInfo`, the three-action
       scan/derive/compile shape, a `RueToolchainInfo` indirection, the declaration

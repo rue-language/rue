@@ -179,8 +179,10 @@ time. Do not bypass that coordination with a direct `buck2 test //...` when a
 full local run is intended. Quick, filtered, and targeted checks do not take the
 host lock. The optional BuildBuddy action cache uses one private user config and
 ignored per-worktree symlinks; see `docs/process/build-cache.md`. Never commit or
-print its credential, and do not use `--prefer-remote` while RUE-320 remains
-open.
+print its credential. Full remote execution is supported (RUE-320, Done
+2026-07-18): the repository wrapper defaults to `--prefer-local`, and
+`--prefer-remote` is an explicit opt-in for cache-population or RE-debugging
+runs, not the default local-development policy.
 
 Testing conventions:
 

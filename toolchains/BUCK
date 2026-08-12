@@ -18,6 +18,7 @@ load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load(":cxx_tools.bzl", "cxx_tools_with_linker")
+load(":rue.bzl", "rue_toolchain")
 load(":remote_test_execution.bzl", "noop_remote_test_execution_toolchain")
 
 cxx_tools_with_linker(
@@ -75,5 +76,23 @@ noop_test_toolchain(
 
 noop_remote_test_execution_toolchain(
     name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+# The Rue compiler toolchain (ADR-0070 / RUE-1404): compiler, std, and the
+# configured platform's native Rue target as one resolved unit. rue_program
+# targets that set no rue_target compile for native_target; the resolved
+# target is always passed explicitly on the compile command line.
+rue_toolchain(
+    name = "rue",
+    compiler = "root//crates/rue:rue",
+    std = "root//:std",
+    native_target = select({
+        "prelude//os:linux": select({
+            "prelude//cpu:arm64": "aarch64-linux",
+            "prelude//cpu:x86_64": "x86-64-linux",
+        }),
+        "prelude//os:macos": "aarch64-macos",
+    }),
     visibility = ["PUBLIC"],
 )
