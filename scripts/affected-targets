@@ -104,6 +104,7 @@ SELECTABLE_LANES=(
     valgrind
     asan
     compiler-reproducibility
+    rue-program-digests
 )
 
 # Representative targets per lane, mirroring what each job executes in ci.yml.
@@ -122,7 +123,8 @@ lane_targets() {
                  //crates/rue-allocator:rue-allocator-test \
                  //crates/rue-target:rue-target-test \
                  //:spec-tests \
-                 //:cli-tests ;;
+                 //:cli-tests \
+                 //fixtures/rue-program:hello-runs-test ;;
         release)
             echo //:release-smoke ;;
         valgrind)
@@ -135,6 +137,12 @@ lane_targets() {
             echo //crates/rue-runtime:rue-runtime //crates/rue-allocator:rue-allocator ;;
         compiler-reproducibility)
             echo //crates/rue:rue ;;
+        rue-program-digests)
+            # ADR-0070 control 3: the digest-sensitivity script drives builds
+            # of the hello fixture, so it is affected exactly when the fixture
+            # (or, transitively, the compiler and the rue_program tool chain)
+            # is.
+            echo //fixtures/rue-program:hello ;;
         *)
             return 1 ;;
     esac

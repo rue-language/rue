@@ -82,7 +82,10 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
         envelope.as_output(),
         ctx.attrs.root,
         toolchain.compiler,
-        hidden = [ctx.attrs.srcs, toolchain.std, ctx.attrs.extra_scan_inputs],
+        # extra_scan_inputs exists only on the boundary-control rule; ordinary
+        # rue_programs have no way to smuggle undeclared-but-materialized
+        # files into the scan.
+        hidden = [ctx.attrs.srcs, toolchain.std, getattr(ctx.attrs, "extra_scan_inputs", [])],
     )
     ctx.actions.run(
         scan_cmd,
@@ -216,9 +219,6 @@ _PROGRAM_COMMON_ATTRS = {
     "opt_level": attrs.option(attrs.string(), default = None),
     "preview_features": attrs.list(attrs.string(), default = []),
     "link_archives": attrs.list(attrs.source(), default = []),
-    # Negative-control plumbing: inputs materialized for the scan but NOT part
-    # of the declared srcs boundary. Ordinary programs never set this.
-    "extra_scan_inputs": attrs.list(attrs.source(), default = []),
     "_derive": attrs.dep(providers = [RunInfo], default = "root//:rue-program-derive-manifest"),
     "_precision": attrs.dep(providers = [RunInfo], default = "root//:rue-program-srcs-precision"),
     "_scan": attrs.dep(providers = [RunInfo], default = "root//:rue-program-scan"),
@@ -255,6 +255,10 @@ def _rue_program_boundary_control_impl(ctx: AnalysisContext) -> list[Provider]:
 rue_program_boundary_control = rule(
     impl = _rue_program_boundary_control_impl,
     attrs = _PROGRAM_COMMON_ATTRS | {
+        # Inputs materialized for the scan but NOT part of the declared srcs
+        # boundary — the control's whole trick, and deliberately not an
+        # attribute ordinary rue_programs carry.
+        "extra_scan_inputs": attrs.list(attrs.source(), default = []),
         "violating_path": attrs.string(),
     },
 )

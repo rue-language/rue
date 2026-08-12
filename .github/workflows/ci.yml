@@ -510,6 +510,12 @@ jobs:
             //crates/rue-runtime-abi:rue-runtime-abi-test
             //crates/rue-allocator:rue-allocator-test
             //crates/rue-target:rue-target-test
+            # ADR-0070 (RUE-1404): the one place CI evaluates the rue
+            # toolchain's non-x64 native_target select branches and runs an
+            # internally-linked rue_program on aarch64-linux and
+            # aarch64-macos. Narrowed like every other entry: it only runs
+            # when the compiler, the rules, or the fixtures are impacted.
+            //fixtures/rue-program:hello-runs-test
           )
           if [ "$NARROW_COUNT" -gt 0 ]; then
             # macOS runners execute this with the stock Bash 3.2, which has no
@@ -607,6 +613,57 @@ jobs:
           path: ${{ runner.temp }}/rue-compiler-repro-artifacts
           if-no-files-found: ignore
 
+
+  # ADR-0070 negative control 3 (RUE-1404): digest sensitivity of the
+  # rue_program action chain. Required like every job here — this repository
+  # has no unaggregated-job tier (//:ci-gate-validation enforces it), and a
+  # hermeticity control nobody gates on decays. The script asserts only what
+  # buck2 guarantees (steady-state convergence, fresh-probe retries past the
+  # lossy file watcher), and the lane decision skips it when nothing it
+  # exercises is affected.
+  rue-program-digests:
+    runs-on: ubuntu-latest
+    name: rue_program digest sensitivity (linux-x64)
+    if: ${{ always() }}
+    needs: affected-targets
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "rue-program-digests"
+
+      - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote cache
+        if: steps.sel.outputs.run == 'true'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Check rue_program digest sensitivity
+        if: steps.sel.outputs.run == 'true'
+        run: scripts/ci-timed "rue_program digests" -- ./scripts/check-rue-program-digests.sh
 
   # RUE-1119: on pull_request, select only the heavy corpus suites the diff
   # actually affects, using Meta's off-the-shelf Buck Target Determinator (BTD,
@@ -1036,6 +1093,7 @@ jobs:
       - linux-premerge
       - native-platforms
       - compiler-reproducibility
+      - rue-program-digests
       - affected-targets
       - platform-corpus
       - release
