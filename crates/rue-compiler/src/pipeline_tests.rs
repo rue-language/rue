@@ -5,6 +5,8 @@ use std::sync::Arc;
 mod tests {
     use std::collections::HashMap;
 
+    use rue_query::QueryKey;
+
     use super::*;
 
     fn snapshot_with_file_id(file_id: u32, source: &str) -> SourceSnapshot {
@@ -26,6 +28,66 @@ mod tests {
         }
         source.push_str(&format!("fn main() -> i32 {{ f{}() }}", functions - 1));
         SourceSnapshot::single("<wide-backend-root>", source).unwrap()
+    }
+
+    #[test]
+    fn backend_query_keys_share_exact_batch_and_memo_display_identities() {
+        let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let rooted = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        let optimized = rooted.cfgs[0].optimized_cfg_key.clone();
+        let cfg = optimized.cfg.clone();
+        let codegen = crate::codegen_query::CodegenUnitQueryKey::new(
+            optimized.clone(),
+            options.target,
+            rue_codegen::BackendArtifactRequest::default(),
+            options.opt_level,
+        );
+        let object = crate::object_query::ObjectProjectionQueryKey::new(codegen.clone());
+
+        for key in [
+            cfg.stable_identity() == cfg.shared_stable_identity().as_ref(),
+            optimized.stable_identity() == optimized.shared_stable_identity().as_ref(),
+            codegen.stable_identity() == codegen.shared_stable_identity().as_ref(),
+            object.stable_identity() == object.shared_stable_identity().as_ref(),
+        ] {
+            assert!(key, "owned and shared query display identities must agree");
+        }
+
+        let optimized_batch = crate::revisioned_query_database::OptimizedCfgBatchKey {
+            keys: Arc::from([optimized.clone()]),
+        };
+        let codegen_batch = crate::revisioned_query_database::CodegenUnitBatchKey {
+            keys: Arc::from([codegen.clone()]),
+        };
+        let object_batch = crate::revisioned_query_database::ObjectProjectionBatchKey {
+            keys: Arc::from([object.clone()]),
+        };
+        assert_eq!(
+            optimized_batch.stable_identity(),
+            format!(
+                "optimized-cfg-batch;units=1\u{1e}{}",
+                optimized.shared_stable_identity()
+            )
+        );
+        assert_eq!(
+            codegen_batch.stable_identity(),
+            format!(
+                "codegen-unit-batch;units=1\u{1e}{}",
+                codegen.shared_stable_identity()
+            )
+        );
+        assert_eq!(
+            object_batch.stable_identity(),
+            format!(
+                "object-projection-batch;units=1\u{1e}{}",
+                object.shared_stable_identity()
+            )
+        );
     }
 
     #[cfg(unix)]

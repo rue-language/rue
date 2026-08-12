@@ -1817,6 +1817,22 @@ allocation-accounted pairs are neutral, as expected for a set-bit iteration
 reduction. Every compiler-work counter, source/output metric, and executable
 byte remains identical.
 
+RUE-1467 retains each backend query key's presentation identity once and shares
+that immutable text between its batch root and memo node. CFG, optimized-CFG,
+codegen-unit, and object-projection batches previously formatted every long
+child identity into a temporary `String`, then the child key formatted the same
+identity again when its memo node was created. This extends the existing
+`QueryKey::shared_stable_identity` ownership path used by body keys; typed key
+equality and hashing remain authoritative and independent of the cached text.
+
+Four allocation-accounted cold Lattice pairs remove 31,105--31,458 allocation
+calls and 4.71--4.96 MB of requested bytes. Across 16 balanced fixed one-worker
+release pairs, retired instructions improve by 0.3325% (0.0453% MAD).
+End-to-end clock is neutral at -0.5556% (1.6545% MAD), cycles at -0.4915%
+(1.0115% MAD), peak RSS at -0.1541% (0.2539% MAD), and peak footprint at
+-0.0452% (0.1528% MAD). Every compiler-work counter, source/output metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

@@ -1269,7 +1269,7 @@ impl QueryKey for OptimizedCfgBatchKey {
         let mut identity = format!("optimized-cfg-batch;units={}", self.keys.len());
         for key in self.keys.iter() {
             identity.push('\u{1e}');
-            identity.push_str(&key.stable_identity());
+            identity.push_str(&key.shared_stable_identity());
         }
         identity
     }
@@ -1300,7 +1300,7 @@ impl QueryKey for CodegenUnitBatchKey {
         let mut identity = format!("codegen-unit-batch;units={}", self.keys.len());
         for key in self.keys.iter() {
             identity.push('\u{1e}');
-            identity.push_str(&key.stable_identity());
+            identity.push_str(&key.shared_stable_identity());
         }
         identity
     }
@@ -1329,7 +1329,7 @@ impl QueryKey for ObjectProjectionBatchKey {
         let mut identity = format!("object-projection-batch;units={}", self.keys.len());
         for key in self.keys.iter() {
             identity.push('\u{1e}');
-            identity.push_str(&key.stable_identity());
+            identity.push_str(&key.shared_stable_identity());
         }
         identity
     }

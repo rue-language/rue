@@ -6,7 +6,7 @@
 //! retained projection owned by the compiler query graph.
 
 use std::{
-    hash::Hash,
+    hash::{Hash, Hasher},
     sync::{Arc, OnceLock},
 };
 
@@ -39,7 +39,7 @@ impl ObjectFormat {
 }
 
 /// Exact identity of one target-object projection.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub(crate) struct ObjectProjectionQueryKey {
     /// The dependency key names the exact canonical CodegenUnit terminal. Its
     /// backend and ABI-layout epochs remain part of this query's identity.
@@ -48,31 +48,59 @@ pub(crate) struct ObjectProjectionQueryKey {
     pub(crate) object_format: ObjectFormat,
     pub(crate) abi_layout_epoch: u32,
     pub(crate) object_writer_epoch: u32,
+    display_identity: Arc<str>,
 }
 
 impl ObjectProjectionQueryKey {
     pub(crate) fn new(codegen: crate::codegen_query::CodegenUnitQueryKey) -> Self {
         let target = codegen.target;
+        let object_format = ObjectFormat::for_target(target);
+        let abi_layout_epoch = codegen.abi_layout_epoch;
+        let codegen_identity = codegen.shared_stable_identity();
+        let display_identity: Arc<str> = format!(
+            "object-projection;{codegen_identity};target={target:?};format={object_format:?};abi-layout={abi_layout_epoch};writer={OBJECT_WRITER_EPOCH}"
+        )
+        .into();
         Self {
-            abi_layout_epoch: codegen.abi_layout_epoch,
+            abi_layout_epoch,
             codegen,
             target,
-            object_format: ObjectFormat::for_target(target),
+            object_format,
             object_writer_epoch: OBJECT_WRITER_EPOCH,
+            display_identity,
         }
+    }
+}
+
+impl PartialEq for ObjectProjectionQueryKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.codegen == other.codegen
+            && self.target == other.target
+            && self.object_format == other.object_format
+            && self.abi_layout_epoch == other.abi_layout_epoch
+            && self.object_writer_epoch == other.object_writer_epoch
+    }
+}
+
+impl Eq for ObjectProjectionQueryKey {}
+
+impl Hash for ObjectProjectionQueryKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.codegen.hash(state);
+        self.target.hash(state);
+        self.object_format.hash(state);
+        self.abi_layout_epoch.hash(state);
+        self.object_writer_epoch.hash(state);
     }
 }
 
 impl QueryKey for ObjectProjectionQueryKey {
     fn stable_identity(&self) -> String {
-        format!(
-            "object-projection;{};target={:?};format={:?};abi-layout={};writer={}",
-            self.codegen.stable_identity(),
-            self.target,
-            self.object_format,
-            self.abi_layout_epoch,
-            self.object_writer_epoch,
-        )
+        self.display_identity.to_string()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.display_identity.clone()
     }
 }
 

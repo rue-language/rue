@@ -68,6 +68,7 @@ pub(crate) struct CodegenUnitQueryKey {
     #[cfg(test)]
     inject_failure: bool,
     memo_hash: u64,
+    display_identity: Arc<str>,
 }
 
 impl CodegenUnitQueryKey {
@@ -97,11 +98,17 @@ impl CodegenUnitQueryKey {
         #[cfg(test)]
         inject_failure.hash(&mut hasher);
         let memo_hash = hasher.finish();
+        let data_model = target.data_model();
+        let code_model = CodeModel::for_target(target);
+        let display_identity: Arc<str> = format!(
+            "{function:?};target={target:?};data-model={data_model:?};code-model={code_model:?};opt={optimization:?};backend={BACKEND_EPOCH};abi-layout={ABI_LAYOUT_EPOCH}"
+        )
+        .into();
         Self {
             function,
             target,
-            data_model: target.data_model(),
-            code_model: CodeModel::for_target(target),
+            data_model,
+            code_model,
             optimization,
             backend_epoch: BACKEND_EPOCH,
             abi_layout_epoch: ABI_LAYOUT_EPOCH,
@@ -110,6 +117,7 @@ impl CodegenUnitQueryKey {
             #[cfg(test)]
             inject_failure,
             memo_hash,
+            display_identity,
         }
     }
 }
@@ -145,16 +153,11 @@ impl Hash for CodegenUnitQueryKey {
 }
 impl QueryKey for CodegenUnitQueryKey {
     fn stable_identity(&self) -> String {
-        format!(
-            "{:?};target={:?};data-model={:?};code-model={:?};opt={:?};backend={};abi-layout={}",
-            self.function,
-            self.target,
-            self.data_model,
-            self.code_model,
-            self.optimization,
-            self.backend_epoch,
-            self.abi_layout_epoch
-        )
+        self.display_identity.to_string()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.display_identity.clone()
     }
 }
 
