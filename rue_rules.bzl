@@ -281,6 +281,12 @@ def _rue_program_test_impl(ctx: AnalysisContext) -> list[Provider]:
         spec,
         program.executable,
     )
+    for staged_path, src in ctx.attrs.data.items():
+        # Checked-in runtime fixtures, staged into the writable working
+        # directory at a declared relative path so scenarios reference them
+        # exactly as a user would from their own cwd. Inline fixtures use
+        # `files`; `data` is for repository files a scenario consumes.
+        command.add(cmd_args(src, format = staged_path + "={}"))
     return inject_test_run_info(
         ctx,
         ExternalRunnerTestInfo(
@@ -299,6 +305,7 @@ _rue_program_test = rule(
         "program": attrs.dep(providers = [RueProgramInfo]),
         "program_args": attrs.list(attrs.string(), default = []),
         "program_env": attrs.dict(attrs.string(), attrs.string(), default = {}),
+        "data": attrs.dict(attrs.string(), attrs.source(), default = {}),
         "files": attrs.list(attrs.dict(attrs.string(), attrs.string()), default = []),
         "stdin": attrs.option(attrs.string(), default = None),
         "exit_code": attrs.int(default = 0),

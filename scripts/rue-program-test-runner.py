@@ -21,6 +21,11 @@ The spec is a JSON file generated at analysis time by `rue_program_test`:
   "stdout_contains": [...],
   "stderr_contains": [...]
 }
+
+Checked-in runtime fixtures (the rule's `data` attribute) arrive as trailing
+STAGED=SOURCE arguments rather than through the spec, because they are Buck
+artifacts the JSON cannot carry; each SOURCE is copied to STAGED inside the
+working directory before the program runs.
 """
 
 import json
@@ -32,11 +37,21 @@ import tempfile
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: rue-program-test-runner SPEC PROGRAM", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print(
+            "usage: rue-program-test-runner SPEC PROGRAM [STAGED=SOURCE...]",
+            file=sys.stderr,
+        )
         return 2
 
-    _, spec_path, program = sys.argv
+    spec_path, program = sys.argv[1], sys.argv[2]
+    data = []
+    for pair in sys.argv[3:]:
+        staged, sep, source = pair.partition("=")
+        if not sep or not staged or not source:
+            print(f"malformed data argument: {pair!r}", file=sys.stderr)
+            return 2
+        data.append((staged, source))
     with open(spec_path, encoding="utf-8") as handle:
         spec = json.load(handle)
 
@@ -48,6 +63,10 @@ def main() -> int:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(entry["source"])
+        for staged, source in data:
+            path = os.path.join(workdir, staged)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            shutil.copy(source, path)
 
         env = dict(os.environ)
         env.update(spec.get("program_env", {}))

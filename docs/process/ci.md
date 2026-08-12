@@ -199,13 +199,20 @@ defer coverage. Native ARM64 lanes use the explicit responsibility matrix
 above instead of broad discovery.
 
 Caldera and Meridian are absent from the ordinary CLI corpus by explicit
-filters because their complete generated graphs are slow-tier workloads. The
-required broad pass instead runs `//:large-example-caldera-canary` and
-`//:large-example-meridian-canary`, reduced roots that exercise each
-application's core compiler/runtime path without claiming full-program
-coverage. Nightly `//:large-example-{caldera,meridian}-slow` targets compile
-and execute the real roots with no success-stub environment. Their `stress4`
-configurations live only in the corresponding `-stress` targets.
+filters because their complete generated graphs are slow-tier workloads. Each
+application instead compiles as a `rue_program` build action (ADR-0070 /
+RUE-1405) — a real cached artifact keyed on its declared read closure, served
+by the remote action cache across invocations and lanes — and every runtime
+scenario is its own `rue_program_test` consuming that artifact. The required
+broad pass runs the `//:large-example-{caldera,meridian}-canary` scenarios
+over reduced roots that exercise each application's core compiler/runtime
+path without claiming full-program coverage. Nightly
+`//:large-example-{caldera,meridian}-slow` suites fan out to the per-scenario
+tests over the complete real roots, and the `stress4` configurations live
+only in the corresponding `-stress` scenarios, which reuse the same compiled
+artifact instead of recompiling it. The positive warm-cache control
+(`scripts/check-rue-program-warm-cache.sh`, scheduled in `cache-probe.yml`)
+asserts the cross-root cache service this mechanism exists to provide.
 
 Required Valgrind coverage explicitly sets
 `RUE_SANITIZER_LARGE_PROGRAMS=none`; it does not quietly recurse around one

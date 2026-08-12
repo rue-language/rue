@@ -66,11 +66,14 @@ jobs:
           --target-platforms //platforms:release
 
   # Caldera and Meridian are real compile-and-run coverage, not required-CI
-  # success stubs. Each matrix job builds a release compiler, compiles its
-  # selected root once, and the target reuses that executable across all
-  # runtime scenarios. Separate jobs keep a scheduled regression attributable
-  # and rerunnable. Manual dispatch may select either program (or both), and
-  # may opt into the separate 4x stress tier.
+  # success stubs. Each application compiles as one cached rue_program build
+  # action (ADR-0070 / RUE-1405); the per-program `-slow` suite fans out to
+  # per-scenario rue_program_tests that all consume that one executable, and
+  # the stress tier reuses the same artifact instead of paying a second full
+  # compile. A warm remote cache serves the compile outright. Separate jobs
+  # keep a scheduled regression attributable and rerunnable. Manual dispatch
+  # may select either program (or both), and may opt into the separate 4x
+  # stress tier.
   large-program:
     strategy:
       fail-fast: false
