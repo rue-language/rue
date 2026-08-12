@@ -121,16 +121,19 @@ jobs:
             echo "The per-attempt nonce makes COLD unique; the probe verifies that WARM reuses results populated by COLD."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ADR-0070 Phase 1 (RUE-1405): the positive warm-cache control. Cold-builds
-  # the two canary rue_programs under a fresh nonce, then re-runs their four
-  # consuming scenarios from a relocated checkout root and fails unless the
-  # scan/derive/compile actions were all served by the remote cache. The
-  # nonce keys the Rust toolchain, so the cold half also rebuilds the
-  # compiler — that is what makes "cold" provable, and it is why this rides
-  # the scheduled probe rather than a per-PR lane.
+  # ADR-0070's positive warm-cache control (RUE-1405, extended by RUE-1406).
+  # Cold-builds the two canary rue_programs and the nine staged CLI programs
+  # under a fresh nonce, then from a relocated checkout root re-runs the
+  # canaries' four consuming scenarios and rebuilds //:cli-staged-programs,
+  # failing unless the scan/derive/compile actions were all served by the
+  # remote cache. The nonce keys the Rust toolchain, so the cold half also
+  # rebuilds the compiler — that is what makes "cold" provable, and it is why
+  # this rides the scheduled probe rather than a per-PR lane.
   rue-program-warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Raised from 60 with RUE-1406: the cold half now also compiles the nine
+    # staged CLI programs, meridian's full 36k-line root among them.
+    timeout-minutes: 90
     env:
       RUE_CACHE_PROBE_NONCE: rue-program-${{ github.run_id }}-${{ github.run_attempt }}
     steps:

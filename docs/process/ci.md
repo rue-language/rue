@@ -221,6 +221,19 @@ select `caldera`, `meridian`, or `all`. The ASan job instruments the Rust arena
 allocator rather than compiled Rue applications, so that selection does not
 apply to it.
 
+The CLI cases that name a checked-in root do not compile it. ADR-0070 Phase 2
+(RUE-1406) declares each of the nine such roots as a `rue_program`, collects
+them into `//:cli-staged-programs`, and gives every CLI corpus action that
+directory as a declared input; the harness runs the prebuilt executable a case
+names. 64 cases work this way. What still compiles inside the harness is
+deliberate and structural — the harness stages a case only when the case says
+nothing about the compile — so the cross-target `cli-test-fixtures` cases, the
+repo-relative `source_path` fixture, the `differential_opt` calculator case,
+the one-scenario wordfreq root, and all ~4,050 inline-source cases compile as
+before, as do the RUE-48 automatic example smokes. `cases/examples_meridian.toml`
+runs in CI again: RUE-1083 disabled its six scenarios because each paid a full
+80.7s compile of the same root, and they now share one cached artifact.
+
 The ordinary CLI corpus is additionally split into `CLI_TEST_SHARD_COUNT` (root
 `BUCK`) cost-balanced shards, `//:cli-tests-shard-0 .. -N`, so its wall clock
 collapses to N parallel slices per platform (RUE-1116/RUE-1158). Each shard

@@ -31,6 +31,11 @@ Both cacheable actions set allow_cache_upload for the same reason
 corpus.bzl's action does: this repository's genrule upload gating is driven by
 a Meta-internal label allowlist, and the whole point of the rule is that a PR
 run's compile is served to the merge-group run.
+
+`rue_program_test` is not the only consumer. `rue_program_staging` collects
+programs into one directory keyed by root path, which the CLI corpus actions
+declare as an ordinary input so their harness runs prebuilt executables
+instead of compiling a case's root (ADR-0070 Phase 2 / RUE-1406).
 """
 
 load("@prelude//test:inject_test_run_info.bzl", "inject_test_run_info")
@@ -333,6 +338,52 @@ def rue_program_test(name, tier = "premerge", labels = [], **kwargs):
         labels = rue_test_labels(tier, labels),
         **kwargs
     )
+
+
+def _rue_program_staging_impl(ctx: AnalysisContext) -> list[Provider]:
+    """One directory of prebuilt executables, keyed by each program's root.
+
+    ADR-0070 Phase 2 (RUE-1406): the CLI corpus harness runs the prebuilt
+    executable a case names instead of compiling that case's root. The
+    artifacts reach the harness the way every other corpus input does — one
+    `$(location ...)` in the suite's `attrs.arg()` env — so each staged
+    executable is a declared input of every consuming corpus action and an
+    edit to any root re-keys them all.
+
+    The key IS the case's `source_path` string, so neither side mangles names:
+    `source_path = "examples/mosaic/main.rue"` in the TOML is
+    `<dir>/examples/mosaic/main.rue` here. A symlinked dir rather than a copied
+    one — the executables are large and the corpus reads them, never writes.
+    """
+    staged = {}
+    for program in ctx.attrs.programs:
+        info = program[RueProgramInfo]
+        if info.root in staged:
+            fail("rue_program_staging({}): two programs stage the root '{}'".format(
+                ctx.label.name,
+                info.root,
+            ))
+        if not info.runs_natively:
+            # A cross-compiled executable cannot be run by the scenario that
+            # names it, and a case that wants one is a cross-target case that
+            # stays compile-in-harness by design.
+            fail("rue_program_staging({}): '{}' compiles for {}, which this platform cannot run".format(
+                ctx.label.name,
+                info.root,
+                info.rue_target,
+            ))
+        staged[info.root] = info.executable
+    return [DefaultInfo(
+        default_output = ctx.actions.symlinked_dir("staged-programs", staged),
+    )]
+
+
+rue_program_staging = rule(
+    impl = _rue_program_staging_impl,
+    attrs = {
+        "programs": attrs.list(attrs.dep(providers = [RueProgramInfo])),
+    },
+)
 
 
 def _rue_program_family_report_impl(ctx: AnalysisContext) -> list[Provider]:
