@@ -198,13 +198,13 @@ fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed()
     for invalid_suffix in [false, true] {
         let mut state = query_cfg_state(source).expect("projection-metadata probe must compile");
         let header_struct = state
-            .type_pool
+            .type_pool()
             .all_struct_ids()
             .into_iter()
-            .find(|id| &*state.type_pool.struct_def(*id).name == "Header")
+            .find(|id| &*state.type_pool().struct_def(*id).name == "Header")
             .expect("ordinary Header nominal");
         let header_ty = Type::new_struct(header_struct);
-        assert_eq!(state.type_pool.struct_def(header_struct).fields.len(), 3);
+        assert_eq!(state.type_pool().struct_def(header_struct).fields.len(), 3);
         let read_index = state
             .functions
             .iter()
@@ -244,10 +244,10 @@ fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed()
                 field_index: 0,
             }]
         };
-        let type_pool = &state.type_pool;
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[read_index].cfg;
         let error = cfg
-            .try_edit(type_pool, |editor| {
+            .try_edit(&type_pool, |editor| {
                 editor.replace_place_read(place_value, base, header_ty, projections)
             })
             .expect_err("ValidatedCfg must reject a malformed nominal projection chain");
@@ -411,11 +411,11 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     let TypeKind::Struct(owned_struct) = owned_ty.kind() else {
         panic!("String must be a struct type")
     };
-    let type_pool = &owned_state.type_pool;
+    let type_pool = owned_state.type_pool().clone();
     let cfg = &mut owned_state.functions[main_index].cfg;
     let span = cfg.get_inst(zero).span;
     let error = cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.append_place_read(
                 editor.entry,
                 PlaceBase::Local(0),
@@ -487,6 +487,7 @@ fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
             .iter()
             .position(|function| function.is_source_named("write"))
             .expect("write CFG");
+        state.select_source_function("write");
         let (write_value, base, base_type, rhs, projections) = {
             let cfg = &state.functions[write_index].cfg;
             cfg.blocks()
@@ -507,7 +508,7 @@ fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
                 })
                 .expect("nested PlaceWrite")
         };
-        let type_pool = &state.type_pool;
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[write_index].cfg;
         let (base, base_type, projections) = match corruption {
             Corruption::LocalBase => (PlaceBase::Local(cfg.num_locals()), base_type, projections),
@@ -518,7 +519,7 @@ fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
         };
         let before = cfg.to_string();
         let error = cfg
-            .try_edit(type_pool, |editor| {
+            .try_edit(&type_pool, |editor| {
                 editor.replace_place_write(write_value, base, base_type, projections, rhs)
             })
             .expect_err("ValidatedCfg must reject a malformed place write");
@@ -571,7 +572,7 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
                 })
                 .expect("indexed PlaceRead")
         };
-        let type_pool = &state.type_pool;
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[read_index].cfg;
         let base = if param_base {
             PlaceBase::Param(cfg.num_params())
@@ -580,7 +581,7 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
         };
         let before = cfg.to_string();
         let error = cfg
-            .try_edit(type_pool, |editor| {
+            .try_edit(&type_pool, |editor| {
                 editor.replace_place_read(read_value, base, base_type, projections)
             })
             .expect_err("ValidatedCfg must reject an out-of-bounds place base");
@@ -634,7 +635,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
         let CfgInstData::PlaceRead { place } = &cfg.get_inst(read_value).data else {
             unreachable!()
         };
-        assert_eq!(interp.state.type_pool.abi_slot_count(place.base_type), 0);
+        assert_eq!(interp.state.type_pool().abi_slot_count(place.base_type), 0);
         assert_eq!(place.base, PlaceBase::Local(cfg.num_locals()));
         assert_eq!(
             interp.place_base_violation(cfg, place, PlaceAccess::Read),
@@ -643,12 +644,12 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
         );
     }
 
-    let type_pool = &state.type_pool;
+    let type_pool = state.type_pool().clone();
     let cfg = &mut state.functions[main_index].cfg;
     let invalid_slot = cfg.num_locals() + 1;
     let before = cfg.to_string();
     let error = cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_place_read(
                 read_value,
                 PlaceBase::Local(invalid_slot),
@@ -692,19 +693,23 @@ fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes
                     let CfgInstData::Store { slot, value: rhs } = cfg.get_inst(value).data else {
                         return None;
                     };
-                    let CfgInstData::Intrinsic { name, .. } = cfg.get_inst(rhs).data else {
+                    let CfgInstData::Intrinsic {
+                        runtime: Some(RuntimeCallKind::RandomU32),
+                        ..
+                    } = cfg.get_inst(rhs).data
+                    else {
                         return None;
                     };
-                    (state.interner.resolve(&name) == "random_u32").then_some((
-                        value,
-                        PlaceBase::Local(slot),
-                        cfg.get_inst(rhs).ty,
-                        rhs,
-                    ))
+                    Some((value, PlaceBase::Local(slot), cfg.get_inst(rhs).ty, rhs))
                 })
-                .expect("whole-variable store with random RHS")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "whole-variable store with random RHS in optimized CFG:\n{}",
+                        &*state.functions[write_index].cfg
+                    )
+                })
         };
-        let type_pool = &state.type_pool;
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[write_index].cfg;
         assert_eq!(cfg.num_params(), 1);
         assert!(!cfg.is_param_writable(0));
@@ -715,7 +720,7 @@ fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes
         };
         let before = cfg.to_string();
         let error = cfg
-            .try_edit(type_pool, |editor| {
+            .try_edit(&type_pool, |editor| {
                 editor.replace_place_write(write_value, base, base_type, [], rhs)
             })
             .expect_err("ValidatedCfg must reject an invalid whole-place write");
@@ -749,6 +754,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
         .iter()
         .position(|function| function.is_source_named("probe"))
         .expect("probe CFG");
+    state.select_source_function("probe");
     let other_fixed_type = state.functions[probe_index]
         .cfg
         .blocks()
@@ -757,7 +763,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
         .map(|value| state.functions[probe_index].cfg.get_inst(value).ty)
         .find(|ty| {
             ty.as_struct()
-                .is_some_and(|struct_id| &*state.type_pool.struct_def(struct_id).name == "Str(3)")
+                .is_some_and(|struct_id| &*state.type_pool().struct_def(struct_id).name == "Str(3)")
         })
         .expect("Str(3) parameter type");
     let (read_value, read_type) = {
@@ -819,11 +825,11 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
         };
         place.base
     };
-    let type_pool = &state.type_pool;
+    let type_pool = state.type_pool().clone();
     let before = state.functions[probe_index].cfg.to_string();
     let error = state.functions[probe_index]
         .cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_place_read(read_value, base, Type::I32, [])
         })
         .expect_err("ValidatedCfg must reject a non-str whole-place read coercion");

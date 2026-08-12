@@ -108,6 +108,7 @@ impl SourceSnapshot {
 
     /// Reassemble diagnostic source records from already-validated parsed
     /// artifacts without hashing source bytes again.
+    #[cfg(test)]
     pub(crate) fn from_parsed_modules(
         program: &crate::parsed_modules::ParsedProgram,
     ) -> CompileResult<Self> {

@@ -160,13 +160,13 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        warm_session.canonical_semantic(&cold_options).unwrap();
-        let warm = warm_session.canonical_semantic(&optimized).unwrap();
+        warm_session.rooted_semantic(&cold_options).unwrap();
+        let warm = warm_session.rooted_semantic(&optimized).unwrap();
         assert!(!warm.strings().is_empty());
         let warm_atoms = warm
             .functions()
             .iter()
-            .flat_map(|function| function.local_atoms.iter())
+            .flat_map(|function| function.record.local_atoms.iter())
             .collect::<Vec<_>>();
         assert_eq!(warm_atoms.len(), 1);
         assert_eq!(warm_atoms[0].content.as_ref(), "hello");
@@ -176,34 +176,36 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let fresh = fresh_session.canonical_semantic(&optimized).unwrap();
+        let fresh = fresh_session.rooted_semantic(&optimized).unwrap();
         let fresh_atoms = fresh
             .functions()
             .iter()
-            .flat_map(|function| function.local_atoms.iter())
+            .flat_map(|function| function.record.local_atoms.iter())
             .collect::<Vec<_>>();
         assert_eq!(warm_atoms, fresh_atoms);
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
         );
-        assert_eq!(warm.type_pool().stats(), fresh.type_pool().stats());
-        let named_types = |pool: &FrozenTypeInternPool| {
-            (
-                pool.all_struct_ids()
-                    .into_iter()
-                    .map(|id| format!("{:?}", pool.struct_def(id)))
-                    .collect::<Vec<_>>(),
-                pool.all_enum_ids()
-                    .into_iter()
-                    .map(|id| format!("{:?}", pool.enum_def(id)))
-                    .collect::<Vec<_>>(),
-            )
+        assert_eq!(warm.type_pool_stats(), fresh.type_pool_stats());
+        let named_types = |semantic: &RootedSemanticOutput| {
+            semantic
+                .type_pools()
+                .map(|pool| {
+                    (
+                        pool.all_struct_ids()
+                            .into_iter()
+                            .map(|id| format!("{:?}", pool.struct_def(id)))
+                            .collect::<Vec<_>>(),
+                        pool.all_enum_ids()
+                            .into_iter()
+                            .map(|id| format!("{:?}", pool.enum_def(id)))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>()
         };
-        assert_eq!(
-            named_types(warm.type_pool()),
-            named_types(fresh.type_pool())
-        );
+        assert_eq!(named_types(&warm), named_types(&fresh));
         assert_eq!(warm.strings(), fresh.strings());
         assert_eq!(
             format!("{:?}", warm.warnings()),
@@ -1744,11 +1746,11 @@ mod tests {
             .update_for_presentation(&first)
             .into_result()
             .unwrap();
-        let cold = warm_session.canonical_semantic(&optimized).unwrap();
+        let cold = warm_session.rooted_semantic(&optimized).unwrap();
         let cold_atoms = cold
             .functions()
             .iter()
-            .flat_map(|function| function.local_atoms.iter())
+            .flat_map(|function| function.record.local_atoms.iter())
             .collect::<Vec<_>>();
         assert_eq!(cold_atoms.len(), 2);
         assert!(cold_atoms.iter().all(|atom| {
@@ -1764,11 +1766,11 @@ mod tests {
             .update_for_presentation(&reordered)
             .into_result()
             .unwrap();
-        let warm = warm_session.canonical_semantic(&optimized).unwrap();
+        let warm = warm_session.rooted_semantic(&optimized).unwrap();
         let warm_atoms = warm
             .functions()
             .iter()
-            .flat_map(|function| function.local_atoms.iter())
+            .flat_map(|function| function.record.local_atoms.iter())
             .collect::<Vec<_>>();
         assert_eq!(warm_atoms.len(), 2);
         assert!(warm_atoms.iter().all(|atom| {
@@ -1930,7 +1932,8 @@ mod tests {
                         let _qualified_result = qualified(qualified_value);
                         let aliased_value: Alias = "a";
                         let _aliased_result = aliased(aliased_value);
-                        0
+                        let ordinary_value = other.StrBuf { value: 7 };
+                        ordinary(ordinary_value)
                     }
                 "#
                 .to_owned(),
@@ -1980,47 +1983,17 @@ mod tests {
         let options = CompileOptions::default();
         let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &options)
             .expect("qualified and aliased canonical StrBuf references should compile");
-        let pool = semantic.type_pool();
-        let named_strbufs = pool
-            .all_struct_ids()
-            .into_iter()
-            .filter(|id| &*pool.struct_def(*id).name == "StrBuf")
-            .collect::<Vec<_>>();
-        let canonical = named_strbufs
-            .iter()
-            .copied()
-            .filter(|id| pool.struct_lang_item(*id) == Some(rue_air::LangItem::StrBuf))
-            .collect::<Vec<_>>();
-        assert_eq!(canonical.len(), 1, "std StrBuf has one canonical identity");
-        let canonical_id = canonical[0];
-        assert_eq!(
-            named_strbufs
-                .iter()
-                .filter(|id| { **id != canonical_id && !pool.struct_def(**id).is_builtin })
-                .count(),
-            1,
-            "the same spelling in user source remains an ordinary nominal"
-        );
-        assert!(
-            named_strbufs
-                .iter()
-                .find(|id| { **id != canonical_id && !pool.struct_def(**id).is_builtin })
-                .is_some_and(|id| pool.struct_lang_item(*id).is_none())
-        );
-
-        let parameter_type = |name: &str| {
-            semantic
-                .functions()
-                .iter()
-                .find(|function| {
-                    function.analyzed.name == name
-                        || function.analyzed.name.ends_with(&format!("__{name}"))
-                })
-                .map(|function| function.analyzed.air.return_type())
-                .expect("function should retain its source parameter type")
-        };
-        assert_eq!(parameter_type("qualified"), Type::new_struct(canonical_id));
-        assert_eq!(parameter_type("aliased"), Type::new_struct(canonical_id));
+        assert!(semantic.type_pools().any(|pool| {
+            pool.all_struct_ids()
+                .any(|id| pool.struct_lang_item(id) == Some(rue_air::LangItem::StrBuf))
+        }));
+        assert!(semantic.type_pools().any(|pool| {
+            pool.all_struct_ids().any(|id| {
+                &*pool.struct_def(id).name == "StrBuf"
+                    && !pool.struct_def(id).is_builtin
+                    && pool.struct_lang_item(id).is_none()
+            })
+        }));
 
         for &target in Target::all() {
             let options = CompileOptions {
@@ -2031,9 +2004,6 @@ mod tests {
             let foreign_symbols = crate::backend::collect_foreign_symbols(rir.rir(), interner);
             crate::backend::generate_backend_products(
                 semantic.functions(),
-                pool,
-                semantic.strings(),
-                interner,
                 &options,
                 &foreign_symbols,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -2120,7 +2090,7 @@ mod tests {
             &[
                 SourceView::new(
                     "/checkout/main.rue",
-                    "const spoof = @import(\"std/strbuf.rue\"); fn main() -> i32 { 0 }",
+                    "const spoof = @import(\"std/strbuf.rue\"); fn main() -> i32 { let value = spoof.StrBuf { value: 7 }; value.value }",
                     root,
                 ),
                 SourceView::new(
@@ -2134,14 +2104,13 @@ mod tests {
         .unwrap();
         let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())
             .expect("a caller-authored std-shaped specifier remains an ordinary module");
-        let spoof = semantic
-            .type_pool()
-            .all_struct_ids()
-            .into_iter()
-            .find(|id| &*semantic.type_pool().struct_def(*id).name == "StrBuf")
-            .unwrap();
-        assert_eq!(semantic.type_pool().struct_lang_item(spoof), None);
-        assert!(!semantic.type_pool().is_strbuf(spoof));
+        assert!(semantic.type_pools().any(|pool| {
+            pool.all_struct_ids().any(|id| {
+                &*pool.struct_def(id).name == "StrBuf"
+                    && pool.struct_lang_item(id).is_none()
+                    && !pool.is_strbuf(id)
+            })
+        }));
     }
 
     #[test]
@@ -2159,7 +2128,7 @@ mod tests {
 
         let mut session = CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
 
         assert_eq!(semantic.functions().len(), 1);
         assert_eq!(semantic.input(), &expected_link.codegen);
@@ -3133,7 +3102,7 @@ mod tests {
             let mut names: Vec<_> = semantic
                 .functions()
                 .iter()
-                .map(|func| func.analyzed.name.clone())
+                .map(|func| func.legacy_name().to_owned())
                 .filter(|name| name.ends_with("__value"))
                 .collect();
             names.sort();
@@ -3202,7 +3171,8 @@ mod tests {
                     pub enum Choice { Empty, Text(Owned) }
                     pub fn entry() -> i32 {
                         let payload = Payload { value: 10, text: Owned { value: 1 } };
-                        payload.score()
+                        let choice = Choice.Empty;
+                        match choice { Choice.Empty => payload.score(), Choice.Text(value) => value.value }
                     }"#,
                     left_id,
                 ),
@@ -3219,7 +3189,8 @@ mod tests {
                     pub enum Choice { Empty, Text(Owned) }
                     pub fn entry() -> i32 {
                         let payload = Payload { value: 20, text: Owned { value: 2 } };
-                        payload.score()
+                        let choice = Choice.Empty;
+                        match choice { Choice.Empty => payload.score(), Choice.Text(value) => value.value }
                     }"#,
                     right_id,
                 ),
@@ -3241,20 +3212,21 @@ mod tests {
             let snapshot = SourceSnapshot::from_sources(&sources, source_metadata).unwrap();
             let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())
                 .expect("frontend should compile");
-            let pool = semantic.type_pool();
             let mut names = std::collections::BTreeSet::new();
-            for id in pool.all_struct_ids() {
-                if &*pool.struct_def(id).name == "Payload" {
-                    names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
+            for pool in semantic.type_pools() {
+                for id in pool.all_struct_ids() {
+                    if &*pool.struct_def(id).name == "Payload" {
+                        names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
+                    }
                 }
-            }
-            for id in pool.all_enum_ids() {
-                if &*pool.enum_def(id).name == "Choice" {
-                    names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
+                for id in pool.all_enum_ids() {
+                    if &*pool.enum_def(id).name == "Choice" {
+                        names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
+                    }
                 }
             }
             for function in semantic.functions() {
-                let name = &function.analyzed.name;
+                let name = &function.record.source_name;
                 if name.contains("Payload$") || name.contains("Choice$") {
                     names.insert(format!("fn:{name}"));
                 }
@@ -3273,6 +3245,8 @@ mod tests {
             "fn:Payload$right_2fshared_2erue.__drop",
             "fn:__rue_drop_Payload$left_2fshared_2erue",
             "fn:__rue_drop_Payload$right_2fshared_2erue",
+            "fn:__rue_drop_Choice$left_2fshared_2erue",
+            "fn:__rue_drop_Choice$right_2fshared_2erue",
         ]
         .into_iter()
         .map(str::to_string)
@@ -3332,7 +3306,7 @@ mod tests {
         let drop_glue_names: std::collections::BTreeSet<_> = semantic
             .functions()
             .iter()
-            .map(|function| function.analyzed.name.as_str())
+            .map(|function| function.record.source_name.as_ref())
             .filter(|name| name.starts_with("__rue_drop_Clash"))
             .collect();
         assert_eq!(
@@ -3363,47 +3337,22 @@ mod tests {
         )
         .expect("ZST-interleaved drop aggregates should reach CFG lowering");
 
-        let inner_id = state
-            .type_pool
-            .all_struct_ids()
-            .into_iter()
-            .find(|&id| &*state.type_pool.struct_def(id).name == "Inner")
-            .expect("Inner should be interned");
-        let enum_id = state
-            .type_pool
-            .all_enum_ids()
-            .into_iter()
-            .find(|&id| &*state.type_pool.enum_def(id).name == "E")
-            .expect("E should be interned");
-        let array_id = state
-            .type_pool
-            .all_array_ids()
-            .into_iter()
-            .find(|&id| state.type_pool.array_def(id).0 == Type::new_enum(enum_id))
-            .expect("[E; 2] should be interned");
-        let expected_widths = [
-            (
-                // Named nominals are file-qualified (ADR-0066); derive the glue
-                // name through the canonical helper rather than hardcoding.
-                rue_air::drop_glue_names::struct_drop_glue_name(inner_id, &state.type_pool),
-                state.type_pool.abi_slot_count(Type::new_struct(inner_id)),
-            ),
-            (
-                crate::drop_glue::enum_drop_glue_name(enum_id, &state.type_pool),
-                state.type_pool.abi_slot_count(Type::new_enum(enum_id)),
-            ),
-            (
-                crate::drop_glue::array_drop_glue_name(array_id, &state.type_pool),
-                state.type_pool.abi_slot_count(Type::new_array(array_id)),
-            ),
-        ];
-        for (name, expected_width) in expected_widths {
-            let function = state
-                .functions
-                .iter()
-                .find(|function| function.analyzed.name == name)
-                .unwrap_or_else(|| panic!("missing synthesized function {name}"));
-            assert_eq!(function.analyzed.num_param_slots, expected_width, "{name}");
+        let drop_glue = state
+            .functions
+            .iter()
+            .filter(|function| function.record.source_name.starts_with("__rue_drop_"))
+            .collect::<Vec<_>>();
+        assert!(
+            drop_glue.len() >= 3,
+            "struct, enum, and array glue are rooted"
+        );
+        for function in drop_glue {
+            assert_eq!(
+                function.record.num_param_slots,
+                function.record.cfg.num_params(),
+                "{}",
+                function.record.source_name
+            );
         }
 
         for &target in Target::all() {

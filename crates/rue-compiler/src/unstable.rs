@@ -4,11 +4,8 @@
 //! policy. These owned snapshots and opaque session products cannot be
 //! installed into a session or used as query keys.
 
-use serde_json::{Value, json};
 use std::fmt::Write as _;
 use std::sync::Arc;
-
-use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
 
 pub use crate::diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
@@ -333,32 +330,17 @@ pub fn committed_successor_sharing(
 }
 
 pub use crate::session::{
-    ClosedDiscoveryContinuation, RootedParkOutcome, SemanticParkOutcome, TrustedSuccessorDelta,
+    ClosedDiscoveryContinuation, RootedCfgOutput, RootedCfgUnit, RootedParkOutcome,
+    TrustedSuccessorDelta,
 };
 
-/// Run the production body-closure root without constructing a whole-program
-/// semantic presentation value.
+/// Run the production body-closure root without constructing a presentation
+/// artifact.
 pub fn rooted_or_toolchain_park(
     session: &mut crate::CompilerSession,
     options: &crate::CompileOptions,
 ) -> RootedParkOutcome {
     session.rooted_or_toolchain_park(options)
-}
-
-/// Run rooted, park-aware semantic analysis on the current committed revision,
-/// surfacing an unsatisfied trusted-toolchain park distinctly (RUE-1112).
-///
-/// This is the host source-loading driver's retry entry: on
-/// [`SemanticParkOutcome::Parked`] the park atomically attaches its exact
-/// missing-demand set to the outstanding closed continuation, so a subsequent
-/// [`closed_discovery_continuation`] mints an authorizing token; the driver
-/// acquires exactly those modules, publishes a successor, re-closes, and calls
-/// this again.
-pub fn semantic_or_toolchain_park(
-    session: &mut crate::CompilerSession,
-    options: &crate::CompileOptions,
-) -> SemanticParkOutcome {
-    session.semantic_or_toolchain_park(options)
 }
 
 /// Mint the single-use trusted-toolchain continuation for the current successful
@@ -432,15 +414,6 @@ pub fn update_for_presentation(
 /// exposing its raw owner.
 pub fn query_merge(session: &mut crate::CompilerSession) -> Result<(), crate::CompileErrors> {
     session.merge().map(drop)
-}
-
-/// Execute the definition-binding query for benchmark instrumentation without
-/// exposing its compiler-owned records.
-pub fn prepare_stable_definitions(
-    session: &mut crate::CompilerSession,
-    options: &crate::CompileOptions,
-) -> Result<(), crate::CompileErrors> {
-    session.stable_definitions(options).map(drop)
 }
 
 /// Return the latest attempted discovery revision for in-tree source-loading
@@ -570,6 +543,11 @@ pub fn cancellable_executable_in_compile_scope(
                 ))),
             ))
         }
+        Err(crate::session::PipelineRequestControl::Parked(park)) => {
+            CancellableCompileOutcome::Errors(crate::session::unresolved_toolchain_park_errors(
+                &park,
+            ))
+        }
     }
 }
 
@@ -603,6 +581,7 @@ pub struct ObjectsReady {
 pub struct EndpointQueryWork {
     pub computed: usize,
     pub reused: usize,
+    pub invalidated: usize,
     pub joined: usize,
     pub canceled: usize,
 }
@@ -612,8 +591,21 @@ impl From<crate::session::BackendQueryWork> for EndpointQueryWork {
         Self {
             computed: work.computed,
             reused: work.reused,
+            invalidated: 0,
             joined: work.joined,
             canceled: work.canceled,
+        }
+    }
+}
+
+impl EndpointQueryWork {
+    fn from_semantic_work(work: crate::CanonicalSemanticWork) -> Self {
+        Self {
+            computed: work.body_analysis.body_analyses_computed,
+            reused: work.body_analysis.body_analyses_reused,
+            invalidated: work.body_analysis.body_analyses_invalidated,
+            joined: 0,
+            canceled: 0,
         }
     }
 }
@@ -621,6 +613,7 @@ impl From<crate::session::BackendQueryWork> for EndpointQueryWork {
 /// Structural work available at the retained compilation endpoints.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EndpointWork {
+    pub semantic: EndpointQueryWork,
     pub cfg: EndpointQueryWork,
     pub codegen: EndpointQueryWork,
     pub object_projection: EndpointQueryWork,
@@ -629,6 +622,7 @@ pub struct EndpointWork {
 impl CodegenReady {
     pub fn unstable_work(&self) -> EndpointWork {
         EndpointWork {
+            semantic: EndpointQueryWork::from_semantic_work(self.rooted.work),
             cfg: self.rooted.cfg_work.into(),
             codegen: self.rooted.codegen_work.into(),
             object_projection: EndpointQueryWork::default(),
@@ -639,6 +633,7 @@ impl CodegenReady {
 impl ObjectsReady {
     pub fn unstable_work(&self) -> EndpointWork {
         EndpointWork {
+            semantic: EndpointQueryWork::from_semantic_work(self.rooted.work),
             cfg: self.rooted.cfg_work.into(),
             codegen: self.rooted.codegen_work.into(),
             object_projection: self.rooted.object_projection_work.into(),
@@ -738,80 +733,16 @@ impl PresentationOutput {
     }
 }
 
-/// Return semantic instrumentation without exposing the semantic owner.
-pub fn semantic_metrics(view: &crate::SemanticView) -> SemanticMetrics {
-    view.unstable_metrics()
+/// Query the canonical reached-body/CFG artifact used by codegen.
+pub fn rooted_cfg(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> Result<RootedCfgOutput, crate::CompileErrors> {
+    session.rooted_cfg(options)
 }
 
-pub fn semantic_input_debug(view: &crate::SemanticView) -> String {
-    view.owner().unstable_input_debug()
-}
-
-/// Exact, owned semantic-state projection used by in-tree cold-vs-reused
-/// differential tooling. Its contents and formatting are deliberately
-/// unstable and are not an artifact that can be fed back into the compiler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticParitySnapshot {
-    details: String,
-}
-
-impl SemanticParitySnapshot {
-    pub(crate) fn new(details: String) -> Self {
-        Self { details }
-    }
-}
-
-pub fn semantic_parity_snapshot(view: &crate::SemanticView) -> SemanticParitySnapshot {
-    view.owner().unstable_parity_snapshot()
-}
-
-/// Raw owner-crate state for the in-tree CFG differential model. This is an
-/// explicitly unstable consuming bridge; ordinary compiler clients use views.
-pub struct OracleSemanticState {
-    pub interner: Arc<lasso::ThreadedRodeo>,
-    pub functions: Vec<UnstableSemanticFunction>,
-    pub type_pool: rue_air::FrozenTypeInternPool,
-    pub strings: Vec<String>,
-    pub rir_payload_storage_stats: rue_rir::RirPayloadStorageStats,
-}
-
-/// Raw function state for in-tree differential and storage-profile tooling.
-pub struct UnstableSemanticFunction {
-    pub analyzed: Arc<rue_air::AnalyzedFunction>,
-    /// The declaration's source name when this callable is an ordinary
-    /// definition. `analyzed.name` is the internal symbol, which an ordinary
-    /// definition qualifies by module (RUE-1125), so a consumer that speaks in
-    /// source terms reads this instead.
-    pub source_name: Option<String>,
-    pub cfg: rue_cfg::ValidatedCfg,
-}
-
-pub fn into_oracle_semantic_state(
-    semantic: Arc<crate::SemanticView>,
-) -> Result<OracleSemanticState, &'static str> {
-    let semantic = Arc::try_unwrap(semantic).map_err(|_| "semantic view is still shared")?;
-    let (semantic_owner, rir_owner) = semantic.into_owners();
-    drop(rir_owner);
-    let semantic_owner =
-        Arc::try_unwrap(semantic_owner).map_err(|_| "semantic owner is still shared")?;
-    let (rir_owner, functions, type_pool, strings, _) = semantic_owner.into_parts_with_rir();
-    let rir_owner = Arc::try_unwrap(rir_owner).map_err(|_| "RIR owner is still shared")?;
-    let rir_payload_storage_stats = rir_owner.rir().payload_storage_stats();
-    let (_, symbols) = rir_owner.into_parts();
-    Ok(OracleSemanticState {
-        interner: symbols.into_interner(),
-        functions: functions
-            .into_iter()
-            .map(|function| UnstableSemanticFunction {
-                source_name: function.definition_source_name().map(str::to_owned),
-                analyzed: function.analyzed,
-                cfg: function.cfg,
-            })
-            .collect(),
-        type_pool,
-        strings,
-        rir_payload_storage_stats,
-    })
+pub fn rir_payload_storage_stats(view: &crate::RirView) -> rue_rir::RirPayloadStorageStats {
+    view.rir().payload_storage_stats()
 }
 
 /// Inject one typed stale-query fault for in-tree differential testing.
@@ -1084,7 +1015,7 @@ mod codegen_unit_tests {
                 file_order: &order,
             })
             .unwrap();
-        let semantic = first_emit.canonical_semantic(&options).unwrap();
+        let semantic = first_emit.rooted_semantic(&options).unwrap();
         first_emit
             .codegen_products(
                 &semantic,
@@ -1103,7 +1034,7 @@ mod codegen_unit_tests {
 
         let mut first_link = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut first_link, &snapshot).unwrap();
-        let semantic = first_link.canonical_semantic(&options).unwrap();
+        let semantic = first_link.rooted_semantic(&options).unwrap();
         first_link
             .codegen_products(
                 &semantic,
@@ -1130,7 +1061,7 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
             session
                 .codegen_products(
@@ -1212,7 +1143,7 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &first).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let before = session
             .codegen_products(
                 &semantic,
@@ -1233,7 +1164,7 @@ mod codegen_unit_tests {
             .code
             .clone();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let after = session
             .codegen_products(
                 &semantic,
@@ -1285,7 +1216,7 @@ mod codegen_unit_tests {
 
         let mut session = crate::CompilerSession::new();
         session.update(&source(plain)).into_result().unwrap();
-        let errors = session.canonical_semantic(&options).unwrap_err();
+        let errors = session.rooted_semantic(&options).unwrap_err();
         assert!(
             errors.iter().any(|error| matches!(
                 &error.kind,
@@ -1296,11 +1227,11 @@ mod codegen_unit_tests {
 
         session.update(&source(accessor)).into_result().unwrap();
         session
-            .canonical_semantic(&options)
+            .rooted_semantic(&options)
             .expect("an accessor link is a legal projection");
 
         session.update(&source(plain)).into_result().unwrap();
-        let errors = session.canonical_semantic(&options).unwrap_err();
+        let errors = session.rooted_semantic(&options).unwrap_err();
         assert!(
             errors.iter().any(|error| matches!(
                 &error.kind,
@@ -1328,7 +1259,7 @@ mod codegen_unit_tests {
         let mut session = crate::CompilerSession::new();
 
         session.update(&source(7)).into_result().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let cold = session
             .codegen_products(
                 &semantic,
@@ -1382,7 +1313,7 @@ mod codegen_unit_tests {
         assert!(session.rooted_cfg_executions().iter().all(|(identity, _)| {
             !matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "value")
         }));
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let warm = session
             .codegen_products(
                 &semantic,
@@ -1392,7 +1323,7 @@ mod codegen_unit_tests {
             .unwrap();
         let mut fresh = crate::CompilerSession::new();
         fresh.update(&source(8)).into_result().unwrap();
-        let semantic = fresh.canonical_semantic(&options).unwrap();
+        let semantic = fresh.rooted_semantic(&options).unwrap();
         let fresh = fresh
             .codegen_products(
                 &semantic,
@@ -1456,7 +1387,7 @@ mod codegen_unit_tests {
             };
             let mut session = crate::CompilerSession::new();
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-            let semantic = session.canonical_semantic(&options).unwrap();
+            let semantic = session.rooted_semantic(&options).unwrap();
             let first = session
                 .codegen_products(
                     &semantic,
@@ -1517,7 +1448,7 @@ mod codegen_unit_tests {
         let run = |workers| {
             let mut session = crate::CompilerSession::with_query_concurrency(workers);
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-            let semantic = session.canonical_semantic(&options).unwrap();
+            let semantic = session.rooted_semantic(&options).unwrap();
             let products = session
                 .codegen_products(
                     &semantic,
@@ -1551,14 +1482,16 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &first).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let consume_name = semantic
             .functions()
             .iter()
             .find(|function| function.definition_source_name() == Some("consume"))
             .unwrap()
-            .machine_name
-            .clone();
+            .record
+            .codegen
+            .defined_symbol
+            .to_string();
         let before = session
             .codegen_products(
                 &semantic,
@@ -1577,7 +1510,7 @@ mod codegen_unit_tests {
             })
             .unwrap();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let after = session
             .codegen_products(
                 &semantic,
@@ -2256,44 +2189,8 @@ impl MetricsSnapshot {
     pub fn rir(&self) -> QueryMetrics {
         self.inner.rir.into()
     }
-    pub fn semantic(&self) -> QueryMetrics {
-        self.inner.semantic.into()
-    }
-    pub fn definitions(&self) -> QueryMetrics {
-        self.inner.definitions.into()
-    }
     pub fn downstream_invalidations(&self) -> usize {
         self.inner.downstream_invalidations
-    }
-    pub fn semantic_entries_invalidated(&self) -> usize {
-        self.inner.semantic_entries_invalidated
-    }
-    pub fn definition_entries_invalidated(&self) -> usize {
-        self.inner.definition_entries_invalidated
-    }
-    pub fn declaration_reuse_plans(&self) -> usize {
-        self.inner.declaration_reuse_plans
-    }
-    pub fn durable_records_compared(&self) -> usize {
-        self.inner.durable_records_compared
-    }
-    pub fn durable_records_reused(&self) -> usize {
-        self.inner.durable_records_reused
-    }
-    pub fn ordinary_declaration_resolutions_skipped(&self) -> usize {
-        self.inner.ordinary_declaration_resolutions_skipped
-    }
-    pub fn durable_installs(&self) -> usize {
-        self.inner.durable_installs
-    }
-    pub fn declaration_reuse_fallbacks(&self) -> usize {
-        self.inner.declaration_reuse_fallbacks
-    }
-    pub fn semantic_record_count(&self) -> usize {
-        self.inner.semantic_records.len()
-    }
-    pub fn definition_record_count(&self) -> usize {
-        self.inner.definition_records.len()
     }
     pub fn merge_metrics(&self) -> MergeMetrics {
         MergeMetrics {
@@ -2369,136 +2266,6 @@ impl MetricsSnapshot {
     pub fn semantic_reachability(&self) -> SemanticReachabilityMetrics {
         self.inner.runtime.semantic_reachability
     }
-    pub fn semantic_work_json(&self, from: usize) -> Value {
-        semantic_work_json(&self.inner, from)
-    }
-    pub fn definition_work_json(&self, from: usize) -> Value {
-        definition_work_json(&self.inner, from)
-    }
-}
-
-fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -> Value {
-    let records = &work.semantic_records[from..];
-    json!({
-        "schema_version": 1,
-        "failed_requests": records.iter().filter(|record| record.failure.is_some()).count(),
-        "failure_phases": {
-            "declaration": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(SemanticFailurePhase::Declaration))).count(),
-            "body_analysis": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(SemanticFailurePhase::BodyAnalysis))).count(),
-            "cfg_construction": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(SemanticFailurePhase::CfgConstruction))).count(),
-        },
-        "bind_invocations": records.iter().map(|record| record.work.binding.bind_invocations).sum::<usize>(),
-        "declaration_resolution_invocations": records.iter().map(|record| record.work.binding.declaration_resolution_invocations).sum::<usize>(),
-        "declaration_resolution_failures": records.iter().map(|record| record.work.binding.declaration_resolution_failures).sum::<usize>(),
-        "body_readiness_finalization_invocations": records.iter().map(|record| record.work.binding.body_readiness_finalization_invocations).sum::<usize>(),
-        "declarations_inspected": records.iter().map(|record| record.work.binding.indexed_declaration_records_visited).sum::<usize>(),
-        "modules_registered": records.iter().map(|record| record.work.binding.modules_registered).sum::<usize>(),
-        "rir_indexes_constructed": records.iter().map(|record| record.work.declaration_index.build_invocations).sum::<usize>(),
-        "rir_instructions_visited": records.iter().map(|record| record.work.declaration_index.rir_instructions_visited).sum::<usize>(),
-        "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
-        "body_analyses_computed": records.iter().map(|record| record.work.body_analysis.body_analyses_computed).sum::<usize>(),
-        "body_analyses_reused": records.iter().map(|record| record.work.body_analysis.body_analyses_reused).sum::<usize>(),
-        "body_analyses_invalidated": records.iter().map(|record| record.work.body_analysis.body_analyses_invalidated).sum::<usize>(),
-        "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
-        "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
-        "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
-        "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),
-        "body_dependency_air_instructions_observed": records.iter().map(|record| record.work.body_analysis.body_dependency_air_instructions_observed).sum::<usize>(),
-        "local_strings_produced": records.iter().map(|record| record.work.body_analysis.local_strings_produced).sum::<usize>(),
-        "string_ids_remapped": records.iter().map(|record| record.work.body_analysis.string_ids_remapped).sum::<usize>(),
-        "specialization_air_instructions_scanned": records.iter().map(|record| record.work.body_analysis.specialization_air_instructions_scanned).sum::<usize>(),
-        "generic_calls_observed": records.iter().map(|record| record.work.body_analysis.generic_calls_observed).sum::<usize>(),
-        "specialization_requests_unique": records.iter().map(|record| record.work.body_analysis.specialization_requests_unique).sum::<usize>(),
-        "specialization_requests_duplicate": records.iter().map(|record| record.work.body_analysis.specialization_requests_duplicate).sum::<usize>(),
-        "specialization_rewrites": records.iter().map(|record| record.work.body_analysis.specialization_rewrites).sum::<usize>(),
-        "specialization_rounds": records.iter().map(|record| record.work.body_analysis.specialization_rounds).sum::<usize>(),
-        "specialization_driver_failures": records.iter().map(|record| record.work.body_analysis.specialization_driver_failures).sum::<usize>(),
-        "specialized_bodies_attempted": records.iter().map(|record| record.work.body_analysis.specialized_bodies_attempted).sum::<usize>(),
-        "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
-        "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
-        "durable_bodies": {
-            "candidate_fallbacks": records.iter().map(|record| record.work.durable_bodies.candidate_fallbacks).sum::<usize>(),
-            "export_attempts": records.iter().map(|record| record.work.durable_bodies.export_attempts).sum::<usize>(),
-            "export_successes": records.iter().map(|record| record.work.durable_bodies.export_successes).sum::<usize>(),
-            "export_rejections": records.iter().map(|record| record.work.durable_bodies.export_rejections).sum::<usize>(),
-            "instructions_exported": records.iter().map(|record| record.work.durable_bodies.instructions_exported).sum::<usize>(),
-            "places_exported": records.iter().map(|record| record.work.durable_bodies.places_exported).sum::<usize>(),
-            "strings_exported": records.iter().map(|record| record.work.durable_bodies.strings_exported).sum::<usize>(),
-            "import_attempts": records.iter().map(|record| record.work.durable_bodies.import_attempts).sum::<usize>(),
-            "import_successes": records.iter().map(|record| record.work.durable_bodies.import_successes).sum::<usize>(),
-            "import_failures": records.iter().map(|record| record.work.durable_bodies.import_failures).sum::<usize>(),
-            "installed_instructions": records.iter().map(|record| record.work.durable_bodies.installed_instructions).sum::<usize>(),
-            "installed_places": records.iter().map(|record| record.work.durable_bodies.installed_places).sum::<usize>(),
-            "installed_strings": records.iter().map(|record| record.work.durable_bodies.installed_strings).sum::<usize>(),
-            "atomic_discards": records.iter().map(|record| record.work.durable_bodies.atomic_discards).sum::<usize>(),
-            "reused_bodies": records.iter().map(|record| record.work.durable_bodies.reused_bodies).sum::<usize>(),
-            "skipped_body_analyses": records.iter().map(|record| record.work.durable_bodies.skipped_body_analyses).sum::<usize>(),
-        },
-        "cfg": {
-            "drop_glue_functions_synthesized": records.iter().map(|record| record.work.cfg.drop_glue_functions_synthesized).sum::<usize>(),
-            "functions_considered": records.iter().map(|record| record.work.cfg.functions_considered).sum::<usize>(),
-            "comptime_functions_filtered": records.iter().map(|record| record.work.cfg.comptime_functions_filtered).sum::<usize>(),
-            "builds_attempted": records.iter().map(|record| record.work.cfg.cfg_builds_attempted).sum::<usize>(),
-            "builds_succeeded": records.iter().map(|record| record.work.cfg.cfg_builds_succeeded).sum::<usize>(),
-            "builds_failed": records.iter().map(|record| record.work.cfg.cfg_builds_failed).sum::<usize>(),
-            "import_attempts": records.iter().map(|record| record.work.cfg.cfg_import_attempts).sum::<usize>(),
-            "import_successes": records.iter().map(|record| record.work.cfg.cfg_import_successes).sum::<usize>(),
-            "import_failures": records.iter().map(|record| record.work.cfg.cfg_import_failures).sum::<usize>(),
-            "air_instructions_consumed": records.iter().map(|record| record.work.cfg.air_instructions_consumed).sum::<usize>(),
-            "optimization_attempts": records.iter().map(|record| record.work.cfg.optimization_attempts).sum::<usize>(),
-            "optimization_completions": records.iter().map(|record| record.work.cfg.optimization_completions).sum::<usize>(),
-            "optimized_level_attempts": records.iter().map(|record| record.work.cfg.optimized_level_attempts).sum::<usize>(),
-            "warnings_emitted": records.iter().map(|record| record.work.cfg.cfg_warnings_emitted).sum::<usize>(),
-            "implicit_destructor_targets_emitted": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_emitted).sum::<usize>(),
-            "reuse_candidates": records.iter().map(|record| record.work.cfg.cfg_reuse_candidates).sum::<usize>(),
-            "reuses": records.iter().map(|record| record.work.cfg.cfg_reuses).sum::<usize>(),
-            "fallbacks": records.iter().map(|record| record.work.cfg.cfg_fallbacks).sum::<usize>(),
-            "warnings_reused": records.iter().map(|record| record.work.cfg.cfg_warnings_reused).sum::<usize>(),
-            "implicit_destructor_targets_reused": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_reused).sum::<usize>(),
-            "export_attempts": records.iter().map(|record| record.work.cfg.cfg_export_attempts).sum::<usize>(),
-            "export_successes": records.iter().map(|record| record.work.cfg.cfg_export_successes).sum::<usize>(),
-            "export_rejections": records.iter().map(|record| record.work.cfg.cfg_export_rejections).sum::<usize>(),
-        },
-        "declaration_type_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_dependency_events).sum::<usize>(),
-        "declaration_type_call_head_dependency_events": records.iter().map(|record| record.work.body_analysis.declaration_type_call_head_dependency_events).sum::<usize>(),
-        "named_const_dependency_events": records.iter().map(|record| record.work.body_analysis.named_const_dependency_events).sum::<usize>(),
-        "manifest_build_invocations": records.iter().map(|record| record.work.manifest.build_invocations).sum::<usize>(),
-        "body_owner_tokens": {
-            "provisional_slots": records.iter().map(|record| record.work.body_owner_tokens.provisional_slots).sum::<usize>(),
-            "authoritative_slots": records.iter().map(|record| record.work.body_owner_tokens.authoritative_slots).sum::<usize>(),
-            "slots_validated": records.iter().map(|record| record.work.body_owner_tokens.slots_validated).sum::<usize>(),
-            "tokens_installed": records.iter().map(|record| record.work.body_owner_tokens.tokens_installed).sum::<usize>(),
-            "validation_failures": records.iter().map(|record| record.work.body_owner_tokens.validation_failures).sum::<usize>(),
-        },
-        "declaration_reuse": {
-            "plan_executions": records.iter().map(|record| record.work.declaration_reuse.plan_executions).sum::<usize>(),
-            "durable_records_compared": records.iter().map(|record| record.work.declaration_reuse.durable_records_compared).sum::<usize>(),
-            "durable_records_reused": records.iter().map(|record| record.work.declaration_reuse.durable_records_reused).sum::<usize>(),
-            "ordinary_declaration_resolutions_skipped": records.iter().map(|record| record.work.declaration_reuse.ordinary_declaration_resolutions_skipped).sum::<usize>(),
-            "install_invocations": records.iter().map(|record| record.work.declaration_reuse.install_invocations).sum::<usize>(),
-            "fallbacks": records.iter().map(|record| record.work.declaration_reuse.fallbacks).sum::<usize>(),
-            "declaration_prefixes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_prefixes_built).sum::<usize>(),
-            "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-            "declaration_prefix_population_runs": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_population_runs).sum::<usize>(),
-            "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-            "declaration_prefix_fallbacks": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_fallbacks).sum::<usize>(),
-        },
-        "declaration_prefixes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_prefixes_built).sum::<usize>(),
-        "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-        "declaration_prefix_population_runs": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_population_runs).sum::<usize>(),
-        "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-        "declaration_prefix_fallbacks": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_fallbacks).sum::<usize>(),
-    })
-}
-
-fn definition_work_json(work: &crate::session::CompilerSessionWork, from: usize) -> Value {
-    let records = &work.definition_records[from..];
-    json!({
-        "bind_invocations": records.iter().map(|record| record.binding.bind_invocations).sum::<usize>(),
-        "manifest_build_invocations": records.iter().map(|record| record.manifest.build_invocations).sum::<usize>(),
-        "manifest_bindings_visited": records.iter().map(|record| record.issuance.manifest_bindings_visited).sum::<usize>(),
-        "ids_issued": records.iter().map(|record| record.issuance.ids_issued).sum::<usize>(),
-    })
 }
 
 /// Deliberate fault selection for the differential incremental oracle.

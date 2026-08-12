@@ -368,9 +368,11 @@ pub(crate) struct RevisionedQueryDatabase {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
+    #[allow(dead_code)]
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     #[allow(dead_code)]
     declaration_orders: QueryFamily<ModuleQueryKey, DeclarationOrderValue>,
+    #[allow(dead_code)]
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
     #[cfg(test)]
     stable_declaration_classifications: QueryFamily<
@@ -450,6 +452,7 @@ pub(crate) struct RevisionedQueryDatabase {
     drop_glues: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::DropGlueValue>,
     #[allow(dead_code)]
     cfgs: QueryFamily<crate::cfg_query::CfgQueryKey, crate::cfg_query::CfgValue>,
+    #[allow(dead_code)]
     optimized_cfgs: QueryFamily<crate::cfg_query::OptimizedCfgQueryKey, crate::cfg_query::CfgValue>,
     optimized_cfg_batches: QueryFamily<OptimizedCfgBatchKey, OptimizedCfgBatchOutput>,
     #[cfg_attr(not(test), allow(dead_code))]
@@ -2091,6 +2094,7 @@ pub(crate) enum WarningBodyReferencesFailure {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum DeclarationShellBatchFailure {
     Query(QueryAbort),
     Stable(crate::declaration_candidate::DeclarationShellFailure),
@@ -3156,6 +3160,7 @@ fn module_rir_value_from_lowering(
     }
 }
 
+#[allow(dead_code)]
 fn project_semantic_shell(
     fact: &crate::declaration_candidate::DeclarationShellFact,
     declaration_span: rue_span::Span,
@@ -15029,7 +15034,10 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
-                    let _attempts = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
+                    let _attempts = context.retain_nested_attempts_for(&[
+                        "compiler.cfg",
+                        "compiler.optimized-cfg",
+                    ]);
                     let terminals = context.query_registered_batch(
                         &optimized_cfgs_for_batch,
                         key.keys.iter().cloned(),
@@ -17035,6 +17043,8 @@ impl RevisionedQueryDatabase {
             .or_else(|| self.current_parse_revision())
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn optimized_cfg(
         &self,
         revision: Revision,
@@ -17361,6 +17371,7 @@ impl RevisionedQueryDatabase {
 
     /// Request every query-owned declaration shell for the selected parsed
     /// program and attach only the current revision's diagnostic locators.
+    #[cfg(test)]
     pub(crate) fn projected_declaration_shells(
         &self,
         revision: Revision,
@@ -17370,6 +17381,7 @@ impl RevisionedQueryDatabase {
         self.projected_declaration_shells_for_modules(revision, program.modules(), cancellation)
     }
 
+    #[cfg(test)]
     pub(crate) fn projected_declaration_shells_for_modules(
         &self,
         revision: Revision,
@@ -19084,6 +19096,7 @@ impl RevisionedQueryDatabase {
         Some(transaction.clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn projected_declaration_semantics(
         &self,
         revision: Revision,

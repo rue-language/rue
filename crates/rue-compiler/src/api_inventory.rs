@@ -1423,11 +1423,9 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
             "missing independent family {family}"
         );
     }
-    let semantic_entry = item(
-        include_str!("canonical_semantic.rs"),
-        "pub struct CanonicalSemanticOutput",
-    );
-    assert!(!semantic_entry.contains("successful_body_cache"));
+    let session = include_str!("session.rs");
+    assert!(!session.contains("pub fn semantic("));
+    assert!(!session.contains("semantic_view_from_rooted"));
     let body_transaction = source_between_exact_boundaries(
         runtime,
         "struct BodyTransactionEvaluator {",
@@ -1579,15 +1577,8 @@ fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
         "RirInstructionView",
         "RirOperandView",
         "RirView",
-        "SemanticView",
-        "FunctionView",
-        "CfgBlockView",
-        "CfgInstructionView",
-        "CfgSuccessorView",
-        "CfgView",
         "SourceIdentityView",
         "SourceLocationView",
-        "TypeView",
     ] {
         assert!(
             root_identifiers.contains(&required),
@@ -1613,8 +1604,6 @@ fn raw_phase_owners_and_backend_drivers_cannot_return_to_the_stable_facade() {
         "SyntaxNodeView",
         "RirInstructionView",
         "RirOperandView",
-        "CfgInstructionView",
-        "CfgSuccessorView",
     ] {
         let signatures = public_signatures(inherent_impl(artifact_views, view));
         assert!(
@@ -1654,6 +1643,14 @@ fn removed_parallel_entry_points_cannot_return() {
         ["pub fn from_", "sources"].concat(),
         ["pub fn source_", "file"].concat(),
         ["Source", "File"].concat(),
+        "CanonicalSemanticOutput".to_owned(),
+        "FunctionWithCfg".to_owned(),
+        "canonical_semantic_with_cancellation".to_owned(),
+        "semantic_attempt".to_owned(),
+        "analyze_prepared_canonical_program_reusing_declarations".to_owned(),
+        "collect_function_cfg_queries".to_owned(),
+        "finish_canonical_analysis".to_owned(),
+        "compose_queried_bodies".to_owned(),
     ];
     for removed in forbidden {
         assert!(
@@ -1661,6 +1658,10 @@ fn removed_parallel_entry_points_cannot_return() {
             "removed compiler entry point returned: {removed}"
         );
     }
+
+    let session = include_str!("session.rs");
+    assert!(!session.contains("pub fn semantic("));
+    assert!(!session.contains("semantic_view_from_rooted"));
 }
 
 #[test]
@@ -1766,7 +1767,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
-            "pubusecrate::session::{ClosedDiscoveryContinuation,RootedParkOutcome,SemanticParkOutcome,TrustedSuccessorDelta,};",
+            "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,TrustedSuccessorDelta,};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
     );
@@ -1786,10 +1787,6 @@ fn unstable_views_do_not_alias_query_engine_records() {
         public_signatures(inherent_impl(session, "CompilerSessionUpdate")),
         public_signatures(inherent_impl(diagnostic, "FrontendDiagnosticSnapshot")),
         public_signatures(inherent_impl(include_str!("queries.rs"), "CompileOutput")),
-        public_signatures(inherent_impl(
-            include_str!("canonical_semantic.rs"),
-            "CanonicalSemanticOutput",
-        )),
         public_signatures(inherent_impl(session, "CanonicalImportGraphOutput")),
     ]
     .concat();
@@ -1890,17 +1887,12 @@ fn durable_cache_schema_cannot_return_to_the_public_facade() {
     assert!(!facade.contains("pub mod durable_semantics;"));
 
     let session = include_str!("session.rs");
-    let semantic_public = public_signatures(inherent_impl(
-        include_str!("canonical_semantic.rs"),
-        "CanonicalSemanticOutput",
-    ));
     for raw_accessor in [
         "durable_specialized_body_payloads",
         "durable_ordinary_bodies",
     ] {
         assert!(
-            !session.contains(raw_accessor)
-                && !semantic_public.contains(&format!("pub fn {raw_accessor}")),
+            !session.contains(raw_accessor),
             "raw durable schema accessor returned to a public signature: {raw_accessor}"
         );
     }
@@ -2589,21 +2581,19 @@ fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
     let database = include_str!("revisioned_query_database.rs");
     let body_query = include_str!("body_query.rs");
 
-    let finish = canonical
-        .split("fn finish_canonical_analysis(")
-        .nth(1)
-        .and_then(|source| source.split("fn recover_declaration_failure(").next())
-        .expect("canonical finalization body");
-    assert!(finish.contains(".compose_queried_bodies("));
-    assert!(!finish.contains("analyze_all_bodies"));
-    assert!(!finish.contains("if no_queried_candidates"));
-    assert_eq!(finish.matches("compose_queried_bodies").count(), 1);
-    let recovery = canonical
-        .split("fn recover_declaration_failure(")
-        .nth(1)
-        .and_then(|source| source.split("\n#[cfg(test)]\nmod tests").next())
-        .expect("declaration recovery body");
-    assert!(!recovery.contains("analyze_all_bodies"));
+    for removed_peer_assembler in [
+        "fn finish_canonical_analysis(",
+        "compose_queried_bodies(",
+        "analyze_all_bodies",
+        "fn recover_declaration_failure(",
+    ] {
+        assert!(
+            !canonical.contains(removed_peer_assembler),
+            "canonical semantic peer assembly returned: {removed_peer_assembler}"
+        );
+    }
+    assert!(!session.contains("pub fn semantic("));
+    assert!(!session.contains("semantic_view_from_rooted"));
     assert!(!session.contains("requires_request_local_discovery"));
 
     let anonymous_branch = database

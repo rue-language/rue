@@ -30,6 +30,8 @@ pub struct DurableBodyWork {
 }
 
 impl DurableBodyWork {
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn record_import_failure(
         &mut self,
         _reason: rue_air::SemanticBodyImportFailureKind,

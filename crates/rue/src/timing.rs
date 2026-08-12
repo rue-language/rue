@@ -1483,7 +1483,7 @@ mod tests {
                 let _span = tracing::info_span!("semantic_astgen").entered();
                 session.rir().unwrap();
             }
-            session.semantic(&CompileOptions::default()).unwrap();
+            rue_compiler::unstable::rooted_cfg(&mut session, &CompileOptions::default()).unwrap();
         });
 
         let session_edges = session_data.parent_edges();
@@ -1508,15 +1508,20 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "parse_file")
             .unwrap();
-        let rir_declaration_index = session_timing
+        let occurrence_index = session_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "rir_declaration_index")
+            .find(|pass| pass.name == "declaration_occurrence_index")
             .unwrap();
-        let sema = session_timing
+        let body_closure = session_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "sema")
+            .find(|pass| pass.name == "body_closure_collection")
+            .unwrap();
+        let optimized_cfg = session_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "optimized_cfg_collection")
             .unwrap();
         // The session parses the source module once, then the registered
         // declaration and body terminals each reparse their exact durable
@@ -1536,25 +1541,29 @@ mod tests {
                 "the demanded reparse is timed beneath its request: {session_edges:?}"
             );
         }
-        // The declaration-shell projection owns the one canonical declaration
-        // index. Registered body transactions consume durable query inputs and
-        // do not derive a second body-local declaration epoch.
-        assert_eq!(rir_declaration_index.invocations, 1);
-        assert_eq!(rir_declaration_index.root_invocations, 0);
-        assert_eq!(rir_declaration_index.leaf_invocations, 1);
+        // Semantic presentation is a projection of the same rooted query
+        // graph used by normal compilation. The old whole-program declaration
+        // index and `sema` coordinator must therefore remain absent.
+        assert_eq!(occurrence_index.invocations, 1);
+        assert_eq!(occurrence_index.root_invocations, 1);
+        assert_eq!(occurrence_index.leaf_invocations, 1);
+        assert_eq!(body_closure.invocations, 1);
+        assert_eq!(body_closure.root_invocations, 1);
+        assert_eq!(optimized_cfg.invocations, 1);
+        assert_eq!(optimized_cfg.root_invocations, 1);
+        assert!(session_edges.contains(&(
+            "body_closure_collection".to_owned(),
+            "body_analysis".to_owned()
+        )));
+        assert!(session_edges.contains(&(
+            "optimized_cfg_collection".to_owned(),
+            "cfg_construction".to_owned()
+        )));
         assert!(
-            session_edges.contains(&(
-                "declaration_shell_prepare".to_owned(),
-                "rir_declaration_index".to_owned()
-            )),
-            "the shell epoch's index is timed beneath its stage: {session_edges:?}"
-        );
-        assert_eq!(sema.invocations, 1);
-        assert_eq!(sema.root_invocations, 1);
-        assert_eq!(sema.leaf_invocations, 1);
-        assert!(
-            !session_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
-            "the index and sema analysis must remain sibling leaves: {session_edges:?}"
+            !session_timing
+                .passes
+                .iter()
+                .any(|pass| pass.name == "rir_declaration_index" || pass.name == "sema")
         );
 
         let compile_data = TimingData::new();
@@ -1689,7 +1698,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             let mut session = CompilerSession::new();
             session.update(&snapshot).into_result().unwrap();
-            session.semantic(&CompileOptions::default()).unwrap();
+            rue_compiler::unstable::rooted_cfg(&mut session, &CompileOptions::default()).unwrap();
         });
 
         // Registered query evaluation is not represented as a presentation
@@ -1720,19 +1729,23 @@ mod tests {
             .passes
             .iter()
             .find(|pass| pass.name == "body_query_prerequisites")
-            .unwrap();
+            .unwrap_or_else(|| panic!("missing prerequisites pass: {:?}", timing.passes));
         assert!(
             prerequisites.invocations >= 2,
             "helper and main each run query prerequisites: {prerequisites:?}"
         );
         assert_eq!(
-            prerequisites.root_invocations, prerequisites.invocations,
-            "registered-query prerequisites are presentation roots"
+            prerequisites.root_invocations, 0,
+            "rooted semantic presentation owns registered-query prerequisites"
         );
         assert_eq!(
             prerequisites.leaf_invocations, prerequisites.invocations,
             "registered-query prerequisites are presentation leaves"
         );
+        assert!(data.parent_edges().contains(&(
+            "body_closure_collection".to_owned(),
+            "body_query_prerequisites".to_owned()
+        )));
         let parse_file = timing
             .passes
             .iter()

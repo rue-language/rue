@@ -16,10 +16,6 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
-    SemanticParkOutcome, frontend_query_invalidations, semantic_or_toolchain_park,
-};
-#[cfg(test)]
-use rue_compiler::unstable::{
     committed_successor_sharing, exact_import_groups_dispatched, import_close_records_reduced,
     import_frontier_roots_requested, import_plan_groups_constructed,
     import_view_full_leaves_published, import_view_ledger_entries_cloned,
@@ -27,6 +23,8 @@ use rue_compiler::unstable::{
     import_view_source_entries_compared, parse_invalidation_entries_compared,
     parse_key_entries_compared, parse_modules_dispatched, parse_sources_materialized,
 };
+#[cfg(test)]
+use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
 use rue_compiler::{
     AcceptedImportSource, AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession,
     DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -2054,29 +2052,23 @@ mod tests {
         let leaf = dir.write("leaf.rue", leaf_source);
         let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
         let source_id = module_source_id(&result, "leaf.rue");
-        let SemanticParkOutcome::Ready(semantic_before) =
-            semantic_or_toolchain_park(&mut result.session, &CompileOptions::default())
-        else {
-            panic!("the valid fixture must complete semantic analysis");
-        };
+        let semantic_before = rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
 
         fs::write(&leaf, leaf_source).unwrap();
         reload_from_filesystem(&mut result).unwrap();
-        let SemanticParkOutcome::Ready(semantic_after) =
-            semantic_or_toolchain_park(&mut result.session, &CompileOptions::default())
-        else {
-            panic!("the identical rewrite must complete semantic analysis");
-        };
+        let semantic_after = rooted_cfg(&mut result.session, &CompileOptions::default()).unwrap();
 
         assert_eq!(module_source_id(&result, "leaf.rue"), source_id);
         assert_eq!(
             semantic_before
-                .function_views()
-                .map(|function| function.name().to_owned())
+                .functions()
+                .iter()
+                .map(|function| function.source_name().to_owned())
                 .collect::<Vec<_>>(),
             semantic_after
-                .function_views()
-                .map(|function| function.name().to_owned())
+                .functions()
+                .iter()
+                .map(|function| function.source_name().to_owned())
                 .collect::<Vec<_>>(),
             "an identical rewrite must preserve the canonical semantic projection"
         );

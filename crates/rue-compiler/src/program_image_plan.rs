@@ -11,7 +11,7 @@ use std::{
 use tracing::{info, info_span};
 
 #[cfg(test)]
-use crate::FunctionWithCfg;
+use crate::session::RootedCfgUnit;
 
 use crate::{
     CompileError, CompileErrors, CompileOptions, CompileOutput, CompileWarning, ErrorKind,
@@ -217,7 +217,7 @@ impl ProgramImage {
     #[cfg(test)]
     pub(crate) fn new(
         units: Vec<CollectedCodegenUnit>,
-        functions: &[FunctionWithCfg],
+        functions: &[RootedCfgUnit],
         options: &CompileOptions,
         export_symbols: &[String],
     ) -> MultiErrorResult<Self> {
@@ -363,7 +363,7 @@ impl ProgramImagePlan {
     #[cfg(test)]
     fn from_inputs(
         units: &[CollectedObjectProjection],
-        functions: &[FunctionWithCfg],
+        functions: &[RootedCfgUnit],
         export_symbols: &[String],
         options: &CompileOptions,
         export_thunk_objects: &[Vec<u8>],
@@ -395,7 +395,7 @@ impl ProgramImagePlan {
             .map(
                 |((function, exported_symbol), bytes)| ProgramImageExportThunk {
                     exported_symbol: exported_symbol.to_owned(),
-                    native_symbol: function.machine_name.clone(),
+                    native_symbol: function.record.codegen.defined_symbol.to_string(),
                     content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
                 },
             )
@@ -461,7 +461,7 @@ impl ProgramImagePlan {
 #[cfg(test)]
 fn validate_program_image_inputs(
     units: &[CollectedCodegenUnit],
-    functions: &[FunctionWithCfg],
+    functions: &[RootedCfgUnit],
     export_symbols: &[String],
 ) -> MultiErrorResult<()> {
     let mut unit_identities = BTreeSet::new();
@@ -486,7 +486,7 @@ fn validate_program_image_inputs(
     let mut thunk_identities = BTreeSet::new();
     for exported_symbol in functions
         .iter()
-        .filter_map(FunctionWithCfg::definition_source_name)
+        .filter_map(RootedCfgUnit::definition_source_name)
         .filter(|name| export_set.contains(name))
     {
         if !thunk_identities.insert(exported_symbol) {
@@ -507,7 +507,10 @@ fn validate_program_image_inputs(
     for function in functions {
         let identity = function_identity(function);
         if functions_by_identity
-            .insert(identity.clone(), function.machine_name.as_str())
+            .insert(
+                identity.clone(),
+                function.record.codegen.defined_symbol.as_ref(),
+            )
             .is_some()
         {
             return duplicate_plan_input("semantic function identity", &identity);
@@ -586,8 +589,8 @@ fn validate_rooted_program_image_inputs(
 }
 
 #[cfg(test)]
-fn function_identity(function: &FunctionWithCfg) -> String {
-    stable_function_identity(&function.semantic_identity)
+fn function_identity(function: &RootedCfgUnit) -> String {
+    stable_function_identity(&function.function)
 }
 
 fn stable_function_identity(function: &crate::FunctionInstanceKey) -> String {
@@ -692,7 +695,7 @@ mod tests {
         let mut session = crate::CompilerSession::with_query_concurrency(workers);
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let units = session
             .codegen_units(
@@ -722,7 +725,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let products = session
             .codegen_products(
@@ -898,7 +901,7 @@ mod tests {
         source: &str,
     ) -> (
         Vec<CollectedCodegenUnit>,
-        Vec<FunctionWithCfg>,
+        Vec<RootedCfgUnit>,
         CompileOptions,
     ) {
         let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
@@ -908,7 +911,7 @@ mod tests {
         };
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let units = session
             .codegen_units(
                 &semantic,
@@ -959,7 +962,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         assert_eq!(exports, ["rue_answer"]);
         let units = session
@@ -977,7 +980,8 @@ mod tests {
             .find(|function| function.definition_source_name() == Some("rue_answer"))
             .expect("the export is code-generated as an ordinary body");
         assert_eq!(
-            exported.legacy_name, "__rue_fn_main_2erue__rue_answer",
+            exported.legacy_name(),
+            "__rue_fn_main_2erue__rue_answer",
             "the export's native body is an ordinary module-qualified callable"
         );
         assert_eq!(
@@ -989,7 +993,7 @@ mod tests {
         assert_eq!(image.plan.export_thunks[0].exported_symbol, "rue_answer");
         assert_eq!(
             image.plan.export_thunks[0].native_symbol,
-            exported.machine_name
+            exported.record.codegen.defined_symbol.as_ref()
         );
     }
 
@@ -1014,7 +1018,9 @@ mod tests {
     #[test]
     fn units_must_match_the_supplied_semantic_function_records() {
         let (units, mut functions, options) = session_inputs("fn main() -> i32 { 0 }");
-        functions[0].machine_name = "mismatched_main".to_owned();
+        let record = std::sync::Arc::make_mut(&mut functions[0].record);
+        std::sync::Arc::make_mut(&mut record.codegen).defined_symbol =
+            std::sync::Arc::from("mismatched_main");
         let error = ProgramImage::new(units, &functions, &options, &[])
             .err()
             .unwrap();
@@ -1068,7 +1074,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let first = ProgramImage::new(
             session
@@ -1087,7 +1093,7 @@ mod tests {
         let first_objects = first.fresh_objects(&options).unwrap();
 
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(&options).unwrap();
+        let semantic = session.rooted_semantic(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let second = ProgramImage::new(
             session
@@ -1153,7 +1159,7 @@ mod tests {
         let mut old_session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut old_session, &snapshot).unwrap();
         let old_rir = old_session.canonical_rir().unwrap();
-        let old_semantic = old_session.canonical_semantic(&options).unwrap();
+        let old_semantic = old_session.rooted_semantic(&options).unwrap();
         let old_exports =
             backend::collect_export_symbols(old_rir.rir(), old_rir.semantic_symbols().interner());
         let old = backend::compile_backend_products(

@@ -7,6 +7,7 @@
 //! module path and owned name alongside concrete kinds and the current
 //! request's diagnostic locations.
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -15,7 +16,9 @@ use rue_parser::{Ident, Item, ast::Visibility};
 use rue_span::{FileId, Span};
 use tracing::info_span;
 
-use crate::{ModuleId, SourceSnapshot};
+use crate::ModuleId;
+#[cfg(test)]
+use crate::SourceSnapshot;
 
 /// The concrete syntax kind of a parsed top-level definition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -52,12 +55,14 @@ pub enum DefinitionNamespace {
 /// owned semantic values; the key contains no parser interner handle,
 /// request-local file ID, or diagnostic path. Clones share their strings.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg(test)]
 pub struct DefinitionNameKey {
     module: ModuleId,
     namespace: DefinitionNamespace,
     name: Arc<str>,
 }
 
+#[cfg(test)]
 impl DefinitionNameKey {
     /// Construct a name-binding key from durable, owned components.
     pub fn new(module: ModuleId, namespace: DefinitionNamespace, name: impl AsRef<str>) -> Self {
@@ -97,12 +102,14 @@ impl DefinitionNameKey {
 /// across source revisions or independently built snapshots, even when their
 /// numeric components happen to match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg(test)]
 pub struct DefinitionOccurrenceId {
     module_index: usize,
     definition_index: usize,
 }
 
 /// Compatibility name; occurrence IDs are always snapshot-local.
+#[cfg(test)]
 pub type DefinitionId = DefinitionOccurrenceId;
 
 /// One definition candidate paired with its current request's source locator.
@@ -111,6 +118,7 @@ pub type DefinitionId = DefinitionOccurrenceId;
 /// graph identity. The ID and locator fields are intentionally snapshot-local
 /// and support diagnostics and navigation after candidates have been matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct DefinitionRecord {
     id: DefinitionId,
     name_key: DefinitionNameKey,
@@ -121,6 +129,7 @@ pub struct DefinitionRecord {
     declaration_span: Span,
 }
 
+#[cfg(test)]
 impl DefinitionRecord {
     /// This record's unique, snapshot-local ID.
     #[inline]
@@ -162,6 +171,7 @@ impl DefinitionRecord {
 /// Empty source modules are represented by values whose [`Self::definitions`]
 /// slice is empty. Definitions are ordered by source position.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct ModuleDefinition {
     key: ModuleId,
     file_id: FileId,
@@ -210,6 +220,7 @@ impl DefinitionShard {
     }
 }
 
+#[cfg(test)]
 impl ModuleDefinition {
     /// The durable logical identity of this module.
     #[inline]
@@ -247,10 +258,13 @@ impl ModuleDefinition {
 /// insufficient to decide revision equality or cache validity.
 #[derive(Debug, Clone)]
 pub struct DefinitionSnapshot {
+    #[cfg(test)]
     source_snapshot: SourceSnapshot,
     #[cfg(test)]
     root_module: ModuleId,
+    #[cfg(test)]
     modules: Vec<ModuleDefinition>,
+    #[cfg(test)]
     definitions_by_name: HashMap<DefinitionNameKey, Vec<DefinitionId>>,
     shards: Arc<[Arc<DefinitionShard>]>,
 }
@@ -276,18 +290,24 @@ impl DefinitionSnapshot {
                 "module indexes do not match the parsed program".into(),
             )));
         }
+        #[cfg(test)]
         let source_snapshot = SourceSnapshot::from_parsed_modules(program)?;
+        #[cfg(test)]
         let mut modules = Vec::with_capacity(program.modules().len());
         let mut work = DefinitionShardWork {
             shards_indexed: previous.map_or(0, |snapshot| snapshot.shards.len()),
             ..DefinitionShardWork::default()
         };
         let mut shards = Vec::with_capacity(program.modules().len());
+        #[cfg(test)]
         let definition_count = indexes.iter().map(|index| index.definitions.len()).sum();
+        #[cfg(test)]
         let mut definitions_by_name =
             HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
 
-        for (module_index, (module, index)) in program.modules().iter().zip(indexes).enumerate() {
+        #[cfg(test)]
+        let mut module_index = 0;
+        for (module, index) in program.modules().iter().zip(indexes) {
             let candidate_records = || {
                 index
                     .definitions
@@ -319,50 +339,58 @@ impl DefinitionSnapshot {
                     records: candidate_records().into(),
                 })
             };
-            let mut definitions = Vec::with_capacity(shard.records.len());
-            for (definition_index, (candidate, current)) in shard
-                .records
-                .iter()
-                .zip(index.definitions.iter())
-                .enumerate()
+            #[cfg(test)]
             {
-                let id = DefinitionId {
-                    module_index,
-                    definition_index,
-                };
-                let name_key = DefinitionNameKey::new(
-                    module.module_id().clone(),
-                    candidate.namespace,
-                    &candidate.name,
-                );
-                definitions_by_name
-                    .entry(name_key.clone())
-                    .or_default()
-                    .push(id);
-                definitions.push(DefinitionRecord {
-                    id,
-                    name_key,
-                    kind: candidate.kind,
-                    visibility: candidate.visibility,
+                let current_module_index = module_index;
+                module_index += 1;
+                let mut definitions = Vec::with_capacity(shard.records.len());
+                for (definition_index, (candidate, current)) in shard
+                    .records
+                    .iter()
+                    .zip(index.definitions.iter())
+                    .enumerate()
+                {
+                    let id = DefinitionId {
+                        module_index: current_module_index,
+                        definition_index,
+                    };
+                    let name_key = DefinitionNameKey::new(
+                        module.module_id().clone(),
+                        candidate.namespace,
+                        &candidate.name,
+                    );
+                    definitions_by_name
+                        .entry(name_key.clone())
+                        .or_default()
+                        .push(id);
+                    definitions.push(DefinitionRecord {
+                        id,
+                        name_key,
+                        kind: candidate.kind,
+                        visibility: candidate.visibility,
+                        file_id: module.file_id(),
+                        name_span: current.name_span,
+                        declaration_span: current.declaration_span,
+                    });
+                }
+                modules.push(ModuleDefinition {
+                    key: module.module_id().clone(),
                     file_id: module.file_id(),
-                    name_span: current.name_span,
-                    declaration_span: current.declaration_span,
+                    definitions,
                 });
             }
-            modules.push(ModuleDefinition {
-                key: module.module_id().clone(),
-                file_id: module.file_id(),
-                definitions,
-            });
             shards.push(shard);
         }
 
         Ok((
             Self {
+                #[cfg(test)]
                 source_snapshot,
                 #[cfg(test)]
                 root_module: program.root().clone(),
+                #[cfg(test)]
                 modules,
+                #[cfg(test)]
                 definitions_by_name,
                 shards: shards.into(),
             },
@@ -372,6 +400,7 @@ impl DefinitionSnapshot {
 
     /// The exact immutable source revision to which all record locations refer.
     #[inline]
+    #[cfg(test)]
     pub fn source_snapshot(&self) -> &SourceSnapshot {
         &self.source_snapshot
     }
@@ -417,6 +446,7 @@ impl DefinitionSnapshot {
     ///
     /// IDs issued by another snapshot may coincidentally address a record here;
     /// callers must use an ID only with its issuing snapshot.
+    #[cfg(test)]
     pub fn definition(&self, id: DefinitionId) -> Option<&DefinitionRecord> {
         let definition = self
             .modules
@@ -432,6 +462,7 @@ impl DefinitionSnapshot {
     /// Occurrences are returned in the snapshot's deterministic module-path
     /// then source-position order. Duplicate and cross-kind candidates are not
     /// collapsed.
+    #[cfg(test)]
     pub fn definitions_named<'a>(
         &'a self,
         name_key: &DefinitionNameKey,

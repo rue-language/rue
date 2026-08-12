@@ -132,9 +132,9 @@ fn main() {
     ALLOCATED_BYTES.store(0, Ordering::SeqCst);
     ENABLED.store(true, Ordering::SeqCst);
     let started = Instant::now();
-    let semantic = session
-        .semantic(&CompileOptions::default())
-        .unwrap_or_else(|errors| {
+    let options = CompileOptions::default();
+    let rooted =
+        rue_compiler::unstable::rooted_cfg(&mut session, &options).unwrap_or_else(|errors| {
             ENABLED.store(false, Ordering::SeqCst);
             eprintln!("semantic analysis failed: {errors:?}");
             process::exit(1);
@@ -142,10 +142,10 @@ fn main() {
     let elapsed_ns = started.elapsed().as_nanos();
     ENABLED.store(false, Ordering::SeqCst);
 
-    drop(session);
-    let semantic = rue_compiler::unstable::into_oracle_semantic_state(semantic)
-        .expect("one-shot profiler session uniquely owns its frontend artifacts");
-    let rir_stats = semantic.rir_payload_storage_stats;
+    let rir = session
+        .rir()
+        .expect("successful rooted CFG has canonical RIR");
+    let rir_stats = rue_compiler::unstable::rir_payload_storage_stats(&rir);
     let rir_family_logical_bytes: Map<String, Value> = RIR_PAYLOAD_FAMILY_NAMES
         .into_iter()
         .zip(rir_stats.family_logical_bytes)
@@ -154,8 +154,8 @@ fn main() {
 
     let mut total = AirPayloadStorageStats::default();
     let mut cfg_total = CfgPayloadStorageStats::default();
-    for function in &semantic.functions {
-        let stats = air_payload_storage_stats(&function.analyzed.air);
+    for function in rooted.functions() {
+        let stats = air_payload_storage_stats(function.air());
         for (to, from) in total
             .family_logical_bytes
             .iter_mut()
@@ -171,7 +171,7 @@ fn main() {
         total.place_store_capacity_bytes += stats.place_store_capacity_bytes;
         total.nonempty_match_envelopes += stats.nonempty_match_envelopes;
         total.peak_staging_bytes = total.peak_staging_bytes.max(stats.peak_staging_bytes);
-        let stats = function.cfg.payload_storage_stats();
+        let stats = function.cfg().payload_storage_stats();
         for (to, from) in cfg_total
             .family_logical_bytes
             .iter_mut()
@@ -207,7 +207,7 @@ fn main() {
             "air_phase_ns": elapsed_ns,
             "allocations": ALLOCATIONS.load(Ordering::SeqCst),
             "allocated_bytes": ALLOCATED_BYTES.load(Ordering::SeqCst),
-            "functions": semantic.functions.len(),
+            "functions": rooted.functions().len(),
             "family_logical_bytes": family_logical_bytes,
             "word_store_logical_bytes": total.word_store_logical_bytes,
             "word_store_capacity_bytes": total.word_store_capacity_bytes,

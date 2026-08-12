@@ -93,7 +93,7 @@ fn trusted_option_snapshot_with_source(root_source: &str, option_source: &str) -
 fn semantic_with_trusted_option(
     root_source: &str,
     options: &CompileOptions,
-) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
     let snapshot = trusted_option_snapshot(root_source);
     let (_, semantic, _) = crate::test_frontend_snapshot(&snapshot, options)?;
     Ok(semantic)
@@ -115,11 +115,11 @@ fn compile_with_trusted_option(
 /// `Option` result. Reading the AIR instruction's `ty` directly gives the
 /// binding the `?` site consumed, not merely what exists in the pool.
 fn fallible_intrinsic_option_enums(
-    semantic: &CanonicalSemanticOutput,
-) -> Vec<(rue_air::RuntimeCallKind, rue_air::EnumId)> {
+    semantic: &RootedSemanticOutput,
+) -> Vec<(rue_air::RuntimeCallKind, String)> {
     let mut found = Vec::new();
     for function in semantic.functions() {
-        for (_, inst) in function.analyzed.air.iter() {
+        for (_, inst) in function.record.air.iter() {
             if let rue_air::AirInstData::Intrinsic {
                 runtime: Some(runtime),
                 ..
@@ -134,7 +134,13 @@ fn fallible_intrinsic_option_enums(
                 )
                 && let rue_air::TypeKind::Enum(enum_id) = inst.ty.kind()
             {
-                found.push((*runtime, enum_id));
+                let def = function.record.type_pool.enum_def(enum_id);
+                assert_eq!(
+                    def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
+                    ["Some", "None"],
+                    "the intrinsic result must be Option-shaped",
+                );
+                found.push((*runtime, def.name.to_string()));
             }
         }
     }
@@ -147,7 +153,7 @@ fn fallible_intrinsic_option_enums(
 /// definition-relative anchor (RUE-1089, allocation-order-independent), the same
 /// producer yields the same digest across programs — so a digest computed from a
 /// std-only reference program identifies the trusted std `Option(i64)` anywhere.
-fn bound_parse_i64_digest(semantic: &CanonicalSemanticOutput) -> String {
+fn bound_parse_i64_digest(semantic: &RootedSemanticOutput) -> String {
     let parse = fallible_intrinsic_option_enums(semantic)
         .into_iter()
         .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
@@ -158,34 +164,24 @@ fn bound_parse_i64_digest(semantic: &CanonicalSemanticOutput) -> String {
         "expected exactly one @parse_i64 binding, got {} ({parse:?})",
         parse.len(),
     );
-    let def = semantic.type_pool().enum_def(parse[0].1);
-    assert_eq!(
-        def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
-        ["Some", "None"],
-        "the ?-bound type must be Option-shaped",
-    );
-    assert_eq!(
-        def.variant_payload(0),
-        &[rue_air::Type::I64],
-        "the ?-bound Option must carry the i64 payload",
-    );
-    def.name.to_string()
+    parse[0].1.clone()
 }
 
 /// The producer digests of every `Some(i64)/None`-shaped anonymous enum in a
 /// pool. Distinct producers of the same shape (a std `Option` and a local
 /// lookalike) appear as distinct digests, so the size of this set counts how
 /// many independent `Option(i64)` identities the program materialized.
-fn option_i64_pool_digests(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
-    let pool = semantic.type_pool();
-    pool.all_enum_ids()
-        .into_iter()
-        .map(|id| pool.enum_def(id))
-        .filter(|def| {
-            def.variants.iter().map(Arc::as_ref).eq(["Some", "None"])
-                && def.variant_payload(0) == [rue_air::Type::I64]
+fn option_i64_pool_digests(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
+    semantic
+        .type_pools()
+        .flat_map(|pool| {
+            pool.all_enum_ids().filter_map(move |id| {
+                let def = pool.enum_def(id);
+                (def.variants.iter().map(Arc::as_ref).eq(["Some", "None"])
+                    && def.variant_payload(0) == [rue_air::Type::I64])
+                .then(|| def.name.to_string())
+            })
         })
-        .map(|def| def.name.to_string())
         .collect()
 }
 
@@ -524,10 +520,10 @@ fn publish_trusted_semantic(
     session: &mut CompilerSession,
     root_source: &str,
     options: &CompileOptions,
-) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
     let snapshot = trusted_option_snapshot(root_source);
     crate::test_support::publish_test_snapshot(session, &snapshot)?;
-    session.canonical_semantic(options)
+    session.rooted_semantic(options)
 }
 
 /// Warm/fresh parity on t-win. A WARM incremental compile (reached after the
@@ -583,7 +579,7 @@ fn main() -> i32 { 0 }
 /// a semantic output, in AIR order. Reading `inst.ty` gives the identity each
 /// site actually consumed, so mixed `?`-operand and plain uses can be compared
 /// directly for shared identity.
-fn parse_i64_bound_enums(semantic: &CanonicalSemanticOutput) -> Vec<rue_air::EnumId> {
+fn parse_i64_bound_enums(semantic: &RootedSemanticOutput) -> Vec<String> {
     fallible_intrinsic_option_enums(semantic)
         .into_iter()
         .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
@@ -835,11 +831,11 @@ fn main() -> i32 {
 fn fresh_semantic(
     source: &str,
     options: &CompileOptions,
-) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
     let snapshot = SourceSnapshot::single("<acceptance>", source).map_err(CompileErrors::from)?;
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result()?;
-    session.canonical_semantic(options)
+    session.rooted_semantic(options)
 }
 
 /// Compile a single source WARM: publish an unrelated prior revision, compile
@@ -850,31 +846,47 @@ fn warm_semantic(
     prior: &str,
     source: &str,
     options: &CompileOptions,
-) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
+) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
     let mut session = CompilerSession::new();
     let prior_snapshot =
         SourceSnapshot::single("<acceptance>", prior).map_err(CompileErrors::from)?;
     session.update(&prior_snapshot).into_result()?;
-    session.canonical_semantic(options).ok(); // prior revision is not oracled.
+    session.rooted_semantic(options).ok(); // prior revision is not oracled.
     let snapshot = SourceSnapshot::single("<acceptance>", source).map_err(CompileErrors::from)?;
     session.update(&snapshot).into_result()?;
-    session.canonical_semantic(options)
+    session.rooted_semantic(options)
 }
 
 /// The emitted symbol names of a semantic output: every struct/enum symbol and
 /// every function machine name. Two independent cold compiles of one program
 /// must produce identical sets.
-fn symbol_names(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
-    let pool = semantic.type_pool();
+fn symbol_names(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
-    for id in pool.all_struct_ids() {
-        names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
-    }
-    for id in pool.all_enum_ids() {
-        names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
+    for pool in semantic.type_pools() {
+        for id in pool.all_struct_ids() {
+            names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
+        }
+        for id in pool.all_enum_ids() {
+            names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
+        }
     }
     for function in semantic.functions() {
-        names.insert(format!("fn:{}", function.machine_name));
+        names.insert(format!("fn:{}", function.record.codegen.defined_symbol));
+    }
+    let plan = crate::semantic_identity::AnonymousSymbolPlan::for_reached_set(
+        semantic
+            .anonymous_nominals()
+            .iter()
+            .map(|nominal| &nominal.identity),
+    );
+    for nominal in semantic.anonymous_nominals() {
+        let symbol =
+            crate::semantic_identity::anonymous_nominal_source_symbol_in(&plan, &nominal.identity);
+        let kind = match &nominal.shape {
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct { .. } => "struct",
+            crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. } => "enum",
+        };
+        names.insert(format!("{kind}:{symbol}"));
     }
     names
 }
@@ -885,7 +897,7 @@ fn symbol_names(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
 /// Stage-A stable-naming cut (ADR-0066, RUE-1089) are also invariant under those
 /// edits — their disambiguating suffix is a digest of the producer identity, not
 /// an allocation-order counter.
-fn named_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
+fn named_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
     symbol_names(semantic)
         .into_iter()
         .filter(|name| !name.contains("__anon_"))
@@ -898,7 +910,7 @@ fn named_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
 /// Since the Stage-A cut (ADR-0066, RUE-1089) each spelling is a STABLE digest
 /// of the producer identity, so this set is identical across independent cold
 /// compiles and across warm/fresh, and unchanged by unrelated edits.
-fn anonymous_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
+fn anonymous_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
     symbol_names(semantic)
         .into_iter()
         .filter(|name| name.contains("__anon_struct_") || name.contains("__anon_enum_"))
@@ -906,17 +918,8 @@ fn anonymous_symbols(semantic: &CanonicalSemanticOutput) -> BTreeSet<String> {
 }
 
 /// Count the anonymous struct/enum types minted into the type pool.
-fn anonymous_type_count(semantic: &CanonicalSemanticOutput) -> usize {
-    let pool = semantic.type_pool();
-    let structs = pool
-        .all_struct_ids()
-        .filter(|&id| pool.struct_def(id).name.starts_with("__anon_struct"))
-        .count();
-    let enums = pool
-        .all_enum_ids()
-        .filter(|&id| pool.enum_def(id).name.starts_with("__anon_enum"))
-        .count();
-    structs + enums
+fn anonymous_type_count(semantic: &RootedSemanticOutput) -> usize {
+    anonymous_symbols(semantic).len()
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,7 +1067,7 @@ fn semantic_at_root_file_id(
     file_id: FileId,
     logical_path: &str,
     options: &CompileOptions,
-) -> Arc<CanonicalSemanticOutput> {
+) -> Arc<RootedSemanticOutput> {
     let physical: std::collections::HashMap<FileId, String> =
         [(file_id, logical_path.to_owned())].into();
     let logical = physical.clone();
@@ -1075,7 +1078,7 @@ fn semantic_at_root_file_id(
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().expect("publish");
     session
-        .canonical_semantic(options)
+        .rooted_semantic(options)
         .expect("permuted-FileId program compiles")
 }
 
@@ -1186,10 +1189,16 @@ fn execute_wrap(output: &CompileOutput, label: &str) -> std::process::Output {
 }
 
 /// Count the anonymous ENUM identities minted into the pool.
-fn anonymous_enum_count(semantic: &CanonicalSemanticOutput) -> usize {
-    let pool = semantic.type_pool();
-    pool.all_enum_ids()
-        .filter(|&id| pool.enum_def(id).name.starts_with("__anon_enum"))
+fn anonymous_enum_count(semantic: &RootedSemanticOutput) -> usize {
+    semantic
+        .anonymous_nominals()
+        .iter()
+        .filter(|nominal| {
+            matches!(
+                &nominal.shape,
+                crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
+            )
+        })
         .count()
 }
 
@@ -1374,7 +1383,7 @@ fn resolve_level_transport_corruptions_fail_closed_loud() {
         "__RUE1089_FAULT_WRONG_KIND__",
     ] {
         let program = fault_probe_program(marker);
-        // Zero publication: the request yields NO `CanonicalSemanticOutput`, so
+        // Zero publication: the request yields NO `RootedSemanticOutput`, so
         // no nominal/member/alias terminal reached the caller.
         let errors = match fresh_semantic(&program, &options) {
             Err(errors) => errors,

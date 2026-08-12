@@ -4,9 +4,9 @@
 //! targets spend their budget re-fuzzing the same endpoint (RUE-776):
 //! - `lexer`: tokenization only.
 //! - `parser`: tokenization + AST construction.
-//! - `sema`: frontend through semantic analysis (type checking, name
-//!   resolution, affine checking) — the semantic query, no backend work.
-//! - `compiler`: the *whole* pipeline — frontend, CFG construction, MIR
+//! - `sema`: frontend through the canonical rooted optimized-CFG artifact,
+//!   including type checking, name resolution, affine checking, and CFG work.
+//! - `compiler`: the *whole* pipeline — frontend, MIR
 //!   lowering, register allocation, machine emission, and internal linking to a
 //!   finished executable. Strictly deeper than `sema`.
 //! - `payloadschemas`: the RIR/AIR/CFG payload publication path.
@@ -67,17 +67,15 @@ mod ice_classification_tests {
     }
 }
 
-/// Run the frontend up to and including semantic analysis. This is the endpoint
-/// of the `sema` target: type inference, name resolution, and affine checking,
-/// with no backend work.
-fn query_semantics(
-    source: &str,
-) -> rue_compiler::MultiErrorResult<std::sync::Arc<rue_compiler::SemanticView>> {
+/// Run the canonical frontend root through optimized CFG construction. This is
+/// the endpoint of the `sema` target, with no machine backend or linker work.
+fn query_semantics(source: &str) -> rue_compiler::MultiErrorResult<()> {
     let snapshot = rue_compiler::SourceSnapshot::single("<fuzz>", source)
         .map_err(rue_compiler::CompileErrors::from)?;
     let mut session = rue_compiler::CompilerSession::new();
     session.update(&snapshot).into_result()?;
-    session.semantic(&rue_compiler::CompileOptions::default())
+    rue_compiler::unstable::rooted_cfg(&mut session, &rue_compiler::CompileOptions::default())
+        .map(drop)
 }
 
 /// Drive the whole compilation pipeline — frontend, backend code generation, and
@@ -178,8 +176,8 @@ impl FuzzTarget for SemaTarget {
 /// finished executable or return ordinary errors.
 ///
 /// This is deliberately a deeper boundary than [`SemaTarget`], which stops at
-/// the semantic query. Where sema fuzzes type inference / name resolution /
-/// affine checking, this target additionally exercises CFG construction, MIR
+/// the canonical optimized-CFG root. Where sema fuzzes type inference, name
+/// resolution, affine checking, and CFG construction, this target additionally exercises MIR
 /// lowering, register allocation, machine emission, and internal linking — the
 /// backend phases where a distinct family of ICEs lives. Keeping the two on
 /// separate endpoints stops their fuzzing budget from being spent twice on the
@@ -1192,22 +1190,17 @@ mod tests {
     }
 
     /// RUE-776: the `compiler` target must reach a strictly deeper boundary than
-    /// `sema`. The sema query stops at the semantic view; the compiler query
+    /// `sema`. The sema query stops at the rooted CFG artifact; the compiler query
     /// must drive codegen and linking to a finished executable. If the compiler
-    /// target is ever pointed back at the semantic query, `query_full_compile`
+    /// target is ever pointed back at that frontend root, `query_full_compile`
     /// stops yielding a binary and this test fails — so the two contracts cannot
     /// silently collapse onto the same endpoint again.
     #[test]
     fn compiler_target_is_deeper_than_sema() {
         let source = "fn main() -> i32 { 42 }";
 
-        // sema endpoint: a semantic view over the program's functions, no
-        // backend artifact.
-        let semantic = query_semantics(source).expect("sema query succeeds on a valid program");
-        assert!(
-            semantic.function_views().len() >= 1,
-            "sema query analyzes the program's functions"
-        );
+        // sema endpoint: the rooted optimized-CFG query, no backend artifact.
+        query_semantics(source).expect("sema query succeeds on a valid program");
 
         // compiler endpoint: a fully linked executable image. The concrete
         // object format is host-dependent (ELF or Mach-O), so only its presence

@@ -3,21 +3,14 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use rue_air::{DeclarationBindingWork, SemanticBindingManifestWork};
-
 use crate::{
-    BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalImportGraphValidation,
-    CanonicalMergeWork, CanonicalMergedProgram, CanonicalRirOutput, CanonicalRirWork,
-    CanonicalSemanticOutput, CanonicalSemanticWork, CodegenInputDescriptor, CompileError,
-    CompileErrors, CompileOptions, CompileWarning, ErrorKind, ModuleResolutionInputs,
+    CanonicalImportGraph, CanonicalImportGraphValidation, CanonicalMergeWork,
+    CanonicalMergedProgram, CanonicalRirOutput, CanonicalRirWork, CodegenInputDescriptor,
+    CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, ModuleResolutionInputs,
     ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
     SourceSnapshot, StablePreviewFeatures,
     canonical_lower::project_module_rirs_with_work,
     canonical_merge::merge_parsed_modules_reusing_indexes,
-    canonical_semantic::{
-        CanonicalSemanticFailure, analyze_prepared_canonical_program_reusing_declarations,
-        prepare_query_declaration_shells,
-    },
     parsed_modules::{ParsedProgram, classify_invalidation},
     validate_canonical_import_graph,
 };
@@ -147,23 +140,9 @@ pub struct CompilerSessionWork {
     pub downstream_invalidations: usize,
     pub last_merge: CanonicalMergeWork,
     pub last_rir: CanonicalRirWork,
-    pub semantic: FrontendQueryWork,
-    pub semantic_entries: usize,
-    pub semantic_entries_invalidated: usize,
-    pub semantic_records: Vec<SemanticQueryRecord>,
-    pub definitions: FrontendQueryWork,
-    pub definition_entries: usize,
-    pub definition_entries_invalidated: usize,
-    pub definition_records: Vec<DefinitionQueryRecord>,
     pub diagnostic_publications: usize,
     pub diagnostic_reuses: usize,
     pub diagnostic_invalidations: usize,
-    pub declaration_reuse_plans: usize,
-    pub durable_records_compared: usize,
-    pub durable_records_reused: usize,
-    pub ordinary_declaration_resolutions_skipped: usize,
-    pub durable_installs: usize,
-    pub declaration_reuse_fallbacks: usize,
     /// Current bounded-retention gauges for long-lived service integrations.
     pub retention: FrontendRetentionMetrics,
     pub(crate) runtime: FrontendRuntimeMetrics,
@@ -186,8 +165,6 @@ pub(crate) enum QueryStructuralWork {
     Parse(ParsedModulesWork),
     Merge(CanonicalMergeWork),
     Rir(CanonicalRirWork),
-    Semantic(Box<SemanticQueryRecord>),
-    Definition(Box<DefinitionQueryRecord>),
 }
 
 #[derive(Debug, Clone)]
@@ -328,10 +305,6 @@ impl QueryComputationGuard {
         self.diagnostics = Some(diagnostics);
     }
 
-    fn request_cancel(&mut self) {
-        self.cancel_requested = true;
-    }
-
     fn finish<T, E>(
         self,
         execution: QueryAttemptExecution,
@@ -380,8 +353,6 @@ struct CompilerSessionMetrics {
     attempts: Arc<Mutex<QueryAttemptIndex>>,
     projected_attempts: BTreeSet<AttemptId>,
     aggregate: CompilerSessionWork,
-    projected_semantic_invalidations: usize,
-    projected_definition_invalidations: usize,
 }
 
 impl CompilerSessionMetrics {
@@ -480,22 +451,6 @@ impl CompilerSessionMetrics {
             {
                 self.aggregate.last_rir = *work;
             }
-            QueryStructuralWork::Semantic(record) => {
-                let reuse = record.work.declaration_reuse;
-                self.aggregate.declaration_reuse_plans += reuse.plan_executions;
-                self.aggregate.durable_records_compared += reuse.durable_records_compared;
-                if !record.failed {
-                    self.aggregate.durable_records_reused += reuse.durable_records_reused;
-                    self.aggregate.ordinary_declaration_resolutions_skipped +=
-                        reuse.ordinary_declaration_resolutions_skipped;
-                    self.aggregate.durable_installs += reuse.install_invocations;
-                    self.aggregate.declaration_reuse_fallbacks += reuse.fallbacks;
-                }
-                self.aggregate.semantic_records.push((**record).clone());
-            }
-            QueryStructuralWork::Definition(record) => {
-                self.aggregate.definition_records.push((**record).clone());
-            }
             QueryStructuralWork::Merge(_) | QueryStructuralWork::Rir(_) => {}
         }
     }
@@ -522,22 +477,8 @@ impl CompilerSessionMetrics {
         if changed_existing_revision {
             self.aggregate.downstream_invalidations += 1;
         }
-        self.projected_semantic_invalidations = 0;
-        self.projected_definition_invalidations = 0;
         self.aggregate.last_merge = CanonicalMergeWork::default();
         self.aggregate.last_rir = CanonicalRirWork::default();
-        self.aggregate.semantic_entries = 0;
-        self.aggregate.semantic_records.clear();
-        self.aggregate.definition_entries = 0;
-        self.aggregate.definition_records.clear();
-    }
-
-    fn publish_semantic(&mut self, retained_entries: usize) {
-        self.aggregate.semantic_entries = retained_entries;
-    }
-
-    fn publish_definition(&mut self, retained_entries: usize) {
-        self.aggregate.definition_entries = retained_entries;
     }
 
     fn diagnostic_publication(&mut self, invalidated_previous: bool) {
@@ -584,23 +525,6 @@ impl CanonicalImportGraphOutput {
     pub fn validation(&self) -> &CanonicalImportGraphValidation {
         &self.validation
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticQueryRecord {
-    pub input: CodegenInputDescriptor,
-    pub work: CanonicalSemanticWork,
-    pub failure: Option<crate::CanonicalSemanticFailureWork>,
-    pub failed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefinitionQueryRecord {
-    pub input: SemanticInputDescriptor,
-    pub binding: DeclarationBindingWork,
-    pub manifest: SemanticBindingManifestWork,
-    pub issuance: BoundDefinitionWork,
-    pub failed: bool,
 }
 
 pub struct CompilerSessionUpdate {
@@ -867,6 +791,7 @@ enum SemanticRequestControl {
 pub(crate) enum PipelineRequestControl {
     Compile(CompileErrors),
     Abort(rue_query::QueryAbort),
+    Parked(Box<crate::ParkedToolchainModules>),
 }
 
 impl From<CompileErrors> for PipelineRequestControl {
@@ -888,32 +813,17 @@ fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> Compile
     .into()
 }
 
-/// The outcome of the rooted, park-aware semantic entry
-/// [`CompilerSession::semantic_or_toolchain_park`] (RUE-1112), consumed by the
-/// host source-loading driver through the unstable facade.
-pub enum SemanticParkOutcome {
-    /// Analysis completed against a revision that satisfied every reached body's
-    /// trusted-toolchain-module demand.
-    Ready(Arc<crate::SemanticView>),
-    /// Analysis produced deterministic program diagnostics.
-    Errors(CompileErrors),
-    /// A reached body demanded a trusted toolchain module absent from the current
-    /// revision. The host driver must acquire the demanded modules, publish a
-    /// successor, and retry.
-    Parked(Box<crate::ParkedToolchainModules>),
-}
-
-/// Park-aware result for the production body-closure root. Unlike
-/// [`SemanticParkOutcome`], success carries no recomposed program semantic
-/// value: normal compilation only needs the query-owned reached terminals.
+/// Park-aware result for the production body-closure root. Success carries no
+/// recomposed whole-program value: consumers project the query-owned reached
+/// terminals they actually need.
 pub enum RootedParkOutcome {
     Ready,
     Errors(CompileErrors),
     Parked(Box<crate::ParkedToolchainModules>),
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RootedCfgUnit {
+#[derive(Clone)]
+pub struct RootedCfgUnit {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
     pub(crate) record: Arc<crate::cfg_query::CfgRecord>,
@@ -921,14 +831,179 @@ pub(crate) struct RootedCfgUnit {
     pub(crate) body_span: rue_span::Span,
 }
 
+impl std::fmt::Debug for RootedCfgUnit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootedCfgUnit")
+            .field("function", &self.function)
+            .field("source_name", &self.record.source_name)
+            .field(
+                "semantic_shape",
+                &self.record.domains.stable_debug_snapshot(&self.record.air),
+            )
+            .field("cfg_blocks", &self.record.cfg.blocks())
+            .field("num_locals", &self.record.num_locals)
+            .field("num_param_slots", &self.record.num_param_slots)
+            .field("strings", &self.record.strings)
+            .field("codegen", &self.record.codegen)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct RootedCfgOutput {
+pub struct RootedCfgOutput {
     graph: RootedBodyGraph,
     pub(crate) cfgs: Vec<RootedCfgUnit>,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
     backend_work: BackendQueryWork,
     backend_root: crate::revisioned_query_database::BackendRootCandidate,
+}
+
+impl RootedCfgOutput {
+    pub fn functions(&self) -> &[RootedCfgUnit] {
+        &self.cfgs
+    }
+
+    pub fn warnings(&self) -> &[CompileWarning] {
+        &self.warnings
+    }
+
+    pub fn metrics(&self) -> crate::unstable::SemanticMetrics {
+        crate::unstable::SemanticMetrics::from_work(self.work)
+    }
+}
+
+impl RootedCfgUnit {
+    pub fn definition_source_name(&self) -> Option<&str> {
+        match &self.function {
+            crate::FunctionInstanceKey::Definition(definition) => Some(definition.name()),
+            _ => None,
+        }
+    }
+
+    pub fn source_name(&self) -> &str {
+        self.definition_source_name()
+            .unwrap_or(&self.record.source_name)
+    }
+
+    pub fn air(&self) -> &rue_air::ValidatedAir {
+        &self.record.air
+    }
+
+    pub fn cfg(&self) -> &rue_cfg::ValidatedCfg {
+        &self.record.cfg
+    }
+
+    pub fn interner(&self) -> &Arc<lasso::ThreadedRodeo> {
+        &self.record.interner
+    }
+
+    pub fn type_pool(&self) -> &rue_air::FrozenTypeInternPool {
+        &self.record.type_pool
+    }
+
+    pub fn strings(&self) -> &Arc<[String]> {
+        &self.record.strings
+    }
+}
+
+/// Retainable semantic presentation projected directly from the canonical
+/// rooted CFG result. This owner contains no semantic machinery: every
+/// function and its local domains are the exact artifacts used by codegen.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct RootedSemanticOutput {
+    pub(crate) input: CodegenInputDescriptor,
+    pub(crate) cfgs: Vec<RootedCfgUnit>,
+    pub(crate) warnings: Vec<CompileWarning>,
+    pub(crate) work: crate::CanonicalSemanticWork,
+    pub(crate) rir: Arc<crate::CanonicalRirOutput>,
+    pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
+    pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    pub(crate) strings: Vec<String>,
+    pub(crate) struct_count: usize,
+    pub(crate) enum_count: usize,
+}
+
+#[cfg(test)]
+impl RootedSemanticOutput {
+    #[cfg(test)]
+    pub(crate) fn input(&self) -> &CodegenInputDescriptor {
+        &self.input
+    }
+
+    #[cfg(test)]
+    pub(crate) fn functions(&self) -> &[RootedCfgUnit] {
+        &self.cfgs
+    }
+
+    #[cfg(test)]
+    pub(crate) fn strings(&self) -> &[String] {
+        &self.strings
+    }
+
+    #[cfg(test)]
+    pub(crate) fn declarations(&self) -> &[crate::DurableDeclarationSemantic] {
+        &self.declarations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn anonymous_nominals(
+        &self,
+    ) -> &[crate::durable_semantics::DurableAnonymousNominal] {
+        &self.anonymous_nominals
+    }
+
+    #[cfg(test)]
+    pub(crate) fn work(&self) -> &crate::CanonicalSemanticWork {
+        &self.work
+    }
+
+    #[cfg(test)]
+    pub(crate) fn warnings(&self) -> &[CompileWarning] {
+        &self.warnings
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unstable_parity_snapshot(&self) -> String {
+        format!(
+            "{:?}|{:?}|{:?}|{}|{}",
+            self.cfgs, self.warnings, self.strings, self.struct_count, self.enum_count
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn type_pools(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &rue_air::FrozenTypeInternPool> {
+        self.cfgs.iter().map(|function| &function.record.type_pool)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn type_pool_stats(&self) -> Vec<rue_air::TypeInternPoolStats> {
+        self.type_pools().map(|pool| pool.stats()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rir_owner(&self) -> &Arc<crate::CanonicalRirOutput> {
+        &self.rir
+    }
+}
+
+impl RootedCfgUnit {
+    #[cfg(test)]
+    pub(crate) fn legacy_name(&self) -> &str {
+        self.record
+            .codegen
+            .symbol_mappings
+            .iter()
+            .find_map(|(source, target)| {
+                (target.as_str() == self.record.codegen.defined_symbol.as_ref())
+                    .then_some(source.as_str())
+            })
+            .unwrap_or(self.record.source_name.as_ref())
+    }
 }
 
 pub(crate) struct RootedCodegenOutput {
@@ -953,7 +1028,7 @@ pub(crate) struct RootedCodegenReadyOutput {
     units: Vec<crate::codegen_query::CollectedCodegenUnit>,
     cfgs: Vec<RootedCfgUnit>,
     warnings: Vec<CompileWarning>,
-    work: crate::CanonicalSemanticWork,
+    pub(crate) work: crate::CanonicalSemanticWork,
     pub(crate) cfg_work: BackendQueryWork,
     pub(crate) codegen_work: BackendQueryWork,
     backend_root: crate::revisioned_query_database::BackendRootCandidate,
@@ -1065,7 +1140,9 @@ struct ContinuationState {
 /// otherwise valid, but a guaranteed toolchain input the reached bodies demand
 /// was not supplied. The park-aware host driver acquires and retries; a stable
 /// embedder that omits the input gets this distinguishable classification.
-fn unresolved_toolchain_park_errors(park: &crate::ParkedToolchainModules) -> CompileErrors {
+pub(crate) fn unresolved_toolchain_park_errors(
+    park: &crate::ParkedToolchainModules,
+) -> CompileErrors {
     let modules = park
         .demands()
         .iter()
@@ -1351,14 +1428,6 @@ impl TypedQueryFamily for ParseQuery {
     }
 }
 
-#[derive(Debug)]
-struct DefinitionComputation {
-    result: Result<Arc<BoundDefinitionSet>, CompileErrors>,
-    binding: DeclarationBindingWork,
-    manifest: SemanticBindingManifestWork,
-    issuance: BoundDefinitionWork,
-}
-
 /// Metric-family markers for canonical projections; they do not own terminals.
 #[derive(Debug)]
 struct ImportDiagnosticQuery;
@@ -1366,10 +1435,6 @@ struct ImportDiagnosticQuery;
 struct MergeQuery;
 #[derive(Debug)]
 struct RirQuery;
-#[derive(Debug)]
-struct SemanticQuery;
-#[derive(Debug)]
-struct DefinitionQuery;
 
 macro_rules! session_query_metrics_family {
     ($query:ty, $name:literal, $field:ident) => {
@@ -1391,8 +1456,6 @@ session_query_metrics_family!(
 );
 session_query_metrics_family!(MergeQuery, "merge", merge);
 session_query_metrics_family!(RirQuery, "rir", rir);
-session_query_metrics_family!(SemanticQuery, "semantic", semantic);
-session_query_metrics_family!(DefinitionQuery, "definitions", definitions);
 
 /// Explicit compiler inputs read by a terminal attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1421,29 +1484,6 @@ impl ExactSourceInput {
             revision: snapshot.source_revision().clone(),
             metadata: snapshot.metadata().clone(),
         }
-    }
-}
-
-fn compute_stable_definitions(
-    merged: &CanonicalMergedProgram,
-    options: &CompileOptions,
-    imports: &CanonicalImportGraph,
-    semantic: &CanonicalSemanticOutput,
-) -> DefinitionComputation {
-    let _ = (options, imports);
-    let definitions = semantic
-        .body_owner_issuer()
-        .projected_for_source_revision(merged.ast().source_revision());
-    let work = semantic.work();
-    let binding = work.binding;
-    let manifest = work.manifest;
-    let issuance = definitions.work();
-    let result = Ok(Arc::new(definitions));
-    DefinitionComputation {
-        result,
-        binding,
-        manifest,
-        issuance,
     }
 }
 
@@ -4404,43 +4444,111 @@ impl CompilerSession {
         result
     }
 
-    /// Analyze the current published revision without issuing stable definition IDs.
-    /// Query semantic analysis and optimized CFGs through immutable views.
-    pub fn semantic(
+    #[cfg(test)]
+    fn rooted_semantic_for_test(
         &mut self,
         options: &CompileOptions,
-    ) -> Result<Arc<crate::SemanticView>, CompileErrors> {
-        if self.oracle_fault.take() == Some(crate::unstable::DifferentialOracleFault::Semantic) {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InternalError("differential semantic fault".into()),
-            )));
-        }
-        let owner = self.canonical_semantic(options)?;
-        let rir = owner.rir_owner().clone();
-        Ok(Arc::new(crate::SemanticView::new(owner, rir)))
+    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+        let rooted = self.rooted_cfg(options)?;
+        self.semantic_projection_for_test(options, rooted)
     }
 
-    pub(crate) fn canonical_semantic(
+    #[cfg(test)]
+    fn semantic_projection_for_test(
         &mut self,
         options: &CompileOptions,
-    ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
-        match self
-            .canonical_semantic_with_cancellation(options, rue_query::CancellationToken::new())
-        {
-            Ok(output) => Ok(output),
-            Err(SemanticRequestControl::Compile(errors)) => Err(errors),
-            // `canonical_semantic` is a stable no-filesystem entry: it cannot
-            // acquire trusted toolchain modules, so it converts an unsatisfied
-            // park to its own error result at this outer boundary (RUE-1112).
-            // The park-aware host driver uses `semantic_or_toolchain_park`, which
-            // surfaces the park distinctly and retries after acquisition.
-            Err(SemanticRequestControl::Parked(park)) => {
-                Err(unresolved_toolchain_park_errors(&park))
-            }
-            Err(SemanticRequestControl::Abort(abort)) => {
-                panic!("uncanceled semantic request aborted: {abort:?}")
+        rooted: RootedCfgOutput,
+    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+        let source = self
+            .published_snapshot
+            .clone()
+            .ok_or_else(no_published_program)?;
+        let input = CodegenInputDescriptor {
+            semantic: SemanticInputDescriptor::new(
+                &source,
+                options.target,
+                &options.preview_features,
+            ),
+            opt_level: options.opt_level.into(),
+        };
+        let rir = self.canonical_rir()?;
+        let mut strings = Vec::new();
+        let mut seen_strings = std::collections::HashSet::new();
+        for unit in &rooted.cfgs {
+            for value in unit.record.strings.iter() {
+                if seen_strings.insert(value.clone()) {
+                    strings.push(value.clone());
+                }
             }
         }
+        let struct_count = rooted
+            .graph
+            .declarations
+            .iter()
+            .filter(|declaration| {
+                matches!(
+                    &declaration.payload,
+                    crate::durable_semantics::DurableDeclarationPayload::Struct { .. }
+                )
+            })
+            .count()
+            + rooted
+                .graph
+                .anonymous_nominals
+                .iter()
+                .filter(|nominal| {
+                    matches!(
+                        &nominal.shape,
+                        crate::durable_semantics::DurableAnonymousNominalShape::Struct { .. }
+                    )
+                })
+                .count();
+        let enum_count = rooted
+            .graph
+            .declarations
+            .iter()
+            .filter(|declaration| {
+                matches!(
+                    &declaration.payload,
+                    crate::durable_semantics::DurableDeclarationPayload::Enum { .. }
+                )
+            })
+            .count()
+            + rooted
+                .graph
+                .anonymous_nominals
+                .iter()
+                .filter(|nominal| {
+                    matches!(
+                        &nominal.shape,
+                        crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
+                    )
+                })
+                .count();
+        #[cfg(test)]
+        let declarations = rooted.graph.declarations.clone();
+        #[cfg(test)]
+        let anonymous_nominals = rooted.graph.anonymous_nominals.clone();
+        Ok(Arc::new(RootedSemanticOutput {
+            input,
+            cfgs: rooted.cfgs,
+            warnings: rooted.warnings,
+            work: rooted.work,
+            rir,
+            declarations,
+            anonymous_nominals,
+            strings,
+            struct_count,
+            enum_count,
+        }))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rooted_semantic(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+        self.rooted_semantic_for_test(options)
     }
 
     fn rooted_body_graph_with_cancellation(
@@ -4852,11 +4960,19 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<RootedCfgOutput, CompileErrors> {
+        if self.oracle_fault.take() == Some(crate::unstable::DifferentialOracleFault::Semantic) {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InternalError("differential semantic fault".into()),
+            )));
+        }
         match self.rooted_cfg_with_cancellation(options, rue_query::CancellationToken::new()) {
             Ok(output) => Ok(output),
             Err(PipelineRequestControl::Compile(errors)) => Err(errors),
             Err(PipelineRequestControl::Abort(abort)) => {
                 Err(pipeline_abort_errors("rooted CFG", abort))
+            }
+            Err(PipelineRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
             }
         }
     }
@@ -4872,9 +4988,7 @@ impl CompilerSession {
                 return Err(PipelineRequestControl::Compile(errors));
             }
             Err(SemanticRequestControl::Parked(park)) => {
-                return Err(PipelineRequestControl::Compile(
-                    unresolved_toolchain_park_errors(&park),
-                ));
+                return Err(PipelineRequestControl::Parked(park));
             }
             Err(SemanticRequestControl::Abort(abort)) => {
                 return Err(PipelineRequestControl::Abort(abort));
@@ -5137,6 +5251,20 @@ impl CompilerSession {
         } else {
             vec![batch_execution; cfg_requests.len()]
         };
+        let nested_cfg_attempts = attempt
+            .nested_attempts()
+            .iter()
+            .filter(|attempt| attempt.node().family() == "compiler.cfg")
+            .collect::<Vec<_>>();
+        let nested_cfg_reuses = nested_cfg_attempts
+            .iter()
+            .filter(|attempt| {
+                matches!(
+                    attempt.execution(),
+                    rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                )
+            })
+            .count();
         let mut backend_work = BackendQueryWork::default();
         for execution in &executions {
             backend_work.observe(*execution);
@@ -5153,6 +5281,30 @@ impl CompilerSession {
             batch_work("cfg.retained-interner-entries-scanned");
         work.cfg.retained_interner_utf8_bytes_scanned +=
             batch_work("cfg.retained-interner-utf8-bytes-scanned");
+        work.cfg.cfg_builds_attempted += batch_work("cfg.build.attempts");
+        work.cfg.cfg_builds_succeeded += batch_work("cfg.build.successes");
+        work.cfg.cfg_builds_failed += batch_work("cfg.build.failures");
+        work.cfg.air_instructions_consumed += batch_work("cfg.air.instructions");
+        work.cfg.optimization_attempts += batch_work("cfg.optimize.attempts");
+        work.cfg.optimization_completions += batch_work("cfg.optimize.successes");
+        work.cfg.optimized_level_attempts += batch_work("cfg.optimize.nonzero-level");
+        work.cfg.cfg_warnings_emitted += batch_work("cfg.warnings");
+        let optimized_reuses = executions
+            .iter()
+            .filter(|execution| {
+                matches!(
+                    execution,
+                    rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                )
+            })
+            .count();
+        let cfg_reuses = if nested_cfg_attempts.is_empty() {
+            optimized_reuses
+        } else {
+            nested_cfg_reuses
+        };
+        work.cfg.cfg_reuse_candidates += cfg_reuses;
+        work.cfg.cfg_reuses += cfg_reuses;
         if let Some(terminal) = attempt.terminal() {
             self.queries.revisioned.retain_backend_optimized_cfg_batch(
                 &mut backend_root,
@@ -5167,33 +5319,16 @@ impl CompilerSession {
             unreachable!("OptimizedCfgBatch publishes typed values")
         };
         assert_eq!(batch.values.len(), cfg_requests.len());
-        for (((function, optimized_cfg_key, body_span), value), execution) in cfg_requests
+        for (((function, optimized_cfg_key, body_span), value), _execution) in cfg_requests
             .into_iter()
             .zip(batch.values.iter())
             .zip(executions)
         {
             #[cfg(test)]
             self.rooted_cfg_executions
-                .push((function.clone(), execution));
-            match execution {
-                rue_query::RequestExecution::Computed => {
-                    work.cfg.cfg_builds_attempted += 1;
-                    work.cfg.optimization_attempts += 1;
-                }
-                rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
-                    work.cfg.cfg_reuse_candidates += 1;
-                    work.cfg.cfg_reuses += 1;
-                }
-                rue_query::RequestExecution::Aborted => {}
-            }
+                .push((function.clone(), _execution));
             let record = match value {
-                crate::cfg_query::CfgValue::Available(record) => {
-                    if execution == rue_query::RequestExecution::Computed {
-                        work.cfg.cfg_builds_succeeded += 1;
-                        work.cfg.optimization_completions += 1;
-                    }
-                    record.clone()
-                }
+                crate::cfg_query::CfgValue::Available(record) => record.clone(),
                 crate::cfg_query::CfgValue::Failure {
                     errors,
                     body_span: old_span,
@@ -5257,6 +5392,30 @@ impl CompilerSession {
         });
         warnings.dedup();
 
+        let source = self
+            .published_snapshot
+            .clone()
+            .ok_or_else(|| PipelineRequestControl::Compile(no_published_program()))?;
+        let input = CodegenInputDescriptor {
+            semantic: SemanticInputDescriptor::new(
+                &source,
+                options.target,
+                &options.preview_features,
+            ),
+            opt_level: options.opt_level.into(),
+        };
+        let imports = self
+            .accepted_semantic_import_graph()
+            .map_err(PipelineRequestControl::Compile)?;
+        let diagnostics = self.publish_diagnostics(
+            &source,
+            FrontendDiagnosticIdentity::Semantic(semantic_diagnostic_input(&input, imports)),
+            None,
+            &warnings,
+        );
+        self.diagnostics.select_snapshot(&diagnostics);
+        self.refresh_retention_metrics();
+
         Ok(RootedCfgOutput {
             graph,
             cfgs,
@@ -5281,6 +5440,9 @@ impl CompilerSession {
             Err(PipelineRequestControl::Compile(errors)) => Err(errors),
             Err(PipelineRequestControl::Abort(abort)) => {
                 Err(pipeline_abort_errors("rooted codegen", abort))
+            }
+            Err(PipelineRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
             }
         }
     }
@@ -5312,6 +5474,9 @@ impl CompilerSession {
             Err(PipelineRequestControl::Compile(errors)) => Err(errors),
             Err(PipelineRequestControl::Abort(abort)) => {
                 Err(pipeline_abort_errors("codegen-ready", abort))
+            }
+            Err(PipelineRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
             }
         }
     }
@@ -5462,6 +5627,9 @@ impl CompilerSession {
             Err(PipelineRequestControl::Compile(errors)) => Err(errors),
             Err(PipelineRequestControl::Abort(abort)) => {
                 Err(pipeline_abort_errors("objects-ready", abort))
+            }
+            Err(PipelineRequestControl::Parked(park)) => {
+                Err(unresolved_toolchain_park_errors(&park))
             }
         }
     }
@@ -5618,7 +5786,7 @@ impl CompilerSession {
     #[cfg(test)]
     pub(crate) fn codegen_products(
         &mut self,
-        semantic: &crate::CanonicalSemanticOutput,
+        semantic: &RootedSemanticOutput,
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::backend::FunctionBackendProduct>, crate::CompileErrors> {
@@ -5637,7 +5805,7 @@ impl CompilerSession {
     #[cfg(test)]
     pub(crate) fn codegen_units(
         &mut self,
-        semantic: &crate::CanonicalSemanticOutput,
+        semantic: &RootedSemanticOutput,
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::codegen_query::CollectedCodegenUnit>, crate::CompileErrors> {
@@ -5652,14 +5820,14 @@ impl CompilerSession {
                     ),
                 ))
             })?;
-        let mut units = Vec::with_capacity(semantic.functions().len());
+        let mut units = Vec::with_capacity(semantic.cfgs.len());
         #[cfg(test)]
         {
             self.codegen_executions.clear();
             self.codegen_attempt_work.clear();
             self.codegen_collections = 0;
         }
-        for function in semantic.functions() {
+        for function in &semantic.cfgs {
             let attempt = self
                 .queries
                 .revisioned
@@ -5681,9 +5849,9 @@ impl CompilerSession {
             #[cfg(test)]
             {
                 self.codegen_executions
-                    .push((function.semantic_identity.clone(), attempt.execution()));
+                    .push((function.function.clone(), attempt.execution()));
                 self.codegen_attempt_work
-                    .push((function.semantic_identity.clone(), attempt.work().to_vec()));
+                    .push((function.function.clone(), attempt.work().to_vec()));
             }
             let terminal = attempt.into_result().map_err(|abort| {
                 crate::CompileErrors::from(crate::CompileError::without_span(
@@ -5696,7 +5864,7 @@ impl CompilerSession {
             match unit {
                 crate::codegen_query::CodegenUnitValue::Available(unit) => {
                     units.push(crate::codegen_query::CollectedCodegenUnit {
-                        function: function.semantic_identity.clone(),
+                        function: function.function.clone(),
                         unit: unit.clone(),
                     });
                     #[cfg(test)]
@@ -5786,33 +5954,6 @@ impl CompilerSession {
         self.queries.revisioned.query_evictions_for_test()
     }
 
-    /// Analyze the current revision, surfacing an unsatisfied trusted-toolchain
-    /// park distinctly instead of converting it to an error (RUE-1112). This
-    /// is the rooted, park-aware entry the host compile driver retries: on
-    /// [`SemanticParkOutcome::Parked`] it acquires exactly the demanded modules,
-    /// publishes a successor, and calls this again.
-    pub(crate) fn semantic_or_toolchain_park(
-        &mut self,
-        options: &CompileOptions,
-    ) -> SemanticParkOutcome {
-        match self
-            .canonical_semantic_with_cancellation(options, rue_query::CancellationToken::new())
-        {
-            Ok(owner) => {
-                let rir = owner.rir_owner().clone();
-                SemanticParkOutcome::Ready(Arc::new(crate::SemanticView::new(owner, rir)))
-            }
-            Err(SemanticRequestControl::Compile(errors)) => SemanticParkOutcome::Errors(errors),
-            Err(SemanticRequestControl::Parked(park)) => {
-                self.attach_toolchain_park(&park);
-                SemanticParkOutcome::Parked(park)
-            }
-            Err(SemanticRequestControl::Abort(abort)) => {
-                panic!("uncanceled semantic request aborted: {abort:?}")
-            }
-        }
-    }
-
     pub(crate) fn rooted_or_toolchain_park(
         &mut self,
         options: &CompileOptions,
@@ -5841,882 +5982,6 @@ impl CompilerSession {
             demands.dedup();
             state.attached_demands = Some(Arc::from(demands));
         }
-    }
-
-    fn canonical_semantic_with_cancellation(
-        &mut self,
-        options: &CompileOptions,
-        cancellation: rue_query::CancellationToken,
-    ) -> Result<Arc<CanonicalSemanticOutput>, SemanticRequestControl> {
-        let mut guard = self.metrics.begin::<SemanticQuery>();
-        let attempt_id = guard.id;
-        let mut execution = QueryAttemptExecution::Rejected;
-        let mut origin = None;
-        let mut attempt_record = None;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.semantic_attempt(
-                options,
-                &cancellation,
-                attempt_id,
-                &mut guard,
-                &mut execution,
-                &mut origin,
-                &mut attempt_record,
-            )
-        }));
-        let result = match result {
-            Ok(result) => result,
-            Err(payload) => self.resume_canceled_query(&mut guard, payload),
-        };
-        // A trusted-toolchain park exits the attempt before the body transaction
-        // publishes a terminal, leaving the semantic query in-flight. Clear that
-        // in-flight attempt exactly as an abort would, so the host driver's retry
-        // (after acquiring the demanded module and re-closing on a new revision)
-        // begins a fresh selection instead of colliding with a stale computing
-        // key (RUE-1112).
-        if matches!(
-            result,
-            Err(SemanticRequestControl::Abort(_)) | Err(SemanticRequestControl::Parked(_))
-        ) {
-            guard.request_cancel();
-        }
-        let structural = attempt_record
-            .clone()
-            .map(Box::new)
-            .map(QueryStructuralWork::Semantic)
-            .unwrap_or(QueryStructuralWork::None);
-        guard.finish(execution, origin, &result, structural);
-        self.metrics.publish_semantic(0);
-        self.metrics.synchronize();
-        result
-    }
-
-    fn semantic_attempt(
-        &mut self,
-        options: &CompileOptions,
-        cancellation: &rue_query::CancellationToken,
-        _attempt_id: AttemptId,
-        guard: &mut QueryComputationGuard,
-        execution: &mut QueryAttemptExecution,
-        _origin: &mut Option<AttemptId>,
-        attempt_record: &mut Option<SemanticQueryRecord>,
-    ) -> Result<Arc<CanonicalSemanticOutput>, SemanticRequestControl> {
-        if cancellation.is_canceled() {
-            return Err(SemanticRequestControl::Abort(
-                rue_query::QueryAbort::Canceled,
-            ));
-        }
-        self.require_successful_import_diagnostics()?;
-        let imports = self.accepted_semantic_import_graph()?;
-        if cancellation.is_canceled() {
-            return Err(SemanticRequestControl::Abort(
-                rue_query::QueryAbort::Canceled,
-            ));
-        }
-        let source = self
-            .published_snapshot
-            .clone()
-            .expect("semantic query retains its exact source snapshot");
-        let input = CodegenInputDescriptor {
-            semantic: SemanticInputDescriptor::new(
-                &source,
-                options.target,
-                &options.preview_features,
-            ),
-            opt_level: options.opt_level.into(),
-        };
-        let rir_result = self.canonical_rir();
-        if cancellation.is_canceled() {
-            return Err(SemanticRequestControl::Abort(
-                rue_query::QueryAbort::Canceled,
-            ));
-        }
-        let rir = match rir_result {
-            Ok(rir) => rir,
-            Err(errors) => {
-                let record = SemanticQueryRecord {
-                    input: input.clone(),
-                    work: CanonicalSemanticWork::default(),
-                    failure: None,
-                    failed: true,
-                };
-                guard.accrue(QueryStructuralWork::Semantic(Box::new(record.clone())));
-                *attempt_record = Some(record);
-                let diagnostics = self.publish_diagnostics(
-                    &source,
-                    FrontendDiagnosticIdentity::Semantic(semantic_diagnostic_input(
-                        &input,
-                        imports.clone(),
-                    )),
-                    Some(&errors),
-                    &[],
-                );
-                guard.attach_diagnostics(diagnostics.clone());
-                self.diagnostics.select_snapshot(&diagnostics);
-                self.refresh_retention_metrics();
-                return Err(SemanticRequestControl::Compile(errors));
-            }
-        };
-        let merged = self.merge().map_err(SemanticRequestControl::Compile)?;
-        if cancellation.is_canceled() {
-            return Err(SemanticRequestControl::Abort(
-                rue_query::QueryAbort::Canceled,
-            ));
-        }
-        *execution = QueryAttemptExecution::Computed;
-        guard.started();
-        let runtime_revision = self
-            .queries
-            .revisioned
-            .current_semantic_revision()
-            .expect("semantic preparation observes a published source/import revision");
-        let declaration_shells_span =
-            tracing::info_span!("declaration_shells", phase = "semantic_analysis").entered();
-        let query_shells = {
-            let _span = tracing::info_span!("declaration_shell_projection").entered();
-            self.queries.revisioned.projected_declaration_shells(
-                runtime_revision,
-                merged.ast(),
-                cancellation.clone(),
-            )
-        };
-        let mut prepared = match query_shells {
-            Ok(query_shells) => {
-                let _span = tracing::info_span!("declaration_shell_prepare").entered();
-                prepare_query_declaration_shells(&merged, &rir, options, &imports, &query_shells)
-            }
-            Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Query(abort)) => {
-                return Err(SemanticRequestControl::Abort(abort));
-            }
-            Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Stable(
-                failure,
-            )) => Err(CanonicalSemanticFailure::declaration(
-                declaration_shell_failure_diagnostics(merged.ast().modules(), &failure),
-                CanonicalSemanticWork::default(),
-            )),
-        };
-        drop(declaration_shells_span);
-        let declaration_semantics = {
-            let _span = tracing::info_span!(
-                "declaration_semantics_projection",
-                phase = "semantic_analysis"
-            )
-            .entered();
-            self.queries.revisioned.projected_declaration_semantics(
-                runtime_revision,
-                merged.ast(),
-                options.target,
-                &options.preview_features,
-                cancellation.clone(),
-            )
-        };
-        let (
-            query_declarations,
-            query_anonymous_nominals,
-            query_declaration_dependencies,
-            query_c_export_roots,
-        ) = match declaration_semantics {
-            Ok(projection) => (
-                Some(projection.declarations),
-                projection.anonymous_nominals,
-                projection.dependencies,
-                projection.c_export_roots,
-            ),
-            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Query(abort)) => {
-                return Err(SemanticRequestControl::Abort(abort));
-            }
-            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Stable {
-                declaration,
-                failure,
-            }) => {
-                let work = match &prepared {
-                    Ok(prepared) => CanonicalSemanticWork {
-                        declaration_index: prepared.declaration_index_work(),
-                        ..CanonicalSemanticWork::default()
-                    },
-                    Err(preparation_failure) => preparation_failure.failure.work,
-                };
-                prepared = Err(CanonicalSemanticFailure::declaration(
-                    semantic_nucleus_failure_diagnostics(
-                        merged.ast().modules(),
-                        declaration.as_ref(),
-                        &failure,
-                    ),
-                    work,
-                ));
-                (None, Arc::from([]), Arc::from([]), Arc::from([]))
-            }
-        };
-        if let (Some(declarations), Ok(prepared_definitions)) =
-            (query_declarations.as_deref(), prepared.as_ref())
-            && let Some(main) = prepared_definitions
-                .definitions()
-                .definitions()
-                .iter()
-                .find(|record| {
-                    let key = record.stable_key();
-                    key.kind() == crate::StableDefinitionKind::Function
-                        && key.name() == "main"
-                        && key.module() == merged.ast().root()
-                })
-            && let Some(declaration) = declarations
-                .iter()
-                .find(|declaration| declaration.key == *main.stable_key())
-            && let crate::durable_semantics::DurableDeclarationPayload::Callable {
-                parameters,
-                result,
-                ..
-            } = &declaration.payload
-        {
-            let reason = if !parameters.is_empty() {
-                Some("`main` must not declare parameters")
-            } else if !matches!(
-                result,
-                crate::durable_semantics::DurableType::I32
-                    | crate::durable_semantics::DurableType::Unit
-            ) {
-                Some("`main` must return `i32` or `()`")
-            } else {
-                None
-            };
-            if let Some(reason) = reason {
-                let work = CanonicalSemanticWork {
-                    declaration_index: prepared_definitions.declaration_index_work(),
-                    ..CanonicalSemanticWork::default()
-                };
-                prepared = Err(CanonicalSemanticFailure::declaration(
-                    CompileErrors::from(CompileError::new(
-                        ErrorKind::InvalidMainSignature { reason },
-                        main.declaration_span(),
-                    )),
-                    work,
-                ));
-            }
-        }
-        let durable_body_work = crate::DurableBodyWork::default();
-        let mut durable_body_candidates = Vec::new();
-        let mut durable_specialized_body_candidates = Vec::new();
-        let mut durable_anonymous_body_candidates = Vec::new();
-        let mut queried_body_work = rue_air::BodyAnalysisWork::default();
-        let mut body_produced_anonymous = BTreeMap::new();
-        let mut body_consulted_anonymous = BTreeMap::new();
-        let mut body_query_errors = BTreeMap::new();
-        let mut body_query_reference_cache = BTreeMap::new();
-        let mut demanded_drop_glue: Arc<[crate::TypeInstanceKey]> = Arc::from([]);
-        let mut demanded_drop_glue_plans: Arc<
-            [(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)],
-        > = Arc::from([]);
-        // RUE-1027 production boundary: derive the reached callable frontier
-        // serially from the references owned by each body transaction. Ordinary
-        // call recursion is worklist state, never a query dependency cycle.
-        // RUE-1028 replaces this deterministic coordinator with database-owned
-        // reachability and parallel frontier scheduling.
-        if let Ok(prepared_definitions) = prepared.as_ref() {
-            let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
-                target: options.target,
-                preview_features: StablePreviewFeatures::new(&options.preview_features),
-            };
-            let mut pending = std::collections::BTreeSet::new();
-            for record in prepared_definitions.definitions().definitions() {
-                let stable = record.stable_key();
-                if stable.kind() == crate::StableDefinitionKind::Function
-                    && stable.name() == "main"
-                    && stable.module() == merged.ast().root()
-                {
-                    pending.insert(crate::FunctionInstanceKey::Definition(stable.clone()));
-                }
-            }
-            pending.extend(
-                query_c_export_roots
-                    .iter()
-                    .cloned()
-                    .map(crate::FunctionInstanceKey::Definition),
-            );
-            let roots = pending;
-            let closure_request = match self.queries.revisioned.body_closure(
-                runtime_revision,
-                crate::body_query::BodyClosureQueryKey {
-                    modules: merged
-                        .ast()
-                        .modules()
-                        .iter()
-                        .map(|module| module.module_id().clone())
-                        .collect::<Vec<_>>()
-                        .into(),
-                    roots: roots.iter().cloned().collect::<Vec<_>>().into(),
-                    configuration: configuration.clone(),
-                },
-                cancellation.clone(),
-            ) {
-                Ok(request) => request,
-                Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
-            };
-            let closure_terminal = &closure_request.terminal;
-            closure_request.accrue_reachability_work(&mut queried_body_work);
-            let rue_query::QueryOutcome::Success(closure_output) = closure_terminal.outcome()
-            else {
-                unreachable!("BodyClosure publishes typed values")
-            };
-            demanded_drop_glue = closure_output.demanded_drop_glue.clone();
-            demanded_drop_glue_plans = closure_output.demanded_drop_glue_plans.clone();
-            if let Some(park) = &closure_output.parked_toolchain {
-                return Err(SemanticRequestControl::Parked(Box::new(park.clone())));
-            }
-            body_query_errors.extend(closure_output.scheduling_errors.iter().cloned());
-            if let Some(fatal) = &closure_output.fatal {
-                let (instance, errors) = match fatal {
-                    crate::body_query::BodyClosureFatal::DeclarationFailed {
-                        declaration,
-                        failure,
-                    } => (
-                        roots.iter().next().cloned(),
-                        semantic_nucleus_failure_diagnostics(
-                            merged.ast().modules(),
-                            declaration.as_ref(),
-                            failure,
-                        ),
-                    ),
-                    crate::body_query::BodyClosureFatal::BodyAvailability { instance, detail } => (
-                        Some(instance.clone()),
-                        crate::CompileErrors::from(crate::CompileError::without_span(
-                            rue_error::ErrorKind::InternalError(format!(
-                                "body availability was incomplete for {instance:?}: {detail}"
-                            )),
-                        )),
-                    ),
-                    crate::body_query::BodyClosureFatal::ProducerFailed { instance, failure } => (
-                        Some(instance.clone()),
-                        semantic_nucleus_failure_diagnostics(merged.ast().modules(), None, failure),
-                    ),
-                    crate::body_query::BodyClosureFatal::WellKnownOptionResolution {
-                        instance,
-                        failure,
-                    } => (
-                        Some(instance.clone()),
-                        well_known_option_resolution_diagnostics(merged.ast().modules(), failure),
-                    ),
-                    crate::body_query::BodyClosureFatal::TypeQuery { ty, detail } => (
-                        roots.iter().next().cloned(),
-                        crate::CompileErrors::from(crate::CompileError::without_span(
-                            rue_error::ErrorKind::InternalError(format!(
-                                "canonical type query failed for {ty:?}: {detail}"
-                            )),
-                        )),
-                    ),
-                    crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
-                        digest,
-                        first,
-                        second,
-                    } => (
-                        roots.iter().next().cloned(),
-                        crate::CompileErrors::from(crate::CompileError::without_span(
-                            rue_error::ErrorKind::InternalError(format!(
-                                "stable anonymous symbol digest {digest:032x} is shared by distinct \
-                                 producer-nominal identities {first:?} and {second:?}"
-                            )),
-                        )),
-                    ),
-                };
-                if let Some(instance) = instance {
-                    body_query_errors.insert(instance, errors);
-                } else {
-                    return Err(SemanticRequestControl::Compile(errors));
-                }
-            }
-            body_query_reference_cache.clear();
-            for closure_body in closure_output.bodies.iter() {
-                let instance = &closure_body.key.instance;
-                let key = &closure_body.key;
-                let rue_query::QueryOutcome::Success(analysis) = closure_body.bundle.outcome()
-                else {
-                    unreachable!("BodyAnalysisBundle publishes typed values")
-                };
-                let needs_source_locator = match &analysis.transaction {
-                    crate::body_query::BodyTransaction::DeterministicFailure { .. } => true,
-                    crate::body_query::BodyTransaction::Success { body, .. } => matches!(
-                        body.as_ref(),
-                        crate::body_query::CanonicalBody::Anonymous { .. }
-                    ),
-                    crate::body_query::BodyTransaction::Control(_) => false,
-                };
-                let current_source_locator = if needs_source_locator {
-                    let locator = self
-                        .queries
-                        .revisioned
-                        .body_source_locator_projection(
-                            runtime_revision,
-                            key.clone(),
-                            cancellation.clone(),
-                        )
-                        .map_err(SemanticRequestControl::Abort)?;
-                    let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
-                        unreachable!("BodySourceLocator publishes typed values")
-                    };
-                    locator.clone()
-                } else {
-                    None
-                };
-                let projected_transaction;
-                let transaction = if matches!(
-                    &analysis.transaction,
-                    crate::body_query::BodyTransaction::DeterministicFailure { .. }
-                ) {
-                    projected_transaction =
-                        crate::revisioned_query_database::project_transaction_diagnostics(
-                            analysis.transaction.clone(),
-                            current_source_locator.as_ref(),
-                        );
-                    &projected_transaction
-                } else {
-                    &analysis.transaction
-                };
-                let computed = matches!(
-                    closure_request.execution_for(key),
-                    rue_query::RequestExecution::Computed
-                );
-                let had_retained_body = closure_request.was_retained(key);
-                if computed {
-                    queried_body_work.body_analyses_computed += 1;
-                } else {
-                    queried_body_work.body_analyses_reused += 1;
-                }
-                if computed {
-                    let specialized =
-                        matches!(instance, crate::FunctionInstanceKey::Specialization { .. });
-                    queried_body_work.bodies_attempted += 1;
-                    if had_retained_body {
-                        queried_body_work.body_analyses_invalidated += 1;
-                    }
-                    if specialized {
-                        queried_body_work.specialized_bodies_attempted += 1;
-                    }
-                    match transaction {
-                        crate::body_query::BodyTransaction::Success { body, .. } => {
-                            queried_body_work.bodies_succeeded += 1;
-                            let body = match body.as_ref() {
-                                crate::body_query::CanonicalBody::Ordinary { body, .. }
-                                | crate::body_query::CanonicalBody::Anonymous { body, .. }
-                                | crate::body_query::CanonicalBody::Specialization {
-                                    body, ..
-                                } => body,
-                            };
-                            queried_body_work.air_instructions_produced += body.instructions.len();
-                            queried_body_work.local_strings_produced += body.strings.len();
-                            if specialized {
-                                queried_body_work.specialized_bodies_succeeded += 1;
-                                queried_body_work.specialized_body_exports_attempted += 1;
-                                queried_body_work.specialized_body_exports_succeeded += 1;
-                                queried_body_work.specialized_body_export_instructions_emitted +=
-                                    body.instructions.len();
-                                queried_body_work.specialized_body_export_places_emitted +=
-                                    body.places.len();
-                                queried_body_work.specialized_body_export_strings_emitted +=
-                                    body.strings.len();
-                            } else {
-                                queried_body_work.ordinary_body_exports_attempted += 1;
-                                queried_body_work.ordinary_body_exports_succeeded += 1;
-                                queried_body_work.ordinary_body_export_instructions_emitted +=
-                                    body.instructions.len();
-                                queried_body_work.ordinary_body_export_places_emitted +=
-                                    body.places.len();
-                                queried_body_work.ordinary_body_export_strings_emitted +=
-                                    body.strings.len();
-                            }
-                        }
-                        crate::body_query::BodyTransaction::DeterministicFailure { .. } => {
-                            queried_body_work.bodies_failed += 1;
-                            if specialized {
-                                queried_body_work.specialized_bodies_failed += 1;
-                            }
-                        }
-                        crate::body_query::BodyTransaction::Control(_) => {
-                            unreachable!("body closure unwraps transaction control")
-                        }
-                    }
-                }
-                body_query_reference_cache
-                    .insert(instance.clone(), transaction.references().clone());
-                if let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } =
-                    transaction
-                {
-                    body_query_errors.insert(instance.clone(), errors.clone());
-                    continue;
-                }
-                let crate::body_query::BodyTransaction::Success {
-                    body,
-                    consulted_anonymous_nominals,
-                    ..
-                } = transaction
-                else {
-                    unreachable!("body closure contains no control transactions")
-                };
-                body_consulted_anonymous.extend(
-                    consulted_anonymous_nominals
-                        .0
-                        .iter()
-                        .cloned()
-                        .map(|nominal| (nominal.identity.clone(), nominal)),
-                );
-                if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
-                    analysis.produced_anonymous.as_ref()
-                {
-                    body_produced_anonymous.extend(
-                        produced
-                            .0
-                            .iter()
-                            .cloned()
-                            .map(|nominal| (nominal.identity.clone(), nominal)),
-                    );
-                }
-                let canonical_body = body.clone();
-                match body.as_ref() {
-                    crate::body_query::CanonicalBody::Ordinary { owner, body } => {
-                        let Some(record) =
-                            prepared_definitions.definitions().definition_by_key(owner)
-                        else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published an ordinary body whose owner has no issued definition record"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        let Some(body_span) = record.body_span() else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published an ordinary body whose owner definition record carries no body span"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        durable_body_candidates.push(
-                            crate::canonical_semantic::PreparedDurableBodyCandidate {
-                                owner: owner.clone(),
-                                body_span,
-                                body: body.clone(),
-                                canonical: canonical_body.clone().into(),
-                            },
-                        );
-                    }
-                    crate::body_query::CanonicalBody::Anonymous {
-                        identity,
-                        body_anchor,
-                        body,
-                    } => {
-                        let crate::FunctionInstanceKey::AnonymousMember { owner, member: _ } =
-                            identity
-                        else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published an anonymous body whose identity is not an anonymous member"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
-                            _,
-                        )) = owner.as_ref()
-                        else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published an anonymous body whose owner is not an anonymous nominal type"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        let Some(source) = current_source_locator.as_ref() else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published an anonymous body without a current source locator"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        let body_span = rue_span::Span::with_file(
-                            source.file_id,
-                            source
-                                .body_start
-                                .saturating_add(body_anchor.start)
-                                .min(source.body_end),
-                            source
-                                .body_start
-                                .saturating_add(body_anchor.end)
-                                .min(source.body_end),
-                        );
-                        durable_anonymous_body_candidates.push(
-                            crate::canonical_semantic::PreparedDurableAnonymousBodyCandidate {
-                                identity: identity.clone(),
-                                body_span,
-                                body: body.clone(),
-                                canonical: canonical_body.clone().into(),
-                            },
-                        );
-                    }
-                    crate::body_query::CanonicalBody::Specialization { identity, body, .. } => {
-                        let Some(record) = prepared_definitions
-                            .definitions()
-                            .definition_by_key(&identity.base)
-                        else {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(
-                                    crate::CompileError::without_span(
-                                        rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} published a specialization body whose base has no issued definition record"
-                                        )),
-                                    ),
-                                ),
-                            );
-                            continue;
-                        };
-                        durable_specialized_body_candidates.push(
-                            crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
-                                instance: instance.clone(),
-                                identity: identity.clone(),
-                                body_span: record.declaration_span(),
-                                body: body.clone(),
-                                canonical: canonical_body.clone().into(),
-                            },
-                        );
-                    }
-                }
-            }
-            queried_body_work.closure_bodies_visited = closure_output.bodies.len();
-            tracing::info!(
-                bodies_attempted = queried_body_work.bodies_attempted,
-                bodies_visited = queried_body_work.closure_bodies_visited,
-                closure_restarts = queried_body_work.closure_restarts,
-                deferred_producer_retries = queried_body_work.deferred_producer_retries,
-                max_specialization_depth = queried_body_work.max_specialization_depth,
-                "body closure complete"
-            );
-        }
-        let query_anonymous_nominals = {
-            let mut all = query_anonymous_nominals
-                .iter()
-                .cloned()
-                .map(|nominal| (nominal.identity.clone(), nominal))
-                .collect::<BTreeMap<_, _>>();
-            all.extend(body_consulted_anonymous);
-            all.extend(body_produced_anonymous);
-            Arc::from(all.into_values().collect::<Vec<_>>())
-        };
-        // Declaration payloads have one production authority: the revisioned
-        // semantic query nucleus. The old durable declaration cache remains a
-        // test-oracle fixture only; it must never select or revive a second
-        // declaration resolver in a real request.
-        let analysis = prepared.and_then(|prepared| {
-            if !body_query_errors.is_empty() {
-                let errors = body_query_errors.into_values().fold(
-                    CompileErrors::new(),
-                    |mut all, errors| {
-                        all.extend(errors);
-                        all
-                    },
-                );
-                let mut work = CanonicalSemanticWork {
-                    declaration_index: prepared.declaration_index_work(),
-                    declaration_reuse: prepared.declaration_reuse_work(),
-                    ..CanonicalSemanticWork::default()
-                };
-                work.accrue_body_query_work(queried_body_work);
-                return Err(CanonicalSemanticFailure::body(errors, work));
-            }
-            let durable = query_declarations
-                .expect("successful semantic-nucleus projection publishes declaration payloads");
-            let definitions = prepared.definitions().clone();
-            let mut output = analyze_prepared_canonical_program_reusing_declarations(
-                &merged,
-                rir.clone(),
-                options,
-                &imports,
-                prepared,
-                &definitions,
-                &durable,
-                &query_anonymous_nominals,
-                &query_declaration_dependencies,
-                durable_body_candidates,
-                durable_specialized_body_candidates,
-                durable_anonymous_body_candidates,
-                demanded_drop_glue,
-                demanded_drop_glue_plans,
-                durable_body_work,
-                &self.queries.revisioned,
-                runtime_revision,
-                cancellation.clone(),
-            )?;
-            output.accrue_body_query_work(queried_body_work);
-            Ok(output)
-        });
-        if cancellation.is_canceled() {
-            return Err(SemanticRequestControl::Abort(
-                rue_query::QueryAbort::Canceled,
-            ));
-        }
-        let failure = analysis.as_ref().err().map(|failure| failure.failure);
-        let semantic_work = analysis
-            .as_ref()
-            .map(|output| output.work())
-            .unwrap_or_else(|failure| failure.failure.work);
-        let result = analysis.map(Arc::new).map_err(|failure| failure.errors);
-        let record = SemanticQueryRecord {
-            input: input.clone(),
-            work: semantic_work,
-            failure,
-            failed: result.is_err(),
-        };
-        guard.accrue(QueryStructuralWork::Semantic(Box::new(record.clone())));
-        *attempt_record = Some(record);
-        if let Ok(output) = &result {
-            debug_assert_eq!(output.input(), &input);
-            debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
-            debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
-        }
-        let diagnostic_input = semantic_diagnostic_input(&input, imports.clone());
-        let diagnostics = self.publish_diagnostics(
-            &source,
-            FrontendDiagnosticIdentity::Semantic(diagnostic_input),
-            result.as_ref().err(),
-            result
-                .as_ref()
-                .map(|output| output.warnings())
-                .unwrap_or(&[]),
-        );
-        guard.attach_diagnostics(diagnostics.clone());
-        self.diagnostics.select_snapshot(&diagnostics);
-        self.refresh_retention_metrics();
-        result.map_err(SemanticRequestControl::Compile)
-    }
-
-    /// Issue stable definition IDs on demand for the current semantic input.
-    ///
-    /// The authoritative semantic terminal already owns the final,
-    /// post-classification definition universe. This projection never starts a
-    /// peer declaration bind or reconstructs stable IDs from shells.
-    pub(crate) fn stable_definitions(
-        &mut self,
-        options: &CompileOptions,
-    ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
-        let mut guard = self.metrics.begin::<DefinitionQuery>();
-        let attempt_id = guard.id;
-        let mut execution = QueryAttemptExecution::Rejected;
-        let mut origin = None;
-        let mut attempt_record = None;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.stable_definitions_attempt(
-                options,
-                attempt_id,
-                &mut guard,
-                &mut execution,
-                &mut origin,
-                &mut attempt_record,
-            )
-        }));
-        let result = match result {
-            Ok(result) => result,
-            Err(payload) => self.resume_canceled_query(&mut guard, payload),
-        };
-        let structural = attempt_record
-            .clone()
-            .map(Box::new)
-            .map(QueryStructuralWork::Definition)
-            .unwrap_or(QueryStructuralWork::None);
-        guard.finish(execution, origin, &result, structural);
-        self.metrics.publish_definition(0);
-        self.metrics.synchronize();
-        result
-    }
-
-    fn stable_definitions_attempt(
-        &mut self,
-        options: &CompileOptions,
-        _attempt_id: AttemptId,
-        guard: &mut QueryComputationGuard,
-        execution: &mut QueryAttemptExecution,
-        _origin: &mut Option<AttemptId>,
-        attempt_record: &mut Option<DefinitionQueryRecord>,
-    ) -> Result<Arc<BoundDefinitionSet>, CompileErrors> {
-        self.require_successful_import_diagnostics()?;
-        let imports = self.accepted_semantic_import_graph()?;
-        let snapshot = self
-            .published_snapshot
-            .clone()
-            .expect("definition query retains its exact source snapshot");
-        let input =
-            SemanticInputDescriptor::new(&snapshot, options.target, &options.preview_features);
-        let _rir = match self.canonical_rir() {
-            Ok(rir) => rir,
-            Err(errors) => {
-                let record = DefinitionQueryRecord {
-                    input: input.clone(),
-                    binding: DeclarationBindingWork::default(),
-                    manifest: SemanticBindingManifestWork::default(),
-                    issuance: BoundDefinitionWork::default(),
-                    failed: true,
-                };
-                guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
-                *attempt_record = Some(record);
-                self.refresh_retention_metrics();
-                return Err(errors);
-            }
-        };
-        let merged = self.merge()?;
-        let semantic = match self.canonical_semantic(options) {
-            Ok(semantic) => semantic,
-            Err(errors) => {
-                let record = DefinitionQueryRecord {
-                    input: input.clone(),
-                    binding: DeclarationBindingWork::default(),
-                    manifest: SemanticBindingManifestWork::default(),
-                    issuance: BoundDefinitionWork::default(),
-                    failed: true,
-                };
-                guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
-                *attempt_record = Some(record);
-                self.refresh_retention_metrics();
-                return Err(errors);
-            }
-        };
-        *execution = QueryAttemptExecution::Computed;
-        guard.started();
-        let computation = compute_stable_definitions(&merged, options, &imports, &semantic);
-        let result = computation.result.clone();
-        let record = DefinitionQueryRecord {
-            input,
-            binding: computation.binding,
-            manifest: computation.manifest,
-            issuance: computation.issuance,
-            failed: result.is_err(),
-        };
-        guard.accrue(QueryStructuralWork::Definition(Box::new(record.clone())));
-        *attempt_record = Some(record);
-        self.refresh_retention_metrics();
-        result
     }
 }
 
@@ -6858,31 +6123,6 @@ fn rooted_unused_function_warnings(
             )
         })
         .collect()
-}
-
-fn declaration_shell_failure_diagnostics(
-    modules: &[Arc<crate::parsed_modules::ParsedModule>],
-    failure: &crate::declaration_candidate::DeclarationShellFailure,
-) -> CompileErrors {
-    use crate::declaration_candidate::DeclarationShellFailure as F;
-    let key = match failure {
-        F::Absent(key) | F::Ambiguous(key) | F::ParserCapabilityMismatch(key) => Some(key),
-        F::OccurrencesUnavailable(_) => None,
-    };
-    let span = key.and_then(|key| {
-        modules
-            .iter()
-            .find(|module| module.module_id() == &key.module)
-            .and_then(|module| module.definitions().declaration_locator(key))
-            .map(|locator| locator.declaration_span)
-    });
-    let kind = ErrorKind::InternalError(format!(
-        "query-owned declaration shell failed stable validation: {failure:?}"
-    ));
-    CompileErrors::from(match span {
-        Some(span) => CompileError::new(kind, span),
-        None => CompileError::without_span(kind),
-    })
 }
 
 fn semantic_nucleus_failure_diagnostics(
@@ -7436,23 +6676,28 @@ mod tests {
     }
 
     fn body_query_key(
-        session: &mut CompilerSession,
+        _session: &mut CompilerSession,
         options: &CompileOptions,
         name: &str,
     ) -> crate::body_query::BodyQueryKey {
-        let definitions = session.stable_definitions(options).unwrap();
-        let definition = definitions
-            .definitions()
-            .iter()
-            .find(|record| {
-                record.stable_key().kind() == StableDefinitionKind::Function
-                    && record.stable_key().name() == name
-            })
-            .unwrap()
-            .stable_key()
-            .clone();
+        body_query_key_in(options, "main.rue", name)
+    }
+
+    fn body_query_key_in(
+        options: &CompileOptions,
+        module: &str,
+        name: &str,
+    ) -> crate::body_query::BodyQueryKey {
+        let function =
+            crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+                crate::ModuleId::from_logical_path(module).unwrap(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                name,
+                None,
+            ));
         crate::body_query::BodyQueryKey::new(
-            crate::FunctionInstanceKey::Definition(definition),
+            function,
             crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
@@ -7468,11 +6713,10 @@ mod tests {
     /// appends its argument mangling to that. Tests therefore select a
     /// specialization through its durable identity.
     fn specialization_arguments<'a>(
-        function: &'a FunctionWithCfg,
+        function: &'a RootedCfgUnit,
         source_name: &str,
     ) -> Option<&'a crate::CanonicalArguments> {
-        let crate::FunctionInstanceKey::Specialization { base, arguments } =
-            &function.semantic_identity
+        let crate::FunctionInstanceKey::Specialization { base, arguments } = &function.function
         else {
             return None;
         };
@@ -7674,8 +6918,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        FunctionWithCfg, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
-        SourceSnapshot, StableDefinitionKey, StableDefinitionKind, Target,
+        OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+        StableDefinitionKey, Target,
     };
 
     #[test]
@@ -7901,7 +7145,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         let cold = session.unstable_metrics().retention();
         assert!(cold.retained_query_records > 0);
@@ -7910,7 +7154,7 @@ mod tests {
         assert!(cold.retained_bytes <= cold.retained_byte_budget);
         assert!(cold.dependency_pins <= cold.dependency_pin_budget);
 
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let warm = session.unstable_metrics().retention();
         assert_eq!(warm.retained_query_records, cold.retained_query_records);
         assert_eq!(warm.retained_bytes, cold.retained_bytes);
@@ -7925,7 +7169,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let merged = session.merge().unwrap();
         let revision = session
             .queries
@@ -7981,12 +7225,12 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
 
-        let park = match session.semantic_or_toolchain_park(&CompileOptions::default()) {
-            SemanticParkOutcome::Parked(park) => park,
-            SemanticParkOutcome::Ready(_) => {
+        let park = match session.rooted_or_toolchain_park(&CompileOptions::default()) {
+            RootedParkOutcome::Parked(park) => park,
+            RootedParkOutcome::Ready => {
                 panic!("expected a trusted-toolchain park, got successful analysis")
             }
-            SemanticParkOutcome::Errors(errors) => {
+            RootedParkOutcome::Errors(errors) => {
                 panic!("expected a trusted-toolchain park, got errors: {errors:?}")
             }
         };
@@ -8034,10 +7278,10 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
 
-        let park = match session.semantic_or_toolchain_park(&CompileOptions::default()) {
-            SemanticParkOutcome::Parked(park) => park,
-            SemanticParkOutcome::Ready(_) => panic!("expected a batched park, got ready analysis"),
-            SemanticParkOutcome::Errors(errors) => {
+        let park = match session.rooted_or_toolchain_park(&CompileOptions::default()) {
+            RootedParkOutcome::Parked(park) => park,
+            RootedParkOutcome::Ready => panic!("expected a batched park, got ready analysis"),
+            RootedParkOutcome::Errors(errors) => {
                 panic!("expected a batched park, got errors: {errors:?}")
             }
         };
@@ -8142,12 +7386,12 @@ mod tests {
         );
         // The rooted attempt parks; the park attaches its exact demanded-missing
         // set to this closed state, making the continuation authorizing.
-        match session.semantic_or_toolchain_park(&CompileOptions::default()) {
-            SemanticParkOutcome::Parked(_) => {}
-            SemanticParkOutcome::Ready(_) => {
+        match session.rooted_or_toolchain_park(&CompileOptions::default()) {
+            RootedParkOutcome::Parked(_) => {}
+            RootedParkOutcome::Ready => {
                 panic!("expected the reached fallible intrinsic to park the rooted attempt")
             }
-            SemanticParkOutcome::Errors(errors) => {
+            RootedParkOutcome::Errors(errors) => {
                 panic!("expected a trusted-toolchain park, got errors: {errors:?}")
             }
         }
@@ -8399,8 +7643,8 @@ mod tests {
         session.close_import_discovery(ledger).unwrap();
         // The rooted attempt is ready: no park, so no demanded set is attached.
         assert!(matches!(
-            session.semantic_or_toolchain_park(&CompileOptions::default()),
-            SemanticParkOutcome::Ready(_)
+            session.rooted_or_toolchain_park(&CompileOptions::default()),
+            RootedParkOutcome::Ready
         ));
         assert!(
             session.closed_discovery_continuation().is_none(),
@@ -8913,7 +8157,7 @@ mod tests {
 
     #[test]
     fn stable_no_filesystem_boundary_classifies_unsatisfied_toolchain_input_not_ice() {
-        // RUE-1112 C3: the stable no-filesystem `canonical_semantic` entry cannot
+        // RUE-1112 C3: the stable no-filesystem `rooted_semantic` entry cannot
         // acquire, so an unsatisfied trusted-toolchain demand for otherwise-valid
         // source is a deterministic CONTRACT failure, never an ICE (E9000).
         let source = snapshot(
@@ -8928,7 +8172,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let errors = session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap_err();
         let error = errors.first().expect("unsatisfied toolchain input error");
         assert!(
@@ -8960,7 +8204,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("the program analyzes");
         let metrics = crate::unstable::provider_observation_metrics(&session);
         assert_eq!(metrics.name_lookups, 3);
@@ -9003,7 +8247,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("the program analyzes");
 
         let metrics = crate::unstable::provider_observation_metrics(&session);
@@ -9030,7 +8274,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("recursive named imports use the in-progress cycle break");
     }
 
@@ -9051,7 +8295,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("the program analyzes");
 
         let metrics = crate::unstable::lookup_pressure_metrics(&session);
@@ -9104,14 +8348,14 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("initial closure analyzes");
         let initial = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(initial.published_roots, 2, "{initial:?}");
 
         session.update(&unreachable).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("unreachable successor analyzes");
         let after_unreachable = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(
@@ -9121,7 +8365,7 @@ mod tests {
 
         session.update(&deleted).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("deleted successor analyzes");
         let after_deleted = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(
@@ -9148,7 +8392,7 @@ mod tests {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let errors = session
-                .canonical_semantic(&CompileOptions::default())
+                .rooted_semantic(&CompileOptions::default())
                 .unwrap_err();
             let error = errors.first().expect("duplicate parameter diagnostic");
             assert!(
@@ -9170,10 +8414,10 @@ mod tests {
         session.update(&source).into_result().unwrap();
 
         let first = session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect_err("empty anonymous struct is rejected");
         let second = session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect_err("the retained producer failure remains deterministic");
 
         assert_eq!(first, second);
@@ -9211,7 +8455,7 @@ mod tests {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let errors = session
-                .canonical_semantic(&CompileOptions::default())
+                .rooted_semantic(&CompileOptions::default())
                 .unwrap_err();
             let error = errors.first().expect("destructor validity diagnostic");
             assert!(
@@ -9286,7 +8530,7 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let consume_key = body_query_key(&mut session, &options, "consume");
         let consume_transaction = retained_body_transaction(&session, &consume_key).2;
         assert!(
@@ -9308,12 +8552,12 @@ mod tests {
             "{dependency_nodes:?}"
         );
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -9346,14 +8590,14 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -9391,13 +8635,13 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.canonical_semantic(&options).unwrap();
+        let cold = session.rooted_semantic(&options).unwrap();
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
         let cold_atoms = cold
             .functions()
             .iter()
-            .flat_map(|function| function.local_atoms.iter())
+            .flat_map(|function| function.record.local_atoms.iter())
             .collect::<Vec<_>>();
         assert_eq!(cold_atoms.len(), 5);
         assert_eq!(
@@ -9407,23 +8651,36 @@ mod tests {
                 .count(),
             2
         );
-        assert!(cold_atoms.iter().any(|atom| atom.dense_id > 1));
+        for function in cold.functions() {
+            for atom in function.record.local_atoms.iter() {
+                assert_eq!(
+                    function
+                        .record
+                        .strings
+                        .get(atom.dense_id as usize)
+                        .map(String::as_str),
+                    Some(atom.content.as_ref())
+                );
+            }
+        }
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(
             warm.work().cfg.cfg_reuses,
             2,
             "cfg work: {:?}",
             warm.work().cfg
         );
-        assert_eq!(warm.work().cfg.cfg_import_successes, 2);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
         assert_eq!(warm.work().cfg.optimization_attempts, 1);
         assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
         for function in warm.functions() {
-            for atom in &function.local_atoms {
+            for atom in function.record.local_atoms.iter() {
                 assert_eq!(
-                    warm.strings()
+                    function
+                        .record
+                        .strings
                         .get(atom.dense_id as usize)
                         .map(String::as_str),
                     Some(atom.content.as_ref())
@@ -9433,7 +8690,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -9453,9 +8710,7 @@ mod tests {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let semantic = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let semantic = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let cfg_work = semantic.work().cfg;
         assert_eq!(cfg_work.materialization_index_builds, 1, "{cfg_work:?}");
         assert_eq!(
@@ -9484,7 +8739,12 @@ mod tests {
         let names = semantic
             .functions()
             .iter()
-            .map(|function| (function.analyzed.name.as_str(), function.cfg.fn_name()))
+            .map(|function| {
+                (
+                    function.record.source_name.as_ref(),
+                    function.record.cfg.fn_name(),
+                )
+            })
             .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(
             names.get("__rue_fn_main_2erue__probe"),
@@ -9519,10 +8779,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert!(
             warm.work().cfg.cfg_builds_attempted > 0,
             "same-layout drop-fact changes must rebuild affected CFGs: {:?}",
@@ -9530,7 +8790,7 @@ mod tests {
         );
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -9562,10 +8822,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(
             warm.work().cfg.cfg_builds_attempted,
             0,
@@ -9584,15 +8844,10 @@ mod tests {
             "complete relocation domains must reuse optimized terminals: {:?}",
             warm.work().cfg
         );
-        assert_eq!(
-            warm.work().cfg.cfg_import_successes,
-            warm.work().cfg.cfg_reuses,
-            "the collector must receive already-relocated optimized terminals: {:?}",
-            warm.work().cfg
-        );
+        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -9624,14 +8879,14 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
-        assert_eq!(warm.work().cfg.cfg_reuse_candidates, 0);
+        let warm = session.rooted_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuse_candidates, 1);
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert_eq!(warm.work().cfg.cfg_import_attempts, 1);
-        assert_eq!(warm.work().cfg.cfg_import_successes, 1);
+        assert_eq!(warm.work().cfg.cfg_import_attempts, 0);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         assert_eq!(warm.work().cfg.cfg_import_failures, 0);
         assert_eq!(warm.work().cfg.cfg_fallbacks, 0);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
@@ -9643,7 +8898,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -9666,12 +8921,12 @@ mod tests {
         let first = well_known_option_isolation_snapshot(&first_text);
         let second = well_known_option_isolation_snapshot(&second_text);
         let options = CompileOptions::default();
-        let runtime_symbols = |output: &crate::CanonicalSemanticOutput| {
+        let runtime_symbols = |output: &crate::RootedSemanticOutput| {
             output
                 .functions()
                 .iter()
                 .flat_map(|function| {
-                    let cfg = &function.cfg;
+                    let cfg = &function.record.cfg;
                     cfg.blocks()
                         .iter()
                         .flat_map(|block| block.insts.iter())
@@ -9680,7 +8935,7 @@ mod tests {
                                 runtime: Some(rue_air::RuntimeCallKind::ParseI64),
                                 name,
                                 ..
-                            } => Some(name),
+                            } => Some(function.record.interner.resolve(&name).to_owned()),
                             _ => None,
                         })
                         .collect::<Vec<_>>()
@@ -9690,9 +8945,9 @@ mod tests {
 
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &first);
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         publish_with_test_imports(&mut session, &second);
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
         assert!(warm.work().cfg.cfg_reuses >= 2, "{:?}", warm.work().cfg);
         assert_eq!(
@@ -9703,28 +8958,14 @@ mod tests {
         );
         let warm_symbols = runtime_symbols(&warm);
         assert_eq!(warm_symbols.len(), 1);
-        let warm_rir = warm.rir_owner();
-        assert_eq!(
-            warm_rir
-                .semantic_symbols()
-                .interner()
-                .resolve(&warm_symbols[0]),
-            "parse_i64"
-        );
+        assert_eq!(warm_symbols[0], "parse_i64");
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &second);
-        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_semantic(&options).unwrap();
         let fresh_symbols = runtime_symbols(&fresh_output);
         assert_eq!(fresh_symbols.len(), 1);
-        let fresh_rir = fresh_output.rir_owner();
-        assert_eq!(
-            fresh_rir
-                .semantic_symbols()
-                .interner()
-                .resolve(&fresh_symbols[0]),
-            "parse_i64"
-        );
+        assert_eq!(fresh_symbols[0], "parse_i64");
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh_output.functions()))
@@ -9740,12 +8981,12 @@ mod tests {
                  fn main() -> i32 {{ probe_print(); 0 }}"
             )
         };
-        let runtime_calls = |output: &crate::CanonicalSemanticOutput| {
+        let runtime_calls = |output: &crate::RootedSemanticOutput| {
             output
                 .functions()
                 .iter()
                 .flat_map(|function| {
-                    let cfg = &function.cfg;
+                    let cfg = &function.record.cfg;
                     cfg.blocks()
                         .iter()
                         .flat_map(|block| block.insts.iter())
@@ -9754,7 +8995,9 @@ mod tests {
                                 runtime: Some(runtime),
                                 name,
                                 ..
-                            } => Some((runtime, name)),
+                            } => {
+                                Some((runtime, function.record.interner.resolve(&name).to_owned()))
+                            }
                             _ => None,
                         })
                         .collect::<Vec<_>>()
@@ -9768,39 +9011,31 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.canonical_semantic(&options).unwrap();
+        let cold = session.rooted_semantic(&options).unwrap();
         let cold_calls = runtime_calls(&cold);
         assert_eq!(cold_calls.len(), 1);
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
         assert_eq!(warm.work().cfg.cfg_reuses, 2);
         assert_eq!(warm.work().cfg.optimization_attempts, 0);
         let warm_calls = runtime_calls(&warm);
         assert_eq!(warm_calls.len(), 1);
-        assert_ne!(
+        assert_eq!(
             cold_calls, warm_calls,
-            "the inserted declaration must perturb the live runtime-call symbol"
+            "function-local domains keep stable runtime-call spellings"
         );
-        let warm_rir = warm.rir_owner();
         for (runtime, symbol) in &warm_calls {
-            assert_eq!(
-                warm_rir.semantic_symbols().interner().resolve(symbol),
-                runtime.helper().helper().symbol
-            );
+            assert_eq!(symbol, runtime.helper().helper().symbol);
         }
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_semantic(&options).unwrap();
         let fresh_calls = runtime_calls(&fresh_output);
         assert_eq!(fresh_calls.len(), 1);
-        let fresh_rir = fresh_output.rir_owner();
         for (runtime, symbol) in &fresh_calls {
-            assert_eq!(
-                fresh_rir.semantic_symbols().interner().resolve(symbol),
-                runtime.helper().helper().symbol
-            );
+            assert_eq!(symbol, runtime.helper().helper().symbol);
         }
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
@@ -9832,19 +9067,19 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
 
-        let cold = session.canonical_semantic(&o0).unwrap();
+        let cold = session.rooted_semantic(&o0).unwrap();
         assert_eq!(cold.functions().len(), 3);
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
 
-        let optimized = session.canonical_semantic(&o1).unwrap();
+        let optimized = session.rooted_semantic(&o1).unwrap();
         assert_eq!(optimized.functions().len(), 3);
         assert_eq!(optimized.work().cfg.cfg_builds_attempted, 0);
         assert_eq!(optimized.work().cfg.cfg_builds_succeeded, 0);
         assert_eq!(optimized.work().cfg.cfg_builds_failed, 0);
         assert_eq!(optimized.work().cfg.cfg_reuses, 3);
-        assert_eq!(optimized.work().cfg.cfg_import_attempts, 3);
-        assert_eq!(optimized.work().cfg.cfg_import_successes, 3);
+        assert_eq!(optimized.work().cfg.cfg_import_attempts, 0);
+        assert_eq!(optimized.work().cfg.cfg_import_successes, 0);
         assert_eq!(optimized.work().cfg.optimization_attempts, 3);
         assert_eq!(optimized.work().cfg.optimization_completions, 3);
         assert_eq!(optimized.work().cfg.optimized_level_attempts, 3);
@@ -9876,12 +9111,12 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         assert!(warm.functions().iter().any(|function| {
             matches!(
-                function.semantic_identity,
+                function.function,
                 crate::FunctionInstanceKey::Specialization { .. }
             )
         }));
@@ -9925,17 +9160,17 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&first_options).unwrap();
-        let cross_target = session.canonical_semantic(&other_options).unwrap();
+        session.rooted_semantic(&first_options).unwrap();
+        let cross_target = session.rooted_semantic(&other_options).unwrap();
         assert_eq!(cross_target.work().cfg.cfg_reuses, 0);
         assert_eq!(cross_target.work().cfg.cfg_builds_attempted, 3);
         session.update(&renamed).into_result().unwrap();
-        let changed = session.canonical_semantic(&other_options).unwrap();
+        let changed = session.rooted_semantic(&other_options).unwrap();
         assert_eq!(changed.work().cfg.cfg_reuses, 1);
         assert_eq!(changed.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&renamed).into_result().unwrap();
-        let fresh = fresh.canonical_semantic(&other_options).unwrap();
+        let fresh = fresh.rooted_semantic(&other_options).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -9965,11 +9200,11 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let (first_stamp, _, first_transaction) = retained_body_transaction(&session, &main);
         session.update(&second).into_result().unwrap();
-        let output = session.canonical_semantic(&options).unwrap();
+        let output = session.rooted_semantic(&options).unwrap();
         let (second_stamp, _, second_transaction) = retained_body_transaction(&session, &main);
         assert_ne!(first_stamp, second_stamp);
         assert!(matches!(
@@ -9980,15 +9215,13 @@ mod tests {
             second_transaction,
             crate::body_query::BodyTransaction::Success { .. }
         ));
-        assert_eq!(output.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(output.work().binding.durable_install_invocations, 1);
-        assert_eq!(output.work().declaration_reuse.durable_records_reused, 2);
+        assert_eq!(output.work().body_analysis.body_analyses_computed, 1);
     }
 
     fn assert_semantic_artifact_parity(
         session: &CompilerSession,
-        actual: &CanonicalSemanticOutput,
-        fresh: &CanonicalSemanticOutput,
+        actual: &RootedSemanticOutput,
+        fresh: &RootedSemanticOutput,
     ) {
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", actual.functions())),
@@ -10026,10 +9259,7 @@ mod tests {
         normalized
     }
 
-    fn assert_body_artifact_parity(
-        actual: &CanonicalSemanticOutput,
-        fresh: &CanonicalSemanticOutput,
-    ) {
+    fn assert_body_artifact_parity(actual: &RootedSemanticOutput, fresh: &RootedSemanticOutput) {
         assert_eq!(
             format!("{:?}", actual.functions()),
             format!("{:?}", fresh.functions())
@@ -10039,7 +9269,7 @@ mod tests {
             format!("{:?}", actual.warnings()),
             format!("{:?}", fresh.warnings())
         );
-        assert_eq!(actual.type_pool().stats(), fresh.type_pool().stats());
+        assert_eq!(actual.type_pool_stats(), fresh.type_pool_stats());
     }
 
     fn assert_diagnostic_parity(actual: &CompilerSession, fresh: &CompilerSession) {
@@ -10079,21 +9309,15 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&relocated_edit).into_result().unwrap();
-        let reused = session.canonical_semantic(&options).unwrap();
-        assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(reused.work().binding.durable_payloads_installed, 2);
-        assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(
-            reused.work().declaration_reuse.declaration_prefix_fallbacks,
-            0
-        );
+        let reused = session.rooted_semantic(&options).unwrap();
+        assert!(reused.work().body_analysis.body_analyses_computed > 0);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&relocated_edit).into_result().unwrap();
-        let ordinary = fresh.canonical_semantic(&options).unwrap();
+        let ordinary = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &reused, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -10118,28 +9342,17 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&edited).into_result().unwrap();
-        let actual = session.canonical_semantic(&options).unwrap();
-        assert_eq!(actual.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(actual.work().declaration_reuse.install_invocations, 1);
-        assert_eq!(actual.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(actual.work().declaration_reuse.fallbacks, 0);
-        assert_eq!(
-            actual.work().declaration_reuse.declaration_prefix_fallbacks,
-            0
-        );
-        assert_eq!(
-            actual.work().declaration_reuse.declaration_prefixes_built,
-            1
-        );
+        let actual = session.rooted_semantic(&options).unwrap();
+        assert_eq!(actual.work().body_analysis.body_analyses_computed, 1);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.canonical_semantic(&options).unwrap();
+        let ordinary = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &actual, &ordinary);
-        assert_eq!(actual.type_pool().stats(), ordinary.type_pool().stats());
+        assert_eq!(actual.type_pool_stats(), ordinary.type_pool_stats());
         assert_diagnostic_parity(&session, &fresh);
     }
 
@@ -10157,44 +9370,25 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.canonical_semantic(&options).unwrap();
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(cold.work().binding.durable_install_invocations, 1);
+        let cold = session.rooted_semantic(&options).unwrap();
+        assert!(cold.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            ordinary.work().binding.declaration_resolution_invocations,
-            0
-        );
-        assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
-        assert_eq!(ordinary.work().binding.durable_payloads_installed, 3);
-        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 3);
-        assert_eq!(
-            ordinary
-                .work()
-                .declaration_reuse
-                .declaration_prefix_fallbacks,
-            0
-        );
+        let ordinary = session.rooted_semantic(&options).unwrap();
+        assert!(ordinary.work().body_analysis.body_analyses_computed > 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.canonical_semantic(&options).unwrap();
+        let expected = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
 
         // Moving to a different declaration universe seeds a new baseline, and
         // its next body edit can reuse normally.
         session.update(&supported).into_result().unwrap();
-        let seeded = session.canonical_semantic(&options).unwrap();
-        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(seeded.work().binding.durable_install_invocations, 1);
+        let seeded = session.rooted_semantic(&options).unwrap();
+        assert!(seeded.work().body_analysis.body_analyses_computed > 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            recovered.work().binding.declaration_resolution_invocations,
-            0
-        );
-        assert_eq!(recovered.work().binding.durable_payloads_installed, 1);
+        let recovered = session.rooted_semantic(&options).unwrap();
+        assert!(recovered.work().body_analysis.body_analyses_computed > 0);
     }
 
     #[test]
@@ -10220,32 +9414,18 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.canonical_semantic(&options).unwrap();
-        assert_eq!(cold.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(cold.work().binding.durable_install_invocations, 1);
+        let cold = session.rooted_semantic(&options).unwrap();
+        assert!(cold.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            ordinary.work().binding.declaration_resolution_invocations,
-            0
-        );
-        assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
-        assert_eq!(ordinary.work().binding.durable_payloads_installed, 2);
-        assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(
-            ordinary
-                .work()
-                .declaration_reuse
-                .declaration_prefix_fallbacks,
-            0
-        );
+        let ordinary = session.rooted_semantic(&options).unwrap();
+        assert!(ordinary.work().body_analysis.body_analyses_computed > 0);
         // Type producers are query inputs, not runtime function bodies. The
         // reached executable set is `main` plus the anonymous `get` method.
         assert_eq!(ordinary.functions().len(), 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.canonical_semantic(&options).unwrap();
+        let expected = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &ordinary, &expected);
 
         let supported = snapshot(
@@ -10257,16 +9437,11 @@ mod tests {
             1,
         );
         session.update(&supported).into_result().unwrap();
-        let seeded = session.canonical_semantic(&options).unwrap();
-        assert_eq!(seeded.work().binding.declaration_resolution_invocations, 0);
-        assert_eq!(seeded.work().binding.durable_install_invocations, 1);
+        let seeded = session.rooted_semantic(&options).unwrap();
+        assert!(seeded.work().body_analysis.body_analyses_computed > 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            recovered.work().binding.declaration_resolution_invocations,
-            0
-        );
-        assert_eq!(recovered.work().binding.durable_payloads_installed, 1);
+        let recovered = session.rooted_semantic(&options).unwrap();
+        assert!(recovered.work().body_analysis.body_analyses_computed > 0);
     }
 
     #[test]
@@ -10310,35 +9485,25 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         session.update(&signature).into_result().unwrap();
-        let changed = session.canonical_semantic(&options).unwrap();
-        assert_eq!(changed.work().binding.declaration_resolution_invocations, 0);
+        let changed = session.rooted_semantic(&options).unwrap();
+        assert!(changed.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&broken_body).into_result().unwrap();
-        assert!(session.canonical_semantic(&options).is_err());
+        assert!(session.rooted_semantic(&options).is_err());
         session.update(&recovered).into_result().unwrap();
-        let recovered = session.canonical_semantic(&options).unwrap();
-        assert_eq!(
-            recovered.work().binding.declaration_resolution_invocations,
-            0
-        );
-        assert_eq!(recovered.work().declaration_reuse.durable_records_reused, 2);
+        let recovered = session.rooted_semantic(&options).unwrap();
+        assert!(recovered.work().body_analysis.body_analyses_computed > 0);
 
         let mut other_target = options.clone();
         other_target.target = *Target::all()
             .iter()
             .find(|target| **target != options.target)
             .unwrap();
-        let target_changed = session.canonical_semantic(&other_target).unwrap();
-        assert_eq!(
-            target_changed
-                .work()
-                .binding
-                .declaration_resolution_invocations,
-            0
-        );
+        let target_changed = session.rooted_semantic(&other_target).unwrap();
+        assert!(target_changed.work().body_analysis.body_analyses_computed > 0);
     }
 
     #[test]
@@ -10422,10 +9587,10 @@ mod tests {
         let mut session = CompilerSession::new();
 
         session.update(&valid).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let key = body_query_key(&mut session, &options, "main");
         session.update(&first).into_result().unwrap();
-        let first_errors = session.canonical_semantic(&options).unwrap_err();
+        let first_errors = session.rooted_semantic(&options).unwrap_err();
         let (first_stamp, _, _) = retained_body_transaction(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (first_locator_stamp, _) = retained_body_source_locator(&session, &key);
@@ -10439,7 +9604,7 @@ mod tests {
         );
 
         session.update(&shifted).into_result().unwrap();
-        let shifted_errors = session.canonical_semantic(&options).unwrap_err();
+        let shifted_errors = session.rooted_semantic(&options).unwrap_err();
         let (shifted_stamp, _, _) = retained_body_transaction(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (shifted_locator_stamp, _) = retained_body_source_locator(&session, &key);
@@ -10476,14 +9641,14 @@ mod tests {
         let mut session = CompilerSession::new();
 
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let key = body_query_key(&mut session, &options, "main");
         let first_body_stamps = retained_body_query_stamps(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (first_locator_stamp, first_locator) = retained_body_source_locator(&session, &key);
 
         session.update(&shifted).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         let shifted_body_stamps = retained_body_query_stamps(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (shifted_locator_stamp, shifted_locator) = retained_body_source_locator(&session, &key);
@@ -10549,7 +9714,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .expect("many shallow specializations must compile");
     }
 
@@ -10573,7 +9738,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
         let errors = session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap_err();
         assert!(
             matches!(
@@ -10603,16 +9768,8 @@ fn main() -> i32 { 0 }
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
-            let definitions = session
-                .stable_definitions(&CompileOptions::default())
-                .unwrap();
-            assert!(definitions.definitions().iter().any(|record| {
-                record.stable_key().kind() == StableDefinitionKind::ValueConst
-                    && record.stable_key().name() == "T"
-            }));
+            let semantic = session.rooted_semantic(&CompileOptions::default()).unwrap();
+            assert!(!semantic.functions().is_empty());
         }
     }
 
@@ -10639,7 +9796,7 @@ fn main() -> i32 { 0 }
             };
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let query = match session.canonical_semantic(&CompileOptions::default()) {
+            let query = match session.rooted_semantic(&CompileOptions::default()) {
                 Err(errors) => errors,
                 Ok(_) => panic!("query path unexpectedly accepted failure fixture"),
             };
@@ -10647,32 +9804,6 @@ fn main() -> i32 { 0 }
                 |errors: CompileErrors| errors.iter().map(ToString::to_string).collect::<Vec<_>>();
             assert_eq!(messages(retired), messages(query));
         }
-    }
-
-    #[test]
-    fn published_queries_support_stable_tooling_lookups() {
-        let source = base();
-        let options = CompileOptions::default();
-        let mut session = CompilerSession::new();
-        let published = session.update(&source).into_owner_result().unwrap();
-
-        let module_id = ModuleId::from_logical_path("a.rue").unwrap();
-        let module = published.module(&module_id).expect("module by stable ID");
-        assert_eq!(module.module_id(), &module_id);
-        assert!(
-            published
-                .module(&ModuleId::from_logical_path("missing.rue").unwrap())
-                .is_none()
-        );
-
-        let definitions = session.stable_definitions(&options).unwrap();
-        let record = &definitions.definitions()[0];
-        assert!(std::ptr::eq(
-            definitions
-                .definition_by_key(record.stable_key())
-                .expect("definition by stable key"),
-            record
-        ));
     }
 
     #[test]
@@ -10901,28 +10032,32 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         publish_with_test_imports(&mut session, &relocated);
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.canonical_semantic(&options).unwrap();
+        let reused = session.rooted_semantic(&options).unwrap();
         let mut fresh_session = CompilerSession::new();
         publish_with_test_imports(&mut fresh_session, &relocated);
-        let fresh = fresh_session.canonical_semantic(&options).unwrap();
+        let fresh = fresh_session.rooted_semantic(&options).unwrap();
         assert_eq!(
             reused
                 .functions()
                 .iter()
-                .map(|function| (&function.semantic_identity, function.machine_name.as_str()))
+                .map(|function| (
+                    &function.function,
+                    function.record.codegen.defined_symbol.as_ref()
+                ))
                 .collect::<Vec<_>>(),
             fresh
                 .functions()
                 .iter()
-                .map(|function| (&function.semantic_identity, function.machine_name.as_str()))
+                .map(|function| (
+                    &function.function,
+                    function.record.codegen.defined_symbol.as_ref()
+                ))
                 .collect::<Vec<_>>()
         );
         assert_eq!(reused.strings(), fresh.strings());
@@ -10947,10 +10082,8 @@ fn main() -> i32 { 0 }
         let run = |options: CompileOptions| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
-            session.canonical_semantic(&options).unwrap()
+            session.rooted_semantic(&CompileOptions::default()).unwrap();
+            session.rooted_semantic(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -10982,13 +10115,11 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let cold = session.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(cold.warnings().len(), 1);
 
         let warm = session
-            .canonical_semantic(&CompileOptions {
+            .rooted_semantic(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -11014,7 +10145,7 @@ fn main() -> i32 { 0 }
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let errors = session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap_err();
         assert!(errors.iter().any(|error| {
             error
@@ -11031,15 +10162,13 @@ fn main() -> i32 { 0 }
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        session.canonical_semantic(&optimized).unwrap();
+        session.rooted_semantic(&optimized).unwrap();
 
         let unrelated_text = format!("{source_text}\nfn unrelated() -> i32 {{ 7 }}");
         let unrelated = snapshot(
@@ -11047,9 +10176,7 @@ fn main() -> i32 { 0 }
             42,
         );
         session.update(&unrelated).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
 
         let changed_text = "fn inner(comptime T: type, value: T) -> T { let copy = value; copy }\n\
              fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
@@ -11057,14 +10184,10 @@ fn main() -> i32 { 0 }
              fn unrelated() -> i32 { 7 }";
         let changed_source = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
         session.update(&changed_source).into_result().unwrap();
-        let changed = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
-        let fresh = fresh
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", changed.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -11087,15 +10210,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.canonical_semantic(&optimized).unwrap();
+        let warm = session.rooted_semantic(&optimized).unwrap();
         assert_eq!(warm.functions().len(), 7);
     }
 
@@ -11109,9 +10230,7 @@ fn main() -> i32 { 0 }
         let first = snapshot(&[(42, "/p/main.rue", "main.rue", first_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let cold = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let choose_true = cold
             .functions()
             .iter()
@@ -11122,7 +10241,7 @@ fn main() -> i32 { 0 }
             })
             .unwrap();
         let choose_true_key = crate::body_query::BodyQueryKey::new(
-            choose_true.semantic_identity.clone(),
+            choose_true.function.clone(),
             crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: CompileOptions::default().target,
                 preview_features: StablePreviewFeatures::new(
@@ -11153,14 +10272,10 @@ fn main() -> i32 { 0 }
             42,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
-        let fresh = fresh
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -11186,9 +10301,7 @@ fn main() -> i32 { 0 }
         let first = snapshot(&[(43, "/p/main.rue", "main.rue", first_text)], 43);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
 
         let changed_text = first_text.replace("cleanup();", "cleanup(); let marker = 0;");
         let changed_source = snapshot(
@@ -11196,13 +10309,11 @@ fn main() -> i32 { 0 }
             43,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&changed_source).into_result().unwrap();
         let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&changed, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -11230,23 +10341,17 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let reused = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let reused = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let fresh = fresh
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
         );
-        assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
+        assert_eq!(reused.type_pool_stats(), fresh.type_pool_stats());
     }
 
     #[test]
@@ -11280,26 +10385,16 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&a).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&b).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&a).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&a_prime).into_result().unwrap();
-        let output = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let output = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&a_prime).into_result().unwrap();
-        let fresh = fresh
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", output.functions()),
             format!("{:?}", fresh.functions())
@@ -11338,17 +10433,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let actual = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -11376,17 +10467,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let actual = session.rooted_semantic(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
-            .canonical_semantic(&CompileOptions::default())
+            .rooted_semantic(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -11420,18 +10507,16 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&relocated).into_result().unwrap();
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let actual = session.canonical_semantic(&options).unwrap();
+        let actual = session.rooted_semantic(&options).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&relocated).into_result().unwrap();
-        let fresh = fresh_session.canonical_semantic(&options).unwrap();
+        let fresh = fresh_session.rooted_semantic(&options).unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -11459,11 +10544,9 @@ fn main() -> i32 { 0 }
         let run = |options: CompileOptions, next: &SourceSnapshot| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap();
+            session.rooted_semantic(&CompileOptions::default()).unwrap();
             session.update(next).into_result().unwrap();
-            session.canonical_semantic(&options).unwrap()
+            session.rooted_semantic(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -11508,18 +10591,14 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&both_roots).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
         session.update(&other_root).into_result().unwrap();
-        let root = session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        let root = session.rooted_semantic(&CompileOptions::default()).unwrap();
         assert_eq!(root.functions().len(), 1);
     }
 
     #[test]
-    fn malformed_well_known_option_repairs_to_fresh_canonical_semantics() {
+    fn malformed_well_known_option_repairs_to_fresh_rooted_semantics() {
         let options = CompileOptions::default();
         let program = r#"
 const opt = @import("std/option.rue");
@@ -11540,7 +10619,7 @@ fn main() -> i32 {
         let mut warm = CompilerSession::new();
         publish_with_test_imports(&mut warm, &malformed);
         let errors = warm
-            .canonical_semantic(&options)
+            .rooted_semantic(&options)
             .expect_err("the malformed trusted Option specialization must fail");
         assert!(
             errors.to_string().contains("missing"),
@@ -11556,13 +10635,13 @@ fn main() -> i32 {
         );
         publish_with_test_imports(&mut warm, &repaired);
         let warm_repaired = warm
-            .canonical_semantic(&options)
+            .rooted_semantic(&options)
             .expect("the repaired successor must compile");
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &repaired);
         let fresh_repaired = fresh
-            .canonical_semantic(&options)
+            .rooted_semantic(&options)
             .expect("the repaired snapshot must compile fresh");
 
         assert_eq!(
@@ -11626,7 +10705,7 @@ fn main() -> i32 {
         let source_v1 = well_known_option_isolation_snapshot(program_v1);
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &source_v1);
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         let left_key = body_query_key(&mut session, &options, "left");
         let right_key = body_query_key(&mut session, &options, "right");
@@ -11679,7 +10758,7 @@ fn main() -> i32 {
 "#;
         let source_v2 = well_known_option_isolation_snapshot(program_v2);
         publish_with_test_imports(&mut session, &source_v2);
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         let left_key_v2 = body_query_key(&mut session, &options, "left");
         let left_stamp_v2 = retained_body_transaction(&session, &left_key_v2).0;
@@ -11811,14 +10890,13 @@ fn main() -> i32 {
 
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &program(SPARE));
-        let cold = session.canonical_semantic(&options).unwrap();
-        let value = body_query_key(&mut session, &options, "value");
+        let cold = session.rooted_semantic(&options).unwrap();
+        let value = body_query_key_in(&options, "helpers.rue", "value");
 
         // Everything RUE-1125 requires to be a function of `value`'s own
         // declaration: its query terminals, its dependency set, its emitted
         // symbols, and how it is presented.
-        let observed = |session: &CompilerSession,
-                        semantic: &Arc<crate::CanonicalSemanticOutput>| {
+        let observed = |session: &CompilerSession, semantic: &Arc<crate::RootedSemanticOutput>| {
             let function = semantic
                 .functions()
                 .iter()
@@ -11828,9 +10906,9 @@ fn main() -> i32 {
                 retained_body_query_stamps(session, &value),
                 retained_body_closure_stamps(session, &value),
                 retained_body_dependency_nodes(session, &value),
-                function.semantic_identity.clone(),
-                function.legacy_name.clone(),
-                function.machine_name.clone(),
+                function.function.clone(),
+                function.legacy_name().to_owned(),
+                function.record.codegen.defined_symbol.clone(),
             )
         };
         let before = observed(&session, &cold);
@@ -11863,7 +10941,7 @@ fn main() -> i32 {
         // existing span in `spare.rue` untouched.
         let edited = format!("{SPARE}\n@allow(unused_function)\npub fn value() -> i32 {{ 99 }}\n");
         publish_with_test_imports(&mut session, &program(&edited));
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         let after = observed(&session, &warm);
 
         assert_eq!(
@@ -11895,20 +10973,12 @@ fn main() -> i32 {
 
         // The declaration terminal and the presentation identity are equally
         // unaffected, and the new declaration really is present and distinct.
-        let declarations = |session: &mut CompilerSession| {
-            session
-                .stable_definitions(&options)
-                .unwrap()
-                .definitions()
-                .iter()
-                .filter(|record| {
-                    record.stable_key().kind() == StableDefinitionKind::Function
-                        && record.stable_key().name() == "value"
-                })
-                .map(|record| record.stable_key().clone())
-                .collect::<Vec<_>>()
-        };
-        let bound = declarations(&mut session);
+        let bound = warm
+            .declarations()
+            .iter()
+            .filter(|declaration| declaration.key.name() == "value")
+            .map(|declaration| declaration.key.clone())
+            .collect::<Vec<_>>();
         let helpers_value = match &before.3 {
             crate::FunctionInstanceKey::Definition(key) => key.clone(),
             other => panic!("value is an ordinary definition: {other:?}"),
@@ -11925,10 +10995,11 @@ fn main() -> i32 {
         );
         assert_eq!(bound.len(), 2, "{bound:?}");
         let presented = session
-            .semantic(&options)
+            .rooted_cfg(&options)
             .unwrap()
-            .function_views()
-            .map(|function| function.name().to_owned())
+            .functions()
+            .iter()
+            .map(|function| function.source_name().to_owned())
             .collect::<Vec<_>>();
         assert!(
             presented.contains(&"value".to_owned()),
@@ -11938,7 +11009,7 @@ fn main() -> i32 {
         // Warm and fresh must agree on the whole artifact.
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &program(&edited));
-        let expected = fresh.canonical_semantic(&options).unwrap();
+        let expected = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &warm, &expected);
     }
 
@@ -11957,14 +11028,14 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let helper = body_query_key(&mut session, &options, "helper");
         let first_main = retained_body_query_stamps(&session, &main);
         let first_helper = retained_body_query_stamps(&session, &helper);
 
         session.update(&second).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let second_main = retained_body_query_stamps(&session, &main);
         let second_helper = retained_body_query_stamps(&session, &helper);
 
@@ -11993,7 +11064,7 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         let compile_units = |session: &mut CompilerSession| {
-            let semantic = session.canonical_semantic(&options).unwrap();
+            let semantic = session.rooted_semantic(&options).unwrap();
             session
                 .codegen_units(
                     &semantic,
@@ -12028,12 +11099,12 @@ fn main() -> i32 {
         let cold_main = cold
             .functions()
             .iter()
-            .find(|function| function.legacy_name == "main")
+            .find(|function| function.record.codegen.defined_symbol.as_ref() == "main")
             .unwrap();
         let cold_main_work = session
             .codegen_attempt_work()
             .iter()
-            .find(|(identity, _)| identity == &cold_main.semantic_identity)
+            .find(|(identity, _)| identity == &cold_main.function)
             .unwrap();
         assert!(cold_main_work.1.iter().any(|(label, amount)| {
             label.as_ref() == "codegen.domain.symbol-aliases" && *amount > 0
@@ -12047,7 +11118,7 @@ fn main() -> i32 {
                 .iter()
                 .find(|function| function.definition_source_name() == Some(name))
                 .unwrap()
-                .semantic_identity
+                .function
                 .clone()
         };
         let execution_for = |identity: &crate::FunctionInstanceKey| {
@@ -12075,25 +11146,6 @@ fn main() -> i32 {
             main_work.1.is_empty(),
             "reused codegen terminals perform no local lowering or dependency collection"
         );
-    }
-
-    #[test]
-    fn cfg_fails_closed_when_an_exact_call_abi_dependency_fails() {
-        let source = SourceSnapshot::single(
-            "main.rue",
-            "fn helper(value: i32) -> i32 { value } fn main() -> i32 { helper(42) }",
-        )
-        .unwrap();
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let errors = crate::cfg_query::with_test_call_abi_failure_injection(|| {
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap_err()
-        });
-        let rendered = errors.to_string();
-        assert!(rendered.contains("call ABI unavailable"), "{rendered}");
-        assert!(rendered.contains("injected call ABI failure"), "{rendered}");
     }
 
     #[test]
@@ -12176,7 +11228,7 @@ fn main() -> i32 {
             };
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let semantic = session.canonical_semantic(&options).unwrap();
+            let semantic = session.rooted_semantic(&options).unwrap();
             let foreign = crate::backend::collect_foreign_symbols(
                 semantic.rir_owner().rir(),
                 semantic.rir_owner().semantic_symbols().interner(),
@@ -12193,9 +11245,6 @@ fn main() -> i32 {
                 .collect::<Vec<_>>();
             let legacy = crate::backend::generate_backend_products(
                 semantic.functions(),
-                semantic.type_pool(),
-                semantic.strings(),
-                semantic.rir_owner().semantic_symbols().interner(),
                 &options,
                 &foreign,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -12229,7 +11278,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.canonical_semantic(&options).unwrap();
+        let cold = session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let make_definition = body_query_key(&mut session, &options, "Make");
         let make = crate::body_query::BodyQueryKey::new(
@@ -12244,10 +11293,8 @@ fn main() -> i32 {
             .iter()
             .find(|function| specialization_arguments(function, "size").is_some())
             .unwrap();
-        let size = crate::body_query::BodyQueryKey::new(
-            size.semantic_identity.clone(),
-            main.configuration.clone(),
-        );
+        let size =
+            crate::body_query::BodyQueryKey::new(size.function.clone(), main.configuration.clone());
         let first_make_stamps = retained_body_query_stamps(&session, &make);
         let first_size_stamps = retained_body_query_stamps(&session, &size);
         let make_dependencies = retained_body_dependency_nodes(&session, &make);
@@ -12267,7 +11314,7 @@ fn main() -> i32 {
         );
 
         session.update(&second).into_result().unwrap();
-        let warm = session.canonical_semantic(&options).unwrap();
+        let warm = session.rooted_semantic(&options).unwrap();
         let second_make_stamps = retained_body_query_stamps(&session, &make);
         let second_size_stamps = retained_body_query_stamps(&session, &size);
         assert_ne!(first_make_stamps.3, second_make_stamps.3);
@@ -12275,7 +11322,7 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let expected = fresh.canonical_semantic(&options).unwrap();
+        let expected = fresh.rooted_semantic(&options).unwrap();
         assert_semantic_artifact_parity(&session, &warm, &expected);
     }
 
@@ -12305,9 +11352,7 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .unwrap();
+        session.rooted_semantic(&CompileOptions::default()).unwrap();
     }
 
     #[test]
@@ -12329,7 +11374,7 @@ fn main() -> i32 {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let transaction = retained_body_transaction(&session, &main).2;
         let mut producers = BTreeSet::new();
@@ -12374,7 +11419,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut warm = CompilerSession::new();
         warm.update(&missing).into_result().unwrap();
-        assert!(warm.canonical_semantic(&options).is_err());
+        assert!(warm.rooted_semantic(&options).is_err());
         let main = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
                 crate::ModuleId::from_logical_path("main.rue").unwrap(),
@@ -12403,10 +11448,10 @@ fn main() -> i32 {
         );
 
         warm.update(&resolved).into_result().unwrap();
-        let warm_output = warm.canonical_semantic(&options).unwrap();
+        let warm_output = warm.rooted_semantic(&options).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&resolved).into_result().unwrap();
-        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm_output.functions()),
             format!("{:?}", fresh_output.functions())
@@ -12434,13 +11479,13 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut warm = CompilerSession::new();
         publish_with_test_imports(&mut warm, &missing);
-        assert!(warm.canonical_semantic(&options).is_err());
+        assert!(warm.rooted_semantic(&options).is_err());
 
         publish_with_test_imports(&mut warm, &resolved);
-        let warm_output = warm.canonical_semantic(&options).unwrap();
+        let warm_output = warm.rooted_semantic(&options).unwrap();
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &resolved);
-        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_semantic(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm_output.functions()),
             format!("{:?}", fresh_output.functions())
@@ -12457,7 +11502,7 @@ fn main() -> i32 {
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
-            session.canonical_semantic(&options).unwrap();
+            session.rooted_semantic(&options).unwrap();
             let key = body_query_key(&mut session, &options, "main");
             let transaction = retained_body_transaction(&session, &key).2;
             (key, transaction)
@@ -12481,7 +11526,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         let key = body_query_key(&mut session, &options, "main");
         let revision = session
@@ -12540,7 +11585,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let key = body_query_key(&mut session, &options, "recurse");
         let transaction = retained_body_transaction(&session, &key).2;
         assert!(matches!(
@@ -12577,11 +11622,11 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let output = session.canonical_semantic(&options).unwrap();
+        let output = session.rooted_semantic(&options).unwrap();
 
         assert!(
             output.functions().iter().any(|function| matches!(
-                function.semantic_identity,
+                function.function,
                 crate::FunctionInstanceKey::Specialization { .. }
             )),
             "the reachable specialization must be composed into canonical output"
@@ -12595,7 +11640,7 @@ fn main() -> i32 {
         session.update(&source).into_result().unwrap();
 
         let default_options = CompileOptions::default();
-        session.canonical_semantic(&default_options).unwrap();
+        session.rooted_semantic(&default_options).unwrap();
         let default_key = body_query_key(&mut session, &default_options, "main");
         let default = retained_body_transaction(&session, &default_key);
 
@@ -12608,7 +11653,7 @@ fn main() -> i32 {
             preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
             ..CompileOptions::default()
         };
-        session.canonical_semantic(&configured_options).unwrap();
+        session.rooted_semantic(&configured_options).unwrap();
         let configured_key = body_query_key(&mut session, &configured_options, "main");
         let configured = retained_body_transaction(&session, &configured_key);
 
@@ -12633,7 +11678,7 @@ fn main() -> i32 {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
 
         let key = body_query_key(&mut session, &options, "main");
         let transaction = retained_body_transaction(&session, &key).2;
@@ -12680,7 +11725,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        assert!(session.canonical_semantic(&options).is_err());
+        assert!(session.rooted_semantic(&options).is_err());
         let key = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
                 crate::ModuleId::from_logical_path("main.rue").unwrap(),
@@ -12754,7 +11799,7 @@ fn main() -> i32 {
         };
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let main_transaction = retained_body_transaction(&session, &main).2;
         let dependencies = retained_body_dependency_nodes(&session, &main);
@@ -12826,7 +11871,7 @@ fn main() -> i32 {
         )
         .unwrap();
         session.update(&ambiguous).into_result().unwrap();
-        assert!(session.canonical_semantic(&options).is_err());
+        assert!(session.rooted_semantic(&options).is_err());
         let revision = session
             .queries
             .revisioned
@@ -12847,7 +11892,7 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&ambiguous).into_result().unwrap();
-        assert!(fresh.canonical_semantic(&options).is_err());
+        assert!(fresh.rooted_semantic(&options).is_err());
         let fresh_revision = fresh
             .queries
             .revisioned
@@ -12885,7 +11930,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let dependencies = retained_body_dependency_nodes(&session, &main);
         assert!(
@@ -12896,7 +11941,7 @@ fn main() -> i32 {
         );
 
         session.update(&duplicate).into_result().unwrap();
-        assert!(session.canonical_semantic(&options).is_err());
+        assert!(session.rooted_semantic(&options).is_err());
         let revision = session
             .queries
             .revisioned
@@ -12917,7 +11962,7 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&duplicate).into_result().unwrap();
-        assert!(fresh.canonical_semantic(&options).is_err());
+        assert!(fresh.rooted_semantic(&options).is_err());
         let fresh_revision = fresh
             .queries
             .revisioned
@@ -12945,7 +11990,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.canonical_semantic(&options).unwrap();
+        session.rooted_semantic(&options).unwrap();
         let dead = body_query_key(&mut session, &options, "dead");
         assert!(
             !session.queries.revisioned.has_retained_body_key(&dead),

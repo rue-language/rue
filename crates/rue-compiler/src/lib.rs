@@ -22,8 +22,8 @@
 //! )?;
 //! let mut session = CompilerSession::new();
 //! session.update(&snapshot).into_result()?;
-//! let semantic = session.semantic(&CompileOptions::default())?;
-//! assert_eq!(semantic.function_views().len(), 1);
+//! let executable = session.executable(&CompileOptions::default())?;
+//! assert!(!executable.elf.is_empty());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
@@ -98,10 +98,9 @@ mod supported_api_inventory;
 
 // Supported source, identity, option, session, and diagnostic surface.
 pub use artifact_views::{
-    CfgBlockView, CfgInstructionView, CfgSuccessorView, CfgView, FunctionView,
     ImportDiscoveryStatus, ImportDiscoveryView, RirInstructionView, RirOperandView, RirView,
-    SemanticView, SourceIdentityView, SourceLocationView, SyntaxModuleView, SyntaxNodeView,
-    SyntaxView, TokenView, TypeView,
+    SourceIdentityView, SourceLocationView, SyntaxModuleView, SyntaxNodeView, SyntaxView,
+    TokenView,
 };
 pub use dependency_envelope::{
     DependencyEnvelope, DependencyEnvelopeStatus, DependencyResolutionOutcome, DependencyTopology,
@@ -126,7 +125,6 @@ pub use import_graph::{
 };
 pub(crate) use import_graph::{ResolvedCodegenRevision, ResolvedProgramRevision};
 pub(crate) use parsed_modules::{InvalidImportShape, ParsedProgram};
-pub(crate) use queries::FunctionWithCfg;
 pub use queries::{CompileOptions, CompileOutput, LinkerMode, SourceView, compile_snapshot};
 #[allow(unused_imports)]
 pub(crate) use semantic_identity::{
@@ -151,15 +149,11 @@ pub(crate) use toolchain_module_demand::BodyToolchainDemand;
 // while the session remains their sole owner, without publishing them through
 // the supported facade.
 #[allow(unused_imports)]
-pub(crate) use bound_definitions::BoundDefinitionWork;
-#[allow(unused_imports)]
 pub(crate) use canonical_lower::CanonicalRirWork;
 #[allow(unused_imports)]
 pub(crate) use canonical_merge::CanonicalMergeWork;
 #[allow(unused_imports)]
-pub(crate) use canonical_semantic::{
-    CanonicalSemanticFailurePhase, CanonicalSemanticFailureWork, CanonicalSemanticWork,
-};
+pub(crate) use canonical_semantic::CanonicalSemanticWork;
 #[allow(unused_imports)]
 pub(crate) use definition_snapshot::DefinitionShardWork;
 #[allow(unused_imports)]
@@ -172,11 +166,13 @@ pub(crate) use parsed_modules::{ParseInvalidationSummary, ParsedModulesWork};
 pub(crate) use queries::{PipelineWork, SourceStats};
 #[allow(unused_imports)]
 pub(crate) use semantic_symbols::SemanticTranslationWork;
+#[cfg(test)]
+pub(crate) use session::RootedSemanticOutput;
 #[allow(unused_imports)]
 pub(crate) use session::{
-    CompilerSessionWork, DefinitionQueryRecord, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
-    FrontendQueryWork, FrontendRetentionMetrics, ImportDiscoveryRevisionArtifact,
-    ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor, SemanticQueryRecord,
+    CompilerSessionWork, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FrontendQueryWork,
+    FrontendRetentionMetrics, ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus,
+    ImportGraphInputDescriptor,
 };
 #[cfg(test)]
 pub(crate) use source_identity::LinkInputDescriptor;
@@ -189,16 +185,16 @@ pub(crate) use source_identity::{
 // Immutable query artifacts and stable identities returned by CompilerSession.
 #[cfg(test)]
 pub(crate) use body_query::{BodyTransaction, transaction_equal};
+#[cfg(test)]
+pub(crate) use bound_definitions::BoundDefinitionSet;
 pub(crate) use bound_definitions::{
-    BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
+    StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
 };
 pub(crate) use canonical_lower::CanonicalRirOutput;
 pub(crate) use canonical_merge::CanonicalMergedProgram;
-pub(crate) use canonical_semantic::CanonicalSemanticOutput;
-pub(crate) use definition_snapshot::{
-    DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
-    DefinitionRecord, DefinitionSnapshot,
-};
+pub(crate) use definition_snapshot::{DefinitionKind, DefinitionNamespace, DefinitionSnapshot};
+#[cfg(test)]
+pub(crate) use definition_snapshot::{DefinitionNameKey, DefinitionOccurrenceId, DefinitionRecord};
 pub(crate) use durable_body::{DurableAirInstData, DurableProjection};
 #[cfg(test)]
 pub(crate) use durable_semantics::DurableDeclarationPayload;
@@ -207,10 +203,10 @@ pub(crate) use durable_semantics::{DurableConstValue, DurableType};
 #[cfg(test)]
 pub(crate) use durable_semantics::{
     DurableSemanticProjectionFailure, DurableSemanticProjectionWork,
+    project_durable_declaration_semantics,
 };
 
 // Small foundational types callers need to configure or inspect the facade.
-pub(crate) use rue_air::FrozenTypeInternPool;
 pub use rue_cfg::OptLevel;
 pub(crate) use rue_error::{CompileError, CompileResult, Diagnostic, ErrorCode, ErrorKind};
 pub use rue_error::{
@@ -224,7 +220,6 @@ pub(crate) use rue_span::Span;
 pub use rue_target::{Arch, Target};
 
 // Internal phase vocabulary. These are intentionally not part of the facade.
-pub(crate) use durable_semantics::project_durable_declaration_semantics;
 pub(crate) use import_graph::{validate_additive_successor, validate_canonical_import_graph};
 #[cfg(test)]
 pub(crate) use linking::{parse_runtime_archive, validate_runtime};
@@ -234,8 +229,8 @@ pub(crate) use semantic_symbols::SemanticSymbolUniverse;
 pub(crate) use syntax::SyntaxWork;
 
 pub(crate) use lasso::ThreadedRodeo;
-pub(crate) use rue_air::{AnalyzedFunction, SemaOutput, Type};
-pub(crate) use rue_cfg::ValidatedCfg as Cfg;
+#[cfg(test)]
+pub(crate) use rue_air::Type;
 pub(crate) use rue_codegen::RelocationKind;
 pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,

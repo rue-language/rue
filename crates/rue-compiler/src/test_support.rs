@@ -9,8 +9,8 @@ use crate::*;
 /// useful for testing semantic analysis without generating machine code.
 #[derive(Debug)]
 pub struct AirOutput {
-    /// Type intern pool containing all struct and enum definitions.
-    pub type_pool: FrozenTypeInternPool,
+    /// Named and reached anonymous struct declarations from the rooted graph.
+    pub struct_count: usize,
     /// Warnings collected during analysis.
     pub warnings: Vec<CompileWarning>,
 }
@@ -18,40 +18,19 @@ pub struct AirOutput {
 pub(crate) fn test_air(source: &str) -> MultiErrorResult<AirOutput> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
     let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
-    let semantic = std::sync::Arc::try_unwrap(semantic)
-        .expect("test session uniquely owns its semantic output after return");
-    let (_, type_pool, _, warnings) = semantic.into_parts();
     Ok(AirOutput {
-        type_pool,
-        warnings,
+        struct_count: semantic.struct_count,
+        warnings: semantic.warnings.clone(),
     })
 }
 
 pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
-    let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
-    let semantic = std::sync::Arc::try_unwrap(semantic)
-        .expect("test session uniquely owns its semantic output after return");
-    let (functions, type_pool, strings, warnings) = semantic.into_parts();
-    let rir =
-        std::sync::Arc::try_unwrap(rir).expect("test session uniquely owns its RIR after return");
-    let (_, symbols) = rir.into_parts();
+    let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
     Ok(CompileState {
-        interner: {
-            use lasso::Key;
-            let source = symbols.into_interner();
-            let rebuilt = ThreadedRodeo::default();
-            for index in 0..source.len() {
-                let spur = lasso::Spur::try_from_usize(index)
-                    .expect("semantic interner spur index is representable");
-                rebuilt.get_or_intern(source.resolve(&spur));
-            }
-            rebuilt
-        },
-        functions,
-        type_pool,
-        strings,
-        warnings,
+        functions: semantic.cfgs.clone(),
+        warnings: semantic.warnings.clone(),
+        snapshot,
     })
 }
 
@@ -60,16 +39,16 @@ pub(crate) fn test_codegen_state(state: &CompileState, target: Target) -> MultiE
         target,
         ..Default::default()
     };
-    crate::backend::generate_backend_products(
-        &state.functions,
-        &state.type_pool,
-        &state.strings,
-        &state.interner,
-        &options,
-        &[],
-        rue_codegen::BackendArtifactRequest::default(),
-    )
-    .map(drop)
+    let mut session = CompilerSession::new();
+    publish_test_snapshot(&mut session, &state.snapshot)?;
+    let semantic = session.rooted_semantic(&options)?;
+    session
+        .codegen_units(
+            &semantic,
+            &options,
+            rue_codegen::BackendArtifactRequest::default(),
+        )
+        .map(drop)
 }
 
 /// The canonical merge and RIR artifacts for `snapshot`.
@@ -120,13 +99,13 @@ pub(crate) fn test_frontend_snapshot(
     options: &CompileOptions,
 ) -> MultiErrorResult<(
     std::sync::Arc<CanonicalRirOutput>,
-    std::sync::Arc<CanonicalSemanticOutput>,
+    std::sync::Arc<crate::session::RootedSemanticOutput>,
     CompilerSessionWork,
 )> {
     let mut session = CompilerSession::new();
     publish_test_snapshot(&mut session, snapshot)?;
     let _rir = session.canonical_rir()?;
-    let semantic = session.canonical_semantic(options)?;
+    let semantic = session.rooted_semantic(options)?;
     let rir = semantic.rir_owner().clone();
     let work = session.work().clone();
     drop(session);

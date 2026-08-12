@@ -1330,7 +1330,6 @@ fn structural_work(
     let parse = after.parse_metrics();
     let merge = query_delta(before.merge(), after.merge());
     let rir = query_delta(before.rir(), after.rir());
-    let semantic = query_delta(before.semantic(), after.semantic());
     let imports = query_delta(before.imports(), after.imports());
     let mut program = merge;
     add_work(&mut program, &rir);
@@ -1355,13 +1354,7 @@ fn structural_work(
             ..Default::default()
         },
         program,
-        semantic: PhaseWork {
-            invalidated: delta(
-                before.semantic_entries_invalidated(),
-                after.semantic_entries_invalidated(),
-            ),
-            ..semantic
-        },
+        semantic: endpoint_phase(endpoint.semantic),
         cfg: endpoint_phase(endpoint.cfg),
         codegen: endpoint_phase(endpoint.codegen),
         object_projection: endpoint_phase(endpoint.object_projection),
@@ -1387,6 +1380,7 @@ fn endpoint_phase(work: EndpointQueryWork) -> PhaseWork {
     PhaseWork {
         computed: work.computed as u64,
         reused: work.reused as u64,
+        invalidated: work.invalidated as u64,
         joined: work.joined as u64,
         canceled: work.canceled as u64,
         ..Default::default()

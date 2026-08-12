@@ -47,12 +47,13 @@ pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRode
 /// declared foreign call rather than an unresolved glue symbol.
 #[cfg(test)]
 pub(crate) fn foreign_call_symbol_mappings(
-    functions: &[FunctionWithCfg],
+    functions: &[crate::session::RootedCfgUnit],
     foreign_symbols: &[String],
 ) -> std::collections::BTreeMap<String, String> {
     let mut symbol_mappings = functions
         .iter()
-        .map(|function| (function.legacy_name.clone(), function.machine_name.clone()))
+        .flat_map(|function| function.record.codegen.symbol_mappings.iter())
+        .map(|(source, target)| (source.clone(), target.clone()))
         .collect::<std::collections::BTreeMap<_, _>>();
     for name in foreign_symbols {
         symbol_mappings
@@ -81,10 +82,7 @@ pub(crate) struct FunctionBackendProduct {
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_backend(
-    functions: &[FunctionWithCfg],
-    type_pool: &FrozenTypeInternPool,
-    strings: &[String],
-    interner: &ThreadedRodeo,
+    functions: &[crate::session::RootedCfgUnit],
     options: &CompileOptions,
     warnings: &[CompileWarning],
     // Names of `extern "C"` foreign declarations (ADR-0064 C FFI). Each is an
@@ -95,15 +93,8 @@ pub(crate) fn compile_backend(
     // an additional C-ABI entry thunk object exposing that name globally.
     export_symbols: &[String],
 ) -> MultiErrorResult<CompileOutput> {
-    let object_files = generate_pre_link_objects(
-        functions,
-        type_pool,
-        strings,
-        interner,
-        options,
-        foreign_symbols,
-        export_symbols,
-    )?;
+    let object_files =
+        generate_pre_link_objects(functions, options, foreign_symbols, export_symbols)?;
 
     // Link to executable
     match &options.linker {
@@ -122,10 +113,7 @@ pub(crate) fn compile_backend(
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_pre_link_objects(
-    functions: &[FunctionWithCfg],
-    type_pool: &FrozenTypeInternPool,
-    strings: &[String],
-    interner: &ThreadedRodeo,
+    functions: &[crate::session::RootedCfgUnit],
     options: &CompileOptions,
     foreign_symbols: &[String],
     export_symbols: &[String],
@@ -133,41 +121,13 @@ pub(crate) fn generate_pre_link_objects(
     // Check for main function
     let _main_fn = functions
         .iter()
-        .find(|f| {
-            matches!(
-                f.symbol,
-                crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
-                    crate::CompilerCallableId::ProgramEntry
-                ))
-            ) && f.machine_name == "main"
-        })
+        .find(|function| function.record.codegen.defined_symbol.as_ref() == "main")
         .ok_or_else(|| {
             CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
         })?;
 
-    for function in functions {
-        match &function.symbol {
-            crate::StableSymbolId::Callable(crate::StableCallableId::Function(identity))
-                if identity == &function.semantic_identity
-                    && crate::StableSymbolEncoder::encode(&function.symbol)
-                        == function.machine_name => {}
-            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
-                crate::CompilerCallableId::ProgramEntry,
-            )) if function.machine_name == "main" => {}
-            _ => {
-                return Err(CompileError::without_span(ErrorKind::InternalError(
-                    "compiler function record has inconsistent semantic/symbol projection".into(),
-                ))
-                .into());
-            }
-        }
-    }
-
     let products = generate_backend_products(
         functions,
-        type_pool,
-        strings,
-        interner,
         options,
         foreign_symbols,
         rue_codegen::BackendArtifactRequest::default(),
@@ -179,7 +139,7 @@ pub(crate) fn generate_pre_link_objects(
 /// lowering or emission; callers have already collected the shared units.
 #[cfg(test)]
 pub(crate) fn generate_pre_link_objects_from_products(
-    functions: &[FunctionWithCfg],
+    functions: &[crate::session::RootedCfgUnit],
     products: Vec<FunctionBackendProduct>,
     options: &CompileOptions,
     export_symbols: &[String],
@@ -212,32 +172,28 @@ pub(crate) fn generate_pre_link_objects_from_products(
 /// The program-image adapter uses the same check before it serializes the
 /// shared `CodegenUnit` terminals.
 #[cfg(test)]
-pub(crate) fn validate_backend_functions(functions: &[FunctionWithCfg]) -> MultiErrorResult<()> {
-    if !functions.iter().any(|function| {
-        matches!(
-            function.symbol,
-            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
-                crate::CompilerCallableId::ProgramEntry
-            ))
-        ) && function.machine_name == "main"
-    }) {
+pub(crate) fn validate_backend_functions(
+    functions: &[crate::session::RootedCfgUnit],
+) -> MultiErrorResult<()> {
+    if !functions
+        .iter()
+        .any(|function| function.record.codegen.defined_symbol.as_ref() == "main")
+    {
         return Err(CompileError::without_span(ErrorKind::NoMainFunction).into());
     }
     for function in functions {
-        match &function.symbol {
-            crate::StableSymbolId::Callable(crate::StableCallableId::Function(identity))
-                if identity == &function.semantic_identity
-                    && crate::StableSymbolEncoder::encode(&function.symbol)
-                        == function.machine_name => {}
-            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
-                crate::CompilerCallableId::ProgramEntry,
-            )) if function.machine_name == "main" => {}
-            _ => {
-                return Err(CompileError::without_span(ErrorKind::InternalError(
-                    "compiler function record has inconsistent semantic/symbol projection".into(),
-                ))
-                .into());
-            }
+        let machine_name = function.record.codegen.defined_symbol.as_ref();
+        if machine_name == "main" {
+            continue;
+        }
+        let expected = crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+            crate::StableCallableId::Function(function.function.clone()),
+        ));
+        if expected != machine_name {
+            return Err(CompileError::without_span(ErrorKind::InternalError(
+                "compiler function record has inconsistent semantic/symbol projection".into(),
+            ))
+            .into());
         }
     }
     Ok(())
@@ -248,10 +204,7 @@ pub(crate) fn validate_backend_functions(functions: &[FunctionWithCfg]) -> Multi
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_backend_products(
-    functions: &[FunctionWithCfg],
-    type_pool: &FrozenTypeInternPool,
-    strings: &[String],
-    interner: &ThreadedRodeo,
+    functions: &[crate::session::RootedCfgUnit],
     options: &CompileOptions,
     foreign_symbols: &[String],
     request: rue_codegen::BackendArtifactRequest,
@@ -270,6 +223,7 @@ pub(crate) fn generate_backend_products(
         .map(|func| {
             let _worker = codegen_span.enter();
             let stable_atom_ids = func
+                .record
                 .local_atoms
                 .iter()
                 .map(|atom| {
@@ -279,6 +233,7 @@ pub(crate) fn generate_backend_products(
                 })
                 .collect::<Vec<_>>();
             let atom_projection = func
+                .record
                 .local_atoms
                 .iter()
                 .zip(&stable_atom_ids)
@@ -290,19 +245,19 @@ pub(crate) fn generate_backend_products(
                 .collect::<Vec<_>>();
             let mut product = match options.target.arch() {
                 Arch::X86_64 => rue_codegen::x86_64::generate_product_with_symbols_and_atoms(
-                    &func.cfg,
-                    type_pool,
-                    strings,
-                    interner,
+                    &func.record.cfg,
+                    &func.record.type_pool,
+                    &func.record.strings,
+                    &func.record.interner,
                     symbols,
                     &atom_projection,
                     request,
                 )?,
                 Arch::Aarch64 => rue_codegen::aarch64::generate_product_with_symbols_and_atoms(
-                    &func.cfg,
-                    type_pool,
-                    strings,
-                    interner,
+                    &func.record.cfg,
+                    &func.record.type_pool,
+                    &func.record.strings,
+                    &func.record.interner,
                     options.target,
                     symbols,
                     &atom_projection,
@@ -310,14 +265,14 @@ pub(crate) fn generate_backend_products(
                 )?,
             };
             if let Some(lowering) = &mut product.artifacts.lowering {
-                lowering.fn_name.clone_from(&func.machine_name);
+                lowering.fn_name = func.record.codegen.defined_symbol.to_string();
             }
             validate_production_call_relocations(
                 &product.machine_code.relocations,
                 &symbol_mappings,
             )?;
             Ok(FunctionBackendProduct {
-                machine_name: func.machine_name.clone(),
+                machine_name: func.record.codegen.defined_symbol.to_string(),
                 machine_code: product.machine_code,
                 artifacts: product.artifacts,
             })
@@ -367,7 +322,7 @@ pub(crate) fn project_backend_object(
 /// Link canonical codegen units through the ordinary one-shot adapter.
 #[cfg(test)]
 pub(crate) fn compile_backend_products(
-    functions: &[FunctionWithCfg],
+    functions: &[crate::session::RootedCfgUnit],
     products: Vec<FunctionBackendProduct>,
     options: &CompileOptions,
     warnings: &[CompileWarning],
@@ -396,7 +351,7 @@ pub(crate) fn compile_backend_products(
 /// the argument-register scalars the thunk marshals.
 #[cfg(test)]
 pub(crate) fn generate_export_thunk_objects(
-    functions: &[FunctionWithCfg],
+    functions: &[crate::session::RootedCfgUnit],
     options: &CompileOptions,
     export_symbols: &[String],
 ) -> Vec<Vec<u8>> {
@@ -413,7 +368,7 @@ pub(crate) fn generate_export_thunk_objects(
         else {
             continue;
         };
-        let cfg = &function.cfg;
+        let cfg = &function.record.cfg;
         // A scalar parameter is materialized as a `Param { index }` instruction
         // carrying its type; parameter `index` arrives in the matching argument
         // register. Default every slot to a register-width scalar (no extension)
@@ -436,7 +391,7 @@ pub(crate) fn generate_export_thunk_objects(
         objects.push(generate_export_thunk_object(
             options.target,
             exported_symbol,
-            &function.machine_name,
+            &function.record.codegen.defined_symbol,
             &param_types,
         ));
     }
@@ -588,7 +543,7 @@ fn main() -> i32 {
 
     fn frontend() -> (
         std::sync::Arc<CanonicalRirOutput>,
-        std::sync::Arc<CanonicalSemanticOutput>,
+        std::sync::Arc<RootedSemanticOutput>,
     ) {
         let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
         let (rir, semantic, _) =
@@ -599,7 +554,7 @@ fn main() -> i32 {
 
     fn strbuf_concat_frontend() -> (
         std::sync::Arc<CanonicalRirOutput>,
-        std::sync::Arc<CanonicalSemanticOutput>,
+        std::sync::Arc<RootedSemanticOutput>,
     ) {
         let root = FileId::new(1);
         let strbuf = FileId::new(2);
@@ -670,9 +625,6 @@ drop fn StrBuf(self) { }
         let foreign_symbols = collect_foreign_symbols(rir.rir(), interner);
         let products = generate_backend_products(
             semantic.functions(),
-            semantic.type_pool(),
-            semantic.strings(),
-            interner,
             &options,
             &foreign_symbols,
             rue_codegen::BackendArtifactRequest {
@@ -738,17 +690,17 @@ drop fn StrBuf(self) { }
         let concat_symbols = semantic
             .functions()
             .iter()
-            .filter(|function| function.analyzed.name.contains("concat_borrowed"))
-            .map(|function| function.machine_name.as_str())
+            .filter(|function| function.record.source_name.contains("concat_borrowed"))
+            .map(|function| function.record.codegen.defined_symbol.as_ref())
             .collect::<HashSet<_>>();
         let cleanup_symbols = semantic
             .functions()
             .iter()
             .filter(|function| {
-                function.analyzed.name.contains(".__drop")
-                    || function.analyzed.name.starts_with("__rue_drop_")
+                function.record.source_name.contains(".__drop")
+                    || function.record.source_name.starts_with("__rue_drop_")
             })
-            .map(|function| function.machine_name.as_str())
+            .map(|function| function.record.codegen.defined_symbol.as_ref())
             .collect::<HashSet<_>>();
         let concats: Vec<_> = calls
             .iter()
@@ -796,8 +748,7 @@ drop fn StrBuf(self) { }
 
     #[test]
     fn function_objects_only_contain_their_referenced_strings() {
-        let (rir, semantic) = frontend();
-        let interner = rir.semantic_symbols().interner();
+        let (_rir, semantic) = frontend();
 
         for target in [
             Target::X86_64Linux,
@@ -808,16 +759,8 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects = generate_pre_link_objects(
-                semantic.functions(),
-                semantic.type_pool(),
-                semantic.strings(),
-                interner,
-                &options,
-                &[],
-                &[],
-            )
-            .unwrap();
+            let objects =
+                generate_pre_link_objects(semantic.functions(), &options, &[], &[]).unwrap();
 
             let all_object_bytes: Vec<_> = objects.into_iter().flatten().collect();
             assert_eq!(count(&all_object_bytes, FIRST_LITERAL), 1, "{target}");
@@ -827,8 +770,7 @@ drop fn StrBuf(self) { }
 
     #[test]
     fn text_objects_and_runtime_archive_have_no_obsolete_string_symbols() {
-        let (rir, semantic) = strbuf_concat_frontend();
-        let interner = rir.semantic_symbols().interner();
+        let (_rir, semantic) = strbuf_concat_frontend();
         let obsolete =
             |name: &str| name.starts_with("__rue_String_") || name == "__rue_drop_String";
 
@@ -841,16 +783,8 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects = generate_pre_link_objects(
-                semantic.functions(),
-                semantic.type_pool(),
-                semantic.strings(),
-                interner,
-                &options,
-                &[],
-                &[],
-            )
-            .unwrap();
+            let objects =
+                generate_pre_link_objects(semantic.functions(), &options, &[], &[]).unwrap();
 
             let mut undefined = HashSet::new();
             for bytes in objects {
@@ -886,17 +820,8 @@ drop fn StrBuf(self) { }
             "runtime archive still contains obsolete exports: {obsolete_exports:?}"
         );
 
-        compile_backend(
-            semantic.functions(),
-            semantic.type_pool(),
-            semantic.strings(),
-            interner,
-            &options,
-            &[],
-            &[],
-            &[],
-        )
-        .expect("ordinary source-defined StrBuf program must link without obsolete members");
+        compile_backend(semantic.functions(), &options, &[], &[], &[])
+            .expect("ordinary source-defined StrBuf program must link without obsolete members");
     }
 
     #[test]

@@ -16,8 +16,8 @@ use rue_compiler::unstable::{
     PresentationStage, begin_import_input_request, close_import_input_request, discovery_attempt,
     import_demand_frontier_for_roots, import_discovery_accepted_reads_debug,
     import_discovery_graph_input_debug, import_discovery_observation_ledger_debug,
-    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch,
-    semantic_input_debug, stage_import_input_request,
+    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch, rooted_cfg,
+    stage_import_input_request,
 };
 use rue_compiler::{
     AcceptedImportSource, CompileOptions, CompilerSession, FileMetadataFingerprint,
@@ -265,26 +265,31 @@ fn observe_with_fault(
     );
     let rir = present(session, PresentationStage::Rir);
     if fault == Some(DifferentialOracleFault::Semantic) {
-        let _ = session.semantic(&step.options);
+        let _ = rooted_cfg(session, &step.options);
         assert!(inject_stale_query_for_oracle(
             session,
             DifferentialOracleFault::Semantic
         ));
     }
-    let semantic = session.semantic(&step.options);
+    let semantic = rooted_cfg(session, &step.options);
     let (semantic, semantic_hash, executable_hash, identities) = match semantic {
         Ok(output) => {
             let functions = output
-                .function_views()
+                .functions()
+                .iter()
                 .map(|function| {
                     (
-                        function.name().to_owned(),
-                        function.instruction_count(),
-                        function.cfg().block_count(),
+                        function.source_name().to_owned(),
+                        function.air().len(),
+                        function.cfg().blocks().len(),
                     )
                 })
                 .collect::<Vec<_>>();
-            let strings = output.string_literals().collect::<Vec<_>>();
+            let strings = output
+                .functions()
+                .iter()
+                .flat_map(|function| function.strings().iter().map(String::as_str))
+                .collect::<Vec<_>>();
             let air = session
                 .unstable_present(PresentationRequest {
                     stage: PresentationStage::Air,
@@ -326,7 +331,7 @@ fn observe_with_fault(
                 format!(
                     "source={:?};codegen={:?}",
                     step.snapshot.source_revision(),
-                    semantic_input_debug(&output)
+                    format_args!("{:?}", step.options)
                 ),
             )
         }
@@ -639,7 +644,7 @@ fn option_variants_produce_independent_canonical_semantic_outputs() {
     let mut session = CompilerSession::new();
     session.update(&source).into_result().unwrap();
     let default = CompileOptions::default();
-    let first = session.semantic(&default).unwrap();
+    let first = rooted_cfg(&mut session, &default).unwrap();
     let target = CompileOptions {
         target: *Target::all()
             .iter()
@@ -657,13 +662,16 @@ fn option_variants_produce_independent_canonical_semantic_outputs() {
     };
     let variants = [
         first,
-        session.semantic(&target).unwrap(),
-        session.semantic(&optimized).unwrap(),
-        session.semantic(&preview).unwrap(),
+        rooted_cfg(&mut session, &target).unwrap(),
+        rooted_cfg(&mut session, &optimized).unwrap(),
+        rooted_cfg(&mut session, &preview).unwrap(),
     ];
     for semantic in variants {
-        assert_eq!(semantic.function_views().next().unwrap().name(), "helper");
-        assert_eq!(semantic.function_views().nth(1).unwrap().name(), "main");
+        assert_eq!(
+            semantic.functions().first().unwrap().source_name(),
+            "helper"
+        );
+        assert_eq!(semantic.functions().get(1).unwrap().source_name(), "main");
     }
 }
 
@@ -715,7 +723,7 @@ fn fault_injection_proves_semantic_diagnostic_and_import_cache_detection() {
         (
             &corpus[1..3],
             DifferentialOracleFault::Semantic,
-            "affected fields: diagnostics, semantic, emitted-assembly-hash, executable-hash, stable-identities",
+            "affected fields: semantic, emitted-assembly-hash, executable-hash, stable-identities",
         ),
         (
             &corpus[9..11],

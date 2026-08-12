@@ -53,10 +53,6 @@ impl SemanticSymbolUniverse {
         self.interner
     }
 
-    pub(crate) fn shared_interner(&self) -> Arc<ThreadedRodeo> {
-        self.interner.clone()
-    }
-
     /// Start a destination universe for one canonical program traversal.
     #[cfg(test)]
     pub(crate) fn new(program: &ParsedProgram) -> Self {
@@ -174,6 +170,7 @@ impl SemanticSymbolUniverse {
         &self.admitted_modules
     }
 
+    #[cfg(test)]
     pub(crate) fn admits_exact_modules(
         &self,
         modules: &[Arc<crate::parsed_modules::ParsedModule>],

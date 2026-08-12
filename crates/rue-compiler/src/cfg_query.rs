@@ -14,30 +14,8 @@ use rue_span::Span;
 use crate::retained_charge::RetainedCharge;
 
 #[cfg(test)]
-use std::cell::Cell;
-
-#[cfg(test)]
 thread_local! {
-    static INJECT_CALL_ABI_FAILURE: Cell<bool> = const { Cell::new(false) };
-    static CFG_QUERY_KEY_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn with_test_call_abi_failure_injection<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            INJECT_CALL_ABI_FAILURE.with(|enabled| enabled.set(false));
-        }
-    }
-    INJECT_CALL_ABI_FAILURE.with(|enabled| {
-        assert!(
-            !enabled.replace(true),
-            "call-ABI failure injection is not nestable"
-        );
-    });
-    let _reset = Reset;
-    run()
+    static CFG_QUERY_KEY_CONSTRUCTIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -505,6 +483,8 @@ pub(crate) struct CfgRecord {
     /// reads this owned artifact instead of rematerializing a program epoch.
     pub(crate) air: Arc<rue_air::ValidatedAir>,
     pub(crate) source_name: Arc<str>,
+    pub(crate) num_locals: u32,
+    pub(crate) num_param_slots: u32,
     pub(crate) cfg: rue_cfg::ValidatedCfg,
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
     pub(crate) type_pool: rue_air::FrozenTypeInternPool,
@@ -1237,19 +1217,6 @@ fn build_cfg(
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("CallAbi publishes typed values")
         };
-        #[cfg(test)]
-        let injected;
-        #[cfg(test)]
-        let value = if INJECT_CALL_ABI_FAILURE.with(Cell::get) {
-            injected = crate::type_queries::CallAbiValue::Failure(
-                crate::type_queries::TypeQueryFailure::Unavailable(Arc::from(
-                    "injected call ABI failure",
-                )),
-            );
-            &injected
-        } else {
-            value
-        };
         match value {
             crate::type_queries::CallAbiValue::Available(facts) => {
                 call_abi_facts.insert(callable, facts.clone());
@@ -1321,6 +1288,8 @@ fn build_cfg(
     Ok(CfgValue::Available(Arc::new(CfgRecord {
         air: Arc::new(materialized.air),
         source_name: materialized.name.into(),
+        num_locals: materialized.num_locals,
+        num_param_slots: materialized.num_param_slots,
         cfg: output
             .cfg
             .expect("successful CFG construction publishes a validated CFG"),
@@ -1535,6 +1504,8 @@ pub(crate) fn evaluate_optimized_cfg(
         move |cfg| CfgRecord {
             air: record.air.clone(),
             source_name: record.source_name.clone(),
+            num_locals: record.num_locals,
+            num_param_slots: record.num_param_slots,
             cfg,
             domains,
             type_pool: record.type_pool.clone(),
@@ -1580,6 +1551,8 @@ fn optimize_cfg_without_accessors(
         |cfg| CfgRecord {
             air: record.air.clone(),
             source_name: record.source_name.clone(),
+            num_locals: record.num_locals,
+            num_param_slots: record.num_param_slots,
             cfg,
             domains: record.domains.clone(),
             type_pool: record.type_pool.clone(),
