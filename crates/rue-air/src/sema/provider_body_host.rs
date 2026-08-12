@@ -450,6 +450,12 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+enum ImportNominalRegistration {
+    InProgress,
+    Complete,
+}
+
 struct ProviderBodyHost<'a, P, S, K, M> {
     endpoint: ProviderEndpointFacts<'a, P, S, K, M>,
     calls: ProviderCallFacts<'a, P, S, K, M>,
@@ -485,6 +491,13 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     named_method_infos: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
     const_infos: RefCell<HashMap<(FileId, Spur), ConstInfo>>,
     observed_named_definitions: RefCell<HashSet<K>>,
+    /// Request-local state for recursive named-import identity closures. The
+    /// in-progress state breaks type cycles; the complete state skips repeated
+    /// registrations only after every nested field succeeded. A failed outer
+    /// walk clears the request-local cache, so no partial cycle member survives.
+    /// Compact endpoint tokens avoid retaining a second copy of each durable key.
+    import_nominal_registrations:
+        RefCell<HashMap<SemanticDefinitionToken, ImportNominalRegistration>>,
     nominal_tokens: RefCell<HashMap<Type, (SemanticDefinitionToken, K)>>,
     modules_by_file: RefCell<HashMap<FileId, M>>,
     module_tokens: RefCell<HashMap<ModuleId, (SemanticModuleToken, M)>>,
@@ -620,6 +633,7 @@ where
             named_method_infos: RefCell::new(HashMap::new()),
             const_infos: RefCell::new(HashMap::new()),
             observed_named_definitions: RefCell::new(HashSet::new()),
+            import_nominal_registrations: RefCell::new(HashMap::new()),
             nominal_tokens: RefCell::new(HashMap::new()),
             modules_by_file: RefCell::new(HashMap::new()),
             module_tokens: RefCell::new(HashMap::new()),
@@ -1599,54 +1613,93 @@ where
         &self,
         value: &crate::SemanticImportType<K, M>,
     ) -> Result<(), crate::SemanticBodyExportFailure> {
+        let result = self.register_import_nominal_identities_inner(value);
+        if result.is_err() {
+            self.import_nominal_registrations.borrow_mut().clear();
+        }
+        result
+    }
+
+    fn register_import_nominal_identities_inner(
+        &self,
+        value: &crate::SemanticImportType<K, M>,
+    ) -> Result<(), crate::SemanticBodyExportFailure> {
         use crate::SemanticImportType as T;
         match value {
             T::Nominal(key) => {
-                let nominal = DurableNominalSource::nominal(&self.source, key)
-                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                let kind = match &nominal.body {
-                    crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
-                    crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
-                };
-                let ty = self
-                    .state
-                    .identity_context()
-                    .pool_mut()
-                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
-                    .resolve_provider_type(value)
-                    .map_err(|_| crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                let token = self.endpoint.register_named_nominal(
-                    key.clone(),
-                    self.owner_file.index(),
-                    nominal.name.as_ref(),
-                    kind,
-                );
-                let already_registered = self.nominal_tokens.borrow().contains_key(&ty);
-                self.nominal_tokens
-                    .borrow_mut()
-                    .insert(ty, (token, key.clone()));
-                if already_registered {
-                    return Ok(());
-                }
-                match &nominal.body {
-                    crate::DurableNominalBody::Struct { fields, .. } => {
-                        for (_, field) in fields {
-                            self.register_import_nominal_identities(field)?;
-                        }
+                if let Some(token) = self.endpoint.registered_named_nominal_token(key) {
+                    match self.import_nominal_registrations.borrow().get(&token) {
+                        Some(ImportNominalRegistration::Complete) => return Ok(()),
+                        Some(ImportNominalRegistration::InProgress) => return Ok(()),
+                        None => {}
                     }
-                    crate::DurableNominalBody::Enum { variants } => {
-                        for (_, payload) in variants {
-                            for field in payload {
-                                self.register_import_nominal_identities(field)?;
+                }
+
+                let mut registration_token = None;
+                let result = (|| {
+                    let nominal = DurableNominalSource::nominal(&self.source, key)
+                        .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                    let kind = match &nominal.body {
+                        crate::DurableNominalBody::Struct { .. } => {
+                            crate::StableDefinitionKind::Struct
+                        }
+                        crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
+                    };
+                    let ty = self
+                        .state
+                        .identity_context()
+                        .pool_mut()
+                        .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
+                        .resolve_provider_type(value)
+                        .map_err(|_| crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                    let token = self.endpoint.register_named_nominal(
+                        key.clone(),
+                        self.owner_file.index(),
+                        nominal.name.as_ref(),
+                        kind,
+                    );
+                    registration_token = Some(token);
+                    self.import_nominal_registrations
+                        .borrow_mut()
+                        .insert(token, ImportNominalRegistration::InProgress);
+                    self.nominal_tokens
+                        .borrow_mut()
+                        .insert(ty, (token, key.clone()));
+                    match &nominal.body {
+                        crate::DurableNominalBody::Struct { fields, .. } => {
+                            for (_, field) in fields {
+                                self.register_import_nominal_identities_inner(field)?;
+                            }
+                        }
+                        crate::DurableNominalBody::Enum { variants } => {
+                            for (_, payload) in variants {
+                                for field in payload {
+                                    self.register_import_nominal_identities_inner(field)?;
+                                }
                             }
                         }
                     }
+                    Ok(())
+                })();
+                if let Some(token) = registration_token {
+                    if result.is_ok() {
+                        self.import_nominal_registrations
+                            .borrow_mut()
+                            .insert(token, ImportNominalRegistration::Complete);
+                    } else {
+                        self.import_nominal_registrations
+                            .borrow_mut()
+                            .remove(&token);
+                    }
                 }
+                result?;
             }
             T::Array { element, .. }
             | T::Slice { element, .. }
             | T::PtrConst(element)
-            | T::PtrMut(element) => self.register_import_nominal_identities(element)?,
+            | T::PtrMut(element) => {
+                self.register_import_nominal_identities_inner(element)?;
+            }
             T::I8
             | T::I16
             | T::I32

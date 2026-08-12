@@ -1234,6 +1234,21 @@ allocation-accounted pairs are count-neutral and save 0.16 MiB requested at
 the median. Every compiler-work counter, emitted-output metric, and executable
 byte remains identical.
 
+RUE-1423 gives each provider body request one success cache for named-import
+identity closures. An explicit in-progress state breaks recursive type cycles;
+the complete state is published only after every nested field succeeds, so
+repeated signatures no longer re-query and re-materialize a nominal and its
+recursive fields. A failed outer walk clears the request-local cache, preserving
+retry and error behavior without retaining partial cycle members.
+
+On fixed one-worker cold Lattice this removes 2,425 semantic-provider
+materializations, 4,850 declaration-fact reads, and 9,696 query reuses. Eight
+balanced alternating release pairs reduce retired instructions by a 0.212%
+paired median with 0.055% paired MAD. Clock is neutral at the paired median;
+peak RSS is neutral at -0.014% with 0.142% paired MAD. Four allocation-accounted
+pairs save a median 21,951 allocations and 1.99 MiB of requested bytes. Source
+metrics, emitted-output metrics, and executable bytes remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
