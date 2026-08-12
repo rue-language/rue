@@ -1735,6 +1735,19 @@ clock is neutral at +0.9866% (2.9942% MAD), the `codegen_unit` phase at -0.6757%
 compiler-work counter, source/output metric, and executable byte remains
 identical.
 
+RUE-1461 lets codegen-unit fingerprinting borrow the canonical defined symbol
+and generated machine code directly. The evaluator previously rebuilt a
+`FunctionBackendProduct` solely to replace its name before hashing, allocating
+and copying one equal `String` per unit even though both borrowed inputs were
+already in scope. Four allocation-accounted cold Lattice pairs remove
+1,131--1,318 allocation calls and 155,234--231,202 requested bytes. Across 16
+balanced fixed one-worker release pairs, end-to-end compiler clock is neutral
+at +2.5015% (3.4540% MAD), the `codegen_unit` phase at +3.3730% (5.3584% MAD),
+retired instructions at +0.0470% (0.0875% MAD), cycles at +0.6602% (2.0821%
+MAD), peak RSS at -0.0821% (0.6671% MAD), and peak footprint at -0.2669%
+(0.1964% MAD). Every compiler-work counter, source/output metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

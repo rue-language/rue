@@ -403,12 +403,12 @@ impl CodegenUnit {
     }
 }
 
-fn product_fingerprint(product: &crate::backend::FunctionBackendProduct) -> u64 {
+fn product_fingerprint(machine_name: &str, machine_code: &rue_codegen::MachineCode) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    product.machine_name.hash(&mut hasher);
-    product.machine_code.code.hash(&mut hasher);
-    product.machine_code.strings.hash(&mut hasher);
-    for relocation in &product.machine_code.relocations {
+    machine_name.hash(&mut hasher);
+    machine_code.code.hash(&mut hasher);
+    machine_code.strings.hash(&mut hasher);
+    for relocation in &machine_code.relocations {
         relocation.offset.hash(&mut hasher);
         relocation.symbol.hash(&mut hasher);
         std::mem::discriminant(&relocation.kind).hash(&mut hasher);
@@ -530,11 +530,6 @@ pub(crate) fn evaluate_codegen_unit(
     }
     context.check_canceled()?;
     context.record_work(rue_query::WorkItem::new("codegen.unit.successes", 1));
-    let product = crate::backend::FunctionBackendProduct {
-        machine_name: record.codegen.defined_symbol.to_string(),
-        machine_code: product.machine_code,
-        artifacts: product.artifacts,
-    };
     let relocations = product
         .machine_code
         .relocations
@@ -608,7 +603,8 @@ pub(crate) fn evaluate_codegen_unit(
     .into();
     let content_fingerprint = {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        product_fingerprint(&product).hash(&mut hasher);
+        product_fingerprint(&record.codegen.defined_symbol, &product.machine_code)
+            .hash(&mut hasher);
         sections.hash(&mut hasher);
         hasher.finish()
     };
