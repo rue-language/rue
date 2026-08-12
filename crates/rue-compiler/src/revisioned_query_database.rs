@@ -21800,8 +21800,8 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         Some(definition.kind())
     }
 
-    fn definition_owner_name(&self, definition: &crate::StableDefinitionKey) -> Option<String> {
-        definition.owner().map(|owner| owner.name().to_owned())
+    fn definition_owner_name(&self, definition: &crate::StableDefinitionKey) -> Option<Arc<str>> {
+        definition.owner().map(|owner| owner.shared_name().clone())
     }
 
     fn canonical_import(
@@ -21833,8 +21833,8 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         }
     }
 
-    fn definition_name(&self, definition: &crate::StableDefinitionKey) -> Option<String> {
-        Some(definition.name().to_owned())
+    fn definition_name(&self, definition: &crate::StableDefinitionKey) -> Option<Arc<str>> {
+        Some(definition.shared_name().clone())
     }
 
     fn reduce_comptime_call(
