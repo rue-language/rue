@@ -3067,6 +3067,33 @@ impl AtomicValidationWork {
     }
 }
 
+/// Publishes one validation traversal's dependency-edge work in a bounded
+/// batch, including when a registered evaluator unwinds through validation.
+struct DependencyValidationWork<'a> {
+    work: &'a AtomicValidationWork,
+    observations: u64,
+}
+
+impl DependencyValidationWork<'_> {
+    fn observe(&mut self) {
+        self.observations += 1;
+    }
+}
+
+impl Drop for DependencyValidationWork<'_> {
+    fn drop(&mut self) {
+        if self.observations == 0 {
+            return;
+        }
+        self.work
+            .dependency_observations
+            .fetch_add(self.observations, Ordering::Relaxed);
+        self.work
+            .registry_probes
+            .fetch_add(self.observations, Ordering::Relaxed);
+    }
+}
+
 /// Display-only query identities materialized by the runtime.
 ///
 /// The byte counters record the UTF-8 length returned by
@@ -10103,13 +10130,16 @@ impl RuntimeCore {
         if !direct_inputs_valid {
             return Ok(false);
         }
+        // These two counters advance together for every inspected dependency.
+        // Accumulate the exact attempted prefix locally so the common complete
+        // traversal performs two atomic updates rather than two per edge. The
+        // guard also flushes an early return or evaluator unwind.
+        let mut dependency_work = DependencyValidationWork {
+            work: &task.validation_work,
+            observations: 0,
+        };
         for observed in terminal.dependencies.iter() {
-            task.validation_work
-                .dependency_observations
-                .fetch_add(1, Ordering::Relaxed);
-            task.validation_work
-                .registry_probes
-                .fetch_add(1, Ordering::Relaxed);
+            dependency_work.observe();
             let node =
                 self.validation_node(&observed.node, observed.incarnation, &task.validation_work);
             let stamp = match node {
@@ -10644,6 +10674,30 @@ mod tests {
                 <= work.demands
         );
         assert!(work.certificates_published <= work.successful_traversals);
+    }
+
+    #[test]
+    fn dependency_validation_work_flushes_complete_and_early_prefixes() {
+        fn inspect(work: &AtomicValidationWork, stop_after: Option<u64>) -> bool {
+            let mut dependency_work = DependencyValidationWork {
+                work,
+                observations: 0,
+            };
+            for observation in 1..=3 {
+                dependency_work.observe();
+                if stop_after == Some(observation) {
+                    return false;
+                }
+            }
+            true
+        }
+
+        let work = AtomicValidationWork::default();
+        assert!(inspect(&work, None));
+        assert!(!inspect(&work, Some(2)));
+        let work = work.snapshot();
+        assert_eq!(work.dependency_observations, 5);
+        assert_eq!(work.registry_probes, 5);
     }
 
     #[test]

@@ -1169,6 +1169,22 @@ median, with 1.43% paired MAD and a -2.94% to +1.96% range. Median peak RSS
 moves +0.71 MiB within dispersion. Every published compiler-work counter and
 emitted executable byte remains identical.
 
+RUE-1420 batches the two task-local work-counter updates that advance together
+for every dependency inspected by retained-terminal validation. Each traversal
+accumulates its exact attempted dependency prefix and publishes that prefix to
+`dependency_observations` and `registry_probes` once at exit, including early
+returns and unwinding, instead of performing two atomic read-modify-write
+operations per edge. Fixed one-worker cold Lattice inspects 614,202 dependency
+edges, so the common complete traversal removes roughly 1.23 million atomic
+updates without weakening the counter contract.
+
+Four fixed one-worker allocation probes are neutral, with a paired median of
++28 calls and +0.02 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.01% paired median, with 0.65%
+paired MAD and a -3.19% to +1.54% range. Median peak RSS moves +1.02 MiB within
+a 2.51 MiB paired MAD. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
