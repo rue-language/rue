@@ -21177,7 +21177,8 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
     // terminal without crossing the runtime again. Direct mapping bounds this
     // optimization independently of body size, and collisions only cause a
     // canonical query miss.
-    nucleus_cache: std::cell::RefCell<[Option<SemanticNucleusCacheEntry>; 8]>,
+    nucleus_cache:
+        std::cell::RefCell<[Option<SemanticNucleusCacheEntry>; SEMANTIC_NUCLEUS_CACHE_SLOTS]>,
     #[cfg(test)]
     nucleus_cache_hits: std::cell::Cell<u64>,
 }
@@ -21187,8 +21188,12 @@ struct SemanticNucleusCacheEntry {
     terminal: Arc<rue_query::QueryTerminal<crate::semantic_query_nucleus::SemanticNucleusValue>>,
 }
 
-// Fixed keys make cache collisions, and therefore published work counters,
-// deterministic. Exact key equality remains authoritative at every slot.
+// The maintained cold scaling curve selects 16 slots. Larger capacities remove
+// more query work but measurably raise peak RSS; 16 is the largest tested point
+// with neutral memory. Fixed keys make cache collisions, and therefore
+// published work counters, deterministic. Exact key equality remains
+// authoritative at every slot.
+const SEMANTIC_NUCLEUS_CACHE_SLOTS: usize = 16;
 const SEMANTIC_NUCLEUS_CACHE_HASHER: RandomState = RandomState::with_seeds(0, 1, 2, 3);
 
 #[derive(Default)]

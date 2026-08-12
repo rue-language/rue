@@ -1398,6 +1398,26 @@ are neutral at -211 to +274 calls and -0.20 to +0.00 MB requested. Semantic-
 provider counters, every compiler-work counter other than the removed reuses,
 source/output metrics, and executable bytes remain identical.
 
+RUE-1435 sizes that same bounded cache from the maintained scaling curve rather
+than leaving its initial capacity as a guess. Moving from eight to 16 slots
+removes another 835, 1,452, 2,855 and 3,622 query-runtime reuses from Ruelex
+through Lattice. Thirty-two slots remove 1,237, 2,079, 4,144 and 7,561 reuses
+relative to eight, but twelve alternating Lattice pairs raise peak RSS by a
+consistent 0.54% paired median with 0.24% paired MAD. Doubling again to 64
+removes only another 349, 437, 800 and 1,551 reuses respectively. Both larger
+capacities are rejected: 32 crosses the no-regression memory boundary and 64
+has sharply diminishing work reduction per retained inline slot.
+
+Twelve alternating fixed one-worker Lattice comparisons of eight versus 16
+slots are clock-neutral at a 0.00% paired median with 1.57% paired MAD; retired
+instructions are neutral at -0.021% with 0.029% paired MAD, and peak RSS is
+neutral at -0.22% with 0.51% paired MAD. Four allocation-accounted pairs are
+neutral at median deltas of +200 calls and +0.10 MB requested. The complete
+capacity curve preserves semantic-provider counters, source/output metrics,
+and executable bytes. The selected 16-slot cache remains request-scoped,
+allocation-free, deterministic and bounded independently of body size; misses
+still cross the canonical query path.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
