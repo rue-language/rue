@@ -9,7 +9,7 @@ accepted: 2026-08-12
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-1164", "RUE-1118", "RUE-1222", "RUE-1267", "ADR-0047", "ADR-0051", "ADR-0069"]
+relates: ["RUE-1164", "RUE-1404", "RUE-1405", "RUE-1406", "RUE-1407", "RUE-1408", "RUE-1118", "RUE-1222", "RUE-1267", "ADR-0047", "ADR-0051", "ADR-0069"]
 ---
 
 # ADR-0070: Rue Program Compilation as Declared Buck Actions
@@ -695,7 +695,8 @@ internal CI scheduling and would not ship in a ruleset.
 
 ## Implementation Phases
 
-- [ ] **Phase 0: Rules, scan-derived manifest, audit, controls** — `rue_rules.bzl`
+- [ ] **Phase 0: Rules, scan-derived manifest, audit, controls** — RUE-1404 —
+      `rue_rules.bzl`
       with `rue_program`, `rue_program_test`, `RueProgramInfo`, the three-action
       scan/derive/compile shape, a `RueToolchainInfo` indirection, the declaration
       audit, and the three controls. This phase also settles the rule names while
@@ -703,7 +704,8 @@ internal CI scheduling and would not ship in a ruleset.
       stale-`--prefer-remote` documentation fix noted in the References (RUE-320
       is Done, so `AGENTS.md`'s condition no longer holds). No existing target
       changes.
-- [ ] **Phase 1: Large examples** — convert the six `large-example-*` `sh_test`s
+- [ ] **Phase 1: Large examples** — RUE-1405 — convert the six
+      `large-example-*` `sh_test`s
       over their four roots; each scenario in `scripts/run-large-example.sh`
       becomes its own `rue_program_test`, retiring the script. **The justification
       is not critical-path seconds** — the required path pays only 2.3s + 3.1s of
@@ -714,7 +716,8 @@ internal CI scheduling and would not ship in a ruleset.
       establish the mechanism. This phase owns the positive warm-cache check: a
       relocated or cross-lane second build must show the canary scan and compile
       actions cache-served under multiple consuming scenarios.
-- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** — the
+- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** —
+      RUE-1406 — the
       64 cases keep their TOML form and their existing corpus actions; what
       changes is that each CLI corpus action declares the 9 program artifacts as
       inputs and the harness runs the prebuilt executable a case names instead of
@@ -730,11 +733,13 @@ internal CI scheduling and would not ship in a ruleset.
       question 2** — Buck builds each program once, every scenario shares it,
       and warm runs serve the compile from cache, which is RUE-1164's goal met on
       the existing corpus topology.
-- [ ] **Phase 3: Test-result caching decision** — only after the negative controls
-      pass on a real branch. See open question 4. The default — do not enable —
-      stands unless evidence overturns it.
+- [ ] **Phase 3: Test-result caching decision** — RUE-1407 — only after the
+      negative controls pass on a real branch. See open question 4. The default —
+      do not enable — stands unless evidence overturns it.
 
-Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
+Linear issues are filed per phase under RUE-1164: RUE-1404, RUE-1405, RUE-1406
+and RUE-1407, in phase order. The per-file corpus redesign of open question 2 is
+RUE-1408, deliberately outside this sequence.
 
 ## Consequences
 
@@ -858,9 +863,9 @@ declined — afterward without reopening it.
    here, because it is a corpus-topology redesign — it dissolves CLI sharding,
    reaches into the spec and UI corpora, and modifies the harness's whole-corpus
    validation. Recommendation: file it as its own ADR and issue once this one is
-   accepted. Nothing in Phases 0–2 waits on it or forecloses it — per-file
-   actions would consume the same `RueProgramInfo` artifacts Phase 2 wires in,
-   just from finer-grained consumers.
+   accepted — done: RUE-1408. Nothing in Phases 0–2 waits on it or forecloses
+   it — per-file actions would consume the same `RueProgramInfo` artifacts
+   Phase 2 wires in, just from finer-grained consumers.
 
 3. **Do the CLI cases migrate out of TOML, or does the harness consume prebuilt
    artifacts?** Recommendation **reversed** after review: **let the harness
@@ -928,7 +933,8 @@ declined — afterward without reopening it.
 ## Future Work
 
 **Per-file corpus actions (from open question 2 — a separate ADR, not part of
-this one).** Make the corpus action's unit the case TOML file, comprehended from
+this one; tracked as RUE-1408).** Make the corpus action's unit the case TOML
+file, comprehended from
 `glob(["cases/*.toml"])` at load time, each file-target declaring its own TOML
 plus the coarse rare-change inputs; move shard assignment out of the action-key
 domain entirely by letting ADR-0069's lane planner pack the file-targets per run
@@ -978,3 +984,5 @@ approves nor forecloses this; it consumes the same artifacts Phase 2 wires in.
 - `corpus.bzl` — RUE-1118's cacheable corpus actions and their input contract
 - RUE-1164, RUE-1118, RUE-1222, RUE-1267; RUE-320 (remote execution, Done
   2026-07-18); RUE-1083 (the budget kills that disabled the meridian section)
+- RUE-1404 / RUE-1405 / RUE-1406 / RUE-1407 — the Phase 0–3 implementation
+  issues under RUE-1164; RUE-1408 — the per-file corpus ADR from open question 2
