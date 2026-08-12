@@ -874,7 +874,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///
     /// Takes a syscall number and up to 6 arguments, all of which must be u64.
     /// Returns i64 (the syscall return value, which may be negative for errors).
-    /// Requires a checked block.
+    ///
+    /// `@syscall` is an unchecked operation (spec 9.2:3a): the shared
+    /// checked-block gate in `analyze_intrinsic_impl` rejects it outside a
+    /// `checked` block before this analysis runs.
     pub(super) fn analyze_syscall_intrinsic(
         &mut self,
         air: &mut Air,

@@ -5,6 +5,11 @@
 # into the wrong syscall register and compiling cleanly — a silent
 # miscompile (RUE-130 item 8). The type argument is now lowered to a
 # placeholder so Sema reports a proper type error instead.
+#
+# The `@syscall` cases sit inside `checked` blocks because `@syscall` is an
+# unchecked operation (spec 9.2:3a, RUE-1369); without the block the shared
+# checked-block gate would fire first and hide the argument diagnostic under
+# test.
 
 [section]
 id = "cli.intrinsic_args"
@@ -20,7 +25,9 @@ files = [
 fn main() -> i32 {
     let a: u64 = 60;
     let b: u64 = 7;
-    let r = @syscall(a, (), b);
+    checked {
+        let r = @syscall(a, (), b);
+    };
     0
 }
 """ },
@@ -35,7 +42,9 @@ files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
     let a: u64 = 60;
-    let r = @syscall(a, i32);
+    checked {
+        let r = @syscall(a, i32);
+    };
     0
 }
 """ },

@@ -26,6 +26,11 @@ argument = expression ;
 
 The `@syscall` intrinsic takes at least one argument (the syscall number) and at most seven arguments (syscall number plus six syscall arguments). All arguments must be of type `u64`.
 
+{{ rule(id="9.2:3a", cat="legality-rule") }}
+
+`@syscall` is an unchecked operation and **MUST** appear within a `checked`
+block (§9.1, 9.1:12). Using it outside a `checked` block is a compile error.
+
 {{ rule(id="9.2:4", cat="dynamic-semantics") }}
 
 The `@syscall` intrinsic returns an `i64` value representing the result of the
