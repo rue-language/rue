@@ -2929,21 +2929,22 @@ impl ValidationWork {
     }
 }
 
+/// Task-local storage for the independent validation outcomes.
+///
+/// `traversals`, `registry_probes`, `node_visits`, and `memo_misses` are exact
+/// sums of fields below, so snapshots derive them instead of paying a second
+/// atomic update on the validation hot path.
 #[derive(Debug, Default)]
 struct AtomicValidationWork {
-    traversals: AtomicU64,
     successful_traversals: AtomicU64,
     dirty_traversals: AtomicU64,
     aborted_traversals: AtomicU64,
     input_observations: AtomicU64,
     dependency_observations: AtomicU64,
-    registry_probes: AtomicU64,
     registry_index_lookups: AtomicU64,
     registry_misses: AtomicU64,
-    node_visits: AtomicU64,
     active_cycle_prunes: AtomicU64,
     memo_hits: AtomicU64,
-    memo_misses: AtomicU64,
     certificate_misses: AtomicU64,
     proof_reacquisition_misses: AtomicU64,
     endorsement_probes: AtomicU64,
@@ -2960,21 +2961,35 @@ struct AtomicValidationWork {
 }
 
 impl AtomicValidationWork {
+    fn derive_totals(mut work: ValidationWork) -> ValidationWork {
+        work.traversals = work
+            .successful_traversals
+            .saturating_add(work.dirty_traversals)
+            .saturating_add(work.aborted_traversals);
+        work.registry_probes = work
+            .dependency_observations
+            .saturating_add(work.successful_traversals);
+        work.memo_misses = work
+            .certificate_misses
+            .saturating_add(work.proof_reacquisition_misses);
+        work.node_visits = work
+            .active_cycle_prunes
+            .saturating_add(work.memo_hits)
+            .saturating_add(work.memo_misses);
+        work
+    }
+
     fn snapshot(&self) -> ValidationWork {
-        ValidationWork {
-            traversals: self.traversals.load(Ordering::Relaxed),
+        Self::derive_totals(ValidationWork {
             successful_traversals: self.successful_traversals.load(Ordering::Relaxed),
             dirty_traversals: self.dirty_traversals.load(Ordering::Relaxed),
             aborted_traversals: self.aborted_traversals.load(Ordering::Relaxed),
             input_observations: self.input_observations.load(Ordering::Relaxed),
             dependency_observations: self.dependency_observations.load(Ordering::Relaxed),
-            registry_probes: self.registry_probes.load(Ordering::Relaxed),
             registry_index_lookups: self.registry_index_lookups.load(Ordering::Relaxed),
             registry_misses: self.registry_misses.load(Ordering::Relaxed),
-            node_visits: self.node_visits.load(Ordering::Relaxed),
             active_cycle_prunes: self.active_cycle_prunes.load(Ordering::Relaxed),
             memo_hits: self.memo_hits.load(Ordering::Relaxed),
-            memo_misses: self.memo_misses.load(Ordering::Relaxed),
             certificate_misses: self.certificate_misses.load(Ordering::Relaxed),
             proof_reacquisition_misses: self.proof_reacquisition_misses.load(Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.load(Ordering::Relaxed),
@@ -2990,24 +3005,21 @@ impl AtomicValidationWork {
             demand_aborts: self.demand_aborts.load(Ordering::Relaxed),
             superseded: self.superseded.load(Ordering::Relaxed),
             certificates_published: self.certificates_published.load(Ordering::Relaxed),
-        }
+            ..ValidationWork::default()
+        })
     }
 
     fn take(&self) -> ValidationWork {
-        ValidationWork {
-            traversals: self.traversals.swap(0, Ordering::Relaxed),
+        Self::derive_totals(ValidationWork {
             successful_traversals: self.successful_traversals.swap(0, Ordering::Relaxed),
             dirty_traversals: self.dirty_traversals.swap(0, Ordering::Relaxed),
             aborted_traversals: self.aborted_traversals.swap(0, Ordering::Relaxed),
             input_observations: self.input_observations.swap(0, Ordering::Relaxed),
             dependency_observations: self.dependency_observations.swap(0, Ordering::Relaxed),
-            registry_probes: self.registry_probes.swap(0, Ordering::Relaxed),
             registry_index_lookups: self.registry_index_lookups.swap(0, Ordering::Relaxed),
             registry_misses: self.registry_misses.swap(0, Ordering::Relaxed),
-            node_visits: self.node_visits.swap(0, Ordering::Relaxed),
             active_cycle_prunes: self.active_cycle_prunes.swap(0, Ordering::Relaxed),
             memo_hits: self.memo_hits.swap(0, Ordering::Relaxed),
-            memo_misses: self.memo_misses.swap(0, Ordering::Relaxed),
             certificate_misses: self.certificate_misses.swap(0, Ordering::Relaxed),
             proof_reacquisition_misses: self.proof_reacquisition_misses.swap(0, Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.swap(0, Ordering::Relaxed),
@@ -3025,7 +3037,8 @@ impl AtomicValidationWork {
             demand_aborts: self.demand_aborts.swap(0, Ordering::Relaxed),
             superseded: self.superseded.swap(0, Ordering::Relaxed),
             certificates_published: self.certificates_published.swap(0, Ordering::Relaxed),
-        }
+            ..ValidationWork::default()
+        })
     }
 
     fn add(&self, work: ValidationWork) {
@@ -3037,19 +3050,15 @@ impl AtomicValidationWork {
             };
         }
         add_fields!(
-            traversals,
             successful_traversals,
             dirty_traversals,
             aborted_traversals,
             input_observations,
             dependency_observations,
-            registry_probes,
             registry_index_lookups,
             registry_misses,
-            node_visits,
             active_cycle_prunes,
             memo_hits,
-            memo_misses,
             certificate_misses,
             proof_reacquisition_misses,
             endorsement_probes,
@@ -3064,6 +3073,31 @@ impl AtomicValidationWork {
             superseded,
             certificates_published,
         );
+    }
+}
+
+/// Publishes exactly one completed validation-traversal outcome. Keeping the
+/// outcome in the guard makes an evaluator unwind count as an aborted
+/// traversal, so the aggregate total can be derived without a separate atomic.
+struct ValidationTraversalWork<'a> {
+    work: &'a AtomicValidationWork,
+    outcome: Option<bool>,
+}
+
+impl ValidationTraversalWork<'_> {
+    fn finish(mut self, valid: bool) {
+        self.outcome = Some(valid);
+    }
+}
+
+impl Drop for ValidationTraversalWork<'_> {
+    fn drop(&mut self) {
+        let counter = match self.outcome {
+            Some(true) => &self.work.successful_traversals,
+            Some(false) => &self.work.dirty_traversals,
+            None => &self.work.aborted_traversals,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -3087,9 +3121,6 @@ impl Drop for DependencyValidationWork<'_> {
         }
         self.work
             .dependency_observations
-            .fetch_add(self.observations, Ordering::Relaxed);
-        self.work
-            .registry_probes
             .fetch_add(self.observations, Ordering::Relaxed);
     }
 }
@@ -4997,9 +5028,6 @@ where
         task: &Arc<Task>,
         active: &mut ActiveValidations,
     ) -> Result<Option<u64>, QueryAbort> {
-        task.validation_work
-            .node_visits
-            .fetch_add(1, Ordering::Relaxed);
         if !active.insert(self.incarnation) {
             task.validation_work
                 .active_cycle_prunes
@@ -5051,9 +5079,6 @@ where
                 proof_reacquisition_miss = true;
             }
         }
-        task.validation_work
-            .memo_misses
-            .fetch_add(1, Ordering::Relaxed);
         if proof_reacquisition_miss {
             task.validation_work
                 .proof_reacquisition_misses
@@ -10060,35 +10085,19 @@ impl RuntimeCore {
         terminal: &QueryTerminal<V>,
         task: &Arc<Task>,
     ) -> Result<(bool, bool, bool), QueryAbort> {
-        task.validation_work
-            .traversals
-            .fetch_add(1, Ordering::Relaxed);
-        let proof = task.begin_validation();
-        let valid = match self.valid_for_revision_inner(
-            terminal,
-            task,
-            &mut ActiveValidations::default(),
-        ) {
-            Ok(valid) => valid,
-            Err(abort) => {
-                task.validation_work
-                    .aborted_traversals
-                    .fetch_add(1, Ordering::Relaxed);
-                return Err(abort);
-            }
+        let traversal_work = ValidationTraversalWork {
+            work: &task.validation_work,
+            outcome: None,
         };
+        let proof = task.begin_validation();
+        let valid =
+            self.valid_for_revision_inner(terminal, task, &mut ActiveValidations::default())?;
         let registered_only = proof.registered_only();
         let retryable = proof.retryable();
         if valid {
-            task.validation_work
-                .successful_traversals
-                .fetch_add(1, Ordering::Relaxed);
             self.mark_terminal_validated(terminal, task.revision, registered_only, task);
-        } else {
-            task.validation_work
-                .dirty_traversals
-                .fetch_add(1, Ordering::Relaxed);
         }
+        traversal_work.finish(valid);
         Ok((valid, registered_only, retryable))
     }
 
@@ -10099,9 +10108,6 @@ impl RuntimeCore {
         registered_only: bool,
         task: &Task,
     ) {
-        task.validation_work
-            .registry_probes
-            .fetch_add(1, Ordering::Relaxed);
         if let Some(node) = self.validation_node(
             &terminal.node,
             terminal.node_incarnation,
@@ -10730,6 +10736,73 @@ mod tests {
         let work = work.snapshot();
         assert_eq!(work.dependency_observations, 5);
         assert_eq!(work.registry_probes, 5);
+    }
+
+    #[test]
+    fn atomic_validation_work_derives_totals_and_preserves_them_across_transfer() {
+        let work = AtomicValidationWork::default();
+        work.successful_traversals.fetch_add(2, Ordering::Relaxed);
+        work.dirty_traversals.fetch_add(3, Ordering::Relaxed);
+        work.aborted_traversals.fetch_add(4, Ordering::Relaxed);
+        work.dependency_observations.fetch_add(5, Ordering::Relaxed);
+        work.active_cycle_prunes.fetch_add(6, Ordering::Relaxed);
+        work.memo_hits.fetch_add(7, Ordering::Relaxed);
+        work.certificate_misses.fetch_add(8, Ordering::Relaxed);
+        work.proof_reacquisition_misses
+            .fetch_add(9, Ordering::Relaxed);
+
+        let expected = ValidationWork {
+            traversals: 9,
+            successful_traversals: 2,
+            dirty_traversals: 3,
+            aborted_traversals: 4,
+            dependency_observations: 5,
+            registry_probes: 7,
+            node_visits: 30,
+            active_cycle_prunes: 6,
+            memo_hits: 7,
+            memo_misses: 17,
+            certificate_misses: 8,
+            proof_reacquisition_misses: 9,
+            ..ValidationWork::default()
+        };
+        assert_eq!(work.snapshot(), expected);
+        assert_eq!(work.take(), expected);
+        assert_eq!(work.snapshot(), ValidationWork::default());
+
+        work.add(expected);
+        assert_eq!(work.snapshot(), expected);
+    }
+
+    #[test]
+    fn validation_traversal_work_records_every_outcome_once() {
+        let work = AtomicValidationWork::default();
+        {
+            let traversal = ValidationTraversalWork {
+                work: &work,
+                outcome: None,
+            };
+            traversal.finish(true);
+        }
+        {
+            let traversal = ValidationTraversalWork {
+                work: &work,
+                outcome: None,
+            };
+            traversal.finish(false);
+        }
+        {
+            let _traversal = ValidationTraversalWork {
+                work: &work,
+                outcome: None,
+            };
+        }
+
+        let work = work.snapshot();
+        assert_eq!(work.traversals, 3);
+        assert_eq!(work.successful_traversals, 1);
+        assert_eq!(work.dirty_traversals, 1);
+        assert_eq!(work.aborted_traversals, 1);
     }
 
     #[test]
