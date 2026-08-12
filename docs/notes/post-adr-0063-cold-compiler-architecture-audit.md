@@ -1137,6 +1137,23 @@ paired MAD and a -4.86% to +1.35% range. Median peak RSS falls by 1.07 MiB.
 Every published compiler-work counter and emitted executable byte remains
 identical.
 
+RUE-1414 validates each durable type-export graph once at its checked root.
+Projection previously called the checked export boundary recursively for every
+array, pointer, and slice child, so a nested structural chain revalidated every
+remaining suffix and accumulated quadratic validation work in its depth. The
+validated projection helper now walks that immutable graph once after the root
+boundary has established completeness and pool ownership; nominal and module
+export joins still fail closed independently.
+
+The maintained Lattice graph is shallow enough that four fixed one-worker
+allocation probes move within run-to-run dispersion, with a median reduction
+of 256 calls and 0.10 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.22% paired median, with 0.56%
+paired MAD and a -1.31% to +5.92% range. Median peak RSS moves +1.48 MiB within
+dispersion. Every published compiler-work counter and emitted executable byte
+remains identical. The architectural result is the linear validation bound,
+not a claimed clock improvement on the current corpus.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

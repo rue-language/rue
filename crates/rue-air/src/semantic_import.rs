@@ -1902,6 +1902,16 @@ where
         self.type_pool
             .validate_complete_type(value)
             .map_err(|_| SemanticImportFailure::ForeignLocalType)?;
+        self.export_type_local_validated(value)
+    }
+
+    /// Project a type whose complete reachable graph was checked by the root
+    /// export boundary. Recursive projection must not revalidate every suffix
+    /// of that same immutable graph.
+    fn export_type_local_validated(
+        &self,
+        value: Type,
+    ) -> Result<SemanticImportType<K, M>, SemanticImportFailure> {
         Ok(match value.kind() {
             crate::TypeKind::I8 => SemanticImportType::I8,
             crate::TypeKind::I16 => SemanticImportType::I16,
@@ -1926,7 +1936,9 @@ where
                     };
                     SemanticImportType::Slice {
                         element: Box::new(
-                            self.export_type_local(self.type_pool.ptr_const_def(pointer))?,
+                            self.export_type_local_validated(
+                                self.type_pool.ptr_const_def(pointer),
+                            )?,
                         ),
                         name: def.name.clone(),
                     }
@@ -1980,15 +1992,15 @@ where
             crate::TypeKind::Array(id) => {
                 let (element, len) = self.type_pool.array_def(id);
                 SemanticImportType::Array {
-                    element: Box::new(self.export_type_local(element)?),
+                    element: Box::new(self.export_type_local_validated(element)?),
                     len,
                 }
             }
             crate::TypeKind::PtrConst(id) => SemanticImportType::PtrConst(Box::new(
-                self.export_type_local(self.type_pool.ptr_const_def(id))?,
+                self.export_type_local_validated(self.type_pool.ptr_const_def(id))?,
             )),
             crate::TypeKind::PtrMut(id) => SemanticImportType::PtrMut(Box::new(
-                self.export_type_local(self.type_pool.ptr_mut_def(id))?,
+                self.export_type_local_validated(self.type_pool.ptr_mut_def(id))?,
             )),
             crate::TypeKind::Module(id) => SemanticImportType::Module(
                 self.module_exports
@@ -2931,6 +2943,14 @@ mod tests {
         assert_eq!(
             b.export_const_value(value),
             Err(SemanticImportFailure::ForeignLocalValue)
+        );
+        assert_eq!(
+            a.export_type(SemanticImportedType {
+                epoch: a.epoch.clone(),
+                value: Type::ERROR,
+            }),
+            Err(SemanticImportFailure::ForeignLocalType),
+            "the checked root boundary must still reject a branded recovery type"
         );
     }
 
