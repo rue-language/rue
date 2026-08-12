@@ -131,6 +131,7 @@ pub(crate) struct CfgQueryKey {
     pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) semantic_input: CfgSemanticInput,
     memo_hash: u64,
+    display_identity: Arc<str>,
 }
 
 impl CfgQueryKey {
@@ -154,11 +155,17 @@ impl CfgQueryKey {
         function.hash(&mut hasher);
         configuration.hash(&mut hasher);
         let memo_hash = hasher.finish();
+        let display_identity: Arc<str> = format!(
+            "{function:?};target={:?};preview={:?}",
+            configuration.target, configuration.preview_features
+        )
+        .into();
         Self {
             function,
             configuration,
             semantic_input,
             memo_hash,
+            display_identity,
         }
     }
 }
@@ -181,10 +188,11 @@ impl Hash for CfgQueryKey {
 
 impl QueryKey for CfgQueryKey {
     fn stable_identity(&self) -> String {
-        format!(
-            "{:?};target={:?};preview={:?}",
-            self.function, self.configuration.target, self.configuration.preview_features
-        )
+        self.display_identity.to_string()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.display_identity.clone()
     }
 }
 
@@ -439,6 +447,7 @@ pub(crate) struct OptimizedCfgQueryKey {
     pub(crate) cfg: CfgQueryKey,
     pub(crate) opt_level: rue_cfg::OptLevel,
     pub(crate) accessor_dependencies: Arc<[CfgQueryKey]>,
+    display_identity: Arc<str>,
 }
 
 impl OptimizedCfgQueryKey {
@@ -447,10 +456,17 @@ impl OptimizedCfgQueryKey {
         opt_level: rue_cfg::OptLevel,
         accessor_dependencies: Arc<[CfgQueryKey]>,
     ) -> Self {
+        let cfg_identity = cfg.shared_stable_identity();
+        let display_identity: Arc<str> = format!(
+            "{cfg_identity};opt={opt_level:?};accessors={}",
+            accessor_dependencies.len()
+        )
+        .into();
         Self {
             cfg,
             opt_level,
             accessor_dependencies,
+            display_identity,
         }
     }
 }
@@ -475,12 +491,11 @@ impl std::hash::Hash for OptimizedCfgQueryKey {
 
 impl QueryKey for OptimizedCfgQueryKey {
     fn stable_identity(&self) -> String {
-        format!(
-            "{};opt={:?};accessors={}",
-            self.cfg.stable_identity(),
-            self.opt_level,
-            self.accessor_dependencies.len()
-        )
+        self.display_identity.to_string()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.display_identity.clone()
     }
 }
 
