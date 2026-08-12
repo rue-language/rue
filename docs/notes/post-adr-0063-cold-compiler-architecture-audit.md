@@ -1688,6 +1688,23 @@ median (0.7210% MAD), retired instructions at -0.0307% (0.0593% MAD), cycles at
 at -0.0580% (0.1881% MAD). Every compiler-work counter, source/output metric,
 and executable byte remains identical.
 
+RUE-1458 makes rooted program-image validation the single producer of each
+unit's stable encoded identity. Fresh plan construction previously encoded
+every callable again, copied every already-shared defined symbol, and rebuilt
+the same identity/symbol sets a third time after raw inputs had passed their
+full duplicate, entry-point, and export checks. The retained-plan delta API
+keeps its independent fail-closed plan validation because its inputs do not
+come from that private fresh-construction path.
+
+Four allocation-accounted cold Lattice pairs remove 8,362--8,758 allocation
+calls and 680,862--823,390 requested bytes. Across 16 balanced release pairs,
+the `program_image_plan` phase improves by 7.3521% at the paired median (0.6639%
+MAD). End-to-end compiler clock is neutral at -0.0765% (1.3312% MAD), retired
+instructions at -0.0455% (0.0786% MAD), cycles at +0.3026% (0.8219% MAD), peak
+RSS at +0.1173% (0.3600% MAD), and peak footprint at -0.2005% (0.1693% MAD).
+Every compiler-work counter, source/output metric, and executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
