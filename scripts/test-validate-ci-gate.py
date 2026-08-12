@@ -199,12 +199,18 @@ class GateValidatorTests(unittest.TestCase):
         # RUE-1130. A target the native job runs but the determinator does not
         # list is invisible to selection: the lane can be deselected, or
         # narrowed away, by a diff that actually reaches it.
+        # Anchored on the array's LAST target so the splice keeps working as
+        # entries are appended; the inequality assertion turns a stale anchor
+        # into a clear failure here rather than a silent no-op that lets the
+        # drift assertion below fail with an empty error list (RUE-1404 hit
+        # exactly that when the fixture target joined the array).
         changed = SOURCE.read_text().replace(
-            "            //crates/rue-target:rue-target-test\n          )",
-            "            //crates/rue-target:rue-target-test\n"
+            "            //fixtures/rue-program:hello-runs-test\n          )",
+            "            //fixtures/rue-program:hello-runs-test\n"
             "            //crates/rue-query:rue-query-test\n          )",
             1,
         )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//crates/rue-query:rue-query-test", errors)
         self.assertIn("selection cannot see it", errors)
