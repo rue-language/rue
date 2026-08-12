@@ -8967,10 +8967,10 @@ mod tests {
         assert_eq!(metrics.import_lookups, 0);
         assert_eq!(metrics.method_candidates, 0);
         assert_eq!(metrics.operator_candidates, 0);
-        assert_eq!(metrics.declaration_facts, 13, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 12, "{metrics:?}");
         assert_eq!(
-            metrics.identity_facts, 7,
-            "candidate resolution must reuse the winning declaration identity instead of issuing a peer query: {metrics:?}"
+            metrics.identity_facts, 6,
+            "callable type syntax must travel with the winning signature instead of resolving its candidate again: {metrics:?}"
         );
         assert_eq!(metrics.signature_facts, 6, "{metrics:?}");
         assert_eq!(metrics.materializations, 6, "{metrics:?}");
@@ -9008,8 +9008,8 @@ mod tests {
 
         let metrics = crate::unstable::provider_observation_metrics(&session);
         assert_eq!(metrics.name_lookups, 16, "{metrics:?}");
-        assert_eq!(metrics.declaration_facts, 21, "{metrics:?}");
-        assert_eq!(metrics.identity_facts, 11, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 20, "{metrics:?}");
+        assert_eq!(metrics.identity_facts, 10, "{metrics:?}");
         assert_eq!(metrics.signature_facts, 10, "{metrics:?}");
         assert_eq!(metrics.materializations, 10, "{metrics:?}");
     }
@@ -12739,7 +12739,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn body_callable_dependencies_select_exact_shell_candidate_sets() {
+    fn body_callable_dependencies_stop_at_exact_semantic_signature_candidates() {
         let source = SourceSnapshot::single(
             "main.rue",
             "extern \"C\" { fn foreign() -> i32; }\n\
@@ -12768,28 +12768,13 @@ fn main() -> i32 {
                  transaction={main_transaction:?}; dependencies={dependencies:?}"
             );
         }
-        for (category, name) in [("Function", "helper"), ("ExternFunction", "foreign")] {
-            assert!(
-                dependencies.iter().any(|node| {
-                    node.contains("compiler.raw-declaration-signature")
-                        && node.contains(&format!(":{category}:"))
-                        && node.contains(name)
-                }),
-                "body transaction must observe the exactly selected signature for {name}: \
-                 transaction={main_transaction:?}; dependencies={dependencies:?}"
-            );
-        }
-        for (category, name) in [("ExternFunction", "helper"), ("Function", "foreign")] {
-            assert!(
-                dependencies.iter().all(|node| {
-                    !(node.contains("compiler.raw-declaration-signature")
-                        && node.contains(&format!(":{category}:"))
-                        && node.contains(name))
-                }),
-                "the unselected opposite-category signature must stay behind the lookup for \
-                 {name}: dependencies={dependencies:?}"
-            );
-        }
+        assert!(
+            dependencies
+                .iter()
+                .all(|node| !node.contains("compiler.raw-declaration-signature")),
+            "raw syntax is an internal dependency of the semantic-signature query, not a peer \
+             body dependency: transaction={main_transaction:?}; dependencies={dependencies:?}"
+        );
         assert!(
             dependencies.iter().any(|node| {
                 node.contains("compiler.semantic-nucleus")
@@ -12799,6 +12784,18 @@ fn main() -> i32 {
             }),
             "{dependencies:?}"
         );
+        for (category, name) in [("ExternFunction", "helper"), ("Function", "foreign")] {
+            assert!(
+                dependencies.iter().all(|node| {
+                    !(node.contains("compiler.semantic-nucleus")
+                        && node.contains("signature:")
+                        && node.contains(&format!(":{category}:"))
+                        && node.contains(name))
+                }),
+                "the unselected opposite-category signature must stay behind the lookup for \
+                 {name}: dependencies={dependencies:?}"
+            );
+        }
         assert!(
             dependencies.iter().any(|node| {
                 node.contains("compiler.semantic-nucleus")

@@ -2184,15 +2184,28 @@ pub struct DurableSignatureParameter<K, M> {
     pub is_comptime: bool,
 }
 
+/// Exact parameter and result type fragments retained by the canonical
+/// declaration-signature parse. Dependent callable types cannot always be
+/// reconstructed from their reduced durable placeholders, so executable body
+/// materialization carries these fragments beside the semantic signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableCallableTypeSyntax {
+    pub parameters: Arc<[Arc<str>]>,
+    pub result: Arc<str>,
+}
+
 /// The durable signature of a free function, sufficient to assemble the
-/// signature-derived subset of a [`FunctionInfo`]. `is_generic` is *not* a field
-/// — it is the derived predicate "any parameter is comptime", exactly the
-/// invariant the epoch enforces between its shell and RIR
+/// signature-derived subset of a [`FunctionInfo`]. Executable-body sources may
+/// also carry the canonical exact type fragments needed to resolve dependent
+/// placeholders; identity-only sources leave that field absent. `is_generic`
+/// is *not* a field — it is the derived predicate "any parameter is comptime",
+/// exactly the invariant the epoch enforces between its shell and RIR
 /// (`binding_manifest.rs`: `shell.is_generic == params.any(is_comptime)`).
 #[derive(Debug, Clone)]
 pub struct DurableFunction<K, M> {
     pub parameters: Vec<DurableSignatureParameter<K, M>>,
     pub result: SemanticImportType<K, M>,
+    pub type_syntax: Option<DurableCallableTypeSyntax>,
     pub is_public: bool,
     pub is_unchecked: bool,
     pub is_extern: bool,
@@ -2207,6 +2220,7 @@ pub struct DurableMethod<K, M> {
     pub receiver: SemanticImportType<K, M>,
     pub parameters: Vec<DurableSignatureParameter<K, M>>,
     pub result: SemanticImportType<K, M>,
+    pub type_syntax: Option<DurableCallableTypeSyntax>,
     pub has_self: bool,
     pub self_mode: SemanticParameterMode,
     pub is_accessor: bool,
@@ -2224,19 +2238,12 @@ pub trait DurableCallableSource<K, M> {
     /// method in the durable universe.
     fn method(&self, key: &K) -> Option<DurableMethod<K, M>>;
 
-    /// Exact parameter/result type syntax for this callable, when it is
-    /// retained as a separately observed query fact. Body specialization needs
-    /// this alongside the durable semantic placeholders.
-    fn callable_type_syntax(&self, _key: &K) -> Option<(Vec<Arc<str>>, Arc<str>)> {
-        None
-    }
-
     /// Whether dependent callable types are being materialized for an
-    /// executable body-analysis host. Such a host retains the exact durable
-    /// syntax separately and uses `COMPTIME_TYPE` only as the local placeholder
-    /// that specialization resolves before execution. Identity-only consumers
-    /// keep the default refusal so a generic parameter can never be mistaken
-    /// for an independently materialized type.
+    /// executable body-analysis host. Such a host carries the exact syntax
+    /// beside its durable function or method and uses `COMPTIME_TYPE` only as
+    /// the local placeholder that specialization resolves before execution.
+    /// Identity-only consumers keep the default refusal so a generic parameter
+    /// can never be mistaken for an independently materialized type.
     fn uses_deferred_body_type_placeholders(&self) -> bool {
         false
     }
@@ -2381,6 +2388,7 @@ where
         let DurableFunction {
             parameters,
             result,
+            type_syntax: _,
             is_public,
             is_unchecked,
             is_extern,
@@ -2422,6 +2430,7 @@ where
             receiver,
             parameters,
             result,
+            type_syntax: _,
             has_self,
             self_mode,
             is_accessor,
@@ -3433,6 +3442,7 @@ mod tests {
         DurableFunction {
             parameters,
             result,
+            type_syntax: None,
             is_public,
             is_unchecked,
             is_extern: false,
@@ -3450,6 +3460,7 @@ mod tests {
             receiver,
             parameters,
             result,
+            type_syntax: None,
             has_self,
             self_mode,
             is_accessor: false,

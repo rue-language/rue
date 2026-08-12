@@ -1316,6 +1316,24 @@ with deltas of -32 to +319 calls and -0.01 to +0.13 MB requested. Every
 published compiler-work counter, emitted-output metric, source metric, and
 executable byte remains identical.
 
+RUE-1430 carries exact callable type fragments with the canonical semantic-
+signature projection that already parses them. Body-local materialization
+previously queried the same declaration candidate again and rebuilt a parser
+and interner to recover dependent parameter/result syntax that cannot be
+reconstructed from reduced comptime placeholders. Durable function and method
+facts now transport the canonical fragments directly; raw declaration syntax
+remains an internal dependency of the semantic-signature query instead of a
+peer dependency of every consuming body.
+
+Cold one-worker Lattice removes 2,738 declaration-identity fact reads, 5,476
+query reuses, and 2,738 redundant signature parser invocations. Sixteen
+balanced release pairs reduce retired instructions by a 2.262% paired median
+with 0.043% paired MAD and compile clock by 2.20% with 0.63% paired MAD. Peak
+RSS is neutral at -0.22% with 0.34% paired MAD. Four allocation-accounted pairs
+save 478,839--479,274 allocations and 109.31--109.61 MB requested. Every other
+published compiler-work counter, emitted-output metric, source metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

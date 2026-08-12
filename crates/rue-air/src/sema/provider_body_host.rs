@@ -738,7 +738,7 @@ where
         info: FunctionCallInfo,
         function: &crate::DurableFunction<K, M>,
         retain_rir_type_syntax: bool,
-        exact_type_syntax: Option<&(Vec<Arc<str>>, Arc<str>)>,
+        exact_type_syntax: Option<&crate::DurableCallableTypeSyntax>,
         signature_file: FileId,
     ) {
         self.durable_comptime_type_flags.borrow_mut().insert(
@@ -759,7 +759,7 @@ where
             let symbols = exact_type_syntax
                 .map(|syntax| {
                     syntax
-                        .0
+                        .parameters
                         .iter()
                         .map(|ty| self.signature_type_symbol(ty))
                         .collect()
@@ -867,9 +867,9 @@ where
             self.register_import_nominal_identities(&function.result)
                 .ok()?;
         }
-        let exact_type_syntax = self.source.callable_type_syntax(&key);
-        let return_type_sym = if let Some(syntax) = &exact_type_syntax {
-            self.signature_type_symbol(&syntax.1)
+        let exact_type_syntax = function.type_syntax.as_ref();
+        let return_type_sym = if let Some(syntax) = exact_type_syntax {
+            self.signature_type_symbol(&syntax.result)
         } else {
             self.durable_signature_type_symbol(&function.result, &function.parameters)?
         };
@@ -879,13 +879,7 @@ where
             .pool_mut()?
             .resolve_function_call(&key, return_type_sym, file)
             .ok()?;
-        self.install_durable_callable_metadata(
-            info,
-            &function,
-            false,
-            exact_type_syntax.as_ref(),
-            file,
-        );
+        self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, &name);
         self.function_infos.borrow_mut().insert(symbol, info);
         self.function_tokens
@@ -1033,10 +1027,9 @@ where
             self.register_import_nominal_identities(&function.result)
                 .ok()?;
         }
-        let exact_type_syntax = self.source.callable_type_syntax(&key);
+        let exact_type_syntax = function.type_syntax.as_ref();
         let return_type_sym = exact_type_syntax
-            .as_ref()
-            .map(|syntax| self.signature_type_symbol(&syntax.1))
+            .map(|syntax| self.signature_type_symbol(&syntax.result))
             .or_else(|| {
                 self.durable_signature_type_symbol(&function.result, &function.parameters)
             })?;
@@ -1046,13 +1039,7 @@ where
             .pool_mut()?
             .resolve_function_call(&key, return_type_sym, file)
             .ok()?;
-        self.install_durable_callable_metadata(
-            info,
-            &function,
-            false,
-            exact_type_syntax.as_ref(),
-            file,
-        );
+        self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, name);
         self.function_infos.borrow_mut().insert(internal, info);
         self.function_tokens
