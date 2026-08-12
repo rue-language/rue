@@ -4062,11 +4062,56 @@ fn lower_owned_body_input(
     })
 }
 
-/// Project only statically resolvable free-function and type-constructor call
 /// Project statically resolvable free-function and type-constructor call heads
 /// directly from the canonical parsed module. The exact declaration candidate
 /// selects one parser-owned AST body; no body fragment is reparsed and no RIR,
 /// semantic body analysis, reachability, CFG, or codegen query is entered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WarningBodySelectionWork {
+    top_level_items_examined: u32,
+    member_items_examined: u32,
+}
+
+fn warning_item_span(item: &rue_parser::ast::Item) -> rue_span::Span {
+    use rue_parser::ast::Item;
+    match item {
+        Item::Function(item) => item.span,
+        Item::Struct(item) => item.span,
+        Item::Enum(item) => item.span,
+        Item::DropFn(item) => item.span,
+        Item::Extern(item) => item.span,
+        Item::Const(item) => item.span,
+        Item::Error(span) => *span,
+    }
+}
+
+/// Find the source-ordered record containing `target` with a bounded binary
+/// search. Parser-owned top-level items and nominal members are non-overlapping,
+/// so the last record beginning no later than the target is the only possible
+/// owner. The exact declaration checks below remain authoritative.
+fn warning_record_containing<'a, T>(
+    records: &'a [T],
+    target: rue_span::Span,
+    mut span: impl FnMut(&T) -> rue_span::Span,
+    examined: &mut u32,
+) -> Option<&'a T> {
+    let mut start = 0;
+    let mut end = records.len();
+    while start < end {
+        let middle = start + (end - start) / 2;
+        *examined = examined.saturating_add(1);
+        if span(&records[middle]).start <= target.start {
+            start = middle + 1;
+        } else {
+            end = middle;
+        }
+    }
+    let record = records.get(start.checked_sub(1)?)?;
+    *examined = examined.saturating_add(1);
+    let record_span = span(record);
+    (record_span.start <= target.start && target.end <= record_span.end).then_some(record)
+}
+
 fn warning_static_call_heads(
     module: &crate::parsed_modules::ParsedModule,
     candidate: &crate::declaration_candidate::DeclarationCandidateKey,
@@ -4074,25 +4119,34 @@ fn warning_static_call_heads(
         (u32, u32),
         crate::declaration_candidate::DeclarationImportSiteKey,
     >,
-) -> Result<Arc<[WarningSyntaxCallHead]>, Arc<str>> {
+) -> (
+    Result<Arc<[WarningSyntaxCallHead]>, Arc<str>>,
+    WarningBodySelectionWork,
+) {
     use crate::declaration_candidate::DeclarationCandidateCategory as Category;
     use rue_parser::ast::Item;
 
-    let locator = module
-        .definitions()
-        .declaration_locator(candidate)
-        .ok_or_else(|| {
-            Arc::from("warning call-head projection has no exact declaration locator")
-        })?;
-    let mut collector = WarningStaticCallCollector::new(module, declaration_imports);
-    let mut matches = 0_u32;
-    for item in &module.ast().items {
+    let mut work = WarningBodySelectionWork::default();
+    let result = (|| {
+        let locator = module
+            .definitions()
+            .declaration_locator(candidate)
+            .ok_or_else(|| {
+                Arc::from("warning call-head projection has no exact declaration locator")
+            })?;
+        let item = warning_record_containing(
+            &module.ast().items,
+            locator.declaration_span,
+            warning_item_span,
+            &mut work.top_level_items_examined,
+        )
+        .ok_or_else(|| Arc::from("warning call-head projection has no containing AST item"))?;
+        let mut collector = WarningStaticCallCollector::new(module, declaration_imports);
         match (candidate.category, item) {
             (Category::Function, Item::Function(function))
                 if function.span == locator.declaration_span
                     && module.resolve_raw_symbol(function.name.name) == candidate.name.as_ref() =>
             {
-                matches += 1;
                 collector.visit_callable(
                     &function.params,
                     function.return_type.as_ref(),
@@ -4104,41 +4158,49 @@ fn warning_static_call_heads(
                 let owner_matches = candidate.owner.as_ref().is_some_and(|owner| {
                     module.resolve_raw_symbol(structure.name.name) == owner.name.as_ref()
                 });
-                if !owner_matches {
-                    continue;
-                }
-                for method in &structure.methods {
-                    if method.span == locator.declaration_span
+                let method = owner_matches
+                    .then(|| {
+                        warning_record_containing(
+                            &structure.methods,
+                            locator.declaration_span,
+                            |method| method.span,
+                            &mut work.member_items_examined,
+                        )
+                    })
+                    .flatten();
+                let Some(method) = method.filter(|method| {
+                    method.span == locator.declaration_span
                         && module.resolve_raw_symbol(method.name.name) == candidate.name.as_ref()
-                    {
-                        matches += 1;
-                        collector.visit_callable(
-                            &method.params,
-                            method.return_type.as_ref(),
-                            &method.body,
-                            method.receiver.is_some(),
-                        );
-                    }
-                }
+                }) else {
+                    return Err(Arc::from(format!(
+                        "warning call-head projection selected no exact member AST body for {}",
+                        candidate.stable_identity()
+                    )));
+                };
+                collector.visit_callable(
+                    &method.params,
+                    method.return_type.as_ref(),
+                    &method.body,
+                    method.receiver.is_some(),
+                );
             }
             (Category::Destructor, Item::DropFn(drop_fn))
                 if drop_fn.span == locator.declaration_span
                     && module.resolve_raw_symbol(drop_fn.type_name.name)
                         == candidate.name.as_ref() =>
             {
-                matches += 1;
                 collector.visit_callable(&[], None, &drop_fn.body, true);
             }
-            _ => {}
+            _ => {
+                return Err(Arc::from(format!(
+                    "warning call-head projection selected no exact AST body for {}",
+                    candidate.stable_identity()
+                )));
+            }
         }
-    }
-    if matches != 1 {
-        return Err(Arc::from(format!(
-            "warning call-head projection selected {matches} AST bodies for {}",
-            candidate.stable_identity()
-        )));
-    }
-    Ok(collector.heads.into_iter().collect::<Vec<_>>().into())
+        Ok(collector.heads.into_iter().collect::<Vec<_>>().into())
+    })();
+    (result, work)
 }
 
 #[derive(Debug, Clone)]
@@ -13050,17 +13112,18 @@ impl RevisionedQueryDatabase {
                             },
                         );
                     }
-                    let value = warning_static_call_heads(module, candidate, &declaration_imports)
-                        .map_or_else(
-                            |_| {
-                                WarningBodySyntaxValue::Failure(
-                                    WarningBodyReferencesFailure::ParserCapabilityMismatch(
-                                        candidate.clone(),
-                                    ),
-                                )
-                            },
-                            WarningBodySyntaxValue::Available,
-                        );
+                    let (projected, _) =
+                        warning_static_call_heads(module, candidate, &declaration_imports);
+                    let value = projected.map_or_else(
+                        |_| {
+                            WarningBodySyntaxValue::Failure(
+                                WarningBodyReferencesFailure::ParserCapabilityMismatch(
+                                    candidate.clone(),
+                                ),
+                            )
+                        },
+                        WarningBodySyntaxValue::Available,
+                    );
                     let kind = if matches!(value, WarningBodySyntaxValue::Available(_)) {
                         QueryTerminalKind::Success
                     } else {
@@ -26036,6 +26099,89 @@ fn main() -> i32 {
             .find(|candidate| candidate.category == category && candidate.name.as_ref() == name)
             .cloned()
             .unwrap_or_else(|| panic!("missing {category:?} candidate `{name}`"))
+    }
+
+    #[test]
+    fn warning_body_selection_is_logarithmic_and_fail_closed() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let mut text = String::new();
+        for index in 0..128 {
+            text.push_str(&format!("fn unrelated_{index}() -> i32 {{ 0 }}\n"));
+        }
+        text.push_str("fn target_free() -> i32 { 0 }\n");
+        text.push_str("@copy struct Bag { value: i32,\n");
+        for index in 0..128 {
+            text.push_str(&format!("fn unrelated_member_{index}() -> i32 {{ 0 }}\n"));
+        }
+        text.push_str("fn target_associated() -> i32 { 0 }\n");
+        text.push_str("fn target_method(borrow self) -> i32 { self.value }\n}\n");
+        text.push_str("drop fn Bag(self) {}\n");
+
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            revision,
+            ModuleQueryKey(module.clone()),
+            CancellationToken::new(),
+        );
+        let parsed = match parsed.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(ParseModuleValue {
+                result: Ok(parsed), ..
+            }) => parsed,
+            other => panic!("expected parsed module, got {other:?}"),
+        };
+        let empty_imports = std::collections::BTreeMap::new();
+
+        for (category, name, expects_member_search) in [
+            (Category::Function, "target_free", false),
+            (Category::AssociatedFunction, "target_associated", true),
+            (Category::Method, "target_method", true),
+            (Category::Destructor, "Bag", false),
+        ] {
+            let candidate = declaration_candidate(&database, revision, &module, category, name);
+            let (projected, work) = warning_static_call_heads(parsed, &candidate, &empty_imports);
+            assert!(
+                projected.is_ok(),
+                "{category:?} selection failed: {projected:?}"
+            );
+            assert!(
+                work.top_level_items_examined <= 10,
+                "{category:?} inspected {} of {} top-level items",
+                work.top_level_items_examined,
+                parsed.ast().items.len()
+            );
+            if expects_member_search {
+                assert!(
+                    work.member_items_examined <= 10,
+                    "{category:?} inspected {} member items",
+                    work.member_items_examined
+                );
+            } else {
+                assert_eq!(work.member_items_examined, 0);
+            }
+        }
+
+        let mut mismatched = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            Category::Function,
+            "target_free",
+        );
+        mismatched.name = Arc::from("not-target-free");
+        let (projected, work) = warning_static_call_heads(parsed, &mismatched, &empty_imports);
+        assert!(
+            projected.is_err(),
+            "a mismatched exact key must fail closed"
+        );
+        assert_eq!(work, WarningBodySelectionWork::default());
     }
 
     fn request_semantic_nucleus(
