@@ -1773,6 +1773,19 @@ requested bytes (0.28% of the run); the peak-memory comparisons above remain
 neutral. Every compiler-work counter, source/output metric, and executable byte
 remains identical.
 
+RUE-1464 reuses the owned struct-symbol buffer when constructing provider
+member callable names. The canonical spelling helper previously allocated an
+owner string, formatted a second `Owner.method` / `Owner::method` string, and
+immediately dropped the owner. Extending that buffer in place preserves the
+single spelling path while removing the redundant intermediate allocation.
+Four allocation-accounted cold Lattice pairs remove 112,908--113,474
+allocation calls and 5.05--5.30 MB of requested bytes. Across 16 balanced
+fixed one-worker pairs, retired instructions improve by 0.4428% (0.1301%
+MAD); clock is neutral at -0.1323% amid substantial host noise, cycles at
++0.1649%, peak RSS at -0.6822%, and peak footprint at -0.0373%. Every
+compiler-work counter, source/output metric, and executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

@@ -67,6 +67,14 @@ fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spu
     interner.get_or_intern(name)
 }
 
+fn append_member_callable_name(mut owner: String, method: &str, has_self: bool) -> String {
+    let separator = if has_self { "." } else { "::" };
+    owner.reserve(separator.len() + method.len());
+    owner.push_str(separator);
+    owner.push_str(method);
+    owner
+}
+
 #[cfg(test)]
 #[test]
 fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer() {
@@ -75,6 +83,19 @@ fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer()
         let symbol = intern_synthetic_argument_name(&interner, index);
         assert_eq!(interner.resolve(&symbol), format!("arg{index}"));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn member_callable_names_extend_the_owned_owner_spelling() {
+    assert_eq!(
+        append_member_callable_name("Owner".to_owned(), "method", true),
+        "Owner.method"
+    );
+    assert_eq!(
+        append_member_callable_name("Owner".to_owned(), "make", false),
+        "Owner::make"
+    );
 }
 
 /// Stable, request-independent description of an anonymous nominal created by
@@ -1190,11 +1211,7 @@ where
     /// reintroduce a join that only holds while two policies agree.
     fn member_callable_name(&self, struct_id: StructId, method: &str, has_self: bool) -> String {
         let owner = self.type_pool.struct_symbol_name(struct_id);
-        if has_self {
-            format!("{owner}.{method}")
-        } else {
-            format!("{owner}::{method}")
-        }
+        append_member_callable_name(owner, method, has_self)
     }
 
     fn member_callable_symbol(&self, struct_id: StructId, method: &str, has_self: bool) -> Spur {
