@@ -233,4 +233,5 @@ The table is generated from ADR frontmatter. Run
 | [0068](0068-incremental-edit-performance-measurement.md) | Incremental edit-scenario performance measurement | Accepted | tooling, compiler, incremental, performance |
 | [0069](0069-ci-work-scheduling.md) | CI work scheduling for a compiler monorepo | Accepted | process, ci, testing, build, performance |
 | [0070](0070-rue-program-build-actions.md) | Rue program compilation as declared Buck actions | Accepted | build, ci, testing, tooling |
+| [0071](0071-release-quality-compiler-performance-contract.md) | Release-quality compiler performance contract | Accepted | architecture, compiler, performance, process |
 <!-- ADR-INDEX:END -->
