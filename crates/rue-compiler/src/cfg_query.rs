@@ -1344,6 +1344,9 @@ pub(crate) fn evaluate_optimized_cfg(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
     };
     let _span = tracing::info_span!("cfg_optimization", phase = "cfg_and_optimization").entered();
+    if key.accessor_dependencies.is_empty() {
+        return Ok(optimize_cfg_without_accessors(context, key, record));
+    }
     let mut current = record.cfg.clone();
     let mut domains = record.domains.clone();
     let interner = record.interner.clone();
@@ -1507,52 +1510,107 @@ pub(crate) fn evaluate_optimized_cfg(
         accessor_calls.extend(introduced_calls);
         context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
     }
+    let interner_retained_entries = interner.len() as u64;
+    Ok(finish_cfg_optimization(
+        context,
+        key,
+        current,
+        &record.type_pool,
+        record.body_span,
+        move |cfg| CfgRecord {
+            air: record.air.clone(),
+            source_name: record.source_name.clone(),
+            cfg,
+            domains,
+            type_pool: record.type_pool.clone(),
+            interner,
+            interner_retained_charge: record.interner_retained_charge.clone(),
+            interner_retained_entries,
+            strings: strings.into(),
+            local_atoms: local_atoms.into(),
+            codegen: Arc::new(CfgCodegenDomain {
+                defined_symbol: record.codegen.defined_symbol.clone(),
+                symbol_mappings: Arc::new(symbol_mappings),
+                foreign_symbols: Arc::new(foreign_symbols),
+            }),
+            materialization_warnings: materialization_warnings.into(),
+            body_span: record.body_span,
+            warnings: warnings.into(),
+            implicit_destructor_targets: implicit_destructor_targets
+                .into_iter()
+                .collect::<Vec<_>>()
+                .into(),
+            implicit_destructor_dependencies_complete,
+        },
+    ))
+}
+
+/// Optimize an ordinary CFG without materializing mutable accessor-import
+/// collections that cannot change when the dependency list is empty.
+fn optimize_cfg_without_accessors(
+    context: &QueryContext,
+    key: &OptimizedCfgQueryKey,
+    record: &Arc<CfgRecord>,
+) -> QueryOutput<CfgValue> {
+    assert!(
+        key.accessor_dependencies.is_empty(),
+        "ordinary CFG optimization cannot receive accessor dependencies"
+    );
+    finish_cfg_optimization(
+        context,
+        key,
+        record.cfg.clone(),
+        &record.type_pool,
+        record.body_span,
+        |cfg| CfgRecord {
+            air: record.air.clone(),
+            source_name: record.source_name.clone(),
+            cfg,
+            domains: record.domains.clone(),
+            type_pool: record.type_pool.clone(),
+            interner: record.interner.clone(),
+            interner_retained_charge: record.interner_retained_charge.clone(),
+            interner_retained_entries: record.interner_retained_entries,
+            strings: record.strings.clone(),
+            local_atoms: record.local_atoms.clone(),
+            codegen: record.codegen.clone(),
+            materialization_warnings: record.materialization_warnings.clone(),
+            body_span: record.body_span,
+            warnings: record.warnings.clone(),
+            implicit_destructor_targets: record.implicit_destructor_targets.clone(),
+            implicit_destructor_dependencies_complete: record
+                .implicit_destructor_dependencies_complete,
+        },
+    )
+}
+
+fn finish_cfg_optimization(
+    context: &QueryContext,
+    key: &OptimizedCfgQueryKey,
+    cfg: rue_cfg::ValidatedCfg,
+    type_pool: &rue_air::FrozenTypeInternPool,
+    body_span: Span,
+    build_record: impl FnOnce(rue_cfg::ValidatedCfg) -> CfgRecord,
+) -> QueryOutput<CfgValue> {
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.optimize.nonzero-level",
         u64::from(key.opt_level != rue_cfg::OptLevel::O0),
     ));
-    match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
+    match rue_cfg::opt::optimize(cfg, key.opt_level, type_pool) {
         Ok(cfg) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
-            let interner_retained_entries = interner.len() as u64;
-            Ok(QueryOutput::success(CfgValue::Available(Arc::new(
-                CfgRecord {
-                    air: record.air.clone(),
-                    source_name: record.source_name.clone(),
-                    cfg,
-                    domains,
-                    type_pool: record.type_pool.clone(),
-                    interner,
-                    interner_retained_charge: record.interner_retained_charge.clone(),
-                    interner_retained_entries,
-                    strings: strings.into(),
-                    local_atoms: local_atoms.into(),
-                    codegen: Arc::new(CfgCodegenDomain {
-                        defined_symbol: record.codegen.defined_symbol.clone(),
-                        symbol_mappings: Arc::new(symbol_mappings),
-                        foreign_symbols: Arc::new(foreign_symbols),
-                    }),
-                    materialization_warnings: materialization_warnings.into(),
-                    body_span: record.body_span,
-                    warnings: warnings.into(),
-                    implicit_destructor_targets: implicit_destructor_targets
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                        .into(),
-                    implicit_destructor_dependencies_complete,
-                },
-            ))))
+            QueryOutput::success(CfgValue::Available(Arc::new(build_record(cfg))))
         }
         Err(error) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.failures", 1));
-            Ok(QueryOutput::success(CfgValue::Failure {
+            QueryOutput::success(CfgValue::Failure {
                 errors: crate::CompileErrors::from(crate::CompileError::without_span(
                     error.error_kind("CFG optimization failed"),
                 )),
-                body_span: record.body_span,
+                body_span,
             })
-            .with_terminal_kind(rue_query::QueryTerminalKind::Failure))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure)
         }
     }
 }

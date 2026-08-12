@@ -1078,6 +1078,20 @@ paired MAD and a -10.96% to +5.83% range. Median peak RSS falls by 0.68 MiB
 within dispersion. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1403 gives ordinary CFG optimization a no-accessor path. When the optimized
+key has no accessor dependencies, immutable strings, local atoms, codegen
+metadata, warnings, and destructor targets remain shared instead of being
+cloned into mutable collections that cannot change. CFG and optimization
+ownership, query granularity, failure behavior, and the accessor path remain
+unchanged.
+
+Four fixed one-worker allocation probes save 74,544--74,624 calls and
+15.68--15.86 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs have a favorable but still clock-neutral -0.95% paired
+median, with 1.42% paired MAD and a -4.92% to +6.84% range. Median peak RSS
+falls by 15.02 MiB. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
