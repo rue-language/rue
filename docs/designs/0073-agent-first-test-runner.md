@@ -87,10 +87,9 @@ longer is:
   46-helper runtime ABI manifest (ADR-0055, `rue-runtime-abi`); the `@syscall`
   intrinsic; or `extern "C"` foreign calls (ADR-0064 — accepted, preview-gated,
   in progress). The `checked` boundary is *not* an effect proxy and the
-  analysis never relies on it: `@syscall` is in fact accepted outside
-  `checked` blocks today (the shared gate excludes it and spec legality rule
-  9.1:12 omits it — RUE-1369), and effect leaves are extracted from analyzed
-  bodies wherever they appear. The effectful operations of `std.fs`,
+  analysis never relies on it: std wraps its `checked` blocks inside
+  ordinary safe functions, so callers never write `checked`, and effect
+  leaves are extracted from analyzed bodies wherever they appear. The effectful operations of `std.fs`,
   `std.net`, and `std.exit` are pure Rue over `@syscall` whose I/O bypasses
   the helper manifest entirely (they still allocate through it) — so the
   analysis must be interprocedural over reached bodies, but its effect
@@ -1577,10 +1576,9 @@ Phase 4 selection plus the existing watch loop).
 ## References
 
 - RUE-506 (design capture this ADR supersedes in mechanism), RUE-505, RUE-504,
-  RUE-438 (machine-readable interface project); RUE-1369 (`@syscall` checked
-  gating defect) and RUE-1370 (signal-handler spec contradiction), both filed
-  from this ADR's adversarial review; RUE-967 (pointer provenance split,
-  gating the `addr` leaf disposition in §4.1).
+  RUE-438 (machine-readable interface project); RUE-1370 (signal-handler
+  spec contradiction, filed from this ADR's adversarial review); RUE-967
+  (pointer provenance split, gating the `addr` leaf disposition in §4.1).
 - ADR-0063 §1/§3/§8/§15 (roots, fingerprints, reachability, test-selection
   consumer) and its rejected alternative "make body queries depend on callee
   bodies" (the shape §4.2's component queries avoid by joining along the
