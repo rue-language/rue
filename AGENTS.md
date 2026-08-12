@@ -316,14 +316,18 @@ A magic word in a PR is a command that manipulates issue state. It is never a
 citation. Use one only to drive the state of the single issue that PR
 completes; every other mention of an issue belongs in Linear, not in PR text.
 
-**There is no read-only magic word.** Any word from either list below links the
-issue, and linking alone hands it to status automation that moves it to
-In Progress — including issues that are already Done or Canceled.
-`Refs RUE-NN` does not "just link for context": on 2026-08-12, PR #2318
-carried `refs` for two background issues and dragged one out of Done (finished
-three weeks earlier) and another out of Canceled, back into In Progress.
+**A "non-closing" word is not a read-only word.** It only opts out of the
+*merge* step; the issue still walks the earlier workflow statuses, and this
+workspace runs Linear's default automation — "we will move linked issues to
+'In Progress' when PRs are open and 'Done' when PRs merge." So `Refs RUE-NN`
+moves the issue to In Progress the moment the PR opens, including an issue
+that is already Done or Canceled. On 2026-08-12, PR #2318 carried `refs` for
+two background issues and dragged one out of Done (finished three weeks
+earlier) and another out of Canceled, back into In Progress.
 
-**Closing words** (verbatim — also close the issue on merge):
+Source for this section: [Linear's GitHub docs](https://linear.app/docs/github).
+
+**Closing words** (verbatim — full automation, including the on-merge status):
 
 ```
 close, closes, closed, closing
@@ -334,14 +338,20 @@ implement, implements, implemented, implementing
 linear issue
 ```
 
-**Linking words** (verbatim — no close, but still link and still move status):
+**Non-closing words** (verbatim — skip only the on-merge status; every earlier
+workflow transition, In Progress included, still fires):
 
 ```
 ref, refs, references
 part of
-related to, relates to
 contributes to
 toward, towards
+```
+
+**Relation words** (verbatim — mark the PR related, no status change at all):
+
+```
+relates to, related to
 ```
 
 Rules:
@@ -350,15 +360,17 @@ Rules:
   completes, used only when the PR meets every acceptance criterion on that
   issue (tests, docs, ADR updates included). If it doesn't, use no magic word
   at all and say what's left in the PR body.
-- Never use a linking word to cite background, prior, parent, or follow-up
+- Never use a non-closing word to cite background, prior, parent, or follow-up
   issues. Record those relationships in Linear itself — `relatedTo`,
   `blockedBy`, or a parent issue — where they persist and don't touch state.
   A PR body is not a tracker.
-- Naming another issue as plain prose is fine ("the meridian coverage disabled
-  under RUE-1083"), but check afterwards that it did not link; if it did, or if
-  an ID must appear anyway (e.g. a carried-over branch name), add
-  `skip RUE-NN` or `ignore RUE-NN` to the PR description to unlink it and
-  suppress status automation.
+- `relates to` / `related to` are the only status-safe words, but they still
+  attach the PR and leave the relationship recorded in GitHub rather than the
+  tracker. Prefer a Linear relation anyway.
+- A bare ID with no magic word does not link, so naming an issue in plain prose
+  is fine ("the meridian coverage disabled under RUE-1083"). If an ID must
+  appear somewhere that does link (e.g. a carried-over branch name), add
+  `skip RUE-NN` or `ignore RUE-NN` to the PR description to suppress it.
 - A magic word applies to every ID that follows it — `Fixes RUE-1067, RUE-1068
   and RUE-1069` closes all three. A PR that genuinely completes several issues
   needs each ID spelled with its own word; anything it merely touches is not
@@ -369,7 +381,9 @@ as closing keywords, so they get written as ordinary prose, but Linear closes on
 them. "Implements the FFI shim described in RUE-1064" closes RUE-1064. Reword
 the sentence rather than reaching for `refs`.
 
-An issue ID in a branch name or PR title auto-links the PR the same way. Use at
+An ID in the branch name links the PR on its own, with no magic word
+involved — that is how Rue's `dorianscheidt/rue-NNNN-…` branches link, and it
+is enough. Elsewhere an ID links only when a magic word precedes it. Use at
 most one ID per branch name (the issue it completes), and don't reuse a
 completed ID for a follow-up branch.
 
