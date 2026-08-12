@@ -1220,6 +1220,20 @@ MAD; median peak RSS falls 2.26 MiB and retired instructions fall 0.08%.
 Every published compiler-work counter and emitted executable byte remains
 identical.
 
+RUE-1424 specializes hashing for the retained-pin index's semantic-stamp keys.
+Every key is a fixed-width `(node incarnation, stamp)` pair: the runtime assigns
+the unique incarnation, and retention bounds limit the historical stamps held
+for each node. A private hasher mixes both components while exact key equality
+remains authoritative; caller-controlled typed query maps retain their
+randomized hashers.
+
+Eight balanced fixed one-worker cold Lattice pairs reduce retired instructions
+by a 0.565% paired median with 0.028% paired MAD. Clock moves -0.97% with 0.95%
+paired MAD, while peak RSS is neutral at +0.02% with 0.30% paired MAD. Four
+allocation-accounted pairs are count-neutral and save 0.16 MiB requested at
+the median. Every compiler-work counter, emitted-output metric, and executable
+byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
