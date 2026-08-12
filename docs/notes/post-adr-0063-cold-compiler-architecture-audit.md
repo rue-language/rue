@@ -1366,6 +1366,21 @@ paired MAD. Four allocation-accounted pairs save 113,732--114,528 allocations
 and 39.46--39.70 MB of requested bytes. Every published compiler-work counter,
 emitted-output metric, source metric, and executable byte remains identical.
 
+RUE-1433 derives the semantic provider's declaration-fact aggregate from its
+four disjoint fact-family counters. Identity, signature, type/well-formedness,
+and const/comptime reads already partition the public total exactly; storing
+and updating a fifth aggregate atomic duplicated that work. Drop/copy metadata
+now classifies its backing nominal-signature read explicitly, and a focused
+differential covers that composite path as well as the exact sum invariant.
+
+Fixed one-worker cold Lattice removes exactly 52,337 redundant atomic updates.
+Sixteen balanced release pairs are clock-neutral at a -0.82% paired median with
+0.92% paired MAD. Retired instructions are neutral at -0.020% with 0.029%
+paired MAD, and peak RSS is neutral at -0.10% with 0.24% paired MAD. Four
+allocation-accounted pairs are neutral at -170 to -72 calls and -0.03 to
++0.06 MB requested. Every published compiler-work counter, emitted-output
+metric, source metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
