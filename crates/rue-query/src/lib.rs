@@ -3368,12 +3368,12 @@ pub struct RuntimeMetrics {
     /// configured budget the policy is to grow and record the event here, never
     /// to evict a terminal the current computation still needs.
     pub retention_growth: u64,
-    /// Retention enforcement passes run. Each `enforce_retention` call — one full
-    /// eviction scan of a single family — increments this once. Batched
-    /// task-lease teardown deliberately runs one pass per distinct family
-    /// involved rather than one per released pin, so releasing N pins in one
-    /// family raises this by one, not by N; this counter is what makes that
-    /// linearity observable to tests.
+    /// Retention enforcement passes run. Each family pass which reaches the
+    /// eviction loop increments this once; an already-converged family does not.
+    /// Batched task-lease teardown deliberately requests one pass per distinct
+    /// family involved rather than one per released pin, so releasing N pins in
+    /// one family raises this by at most one, not by N. This counter makes the
+    /// resulting work reduction observable to tests.
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by enforcement passes.
     ///
@@ -5570,6 +5570,22 @@ fn next_probe(current: u64, quantum: u64) -> u64 {
         .saturating_mul(quantum)
 }
 
+/// Whether a strict family pass is already known to have no retention work.
+///
+/// Keep this non-generic check out of line: every query family monomorphizes
+/// its enforcement path, while the convergence predicate depends only on the
+/// shared numeric state. A publisher which races either load still owns the
+/// strict watermark transition and therefore schedules the required pass.
+#[inline(never)]
+fn retention_already_converged(
+    retained_count: &AtomicUsize,
+    next_publish_sweep: &AtomicUsize,
+    retention_limit: usize,
+) -> bool {
+    retained_count.load(Ordering::Acquire) <= retention_limit
+        && next_publish_sweep.load(Ordering::Acquire) <= retention_limit.saturating_add(1)
+}
+
 fn evict_one_from_family<K, V>(core: &Arc<RuntimeCore>, family: &Arc<FamilyInner<K, V>>) -> bool
 where
     K: QueryKey,
@@ -6798,6 +6814,17 @@ where
     }
 
     fn enforce_retention(&self) {
+        // A released pin often asks an already-converged family for a strict
+        // pass. Skip only when both the live count and publication watermark
+        // are strict; a stale geometric watermark still needs the ordinary
+        // pass below to rebase future publish-side enforcement.
+        if retention_already_converged(
+            &self.inner.retained_count,
+            &self.inner.next_publish_sweep,
+            self.inner.retention_limit,
+        ) {
+            return;
+        }
         self.enforce_retention_with_margin(1);
     }
 
@@ -18233,8 +18260,7 @@ mod tests {
     // A rooted request which invalidates many parent/child pairs used to run
     // retention once for every stale discovery pin and every speculative child
     // publication. The task boundary is the safe batching boundary: all pins
-    // release before one strict pass per family, and the runtime-wide pass runs
-    // only after those family passes have converged.
+    // release together, and an already-converged family needs no strict pass.
     #[test]
     fn validation_only_publication_sweeps_are_batched_per_rooted_request() {
         const CHILDREN: u64 = 64;
@@ -18306,11 +18332,40 @@ mod tests {
 
         assert_eq!(
             after.retention_enforcements - before.retention_enforcements,
-            3
+            0,
+            "all three families remain below their bounds and at strict watermarks"
         );
         assert_eq!(
             after.retention_scan_entries - before.retention_scan_entries,
             0
+        );
+    }
+
+    #[test]
+    fn strict_retention_rebases_a_stale_watermark_below_the_family_limit() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<Key, u64>("stale-strict-watermark", 8)
+            .unwrap();
+        runtime
+            .query(
+                &family,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(1)),
+            )
+            .unwrap();
+        assert_eq!(family.inner.retained_count.load(Ordering::Acquire), 1);
+
+        family.inner.next_publish_sweep.store(64, Ordering::Release);
+        let before = runtime.metrics().retention_enforcements;
+        family.enforce_retention();
+        assert_eq!(runtime.metrics().retention_enforcements, before + 1);
+        assert_eq!(
+            family.inner.next_publish_sweep.load(Ordering::Acquire),
+            family.inner.retention_limit + 1
         );
     }
 

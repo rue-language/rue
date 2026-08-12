@@ -1658,6 +1658,22 @@ MAD). Four allocation-accounted pairs were neutral in allocation count and
 removed 4.38--4.48 MB of requested bytes. Every published compiler-work
 counter, source/output metric, and executable byte remained identical.
 
+RUE-1455 skips strict family-retention passes which are already converged: the
+live terminal count is at or below the family bound and the publication
+watermark is already at the strict next-publication threshold. A stale
+geometric watermark still enters the ordinary pass so later publication cannot
+hide above the bound. The convergence predicate is one non-generic out-of-line
+helper rather than repeated code in every monomorphized query family.
+
+Cold one-worker Lattice removes exactly 9,793 no-op retention passes, reducing
+`retention_enforcements` from 11,261 to 1,468 while preserving all 31,549
+retention scan-entry visits. Across 32 balanced release pairs, compiler clock
+is neutral at +0.0000% paired median (1.0989% MAD), retired instructions at
+-0.0085% (0.0609% MAD), cycles at +0.2444% (0.9928% MAD), peak RSS at +0.0060%
+(0.3161% MAD), and peak footprint at +0.0601% (0.1746% MAD). Four
+allocation-accounted pairs are neutral. Every other compiler-work counter,
+source/output metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
