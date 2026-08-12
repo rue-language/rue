@@ -1,11 +1,11 @@
 ---
 id: 0070
 title: "Rue program compilation as declared Buck actions"
-status: proposal
+status: accepted
 tags: [build, ci, testing, tooling]
 feature-flag: null
 created: 2026-08-11
-accepted:
+accepted: 2026-08-12
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,13 +16,13 @@ relates: ["RUE-1164", "RUE-1118", "RUE-1222", "RUE-1267", "ADR-0047", "ADR-0051"
 
 ## Status
 
-Proposal. This is the reviewed design RUE-1164 asks for and ADR-0069 Phase 5
-defers to. Nothing here is implemented. The granularity rule under "Which
-compiles become actions" and the four items under "Open questions" are maintainer
-decisions rather than settled design; each open question now carries a
-recommendation and its evidence. Question 2's proposal is large enough to deserve
-its own ADR and issue, and — after review — it no longer gates any phase here:
-question 3's recommendation stands on the existing corpus actions alone.
+Accepted. This is the reviewed design RUE-1164 asks for and ADR-0069 Phase 5
+defers to. Nothing here is implemented yet. All four recommendations under "Open
+questions" were accepted with the ADR, scoped to the initial implementation:
+hybrid target resolution (1), per-file corpus actions deferred to their own ADR
+and issue (2), the harness consuming prebuilt artifacts on the existing corpus
+actions (3), and test-result caching off (4). Question 2's proposal gates no
+phase here and is neither approved nor foreclosed by this acceptance.
 
 ## Summary
 
@@ -799,9 +799,12 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 
 ## Open Questions
 
-All four carry a recommendation now, and three of them changed after review. They
-remain maintainer decisions: RUE-1164 is labelled `needs-decision`, and questions
-2 and 3 in particular reach beyond what this ADR can settle on its own.
+All four carried a recommendation at acceptance, and three of them changed under
+review. With this ADR's acceptance the recommendations below are the decisions,
+scoped to the initial implementation — question 2 by deferral to its own ADR and
+issue, and question 4 as a default that stands unless evidence overturns it. The
+reasoning is kept in full because it is the record of why each answer is what it
+is.
 
 **Questions 2 and 3 are related but no longer coupled.** An earlier draft
 decided them together, on the theory that per-file corpus actions were what made
@@ -865,7 +868,7 @@ declined — afterward without reopening it.
    existing corpus actions alone rather than conditionally on question 2.
 
    The defect Phase 2 fixes is the weld between compile and scenario, not the
-   TOML. Handing the 65 scenarios a prebuilt executable fixes exactly that;
+   TOML. Handing the 64 scenarios a prebuilt executable fixes exactly that;
    migrating them additionally relocates the authoring surface — by this
    document's own assessment the largest-blast-radius change in it — to buy
    per-scenario CI selection whose value stays speculative until RUE-1267's packer
@@ -881,11 +884,11 @@ declined — afterward without reopening it.
    rather than extended, and avoids a two-mechanism transition entirely.
 
    The mechanism needs nothing question 2 would build. Each existing CLI corpus
-   action declares all ten program artifacts through its `attrs.arg()` env — the
+   action declares all nine program artifacts through its `attrs.arg()` env — the
    same `$(location ...)` contract every other corpus input already uses — and
    the harness runs the artifact a case names. The simplest correct form declares
-   all ten on every CLI corpus action; that is a mild over-declaration of each
-   action's key (an edit to any of the ten roots re-runs all the CLI corpus
+   all nine on every CLI corpus action; that is a mild over-declaration of each
+   action's key (an edit to any of the nine roots re-runs all the CLI corpus
    actions — which is also true today, since the roots live inside the declared
    `:examples` filegroup), and it fails closed, since a case whose program is
    missing from the staging environment cannot run. If question 2's per-file
