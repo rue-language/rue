@@ -3545,6 +3545,40 @@ impl Hasher for IncarnationHasher {
     }
 }
 
+/// Fast hashing for retained semantic-stamp identities.
+///
+/// The complete key is runtime-owned: it combines a monotonically assigned,
+/// runtime-unique node incarnation with one of that node's semantic stamps.
+/// Retention bounds also limit the number of historical stamps per node. Mix
+/// both fixed-width components without paying SipHash on the retention and
+/// validation hot path; caller-controlled query-key maps keep randomized
+/// hashing.
+#[derive(Debug, Default)]
+struct RetainedStampHasher(u64);
+
+impl Hasher for RetainedStampHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        let mut hash = self.0 ^ 0x9e3779b97f4a7c15;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        self.0 = hash;
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        let mut mixed = value.wrapping_add(0x9e3779b97f4a7c15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d049bb133111eb);
+        mixed ^= mixed >> 31;
+        self.0 = self.0.rotate_left(27) ^ mixed;
+    }
+}
+
 #[derive(Debug)]
 struct RegisteredNode {
     node: Weak<dyn ErasedNode>,
@@ -8343,7 +8377,7 @@ pub struct RetainedPinSet {
     /// terminal revision in this set. Query dependency edges use this same
     /// semantic identity, so any complete retained cone carrying the stamp can
     /// supply its representative terminal during final promotion.
-    stamp_identities: HashSet<(u64, u64)>,
+    stamp_identities: HashSet<(u64, u64), BuildHasherDefault<RetainedStampHasher>>,
     /// Runtime identities represented by held pins. This makes same-runtime
     /// authority checks proportional to the number of fallback sets, not pins.
     runtime_identities: HashSet<u64>,
@@ -10903,6 +10937,19 @@ mod tests {
                 "the private registry hasher must use the runtime-owned incarnation directly"
             );
         }
+    }
+
+    #[test]
+    fn retained_stamp_hasher_mixes_both_runtime_identity_components() {
+        let hash = |identity: (u64, u64)| {
+            let mut hasher = RetainedStampHasher::default();
+            std::hash::Hash::hash(&identity, &mut hasher);
+            hasher.finish()
+        };
+
+        assert_eq!(hash((7, 11)), hash((7, 11)));
+        assert_ne!(hash((7, 11)), hash((8, 11)));
+        assert_ne!(hash((7, 11)), hash((7, 12)));
     }
 
     #[test]
