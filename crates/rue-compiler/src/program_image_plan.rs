@@ -25,15 +25,29 @@ use crate::{
 use crate::codegen_query::CollectedCodegenUnit;
 
 /// Stable, link-relevant identity for one reached codegen terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ProgramImageUnit {
     /// The durable callable identity retained by the terminal.  The encoded
     /// key below is only its deterministic ordering/map projection.
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) identity: String,
     pub(crate) defined_symbol: Arc<str>,
-    pub(crate) content_digest: ContentDigest,
+    /// The immutable projection owns its lazily materialized durable digest.
+    /// Keeping the projection here lets fresh plan construction avoid hashing
+    /// bytes that only a later plan comparison needs.
+    pub(crate) object: Arc<crate::object_query::ObjectProjection>,
 }
+
+impl PartialEq for ProgramImageUnit {
+    fn eq(&self, other: &Self) -> bool {
+        self.function == other.function
+            && self.identity == other.identity
+            && self.defined_symbol == other.defined_symbol
+            && self.object.content_digest() == other.object.content_digest()
+    }
+}
+
+impl Eq for ProgramImageUnit {}
 
 /// The deterministic contribution of a C-ABI export thunk.  Thunks are not
 /// codegen terminals, but their object bytes are a compiler-owned link input
@@ -319,7 +333,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity,
                 defined_symbol: collected.unit.defined_symbol.clone(),
-                content_digest: collected.object.content_digest,
+                object: Arc::clone(&collected.object),
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -360,7 +374,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity: stable_function_identity(&collected.function),
                 defined_symbol: collected.unit.defined_symbol.clone(),
-                content_digest: collected.object.content_digest,
+                object: Arc::clone(&collected.object),
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -726,12 +740,32 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn fresh_plan_defers_object_digests_until_comparison() {
+        let (plan, _, _) = image_for("fn main() -> i32 { 0 }", Target::X86_64Linux, 1);
+        assert!(
+            plan.units
+                .iter()
+                .all(|unit| !unit.object.content_digest_is_initialized())
+        );
+
+        assert_eq!(plan, plan.clone());
+        assert!(
+            plan.units
+                .iter()
+                .all(|unit| unit.object.content_digest_is_initialized())
+        );
+    }
+
     fn unit(identity: &str, digest_byte: u8) -> ProgramImageUnit {
         ProgramImageUnit {
             function: crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64)),
             identity: identity.to_owned(),
             defined_symbol: Arc::from(identity),
-            content_digest: [digest_byte; 32],
+            object: Arc::new(crate::object_query::ObjectProjection::from_bytes(vec![
+                digest_byte;
+                32
+            ])),
         }
     }
 
@@ -769,11 +803,13 @@ mod tests {
     #[test]
     fn delta_tracks_serialized_object_bytes_not_only_codegen_metadata() {
         let mut before = unit("same", 1);
-        before.content_digest =
-            bytes_digest(b"rue.program-image.object\0v1\0", b"first object encoding");
+        before.object = Arc::new(crate::object_query::ObjectProjection::from_bytes(
+            b"first object encoding".to_vec(),
+        ));
         let mut after = before.clone();
-        after.content_digest =
-            bytes_digest(b"rue.program-image.object\0v1\0", b"second object encoding");
+        after.object = Arc::new(crate::object_query::ObjectProjection::from_bytes(
+            b"second object encoding".to_vec(),
+        ));
         let delta = plan(vec![after.clone()])
             .delta_from(&plan(vec![before]))
             .unwrap();

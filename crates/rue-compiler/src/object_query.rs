@@ -5,7 +5,10 @@
 //! consumes these stable bytes on every link, while unchanged units reuse the
 //! retained projection owned by the compiler query graph.
 
-use std::{hash::Hash, sync::Arc};
+use std::{
+    hash::Hash,
+    sync::{Arc, OnceLock},
+};
 
 use rue_query::{
     QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput, QueryTerminalKind,
@@ -74,24 +77,42 @@ impl QueryKey for ObjectProjectionQueryKey {
 }
 
 /// Retained object-container bytes and their stable content identity for one
-/// codegen unit. The digest is computed once with the immutable bytes so every
-/// downstream program-image assembly can reuse it without a serialized hash
-/// pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// codegen unit. Fresh linking consumes only the immutable bytes, so the
+/// durable digest is computed once on demand if a later plan comparison needs
+/// it.
+#[derive(Debug, Clone)]
 pub(crate) struct ObjectProjection {
     pub(crate) bytes: Arc<[u8]>,
-    pub(crate) content_digest: ContentDigest,
+    content_digest: OnceLock<ContentDigest>,
 }
 
 impl ObjectProjection {
     pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
-        let content_digest = bytes_digest(OBJECT_DIGEST_DOMAIN, &bytes);
         Self {
             bytes: bytes.into(),
-            content_digest,
+            content_digest: OnceLock::new(),
         }
     }
+
+    pub(crate) fn content_digest(&self) -> ContentDigest {
+        *self
+            .content_digest
+            .get_or_init(|| bytes_digest(OBJECT_DIGEST_DOMAIN, &self.bytes))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn content_digest_is_initialized(&self) -> bool {
+        self.content_digest.get().is_some()
+    }
 }
+
+impl PartialEq for ObjectProjection {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes
+    }
+}
+
+impl Eq for ObjectProjection {}
 
 impl RetainedCharge for ObjectProjection {
     fn retained_charge(&self) -> u64 {
@@ -207,8 +228,12 @@ mod tests {
         let same = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 4]);
         let changed = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 5]);
 
-        assert_eq!(first.content_digest, same.content_digest);
-        assert_ne!(first.content_digest, changed.content_digest);
+        assert!(!first.content_digest_is_initialized());
+        assert_eq!(first, same);
+        assert!(!first.content_digest_is_initialized());
+        assert_eq!(first.content_digest(), same.content_digest());
+        assert_ne!(first.content_digest(), changed.content_digest());
+        assert!(first.content_digest_is_initialized());
     }
 
     #[test]

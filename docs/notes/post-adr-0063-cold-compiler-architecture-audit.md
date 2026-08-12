@@ -1786,6 +1786,22 @@ MAD); clock is neutral at -0.1323% amid substantial host noise, cycles at
 compiler-work counter, source/output metric, and executable byte remains
 identical.
 
+RUE-1465 defers each immutable object projection's durable content digest until
+a caller compares program-image plans. Fresh linking consumes the retained
+object bytes directly, so eagerly hashing 1,280 objects and 3,011,805 bytes on
+cold Lattice prepared identity for only the dormant later-linking seam. The
+projection still owns and memoizes the same domain-separated SHA-256 digest;
+ordinary exact object equality and fresh plan construction do not force it,
+while plan delta comparison does.
+
+Across 16 balanced fixed one-worker cold Lattice pairs, retired instructions
+improve by 0.5993% (0.0651% MAD) and cycles by 0.2315% (0.7333% MAD).
+End-to-end clock is neutral at -0.1895% (1.4135% MAD), peak RSS at +0.3510%
+(0.3469% MAD), and peak footprint at +0.8275% (0.3708% MAD). Four
+allocation-accounted pairs are neutral at +101--320 calls (under 0.003%) and
+-3.3--118.6 KB requested bytes. Every compiler-work counter, source/output
+metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
