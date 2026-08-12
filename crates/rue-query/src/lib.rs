@@ -5135,14 +5135,6 @@ where
             let state = lock(&self.state);
             if let Some(certificate) = &state.validated_at
                 && certificate.revision == task.revision
-                && state.attempts.iter().any(|attempt| {
-                    matches!(
-                        &attempt.state,
-                        AttemptState::Terminal { terminal, .. }
-                            if terminal.stamp == certificate.stamp
-                                && terminal.revision == certificate.terminal_revision
-                    )
-                })
             {
                 // A registered-cone endorsement is also a retention proof. A
                 // memo may skip validation in that scope only when this task
@@ -5361,6 +5353,26 @@ struct NodeState<V> {
     validated_at: Option<ValidationCertificate>,
 }
 
+impl<V> NodeState<V> {
+    /// Remove one attempt and invalidate a certificate backed by its terminal.
+    ///
+    /// Keeping this invariant at the three removal sites makes certificate
+    /// lookup O(1): a present certificate always names a terminal still held by
+    /// this node, so the validation hot path does not rescan retained attempts.
+    fn remove_attempt(&mut self, index: usize) -> Option<Attempt<V>> {
+        let removed = self.attempts.remove(index)?;
+        if let AttemptState::Terminal { terminal, .. } = &removed.state
+            && self.validated_at.as_ref().is_some_and(|certificate| {
+                certificate.stamp == terminal.stamp
+                    && certificate.terminal_revision == terminal.revision
+            })
+        {
+            self.validated_at = None;
+        }
+        Some(removed)
+    }
+}
+
 #[derive(Debug)]
 struct Attempt<V> {
     id: u64,
@@ -5513,8 +5525,7 @@ where
             continue;
         }
         let removed = state
-            .attempts
-            .remove(index)
+            .remove_attempt(index)
             .expect("retention selected an existing attempt");
         let (terminal, handoffs) = match removed.state {
             AttemptState::Terminal {
@@ -6466,7 +6477,7 @@ where
     fn abort_attempt(&self, node: &Arc<Node<K, V>>, attempt_id: u64) {
         let mut state = lock(&node.state);
         if let Some(index) = state.attempts.iter().position(|item| item.id == attempt_id) {
-            state.attempts.remove(index);
+            state.remove_attempt(index);
         }
         drop(state);
         node.wait.notify_all();
@@ -6482,8 +6493,7 @@ where
                 return;
             }
             let removed = state
-                .attempts
-                .remove(index)
+                .remove_attempt(index)
                 .expect("terminal attempt exists");
             match removed.state {
                 AttemptState::Terminal { terminal, .. } => Some(terminal),
@@ -14949,6 +14959,74 @@ mod tests {
             1,
             "the shared leaf is re-demanded only on its first path"
         );
+    }
+
+    #[test]
+    fn removing_a_terminal_invalidates_only_its_certificate() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(25, 9);
+        let second = Revision::new(26, 9);
+        let input = InputIdentity::new("source", "certificate-retention");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 2)])
+            .unwrap();
+
+        let evaluator_input = input.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "certificate-retention",
+                8,
+                move |context, _, _| {
+                    Ok(QueryOutput::success(
+                        context.input(evaluator_input.clone())?,
+                    ))
+                },
+            )
+            .unwrap();
+        let first_terminal = runtime
+            .request_registered(&family, first, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let second_terminal = runtime
+            .request_registered(&family, second, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let node = family.node(Key("value")).unwrap();
+        let attempt_id = |revision| {
+            lock(&node.node.state)
+                .attempts
+                .iter()
+                .find(|attempt| attempt.revision == revision)
+                .unwrap()
+                .id
+        };
+
+        assert_eq!(
+            lock(&node.node.state).validated_at,
+            Some(ValidationCertificate {
+                revision: second,
+                stamp: second_terminal.stamp,
+                terminal_revision: second,
+                registered_only: false,
+            })
+        );
+        family.detach_terminal_attempt(&node.node, attempt_id(first));
+        assert_eq!(
+            lock(&node.node.state)
+                .validated_at
+                .unwrap()
+                .terminal_revision,
+            second,
+            "removing an older terminal preserves the current certificate"
+        );
+        family.detach_terminal_attempt(&node.node, attempt_id(second));
+        assert!(lock(&node.node.state).validated_at.is_none());
+
+        drop(first_terminal);
+        drop(second_terminal);
     }
 
     #[test]
