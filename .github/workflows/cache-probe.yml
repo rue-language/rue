@@ -43,6 +43,17 @@ jobs:
       - name: Install dotslash
         uses: facebook/install-dotslash@v2
 
+      # The buck2 binary itself, not build artifacts: this job deliberately
+      # clears buck-out and rebuilds cold, but re-downloading buck2 from the
+      # releases CDN is a network dependency the probe does not exist to test.
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
       - name: Guard — secret present
         env:
           KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
