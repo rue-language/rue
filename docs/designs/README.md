@@ -234,4 +234,5 @@ The table is generated from ADR frontmatter. Run
 | [0069](0069-ci-work-scheduling.md) | CI work scheduling for a compiler monorepo | Accepted | process, ci, testing, build, performance |
 | [0070](0070-rue-program-build-actions.md) | Rue program compilation as declared Buck actions | Accepted | build, ci, testing, tooling |
 | [0071](0071-release-quality-compiler-performance-contract.md) | Release-quality compiler performance contract | Accepted | architecture, compiler, performance, process |
+| [0071](0071-agent-first-test-runner.md) | rue test: agent-first test runner on the query graph | Proposal | tooling, testing, syntax, semantics, incremental, cli, language-shape |
 <!-- ADR-INDEX:END -->
