@@ -505,6 +505,11 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     generated_structs: HashMap<Spur, StructId>,
     generated_enums: HashMap<Spur, EnumId>,
     anonymous_methods: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
+    /// Anonymous method endpoints whose complete durable signature set has
+    /// already been installed in this body request. Provider type resolution
+    /// handles recursive nominal shells inside the type pool and does not call
+    /// back into endpoint installation, so only successful walks are cached.
+    anonymous_method_registrations: RefCell<HashSet<Type>>,
     anonymous_struct_ids: HashSet<StructId>,
     anonymous_enum_ids: HashSet<EnumId>,
     anon_struct_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
@@ -641,6 +646,7 @@ where
             generated_structs: HashMap::new(),
             generated_enums: HashMap::new(),
             anonymous_methods: RefCell::new(HashMap::new()),
+            anonymous_method_registrations: RefCell::new(HashSet::new()),
             anonymous_struct_ids: HashSet::new(),
             anonymous_enum_ids: HashSet::new(),
             anon_struct_identities: HashMap::new(),
@@ -2206,6 +2212,27 @@ where
     }
 
     fn register_provider_anonymous_method_endpoints(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        owner_type: Type,
+    ) -> Option<()> {
+        if self
+            .anonymous_method_registrations
+            .borrow()
+            .contains(&owner_type)
+        {
+            return Some(());
+        }
+        let result = self.register_provider_anonymous_method_endpoints_inner(identity, owner_type);
+        if result.is_some() {
+            self.anonymous_method_registrations
+                .borrow_mut()
+                .insert(owner_type);
+        }
+        result
+    }
+
+    fn register_provider_anonymous_method_endpoints_inner(
         &self,
         identity: &crate::AnonymousNominalKey<K, M>,
         owner_type: Type,
