@@ -1593,6 +1593,25 @@ and -0.3196% respectively. Four allocation-accounting pairs removed a median
 22,420.5 calls and 1,045,227 requested bytes. Every published compiler-work
 counter, source/output metric, and executable byte remained identical.
 
+RUE-1450 gives each semantic body-fact request a small direct-mapped cache for
+exact name-lookup terminals. Repeated provider calls now probe with the borrowed
+module, namespace, and name, so a hit avoids allocating another owned query key
+and crossing the query runtime. The first lookup still records the terminal as
+an exact dependency; later hits reuse that already-observed edge. Fixed hash
+seeds make collisions and the resulting work count reproducible, while exact
+key equality remains authoritative. The maintained cold Lattice curve removed
+33,023 query reuses at 8 slots, 35,063 at 16, 39,537 at 32, and 40,655 at 64;
+32 is the measured knee before retained state doubles for little additional
+work reduction.
+
+Against the exact merged RUE-1327 parent, 16 balanced fixed one-worker cold
+Lattice pairs reduced retired instructions by a 0.3993% paired median (0.0467%
+MAD). Compiler clock, cycles, and peak RSS were neutral at -0.3782%, -0.3138%,
+and +0.0416% respectively. Four allocation-accounting pairs removed a median
+39,717.5 calls and 964,574 requested bytes. Query-runtime reuses fell exactly
+from 405,868 to 366,331; every other compiler-work counter, source/output
+metric, and executable byte remained identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

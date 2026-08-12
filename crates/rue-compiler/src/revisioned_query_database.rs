@@ -21179,13 +21179,23 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
     // canonical query miss.
     nucleus_cache:
         std::cell::RefCell<[Option<SemanticNucleusCacheEntry>; SEMANTIC_NUCLEUS_CACHE_SLOTS]>,
+    // Name lookups have the same task-local terminal lifetime as nucleus reads.
+    // Probe with borrowed text so a hit avoids allocating the owned query key.
+    lookup_name_cache: std::cell::RefCell<[Option<LookupNameCacheEntry>; LOOKUP_NAME_CACHE_SLOTS]>,
     #[cfg(test)]
     nucleus_cache_hits: std::cell::Cell<u64>,
+    #[cfg(test)]
+    lookup_name_cache_hits: std::cell::Cell<u64>,
 }
 
 struct SemanticNucleusCacheEntry {
     key: crate::semantic_query_nucleus::SemanticNucleusKey,
     terminal: Arc<rue_query::QueryTerminal<crate::semantic_query_nucleus::SemanticNucleusValue>>,
+}
+
+struct LookupNameCacheEntry {
+    key: LookupNameKey,
+    terminal: Arc<rue_query::QueryTerminal<LookupNameValue>>,
 }
 
 // The maintained cold scaling curve selects 16 slots. Larger capacities remove
@@ -21195,6 +21205,13 @@ struct SemanticNucleusCacheEntry {
 // authoritative at every slot.
 const SEMANTIC_NUCLEUS_CACHE_SLOTS: usize = 16;
 const SEMANTIC_NUCLEUS_CACHE_HASHER: RandomState = RandomState::with_seeds(0, 1, 2, 3);
+
+// The cold Lattice work curve removes 33,023 query reuses at 8 slots, 35,063
+// at 16, 39,537 at 32, and 40,655 at 64. Thirty-two is the knee: doubling it
+// retains twice as many owned lookup keys and terminals for only 1,118 fewer
+// reuses. Fixed keys keep the work reduction reproducible.
+const LOOKUP_NAME_CACHE_SLOTS: usize = 32;
+const LOOKUP_NAME_CACHE_HASHER: RandomState = RandomState::with_seeds(4, 5, 6, 7);
 
 #[derive(Default)]
 struct CanonicalAnonymousNominalRegistry {
@@ -22575,8 +22592,11 @@ impl<'a> CompilerBodyFactProvider<'a> {
         Self {
             queries,
             nucleus_cache: std::cell::RefCell::new(std::array::from_fn(|_| None)),
+            lookup_name_cache: std::cell::RefCell::new(std::array::from_fn(|_| None)),
             #[cfg(test)]
             nucleus_cache_hits: std::cell::Cell::new(0),
+            #[cfg(test)]
+            lookup_name_cache_hits: std::cell::Cell::new(0),
         }
     }
 
@@ -22734,9 +22754,25 @@ impl<'a> CompilerBodyFactProvider<'a> {
         namespace: rue_air::ProviderNamespace,
         name: &str,
     ) -> rue_air::NameResolution {
+        let namespace = provider_namespace_to_definition(namespace);
+        let cache_slot = LOOKUP_NAME_CACHE_HASHER.hash_one((module, namespace, name)) as usize
+            % LOOKUP_NAME_CACHE_SLOTS;
+        if let Some(entry) = &self.lookup_name_cache.borrow()[cache_slot]
+            && entry.key.module == *module
+            && entry.key.namespace == namespace
+            && entry.key.name.as_ref() == name
+        {
+            #[cfg(test)]
+            self.lookup_name_cache_hits
+                .set(self.lookup_name_cache_hits.get() + 1);
+            return match entry.terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
+                _ => rue_air::NameResolution::IndexUnavailable,
+            };
+        }
         let key = LookupNameKey {
             module: module.clone(),
-            namespace: provider_namespace_to_definition(namespace),
+            namespace,
             name: Arc::from(name),
         };
         match self
@@ -22751,12 +22787,15 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 self.queries.observed.borrow_mut().record(
                     &self.queries.lookup_names,
                     &terminal,
-                    LookupObservationKey::Name(key),
+                    LookupObservationKey::Name(key.clone()),
                 );
-                match terminal.outcome() {
+                let resolution = match terminal.outcome() {
                     rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
                     _ => rue_air::NameResolution::IndexUnavailable,
-                }
+                };
+                self.lookup_name_cache.borrow_mut()[cache_slot] =
+                    Some(LookupNameCacheEntry { key, terminal });
+                resolution
             }
             Err(abort) => {
                 self.observe_abort(abort);
@@ -34170,6 +34209,53 @@ fn main() -> i32 {
 
         assert_eq!(outcome.result.0, outcome.result.1);
         assert_eq!(outcome.result.2, 1);
+    }
+
+    #[test]
+    fn provider_repeated_name_lookup_reuses_the_request_local_terminal() {
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "fn helper(x: i32) -> i32 { x }\nfn main() -> i32 { helper(0) }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "repeated-name-lookup",
+            move |provider| {
+                let first = provider.lookup_unqualified(
+                    &m,
+                    rue_air::ProviderNamespace::ModuleItem,
+                    "helper",
+                );
+                let second = provider.lookup_unqualified(
+                    &m,
+                    rue_air::ProviderNamespace::ModuleItem,
+                    "helper",
+                );
+                (first, second, provider.lookup_name_cache_hits.get())
+            },
+        );
+
+        assert_eq!(outcome.result.0, outcome.result.1);
+        assert_eq!(outcome.result.2, 1);
+        assert_eq!(
+            outcome
+                .dependencies
+                .iter()
+                .filter(|node| node.family() == "compiler.lookup-name")
+                .count(),
+            1,
+            "the cache hit reuses the request's already-observed lookup edge"
+        );
     }
 
     // ---- RUE-1091 r4b-1: call-resolution ProviderFacts differentials --------
