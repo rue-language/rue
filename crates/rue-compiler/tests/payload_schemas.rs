@@ -184,15 +184,13 @@ fn observe(source: &str) -> Vec<String> {
     let snapshot = SourceSnapshot::single("<payload-verification>", source).unwrap();
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().unwrap();
-    let semantic = session.semantic(&CompileOptions::default()).unwrap();
-    drop(session);
-    rue_compiler::unstable::into_oracle_semantic_state(semantic)
-        .expect("one-shot payload verification uniquely owns its frontend artifacts")
-        .functions
-        .into_iter()
+    rue_compiler::unstable::rooted_cfg(&mut session, &CompileOptions::default())
+        .unwrap()
+        .functions()
+        .iter()
         .map(|function| {
-            let before = function.cfg.to_string();
-            let cloned = function.cfg.clone();
+            let before = function.cfg().to_string();
+            let cloned = function.cfg().clone();
             assert_eq!(cloned.to_string(), before);
             before
         })

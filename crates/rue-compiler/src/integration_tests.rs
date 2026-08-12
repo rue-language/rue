@@ -614,11 +614,7 @@ mod integration_tests {
                 fn main() -> i32 { 0 }
             "#;
             let result = test_air(src).unwrap();
-            let point = result
-                .type_pool
-                .all_struct_ids()
-                .find(|&id| &*result.type_pool.struct_def(id).name == "Point");
-            assert!(point.is_some(), "Point struct should exist in pool");
+            assert_eq!(result.struct_count, 1);
         }
 
         #[test]
@@ -1034,7 +1030,7 @@ drop fn StrBuf(self) { }
             let mut air_shapes = semantic
                 .functions()
                 .iter()
-                .flat_map(|function| function.analyzed.air.iter())
+                .flat_map(|function| function.record.air.iter())
                 .filter_map(|(_, inst)| match inst.data {
                     rue_air::AirInstData::Call {
                         runtime: Some(runtime),
@@ -1051,7 +1047,7 @@ drop fn StrBuf(self) { }
                 .functions()
                 .iter()
                 .flat_map(|function| {
-                    let cfg = &function.cfg;
+                    let cfg = &function.record.cfg;
                     cfg.blocks()
                         .iter()
                         .flat_map(|block| block.insts.iter())
@@ -1093,6 +1089,7 @@ drop fn StrBuf(self) { }
                     .iter()
                     .find(|function| function.definition_source_name() == Some("probe"))
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
+                    .record
                     .cfg;
                 let intrinsic_types: Vec<_> = cfg
                     .blocks()
@@ -1170,6 +1167,7 @@ drop fn StrBuf(self) { }
                     .iter()
                     .find(|function| function.definition_source_name() == Some("probe"))
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
+                    .record
                     .cfg;
                 let intrinsic_types: Vec<_> = cfg
                     .blocks()
@@ -1305,7 +1303,7 @@ drop fn StrBuf(self) { }
             let src = "fn main() -> i32 { if true { 1 } else { 0 } }";
             let state = test_cfg(src).unwrap();
             // CFG should have multiple blocks for branching
-            let main_cfg = &state.functions[0].cfg;
+            let main_cfg = &state.functions[0].record.cfg;
             assert!(main_cfg.blocks().len() >= 3); // entry, then, else, merge
         }
 
@@ -1319,7 +1317,7 @@ drop fn StrBuf(self) { }
                 }
             "#;
             let state = test_cfg(src).unwrap();
-            let main_cfg = &state.functions[0].cfg;
+            let main_cfg = &state.functions[0].record.cfg;
             assert!(main_cfg.blocks().len() >= 3); // header, body, exit
         }
     }

@@ -20,14 +20,18 @@
 //! 1. Receives all element slots as parameters (flattened)
 //! 2. Drops each element in index order (element 0 first, then 1, etc.)
 
+#[cfg(test)]
 use rue_air::{
     AirEditor, AirPattern, AirRef, AirValidationContext, AnalyzedFunction, EnumId,
     FrozenTypeInternPool, ParamSlotModes, StructDef, Type, TypeKind,
 };
+#[cfg(test)]
 use rue_error::{CompileError, CompileResult, ErrorKind};
+#[cfg(test)]
 use rue_span::Span;
 use std::sync::Arc;
 
+#[cfg(test)]
 type IssuedTypeInstanceKey =
     rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>;
 
@@ -241,6 +245,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
     })
 }
 
+#[cfg(test)]
 fn plan_type_matches_live(
     planned: &IssuedTypeInstanceKey,
     live: Type,
@@ -289,6 +294,8 @@ fn plan_type_matches_live(
 /// `types_by_identity` is the semantic epoch's direct reverse index.  This
 /// path performs one keyed probe per demanded owner and never enumerates a
 /// struct/array/enum pool.
+#[cfg(test)]
+#[allow(dead_code)]
 pub fn synthesize_demanded_drop_glue(
     type_pool: &FrozenTypeInternPool,
     types_by_identity: &std::collections::HashMap<
@@ -357,6 +364,7 @@ pub fn synthesize_demanded_drop_glue(
 }
 
 /// Create a drop glue function for a single struct.
+#[cfg(test)]
 fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
@@ -501,6 +509,7 @@ fn create_struct_drop_glue_function(
 ///
 /// The function receives all element slots as parameters (flattened) and drops
 /// each element in index order.
+#[cfg(test)]
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
     type_pool: &FrozenTypeInternPool,
@@ -629,6 +638,7 @@ fn create_array_drop_glue_function(
 /// payload needs no drop (and discriminant-only variants) fall through to a
 /// no-op wildcard default arm, so exactly the active variant's payload is
 /// dropped.
+#[cfg(test)]
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
@@ -773,6 +783,7 @@ fn create_enum_drop_glue_function(
 // `rue_air::drop_glue_names` so glue synthesis here and the backends' lowering
 // cannot spell them differently (RUE-796). Re-exported for the existing
 // `rue_compiler::drop_glue::{enum,array}_drop_glue_name` call sites.
+#[cfg(test)]
 pub use rue_air::drop_glue_names::{array_drop_glue_name, enum_drop_glue_name};
 
 #[cfg(test)]

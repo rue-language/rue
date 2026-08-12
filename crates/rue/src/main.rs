@@ -2052,7 +2052,7 @@ mod tests {
     }
 
     #[test]
-    fn session_emit_frontend_performs_one_parse_lower_and_bind() {
+    fn session_emit_frontend_projects_rooted_query_work() {
         let root = FileId::new(9);
         let helper = FileId::new(2);
         let snapshot = test_snapshot(
@@ -2079,14 +2079,14 @@ mod tests {
         assert_eq!(work.parsed.parser_invocations, 2);
         assert_eq!(work.lowered.parser_invocations, 0);
         assert_eq!(work.lowered.ast_payload_clones, 0);
-        assert_eq!(work.semantic.binding.bind_invocations, 1);
-        assert_eq!(work.semantic.manifest.build_invocations, 1);
+        assert_eq!(work.semantic.binding.bind_invocations, 0);
+        assert_eq!(work.semantic.manifest.build_invocations, 0);
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 1);
         assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 1);
         assert_eq!(work.semantic.cfg.cfg_builds_failed, 0);
         let session_work = &frontend.session_work;
         assert_eq!(session_work.updates(), 1);
-        assert_eq!(session_work.semantic().executions, 1);
+        assert_eq!(work.semantic.body.analyses_computed, 1);
 
         let mut presentation_session = CompilerSession::new();
         let presentation = update_for_presentation(&mut presentation_session, &snapshot);
@@ -2113,7 +2113,10 @@ mod tests {
         let presentation_work = presentation_session.unstable_metrics();
         assert_eq!(presentation_work.merge().executions, 0);
         assert_eq!(presentation_work.rir().executions, 0);
-        assert_eq!(presentation_work.semantic().executions, 0);
+        assert_eq!(
+            presentation_work.semantic_reachability(),
+            rue_compiler::unstable::SemanticReachabilityMetrics::default()
+        );
     }
 
     #[test]

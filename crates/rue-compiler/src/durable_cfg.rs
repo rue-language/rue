@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
-use rue_air::{AirInstData, AnalyzedFunction, SemanticImportType, Type, TypeKind};
+#[cfg(test)]
+use rue_air::AnalyzedFunction;
+use rue_air::{AirInstData, SemanticImportType, Type, TypeKind};
+#[cfg(test)]
 use rue_error::ErrorKind;
 use rue_span::Span;
 
@@ -11,12 +14,14 @@ use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
+#[cfg(test)]
 pub(crate) struct CfgTypeAdmissionIndex<'a> {
     pool: &'a rue_air::FrozenTypeInternPool,
     aggregates: &'a HashMap<Type, crate::TypeInstanceKey>,
     live_by_stable: Option<HashMap<CanonicalType, Type>>,
 }
 
+#[cfg(test)]
 impl<'a> CfgTypeAdmissionIndex<'a> {
     pub(crate) fn new(
         pool: &'a rue_air::FrozenTypeInternPool,
@@ -483,6 +488,8 @@ impl CfgDomainFailure {
     /// compact `u32` payload representation, which is an implementation-limit
     /// rejection (`E1401` naming the limit, spec C.1:2) rather than a compiler
     /// bug. Every other relocation failure is a producer invariant.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn error_kind(&self, context: &str) -> ErrorKind {
         match self {
             Self::Edit(error) => error.error_kind(context),
@@ -492,7 +499,40 @@ impl CfgDomainFailure {
 }
 
 impl CfgDomainProjection {
+    pub(crate) fn stable_debug_snapshot(&self, air: &rue_air::ValidatedAir) -> String {
+        let instruction_kinds = air
+            .iter()
+            .map(|(_, instruction)| live_instruction_kind(&instruction.data))
+            .collect::<Vec<_>>();
+        let types = self
+            .types
+            .iter()
+            .map(|(_, stable)| stable)
+            .collect::<Vec<_>>();
+        let strings = self
+            .strings
+            .iter()
+            .map(|(_, stable)| stable)
+            .collect::<Vec<_>>();
+        let spans = self
+            .spans
+            .iter()
+            .map(|(_, stable)| stable)
+            .collect::<Vec<_>>();
+        let symbols = self
+            .symbols
+            .iter()
+            .map(|(_, stable)| stable)
+            .collect::<Vec<_>>();
+        format!(
+            "{instruction_kinds:?}|{types:?}|{strings:?}|{:?}|{spans:?}|{symbols:?}",
+            self.atoms
+        )
+    }
+
     /// Admit stable symbols already owned by a surrounding semantic output.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn admit_stable_symbols(
         &mut self,
         old: &Self,
@@ -522,6 +562,7 @@ impl CfgDomainProjection {
     }
 
     /// Admit stable types already owned by a surrounding semantic output.
+    #[cfg(test)]
     pub(crate) fn admit_stable_types(
         &mut self,
         old: &Self,
@@ -551,6 +592,8 @@ impl CfgDomainProjection {
     /// The one-shot semantic adapter owns the merged program string table, so
     /// relocation maps those stable literals to that table before importing
     /// the optimized terminal.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn admit_stable_strings(
         &mut self,
         old: &Self,
@@ -703,6 +746,8 @@ impl CfgDomainProjection {
         }
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn same_live_domain(&self, other: &Self) -> bool {
         let complete_or_same_epoch = match (&self.incomplete_epoch, &other.incomplete_epoch) {
             (None, None) => true,
@@ -721,6 +766,8 @@ impl CfgDomainProjection {
     /// Build the relocation domain for one canonical analyzed function without
     /// consulting a program-wide CFG cache. Every live type, symbol, string,
     /// local atom, and span is paired with its stable record-local identity.
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn from_canonical_function(
         function: &AnalyzedFunction,
         stable_identity: &crate::FunctionInstanceKey,
@@ -1059,6 +1106,8 @@ impl CfgDomainProjection {
     pub fn validate_cfg(&self, cfg: &rue_cfg::Cfg, span: Span) -> Result<(), CfgDomainFailure> {
         Self::import_cfg(self, self, cfg, span).map(|_| ())
     }
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub fn from_body(
         function: &AnalyzedFunction,
         stable_function: &crate::FunctionInstanceKey,
@@ -1733,10 +1782,8 @@ mod tests {
         assert!(!type_admission.contains("canonical_type_from_live("));
 
         let queries = include_str!("queries.rs");
-        assert_eq!(queries.matches("CfgTypeAdmissionIndex::new(").count(), 1);
-        assert!(
-            queries.contains(".admit_stable_types(&record.domains, &mut type_admission_index)")
-        );
+        assert!(!queries.contains("CfgTypeAdmissionIndex::new("));
+        assert!(!queries.contains(".admit_stable_types("));
 
         let type_closure = source
             .split_once("// CFG cleanup elaboration recursively reads aggregate fields")

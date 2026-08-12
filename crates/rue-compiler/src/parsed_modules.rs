@@ -933,6 +933,7 @@ impl ParsedModule {
     pub(crate) fn resolve_raw_symbol(&self, symbol: Spur) -> &str {
         self.payload.resolver.resolver.resolve(&symbol)
     }
+    #[cfg(test)]
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
     }

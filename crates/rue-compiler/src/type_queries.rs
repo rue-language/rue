@@ -242,6 +242,8 @@ pub(crate) struct DropGlueVariantField<D = crate::StableDefinitionKey, M = crate
 }
 
 impl<D, M> DropGlueFacts<D, M> {
+    #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn try_map_identities<D2, M2, E>(
         &self,
         definition: &impl Fn(&D) -> Result<D2, E>,

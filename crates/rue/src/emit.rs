@@ -3,7 +3,7 @@ use rue_compiler::unstable::MetricsSnapshot;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 #[cfg(test)]
-use rue_compiler::unstable::{LowerMetrics, ParseMetrics, SemanticMetrics, semantic_metrics};
+use rue_compiler::unstable::{LowerMetrics, ParseMetrics, SemanticMetrics, rooted_cfg};
 use rue_compiler::unstable::{PresentationRequest, PresentationStage};
 #[cfg(test)]
 use rue_compiler::{CompileErrors, CompilerSession, RirView, SourceSnapshot};
@@ -125,14 +125,14 @@ pub(crate) fn build_emit_frontend_in_session(
         let _span = info_span!("semantic_astgen").entered();
         session.rir()?
     };
-    let semantic = session.semantic(&options)?;
+    let rooted = rooted_cfg(session, &options)?;
     let session_work = session.unstable_metrics();
     Ok(EmitFrontend {
         _rir: rir,
         work: EmitWork {
             parsed: session_work.parse_metrics(),
             lowered: session_work.lower_metrics(),
-            semantic: semantic_metrics(&semantic),
+            semantic: rooted.metrics(),
         },
         #[cfg(test)]
         session_work,

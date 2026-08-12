@@ -11,7 +11,6 @@ stable|CompilerSession|artifact-query|embedders|import_diagnostics|pub fn import
 stable|CompilerSession|artifact-query|embedders|import_graph|pub fn import_graph(&mut self,std_dir:Option<&str>,)->Result<Arc<CanonicalImportGraphOutput>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
-stable|CompilerSession|artifact-query|embedders|semantic|pub fn semantic(&mut self,options:&CompileOptions,)->Result<Arc<crate::SemanticView>,CompileErrors>
 stable|CompilerSession|diagnostic-query|embedders|last_good_semantic_diagnostics|pub fn last_good_semantic_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_diagnostics|pub fn latest_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_successful_diagnostics|pub fn latest_successful_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
@@ -21,24 +20,17 @@ stable|CompilerSessionUpdate|artifact-result|embedders|diagnostics|pub fn diagno
 stable|CompilerSessionUpdate|artifact-result|embedders|into_result|pub fn into_result(self)->Result<crate::SyntaxView,CompileErrors>
 stable|CompilerSessionUpdate|artifact-result|embedders|result|pub fn result(&self)->Result<crate::SyntaxView,&CompileErrors>
 stable|CompilerSessionUpdate|session-status|embedders|downstream_invalidated|pub fn downstream_invalidated(&self)->bool
-stable|artifact_views|artifact-view|embedders+tooling|CfgBlockView|pub use artifact_views::CfgBlockView
-stable|artifact_views|artifact-view|embedders+tooling|CfgInstructionView|pub use artifact_views::CfgInstructionView
-stable|artifact_views|artifact-view|embedders+tooling|CfgSuccessorView|pub use artifact_views::CfgSuccessorView
-stable|artifact_views|artifact-view|embedders+tooling|CfgView|pub use artifact_views::CfgView
-stable|artifact_views|artifact-view|embedders+tooling|FunctionView|pub use artifact_views::FunctionView
 stable|artifact_views|artifact-view|embedders+tooling|ImportDiscoveryStatus|pub use artifact_views::ImportDiscoveryStatus
 stable|artifact_views|artifact-view|embedders+tooling|ImportDiscoveryView|pub use artifact_views::ImportDiscoveryView
 stable|artifact_views|artifact-view|embedders+tooling|RirInstructionView|pub use artifact_views::RirInstructionView
 stable|artifact_views|artifact-view|embedders+tooling|RirOperandView|pub use artifact_views::RirOperandView
 stable|artifact_views|artifact-view|embedders+tooling|RirView|pub use artifact_views::RirView
-stable|artifact_views|artifact-view|embedders+tooling|SemanticView|pub use artifact_views::SemanticView
 stable|artifact_views|artifact-view|embedders+tooling|SourceIdentityView|pub use artifact_views::SourceIdentityView
 stable|artifact_views|artifact-view|embedders+tooling|SourceLocationView|pub use artifact_views::SourceLocationView
 stable|artifact_views|artifact-view|embedders+tooling|SyntaxModuleView|pub use artifact_views::SyntaxModuleView
 stable|artifact_views|artifact-view|embedders+tooling|SyntaxNodeView|pub use artifact_views::SyntaxNodeView
 stable|artifact_views|artifact-view|embedders+tooling|SyntaxView|pub use artifact_views::SyntaxView
 stable|artifact_views|artifact-view|embedders+tooling|TokenView|pub use artifact_views::TokenView
-stable|artifact_views|artifact-view|embedders+tooling|TypeView|pub use artifact_views::TypeView
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyEnvelope|pub use dependency_envelope::DependencyEnvelope
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyEnvelopeStatus|pub use dependency_envelope::DependencyEnvelopeStatus
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyResolutionOutcome|pub use dependency_envelope::DependencyResolutionOutcome

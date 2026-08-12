@@ -236,6 +236,7 @@ impl CanonicalImportGraph {
 
     /// Find the unique record for one canonical import key without re-deriving
     /// resolution. The graph's validated order makes this logarithmic.
+    #[cfg(test)]
     pub(crate) fn record_for(
         &self,
         importer: &ModuleId,
@@ -244,6 +245,7 @@ impl CanonicalImportGraph {
         self.record_for_with(importer, normalized_specifier, || {})
     }
 
+    #[cfg(test)]
     fn record_for_with(
         &self,
         importer: &ModuleId,

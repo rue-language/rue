@@ -958,7 +958,7 @@ mod tests {
             .map_err(rue_compiler::CompileErrors::from)?;
         let mut session = CompilerSession::new();
         session.update(&snapshot).into_result()?;
-        session.semantic(&CompileOptions::default()).map(|_| ())
+        rue_compiler::unstable::rooted_cfg(&mut session, &CompileOptions::default()).map(drop)
     }
 
     const COMPILE_CONTRACT_SEEDS: u64 = 500;

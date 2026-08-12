@@ -29,7 +29,7 @@ fn find_call_metadata(
                 let CfgInstData::Call { name, .. } = &inst.data else {
                     continue;
                 };
-                if state.interner.resolve(name) == expected_name {
+                if function.interner.resolve(name) == expected_name {
                     let args = function.cfg.get_call_args(&inst.data);
                     return (
                         args.iter()
@@ -173,12 +173,12 @@ fn find_intrinsic_in_function<'a>(
     function_name: &str,
     expected_name: &str,
 ) -> (&'a Cfg, CfgValue, Vec<CfgValue>, Type) {
-    let cfg = state
+    let function = state
         .functions
         .iter()
-        .find(|function| function.is_source_named(function_name))
-        .map(|function| &function.cfg)
+        .position(|function| function.is_source_named(function_name))
         .unwrap_or_else(|| panic!("missing CFG for {function_name}"));
+    let cfg = &state.functions[function].cfg;
     let mut found = None;
     for value in cfg
         .blocks()
@@ -189,7 +189,7 @@ fn find_intrinsic_in_function<'a>(
         let CfgInstData::Intrinsic { name, .. } = &inst.data else {
             continue;
         };
-        if state.interner.resolve(name) != expected_name {
+        if state.functions[function].interner.resolve(name) != expected_name {
             continue;
         }
         let item = (value, cfg.get_intrinsic_args(&inst.data).to_vec(), inst.ty);
@@ -205,8 +205,10 @@ fn find_intrinsic_in_function<'a>(
 
 #[test]
 fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
-    let state = query_cfg_state("struct Probe { pointer: ptr mut u8 } fn main() -> i32 { 0 }")
-        .expect("probe must compile");
+    let state = query_cfg_state(
+        "fn main() -> i32 { checked { let pointer: ptr mut u8 = @alloc(1, 1); @free(pointer, 1, 1); }; 0 }",
+    )
+    .expect("probe must compile");
     let mut interp = Interp {
         state: &state,
         stdout: String::new(),
@@ -218,10 +220,11 @@ fn shared_str_character_builtins_require_and_model_ptr_len_offset() {
         heap: Vec::new(),
     };
     // The builtin contract only needs the logical pointer kind. Look up the
-    // pointer registered by Probe rather than mutating the completed universe.
+    // pointer registered by the rooted main body rather than mutating the
+    // completed universe.
     let ptr = Type::new_ptr_mut(
         state
-            .type_pool
+            .type_pool()
             .get_ptr_mut_by_type(Type::U8)
             .expect("Probe must register ptr mut u8"),
     );
@@ -324,6 +327,7 @@ fn panic_never_signature_is_an_oracle_contract_for_both_arities() {
         heap: Vec::new(),
     };
     for function_name in ["panic_no_message", "panic_with_message"] {
+        state.select_source_function(function_name);
         let (cfg, _intrinsic, args, result_ty) =
             find_intrinsic_in_function(&state, function_name, "panic");
         // `@panic` diverges, so the compiler types it `!` (never) (RUE-512).
@@ -406,12 +410,12 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             {
                 match &cfg.get_inst(value).data {
                     CfgInstData::Intrinsic { name, .. }
-                        if state.interner.resolve(name) == "random_u32" =>
+                        if state.interner().resolve(name) == "random_u32" =>
                     {
                         random = Some(value);
                     }
                     CfgInstData::Call { name, .. }
-                        if state.interner.resolve(name) == callee_symbol =>
+                        if state.interner().resolve(name) == callee_symbol =>
                     {
                         assert!(
                             call.replace(value).is_none(),
@@ -427,13 +431,13 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
             )
         };
 
-        let type_pool = &state.type_pool;
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[main_index].cfg;
         let mut args = cfg.get_call_args(&cfg.get_inst(call).data).to_vec();
         assert_eq!(args.len(), 1, "{callee_name} probe arity");
         args[0].value = random;
         args[0].mode = replacement_mode;
-        cfg.try_edit(type_pool, |editor| editor.replace_call_args(call, args))
+        cfg.try_edit(&type_pool, |editor| editor.replace_call_args(call, args))
             .unwrap();
 
         let cfg = &state.functions[main_index].cfg;
@@ -490,6 +494,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             (random, panic, panic_args, assertion, assert_args)
         };
 
+        let type_pool = state.type_pool().clone();
         let cfg = &mut state.functions[main_index].cfg;
         let (outer, replacement_args, replacement_ty, expected) = match probe {
             0 => (
@@ -524,8 +529,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
             ),
             _ => unreachable!(),
         };
-        let type_pool = &state.type_pool;
-        cfg.try_edit(type_pool, |editor| {
+        cfg.try_edit(&type_pool, |editor| {
             editor.replace_intrinsic_args(outer, replacement_args)?;
             editor.replace_inst_type(outer, replacement_ty)?;
             Ok::<_, rue_cfg::CfgEditError>(())
@@ -629,10 +633,10 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     preview_features.insert(rue_compiler::PreviewFeature::Slices);
     let source = r#"const ZERO: u64 = 0;
         fn slice_len(borrow s: [i32]) -> u64 { s.len() }
-        fn user_pointer() -> u64 {
+        fn user_pointer(borrow s: [i32]) -> u64 {
             checked {
                 let p: ptr mut i32 = @int_to_ptr(ZERO);
-                @ptr_to_int(p)
+                @ptr_to_int(p) + s.len()
             }
         }
         fn offset_probe() -> u64 {
@@ -641,7 +645,8 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         }
         fn main() -> i32 {
             let empty: [i32; 0] = [];
-            @intCast(slice_len(borrow empty) + user_pointer() + offset_probe())
+            let values = [1, 2];
+            @intCast(slice_len(borrow empty) + user_pointer(borrow values) + offset_probe())
         }"#;
     let state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("pointer provenance probe must compile");
@@ -658,6 +663,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
 
     let (slice_cfg, slice_inst, slice_args, slice_result) =
         find_intrinsic_in_function(&state, "main", "int_to_ptr");
+    state.select_source_function("main");
     assert_eq!(
         interp.classify_unsupported_intrinsic(
             slice_cfg,
@@ -673,6 +679,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
 
     let (user_cfg, user_inst, user_args, user_result) =
         find_intrinsic_in_function(&state, "user_pointer", "int_to_ptr");
+    state.select_source_function("user_pointer");
     assert!(matches!(
         user_cfg.get_inst(user_args[0]).data,
         CfgInstData::Const(0)
@@ -691,6 +698,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     );
     let (offset_cfg, offset_inst, offset_args, offset_result) =
         find_intrinsic_in_function(&state, "offset_probe", "ptr_offset");
+    state.select_source_function("offset_probe");
     assert_eq!(
         interp.classify_unsupported_intrinsic(
             offset_cfg,
@@ -743,6 +751,20 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         .expect("pointer provenance drift probe must compile");
     let (_, _, _, drift_slice_result) =
         find_intrinsic_in_function(&drift_state, "main", "int_to_ptr");
+    let main_index = drift_state.select_source_function("main");
+    let (slice_pointer_is_mut, slice_pointee) = match drift_slice_result.kind() {
+        TypeKind::PtrConst(id) => (
+            false,
+            drift_state.functions[main_index]
+                .type_pool
+                .ptr_const_def(id),
+        ),
+        TypeKind::PtrMut(id) => (
+            true,
+            drift_state.functions[main_index].type_pool.ptr_mut_def(id),
+        ),
+        _ => panic!("empty-slice pointer synthesis must return a pointer"),
+    };
     let (_, drift_user_inst, _, _) =
         find_intrinsic_in_function(&drift_state, "user_pointer", "int_to_ptr");
     let drift_user_index = drift_state
@@ -750,15 +772,32 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         .iter()
         .position(|function| function.is_source_named("user_pointer"))
         .expect("user_pointer CFG");
-    let type_pool = &drift_state.type_pool;
+    drift_state.select_source_function("user_pointer");
+    let type_pool = drift_state.type_pool().clone();
+    let drift_slice_result = if slice_pointer_is_mut {
+        Type::new_ptr_mut(
+            type_pool
+                .all_ptr_mut_ids()
+                .find(|id| type_pool.ptr_mut_def(*id) == slice_pointee)
+                .expect("user-pointer domain contains the synthesized slice pointer type"),
+        )
+    } else {
+        Type::new_ptr_const(
+            type_pool
+                .all_ptr_const_ids()
+                .find(|id| type_pool.ptr_const_def(*id) == slice_pointee)
+                .expect("user-pointer domain contains the synthesized slice pointer type"),
+        )
+    };
     drift_state.functions[drift_user_index]
         .cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_inst_type(drift_user_inst, drift_slice_result)
         })
         .unwrap();
     let (drift_cfg, drift_inst, drift_args, drift_result) =
         find_intrinsic_in_function(&drift_state, "user_pointer", "int_to_ptr");
+    drift_state.select_source_function("user_pointer");
     let drift_interp = Interp {
         state: &drift_state,
         stdout: String::new(),
@@ -783,7 +822,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
 
     let mut extra_use_state = query_cfg_state_with_preview_features(source, &preview_features)
         .expect("empty-slice exclusive-use probe must compile");
-    let (_, extra_slice_inst, _, _) =
+    let (_, extra_slice_inst, _, extra_slice_result) =
         find_intrinsic_in_function(&extra_use_state, "main", "int_to_ptr");
     let extra_main = extra_use_state
         .functions
@@ -805,11 +844,11 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             )
         })
         .expect("outer result cast");
-    let type_pool = &extra_use_state.type_pool;
+    let type_pool = extra_use_state.type_pool().clone();
     extra_use_state.functions[extra_main]
         .cfg
-        .try_edit(type_pool, |editor| {
-            editor.replace_int_cast(outer_cast, extra_slice_inst, drift_slice_result)
+        .try_edit(&type_pool, |editor| {
+            editor.replace_int_cast(outer_cast, extra_slice_inst, extra_slice_result)
         })
         .unwrap();
     let (extra_cfg, extra_inst, extra_args, extra_result) =
@@ -867,10 +906,10 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             .expect("outer result cast");
         (slice_init, cfg.get_inst(slice_init).ty, outer_cast)
     };
-    let type_pool = &extra_init_use_state.type_pool;
+    let type_pool = extra_init_use_state.type_pool().clone();
     extra_init_use_state.functions[extra_init_main]
         .cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_int_cast(outer_cast, slice_init, slice_ty)
         })
         .unwrap();
@@ -946,9 +985,9 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
         .expect("empty-slice call argument");
     assert_eq!(slice_arg.mode, CfgArgMode::Normal);
     slice_arg.mode = CfgArgMode::Borrow;
-    let type_pool = &wrong_consumer_state.type_pool;
+    let type_pool = wrong_consumer_state.type_pool().clone();
     let cfg = &mut wrong_consumer_state.functions[wrong_consumer_main].cfg;
-    cfg.try_edit(type_pool, |editor| {
+    cfg.try_edit(&type_pool, |editor| {
         editor.replace_call_args(consumer, consumer_args)
     })
     .unwrap();
@@ -1001,10 +1040,10 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             })
             .expect("empty-slice StructInit")
     };
-    let type_pool = &wrong_init_state.type_pool;
+    let type_pool = wrong_init_state.type_pool().clone();
     wrong_init_state.functions[wrong_init_main]
         .cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_inst_type(slice_init, Type::UNIT)
         })
         .unwrap();
@@ -1080,11 +1119,11 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
         };
         (place.base, place.base_type, struct_id)
     };
-    let out_of_bounds = state.type_pool.struct_def(struct_id).field_count() as u32;
-    let type_pool = &state.type_pool;
+    let out_of_bounds = state.type_pool().struct_def(struct_id).field_count() as u32;
+    let type_pool = state.type_pool().clone();
     let error = state.functions[main_index]
         .cfg
-        .try_edit(type_pool, |editor| {
+        .try_edit(&type_pool, |editor| {
             editor.replace_place_read(
                 field_read,
                 base,
@@ -1259,6 +1298,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
     let (parse64_cfg, parse64_inst, parse64_args, parse64_result) =
         find_intrinsic_in_function(&state, "parse64", "parse_i64");
 
+    state.select_source_function("parse32");
     assert_eq!(
         interp.classify_unsupported_intrinsic(
             parse32_cfg,
@@ -1271,6 +1311,7 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
             UnsupportedIntrinsicKind::ParseI32,
         ))
     );
+    state.select_source_function("parse64");
     assert_eq!(
         interp.classify_unsupported_intrinsic(
             parse64_cfg,
@@ -1283,13 +1324,14 @@ fn option_returning_intrinsics_require_the_exact_payload_type() {
             UnsupportedIntrinsicKind::ParseI64,
         ))
     );
+    state.select_source_function("parse32");
     assert_eq!(
         interp.classify_unsupported_intrinsic(
             parse32_cfg,
             parse32_inst,
             "parse_i32",
             &parse32_args,
-            parse64_result,
+            Type::U64,
         ),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
         "Option(i64) is not a valid parse_i32 result"
@@ -1337,14 +1379,16 @@ fn read_line_requires_trusted_source_strbuf_payload_metadata() {
         heap: Vec::new(),
     };
     let (cfg, inst, args, result) = find_intrinsic_in_function(&state, "line", "read_line");
+    state.select_source_function("line");
     assert_eq!(
         interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, result),
         UnsupportedKind::ExternalDependency(ExternalDependencyKind::StandardInput)
     );
 
-    let (_, _, _, parse_result) = find_intrinsic_in_function(&state, "parse", "parse_i32");
+    let _ = find_intrinsic_in_function(&state, "parse", "parse_i32");
+    state.select_source_function("line");
     assert_eq!(
-        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, parse_result),
+        interp.classify_unsupported_intrinsic(cfg, inst, "read_line", &args, Type::I32),
         UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
         "an arbitrary Option payload must not satisfy @read_line"
     );

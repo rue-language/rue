@@ -97,7 +97,7 @@ fn stable_str_equality_is_lowered_and_modeled_by_byte_content() {
             let TypeKind::Struct(struct_id) = cfg.get_inst(operand).ty.kind() else {
                 panic!("{function} operand is not the stable str nominal")
             };
-            assert_eq!(&*state.type_pool.struct_def(struct_id).name, "str");
+            assert_eq!(&*state.type_pool().struct_def(struct_id).name, "str");
         }
     }
     let outcome = run_state(state).expect("stable str equality must be modeled");

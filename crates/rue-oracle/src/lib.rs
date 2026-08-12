@@ -72,12 +72,11 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct CompileState {
-    interner: ThreadedRodeo,
     functions: Vec<OracleFunction>,
-    type_pool: FrozenTypeInternPool,
-    strings: Vec<String>,
+    current_function: AtomicUsize,
 }
 
 struct OracleFunction {
@@ -89,6 +88,34 @@ struct OracleFunction {
     #[cfg(test)]
     source_name: Option<String>,
     cfg: rue_cfg::ValidatedCfg,
+    interner: Arc<ThreadedRodeo>,
+    type_pool: FrozenTypeInternPool,
+    strings: Arc<[String]>,
+}
+
+#[cfg(test)]
+impl CompileState {
+    fn select_source_function(&self, name: &str) -> usize {
+        let index = self
+            .functions
+            .iter()
+            .position(|function| function.is_source_named(name))
+            .unwrap_or_else(|| panic!("oracle test program has no {name} CFG"));
+        self.current_function.store(index, Ordering::Relaxed);
+        index
+    }
+
+    fn selected_function(&self) -> &OracleFunction {
+        &self.functions[self.current_function.load(Ordering::Relaxed)]
+    }
+
+    fn type_pool(&self) -> &FrozenTypeInternPool {
+        &self.selected_function().type_pool
+    }
+
+    fn interner(&self) -> &ThreadedRodeo {
+        &self.selected_function().interner
+    }
 }
 
 #[cfg(test)]
@@ -136,24 +163,26 @@ fn query_cfg_state_from_session(
     mut session: CompilerSession,
     options: &CompileOptions,
 ) -> Result<CompileState, CompileErrors> {
-    let semantic = session.semantic(options)?;
-    drop(session);
-    let state = rue_compiler::unstable::into_oracle_semantic_state(semantic)
-        .expect("one-shot oracle session uniquely owns its frontend artifacts");
+    let rooted = rue_compiler::unstable::rooted_cfg(&mut session, options)?;
+    let functions = rooted
+        .functions()
+        .iter()
+        .map(|function| OracleFunction {
+            #[cfg(test)]
+            source_name: function.definition_source_name().map(str::to_owned),
+            cfg: function.cfg().clone(),
+            interner: function.interner().clone(),
+            type_pool: function.type_pool().clone(),
+            strings: function.strings().clone(),
+        })
+        .collect::<Vec<_>>();
+    let entry = functions
+        .iter()
+        .position(|function| function.cfg.fn_name() == "main")
+        .expect("successful oracle compilation publishes a main CFG");
     Ok(CompileState {
-        interner: Arc::try_unwrap(state.interner)
-            .expect("one-shot oracle uniquely owns its semantic symbol interner"),
-        functions: state
-            .functions
-            .into_iter()
-            .map(|function| OracleFunction {
-                #[cfg(test)]
-                source_name: function.source_name,
-                cfg: function.cfg,
-            })
-            .collect(),
-        type_pool: state.type_pool,
-        strings: state.strings,
+        functions,
+        current_function: AtomicUsize::new(entry),
     })
 }
 
@@ -940,6 +969,14 @@ enum WritebackPlace<'a> {
 }
 
 impl<'a> Interp<'a> {
+    fn function(&self) -> &OracleFunction {
+        &self.state.functions[self.state.current_function.load(Ordering::Relaxed)]
+    }
+
+    fn type_pool(&self) -> &FrozenTypeInternPool {
+        &self.function().type_pool
+    }
+
     fn string_literal_value(&mut self, text: String, ty: Type) -> Value {
         // A source string literal materializes as a real text header over an
         // (immortal) heap byte allocation (RUE-1010 §6.13.2). The ABI slot width
@@ -958,7 +995,7 @@ impl<'a> Interp<'a> {
     /// view.
     fn text_value_slot_width(&self, ty: Type) -> usize {
         ty.as_struct()
-            .map(|id| self.state.type_pool.abi_slot_count(Type::new_struct(id)) as usize)
+            .map(|id| self.type_pool().abi_slot_count(Type::new_struct(id)) as usize)
             .unwrap_or(3)
     }
 
@@ -972,11 +1009,11 @@ impl<'a> Interp<'a> {
 
     fn is_bare_str_type(&self, ty: Type) -> bool {
         ty.as_struct()
-            .is_some_and(|struct_id| &*self.state.type_pool.struct_def(struct_id).name == "str")
+            .is_some_and(|struct_id| &*self.type_pool().struct_def(struct_id).name == "str")
     }
 
     fn is_str_like_struct(&self, struct_id: rue_air::StructId) -> bool {
-        let name: &str = &self.state.type_pool.struct_def(struct_id).name;
+        let name: &str = &self.type_pool().struct_def(struct_id).name;
         name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
     }
 
@@ -1001,7 +1038,7 @@ impl<'a> Interp<'a> {
     }
 
     fn is_owned_string_struct(&self, struct_id: rue_air::StructId) -> bool {
-        self.state.type_pool.is_strbuf(struct_id)
+        self.type_pool().is_strbuf(struct_id)
     }
 
     /// Whether `ty` is a text type — a `str`/`Str(N)` view or an owned `StrBuf`.
@@ -1197,8 +1234,8 @@ impl<'a> Interp<'a> {
 
     fn pointer_pointee(&self, ty: Type) -> Option<(Type, bool)> {
         match ty.kind() {
-            TypeKind::PtrConst(id) => Some((self.state.type_pool.ptr_const_def(id), false)),
-            TypeKind::PtrMut(id) => Some((self.state.type_pool.ptr_mut_def(id), true)),
+            TypeKind::PtrConst(id) => Some((self.type_pool().ptr_const_def(id), false)),
+            TypeKind::PtrMut(id) => Some((self.type_pool().ptr_mut_def(id), true)),
             _ => None,
         }
     }
@@ -1207,7 +1244,7 @@ impl<'a> Interp<'a> {
         let TypeKind::Enum(enum_id) = ty.kind() else {
             return None;
         };
-        let def = self.state.type_pool.enum_def(enum_id);
+        let def = self.type_pool().enum_def(enum_id);
         let (Some(some), Some(none)) = (def.find_variant("Some"), def.find_variant("None")) else {
             return None;
         };
@@ -1248,7 +1285,7 @@ impl<'a> Interp<'a> {
                 let CfgInstData::StructInit { struct_id, .. } = data else {
                     return false;
                 };
-                let def = self.state.type_pool.struct_def(*struct_id);
+                let def = self.type_pool().struct_def(*struct_id);
                 let is_slice = def.name.starts_with('[')
                     && def.name.ends_with(']')
                     && parse_array_type_syntax(&def.name).is_none();
@@ -1286,7 +1323,7 @@ impl<'a> Interp<'a> {
                 struct_id,
                 field_index,
             } => {
-                let def = self.state.type_pool.struct_def(struct_id);
+                let def = self.type_pool().struct_def(struct_id);
                 let field = def.fields.get(field_index as usize)?;
                 Some((Type::new_struct(struct_id), field.ty))
             }
@@ -1299,7 +1336,7 @@ impl<'a> Interp<'a> {
                 let TypeKind::Array(array_id) = array_type.kind() else {
                     return None;
                 };
-                let (element, _) = self.state.type_pool.array_def(array_id);
+                let (element, _) = self.type_pool().array_def(array_id);
                 Some((array_type, element))
             }
         }
@@ -1343,7 +1380,7 @@ impl<'a> Interp<'a> {
             PlaceBase::Local(slot) => (
                 slot,
                 cfg.num_locals(),
-                self.state.type_pool.abi_slot_count(place.base_type),
+                self.type_pool().abi_slot_count(place.base_type),
                 None,
             ),
             PlaceBase::Param(slot) => {
@@ -1353,7 +1390,7 @@ impl<'a> Interp<'a> {
                 let width = if cfg.is_param_by_ref(slot) {
                     1
                 } else {
-                    self.state.type_pool.abi_slot_count(place.base_type)
+                    self.type_pool().abi_slot_count(place.base_type)
                 };
                 (slot, cfg.num_params(), width, Some(slot))
             }
@@ -1777,19 +1814,17 @@ impl<'a> Interp<'a> {
     }
 
     fn interner(&self) -> &ThreadedRodeo {
-        &self.state.interner
+        &self.function().interner
     }
 
     /// Locate a callee by the internal symbol its call site names. This is the
     /// interpreter's dispatch, so it must speak the CFG's own symbol space,
     /// not source names.
-    fn find_cfg(&self, name: &str) -> Option<&'a Cfg> {
+    fn find_function(&self, name: &str) -> Option<usize> {
         self.state
             .functions
             .iter()
-            .map(|f| &f.cfg)
-            .find(|c| c.fn_name() == name)
-            .map(|cfg| &**cfg)
+            .position(|function| function.cfg.fn_name() == name)
     }
 
     /// Number of physical parameter slots occupied by one CFG call argument.
@@ -1807,7 +1842,7 @@ impl<'a> Interp<'a> {
             CfgArgMode::Normal => rue_air::ArgConvention::ByValue,
             CfgArgMode::Inout | CfgArgMode::Borrow => rue_air::ArgConvention::ByReference,
         };
-        rue_air::NativeCallAbi::for_arguments(&self.state.type_pool).arg_slot_width(ty, convention)
+        rue_air::NativeCallAbi::for_arguments(self.type_pool()).arg_slot_width(ty, convention)
             as usize
     }
 
@@ -1903,7 +1938,9 @@ impl<'a> Interp<'a> {
             ));
         }
         self.depth += 1;
+        let caller = self.state.current_function.load(Ordering::Relaxed);
         let result = self.call_inner(name, args);
+        self.state.current_function.store(caller, Ordering::Relaxed);
         self.depth -= 1;
         result
     }
@@ -1913,12 +1950,13 @@ impl<'a> Interp<'a> {
         name: &str,
         args: &[(Value, Type, CfgArgMode)],
     ) -> Step<(Value, Vec<Option<Value>>)> {
-        let cfg = self.find_cfg(name).ok_or_else(|| {
+        let function = self.find_function(name).ok_or_else(|| {
             unsupported(
                 UnsupportedKind::ContractViolation(ContractViolationKind::MissingFunctionBody),
                 format!("call to '{name}'"),
             )
         })?;
+        let cfg = &*self.state.functions[function].cfg;
         self.preflight_call_layout(cfg, name, args.iter().map(|(_, ty, mode)| (*ty, *mode)))?;
         // Lay arguments out by physical slot: place each whole semantic value
         // at its base slot, then pad with `None` for extra by-value aggregate
@@ -1943,6 +1981,12 @@ impl<'a> Interp<'a> {
             }
         }
         debug_assert_eq!(param_slots.len(), cfg.num_params() as usize);
+        // Every live handle in the callee CFG belongs to this function's
+        // retained local domains. Argument widths above were intentionally
+        // interpreted in the caller's domain before crossing the boundary.
+        self.state
+            .current_function
+            .store(function, Ordering::Relaxed);
         let mut frame = Frame {
             params: param_slots,
             locals: vec![None; cfg.num_locals() as usize],
@@ -2286,20 +2330,23 @@ impl<'a> Interp<'a> {
     fn run_drop(&mut self, ty: Type, v: Value) -> Step<()> {
         match ty.kind() {
             TypeKind::Struct(sid) => {
-                let sd = self.state.type_pool.struct_def(sid);
+                let sd = self.type_pool().struct_def(sid);
                 // Synthetic builtin types have no observable destructor and no
                 // CFG body; skip them.
                 if sd.is_builtin {
                     return Ok(());
                 }
-                if let Some(dtor) = sd.destructor.clone() {
+                let is_builtin = sd.is_builtin;
+                let destructor = sd.destructor.clone();
+                let fields = sd.fields.clone();
+                if let Some(dtor) = destructor {
                     self.call(&dtor, &[(v.clone(), ty, CfgArgMode::Normal)])?;
                 }
                 // A builtin type's destructor is its entire drop glue; a
                 // user struct then drops its fields in declaration order.
-                if !sd.is_builtin {
+                if !is_builtin {
                     if let Value::Aggregate(elems) = &v {
-                        for (i, field) in sd.fields.iter().enumerate() {
+                        for (i, field) in fields.iter().enumerate() {
                             if let Some(fv) = elems.get(i).cloned() {
                                 self.run_drop(field.ty, fv)?;
                             }
@@ -2308,7 +2355,7 @@ impl<'a> Interp<'a> {
                 }
             }
             TypeKind::Array(aid) => {
-                let (elem_ty, _len) = self.state.type_pool.array_def(aid);
+                let (elem_ty, _len) = self.type_pool().array_def(aid);
                 if let Value::Aggregate(elems) = &v {
                     for fv in elems.iter().cloned() {
                         self.run_drop(elem_ty, fv)?;
@@ -2325,7 +2372,7 @@ impl<'a> Interp<'a> {
                 if let Value::Aggregate(elems) = &v
                     && let Some(Value::Int(tag)) = elems.first()
                 {
-                    let def = self.state.type_pool.enum_def(eid);
+                    let def = self.type_pool().enum_def(eid);
                     let payload_tys = def.variant_payload(*tag as usize).to_vec();
                     for (i, pty) in payload_tys.into_iter().enumerate() {
                         if let Some(fv) = elems.get(i + 1).cloned() {
@@ -2345,7 +2392,7 @@ impl<'a> Interp<'a> {
     /// zero-sized, and arrays that are empty or have zero-sized elements.
     /// Enums are never zero-sized (they always carry a discriminant slot).
     fn is_zero_sized(&self, ty: Type) -> bool {
-        self.state.type_pool.abi_slot_count(ty) == 0
+        self.type_pool().abi_slot_count(ty) == 0
     }
 
     /// Materialize the (unique) value of a zero-sized type, preserving the
@@ -2353,7 +2400,7 @@ impl<'a> Interp<'a> {
     fn zero_sized_value(&self, ty: Type) -> Value {
         match ty.kind() {
             TypeKind::Struct(sid) => {
-                let sd = self.state.type_pool.struct_def(sid);
+                let sd = self.type_pool().struct_def(sid);
                 Value::Aggregate(
                     sd.fields
                         .iter()
@@ -2362,7 +2409,7 @@ impl<'a> Interp<'a> {
                 )
             }
             TypeKind::Array(aid) => {
-                let (elem_ty, len) = self.state.type_pool.array_def(aid);
+                let (elem_ty, len) = self.type_pool().array_def(aid);
                 Value::Aggregate((0..len).map(|_| self.zero_sized_value(elem_ty)).collect())
             }
             _ => Value::Unit,
@@ -2394,7 +2441,7 @@ impl<'a> Interp<'a> {
             CfgInstData::BoolConst(b) => Value::Bool(*b),
             CfgInstData::StringConst(idx) => {
                 let text = self
-                    .state
+                    .function()
                     .strings
                     .get(*idx as usize)
                     .cloned()
@@ -2540,7 +2587,7 @@ impl<'a> Interp<'a> {
                             "PlaceRead base {:?} with type {:?} (logical width {}) violates its CFG contract ({} local slots, {} parameter slots)",
                             place.base,
                             place.base_type,
-                            self.state.type_pool.abi_slot_count(place.base_type),
+                            self.type_pool().abi_slot_count(place.base_type),
                             cfg.num_locals(),
                             cfg.num_params(),
                         ),
@@ -2569,7 +2616,7 @@ impl<'a> Interp<'a> {
                             "PlaceWrite base {:?} with type {:?} (logical width {}) violates its CFG contract ({} local slots, {} parameter slots)",
                             place.base,
                             place.base_type,
-                            self.state.type_pool.abi_slot_count(place.base_type),
+                            self.type_pool().abi_slot_count(place.base_type),
                             cfg.num_locals(),
                             cfg.num_params(),
                         ),
@@ -2661,7 +2708,7 @@ impl<'a> Interp<'a> {
                         return Err(unsupported(kind, format!("call to '{fname}'")));
                     }
                     Some(kind)
-                } else if !is_string_builtin && self.find_cfg(&fname).is_none() {
+                } else if !is_string_builtin && self.find_function(&fname).is_none() {
                     return Err(unsupported(
                         UnsupportedKind::ContractViolation(
                             ContractViolationKind::MissingFunctionBody,
@@ -2672,9 +2719,10 @@ impl<'a> Interp<'a> {
                     None
                 };
                 if !is_string_builtin && missing_call_kind.is_none() {
-                    let callee = self
-                        .find_cfg(&fname)
-                        .expect("a present user call has a CFG body");
+                    let callee = &*self.state.functions[self
+                        .find_function(&fname)
+                        .expect("a present user call has a CFG body")]
+                    .cfg;
                     self.preflight_call_layout(
                         callee,
                         &fname,
@@ -2912,7 +2960,7 @@ impl<'a> Interp<'a> {
                 let (Value::Aggregate(xs), Value::Aggregate(ys)) = (x, y) else {
                     return Ok(x == y);
                 };
-                let def = self.state.type_pool.struct_def(sid);
+                let def = self.type_pool().struct_def(sid);
                 if xs.len() != ys.len() || xs.len() != def.fields.len() {
                     return Ok(x == y);
                 }
@@ -2924,7 +2972,7 @@ impl<'a> Interp<'a> {
                 Ok(true)
             }
             TypeKind::Array(aid) => {
-                let (elem_ty, _len) = self.state.type_pool.array_def(aid);
+                let (elem_ty, _len) = self.type_pool().array_def(aid);
                 let (Value::Aggregate(xs), Value::Aggregate(ys)) = (x, y) else {
                     return Ok(x == y);
                 };
@@ -2948,7 +2996,7 @@ impl<'a> Interp<'a> {
                             return Ok(false);
                         }
                         let tag = xs[0].as_int() as usize;
-                        let payload_tys = self.state.type_pool.enum_def(eid).variant_payload(tag);
+                        let payload_tys = self.type_pool().enum_def(eid).variant_payload(tag);
                         if xs.len() != ys.len() {
                             return Ok(false);
                         }
@@ -3345,12 +3393,12 @@ impl<'a> Interp<'a> {
                         Value::Aggregate(vec![Value::Ptr(None), Value::Int(0)])
                     }
                 } else {
-                    let sd = self.state.type_pool.struct_def(sid);
+                    let sd = self.type_pool().struct_def(sid);
                     Value::Aggregate(sd.fields.iter().map(|f| self.zeroed_value(f.ty)).collect())
                 }
             }
             TypeKind::Array(aid) => {
-                let (elem, len) = self.state.type_pool.array_def(aid);
+                let (elem, len) = self.type_pool().array_def(aid);
                 Value::Aggregate((0..len).map(|_| self.zeroed_value(elem)).collect())
             }
             // A zeroed enum is discriminant 0; a bare tag under the interpreter's
@@ -3362,7 +3410,7 @@ impl<'a> Interp<'a> {
 
     /// Byte size of one value of `ty` from the compact-layout authority.
     fn type_byte_size(&self, ty: Type) -> u64 {
-        self.state.type_pool.layout(ty).size
+        self.type_pool().layout(ty).size
     }
 
     /// Push a new allocation, returning its index.

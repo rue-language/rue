@@ -3716,14 +3716,13 @@ mod tests {
         }
         session.close_import_discovery(ledger).unwrap_err();
         let errors = session
-            .canonical_semantic(&crate::CompileOptions::default())
+            .rooted_semantic(&crate::CompileOptions::default())
             .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(
             errors.first().unwrap().kind,
             ErrorKind::StdLibNotFound
         ));
-        assert_eq!(session.work().semantic.executions, 0);
     }
 
     #[test]
@@ -3754,10 +3753,9 @@ mod tests {
         assert_eq!(session.work().last_rir, crate::CanonicalRirWork::default());
         assert!(
             session
-                .canonical_semantic(&crate::CompileOptions::default())
+                .rooted_semantic(&crate::CompileOptions::default())
                 .is_err()
         );
-        assert_eq!(session.work().semantic.executions, 0);
         let one_shot =
             crate::compile_snapshot(&source, &crate::CompileOptions::default()).unwrap_err();
         assert!(matches!(

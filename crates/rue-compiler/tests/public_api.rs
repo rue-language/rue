@@ -1,14 +1,11 @@
 use std::sync::Arc;
 
-use rue_compiler::unstable::{
-    MetricsSnapshot, OracleSemanticState, PresentationRequest, PresentationStage,
-    into_oracle_semantic_state,
-};
+use rue_compiler::unstable::{MetricsSnapshot, PresentationRequest, PresentationStage, rooted_cfg};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompileOutput, CompilerSession, CompilerSessionUpdate,
     DependencyEnvelope, DiagnosticStage, FileId, FrontendDiagnosticSnapshot, ImportDiscoveryStatus,
-    ImportDiscoveryView, MultiErrorResult, RirView, SemanticView, SourceLocationView,
-    SourceMetadata, SourceRevision, SourceSnapshot, SourceView, SyntaxNodeView, compile_snapshot,
+    ImportDiscoveryView, MultiErrorResult, RirView, SourceLocationView, SourceMetadata,
+    SourceRevision, SourceSnapshot, SourceView, SyntaxNodeView, compile_snapshot,
 };
 use rue_error::ErrorKind;
 
@@ -30,7 +27,7 @@ fn curated_facade_compiles_for_an_external_consumer() {
 
     let syntax = session.published().unwrap();
     let rir: Arc<RirView> = session.rir().unwrap();
-    let semantic: Arc<SemanticView> = session.semantic(&CompileOptions::default()).unwrap();
+    let rooted = rooted_cfg(&mut session, &CompileOptions::default()).unwrap();
     let work: MetricsSnapshot = session.unstable_metrics();
     let diagnostics: Option<&Arc<FrontendDiagnosticSnapshot>> = session.latest_diagnostics();
     let views: Vec<SourceView<'_>> = snapshot.files().collect();
@@ -53,14 +50,10 @@ fn curated_facade_compiles_for_an_external_consumer() {
                 .source_identity()
         )
     );
-    let function = semantic.function_views().next().unwrap();
-    assert_eq!(function.name(), "main");
-    assert!(function.instruction_count() > 0);
-    let block = function.cfg().blocks().next().unwrap();
-    assert!(!block.terminator_kind().is_empty());
-    assert!(block.instruction_count() > 0);
-    assert_eq!(block.instructions().len(), block.instruction_count());
-    assert_eq!(block.successors().len(), block.successor_count());
+    let function = rooted.functions().first().unwrap();
+    assert_eq!(function.source_name(), "main");
+    assert!(!function.air().is_empty());
+    assert!(!function.cfg().blocks().is_empty());
     assert_eq!(
         syntax
             .modules()
@@ -75,7 +68,7 @@ fn curated_facade_compiles_for_an_external_consumer() {
     assert_eq!(work.updates(), 1);
     assert!(diagnostics.is_some());
     assert_eq!(diagnostics.unwrap().stage(), DiagnosticStage::Semantic);
-    for debug in [format!("{rir:?}"), format!("{semantic:?}")] {
+    for debug in [format!("{rir:?}")] {
         assert!(!debug.contains("CanonicalRirOutput"));
         assert!(!debug.contains("CanonicalSemanticOutput"));
         assert!(!debug.contains("ThreadedRodeo"));
@@ -311,28 +304,16 @@ fn main() -> i32 { choose(0) }
     let snapshot = SourceSnapshot::single("main.rue", source).unwrap();
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().unwrap();
-    let semantic = session.semantic(&CompileOptions::default()).unwrap();
-    let cfg = semantic
-        .function_views()
-        .find(|function| function.name() == "choose")
+    let rooted = rooted_cfg(&mut session, &CompileOptions::default()).unwrap();
+    let cfg = rooted
+        .functions()
+        .iter()
+        .find(|function| function.source_name() == "choose")
         .unwrap()
         .cfg();
-    let blocks = cfg.blocks().collect::<Vec<_>>();
-    let mut edge_count = 0;
-
-    for block in &blocks {
-        assert_eq!(block.instruction_count(), block.instructions().len());
-        for instruction in block.instructions() {
-            assert!(!instruction.kind().is_empty());
-        }
-        assert_eq!(block.successor_count(), block.successors().len());
-        for successor in block.successors() {
-            edge_count += 1;
-            assert!(successor.target_ordinal() < blocks.len());
-            assert_eq!(successor.target().ordinal(), successor.target_ordinal());
-        }
-    }
-    assert!(edge_count >= 2);
+    let blocks = cfg.blocks();
+    assert!(blocks.len() >= 3);
+    assert!(blocks.iter().any(|block| !block.insts.is_empty()));
 }
 
 #[test]
@@ -362,11 +343,4 @@ fn presentation_file_order_rejects_unknown_duplicate_and_incomplete_inputs() {
             Some(ErrorKind::InvalidCompilerInput(_))
         ));
     }
-}
-
-#[test]
-fn oracle_consumption_accepts_only_the_semantic_views_embedded_rir_owner() {
-    let bridge: fn(Arc<SemanticView>) -> Result<OracleSemanticState, &'static str> =
-        into_oracle_semantic_state;
-    let _ = bridge;
 }
