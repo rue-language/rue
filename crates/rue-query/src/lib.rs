@@ -3638,11 +3638,11 @@ struct NodeRegistry {
 
 /// Identity hashing for runtime-owned, monotonically assigned incarnation IDs.
 ///
-/// These keys are never caller-controlled, and the registry does not expose
-/// iteration order. This hasher is deliberately private to `NodeRegistry`:
-/// caller-controlled typed family keys must keep their randomized hashers.
-/// Using the ID directly gives exact registry operations expected O(1) lookup
-/// without paying a general-purpose string-resistant hashing cost.
+/// These keys are never caller-controlled, and the private runtime-ID indexes
+/// do not expose iteration order. Caller-controlled typed family keys keep
+/// their randomized hashers. Using the ID directly gives exact runtime-index
+/// operations expected O(1) lookup without paying a general-purpose
+/// string-resistant hashing cost.
 #[derive(Debug, Default)]
 struct IncarnationHasher(u64);
 
@@ -3673,8 +3673,9 @@ impl Hasher for IncarnationHasher {
 /// runtime-unique node incarnation with one of that node's semantic stamps and,
 /// for exact terminal identity, a runtime revision. Retention bounds also limit
 /// the number of historical stamps and revisions per node. Mix these fixed-width
-/// components without paying SipHash on the retention and validation hot path;
-/// caller-controlled query-key maps keep randomized hashing.
+/// components without paying SipHash on the retention, validation, and cone
+/// promotion hot paths; caller-controlled query-key maps keep randomized
+/// hashing.
 #[derive(Debug, Default)]
 struct RetainedIdentityHasher(u64);
 
@@ -3700,6 +3701,9 @@ impl Hasher for RetainedIdentityHasher {
         self.0 = self.0.rotate_left(27) ^ mixed;
     }
 }
+
+type RetainedIdentityMap<K, V> = HashMap<K, V, BuildHasherDefault<RetainedIdentityHasher>>;
+type RetainedIdentitySet<K> = HashSet<K, BuildHasherDefault<RetainedIdentityHasher>>;
 
 #[derive(Debug)]
 struct RegisteredNode {
@@ -7874,8 +7878,14 @@ impl QueryContext {
             .iter()
             .map(|authority| authority.leases.held.len())
             .sum::<usize>();
-        let mut current_exact = HashMap::with_capacity(leases.held.len());
-        let mut selected = HashMap::with_capacity(leases.held.len() + batch_lease_count);
+        let mut current_exact = RetainedIdentityMap::with_capacity_and_hasher(
+            leases.held.len(),
+            BuildHasherDefault::default(),
+        );
+        let mut selected = RetainedIdentityMap::with_capacity_and_hasher(
+            leases.held.len() + batch_lease_count,
+            BuildHasherDefault::default(),
+        );
         for lease in &leases.held {
             let identity = lease.identity();
             current_exact.insert(identity, lease.as_ref());
@@ -7898,7 +7908,10 @@ impl QueryContext {
             }
         }
         for fallback in &promotion_fallbacks {
-            let mut fallback_selected = HashMap::with_capacity(fallback.held.len());
+            let mut fallback_selected = RetainedIdentityMap::with_capacity_and_hasher(
+                fallback.held.len(),
+                BuildHasherDefault::default(),
+            );
             for lease in &fallback.held {
                 let identity = lease.identity();
                 let selected_for_stamp = fallback_selected
@@ -7922,7 +7935,10 @@ impl QueryContext {
             );
         }
         let mut retained = RetainedPinSet::new();
-        let mut visited = HashSet::with_capacity(selected.len());
+        let mut visited = RetainedIdentitySet::with_capacity_and_hasher(
+            selected.len(),
+            BuildHasherDefault::default(),
+        );
         while let Some(lease) = pending.pop() {
             if !visited.insert(lease.identity()) {
                 continue;
