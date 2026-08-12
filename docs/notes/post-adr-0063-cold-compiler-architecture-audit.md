@@ -1499,6 +1499,26 @@ Allocation accounting and every compiler-work/output invariant were neutral.
 The feature was rejected under the no-regression memory boundary; the measured
 speed/memory tradeoff remains available for a future explicit policy decision.
 
+RUE-1442 tested preallocating the stable semantic-symbol encoder after cold
+samples found repeated `String` growth in that path. Both tested capacities
+were counterproductive. A 128-byte start regressed retired instructions by
+0.5332% (MAD 0.0596%) and RSS by 0.2792% (MAD 0.6203%) over 16 balanced Lattice
+pairs; 64 bytes regressed instructions by 0.7550% (MAD 0.0580%) and RSS by
+1.2447% (MAD 0.3614%) over 12 pairs. Both preserved work and output, but the
+existing formatting-led growth remains the better cold-compile tradeoff.
+
+RUE-1443 removes one heap allocation from every registered validation
+traversal. Validation proof states now remain inline in each task's lexical
+stack; structured batch children link to their parent task and propagate
+unregistered or retryable state through that acyclic ancestry. This preserves
+the existing nested-batch proof semantics while avoiding shared
+`Arc<AtomicU8>` state on ordinary traversals. Against the exact RUE-1440 parent,
+20 balanced Lattice pairs reduced retired instructions by 0.2067% (MAD 0.0313%)
+with neutral wall time, cycles, and RSS. Four allocation-accounting pairs
+removed a median 155,870.5 allocation calls and 5,286,240 requested bytes.
+Compiler work, source metrics, emitted-output
+metrics, and executable digest remained exact.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

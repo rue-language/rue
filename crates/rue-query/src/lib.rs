@@ -11,7 +11,7 @@ use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 use ahash::{AHashMap, AHashSet, RandomState};
@@ -1733,6 +1733,66 @@ mod registered_batch_tests {
                     assert!(
                         !proof.registered_only(),
                         "an unregistered evaluator in a batch child must taint the parent's proof"
+                    );
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .request_registered(&root, revision(2), Key("root"), CancellationToken::new(),)
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn nested_registered_batch_child_taints_every_enclosing_validation_proof() {
+        let runtime = QueryRuntime::new(3);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        let external = runtime
+            .family::<Slot, u64>("nested-registered-batch-proof-external", 1)
+            .unwrap();
+        let external_for_leaf = external.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "nested-registered-batch-proof-leaf",
+                1,
+                move |context, _, key| {
+                    context.query(&external_for_leaf, key.clone(), |_| {
+                        Ok(QueryOutput::success(key.0))
+                    })?;
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(&leaf, revision(1), Slot(0), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "nested-registered-batch-proof-middle",
+                1,
+                move |context, _, key| {
+                    context.query_registered_batch(&leaf_for_middle, [key.clone()])?;
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        let middle_for_root = middle.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "nested-registered-batch-proof-root",
+                1,
+                move |context, _, _| {
+                    let proof = context.task.begin_validation();
+                    context.query_registered_batch(&middle_for_root, [Slot(0)])?;
+                    assert!(
+                        !proof.registered_only(),
+                        "an unregistered evaluator in a nested batch must taint every ancestor"
                     );
                     Ok(QueryOutput::success(1))
                 },
@@ -4566,6 +4626,7 @@ impl QueryRuntime {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
+            validation_proof_parent: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -8015,9 +8076,15 @@ struct Task {
     /// innermost structured batch containing this task. Nested batches link to
     /// the enclosing authority rather than copying its cone.
     batch_validation_authority: Option<Arc<BatchValidationAuthority>>,
-    /// Active recursive validation certificates. Encountering an unregistered
-    /// node taints every enclosing traversal.
-    validation_proofs: Mutex<Vec<Arc<AtomicU8>>>,
+    /// The structured task whose active validation scopes enclose this batch
+    /// child. Propagating proof state through this weak, acyclic parent chain
+    /// avoids allocating shared state for every ordinary validation traversal
+    /// without extending a completed parent's lifetime.
+    validation_proof_parent: Option<Weak<Task>>,
+    /// Active recursive validation certificates local to this task.
+    /// Encountering an unregistered node taints these and every enclosing
+    /// task's active traversal through `validation_proof_parent`.
+    validation_proofs: Mutex<Vec<u8>>,
     /// High-frequency validation work accumulated on this rooted request and
     /// merged into the runtime once at task completion.
     validation_work: AtomicValidationWork,
@@ -8175,28 +8242,34 @@ impl Drop for ValidationEndorsementGuard {
 
 struct ValidationProofGuard {
     task: Arc<Task>,
-    state: Arc<AtomicU8>,
+    depth: usize,
 }
 
 impl ValidationProofGuard {
+    fn state(&self) -> u8 {
+        *lock(&self.task.validation_proofs)
+            .get(self.depth)
+            .expect("validation proof guard owns one active traversal")
+    }
+
     fn registered_only(&self) -> bool {
-        self.state.load(Ordering::Acquire) == VALIDATION_PROOF_REGISTERED
+        self.state() == VALIDATION_PROOF_REGISTERED
     }
 
     fn retryable(&self) -> bool {
-        self.state.load(Ordering::Acquire) == VALIDATION_PROOF_RETRYABLE
+        self.state() == VALIDATION_PROOF_RETRYABLE
     }
 }
 
 impl Drop for ValidationProofGuard {
     fn drop(&mut self) {
-        let popped = lock(&self.task.validation_proofs)
-            .pop()
-            .expect("validation proof guard owns one traversal");
-        assert!(
-            Arc::ptr_eq(&popped, &self.state),
+        let mut proofs = lock(&self.task.validation_proofs);
+        assert_eq!(
+            proofs.len(),
+            self.depth + 1,
             "validation proof guards drop in lexical order"
         );
+        proofs.pop();
     }
 }
 
@@ -9205,10 +9278,6 @@ impl Task {
         let inherited_validation_fallbacks = lock(&self.validation_endorsements)
             .first()
             .map(|scope| scope.fallbacks.clone());
-        // These flags are intentionally shared: crossing an unregistered
-        // evaluator in any structured descendant taints every enclosing
-        // registered-only validation walk.
-        let inherited_validation_proofs = lock(&self.validation_proofs).clone();
         // The child evaluates underneath every node this task is currently
         // inside, so those frames enclose it exactly as if they were its own.
         let inherited_ancestry: Arc<[ExactNodeIdentity]> = self
@@ -9241,7 +9310,8 @@ impl Task {
                     .collect(),
             ),
             batch_validation_authority: Some(authority),
-            validation_proofs: Mutex::new(inherited_validation_proofs),
+            validation_proof_parent: Some(Arc::downgrade(self)),
+            validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             query_cache: Mutex::new(TaskQueryCache::default()),
@@ -9546,28 +9616,55 @@ impl Task {
     }
 
     fn begin_validation(self: &Arc<Self>) -> ValidationProofGuard {
-        let state = Arc::new(AtomicU8::new(VALIDATION_PROOF_REGISTERED));
-        lock(&self.validation_proofs).push(state.clone());
+        let mut proofs = lock(&self.validation_proofs);
+        let depth = proofs.len();
+        proofs.push(VALIDATION_PROOF_REGISTERED);
+        drop(proofs);
         ValidationProofGuard {
             task: self.clone(),
-            state,
+            depth,
         }
     }
 
     fn taint_validation_proofs(&self) {
-        for proof in lock(&self.validation_proofs).iter() {
-            proof.store(VALIDATION_PROOF_UNREGISTERED, Ordering::Release);
+        for proof in lock(&self.validation_proofs).iter_mut() {
+            *proof = VALIDATION_PROOF_UNREGISTERED;
+        }
+        let mut parent = self
+            .validation_proof_parent
+            .as_ref()
+            .and_then(Weak::upgrade);
+        while let Some(task) = parent {
+            for proof in lock(&task.validation_proofs).iter_mut() {
+                *proof = VALIDATION_PROOF_UNREGISTERED;
+            }
+            parent = task
+                .validation_proof_parent
+                .as_ref()
+                .and_then(Weak::upgrade);
         }
     }
 
     fn defer_validation_proofs(&self) {
-        for proof in lock(&self.validation_proofs).iter() {
-            let _ = proof.compare_exchange(
-                VALIDATION_PROOF_REGISTERED,
-                VALIDATION_PROOF_RETRYABLE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+        for proof in lock(&self.validation_proofs).iter_mut() {
+            if *proof == VALIDATION_PROOF_REGISTERED {
+                *proof = VALIDATION_PROOF_RETRYABLE;
+            }
+        }
+        let mut parent = self
+            .validation_proof_parent
+            .as_ref()
+            .and_then(Weak::upgrade);
+        while let Some(task) = parent {
+            for proof in lock(&task.validation_proofs).iter_mut() {
+                if *proof == VALIDATION_PROOF_REGISTERED {
+                    *proof = VALIDATION_PROOF_RETRYABLE;
+                }
+            }
+            parent = task
+                .validation_proof_parent
+                .as_ref()
+                .and_then(Weak::upgrade);
         }
     }
 
@@ -13065,6 +13162,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
+            validation_proof_parent: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -13117,6 +13215,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
+            validation_proof_parent: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -13391,6 +13490,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             batch_validation_authority: None,
+            validation_proof_parent: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
