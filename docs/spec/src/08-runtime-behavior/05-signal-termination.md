@@ -12,10 +12,32 @@ The traps of the preceding sections (overflow, division by zero, out-of-bounds
 indexing) end a program *from inside* with the panic exit code 101. A program
 may also be ended *from outside* the language's control flow when the host
 operating system delivers a **signal** whose default disposition is to terminate
-the process. Rue installs no signal handlers, so such signals keep their
-platform-default behavior. This section describes the observable exit status in
-that case; because the trigger is external to the language, these paragraphs are
-informative rather than normative.
+the process. Rue installs one signal handler and no others: `SIGSEGV` is caught
+so that a stack overflow becomes a clean abort (8.5:6), and every other signal
+keeps its platform-default behavior. This section describes the observable exit
+status in that case; because the trigger is external to the language, these
+paragraphs are informative rather than normative.
+
+{{ rule(id="8.5:6", cat="informative") }}
+
+The `SIGSEGV` carve-out exists because exhausting the stack is not really an
+external event: unbounded recursion, or a frame larger than the space that
+remains, faults on the operating system's guard page, and the default
+disposition would kill the process with the raw crash status `139`
+(`128 + SIGSEGV`, per 8.5:2) and no explanation. Before user code runs, the
+runtime instead
+installs a `SIGSEGV` handler on an alternate signal stack — so the handler can
+run even though the main stack is the thing that overflowed — which writes
+`stack overflow` to standard error and exits with the panic exit code `101`,
+the same code the traps of the preceding sections use. Any `SIGSEGV` is reported
+this way: in safe Rue a blown stack is the only way to raise one, because
+indexing is bounds-checked, there are no raw-pointer dereferences, and
+arithmetic traps rather than corrupting memory. A `SIGSEGV` raised from
+`checked` code (chapter 9), where those guarantees do not hold, is undefined
+behavior under B.3 and is reported the same way regardless of its cause.
+Installing the handler is best-effort: on a host where the alternate stack or
+the handler registration is unavailable, the program keeps the default
+`SIGSEGV` disposition and exits with `139` as described above.
 
 {{ rule(id="8.5:2", cat="informative") }}
 
