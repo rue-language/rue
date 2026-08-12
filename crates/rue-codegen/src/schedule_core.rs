@@ -164,6 +164,16 @@ impl<Reg: Copy + Eq + Hash> RegTracker<Reg> {
         }
     }
 
+    /// Forget one block's facts while retaining the maps' backing storage.
+    fn clear(&mut self) {
+        for writers in &mut self.last_writer {
+            writers.clear();
+        }
+        for readers in &mut self.last_readers {
+            readers.clear();
+        }
+    }
+
     /// The instruction that last wrote or clobbered `reg`, if any.
     fn last_writer(&self, class: RegClass, reg: &Reg) -> Option<usize> {
         self.last_writer[class.index()].get(reg).copied()
@@ -257,6 +267,7 @@ where
     // MIR instruction into a second full-width vector.
     let mut destination = (0..instructions.len()).collect::<Vec<_>>();
     let mut block_start = 0;
+    let mut regs = RegTracker::new();
 
     for block_end in 0..instructions.len() {
         if !adapter.is_barrier(&instructions[block_end]) {
@@ -269,6 +280,7 @@ where
             block_start,
             block_end,
             &mut destination,
+            &mut regs,
         );
         block_start = block_end + 1;
     }
@@ -280,6 +292,7 @@ where
             block_start,
             instructions.len(),
             &mut destination,
+            &mut regs,
         );
     }
 
@@ -293,6 +306,7 @@ fn record_block_permutation<A>(
     start: usize,
     sched_end: usize,
     destination: &mut [usize],
+    regs: &mut RegTracker<A::Reg>,
 ) where
     A: SchedulerAdapter,
 {
@@ -300,7 +314,7 @@ fn record_block_permutation<A>(
         return;
     }
 
-    let mut nodes = build_dep_graph(instructions, start, sched_end, adapter);
+    let mut nodes = build_dep_graph_reusing(instructions, start, sched_end, adapter, regs);
     calculate_priorities(&mut nodes);
     let order = schedule_block(&nodes);
 
@@ -334,11 +348,25 @@ fn apply_permutation<T>(items: &mut [T], destination: &mut [usize]) {
 }
 
 /// Build the dependency graph for a basic block of instructions.
+#[cfg(test)]
 pub(crate) fn build_dep_graph<A>(
     instructions: &[A::Inst],
     start: usize,
     end: usize,
     adapter: &A,
+) -> Vec<SchedNode>
+where
+    A: SchedulerAdapter,
+{
+    build_dep_graph_reusing(instructions, start, end, adapter, &mut RegTracker::new())
+}
+
+fn build_dep_graph_reusing<A>(
+    instructions: &[A::Inst],
+    start: usize,
+    end: usize,
+    adapter: &A,
+    regs: &mut RegTracker<A::Reg>,
 ) -> Vec<SchedNode>
 where
     A: SchedulerAdapter,
@@ -355,8 +383,8 @@ where
     let mut last_edge_target = vec![usize::MAX; block_len];
 
     // Track the last writer and the readers since that write, per register
-    // class (see `RegTracker`).
-    let mut regs: RegTracker<A::Reg> = RegTracker::new();
+    // class (see `RegTracker`). Retain map capacity across blocks in one MIR.
+    regs.clear();
     // Track last memory access (conservative).
     let mut last_memory_access: Option<usize> = None;
     // Track last FLAGS writer and readers.
@@ -758,6 +786,19 @@ mod tests {
             instructions.iter().map(|inst| inst.id).collect::<Vec<_>>(),
             vec![90, 91, 2, 1, 0, 99]
         );
+    }
+
+    #[test]
+    fn reused_register_tracker_does_not_carry_dependencies_between_blocks() {
+        let gp0 = ClassedReg(RegClass::Gp, 0);
+        let instructions = vec![inst(&[], &[gp0]), inst(&[gp0], &[])];
+        let mut tracker = RegTracker::new();
+
+        let first = build_dep_graph_reusing(&instructions, 0, 1, &TestAdapter, &mut tracker);
+        let second = build_dep_graph_reusing(&instructions, 1, 2, &TestAdapter, &mut tracker);
+
+        assert!(first[0].deps.is_empty());
+        assert!(second[0].deps.is_empty());
     }
 
     #[test]

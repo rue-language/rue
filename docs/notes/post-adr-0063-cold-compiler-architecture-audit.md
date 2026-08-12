@@ -1040,6 +1040,19 @@ paired MAD and a -3.71% to +9.47% range. Median peak RSS falls by 0.73 MiB
 within dispersion. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1400 reuses the instruction scheduler's per-register map storage across
+basic blocks in one function. Each dependency graph still clears every writer
+and reader fact before inspecting a block, so no dependency crosses a control-
+flow barrier; only the hash-table allocation survives for the next block. The
+test-only graph adapter retains its fresh-tracker behavior.
+
+Three fixed one-worker allocation probes save 39,285--39,441 calls and
+7.96--8.11 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.21% paired median, with 1.25%
+paired MAD and a -11.30% to +12.37% range. Median peak RSS falls by 2.01 MiB
+within dispersion. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
