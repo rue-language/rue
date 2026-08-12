@@ -1438,6 +1438,23 @@ allocation-accounted pairs are neutral at a median delta of +44 calls and -0.05
 MB requested. Every published compiler-work counter, source/output metric, and
 executable byte remains identical.
 
+RUE-1437 applies the body-local hashing policy to `ProviderBodyHost`'s
+request-local exact-lookup registries. RUE-1391 deliberately limited the first
+step to `BodyIdentityPool`; the remaining standard SipHash profile leaf now
+includes provider import-nominal registration and anonymous-endpoint lookup.
+Public/output collections and trait-exposed maps remain unchanged. The
+converted registries do not use iteration order as a semantic input: exported
+token vectors are immediately reconstructed as lookup maps, while referenced
+definitions and values are consumed as canonicalized dependency collections.
+
+Sixteen balanced alternating fixed one-worker cold Lattice pairs reduce
+retired instructions by a 0.572% paired median with 0.049% paired MAD. Compiler
+clock moves -1.05% with 1.01% paired MAD, and cycles move -1.29% with 0.54%
+paired MAD. Peak RSS is neutral at +0.23% with 0.31% paired MAD. Four
+allocation-accounted pairs are neutral at median deltas of +76 calls and
+-0.03 MB requested. Every published compiler-work counter, source/output
+metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
