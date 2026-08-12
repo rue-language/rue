@@ -1748,6 +1748,18 @@ MAD), peak RSS at -0.0821% (0.6671% MAD), and peak footprint at -0.2669%
 (0.1964% MAD). Every compiler-work counter, source/output metric, and
 executable byte remains identical.
 
+RUE-1462 gives both provider-backed anonymous-method paths one stack-buffered
+spelling for synthetic parameter names. They previously allocated a temporary
+`String` for every `arg{index}` immediately before interning it; the interner
+needs that text only for the duration of the lookup. Four allocation-accounted
+cold Lattice pairs remove 78,369--78,726 allocation calls and
+339,360--664,096 requested bytes. Across 16 balanced fixed one-worker release
+pairs, end-to-end compiler clock is neutral at +0.3667% (3.7385% MAD), retired
+instructions at -0.0781% (0.2808% MAD), cycles at +0.8649% (3.7935% MAD), peak
+RSS at +0.6267% (0.4606% MAD), and peak footprint at +0.2693% (1.5085% MAD).
+Every compiler-work counter, source/output metric, and executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

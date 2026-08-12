@@ -47,6 +47,36 @@ use crate::{
     SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
 };
 
+fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spur {
+    let mut bytes = [0_u8; 3 + 20];
+    bytes[..3].copy_from_slice(b"arg");
+    let mut value = index;
+    let mut start = bytes.len();
+    loop {
+        start -= 1;
+        bytes[start] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let digits = bytes.len() - start;
+    bytes.copy_within(start.., 3);
+    let end = 3 + digits;
+    let name = std::str::from_utf8(&bytes[..end]).expect("synthetic argument name is ASCII");
+    interner.get_or_intern(name)
+}
+
+#[cfg(test)]
+#[test]
+fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer() {
+    let interner = ThreadedRodeo::new();
+    for index in [0, 9, 10, 1_024, usize::MAX] {
+        let symbol = intern_synthetic_argument_name(&interner, index);
+        assert_eq!(interner.resolve(&symbol), format!("arg{index}"));
+    }
+}
+
 /// Stable, request-independent description of an anonymous nominal created by
 /// one successful provider body transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2157,7 +2187,7 @@ where
             }
             let params = self.state.allocate_params(
                 (0..parameter_types.len())
-                    .map(|index| self.interner.get_or_intern(&format!("arg{index}"))),
+                    .map(|index| intern_synthetic_argument_name(&self.interner, index)),
                 parameter_types.iter().copied(),
                 method.parameters.iter().map(|(_, mode, _)| *mode),
                 method.parameters.iter().map(|(_, _, comptime)| *comptime),
@@ -2276,7 +2306,7 @@ where
                     returns_borrow: false,
                     params: self.state.allocate_params(
                         (0..method.parameters.len())
-                            .map(|index| self.interner.get_or_intern(&format!("arg{index}"))),
+                            .map(|index| intern_synthetic_argument_name(&self.interner, index)),
                         method
                             .parameters
                             .iter()
