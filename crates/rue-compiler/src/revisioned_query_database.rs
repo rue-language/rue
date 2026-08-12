@@ -743,15 +743,15 @@ impl std::fmt::Debug for RevisionedQueryDatabase {
 
 /// Cumulative provider-op observation counters, one per §4 fact family. The
 /// exact provider increments these as it observes each backing terminal in the
-/// registered production body evaluator. Atomic because body queries may run in
-/// parallel.
+/// registered production body evaluator. The declaration aggregate is derived
+/// from its four disjoint fact-family outcomes. Atomic because body queries may
+/// run in parallel.
 #[derive(Debug, Default)]
 pub(crate) struct ProviderObservationCounters {
     name_lookups: std::sync::atomic::AtomicU64,
     import_lookups: std::sync::atomic::AtomicU64,
     method_candidates: std::sync::atomic::AtomicU64,
     operator_candidates: std::sync::atomic::AtomicU64,
-    declaration_facts: std::sync::atomic::AtomicU64,
     identity_facts: std::sync::atomic::AtomicU64,
     signature_facts: std::sync::atomic::AtomicU64,
     type_facts: std::sync::atomic::AtomicU64,
@@ -765,16 +765,23 @@ pub(crate) struct ProviderObservationCounters {
 impl ProviderObservationCounters {
     fn snapshot(&self) -> crate::unstable::ProviderObservationMetrics {
         use std::sync::atomic::Ordering::Relaxed;
+        let identity_facts = self.identity_facts.load(Relaxed);
+        let signature_facts = self.signature_facts.load(Relaxed);
+        let type_facts = self.type_facts.load(Relaxed);
+        let const_facts = self.const_facts.load(Relaxed);
         crate::unstable::ProviderObservationMetrics {
             name_lookups: self.name_lookups.load(Relaxed),
             import_lookups: self.import_lookups.load(Relaxed),
             method_candidates: self.method_candidates.load(Relaxed),
             operator_candidates: self.operator_candidates.load(Relaxed),
-            declaration_facts: self.declaration_facts.load(Relaxed),
-            identity_facts: self.identity_facts.load(Relaxed),
-            signature_facts: self.signature_facts.load(Relaxed),
-            type_facts: self.type_facts.load(Relaxed),
-            const_facts: self.const_facts.load(Relaxed),
+            declaration_facts: identity_facts
+                .saturating_add(signature_facts)
+                .saturating_add(type_facts)
+                .saturating_add(const_facts),
+            identity_facts,
+            signature_facts,
+            type_facts,
+            const_facts,
             materializations: self.materializations.load(Relaxed),
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
@@ -22977,9 +22984,6 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         decl: &crate::declaration_candidate::DeclarationCandidateKey,
     ) -> Option<crate::semantic_query_nucleus::DeclarationIdentityProjection> {
         self.meter()
-            .declaration_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.meter()
             .identity_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let query = crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
@@ -22997,9 +23001,6 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         &self,
         decl: &crate::declaration_candidate::DeclarationCandidateKey,
     ) -> Option<crate::semantic_query_nucleus::ResolvedDeclarationSignature> {
-        self.meter()
-            .declaration_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.meter()
             .signature_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -23019,9 +23020,6 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         &self,
         decl: &crate::declaration_candidate::DeclarationCandidateKey,
     ) -> Option<crate::semantic_query_nucleus::ConstResolutionProjection> {
-        self.meter()
-            .declaration_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.meter()
             .const_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -23056,9 +23054,6 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         // semantic-nucleus terminal family the signature/const ops do, so it is
         // metered as a declaration fact.
         self.meter()
-            .declaration_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.meter()
             .const_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let query = crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
@@ -23083,9 +23078,6 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         &self,
         decl: &crate::declaration_candidate::DeclarationCandidateKey,
     ) -> Option<rue_air::NominalWellFormedness> {
-        self.meter()
-            .declaration_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.meter()
             .type_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -23155,7 +23147,7 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         let has_destructor = !destructor.candidates().is_empty();
         // `@copy` is carried on the receiver type's own struct signature.
         self.meter()
-            .declaration_facts
+            .signature_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let type_key = crate::declaration_candidate::DeclarationCandidateKey {
             module: receiver.module.clone(),
@@ -33950,6 +33942,7 @@ fn main() -> i32 {
         let box_probe = box_struct.clone();
         let copy_probe = copy_receiver.clone();
         let res_probe = res_receiver.clone();
+        let metrics_before = database.provider_observation_metrics();
         let outcome = database.probe_ready_body_facts(
             revision,
             config.clone(),
@@ -33979,6 +33972,21 @@ fn main() -> i32 {
             res_meta,
             toolchain,
         ) = outcome.result;
+        let metrics_after = database.provider_observation_metrics();
+        let identity_facts = metrics_after.identity_facts - metrics_before.identity_facts;
+        let signature_facts = metrics_after.signature_facts - metrics_before.signature_facts;
+        let type_facts = metrics_after.type_facts - metrics_before.type_facts;
+        let const_facts = metrics_after.const_facts - metrics_before.const_facts;
+        let declaration_facts = metrics_after.declaration_facts - metrics_before.declaration_facts;
+        assert_eq!(identity_facts, 1);
+        assert_eq!(signature_facts, 4, "two direct and two drop/copy reads");
+        assert_eq!(type_facts, 1);
+        assert_eq!(const_facts, 0);
+        assert_eq!(
+            declaration_facts,
+            identity_facts + signature_facts + type_facts + const_facts,
+            "the declaration total is exactly partitioned by backing fact family"
+        );
 
         // Identity / signature differential against the semantic-nucleus epoch.
         let epoch_identity = request_semantic_nucleus(
