@@ -1576,9 +1576,8 @@ Phase 4 selection plus the existing watch loop).
 ## References
 
 - RUE-506 (design capture this ADR supersedes in mechanism), RUE-505, RUE-504,
-  RUE-438 (machine-readable interface project); RUE-1370 (signal-handler
-  spec contradiction, filed from this ADR's adversarial review); RUE-967
-  (pointer provenance split, gating the `addr` leaf disposition in §4.1).
+  RUE-438 (machine-readable interface project); RUE-967 (pointer provenance
+  split, gating the `addr` leaf disposition in §4.1).
 - ADR-0063 §1/§3/§8/§15 (roots, fingerprints, reachability, test-selection
   consumer) and its rejected alternative "make body queries depend on callee
   bodies" (the shape §4.2's component queries avoid by joining along the
