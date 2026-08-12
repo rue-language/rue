@@ -8449,7 +8449,7 @@ pub struct RetainedPinSet {
     stamp_identities: HashSet<(u64, u64), BuildHasherDefault<RetainedIdentityHasher>>,
     /// Runtime identities represented by held pins. This makes same-runtime
     /// authority checks proportional to the number of fallback sets, not pins.
-    runtime_identities: HashSet<u64>,
+    runtime_identities: HashSet<u64, BuildHasherDefault<IncarnationHasher>>,
     /// Live pins, type-erased across families. Dropping the set drops these
     /// through the batched two-phase release.
     held: Vec<Box<dyn ObservedLease>>,
