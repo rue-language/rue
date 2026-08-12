@@ -2005,6 +2005,16 @@ pub trait QueryKey: Clone + Eq + Hash + Send + Sync + 'static {
     /// This text is presentation only and may collide. Exact `Self::eq`
     /// remains authoritative for memo-node lookup.
     fn stable_identity(&self) -> String;
+
+    /// A shareable form of the presentation identity.
+    ///
+    /// Keys which flow unchanged through several query families may override
+    /// this method to retain and format the identity once. An override must
+    /// return the same text as [`Self::stable_identity`]. The default keeps
+    /// simple keys allocation-equivalent to that method.
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.stable_identity().into()
+    }
 }
 
 /// Collision-free identity of one immutable input leaf.
@@ -2080,7 +2090,7 @@ pub struct NodeIdentity {
 
 struct NodeIdentityData {
     family: Arc<str>,
-    key: Box<str>,
+    key: Arc<str>,
     runtime_identity: Option<u64>,
     node: Option<Weak<dyn ErasedNode>>,
 }
@@ -2092,7 +2102,7 @@ struct ExactNodeIdentity {
 }
 
 impl NodeIdentity {
-    fn new(family: Arc<str>, key: Box<str>) -> Self {
+    fn new(family: Arc<str>, key: Arc<str>) -> Self {
         Self {
             inner: Arc::new(NodeIdentityData {
                 family,
@@ -2105,7 +2115,7 @@ impl NodeIdentity {
 
     fn registered(
         family: Arc<str>,
-        key: Box<str>,
+        key: Arc<str>,
         runtime_identity: u64,
         node: Weak<dyn ErasedNode>,
     ) -> Self {
@@ -5556,11 +5566,10 @@ where
         let node = if let Some(node) = nodes.get(&key) {
             node.clone()
         } else {
-            let stable_key = key.stable_identity();
+            let stable_key = key.shared_stable_identity();
             self.core
                 .metrics
                 .record_memo_node_identity(stable_key.len());
-            let stable_key = stable_key.into_boxed_str();
             let incarnation = self.core.next_node.fetch_add(1, Ordering::Relaxed);
             let demand = self.inner.evaluator.as_ref().map(|_| {
                 let core = self.core.clone();
@@ -7100,10 +7109,7 @@ impl<K: QueryKey> StructuredWaitLabels for RegisteredBatchItems<K> {
             .items
             .get(index)
             .expect("a structured wait edge names one live batch item");
-        NodeIdentity::new(
-            self.family.clone(),
-            item.key.stable_identity().into_boxed_str(),
-        )
+        NodeIdentity::new(self.family.clone(), item.key.shared_stable_identity())
     }
 }
 
@@ -7325,12 +7331,7 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || {
-                NodeIdentity::new(
-                    family.inner.name.clone(),
-                    key.stable_identity().into_boxed_str(),
-                )
-            },
+            move || NodeIdentity::new(family.inner.name.clone(), key.shared_stable_identity()),
             &result,
         );
         result.into_result()
@@ -7365,12 +7366,7 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || {
-                NodeIdentity::new(
-                    family.inner.name.clone(),
-                    key.stable_identity().into_boxed_str(),
-                )
-            },
+            move || NodeIdentity::new(family.inner.name.clone(), key.shared_stable_identity()),
             &result,
         );
         result.into_result()
@@ -7547,12 +7543,7 @@ impl QueryContext {
             }
             self.task.record_nested(
                 item.request_id,
-                || {
-                    NodeIdentity::new(
-                        items.family.clone(),
-                        item.key.stable_identity().into_boxed_str(),
-                    )
-                },
+                || NodeIdentity::new(items.family.clone(), item.key.shared_stable_identity()),
                 &result,
             );
             terminals.push(result.into_result()?);
@@ -10591,7 +10582,7 @@ mod tests {
                 TaskId(1),
                 WaitEdgeLabel::Materialized(NodeIdentity::new(
                     Arc::from("ordinary"),
-                    Box::from("root"),
+                    Arc::from("root"),
                 )),
             )
             .expect_err("the reverse wait closes a cycle");
@@ -12712,7 +12703,7 @@ mod tests {
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
-            display: NodeIdentity::new(Arc::from("handoff-test"), Box::from("root")),
+            display: NodeIdentity::new(Arc::from("handoff-test"), Arc::from("root")),
             incarnation: 1,
         });
         assert!(task.observe_handoff(AttemptHandoffLifecycle::shared_committed()));
@@ -12764,7 +12755,7 @@ mod tests {
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
-            display: NodeIdentity::new(Arc::from("handoff-cache-test"), Box::from("root")),
+            display: NodeIdentity::new(Arc::from("handoff-cache-test"), Arc::from("root")),
             incarnation: 1,
         });
 

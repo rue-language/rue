@@ -1,6 +1,11 @@
 //! Stable per-body query values and independently stamped projections.
 
-use std::sync::Arc;
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+    ops::Deref,
+    sync::{Arc, OnceLock},
+};
 
 use rue_query::QueryKey;
 
@@ -155,15 +160,82 @@ pub(crate) fn body_input_equal(left: &BodyInputValue, right: &BodyInputValue) ->
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BodyQueryKey {
+pub(crate) struct BodyQueryKeyData {
     pub(crate) instance: crate::FunctionInstanceKey,
     pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    display_identity: OnceLock<Arc<str>>,
+}
+
+/// One immutable body identity shared by its independently stamped query
+/// projections.
+///
+/// Body analysis deliberately carries the same key through several families.
+/// Keeping the payload behind one `Arc` makes those clones constant-size and
+/// lets every memo node share the diagnostic identity formatted on the first
+/// family miss.
+#[derive(Clone)]
+pub(crate) struct BodyQueryKey(Arc<BodyQueryKeyData>);
+
+impl BodyQueryKey {
+    pub(crate) fn new(
+        instance: crate::FunctionInstanceKey,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    ) -> Self {
+        Self(Arc::new(BodyQueryKeyData {
+            instance,
+            configuration,
+            display_identity: OnceLock::new(),
+        }))
+    }
+
+    fn format_identity(&self) -> String {
+        format!("{:?}:{:?}", self.instance, self.configuration)
+    }
+}
+
+impl Deref for BodyQueryKey {
+    type Target = BodyQueryKeyData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl fmt::Debug for BodyQueryKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BodyQueryKey")
+            .field("instance", &self.instance)
+            .field("configuration", &self.configuration)
+            .finish()
+    }
+}
+
+impl PartialEq for BodyQueryKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.instance == other.instance && self.configuration == other.configuration)
+    }
+}
+
+impl Eq for BodyQueryKey {}
+
+impl Hash for BodyQueryKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.instance.hash(state);
+        self.configuration.hash(state);
+    }
 }
 
 impl QueryKey for BodyQueryKey {
     fn stable_identity(&self) -> String {
-        format!("{:?}:{:?}", self.instance, self.configuration)
+        self.format_identity()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.display_identity
+            .get_or_init(|| self.format_identity().into())
+            .clone()
     }
 }
 
@@ -831,9 +903,32 @@ impl BodyTransaction {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_ordered_unique;
+    use super::{BodyQueryKey, merge_ordered_unique};
     use std::collections::BTreeSet;
     use std::sync::Arc;
+
+    use rue_query::QueryKey;
+
+    #[test]
+    fn cloned_body_keys_share_one_lazy_display_identity() {
+        let key = BodyQueryKey::new(
+            crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64)),
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: rue_target::Target::X86_64Linux,
+                preview_features: crate::StablePreviewFeatures::new(
+                    &crate::PreviewFeatures::default(),
+                ),
+            },
+        );
+        let cloned = key.clone();
+        assert!(key.display_identity.get().is_none());
+
+        let first = key.shared_stable_identity();
+        let second = cloned.shared_stable_identity();
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert_eq!(first.as_ref(), key.stable_identity());
+    }
 
     #[test]
     fn ordered_unique_merge_handles_empty_overlap_and_interleaving() {

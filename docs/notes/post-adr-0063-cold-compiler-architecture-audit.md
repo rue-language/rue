@@ -1106,6 +1106,22 @@ paired MAD and a -5.08% to +14.67% range. Median peak RSS falls by 10.91 MiB.
 Every published compiler-work counter and emitted executable byte remains
 identical.
 
+RUE-1411 shares one immutable `BodyQueryKey` payload across the independently
+stamped body-projection families. The first family miss formats its diagnostic
+identity into that shared payload; later body-input, canonical-body,
+transaction, reference, anonymous-production, source, bundle, CFG, and codegen
+memo nodes retain the same `Arc<str>` instead of repeating the deep formatting
+and string allocation. Typed key equality remains the sole memo authority.
+
+Four fixed one-worker allocation probes save 66,845--67,191 calls and
+13.61--13.83 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a +0.21% paired median, with 0.54%
+paired MAD and a -12.43% to +28.94% range on the loaded host. Median peak RSS
+falls by 7.52 MiB. The display-identity counters remain logically unchanged:
+they count the memo nodes and key bytes named by the query graph, not duplicate
+physical string allocations. Every other published compiler-work counter and
+emitted executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
