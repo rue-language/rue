@@ -1266,6 +1266,23 @@ are neutral at median deltas of +48 calls and +0.06 MiB requested. Every
 published compiler-work counter, emitted-output metric, and executable byte
 remains identical.
 
+RUE-1426 derives validation-demand totals from disjoint execution outcomes.
+The task accumulator records reuse, compute, join, and abort directly; a small
+unwind-safe guard records the exceptional case where a retired demand or
+unwind produces no query result. Snapshot and transfer sum those categories
+to preserve the public count of demands issued without a second hot-path
+update.
+
+Fixed one-worker cold Lattice issues 55,737 validation demands, all answered
+by retained-terminal reuse, so the change removes exactly 55,737 redundant
+task-local atomic updates. Sixteen balanced alternating release pairs are
+clock-neutral at a +0.18% paired median with 0.90% paired MAD. Retired
+instructions are neutral at -0.005% with 0.049% paired MAD, and peak RSS is
+neutral at +0.10% with 0.22% paired MAD. Four allocation-accounted pairs are
+neutral at median deltas of -63 calls and -0.01 MiB requested. Every published
+compiler-work counter, emitted-output metric, and executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

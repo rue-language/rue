@@ -2931,9 +2931,10 @@ impl ValidationWork {
 
 /// Task-local storage for the independent validation outcomes.
 ///
-/// `traversals`, `registry_probes`, `node_visits`, `memo_misses`, and
-/// `endorsement_probes` are exact sums of fields below, so snapshots derive
-/// them instead of paying a second atomic update on the validation hot path.
+/// `traversals`, `registry_probes`, `node_visits`, `memo_misses`,
+/// `endorsement_probes`, and `demands` are exact sums of fields below, so
+/// snapshots derive them instead of paying a second atomic update on the
+/// validation hot path.
 #[derive(Debug, Default)]
 struct AtomicValidationWork {
     successful_traversals: AtomicU64,
@@ -2951,7 +2952,7 @@ struct AtomicValidationWork {
     endorsement_hits: AtomicU64,
     terminal_lease_observations: AtomicU64,
     duplicate_terminal_lease_observations: AtomicU64,
-    demands: AtomicU64,
+    demand_without_results: AtomicU64,
     demand_reuses: AtomicU64,
     demand_computes: AtomicU64,
     demand_joins: AtomicU64,
@@ -2982,6 +2983,15 @@ impl AtomicValidationWork {
         work.endorsement_probes = work
             .endorsement_probes
             .saturating_add(work.endorsement_hits);
+        // `demands` carries demands which ended before producing a query
+        // result inside the task accumulator. Every other demand has exactly
+        // one published execution outcome.
+        work.demands = work
+            .demands
+            .saturating_add(work.demand_reuses)
+            .saturating_add(work.demand_computes)
+            .saturating_add(work.demand_joins)
+            .saturating_add(work.demand_aborts);
         work
     }
 
@@ -3004,7 +3014,7 @@ impl AtomicValidationWork {
             duplicate_terminal_lease_observations: self
                 .duplicate_terminal_lease_observations
                 .load(Ordering::Relaxed),
-            demands: self.demands.load(Ordering::Relaxed),
+            demands: self.demand_without_results.load(Ordering::Relaxed),
             demand_reuses: self.demand_reuses.load(Ordering::Relaxed),
             demand_computes: self.demand_computes.load(Ordering::Relaxed),
             demand_joins: self.demand_joins.load(Ordering::Relaxed),
@@ -3036,7 +3046,7 @@ impl AtomicValidationWork {
             duplicate_terminal_lease_observations: self
                 .duplicate_terminal_lease_observations
                 .swap(0, Ordering::Relaxed),
-            demands: self.demands.swap(0, Ordering::Relaxed),
+            demands: self.demand_without_results.swap(0, Ordering::Relaxed),
             demand_reuses: self.demand_reuses.swap(0, Ordering::Relaxed),
             demand_computes: self.demand_computes.swap(0, Ordering::Relaxed),
             demand_joins: self.demand_joins.swap(0, Ordering::Relaxed),
@@ -3070,7 +3080,6 @@ impl AtomicValidationWork {
             endorsement_hits,
             terminal_lease_observations,
             duplicate_terminal_lease_observations,
-            demands,
             demand_reuses,
             demand_computes,
             demand_joins,
@@ -3084,6 +3093,16 @@ impl AtomicValidationWork {
         if endorsement_misses != 0 {
             self.endorsement_misses
                 .fetch_add(endorsement_misses, Ordering::Relaxed);
+        }
+        let demand_results = work
+            .demand_reuses
+            .saturating_add(work.demand_computes)
+            .saturating_add(work.demand_joins)
+            .saturating_add(work.demand_aborts);
+        let demand_without_results = work.demands.saturating_sub(demand_results);
+        if demand_without_results != 0 {
+            self.demand_without_results
+                .fetch_add(demand_without_results, Ordering::Relaxed);
         }
     }
 }
@@ -3110,6 +3129,37 @@ impl Drop for ValidationTraversalWork<'_> {
             None => &self.work.aborted_traversals,
         };
         counter.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Records a demand which unwinds or retires before yielding a query result.
+/// Completed demands publish their execution outcome directly, allowing the
+/// public total to be derived without a separate atomic update.
+struct ValidationDemandWork<'a> {
+    work: &'a AtomicValidationWork,
+    produced_result: bool,
+}
+
+impl<'a> ValidationDemandWork<'a> {
+    fn new(work: &'a AtomicValidationWork) -> Self {
+        Self {
+            work,
+            produced_result: false,
+        }
+    }
+
+    fn finish(mut self) {
+        self.produced_result = true;
+    }
+}
+
+impl Drop for ValidationDemandWork<'_> {
+    fn drop(&mut self) {
+        if !self.produced_result {
+            self.work
+                .demand_without_results
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -5132,7 +5182,7 @@ where
                 .fetch_add(1, Ordering::Relaxed);
         }
         if let Some(demand) = &self.demand {
-            task.validation_work.demands.fetch_add(1, Ordering::Relaxed);
+            let demand_work = ValidationDemandWork::new(&task.validation_work);
             #[cfg(test)]
             core.interpose(InterposeSite::RetainedDependencyDemand);
             let request_id = task.next_nested_request();
@@ -5162,6 +5212,7 @@ where
                         RequestExecution::Aborted => &task.validation_work.demand_aborts,
                     }
                     .fetch_add(1, Ordering::Relaxed);
+                    demand_work.finish();
                     // Retention can retire this incarnation between the memo
                     // check above and the request itself. The answering
                     // incarnation is authoritative: a stamp published by any
@@ -5208,12 +5259,14 @@ where
                     task.validation_work
                         .demand_aborts
                         .fetch_add(1, Ordering::Relaxed);
+                    demand_work.finish();
                     Ok(None)
                 }
                 TaskQueryResult::Aborted { abort, .. } => {
                     task.validation_work
                         .demand_aborts
                         .fetch_add(1, Ordering::Relaxed);
+                    demand_work.finish();
                     Err(abort)
                 }
             };
@@ -10799,6 +10852,34 @@ mod tests {
 
         work.add(transferred);
         assert_eq!(work.snapshot(), snapshot);
+    }
+
+    #[test]
+    fn validation_demand_totals_are_derived_from_results_and_early_exits() {
+        let work = AtomicValidationWork::default();
+        work.demand_reuses.fetch_add(3, Ordering::Relaxed);
+        work.demand_aborts.fetch_add(1, Ordering::Relaxed);
+        drop(ValidationDemandWork::new(&work));
+        drop(ValidationDemandWork::new(&work));
+
+        let snapshot = work.snapshot();
+        assert_eq!(snapshot.demands, 6);
+        assert_eq!(snapshot.demand_reuses, 3);
+        assert_eq!(snapshot.demand_aborts, 1);
+
+        let transferred = work.take();
+        assert_eq!(transferred, snapshot);
+        assert_eq!(work.snapshot(), ValidationWork::default());
+
+        work.add(transferred);
+        assert_eq!(work.snapshot(), snapshot);
+
+        let completed = ValidationDemandWork::new(&work);
+        work.demand_computes.fetch_add(1, Ordering::Relaxed);
+        completed.finish();
+        let completed_snapshot = work.snapshot();
+        assert_eq!(completed_snapshot.demands, 7);
+        assert_eq!(completed_snapshot.demand_computes, 1);
     }
 
     #[test]
