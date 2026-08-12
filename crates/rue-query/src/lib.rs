@@ -3607,18 +3607,18 @@ impl Hasher for IncarnationHasher {
     }
 }
 
-/// Fast hashing for retained semantic-stamp identities.
+/// Fast hashing for retained terminal and semantic-stamp identities.
 ///
-/// The complete key is runtime-owned: it combines a monotonically assigned,
-/// runtime-unique node incarnation with one of that node's semantic stamps.
-/// Retention bounds also limit the number of historical stamps per node. Mix
-/// both fixed-width components without paying SipHash on the retention and
-/// validation hot path; caller-controlled query-key maps keep randomized
-/// hashing.
+/// The complete keys are runtime-owned: they combine a monotonically assigned,
+/// runtime-unique node incarnation with one of that node's semantic stamps and,
+/// for exact terminal identity, a runtime revision. Retention bounds also limit
+/// the number of historical stamps and revisions per node. Mix these fixed-width
+/// components without paying SipHash on the retention and validation hot path;
+/// caller-controlled query-key maps keep randomized hashing.
 #[derive(Debug, Default)]
-struct RetainedStampHasher(u64);
+struct RetainedIdentityHasher(u64);
 
-impl Hasher for RetainedStampHasher {
+impl Hasher for RetainedIdentityHasher {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -8441,12 +8441,12 @@ pub struct RetainedPinSet {
     /// `(node incarnation, stamp, terminal revision)` of every terminal already
     /// leased here, mirroring [`TaskLeases::observed`] so a redundant re-lease is
     /// dropped rather than double-held.
-    observed: HashSet<(u64, u64, Revision)>,
+    observed: HashSet<(u64, u64, Revision), BuildHasherDefault<RetainedIdentityHasher>>,
     /// Node-incarnation/stamp identities retained by at least one exact
     /// terminal revision in this set. Query dependency edges use this same
     /// semantic identity, so any complete retained cone carrying the stamp can
     /// supply its representative terminal during final promotion.
-    stamp_identities: HashSet<(u64, u64), BuildHasherDefault<RetainedStampHasher>>,
+    stamp_identities: HashSet<(u64, u64), BuildHasherDefault<RetainedIdentityHasher>>,
     /// Runtime identities represented by held pins. This makes same-runtime
     /// authority checks proportional to the number of fallback sets, not pins.
     runtime_identities: HashSet<u64>,
@@ -11084,16 +11084,38 @@ mod tests {
     }
 
     #[test]
-    fn retained_stamp_hasher_mixes_both_runtime_identity_components() {
-        let hash = |identity: (u64, u64)| {
-            let mut hasher = RetainedStampHasher::default();
+    fn retained_identity_hasher_mixes_every_runtime_identity_component() {
+        let stamp_hash = |identity: (u64, u64)| {
+            let mut hasher = RetainedIdentityHasher::default();
+            std::hash::Hash::hash(&identity, &mut hasher);
+            hasher.finish()
+        };
+        let terminal_hash = |identity: (u64, u64, Revision)| {
+            let mut hasher = RetainedIdentityHasher::default();
             std::hash::Hash::hash(&identity, &mut hasher);
             hasher.finish()
         };
 
-        assert_eq!(hash((7, 11)), hash((7, 11)));
-        assert_ne!(hash((7, 11)), hash((8, 11)));
-        assert_ne!(hash((7, 11)), hash((7, 12)));
+        assert_eq!(stamp_hash((7, 11)), stamp_hash((7, 11)));
+        assert_ne!(stamp_hash((7, 11)), stamp_hash((8, 11)));
+        assert_ne!(stamp_hash((7, 11)), stamp_hash((7, 12)));
+
+        assert_eq!(
+            terminal_hash((7, 11, revision(13))),
+            terminal_hash((7, 11, revision(13)))
+        );
+        assert_ne!(
+            terminal_hash((7, 11, revision(13))),
+            terminal_hash((8, 11, revision(13)))
+        );
+        assert_ne!(
+            terminal_hash((7, 11, revision(13))),
+            terminal_hash((7, 12, revision(13)))
+        );
+        assert_ne!(
+            terminal_hash((7, 11, revision(13))),
+            terminal_hash((7, 11, revision(14)))
+        );
     }
 
     #[test]
