@@ -1802,6 +1802,21 @@ allocation-accounted pairs are neutral at +101--320 calls (under 0.003%) and
 -3.3--118.6 KB requested bytes. Every compiler-work counter, source/output
 metric, and executable byte remains identical.
 
+RUE-1466 removes the redundant `live_out` set-bit walk from cyclic MIR
+live-range construction shared by both backends. The transfer equation
+`live_in = uses ∪ (live_out - defs)` proves that every live-out register is
+already either live-in or defined at the same instruction, and those two inputs
+were already extending the range. Retained per-instruction liveness and debug
+views keep their live-out table; only the duplicate range pass disappears.
+
+Across 16 balanced fixed one-worker cold Lattice pairs, retired instructions
+improve by 0.1051% (0.0868% MAD). End-to-end clock is neutral at +0.7974%
+(2.6807% MAD), cycles at +0.4182% (1.5224% MAD), peak RSS at -0.0454%
+(0.3189% MAD), and peak footprint at -0.0619% (0.5094% MAD). Four
+allocation-accounted pairs are neutral, as expected for a set-bit iteration
+reduction. Every compiler-work counter, source/output metric, and executable
+byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

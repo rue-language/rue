@@ -457,7 +457,6 @@ where
         &inst_uses,
         &inst_defs,
         live_in,
-        live_out,
         has_back_edge,
     );
 
@@ -702,8 +701,10 @@ fn materialize_live_out(
 ///   element values before storing them); the bitset scan is then O(N²) in the
 ///   number of live bits, whereas this path stays linear (RUE-302).
 /// * **Has back-edges (loops):** loop-carried values are live past their textual
-///   last use, so we extend the same dense range table from the exact
-///   `live_in`/`live_out` scan as well as definitions and uses.
+///   last use, so we extend the same dense range table from the exact `live_in`
+///   scan as well as definitions and uses. Scanning `live_out` too would be
+///   redundant: `live_in = uses ∪ (live_out - defs)`, so every live-out value
+///   is already either live-in or defined at that instruction.
 ///
 /// # A range is a textual interval, not liveness
 ///
@@ -736,7 +737,6 @@ fn build_live_ranges(
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
     live_in: &[FixedBitSet],
-    live_out: &[FixedBitSet],
     has_back_edge: bool,
 ) -> IndexMap<VReg, Option<LiveRange>> {
     let mut ranges: IndexMap<VReg, Option<LiveRange>> =
@@ -776,9 +776,6 @@ fn build_live_ranges(
             extend(*vreg, idx);
         }
         for vreg_idx in live_in[idx].ones() {
-            extend(VReg::new(vreg_idx as u32), idx);
-        }
-        for vreg_idx in live_out[idx].ones() {
             extend(VReg::new(vreg_idx as u32), idx);
         }
     }
@@ -1115,7 +1112,9 @@ mod tests {
         );
 
         // The back-edge keeps v0 live through instruction 3 even though its
-        // last textual use is instruction 2.
+        // last textual use is instruction 2. This is the cyclic extent that
+        // must survive when range construction omits the redundant live-out
+        // scan.
         assert_eq!(info.range(VReg::new(0)), Some(&LiveRange::new(0, 3)));
     }
 
