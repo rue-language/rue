@@ -1473,6 +1473,32 @@ Four allocation-accounted pairs are neutral at a median -82 calls and save
 0.15 MB of requested bytes. Every compiler-work counter,
 source/output metric, and executable byte remains identical.
 
+RUE-1439 tested replacing `RetainedPinSet`'s remaining runtime-identity set
+with the exact empty / one-runtime / mixed-runtime state its consumers need.
+Across two independent sets of 16 balanced alternating fixed one-worker cold
+Lattice pairs, the candidate reduced retired instructions by a 0.145% paired
+median but increased peak RSS by a repeatable 0.60% paired median with 0.30%
+paired MAD. The representation change was rejected under the no-regression
+gate.
+
+RUE-1440 keeps the fail-closed set representation but applies the query
+runtime's existing runtime-owned `u64` hasher to it. Sixteen balanced
+alternating fixed one-worker cold Lattice pairs reduce retired instructions by
+a 0.068% paired median with 0.044% paired MAD. Compiler clock, cycles, and peak
+RSS are neutral at 0.00%, +0.07%, and +0.09% paired medians respectively. Four
+allocation-accounted pairs are neutral at a median +7 calls and save 0.13 MB of
+requested bytes. Every compiler-work counter, source/output metric, and
+executable byte remains identical.
+
+RUE-1441 tested lasso's supported keyed-AHash feature for every shared string
+interner. Sixteen balanced alternating fixed one-worker Lattice pairs reduced
+retired instructions by 1.562% and compiler clock by 2.11% at the paired
+median. Twenty-four Harbor pairs confirmed a 1.630% instruction reduction, but
+also raised peak RSS by a repeatable 0.42% paired median with 0.20% paired MAD.
+Allocation accounting and every compiler-work/output invariant were neutral.
+The feature was rejected under the no-regression memory boundary; the measured
+speed/memory tradeoff remains available for a future explicit policy decision.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
