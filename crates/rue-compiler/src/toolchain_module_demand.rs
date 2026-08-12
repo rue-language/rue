@@ -17,7 +17,7 @@
 //! review.
 //!
 //! Instead the demand is a *distinct typed* [`TrustedToolchainModuleDemand`],
-//! raised by the rooted semantic attempt (not by any import occurrence) when a
+//! raised by the rooted body-closure attempt (not by any import occurrence) when a
 //! reached body needs a trusted module absent from the current revision, and
 //! satisfied by the host source-loading layer that owns filesystem access. The
 //! demand:
@@ -189,7 +189,7 @@ impl RetainedCharge for BodyToolchainDemand {
     }
 }
 
-/// The park raised by the rooted semantic attempt when a reached body demands a
+/// The park raised by the rooted body-closure attempt when a reached body demands a
 /// trusted toolchain module absent from the current revision (RUE-1112).
 ///
 /// It carries the sorted, deduplicated absent modules and the stable requester

@@ -167,15 +167,13 @@ pub(crate) use queries::{PipelineWork, SourceStats};
 #[allow(unused_imports)]
 pub(crate) use semantic_symbols::SemanticTranslationWork;
 #[cfg(test)]
-pub(crate) use session::RootedSemanticOutput;
+pub(crate) use session::RootedCfgOutput;
 #[allow(unused_imports)]
 pub(crate) use session::{
     CompilerSessionWork, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT, FrontendQueryWork,
     FrontendRetentionMetrics, ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus,
     ImportGraphInputDescriptor,
 };
-#[cfg(test)]
-pub(crate) use source_identity::LinkInputDescriptor;
 #[allow(unused_imports)]
 pub(crate) use source_identity::{
     CodegenInputDescriptor, ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor,

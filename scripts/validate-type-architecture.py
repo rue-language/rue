@@ -106,7 +106,6 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "sema/output.rs", "BuiltinTypeCallHead"): "dependency metadata",
     ("rue-air", "sema/output.rs", "DeclarationBuiltinTypeCallHeadDependencyEvent"): "dependency metadata",
     ("rue-compiler", "bound_definitions.rs", "StableNamedTypeKey"): "stable definition lookup key",
-    ("rue-compiler", "artifact_views.rs", "TypeView"): "owner-bound stable compiler facade view",
     ("rue-compiler", "durable_semantics.rs", "DurableType"): "cross-epoch durable type schema",
     ("rue-compiler", "durable_semantics.rs", "DurableAnonymousMethodType"): "cross-epoch durable anonymous-method type schema",
     ("rue-compiler", "source_identity.rs", "ModuleId"): "stable logical source-module identity",

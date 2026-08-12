@@ -541,10 +541,7 @@ fn main() -> i32 {
         );
     }
 
-    fn frontend() -> (
-        std::sync::Arc<CanonicalRirOutput>,
-        std::sync::Arc<RootedSemanticOutput>,
-    ) {
+    fn frontend() -> (std::sync::Arc<CanonicalRirOutput>, RootedCfgOutput) {
         let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
         let (rir, semantic, _) =
             crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
@@ -552,10 +549,7 @@ fn main() -> i32 {
         (rir, semantic)
     }
 
-    fn strbuf_concat_frontend() -> (
-        std::sync::Arc<CanonicalRirOutput>,
-        std::sync::Arc<RootedSemanticOutput>,
-    ) {
+    fn strbuf_concat_frontend() -> (std::sync::Arc<CanonicalRirOutput>, RootedCfgOutput) {
         let root = FileId::new(1);
         let strbuf = FileId::new(2);
         let metadata = SourceMetadata::new_with_trusted_standard_library(

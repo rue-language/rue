@@ -1015,7 +1015,7 @@ mod codegen_unit_tests {
                 file_order: &order,
             })
             .unwrap();
-        let semantic = first_emit.rooted_semantic(&options).unwrap();
+        let semantic = first_emit.rooted_cfg(&options).unwrap();
         first_emit
             .codegen_products(
                 &semantic,
@@ -1034,7 +1034,7 @@ mod codegen_unit_tests {
 
         let mut first_link = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut first_link, &snapshot).unwrap();
-        let semantic = first_link.rooted_semantic(&options).unwrap();
+        let semantic = first_link.rooted_cfg(&options).unwrap();
         first_link
             .codegen_products(
                 &semantic,
@@ -1061,7 +1061,7 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
             session
                 .codegen_products(
@@ -1143,7 +1143,7 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &first).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let before = session
             .codegen_products(
                 &semantic,
@@ -1164,7 +1164,7 @@ mod codegen_unit_tests {
             .code
             .clone();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let after = session
             .codegen_products(
                 &semantic,
@@ -1216,7 +1216,7 @@ mod codegen_unit_tests {
 
         let mut session = crate::CompilerSession::new();
         session.update(&source(plain)).into_result().unwrap();
-        let errors = session.rooted_semantic(&options).unwrap_err();
+        let errors = session.rooted_cfg(&options).unwrap_err();
         assert!(
             errors.iter().any(|error| matches!(
                 &error.kind,
@@ -1227,11 +1227,11 @@ mod codegen_unit_tests {
 
         session.update(&source(accessor)).into_result().unwrap();
         session
-            .rooted_semantic(&options)
+            .rooted_cfg(&options)
             .expect("an accessor link is a legal projection");
 
         session.update(&source(plain)).into_result().unwrap();
-        let errors = session.rooted_semantic(&options).unwrap_err();
+        let errors = session.rooted_cfg(&options).unwrap_err();
         assert!(
             errors.iter().any(|error| matches!(
                 &error.kind,
@@ -1259,7 +1259,7 @@ mod codegen_unit_tests {
         let mut session = crate::CompilerSession::new();
 
         session.update(&source(7)).into_result().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let cold = session
             .codegen_products(
                 &semantic,
@@ -1313,7 +1313,7 @@ mod codegen_unit_tests {
         assert!(session.rooted_cfg_executions().iter().all(|(identity, _)| {
             !matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "value")
         }));
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let warm = session
             .codegen_products(
                 &semantic,
@@ -1323,7 +1323,7 @@ mod codegen_unit_tests {
             .unwrap();
         let mut fresh = crate::CompilerSession::new();
         fresh.update(&source(8)).into_result().unwrap();
-        let semantic = fresh.rooted_semantic(&options).unwrap();
+        let semantic = fresh.rooted_cfg(&options).unwrap();
         let fresh = fresh
             .codegen_products(
                 &semantic,
@@ -1387,7 +1387,7 @@ mod codegen_unit_tests {
             };
             let mut session = crate::CompilerSession::new();
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-            let semantic = session.rooted_semantic(&options).unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
             let first = session
                 .codegen_products(
                     &semantic,
@@ -1448,7 +1448,7 @@ mod codegen_unit_tests {
         let run = |workers| {
             let mut session = crate::CompilerSession::with_query_concurrency(workers);
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-            let semantic = session.rooted_semantic(&options).unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
             let products = session
                 .codegen_products(
                     &semantic,
@@ -1482,7 +1482,7 @@ mod codegen_unit_tests {
         let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &first).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let consume_name = semantic
             .functions()
             .iter()
@@ -1510,7 +1510,7 @@ mod codegen_unit_tests {
             })
             .unwrap();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let after = session
             .codegen_products(
                 &semantic,
