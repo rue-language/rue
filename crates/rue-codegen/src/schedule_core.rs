@@ -20,6 +20,14 @@ use crate::reg_class::RegClass;
 /// in the node allocation while allowing uncommon fan-in and fan-out to spill.
 pub(crate) type EdgeList = SmallVec<[usize; 2]>;
 
+/// Instructions that have read one physical register or the condition flags
+/// since the corresponding value's last write.
+///
+/// These transient dependency facts contain one or two instruction indices in
+/// the common case. Keep those indices inside the map value while allowing an
+/// unusually long run of readers to spill without changing scheduler policy.
+type DependencyReaderList = SmallVec<[usize; 2]>;
+
 /// Physical-register facts attached to one scheduled instruction.
 ///
 /// Both MIRs name at most three read or written registers on one instruction.
@@ -145,7 +153,7 @@ pub trait SchedulerAdapter {
 /// pair of maps produced (RUE-1067).
 struct RegTracker<Reg> {
     last_writer: [HashMap<Reg, usize>; RegClass::COUNT],
-    last_readers: [HashMap<Reg, Vec<usize>>; RegClass::COUNT],
+    last_readers: [HashMap<Reg, DependencyReaderList>; RegClass::COUNT],
 }
 
 impl<Reg: Copy + Eq + Hash> RegTracker<Reg> {
@@ -162,7 +170,7 @@ impl<Reg: Copy + Eq + Hash> RegTracker<Reg> {
     }
 
     /// The instructions that have read `reg` since it was last written.
-    fn last_readers(&self, class: RegClass, reg: &Reg) -> Option<&Vec<usize>> {
+    fn last_readers(&self, class: RegClass, reg: &Reg) -> Option<&DependencyReaderList> {
         self.last_readers[class.index()].get(reg)
     }
 
@@ -343,7 +351,7 @@ where
     let mut last_memory_access: Option<usize> = None;
     // Track last FLAGS writer and readers.
     let mut last_flags_writer: Option<usize> = None;
-    let mut last_flags_readers: Vec<usize> = Vec::new();
+    let mut last_flags_readers = DependencyReaderList::new();
 
     for i in 0..block_len {
         let inst = &instructions[start + i];
@@ -608,6 +616,19 @@ mod tests {
     /// out. No backend has such a register type yet.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     struct ClassedReg(RegClass, u32);
+
+    #[test]
+    fn common_dependency_reader_lists_stay_inline() {
+        let reg = ClassedReg(RegClass::Gp, 0);
+        let mut tracker = RegTracker::new();
+
+        tracker.record_read(RegClass::Gp, reg, 3);
+        tracker.record_read(RegClass::Gp, reg, 7);
+
+        let readers = tracker.last_readers(RegClass::Gp, &reg).unwrap();
+        assert_eq!(readers.as_slice(), [3, 7]);
+        assert!(!readers.spilled());
+    }
 
     /// A minimal instruction: what it reads, what it writes, nothing else.
     #[derive(Debug, Clone)]
