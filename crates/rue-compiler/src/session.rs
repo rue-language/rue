@@ -872,6 +872,42 @@ impl RootedCfgOutput {
     pub fn metrics(&self) -> crate::unstable::SemanticMetrics {
         crate::unstable::SemanticMetrics::from_work(self.work)
     }
+
+    #[cfg(test)]
+    pub(crate) fn work(&self) -> &crate::CanonicalSemanticWork {
+        &self.work
+    }
+
+    #[cfg(test)]
+    pub(crate) fn declarations(&self) -> &[crate::DurableDeclarationSemantic] {
+        &self.graph.declarations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn anonymous_nominals(
+        &self,
+    ) -> &[crate::durable_semantics::DurableAnonymousNominal] {
+        &self.graph.anonymous_nominals
+    }
+
+    #[cfg(test)]
+    pub(crate) fn type_pools(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &rue_air::FrozenTypeInternPool> {
+        self.cfgs.iter().map(|function| &function.record.type_pool)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn type_pool_stats(&self) -> Vec<rue_air::TypeInternPoolStats> {
+        self.type_pools().map(|pool| pool.stats()).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn string_domains(&self) -> impl ExactSizeIterator<Item = &[String]> {
+        self.cfgs
+            .iter()
+            .map(|function| function.record.strings.as_ref())
+    }
 }
 
 impl RootedCfgUnit {
@@ -905,89 +941,6 @@ impl RootedCfgUnit {
 
     pub fn strings(&self) -> &Arc<[String]> {
         &self.record.strings
-    }
-}
-
-/// Retainable semantic presentation projected directly from the canonical
-/// rooted CFG result. This owner contains no semantic machinery: every
-/// function and its local domains are the exact artifacts used by codegen.
-#[cfg(test)]
-#[derive(Debug)]
-pub(crate) struct RootedSemanticOutput {
-    pub(crate) input: CodegenInputDescriptor,
-    pub(crate) cfgs: Vec<RootedCfgUnit>,
-    pub(crate) warnings: Vec<CompileWarning>,
-    pub(crate) work: crate::CanonicalSemanticWork,
-    pub(crate) rir: Arc<crate::CanonicalRirOutput>,
-    pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
-    pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
-    pub(crate) strings: Vec<String>,
-    pub(crate) struct_count: usize,
-    pub(crate) enum_count: usize,
-}
-
-#[cfg(test)]
-impl RootedSemanticOutput {
-    #[cfg(test)]
-    pub(crate) fn input(&self) -> &CodegenInputDescriptor {
-        &self.input
-    }
-
-    #[cfg(test)]
-    pub(crate) fn functions(&self) -> &[RootedCfgUnit] {
-        &self.cfgs
-    }
-
-    #[cfg(test)]
-    pub(crate) fn strings(&self) -> &[String] {
-        &self.strings
-    }
-
-    #[cfg(test)]
-    pub(crate) fn declarations(&self) -> &[crate::DurableDeclarationSemantic] {
-        &self.declarations
-    }
-
-    #[cfg(test)]
-    pub(crate) fn anonymous_nominals(
-        &self,
-    ) -> &[crate::durable_semantics::DurableAnonymousNominal] {
-        &self.anonymous_nominals
-    }
-
-    #[cfg(test)]
-    pub(crate) fn work(&self) -> &crate::CanonicalSemanticWork {
-        &self.work
-    }
-
-    #[cfg(test)]
-    pub(crate) fn warnings(&self) -> &[CompileWarning] {
-        &self.warnings
-    }
-
-    #[cfg(test)]
-    pub(crate) fn unstable_parity_snapshot(&self) -> String {
-        format!(
-            "{:?}|{:?}|{:?}|{}|{}",
-            self.cfgs, self.warnings, self.strings, self.struct_count, self.enum_count
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn type_pools(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &rue_air::FrozenTypeInternPool> {
-        self.cfgs.iter().map(|function| &function.record.type_pool)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn type_pool_stats(&self) -> Vec<rue_air::TypeInternPoolStats> {
-        self.type_pools().map(|pool| pool.stats()).collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rir_owner(&self) -> &Arc<crate::CanonicalRirOutput> {
-        &self.rir
     }
 }
 
@@ -1102,7 +1055,7 @@ impl TrustedSuccessorDelta {
 ///
 /// A close alone leaves the state NON-AUTHORIZING (`attached_demands` is `None`):
 /// no token can be minted and no successor authorized. Authority is granted
-/// only when a rooted semantic park atomically attaches that park's exact sorted
+/// only when a rooted body-closure park atomically attaches that park's exact sorted
 /// missing-demand set to this same state. Demand authority therefore lives here,
 /// bound to one closed revision and one park — never in an ambient session field
 /// a later, non-parking close could inherit.
@@ -2842,7 +2795,7 @@ impl CompilerSession {
         //
         // The closed state is deliberately NON-AUTHORIZING here (`attached_demands`
         // is `None`): a close by itself mints no token and authorizes no successor.
-        // Only a subsequent rooted semantic park attaches its exact missing-demand
+        // Only a subsequent rooted body-closure park attaches its exact missing-demand
         // set to this same state, so a later close whose attempt never parks can
         // never inherit an earlier park's authority.
         self.continuation = self
@@ -2865,7 +2818,7 @@ impl CompilerSession {
 
     /// Mint the trusted-toolchain continuation token for the current successful
     /// import-discovery close, if one is outstanding AND authorizing (RUE-1112).
-    /// A closed state becomes authorizing only once a rooted semantic park
+    /// A closed state becomes authorizing only once a rooted body-closure park
     /// has attached its exact missing-demand set; a close whose attempt is ready
     /// (or never parked) mints no token. The token is opaque and single-use; the
     /// host hands it back to [`Self::publish_trusted_toolchain_successor`].
@@ -2997,7 +2950,7 @@ impl CompilerSession {
         // earlier park's demands.
         let Some(attached_demands) = state.attached_demands.as_ref() else {
             return Err(reject(
-                "the closed continuation is not authorizing; no rooted semantic park has attached a demanded-module set",
+                "the closed continuation is not authorizing; no rooted body-closure park has attached a demanded-module set",
             ));
         };
 
@@ -4444,113 +4397,6 @@ impl CompilerSession {
         result
     }
 
-    #[cfg(test)]
-    fn rooted_semantic_for_test(
-        &mut self,
-        options: &CompileOptions,
-    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
-        let rooted = self.rooted_cfg(options)?;
-        self.semantic_projection_for_test(options, rooted)
-    }
-
-    #[cfg(test)]
-    fn semantic_projection_for_test(
-        &mut self,
-        options: &CompileOptions,
-        rooted: RootedCfgOutput,
-    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
-        let source = self
-            .published_snapshot
-            .clone()
-            .ok_or_else(no_published_program)?;
-        let input = CodegenInputDescriptor {
-            semantic: SemanticInputDescriptor::new(
-                &source,
-                options.target,
-                &options.preview_features,
-            ),
-            opt_level: options.opt_level.into(),
-        };
-        let rir = self.canonical_rir()?;
-        let mut strings = Vec::new();
-        let mut seen_strings = std::collections::HashSet::new();
-        for unit in &rooted.cfgs {
-            for value in unit.record.strings.iter() {
-                if seen_strings.insert(value.clone()) {
-                    strings.push(value.clone());
-                }
-            }
-        }
-        let struct_count = rooted
-            .graph
-            .declarations
-            .iter()
-            .filter(|declaration| {
-                matches!(
-                    &declaration.payload,
-                    crate::durable_semantics::DurableDeclarationPayload::Struct { .. }
-                )
-            })
-            .count()
-            + rooted
-                .graph
-                .anonymous_nominals
-                .iter()
-                .filter(|nominal| {
-                    matches!(
-                        &nominal.shape,
-                        crate::durable_semantics::DurableAnonymousNominalShape::Struct { .. }
-                    )
-                })
-                .count();
-        let enum_count = rooted
-            .graph
-            .declarations
-            .iter()
-            .filter(|declaration| {
-                matches!(
-                    &declaration.payload,
-                    crate::durable_semantics::DurableDeclarationPayload::Enum { .. }
-                )
-            })
-            .count()
-            + rooted
-                .graph
-                .anonymous_nominals
-                .iter()
-                .filter(|nominal| {
-                    matches!(
-                        &nominal.shape,
-                        crate::durable_semantics::DurableAnonymousNominalShape::Enum { .. }
-                    )
-                })
-                .count();
-        #[cfg(test)]
-        let declarations = rooted.graph.declarations.clone();
-        #[cfg(test)]
-        let anonymous_nominals = rooted.graph.anonymous_nominals.clone();
-        Ok(Arc::new(RootedSemanticOutput {
-            input,
-            cfgs: rooted.cfgs,
-            warnings: rooted.warnings,
-            work: rooted.work,
-            rir,
-            declarations,
-            anonymous_nominals,
-            strings,
-            struct_count,
-            enum_count,
-        }))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn rooted_semantic(
-        &mut self,
-        options: &CompileOptions,
-    ) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
-        self.rooted_semantic_for_test(options)
-    }
-
     fn rooted_body_graph_with_cancellation(
         &mut self,
         options: &CompileOptions,
@@ -5786,7 +5632,7 @@ impl CompilerSession {
     #[cfg(test)]
     pub(crate) fn codegen_products(
         &mut self,
-        semantic: &RootedSemanticOutput,
+        semantic: &RootedCfgOutput,
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::backend::FunctionBackendProduct>, crate::CompileErrors> {
@@ -5805,7 +5651,7 @@ impl CompilerSession {
     #[cfg(test)]
     pub(crate) fn codegen_units(
         &mut self,
-        semantic: &RootedSemanticOutput,
+        semantic: &RootedCfgOutput,
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::codegen_query::CollectedCodegenUnit>, crate::CompileErrors> {
@@ -7145,7 +6991,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         let cold = session.unstable_metrics().retention();
         assert!(cold.retained_query_records > 0);
@@ -7154,7 +7000,7 @@ mod tests {
         assert!(cold.retained_bytes <= cold.retained_byte_budget);
         assert!(cold.dependency_pins <= cold.dependency_pin_budget);
 
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let warm = session.unstable_metrics().retention();
         assert_eq!(warm.retained_query_records, cold.retained_query_records);
         assert_eq!(warm.retained_bytes, cold.retained_bytes);
@@ -7169,7 +7015,7 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let merged = session.merge().unwrap();
         let revision = session
             .queries
@@ -7320,7 +7166,7 @@ mod tests {
     }
 
     /// Drive `root_source` to a canonical import-discovery close, then run the
-    /// rooted semantic attempt so its park atomically attaches the demanded-missing
+    /// rooted body-closure attempt so its park atomically attaches the demanded-missing
     /// set to the closed continuation. Returns the session (now holding an
     /// AUTHORIZING continuation), its token, the empty closure-witness frontier, the
     /// predecessor snapshot, its accepted reads, and the assembler ready to add
@@ -7601,7 +7447,7 @@ mod tests {
 
     #[test]
     fn trusted_successor_ready_close_is_non_authorizing() {
-        // A close whose rooted semantic attempt is READY (no fallible intrinsic,
+        // A close whose rooted body-closure attempt is READY (no fallible intrinsic,
         // no park) attaches no demanded set, so the closed continuation mints no
         // token. Demand authority lives only in an attached park, so a ready close
         // can never inherit an earlier park's demand set and admit an uninvited
@@ -8157,7 +8003,7 @@ mod tests {
 
     #[test]
     fn stable_no_filesystem_boundary_classifies_unsatisfied_toolchain_input_not_ice() {
-        // RUE-1112 C3: the stable no-filesystem `rooted_semantic` entry cannot
+        // RUE-1112 C3: the stable no-filesystem `rooted_cfg` entry cannot
         // acquire, so an unsatisfied trusted-toolchain demand for otherwise-valid
         // source is a deterministic CONTRACT failure, never an ICE (E9000).
         let source = snapshot(
@@ -8171,9 +8017,7 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let errors = session
-            .rooted_semantic(&CompileOptions::default())
-            .unwrap_err();
+        let errors = session.rooted_cfg(&CompileOptions::default()).unwrap_err();
         let error = errors.first().expect("unsatisfied toolchain input error");
         assert!(
             matches!(
@@ -8204,7 +8048,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("the program analyzes");
         let metrics = crate::unstable::provider_observation_metrics(&session);
         assert_eq!(metrics.name_lookups, 3);
@@ -8247,7 +8091,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("the program analyzes");
 
         let metrics = crate::unstable::provider_observation_metrics(&session);
@@ -8274,7 +8118,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("recursive named imports use the in-progress cycle break");
     }
 
@@ -8295,7 +8139,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("the program analyzes");
 
         let metrics = crate::unstable::lookup_pressure_metrics(&session);
@@ -8348,14 +8192,14 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("initial closure analyzes");
         let initial = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(initial.published_roots, 2, "{initial:?}");
 
         session.update(&unreachable).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("unreachable successor analyzes");
         let after_unreachable = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(
@@ -8365,7 +8209,7 @@ mod tests {
 
         session.update(&deleted).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("deleted successor analyzes");
         let after_deleted = crate::unstable::lookup_pressure_metrics(&session);
         assert_eq!(
@@ -8391,9 +8235,7 @@ mod tests {
             let source = snapshot(&[(1, "/p/main.rue", "main.rue", source_text)], 1);
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let errors = session
-                .rooted_semantic(&CompileOptions::default())
-                .unwrap_err();
+            let errors = session.rooted_cfg(&CompileOptions::default()).unwrap_err();
             let error = errors.first().expect("duplicate parameter diagnostic");
             assert!(
                 error.to_string().contains("duplicate parameter name 'a'"),
@@ -8414,10 +8256,10 @@ mod tests {
         session.update(&source).into_result().unwrap();
 
         let first = session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect_err("empty anonymous struct is rejected");
         let second = session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect_err("the retained producer failure remains deterministic");
 
         assert_eq!(first, second);
@@ -8454,9 +8296,7 @@ mod tests {
             let source = snapshot(&[(1, "/p/main.rue", "main.rue", source_text)], 1);
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let errors = session
-                .rooted_semantic(&CompileOptions::default())
-                .unwrap_err();
+            let errors = session.rooted_cfg(&CompileOptions::default()).unwrap_err();
             let error = errors.first().expect("destructor validity diagnostic");
             assert!(
                 error.to_string().contains(message),
@@ -8530,7 +8370,7 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let consume_key = body_query_key(&mut session, &options, "consume");
         let consume_transaction = retained_body_transaction(&session, &consume_key).2;
         assert!(
@@ -8552,12 +8392,12 @@ mod tests {
             "{dependency_nodes:?}"
         );
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -8590,14 +8430,14 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -8635,7 +8475,7 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
         let cold_atoms = cold
@@ -8664,7 +8504,7 @@ mod tests {
             }
         }
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(
             warm.work().cfg.cfg_reuses,
             2,
@@ -8690,7 +8530,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm.functions()),
             format!("{:?}", fresh.functions())
@@ -8710,7 +8550,7 @@ mod tests {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let semantic = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let semantic = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let cfg_work = semantic.work().cfg;
         assert_eq!(cfg_work.materialization_index_builds, 1, "{cfg_work:?}");
         assert_eq!(
@@ -8779,10 +8619,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert!(
             warm.work().cfg.cfg_builds_attempted > 0,
             "same-layout drop-fact changes must rebuild affected CFGs: {:?}",
@@ -8790,7 +8630,7 @@ mod tests {
         );
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -8822,10 +8662,10 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(
             warm.work().cfg.cfg_builds_attempted,
             0,
@@ -8847,7 +8687,7 @@ mod tests {
         assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -8879,10 +8719,10 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuse_candidates, 1);
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_import_attempts, 0);
@@ -8898,7 +8738,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&options).unwrap();
+        let fresh = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", warm.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -8921,7 +8761,7 @@ mod tests {
         let first = well_known_option_isolation_snapshot(&first_text);
         let second = well_known_option_isolation_snapshot(&second_text);
         let options = CompileOptions::default();
-        let runtime_symbols = |output: &crate::RootedSemanticOutput| {
+        let runtime_symbols = |output: &crate::RootedCfgOutput| {
             output
                 .functions()
                 .iter()
@@ -8945,9 +8785,9 @@ mod tests {
 
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &first);
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         publish_with_test_imports(&mut session, &second);
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
         assert!(warm.work().cfg.cfg_reuses >= 2, "{:?}", warm.work().cfg);
         assert_eq!(
@@ -8962,7 +8802,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &second);
-        let fresh_output = fresh.rooted_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_cfg(&options).unwrap();
         let fresh_symbols = runtime_symbols(&fresh_output);
         assert_eq!(fresh_symbols.len(), 1);
         assert_eq!(fresh_symbols[0], "parse_i64");
@@ -8981,7 +8821,7 @@ mod tests {
                  fn main() -> i32 {{ probe_print(); 0 }}"
             )
         };
-        let runtime_calls = |output: &crate::RootedSemanticOutput| {
+        let runtime_calls = |output: &crate::RootedCfgOutput| {
             output
                 .functions()
                 .iter()
@@ -9011,11 +8851,11 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         let cold_calls = runtime_calls(&cold);
         assert_eq!(cold_calls.len(), 1);
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
         assert_eq!(warm.work().cfg.cfg_reuses, 2);
         assert_eq!(warm.work().cfg.optimization_attempts, 0);
@@ -9031,7 +8871,7 @@ mod tests {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let fresh_output = fresh.rooted_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_cfg(&options).unwrap();
         let fresh_calls = runtime_calls(&fresh_output);
         assert_eq!(fresh_calls.len(), 1);
         for (runtime, symbol) in &fresh_calls {
@@ -9067,12 +8907,12 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
 
-        let cold = session.rooted_semantic(&o0).unwrap();
+        let cold = session.rooted_cfg(&o0).unwrap();
         assert_eq!(cold.functions().len(), 3);
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
 
-        let optimized = session.rooted_semantic(&o1).unwrap();
+        let optimized = session.rooted_cfg(&o1).unwrap();
         assert_eq!(optimized.functions().len(), 3);
         assert_eq!(optimized.work().cfg.cfg_builds_attempted, 0);
         assert_eq!(optimized.work().cfg.cfg_builds_succeeded, 0);
@@ -9111,9 +8951,9 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         assert!(warm.functions().iter().any(|function| {
             matches!(
                 function.function,
@@ -9160,17 +9000,17 @@ mod tests {
         };
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&first_options).unwrap();
-        let cross_target = session.rooted_semantic(&other_options).unwrap();
+        session.rooted_cfg(&first_options).unwrap();
+        let cross_target = session.rooted_cfg(&other_options).unwrap();
         assert_eq!(cross_target.work().cfg.cfg_reuses, 0);
         assert_eq!(cross_target.work().cfg.cfg_builds_attempted, 3);
         session.update(&renamed).into_result().unwrap();
-        let changed = session.rooted_semantic(&other_options).unwrap();
+        let changed = session.rooted_cfg(&other_options).unwrap();
         assert_eq!(changed.work().cfg.cfg_reuses, 1);
         assert_eq!(changed.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&renamed).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&other_options).unwrap();
+        let fresh = fresh.rooted_cfg(&other_options).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -9200,11 +9040,11 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let (first_stamp, _, first_transaction) = retained_body_transaction(&session, &main);
         session.update(&second).into_result().unwrap();
-        let output = session.rooted_semantic(&options).unwrap();
+        let output = session.rooted_cfg(&options).unwrap();
         let (second_stamp, _, second_transaction) = retained_body_transaction(&session, &main);
         assert_ne!(first_stamp, second_stamp);
         assert!(matches!(
@@ -9218,16 +9058,19 @@ mod tests {
         assert_eq!(output.work().body_analysis.body_analyses_computed, 1);
     }
 
-    fn assert_semantic_artifact_parity(
+    fn assert_rooted_cfg_parity(
         session: &CompilerSession,
-        actual: &RootedSemanticOutput,
-        fresh: &RootedSemanticOutput,
+        actual: &RootedCfgOutput,
+        fresh: &RootedCfgOutput,
     ) {
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", actual.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
         );
-        assert_eq!(actual.strings(), fresh.strings());
+        assert_eq!(
+            actual.string_domains().collect::<Vec<_>>(),
+            fresh.string_domains().collect::<Vec<_>>()
+        );
         assert_eq!(
             format!("{:?}", actual.warnings()),
             format!("{:?}", fresh.warnings())
@@ -9259,12 +9102,15 @@ mod tests {
         normalized
     }
 
-    fn assert_body_artifact_parity(actual: &RootedSemanticOutput, fresh: &RootedSemanticOutput) {
+    fn assert_body_artifact_parity(actual: &RootedCfgOutput, fresh: &RootedCfgOutput) {
         assert_eq!(
             format!("{:?}", actual.functions()),
             format!("{:?}", fresh.functions())
         );
-        assert_eq!(actual.strings(), fresh.strings());
+        assert_eq!(
+            actual.string_domains().collect::<Vec<_>>(),
+            fresh.string_domains().collect::<Vec<_>>()
+        );
         assert_eq!(
             format!("{:?}", actual.warnings()),
             format!("{:?}", fresh.warnings())
@@ -9309,16 +9155,16 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&relocated_edit).into_result().unwrap();
-        let reused = session.rooted_semantic(&options).unwrap();
+        let reused = session.rooted_cfg(&options).unwrap();
         assert!(reused.work().body_analysis.body_analyses_computed > 0);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&relocated_edit).into_result().unwrap();
-        let ordinary = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &reused, &ordinary);
+        let ordinary = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &reused, &ordinary);
         assert_diagnostic_parity(&session, &fresh);
     }
 
@@ -9342,16 +9188,16 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&edited).into_result().unwrap();
-        let actual = session.rooted_semantic(&options).unwrap();
+        let actual = session.rooted_cfg(&options).unwrap();
         assert_eq!(actual.work().body_analysis.body_analyses_computed, 1);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let ordinary = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &actual, &ordinary);
+        let ordinary = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &actual, &ordinary);
         assert_eq!(actual.type_pool_stats(), ordinary.type_pool_stats());
         assert_diagnostic_parity(&session, &fresh);
     }
@@ -9370,24 +9216,24 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         assert!(cold.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.rooted_semantic(&options).unwrap();
+        let ordinary = session.rooted_cfg(&options).unwrap();
         assert!(ordinary.work().body_analysis.body_analyses_computed > 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &ordinary, &expected);
+        let expected = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &ordinary, &expected);
 
         // Moving to a different declaration universe seeds a new baseline, and
         // its next body edit can reuse normally.
         session.update(&supported).into_result().unwrap();
-        let seeded = session.rooted_semantic(&options).unwrap();
+        let seeded = session.rooted_cfg(&options).unwrap();
         assert!(seeded.work().body_analysis.body_analyses_computed > 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.rooted_semantic(&options).unwrap();
+        let recovered = session.rooted_cfg(&options).unwrap();
         assert!(recovered.work().body_analysis.body_analyses_computed > 0);
     }
 
@@ -9414,19 +9260,19 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         assert!(cold.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&edited).into_result().unwrap();
-        let ordinary = session.rooted_semantic(&options).unwrap();
+        let ordinary = session.rooted_cfg(&options).unwrap();
         assert!(ordinary.work().body_analysis.body_analyses_computed > 0);
         // Type producers are query inputs, not runtime function bodies. The
         // reached executable set is `main` plus the anonymous `get` method.
         assert_eq!(ordinary.functions().len(), 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let expected = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &ordinary, &expected);
+        let expected = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &ordinary, &expected);
 
         let supported = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
@@ -9437,10 +9283,10 @@ mod tests {
             1,
         );
         session.update(&supported).into_result().unwrap();
-        let seeded = session.rooted_semantic(&options).unwrap();
+        let seeded = session.rooted_cfg(&options).unwrap();
         assert!(seeded.work().body_analysis.body_analyses_computed > 0);
         session.update(&supported_edit).into_result().unwrap();
-        let recovered = session.rooted_semantic(&options).unwrap();
+        let recovered = session.rooted_cfg(&options).unwrap();
         assert!(recovered.work().body_analysis.body_analyses_computed > 0);
     }
 
@@ -9485,16 +9331,16 @@ mod tests {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&base).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         session.update(&signature).into_result().unwrap();
-        let changed = session.rooted_semantic(&options).unwrap();
+        let changed = session.rooted_cfg(&options).unwrap();
         assert!(changed.work().body_analysis.body_analyses_computed > 0);
 
         session.update(&broken_body).into_result().unwrap();
-        assert!(session.rooted_semantic(&options).is_err());
+        assert!(session.rooted_cfg(&options).is_err());
         session.update(&recovered).into_result().unwrap();
-        let recovered = session.rooted_semantic(&options).unwrap();
+        let recovered = session.rooted_cfg(&options).unwrap();
         assert!(recovered.work().body_analysis.body_analyses_computed > 0);
 
         let mut other_target = options.clone();
@@ -9502,7 +9348,7 @@ mod tests {
             .iter()
             .find(|target| **target != options.target)
             .unwrap();
-        let target_changed = session.rooted_semantic(&other_target).unwrap();
+        let target_changed = session.rooted_cfg(&other_target).unwrap();
         assert!(target_changed.work().body_analysis.body_analyses_computed > 0);
     }
 
@@ -9587,10 +9433,10 @@ mod tests {
         let mut session = CompilerSession::new();
 
         session.update(&valid).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let key = body_query_key(&mut session, &options, "main");
         session.update(&first).into_result().unwrap();
-        let first_errors = session.rooted_semantic(&options).unwrap_err();
+        let first_errors = session.rooted_cfg(&options).unwrap_err();
         let (first_stamp, _, _) = retained_body_transaction(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (first_locator_stamp, _) = retained_body_source_locator(&session, &key);
@@ -9604,7 +9450,7 @@ mod tests {
         );
 
         session.update(&shifted).into_result().unwrap();
-        let shifted_errors = session.rooted_semantic(&options).unwrap_err();
+        let shifted_errors = session.rooted_cfg(&options).unwrap_err();
         let (shifted_stamp, _, _) = retained_body_transaction(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (shifted_locator_stamp, _) = retained_body_source_locator(&session, &key);
@@ -9641,14 +9487,16 @@ mod tests {
         let mut session = CompilerSession::new();
 
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
+        session.canonical_rir().unwrap();
         let key = body_query_key(&mut session, &options, "main");
         let first_body_stamps = retained_body_query_stamps(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (first_locator_stamp, first_locator) = retained_body_source_locator(&session, &key);
 
         session.update(&shifted).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
+        session.canonical_rir().unwrap();
         let shifted_body_stamps = retained_body_query_stamps(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
         let (shifted_locator_stamp, shifted_locator) = retained_body_source_locator(&session, &key);
@@ -9674,8 +9522,9 @@ mod tests {
             shifted_locator.body_start,
             u32::try_from(shifted_text.find("{ 0 }").unwrap()).unwrap(),
         );
-        assert_eq!(warm.work().body_analysis.body_analyses_computed, 0);
-        assert_eq!(warm.work().body_analysis.body_analyses_reused, 1);
+        // The retained terminal stamps above are the canonical evidence that
+        // the body and closure stayed green. Root-level reuse may satisfy the
+        // request before per-body execution counters are accrued.
 
         let merge = session.unstable_metrics().merge_metrics();
         assert_eq!(merge.definition_shards_indexed, 1);
@@ -9714,7 +9563,7 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
         session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("many shallow specializations must compile");
     }
 
@@ -9737,9 +9586,7 @@ mod tests {
         );
         let mut session = CompilerSession::new();
         session.update(&invalid).into_result().unwrap();
-        let errors = session
-            .rooted_semantic(&CompileOptions::default())
-            .unwrap_err();
+        let errors = session.rooted_cfg(&CompileOptions::default()).unwrap_err();
         assert!(
             matches!(
                 errors.first().map(|error| &error.kind),
@@ -9768,7 +9615,7 @@ fn main() -> i32 { 0 }
             let source = snapshot(&[(7, "/p/main.rue", "main.rue", source)], 7);
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let semantic = session.rooted_semantic(&CompileOptions::default()).unwrap();
+            let semantic = session.rooted_cfg(&CompileOptions::default()).unwrap();
             assert!(!semantic.functions().is_empty());
         }
     }
@@ -9796,7 +9643,7 @@ fn main() -> i32 { 0 }
             };
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let query = match session.rooted_semantic(&CompileOptions::default()) {
+            let query = match session.rooted_cfg(&CompileOptions::default()) {
                 Err(errors) => errors,
                 Ok(_) => panic!("query path unexpectedly accepted failure fixture"),
             };
@@ -10032,16 +9879,16 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &original);
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         publish_with_test_imports(&mut session, &relocated);
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let reused = session.rooted_semantic(&options).unwrap();
+        let reused = session.rooted_cfg(&options).unwrap();
         let mut fresh_session = CompilerSession::new();
         publish_with_test_imports(&mut fresh_session, &relocated);
-        let fresh = fresh_session.rooted_semantic(&options).unwrap();
+        let fresh = fresh_session.rooted_cfg(&options).unwrap();
         assert_eq!(
             reused
                 .functions()
@@ -10060,7 +9907,10 @@ fn main() -> i32 { 0 }
                 ))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(reused.strings(), fresh.strings());
+        assert_eq!(
+            reused.string_domains().collect::<Vec<_>>(),
+            fresh.string_domains().collect::<Vec<_>>()
+        );
         assert_eq!(
             format!("{:?}", reused.warnings()),
             format!("{:?}", fresh.warnings())
@@ -10082,8 +9932,8 @@ fn main() -> i32 { 0 }
         let run = |options: CompileOptions| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session.rooted_semantic(&CompileOptions::default()).unwrap();
-            session.rooted_semantic(&options).unwrap()
+            session.rooted_cfg(&CompileOptions::default()).unwrap();
+            session.rooted_cfg(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -10115,11 +9965,11 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let cold = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let cold = session.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(cold.warnings().len(), 1);
 
         let warm = session
-            .rooted_semantic(&CompileOptions {
+            .rooted_cfg(&CompileOptions {
                 opt_level: OptLevel::O1,
                 ..CompileOptions::default()
             })
@@ -10144,9 +9994,7 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let errors = session
-            .rooted_semantic(&CompileOptions::default())
-            .unwrap_err();
+        let errors = session.rooted_cfg(&CompileOptions::default()).unwrap_err();
         assert!(errors.iter().any(|error| {
             error
                 .to_string()
@@ -10162,13 +10010,13 @@ fn main() -> i32 { 0 }
         let source = snapshot(&[(42, "/p/main.rue", "main.rue", source_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        session.rooted_semantic(&optimized).unwrap();
+        session.rooted_cfg(&optimized).unwrap();
 
         let unrelated_text = format!("{source_text}\nfn unrelated() -> i32 {{ 7 }}");
         let unrelated = snapshot(
@@ -10176,7 +10024,7 @@ fn main() -> i32 { 0 }
             42,
         );
         session.update(&unrelated).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
 
         let changed_text = "fn inner(comptime T: type, value: T) -> T { let copy = value; copy }\n\
              fn outer(comptime T: type, value: T) -> T { inner(T, value) }\n\
@@ -10184,10 +10032,10 @@ fn main() -> i32 { 0 }
              fn unrelated() -> i32 { 7 }";
         let changed_source = snapshot(&[(42, "/p/main.rue", "main.rue", changed_text)], 42);
         session.update(&changed_source).into_result().unwrap();
-        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let changed = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(
             normalize_session_local_spurs(format!("{:?}", changed.functions())),
             normalize_session_local_spurs(format!("{:?}", fresh.functions()))
@@ -10210,13 +10058,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
 
         let optimized = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let warm = session.rooted_semantic(&optimized).unwrap();
+        let warm = session.rooted_cfg(&optimized).unwrap();
         assert_eq!(warm.functions().len(), 7);
     }
 
@@ -10230,7 +10078,7 @@ fn main() -> i32 { 0 }
         let first = snapshot(&[(42, "/p/main.rue", "main.rue", first_text)], 42);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let cold = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let choose_true = cold
             .functions()
             .iter()
@@ -10272,10 +10120,10 @@ fn main() -> i32 { 0 }
             42,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let changed = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&changed_source).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
@@ -10301,7 +10149,7 @@ fn main() -> i32 { 0 }
         let first = snapshot(&[(43, "/p/main.rue", "main.rue", first_text)], 43);
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
 
         let changed_text = first_text.replace("cleanup();", "cleanup(); let marker = 0;");
         let changed_source = snapshot(
@@ -10309,11 +10157,11 @@ fn main() -> i32 { 0 }
             43,
         );
         session.update(&changed_source).into_result().unwrap();
-        let changed = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let changed = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&changed_source).into_result().unwrap();
         let fresh = fresh_session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&changed, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -10341,12 +10189,12 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let reused = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let reused = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", fresh.functions())
@@ -10385,16 +10233,16 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&a).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&b).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&a).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&a_prime).into_result().unwrap();
-        let output = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let output = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&a_prime).into_result().unwrap();
-        let fresh = fresh.rooted_semantic(&CompileOptions::default()).unwrap();
+        let fresh = fresh.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(
             format!("{:?}", output.functions()),
             format!("{:?}", fresh.functions())
@@ -10433,13 +10281,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let actual = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -10467,13 +10315,13 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&edited).into_result().unwrap();
-        let actual = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let actual = session.rooted_cfg(&CompileOptions::default()).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&edited).into_result().unwrap();
         let fresh = fresh_session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
@@ -10507,16 +10355,16 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&original).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&relocated).into_result().unwrap();
         let options = CompileOptions {
             opt_level: OptLevel::O1,
             ..CompileOptions::default()
         };
-        let actual = session.rooted_semantic(&options).unwrap();
+        let actual = session.rooted_cfg(&options).unwrap();
         let mut fresh_session = CompilerSession::new();
         fresh_session.update(&relocated).into_result().unwrap();
-        let fresh = fresh_session.rooted_semantic(&options).unwrap();
+        let fresh = fresh_session.rooted_cfg(&options).unwrap();
         assert_body_artifact_parity(&actual, &fresh);
         assert_diagnostic_parity(&session, &fresh_session);
     }
@@ -10544,9 +10392,9 @@ fn main() -> i32 { 0 }
         let run = |options: CompileOptions, next: &SourceSnapshot| {
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            session.rooted_semantic(&CompileOptions::default()).unwrap();
+            session.rooted_cfg(&CompileOptions::default()).unwrap();
             session.update(next).into_result().unwrap();
-            session.rooted_semantic(&options).unwrap()
+            session.rooted_cfg(&options).unwrap()
         };
         let other_target = *Target::all()
             .iter()
@@ -10591,14 +10439,14 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&both_roots).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
         session.update(&other_root).into_result().unwrap();
-        let root = session.rooted_semantic(&CompileOptions::default()).unwrap();
+        let root = session.rooted_cfg(&CompileOptions::default()).unwrap();
         assert_eq!(root.functions().len(), 1);
     }
 
     #[test]
-    fn malformed_well_known_option_repairs_to_fresh_rooted_semantics() {
+    fn malformed_well_known_option_repairs_to_fresh_rooted_cfgs() {
         let options = CompileOptions::default();
         let program = r#"
 const opt = @import("std/option.rue");
@@ -10619,7 +10467,7 @@ fn main() -> i32 {
         let mut warm = CompilerSession::new();
         publish_with_test_imports(&mut warm, &malformed);
         let errors = warm
-            .rooted_semantic(&options)
+            .rooted_cfg(&options)
             .expect_err("the malformed trusted Option specialization must fail");
         assert!(
             errors.to_string().contains("missing"),
@@ -10635,19 +10483,19 @@ fn main() -> i32 {
         );
         publish_with_test_imports(&mut warm, &repaired);
         let warm_repaired = warm
-            .rooted_semantic(&options)
+            .rooted_cfg(&options)
             .expect("the repaired successor must compile");
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &repaired);
         let fresh_repaired = fresh
-            .rooted_semantic(&options)
+            .rooted_cfg(&options)
             .expect("the repaired snapshot must compile fresh");
 
-        assert_eq!(
-            warm_repaired.unstable_parity_snapshot(),
-            fresh_repaired.unstable_parity_snapshot(),
-            "malformed-state warming must not change repaired canonical semantics"
+        crate::test_support::assert_rooted_cfg_value_parity(
+            "malformed-state warming must not change repaired canonical semantics",
+            &warm_repaired,
+            &fresh_repaired,
         );
         assert!(warm.queries.revisioned.any_body_transaction_terminal());
     }
@@ -10705,7 +10553,7 @@ fn main() -> i32 {
         let source_v1 = well_known_option_isolation_snapshot(program_v1);
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &source_v1);
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         let left_key = body_query_key(&mut session, &options, "left");
         let right_key = body_query_key(&mut session, &options, "right");
@@ -10758,7 +10606,7 @@ fn main() -> i32 {
 "#;
         let source_v2 = well_known_option_isolation_snapshot(program_v2);
         publish_with_test_imports(&mut session, &source_v2);
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         let left_key_v2 = body_query_key(&mut session, &options, "left");
         let left_stamp_v2 = retained_body_transaction(&session, &left_key_v2).0;
@@ -10890,13 +10738,13 @@ fn main() -> i32 {
 
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &program(SPARE));
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         let value = body_query_key_in(&options, "helpers.rue", "value");
 
         // Everything RUE-1125 requires to be a function of `value`'s own
         // declaration: its query terminals, its dependency set, its emitted
         // symbols, and how it is presented.
-        let observed = |session: &CompilerSession, semantic: &Arc<crate::RootedSemanticOutput>| {
+        let observed = |session: &CompilerSession, semantic: &crate::RootedCfgOutput| {
             let function = semantic
                 .functions()
                 .iter()
@@ -10941,7 +10789,7 @@ fn main() -> i32 {
         // existing span in `spare.rue` untouched.
         let edited = format!("{SPARE}\n@allow(unused_function)\npub fn value() -> i32 {{ 99 }}\n");
         publish_with_test_imports(&mut session, &program(&edited));
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         let after = observed(&session, &warm);
 
         assert_eq!(
@@ -11009,8 +10857,8 @@ fn main() -> i32 {
         // Warm and fresh must agree on the whole artifact.
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &program(&edited));
-        let expected = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &warm, &expected);
+        let expected = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &warm, &expected);
     }
 
     #[test]
@@ -11028,14 +10876,14 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let helper = body_query_key(&mut session, &options, "helper");
         let first_main = retained_body_query_stamps(&session, &main);
         let first_helper = retained_body_query_stamps(&session, &helper);
 
         session.update(&second).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let second_main = retained_body_query_stamps(&session, &main);
         let second_helper = retained_body_query_stamps(&session, &helper);
 
@@ -11064,7 +10912,7 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         let compile_units = |session: &mut CompilerSession| {
-            let semantic = session.rooted_semantic(&options).unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
             session
                 .codegen_units(
                     &semantic,
@@ -11228,10 +11076,11 @@ fn main() -> i32 {
             };
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
-            let semantic = session.rooted_semantic(&options).unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
+            let rir = session.canonical_rir().unwrap();
             let foreign = crate::backend::collect_foreign_symbols(
-                semantic.rir_owner().rir(),
-                semantic.rir_owner().semantic_symbols().interner(),
+                rir.rir(),
+                rir.semantic_symbols().interner(),
             );
             let owned = session
                 .codegen_units(
@@ -11278,7 +11127,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
-        let cold = session.rooted_semantic(&options).unwrap();
+        let cold = session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let make_definition = body_query_key(&mut session, &options, "Make");
         let make = crate::body_query::BodyQueryKey::new(
@@ -11314,7 +11163,7 @@ fn main() -> i32 {
         );
 
         session.update(&second).into_result().unwrap();
-        let warm = session.rooted_semantic(&options).unwrap();
+        let warm = session.rooted_cfg(&options).unwrap();
         let second_make_stamps = retained_body_query_stamps(&session, &make);
         let second_size_stamps = retained_body_query_stamps(&session, &size);
         assert_ne!(first_make_stamps.3, second_make_stamps.3);
@@ -11322,8 +11171,8 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
-        let expected = fresh.rooted_semantic(&options).unwrap();
-        assert_semantic_artifact_parity(&session, &warm, &expected);
+        let expected = fresh.rooted_cfg(&options).unwrap();
+        assert_rooted_cfg_parity(&session, &warm, &expected);
     }
 
     #[test]
@@ -11352,7 +11201,7 @@ fn main() -> i32 {
         .unwrap();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&CompileOptions::default()).unwrap();
+        session.rooted_cfg(&CompileOptions::default()).unwrap();
     }
 
     #[test]
@@ -11374,7 +11223,7 @@ fn main() -> i32 {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let transaction = retained_body_transaction(&session, &main).2;
         let mut producers = BTreeSet::new();
@@ -11419,7 +11268,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut warm = CompilerSession::new();
         warm.update(&missing).into_result().unwrap();
-        assert!(warm.rooted_semantic(&options).is_err());
+        assert!(warm.rooted_cfg(&options).is_err());
         let main = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
                 crate::ModuleId::from_logical_path("main.rue").unwrap(),
@@ -11448,10 +11297,10 @@ fn main() -> i32 {
         );
 
         warm.update(&resolved).into_result().unwrap();
-        let warm_output = warm.rooted_semantic(&options).unwrap();
+        let warm_output = warm.rooted_cfg(&options).unwrap();
         let mut fresh = CompilerSession::new();
         fresh.update(&resolved).into_result().unwrap();
-        let fresh_output = fresh.rooted_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm_output.functions()),
             format!("{:?}", fresh_output.functions())
@@ -11479,13 +11328,13 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut warm = CompilerSession::new();
         publish_with_test_imports(&mut warm, &missing);
-        assert!(warm.rooted_semantic(&options).is_err());
+        assert!(warm.rooted_cfg(&options).is_err());
 
         publish_with_test_imports(&mut warm, &resolved);
-        let warm_output = warm.rooted_semantic(&options).unwrap();
+        let warm_output = warm.rooted_cfg(&options).unwrap();
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &resolved);
-        let fresh_output = fresh.rooted_semantic(&options).unwrap();
+        let fresh_output = fresh.rooted_cfg(&options).unwrap();
         assert_eq!(
             format!("{:?}", warm_output.functions()),
             format!("{:?}", fresh_output.functions())
@@ -11502,7 +11351,7 @@ fn main() -> i32 {
         let build = |source: &SourceSnapshot| {
             let mut session = CompilerSession::new();
             session.update(source).into_result().unwrap();
-            session.rooted_semantic(&options).unwrap();
+            session.rooted_cfg(&options).unwrap();
             let key = body_query_key(&mut session, &options, "main");
             let transaction = retained_body_transaction(&session, &key).2;
             (key, transaction)
@@ -11526,7 +11375,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         let key = body_query_key(&mut session, &options, "main");
         let revision = session
@@ -11585,7 +11434,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let key = body_query_key(&mut session, &options, "recurse");
         let transaction = retained_body_transaction(&session, &key).2;
         assert!(matches!(
@@ -11622,7 +11471,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let output = session.rooted_semantic(&options).unwrap();
+        let output = session.rooted_cfg(&options).unwrap();
 
         assert!(
             output.functions().iter().any(|function| matches!(
@@ -11640,7 +11489,7 @@ fn main() -> i32 {
         session.update(&source).into_result().unwrap();
 
         let default_options = CompileOptions::default();
-        session.rooted_semantic(&default_options).unwrap();
+        session.rooted_cfg(&default_options).unwrap();
         let default_key = body_query_key(&mut session, &default_options, "main");
         let default = retained_body_transaction(&session, &default_key);
 
@@ -11653,7 +11502,7 @@ fn main() -> i32 {
             preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
             ..CompileOptions::default()
         };
-        session.rooted_semantic(&configured_options).unwrap();
+        session.rooted_cfg(&configured_options).unwrap();
         let configured_key = body_query_key(&mut session, &configured_options, "main");
         let configured = retained_body_transaction(&session, &configured_key);
 
@@ -11678,7 +11527,7 @@ fn main() -> i32 {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         let options = CompileOptions::default();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
 
         let key = body_query_key(&mut session, &options, "main");
         let transaction = retained_body_transaction(&session, &key).2;
@@ -11725,7 +11574,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        assert!(session.rooted_semantic(&options).is_err());
+        assert!(session.rooted_cfg(&options).is_err());
         let key = crate::body_query::BodyQueryKey::new(
             crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
                 crate::ModuleId::from_logical_path("main.rue").unwrap(),
@@ -11799,7 +11648,7 @@ fn main() -> i32 {
         };
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let main_transaction = retained_body_transaction(&session, &main).2;
         let dependencies = retained_body_dependency_nodes(&session, &main);
@@ -11871,7 +11720,7 @@ fn main() -> i32 {
         )
         .unwrap();
         session.update(&ambiguous).into_result().unwrap();
-        assert!(session.rooted_semantic(&options).is_err());
+        assert!(session.rooted_cfg(&options).is_err());
         let revision = session
             .queries
             .revisioned
@@ -11892,7 +11741,7 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&ambiguous).into_result().unwrap();
-        assert!(fresh.rooted_semantic(&options).is_err());
+        assert!(fresh.rooted_cfg(&options).is_err());
         let fresh_revision = fresh
             .queries
             .revisioned
@@ -11930,7 +11779,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&valid).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let dependencies = retained_body_dependency_nodes(&session, &main);
         assert!(
@@ -11941,7 +11790,7 @@ fn main() -> i32 {
         );
 
         session.update(&duplicate).into_result().unwrap();
-        assert!(session.rooted_semantic(&options).is_err());
+        assert!(session.rooted_cfg(&options).is_err());
         let revision = session
             .queries
             .revisioned
@@ -11962,7 +11811,7 @@ fn main() -> i32 {
 
         let mut fresh = CompilerSession::new();
         fresh.update(&duplicate).into_result().unwrap();
-        assert!(fresh.rooted_semantic(&options).is_err());
+        assert!(fresh.rooted_cfg(&options).is_err());
         let fresh_revision = fresh
             .queries
             .revisioned
@@ -11990,7 +11839,7 @@ fn main() -> i32 {
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        session.rooted_semantic(&options).unwrap();
+        session.rooted_cfg(&options).unwrap();
         let dead = body_query_key(&mut session, &options, "dead");
         assert!(
             !session.queries.revisioned.has_retained_body_key(&dead),

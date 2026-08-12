@@ -111,7 +111,7 @@ fn unrelated_module_snapshot_with_main_and_suffix(
 // Measurement
 // ---------------------------------------------------------------------------
 
-/// Structural counters read from one cold `rooted_semantic` compile. Every
+/// Structural counters read from one cold `rooted_cfg` compile. Every
 /// field is a work counter; not one is a clock or an allocation total.
 #[derive(Debug, Clone, Copy)]
 struct Measure {
@@ -145,12 +145,12 @@ impl Measure {
         let mut session = CompilerSession::new();
         session.update(&corpus.snapshot()).into_result().unwrap();
         let output = session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("synthetic corpus compiles");
         Self::from_work_and_provider(
             &output.work(),
             crate::unstable::provider_observation_metrics(&session),
-            output.rir_owner().work(),
+            canonical_rir_work(&mut session),
         )
     }
 
@@ -158,12 +158,12 @@ impl Measure {
         let mut session = CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
         let output = session
-            .rooted_semantic(&CompileOptions::default())
+            .rooted_cfg(&CompileOptions::default())
             .expect("synthetic snapshot compiles");
         Self::from_work_and_provider(
             &output.work(),
             crate::unstable::provider_observation_metrics(&session),
-            output.rir_owner().work(),
+            canonical_rir_work(&mut session),
         )
     }
 
@@ -196,6 +196,13 @@ impl Measure {
             rir_instructions_appended: rir.instructions_appended,
         }
     }
+}
+
+fn canonical_rir_work(session: &mut CompilerSession) -> crate::CanonicalRirWork {
+    session
+        .canonical_rir()
+        .expect("successful rooted CFG has canonical RIR")
+        .work()
 }
 
 fn assert_exact_zero_slope(label: &str, baseline: usize, grown: usize) {
@@ -331,7 +338,7 @@ fn render_diagnostics(errors: &CompileErrors) -> String {
 
 fn assert_successful_output_body_presence(
     label: &str,
-    output: &RootedSemanticOutput,
+    output: &RootedCfgOutput,
     states: &BTreeMap<String, Option<crate::BodyTransaction>>,
 ) {
     for function in output.functions() {
@@ -367,7 +374,7 @@ fn body_query_identity(instance: &crate::FunctionInstanceKey, options: &CompileO
 
 fn reachable_successful_body_identities(
     label: &str,
-    output: &RootedSemanticOutput,
+    output: &RootedCfgOutput,
     states: &BTreeMap<String, Option<crate::BodyTransaction>>,
     options: &CompileOptions,
 ) -> BTreeSet<String> {
@@ -406,10 +413,8 @@ fn assert_reachable_body_key_set_parity(
 }
 
 /// The one shared warm-vs-fresh oracle every edit row uses. Built on the exact
-/// semantic-parity machinery (`RootedSemanticOutput::unstable_parity_snapshot`
-/// — the same owned projection the in-tree cold-vs-reused differential compares),
-/// it asserts full parity between a warm (incremental) rev2 compile and a fresh
-/// rev2 compile:
+/// canonical rooted CFG values, it asserts full parity between a warm
+/// (incremental) rev2 compile and a fresh rev2 compile:
 ///
 /// * success vs failure agreement;
 /// * on success, the full parity snapshot: functions, strings, type pool, bound
@@ -422,8 +427,8 @@ fn assert_warm_fresh_parity(
     fresh_session: &mut CompilerSession,
     source: &SourceSnapshot,
     options: &CompileOptions,
-    warm: &Result<Arc<RootedSemanticOutput>, CompileErrors>,
-    fresh: &Result<Arc<RootedSemanticOutput>, CompileErrors>,
+    warm: &Result<RootedCfgOutput, CompileErrors>,
+    fresh: &Result<RootedCfgOutput, CompileErrors>,
 ) {
     // The body-transaction family is the canonical production cache. Its
     // test-only snapshot includes stale keys as well as current terminals, so
@@ -431,7 +436,7 @@ fn assert_warm_fresh_parity(
     // each output and its transaction edges.
     let warm_bodies = warm_session.retained_body_identity_states_for_test(options);
     let fresh_bodies = fresh_session.retained_body_identity_states_for_test(options);
-    // A failed rooted semantic query may stop before an unchanged helper is
+    // A failed rooted body/CFG query may stop before an unchanged helper is
     // requested. Such a helper can remain observable from the warm cache while
     // having no fresh-side retained key; that is cache reachability, not a
     match (warm, fresh) {
@@ -484,11 +489,7 @@ fn assert_warm_fresh_parity(
                     );
                 }
             }
-            assert_eq!(
-                warm.unstable_parity_snapshot(),
-                fresh.unstable_parity_snapshot(),
-                "{label}: warm/fresh semantic parity snapshot diverged"
-            );
+            crate::test_support::assert_rooted_cfg_value_parity(label, warm, fresh);
 
             // Keep the public output check as a consistency assertion, not as
             // the identity enumeration source. Every emitted function must
@@ -549,7 +550,7 @@ fn assert_warm_fresh_parity(
                 format!("{:?}", fresh_session.latest_diagnostics()),
                 "{label}: ordered failure diagnostic snapshots diverged"
             );
-            // A failed rooted semantic query may stop before unchanged helper
+            // A failed rooted body/CFG query may stop before unchanged helper
             // bodies are requested. Compare deterministic failures demanded
             // by both sides, preserving early-stop behavior for helpers that
             // exist only in one retained family.
@@ -961,15 +962,15 @@ impl EditScenario {
 
         let mut warm = CompilerSession::new();
         warm.update(&self.rev1.snapshot()).into_result().unwrap();
-        warm.rooted_semantic(&options).ok(); // rev1 is not oracled; only rev2.
+        warm.rooted_cfg(&options).ok(); // rev1 is not oracled; only rev2.
         let rev1_origins = warm.retained_body_transaction_origins_for_test(body_names);
         warm.update(&self.rev2.snapshot()).into_result().unwrap();
-        let warm_rev2 = warm.rooted_semantic(&options);
+        let warm_rev2 = warm.rooted_cfg(&options);
         let rev2_origins = warm.retained_body_transaction_origins_for_test(body_names);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&self.rev2.snapshot()).into_result().unwrap();
-        let fresh_rev2 = fresh.rooted_semantic(&options);
+        let fresh_rev2 = fresh.rooted_cfg(&options);
 
         let rev2_source = self.rev2.snapshot();
         assert_warm_fresh_parity(
@@ -987,7 +988,7 @@ impl EditScenario {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&warm),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut warm),
             )
         });
         (
@@ -1044,17 +1045,17 @@ fn run_source_edit(
 
     let mut warm = CompilerSession::new();
     warm.update(&rev1).into_result().unwrap();
-    warm.rooted_semantic(&options).ok();
+    warm.rooted_cfg(&options).ok();
     let before = warm.retained_body_transaction_origins_for_test(&body_names);
     let before_states = warm.retained_body_identity_states_for_test(&options);
     warm.update(&rev2).into_result().unwrap();
-    let warm_result = warm.rooted_semantic(&options);
+    let warm_result = warm.rooted_cfg(&options);
     let after = warm.retained_body_transaction_origins_for_test(&body_names);
     let warm_states = warm.retained_body_identity_states_for_test(&options);
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2).into_result().unwrap();
-    let fresh_result = fresh.rooted_semantic(&options);
+    let fresh_result = fresh.rooted_cfg(&options);
     let fresh_states = fresh.retained_body_identity_states_for_test(&options);
     assert_warm_fresh_parity(
         label,
@@ -1363,11 +1364,11 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
 
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
-    warm.rooted_semantic(&options).unwrap();
+    warm.rooted_cfg(&options).unwrap();
     let body_names = corpus_body_names(40);
     let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     warm.update(&rev2_snap).into_result().unwrap();
-    let warm_rev2 = warm.rooted_semantic(&options);
+    let warm_rev2 = warm.rooted_cfg(&options);
     let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
@@ -1376,7 +1377,7 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&warm),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut warm),
             )
         })
         .expect("single-body-edit warm rev2 compiles");
@@ -1384,14 +1385,14 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     // Fresh rev2 compile for the shared parity oracle and the cold-cost floor.
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
-    let fresh_rev2 = fresh.rooted_semantic(&options);
+    let fresh_rev2 = fresh.rooted_cfg(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
         .map(|output| {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&fresh),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut fresh),
             )
         })
         .expect("single-body-edit fresh rev2 compiles");
@@ -1459,11 +1460,11 @@ fn main() -> i32 { left() + right() + control() }
 
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
-    warm.rooted_semantic(&options).unwrap();
+    warm.rooted_cfg(&options).unwrap();
     let body_names = ["left", "right", "control", "main"].map(str::to_owned);
     let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     warm.update(&rev2_snap).into_result().unwrap();
-    let warm_rev2 = warm.rooted_semantic(&options);
+    let warm_rev2 = warm.rooted_cfg(&options);
     let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
@@ -1472,21 +1473,21 @@ fn main() -> i32 { left() + right() + control() }
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&warm),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut warm),
             )
         })
         .expect("declaration-value-edit warm rev2 compiles");
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
-    let fresh_rev2 = fresh.rooted_semantic(&options);
+    let fresh_rev2 = fresh.rooted_cfg(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
         .map(|output| {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&fresh),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut fresh),
             )
         })
         .expect("declaration-value-edit fresh rev2 compiles");
@@ -1545,7 +1546,7 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
 
     let mut warm = CompilerSession::new();
     warm.update(&rev1_snap).into_result().unwrap();
-    let rev1_result = warm.rooted_semantic(&options);
+    let rev1_result = warm.rooted_cfg(&options);
     assert!(
         rev1_result.is_err(),
         "calling an undefined function must fail the negative-lookup revision"
@@ -1554,7 +1555,7 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     let rev1_origins = warm.retained_body_transaction_origins_for_test(&body_names);
 
     warm.update(&rev2_snap).into_result().unwrap();
-    let warm_rev2 = warm.rooted_semantic(&options);
+    let warm_rev2 = warm.rooted_cfg(&options);
     let rev2_origins = warm.retained_body_transaction_origins_for_test(&body_names);
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
@@ -1563,21 +1564,21 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&warm),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut warm),
             )
         })
         .expect("defining the previously-missing function must make the consumer compile");
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2_snap).into_result().unwrap();
-    let fresh_rev2 = fresh.rooted_semantic(&options);
+    let fresh_rev2 = fresh.rooted_cfg(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
         .map(|output| {
             Measure::from_work_and_provider(
                 &output.work(),
                 crate::unstable::provider_observation_metrics(&fresh),
-                output.rir_owner().work(),
+                canonical_rir_work(&mut fresh),
             )
         })
         .expect("fresh rev2 compiles");
@@ -1659,7 +1660,7 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
         .into_result()
         .unwrap();
     let cold = unrelated_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect("cold lifecycle fixture compiles");
     let cold_body = cold.work().body_analysis;
     assert_eq!(cold_body.body_analyses_reused, 0);
@@ -1674,7 +1675,7 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
         .into_result()
         .unwrap();
     let unrelated_output = unrelated_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect("unrelated-edit lifecycle fixture compiles");
     let unrelated_body = unrelated_output.work().body_analysis;
     assert_eq!(unrelated_body.body_analyses_computed, 0);
@@ -1700,12 +1701,12 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
         .into_result()
         .unwrap();
     let changed_cold = changed_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect("changed-body cold fixture compiles");
     let changed_cold_body = changed_cold.work().body_analysis;
     changed_session.update(&changed).into_result().unwrap();
     let changed_output = changed_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect("changed-body lifecycle fixture compiles");
     let changed_body = changed_output.work().body_analysis;
     assert!(changed_body.body_analyses_computed > 0);
@@ -1732,7 +1733,7 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
             "\n",
         ))
         .into_result()
-        .and_then(|_| unrelated_session.rooted_semantic(&options))
+        .and_then(|_| unrelated_session.rooted_cfg(&options))
         .expect("deletion lifecycle fixture compiles");
     let deleted_body = deleted_output.work().body_analysis;
     assert_eq!(deleted_body.body_analyses_computed, 0);
@@ -1750,7 +1751,7 @@ fn correctness_oracle_rejects_missing_successful_body_transaction() {
     let source = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\n").unwrap();
     let mut session = CompilerSession::new();
     session.update(&source).into_result().unwrap();
-    let output = session.rooted_semantic(&options).unwrap();
+    let output = session.rooted_cfg(&options).unwrap();
     let mut states = session.retained_body_identity_states_for_test(&options);
     let main_identity = states
         .keys()
@@ -1768,7 +1769,7 @@ fn correctness_oracle_rejects_asymmetric_successful_body_key_sets() {
     let source = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\n").unwrap();
     let mut session = CompilerSession::new();
     session.update(&source).into_result().unwrap();
-    session.rooted_semantic(&options).unwrap();
+    session.rooted_cfg(&options).unwrap();
     let transaction = session
         .retained_body_identity_states_for_test(&options)
         .into_values()
@@ -1793,7 +1794,7 @@ fn correctness_oracle_rejects_missing_reachable_transaction_on_both_sides() {
     .unwrap();
     let mut session = CompilerSession::new();
     session.update(&source).into_result().unwrap();
-    let output = session.rooted_semantic(&options).unwrap();
+    let output = session.rooted_cfg(&options).unwrap();
     let states = session.retained_body_identity_states_for_test(&options);
     let (root_identity, root_transaction) = states
         .into_iter()
@@ -1977,7 +1978,7 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
         warm.retained_body_transaction_origins_for_test(&["value".to_owned(), "main".to_owned()]);
     warm.update(&rev2).into_result().unwrap();
     close_import_source(&mut warm, &rev2, context2, reads2);
-    let warm_result = warm.rooted_semantic(&options);
+    let warm_result = warm.rooted_cfg(&options);
     let after =
         warm.retained_body_transaction_origins_for_test(&["value".to_owned(), "main".to_owned()]);
 
@@ -1985,7 +1986,7 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
     fresh.update(&rev2).into_result().unwrap();
     let (_, fresh_context, fresh_reads) = import_source(2, 2);
     close_import_source(&mut fresh, &rev2, fresh_context, fresh_reads);
-    let fresh_result = fresh.rooted_semantic(&options);
+    let fresh_result = fresh.rooted_cfg(&options);
 
     assert_warm_fresh_parity(
         "imported body edit",
@@ -2111,7 +2112,7 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
         .into_result()
         .unwrap();
     let wide_out = wide_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect("many shallow specializations must compile");
     // Finding 5: assert ALL 64 distinct specializations were analyzed, not merely
     // that at least one was.
@@ -2140,7 +2141,7 @@ fn specialization_breadth_compiles_depth_fails_e1200() {
         .into_result()
         .unwrap();
     let deep_err = deep_session
-        .rooted_semantic(&options)
+        .rooted_cfg(&options)
         .expect_err("an unbounded specialization chain must fail deterministically");
     assert!(
         deep_err.iter().any(

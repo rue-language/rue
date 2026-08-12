@@ -1651,6 +1651,16 @@ fn removed_parallel_entry_points_cannot_return() {
         "collect_function_cfg_queries".to_owned(),
         "finish_canonical_analysis".to_owned(),
         "compose_queried_bodies".to_owned(),
+        ["Rooted", "Semantic", "Output"].concat(),
+        ["rooted_", "semantic"].concat(),
+        ["semantic_", "projection_", "for_test"].concat(),
+        ["Semantic", "View"].concat(),
+        ["Function", "View"].concat(),
+        ["Cfg", "View"].concat(),
+        ["CfgBlock", "View"].concat(),
+        ["CfgInstruction", "View"].concat(),
+        ["CfgSuccessor", "View"].concat(),
+        ["Type", "View"].concat(),
     ];
     for removed in forbidden {
         assert!(

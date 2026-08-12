@@ -398,7 +398,7 @@ pub(crate) struct RevisionedQueryDatabase {
     // demanding body's stable requester anchor. It is pure (its only input is the
     // raw-body query, so the dependency edge is honest for invalidation, metrics,
     // and future parallel scheduling), does no presence check, and does no I/O.
-    // The rooted semantic attempt queries it BEFORE each body transaction, checks
+    // The rooted body-closure attempt queries it BEFORE each body transaction, checks
     // the demanded modules against the satisfied catalogue, and parks the absent
     // ones without entering the transaction.
     body_toolchain_demands:

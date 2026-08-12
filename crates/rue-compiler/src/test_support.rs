@@ -18,10 +18,62 @@ pub struct AirOutput {
 pub(crate) fn test_air(source: &str) -> MultiErrorResult<AirOutput> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
     let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
+    let named_structs = semantic
+        .declarations()
+        .iter()
+        .filter(|declaration| {
+            matches!(
+                &declaration.payload,
+                crate::durable_semantics::DurableDeclarationPayload::Struct { .. }
+            )
+        })
+        .count();
+    let anonymous_structs = semantic
+        .anonymous_nominals()
+        .iter()
+        .filter(|nominal| {
+            matches!(
+                &nominal.shape,
+                crate::durable_semantics::DurableAnonymousNominalShape::Struct { .. }
+            )
+        })
+        .count();
     Ok(AirOutput {
-        struct_count: semantic.struct_count,
+        struct_count: named_structs + anonymous_structs,
         warnings: semantic.warnings.clone(),
     })
+}
+
+pub(crate) fn assert_rooted_cfg_value_parity(
+    label: &str,
+    actual: &crate::session::RootedCfgOutput,
+    expected: &crate::session::RootedCfgOutput,
+) {
+    assert_eq!(
+        format!("{:?}", actual.functions()),
+        format!("{:?}", expected.functions()),
+        "{label}: rooted functions differ",
+    );
+    assert_eq!(
+        format!("{:?}", actual.warnings()),
+        format!("{:?}", expected.warnings()),
+        "{label}: warnings differ",
+    );
+    assert_eq!(
+        actual.string_domains().collect::<Vec<_>>(),
+        expected.string_domains().collect::<Vec<_>>(),
+        "{label}: function-owned string domains differ",
+    );
+    assert_eq!(
+        format!("{:?}", actual.declarations()),
+        format!("{:?}", expected.declarations()),
+        "{label}: declaration semantics differ",
+    );
+    assert_eq!(
+        format!("{:?}", actual.anonymous_nominals()),
+        format!("{:?}", expected.anonymous_nominals()),
+        "{label}: anonymous nominal semantics differ",
+    );
 }
 
 pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
@@ -41,7 +93,7 @@ pub(crate) fn test_codegen_state(state: &CompileState, target: Target) -> MultiE
     };
     let mut session = CompilerSession::new();
     publish_test_snapshot(&mut session, &state.snapshot)?;
-    let semantic = session.rooted_semantic(&options)?;
+    let semantic = session.rooted_cfg(&options)?;
     session
         .codegen_units(
             &semantic,
@@ -99,14 +151,13 @@ pub(crate) fn test_frontend_snapshot(
     options: &CompileOptions,
 ) -> MultiErrorResult<(
     std::sync::Arc<CanonicalRirOutput>,
-    std::sync::Arc<crate::session::RootedSemanticOutput>,
+    crate::session::RootedCfgOutput,
     CompilerSessionWork,
 )> {
     let mut session = CompilerSession::new();
     publish_test_snapshot(&mut session, snapshot)?;
-    let _rir = session.canonical_rir()?;
-    let semantic = session.rooted_semantic(options)?;
-    let rir = semantic.rir_owner().clone();
+    let rir = session.canonical_rir()?;
+    let semantic = session.rooted_cfg(options)?;
     let work = session.work().clone();
     drop(session);
     Ok((rir, semantic, work))

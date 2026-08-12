@@ -3716,7 +3716,7 @@ mod tests {
         }
         session.close_import_discovery(ledger).unwrap_err();
         let errors = session
-            .rooted_semantic(&crate::CompileOptions::default())
+            .rooted_cfg(&crate::CompileOptions::default())
             .unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(
@@ -3753,7 +3753,7 @@ mod tests {
         assert_eq!(session.work().last_rir, crate::CanonicalRirWork::default());
         assert!(
             session
-                .rooted_semantic(&crate::CompileOptions::default())
+                .rooted_cfg(&crate::CompileOptions::default())
                 .is_err()
         );
         let one_shot =

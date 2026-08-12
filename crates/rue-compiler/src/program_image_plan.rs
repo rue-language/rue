@@ -695,7 +695,7 @@ mod tests {
         let mut session = crate::CompilerSession::with_query_concurrency(workers);
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let units = session
             .codegen_units(
@@ -725,7 +725,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let products = session
             .codegen_products(
@@ -911,7 +911,7 @@ mod tests {
         };
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let units = session
             .codegen_units(
                 &semantic,
@@ -962,7 +962,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         assert_eq!(exports, ["rue_answer"]);
         let units = session
@@ -1074,7 +1074,7 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let first = ProgramImage::new(
             session
@@ -1093,7 +1093,7 @@ mod tests {
         let first_objects = first.fresh_objects(&options).unwrap();
 
         let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let second = ProgramImage::new(
             session
@@ -1159,7 +1159,7 @@ mod tests {
         let mut old_session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut old_session, &snapshot).unwrap();
         let old_rir = old_session.canonical_rir().unwrap();
-        let old_semantic = old_session.rooted_semantic(&options).unwrap();
+        let old_semantic = old_session.rooted_cfg(&options).unwrap();
         let old_exports =
             backend::collect_export_symbols(old_rir.rir(), old_rir.semantic_symbols().interner());
         let old = backend::compile_backend_products(

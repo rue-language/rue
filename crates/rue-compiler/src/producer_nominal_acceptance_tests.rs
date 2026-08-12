@@ -88,12 +88,12 @@ fn trusted_option_snapshot_with_source(root_source: &str, option_source: &str) -
 }
 
 /// Publish `root_source` alongside the trusted std `Option` module and return
-/// the semantic output. Import resolution is the test-fixture graph, exactly as
+/// the rooted CFG output. Import resolution is the test-fixture graph, exactly as
 /// the other multi-module frontend tests use.
-fn semantic_with_trusted_option(
+fn rooted_cfg_with_trusted_option(
     root_source: &str,
     options: &CompileOptions,
-) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+) -> Result<RootedCfgOutput, CompileErrors> {
     let snapshot = trusted_option_snapshot(root_source);
     let (_, semantic, _) = crate::test_frontend_snapshot(&snapshot, options)?;
     Ok(semantic)
@@ -110,12 +110,12 @@ fn compile_with_trusted_option(
 }
 
 /// The result Option enum types bound to each fallible parse/read intrinsic in
-/// a semantic output — the exact type `resolve_option_result_type` chose. Each
+/// a rooted CFG output — the exact type `resolve_option_result_type` chose. Each
 /// entry is the intrinsic's runtime kind paired with the `EnumId` of its
 /// `Option` result. Reading the AIR instruction's `ty` directly gives the
 /// binding the `?` site consumed, not merely what exists in the pool.
 fn fallible_intrinsic_option_enums(
-    semantic: &RootedSemanticOutput,
+    semantic: &RootedCfgOutput,
 ) -> Vec<(rue_air::RuntimeCallKind, String)> {
     let mut found = Vec::new();
     for function in semantic.functions() {
@@ -153,7 +153,7 @@ fn fallible_intrinsic_option_enums(
 /// definition-relative anchor (RUE-1089, allocation-order-independent), the same
 /// producer yields the same digest across programs — so a digest computed from a
 /// std-only reference program identifies the trusted std `Option(i64)` anywhere.
-fn bound_parse_i64_digest(semantic: &RootedSemanticOutput) -> String {
+fn bound_parse_i64_digest(semantic: &RootedCfgOutput) -> String {
     let parse = fallible_intrinsic_option_enums(semantic)
         .into_iter()
         .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
@@ -171,7 +171,7 @@ fn bound_parse_i64_digest(semantic: &RootedSemanticOutput) -> String {
 /// pool. Distinct producers of the same shape (a std `Option` and a local
 /// lookalike) appear as distinct digests, so the size of this set counts how
 /// many independent `Option(i64)` identities the program materialized.
-fn option_i64_pool_digests(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
+fn option_i64_pool_digests(semantic: &RootedCfgOutput) -> BTreeSet<String> {
     semantic
         .type_pools()
         .flat_map(|pool| {
@@ -201,7 +201,7 @@ fn main() -> i32 {
 }
 "#;
     let semantic =
-        semantic_with_trusted_option(reference, options).expect("std reference program compiles");
+        rooted_cfg_with_trusted_option(reference, options).expect("std reference program compiles");
     bound_parse_i64_digest(&semantic)
 }
 
@@ -226,7 +226,7 @@ fn main() -> i32 {
     }
 }
 "#;
-    let semantic = semantic_with_trusted_option(source, &options)
+    let semantic = rooted_cfg_with_trusted_option(source, &options)
         .expect("trusted-option parse program compiles");
     let bound = bound_parse_i64_digest(&semantic);
     assert_eq!(
@@ -288,7 +288,7 @@ fn main() -> i32 {
 }
 "#;
     let semantic =
-        semantic_with_trusted_option(source, &options).expect("lookalike program compiles");
+        rooted_cfg_with_trusted_option(source, &options).expect("lookalike program compiles");
 
     // Both a std and a local Option(i64) identity were materialized.
     let pool_digests = option_i64_pool_digests(&semantic);
@@ -372,7 +372,7 @@ fn main() -> i32 {
     }
 }
 "#;
-    let errors = fresh_semantic(local_lookalike, &options)
+    let errors = fresh_rooted_cfg(local_lookalike, &options)
         .expect_err("a local-Option `?` operand is no longer accepted (fallback deleted)");
     let rendered = errors.to_string();
     assert!(
@@ -397,7 +397,7 @@ fn main() -> i32 {
     }
 }
 "#;
-    let semantic = semantic_with_trusted_option(std_acquired, &options)
+    let semantic = rooted_cfg_with_trusted_option(std_acquired, &options)
         .expect("std-acquired `@parse_i64(s)?` compiles");
     // The `?` bound the trusted std Option(i64).
     assert_eq!(
@@ -490,7 +490,7 @@ fn main() -> i32 {
 }
 "#;
     let semantic =
-        semantic_with_trusted_option(source, &options).expect("two-body program compiles");
+        rooted_cfg_with_trusted_option(source, &options).expect("two-body program compiles");
     let parse_enums = fallible_intrinsic_option_enums(&semantic)
         .into_iter()
         .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
@@ -515,20 +515,20 @@ fn main() -> i32 {
 }
 
 /// Publish `root_source` (trusted std `Option` present) into `session` through
-/// the discovery protocol, and return the semantic output.
-fn publish_trusted_semantic(
+/// the discovery protocol, and return the rooted CFG output.
+fn publish_trusted_rooted_cfg(
     session: &mut CompilerSession,
     root_source: &str,
     options: &CompileOptions,
-) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+) -> Result<RootedCfgOutput, CompileErrors> {
     let snapshot = trusted_option_snapshot(root_source);
     crate::test_support::publish_test_snapshot(session, &snapshot)?;
-    session.rooted_semantic(options)
+    session.rooted_cfg(options)
 }
 
 /// Warm/fresh parity on t-win. A WARM incremental compile (reached after the
 /// session already compiled an unrelated prior revision that also carried the
-/// trusted std module) produces semantic output identical to a FRESH compile:
+/// trusted std module) produces rooted CFG output identical to a FRESH compile:
 /// the per-body demand, projection, and narrow install are deterministic and
 /// session-issuer-independent, so the well-known `Option(i64)` binding and every
 /// symbol agree exactly.
@@ -549,7 +549,7 @@ fn main() -> i32 {
 
     let mut warm_session = CompilerSession::new();
     // An unrelated prior revision (still trusted-std-bearing) warms the session.
-    publish_trusted_semantic(
+    publish_trusted_rooted_cfg(
         &mut warm_session,
         r#"
 const opt = @import("std/option.rue");
@@ -558,16 +558,12 @@ fn main() -> i32 { 0 }
         &options,
     )
     .ok();
-    let warm = publish_trusted_semantic(&mut warm_session, target, &options)
+    let warm = publish_trusted_rooted_cfg(&mut warm_session, target, &options)
         .expect("warm compile of t-win");
 
-    let fresh = semantic_with_trusted_option(target, &options).expect("fresh compile of t-win");
+    let fresh = rooted_cfg_with_trusted_option(target, &options).expect("fresh compile of t-win");
 
-    assert_eq!(
-        warm.unstable_parity_snapshot(),
-        fresh.unstable_parity_snapshot(),
-        "warm/fresh semantic parity snapshot diverged for t-win",
-    );
+    crate::test_support::assert_rooted_cfg_value_parity("warm/fresh t-win", &warm, &fresh);
     assert_eq!(
         bound_parse_i64_digest(&warm),
         bound_parse_i64_digest(&fresh),
@@ -576,10 +572,10 @@ fn main() -> i32 { 0 }
 }
 
 /// The per-site `Option(i64)` `EnumId` bound at every `@parse_i64` instruction in
-/// a semantic output, in AIR order. Reading `inst.ty` gives the identity each
+/// a rooted CFG output, in AIR order. Reading `inst.ty` gives the identity each
 /// site actually consumed, so mixed `?`-operand and plain uses can be compared
 /// directly for shared identity.
-fn parse_i64_bound_enums(semantic: &RootedSemanticOutput) -> Vec<String> {
+fn parse_i64_bound_enums(semantic: &RootedCfgOutput) -> Vec<String> {
     fallible_intrinsic_option_enums(semantic)
         .into_iter()
         .filter(|(runtime, _)| *runtime == rue_air::RuntimeCallKind::ParseI64)
@@ -603,7 +599,7 @@ fn main() -> i32 {
     0
 }
 "#;
-    let semantic = semantic_with_trusted_option(source, &options)
+    let semantic = rooted_cfg_with_trusted_option(source, &options)
         .expect("a plain unannotated @parse_i64 compiles");
     assert_eq!(
         bound_parse_i64_digest(&semantic),
@@ -633,7 +629,7 @@ fn main() -> i32 {
     match read_num("42") { O.Some(v) => @intCast(v), O.None => 0 }
 }
 "#;
-    let semantic = semantic_with_trusted_option(source, &options)
+    let semantic = rooted_cfg_with_trusted_option(source, &options)
         .expect("mixed plain + `?` in one body compiles with no E9000");
     let bound = parse_i64_bound_enums(&semantic);
     assert_eq!(
@@ -674,7 +670,7 @@ fn main() -> i32 {
     match fallibly("42") { O.Some(v) => @intCast(v) + plainly("1"), O.None => 0 }
 }
 "#;
-    let semantic = semantic_with_trusted_option(source, &options)
+    let semantic = rooted_cfg_with_trusted_option(source, &options)
         .expect("mixed plain + `?` across two bodies compiles with no E9000");
     let bound = parse_i64_bound_enums(&semantic);
     assert_eq!(
@@ -694,7 +690,7 @@ fn main() -> i32 {
 }
 
 /// B1(c). Warm/fresh parity on the mixed (plain + `?`) program: a warm
-/// incremental compile and a fresh compile agree on the full semantic parity
+/// incremental compile and a fresh compile agree on the full rooted CFG parity
 /// snapshot and on the shared well-known `Option(i64)` binding. The per-body
 /// demand, projection, and narrow install are deterministic and
 /// session-issuer-independent even when a body mixes plain and `?` uses.
@@ -715,7 +711,7 @@ fn main() -> i32 {
 "#;
 
     let mut warm_session = CompilerSession::new();
-    publish_trusted_semantic(
+    publish_trusted_rooted_cfg(
         &mut warm_session,
         r#"
 const opt = @import("std/option.rue");
@@ -724,16 +720,12 @@ fn main() -> i32 { 0 }
         &options,
     )
     .ok();
-    let warm = publish_trusted_semantic(&mut warm_session, target, &options)
+    let warm = publish_trusted_rooted_cfg(&mut warm_session, target, &options)
         .expect("warm compile of the mixed program");
-    let fresh =
-        semantic_with_trusted_option(target, &options).expect("fresh compile of the mixed program");
+    let fresh = rooted_cfg_with_trusted_option(target, &options)
+        .expect("fresh compile of the mixed program");
 
-    assert_eq!(
-        warm.unstable_parity_snapshot(),
-        fresh.unstable_parity_snapshot(),
-        "warm/fresh semantic parity snapshot diverged for the mixed program",
-    );
+    crate::test_support::assert_rooted_cfg_value_parity("warm/fresh mixed program", &warm, &fresh);
     let warm_bound = parse_i64_bound_enums(&warm);
     let fresh_bound = parse_i64_bound_enums(&fresh);
     assert!(
@@ -827,40 +819,40 @@ fn main() -> i32 {
 "#;
 
 /// Compile a single (import-free) source through a FRESH session and return its
-/// canonical semantic output (or the collected errors).
-fn fresh_semantic(
+/// canonical rooted CFG output (or the collected errors).
+fn fresh_rooted_cfg(
     source: &str,
     options: &CompileOptions,
-) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+) -> Result<RootedCfgOutput, CompileErrors> {
     let snapshot = SourceSnapshot::single("<acceptance>", source).map_err(CompileErrors::from)?;
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result()?;
-    session.rooted_semantic(options)
+    session.rooted_cfg(options)
 }
 
 /// Compile a single source WARM: publish an unrelated prior revision, compile
 /// it, then publish and compile the target source in the same session. This
 /// exercises the incremental path against the same session state a fresh
 /// compile never sees.
-fn warm_semantic(
+fn warm_rooted_cfg(
     prior: &str,
     source: &str,
     options: &CompileOptions,
-) -> Result<Arc<RootedSemanticOutput>, CompileErrors> {
+) -> Result<RootedCfgOutput, CompileErrors> {
     let mut session = CompilerSession::new();
     let prior_snapshot =
         SourceSnapshot::single("<acceptance>", prior).map_err(CompileErrors::from)?;
     session.update(&prior_snapshot).into_result()?;
-    session.rooted_semantic(options).ok(); // prior revision is not oracled.
+    session.rooted_cfg(options).ok(); // prior revision is not oracled.
     let snapshot = SourceSnapshot::single("<acceptance>", source).map_err(CompileErrors::from)?;
     session.update(&snapshot).into_result()?;
-    session.rooted_semantic(options)
+    session.rooted_cfg(options)
 }
 
-/// The emitted symbol names of a semantic output: every struct/enum symbol and
+/// The emitted symbol names of a rooted CFG output: every struct/enum symbol and
 /// every function machine name. Two independent cold compiles of one program
 /// must produce identical sets.
-fn symbol_names(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
+fn symbol_names(semantic: &RootedCfgOutput) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for pool in semantic.type_pools() {
         for id in pool.all_struct_ids() {
@@ -891,13 +883,13 @@ fn symbol_names(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
     names
 }
 
-/// The named (non-anonymous) type/function symbols of a semantic output. These
+/// The named (non-anonymous) type/function symbols of a rooted CFG output. These
 /// are invariant under reordering and unrelated edits. Anonymous synthetic
 /// symbols are asserted separately via [`anonymous_symbols`], which since the
 /// Stage-A stable-naming cut (ADR-0066, RUE-1089) are also invariant under those
 /// edits — their disambiguating suffix is a digest of the producer identity, not
 /// an allocation-order counter.
-fn named_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
+fn named_symbols(semantic: &RootedCfgOutput) -> BTreeSet<String> {
     symbol_names(semantic)
         .into_iter()
         .filter(|name| !name.contains("__anon_"))
@@ -905,12 +897,12 @@ fn named_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
         .collect()
 }
 
-/// The anonymous synthetic type symbols of a semantic output — the struct/enum
+/// The anonymous synthetic type symbols of a rooted CFG output — the struct/enum
 /// symbols whose spelling carries the `__anon_struct_`/`__anon_enum_` prefix.
 /// Since the Stage-A cut (ADR-0066, RUE-1089) each spelling is a STABLE digest
 /// of the producer identity, so this set is identical across independent cold
 /// compiles and across warm/fresh, and unchanged by unrelated edits.
-fn anonymous_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
+fn anonymous_symbols(semantic: &RootedCfgOutput) -> BTreeSet<String> {
     symbol_names(semantic)
         .into_iter()
         .filter(|name| name.contains("__anon_struct_") || name.contains("__anon_enum_"))
@@ -918,7 +910,7 @@ fn anonymous_symbols(semantic: &RootedSemanticOutput) -> BTreeSet<String> {
 }
 
 /// Count the anonymous struct/enum types minted into the type pool.
-fn anonymous_type_count(semantic: &RootedSemanticOutput) -> usize {
+fn anonymous_type_count(semantic: &RootedCfgOutput) -> usize {
     anonymous_symbols(semantic).len()
 }
 
@@ -931,9 +923,9 @@ fn anonymous_type_count(semantic: &RootedSemanticOutput) -> usize {
 #[test]
 fn producer_nominal_identity_is_stable_under_unrelated_edits() {
     let options = CompileOptions::default();
-    let baseline = fresh_semantic(MULTI_ANON_PRODUCER, &options)
+    let baseline = fresh_rooted_cfg(MULTI_ANON_PRODUCER, &options)
         .expect("baseline multi-anon producer compiles");
-    let reordered = fresh_semantic(MULTI_ANON_PRODUCER_REORDERED, &options)
+    let reordered = fresh_rooted_cfg(MULTI_ANON_PRODUCER_REORDERED, &options)
         .expect("reordered multi-anon producer compiles");
 
     // The same set of anonymous identities exists in both orderings.
@@ -980,20 +972,20 @@ fn producer_nominal_identity_is_stable_under_unrelated_edits() {
 // ---------------------------------------------------------------------------
 
 /// Two independent COLD compiles of the same program produce byte-identical
-/// semantic output (bodies, layouts, type pool, dependencies) and an identical
+/// rooted CFG output (bodies, layouts, type pool, dependencies) and an identical
 /// emitted symbol set. This is the determinism half of the parity oracle,
-/// asserted through the same `unstable_parity_snapshot` projection the scaling
+/// asserted through the same canonical rooted CFG comparisons the scaling
 /// harness uses.
 #[test]
-fn producer_nominal_semantic_output_is_deterministic_across_cold_compiles() {
+fn producer_nominal_rooted_cfg_is_deterministic_across_cold_compiles() {
     let options = CompileOptions::default();
-    let first = fresh_semantic(MULTI_ANON_PRODUCER, &options).expect("first cold compile");
-    let second = fresh_semantic(MULTI_ANON_PRODUCER, &options).expect("second cold compile");
+    let first = fresh_rooted_cfg(MULTI_ANON_PRODUCER, &options).expect("first cold compile");
+    let second = fresh_rooted_cfg(MULTI_ANON_PRODUCER, &options).expect("second cold compile");
 
-    assert_eq!(
-        first.unstable_parity_snapshot(),
-        second.unstable_parity_snapshot(),
-        "two cold compiles of the same program diverged in semantic parity snapshot",
+    crate::test_support::assert_rooted_cfg_value_parity(
+        "two cold compiles of the same program",
+        &first,
+        &second,
     );
     assert_eq!(
         symbol_names(&first),
@@ -1040,7 +1032,7 @@ fn main() -> i32 {
 }
 "#;
     let options = CompileOptions::default();
-    let first = fresh_semantic(source, &options).expect("distinct-producer program compiles");
+    let first = fresh_rooted_cfg(source, &options).expect("distinct-producer program compiles");
     let anon = anonymous_symbols(&first);
     assert_eq!(
         anon.len(),
@@ -1050,7 +1042,7 @@ fn main() -> i32 {
 
     // The same program compiled again yields the SAME two symbols (stability),
     // and they are the same set (determinism) — never a re-numbered pair.
-    let second = fresh_semantic(source, &options).expect("second compile");
+    let second = fresh_rooted_cfg(source, &options).expect("second compile");
     assert_eq!(
         anon,
         anonymous_symbols(&second),
@@ -1062,12 +1054,12 @@ fn main() -> i32 {
 /// caller-chosen request-local `FileId` while keeping the same LOGICAL module
 /// identity (same path). This lets a test present the same logical program under
 /// different `FileId` assignments.
-fn semantic_at_root_file_id(
+fn rooted_cfg_at_root_file_id(
     source: &str,
     file_id: FileId,
     logical_path: &str,
     options: &CompileOptions,
-) -> Arc<RootedSemanticOutput> {
+) -> RootedCfgOutput {
     let physical: std::collections::HashMap<FileId, String> =
         [(file_id, logical_path.to_owned())].into();
     let logical = physical.clone();
@@ -1078,7 +1070,7 @@ fn semantic_at_root_file_id(
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().expect("publish");
     session
-        .rooted_semantic(options)
+        .rooted_cfg(options)
         .expect("permuted-FileId program compiles")
 }
 
@@ -1104,8 +1096,8 @@ fn main() -> i32 {
 }
 "#;
     let options = CompileOptions::default();
-    let at_zero = semantic_at_root_file_id(source, FileId::new(0), "prog.rue", &options);
-    let at_seven = semantic_at_root_file_id(source, FileId::new(7), "prog.rue", &options);
+    let at_zero = rooted_cfg_at_root_file_id(source, FileId::new(0), "prog.rue", &options);
+    let at_seven = rooted_cfg_at_root_file_id(source, FileId::new(7), "prog.rue", &options);
 
     let anon = anonymous_symbols(&at_zero);
     assert!(
@@ -1123,18 +1115,18 @@ fn main() -> i32 {
 /// A WARM (incremental) compile of the acceptance program — reached after the
 /// session already compiled an unrelated prior revision — produces semantic
 /// output identical to a FRESH compile of the same program. This reuses the
-/// scaling harness's parity machinery (`unstable_parity_snapshot`) test-side.
+/// scaling harness's canonical rooted CFG comparisons test-side.
 #[test]
-fn producer_nominal_warm_and_fresh_semantic_output_agree() {
+fn producer_nominal_warm_and_fresh_rooted_cfg_output_agree() {
     let options = CompileOptions::default();
-    let warm = warm_semantic("fn main() -> i32 { 0 }", MULTI_ANON_PRODUCER, &options)
+    let warm = warm_rooted_cfg("fn main() -> i32 { 0 }", MULTI_ANON_PRODUCER, &options)
         .expect("warm compile of multi-anon producer");
-    let fresh = fresh_semantic(MULTI_ANON_PRODUCER, &options).expect("fresh compile");
+    let fresh = fresh_rooted_cfg(MULTI_ANON_PRODUCER, &options).expect("fresh compile");
 
-    assert_eq!(
-        warm.unstable_parity_snapshot(),
-        fresh.unstable_parity_snapshot(),
-        "warm/fresh semantic parity snapshot diverged for the acceptance producer",
+    crate::test_support::assert_rooted_cfg_value_parity(
+        "warm/fresh acceptance producer",
+        &warm,
+        &fresh,
     );
     assert_eq!(
         symbol_names(&warm),
@@ -1189,7 +1181,7 @@ fn execute_wrap(output: &CompileOutput, label: &str) -> std::process::Output {
 }
 
 /// Count the anonymous ENUM identities minted into the pool.
-fn anonymous_enum_count(semantic: &RootedSemanticOutput) -> usize {
+fn anonymous_enum_count(semantic: &RootedCfgOutput) -> usize {
     semantic
         .anonymous_nominals()
         .iter()
@@ -1213,7 +1205,7 @@ fn anonymous_enum_count(semantic: &RootedSemanticOutput) -> usize {
 #[test]
 fn wrap_single_nominal_identity_executes_to_the_payload() {
     let options = CompileOptions::default();
-    let semantic = fresh_semantic(WRAP_REPRO, &options).expect("Wrap repro compiles");
+    let semantic = fresh_rooted_cfg(WRAP_REPRO, &options).expect("Wrap repro compiles");
 
     // A single anonymous Option identity backs every reach of `self.inner`.
     assert_eq!(
@@ -1261,7 +1253,7 @@ fn wrap_payload_executes_on_both_backend_targets() {
             target,
             ..CompileOptions::default()
         };
-        fresh_semantic(WRAP_REPRO, &options).unwrap_or_else(|errors| {
+        fresh_rooted_cfg(WRAP_REPRO, &options).unwrap_or_else(|errors| {
             panic!("target {target:?}: Wrap repro must compile: {errors}")
         });
 
@@ -1346,7 +1338,7 @@ fn main() -> i32 {{
 fn divergent_anchor_transport_fails_closed_loud() {
     let options = CompileOptions::default();
     let program = fault_probe_program("__RUE1089_FAULT_DIVERGE__");
-    let errors = match fresh_semantic(&program, &options) {
+    let errors = match fresh_rooted_cfg(&program, &options) {
         Err(errors) => errors,
         Ok(_) => {
             panic!("a divergent transported anchor must fail closed, but the program compiled")
@@ -1373,7 +1365,7 @@ fn divergent_anchor_transport_fails_closed_loud() {
 /// producer's failure was masked by a live AIR mint), which created a second
 /// identity authority and hid transport defects. The reviewer ruled that
 /// unacceptable; every mode now sinks the request with a typed internal
-/// diagnostic and publishes NO semantic output.
+/// diagnostic and publishes NO rooted CFG output.
 #[test]
 fn resolve_level_transport_corruptions_fail_closed_loud() {
     let options = CompileOptions::default();
@@ -1383,12 +1375,12 @@ fn resolve_level_transport_corruptions_fail_closed_loud() {
         "__RUE1089_FAULT_WRONG_KIND__",
     ] {
         let program = fault_probe_program(marker);
-        // Zero publication: the request yields NO `RootedSemanticOutput`, so
+        // Zero publication: the request yields NO `RootedCfgOutput`, so
         // no nominal/member/alias terminal reached the caller.
-        let errors = match fresh_semantic(&program, &options) {
+        let errors = match fresh_rooted_cfg(&program, &options) {
             Err(errors) => errors,
             Ok(_) => panic!(
-                "corruption mode {marker} must fail closed with no published semantic output, \
+                "corruption mode {marker} must fail closed with no published rooted CFG output, \
                  but the program compiled",
             ),
         };
@@ -1409,7 +1401,7 @@ fn resolve_level_transport_corruptions_fail_closed_loud() {
 fn fault_probe_compiles_and_runs_cleanly_without_a_marker() {
     let options = CompileOptions::default();
     let program = fault_probe_program("no fault here");
-    fresh_semantic(&program, &options).expect("the unmarked probe must compile");
+    fresh_rooted_cfg(&program, &options).expect("the unmarked probe must compile");
     let snapshot = SourceSnapshot::single("<fault>", &program).expect("snapshot");
     let mut session = CompilerSession::new();
     session.update(&snapshot).into_result().expect("publish");
@@ -1518,7 +1510,7 @@ fn main() -> i32 {
     t.first
 }
 "#;
-    fresh_semantic(source, &options).expect("only the selected branch's site is consumed");
+    fresh_rooted_cfg(source, &options).expect("only the selected branch's site is consumed");
 }
 
 /// Trivia and unrelated declarations before the producer shift every module and
@@ -1557,8 +1549,8 @@ fn main() -> i32 {
     b.get()
 }
 "#;
-    let base = fresh_semantic(baseline, &options).expect("baseline compiles");
-    let shift = fresh_semantic(shifted, &options).expect("shifted compiles");
+    let base = fresh_rooted_cfg(baseline, &options).expect("baseline compiles");
+    let shift = fresh_rooted_cfg(shifted, &options).expect("shifted compiles");
     assert_eq!(
         anonymous_type_count(&base),
         anonymous_type_count(&shift),

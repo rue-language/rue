@@ -9,7 +9,7 @@ accepted: 2026-07-17
 implemented: 2026-07-18
 spec-sections: []
 superseded-by:
-relates: ["RUE-865", "RUE-866", "RUE-867", "RUE-868", "RUE-869", "RUE-439", "RUE-749", "ADR-0053", "ADR-0058"]
+relates: ["RUE-865", "RUE-866", "RUE-867", "RUE-868", "RUE-869", "RUE-1477", "RUE-1480", "RUE-439", "RUE-749", "ADR-0053", "ADR-0058"]
 ---
 
 # ADR-0061: Supported compiler facade and immutable artifact views
@@ -19,6 +19,14 @@ relates: ["RUE-865", "RUE-866", "RUE-867", "RUE-868", "RUE-869", "RUE-439", "RUE
 Accepted under RUE-865 on 2026-07-17 and implemented by RUE-866 through RUE-869
 on 2026-07-18. This is an API and ownership decision; it does not change Rue
 language semantics.
+
+Amended on 2026-08-12 by RUE-1477 and RUE-1480: the semantic and CFG view
+portion of this decision is superseded. `CompilerSession::semantic`,
+`SemanticView`, `FunctionView`, `CfgView`, `TypeView`, and their companion
+views have been deleted. Compiler consumers and in-tree test/tooling consumers
+project from the canonical rooted body/CFG query graph; no stable or test-only
+whole-program semantic facade may assemble a peer artifact. The historical
+inventory below records the original decision rather than the current API.
 
 ## Summary
 

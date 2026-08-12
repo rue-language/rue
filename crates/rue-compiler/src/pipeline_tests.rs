@@ -160,9 +160,9 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        warm_session.rooted_semantic(&cold_options).unwrap();
-        let warm = warm_session.rooted_semantic(&optimized).unwrap();
-        assert!(!warm.strings().is_empty());
+        warm_session.rooted_cfg(&cold_options).unwrap();
+        let warm = warm_session.rooted_cfg(&optimized).unwrap();
+        assert!(warm.string_domains().any(|strings| !strings.is_empty()));
         let warm_atoms = warm
             .functions()
             .iter()
@@ -176,7 +176,7 @@ mod tests {
             .update_for_presentation(&snapshot)
             .into_result()
             .unwrap();
-        let fresh = fresh_session.rooted_semantic(&optimized).unwrap();
+        let fresh = fresh_session.rooted_cfg(&optimized).unwrap();
         let fresh_atoms = fresh
             .functions()
             .iter()
@@ -188,7 +188,7 @@ mod tests {
             format!("{:?}", fresh.functions())
         );
         assert_eq!(warm.type_pool_stats(), fresh.type_pool_stats());
-        let named_types = |semantic: &RootedSemanticOutput| {
+        let named_types = |semantic: &RootedCfgOutput| {
             semantic
                 .type_pools()
                 .map(|pool| {
@@ -206,7 +206,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(named_types(&warm), named_types(&fresh));
-        assert_eq!(warm.strings(), fresh.strings());
+        assert_eq!(
+            warm.string_domains().collect::<Vec<_>>(),
+            fresh.string_domains().collect::<Vec<_>>()
+        );
         assert_eq!(
             format!("{:?}", warm.warnings()),
             format!("{:?}", fresh.warnings())
@@ -1746,7 +1749,7 @@ mod tests {
             .update_for_presentation(&first)
             .into_result()
             .unwrap();
-        let cold = warm_session.rooted_semantic(&optimized).unwrap();
+        let cold = warm_session.rooted_cfg(&optimized).unwrap();
         let cold_atoms = cold
             .functions()
             .iter()
@@ -1766,19 +1769,22 @@ mod tests {
             .update_for_presentation(&reordered)
             .into_result()
             .unwrap();
-        let warm = warm_session.rooted_semantic(&optimized).unwrap();
+        let warm = warm_session.rooted_cfg(&optimized).unwrap();
         let warm_atoms = warm
             .functions()
             .iter()
-            .flat_map(|function| function.record.local_atoms.iter())
+            .flat_map(|function| {
+                function
+                    .record
+                    .local_atoms
+                    .iter()
+                    .map(|atom| (atom, function.record.strings.as_ref()))
+            })
             .collect::<Vec<_>>();
         assert_eq!(warm_atoms.len(), 2);
-        assert!(warm_atoms.iter().all(|atom| {
+        assert!(warm_atoms.iter().all(|(atom, strings)| {
             atom.identity.kind == rue_air::LocalAtomKind::ReadOnlyData
-                && warm
-                    .strings()
-                    .get(atom.dense_id as usize)
-                    .map(String::as_str)
+                && strings.get(atom.dense_id as usize).map(String::as_str)
                     == Some(atom.content.as_ref())
         }));
 
@@ -2124,17 +2130,17 @@ mod tests {
         )
         .unwrap();
         let options = CompileOptions::default();
-        let expected_link = LinkInputDescriptor::from_compile_options(&snapshot, &options);
 
         let mut session = CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
-        let semantic = session.rooted_semantic(&options).unwrap();
+        let rir = session.canonical_rir().unwrap();
+        let semantic = session.rooted_cfg(&options).unwrap();
 
         assert_eq!(semantic.functions().len(), 1);
-        assert_eq!(semantic.input(), &expected_link.codegen);
         assert_eq!(
-            semantic.input().semantic.sources.root(),
-            snapshot.source_revision().root()
+            rir.source_revision(),
+            snapshot.source_revision(),
+            "the canonical RIR and rooted CFG request share the published source identity"
         );
     }
 
