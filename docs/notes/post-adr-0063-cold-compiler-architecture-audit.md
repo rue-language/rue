@@ -1053,6 +1053,19 @@ paired MAD and a -11.30% to +12.37% range. Median peak RSS falls by 2.01 MiB
 within dispersion. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1401 reuses the instruction scheduler's dense dependency-graph storage
+across basic blocks in one function. Retained node slots reset their incoming
+and outgoing edges, priority, and latency before reuse; the edge-deduplication
+table is likewise filled with its empty sentinel for every block. The storage
+lifetime remains bounded by one function, and scheduler policy is unchanged.
+
+Four fixed one-worker allocation probes save 35,752--36,052 calls and
+11.89--12.05 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.68% paired median, with 1.20%
+paired MAD and a -5.44% to +2.36% range. Median peak RSS falls by 2.62 MiB
+within dispersion. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

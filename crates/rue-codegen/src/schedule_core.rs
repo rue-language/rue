@@ -224,6 +224,21 @@ impl SchedNode {
             latency,
         }
     }
+
+    /// Prepare one retained node slot for another basic block.
+    fn reset(&mut self, latency: u32) {
+        self.deps.clear();
+        self.users.clear();
+        self.priority = 0;
+        self.latency = latency;
+    }
+}
+
+/// Dense dependency-graph storage reused across blocks in one function.
+#[derive(Default)]
+struct GraphScratch {
+    nodes: Vec<SchedNode>,
+    last_edge_target: Vec<usize>,
 }
 
 /// A ready instruction with its priority, for the scheduling queue.
@@ -268,6 +283,7 @@ where
     let mut destination = (0..instructions.len()).collect::<Vec<_>>();
     let mut block_start = 0;
     let mut regs = RegTracker::new();
+    let mut graph = GraphScratch::default();
 
     for block_end in 0..instructions.len() {
         if !adapter.is_barrier(&instructions[block_end]) {
@@ -281,6 +297,7 @@ where
             block_end,
             &mut destination,
             &mut regs,
+            &mut graph,
         );
         block_start = block_end + 1;
     }
@@ -293,6 +310,7 @@ where
             instructions.len(),
             &mut destination,
             &mut regs,
+            &mut graph,
         );
     }
 
@@ -307,6 +325,7 @@ fn record_block_permutation<A>(
     sched_end: usize,
     destination: &mut [usize],
     regs: &mut RegTracker<A::Reg>,
+    graph: &mut GraphScratch,
 ) where
     A: SchedulerAdapter,
 {
@@ -314,9 +333,9 @@ fn record_block_permutation<A>(
         return;
     }
 
-    let mut nodes = build_dep_graph_reusing(instructions, start, sched_end, adapter, regs);
-    calculate_priorities(&mut nodes);
-    let order = schedule_block(&nodes);
+    let nodes = build_dep_graph_reusing(instructions, start, sched_end, adapter, regs, graph);
+    calculate_priorities(nodes);
+    let order = schedule_block(nodes);
 
     for (new_offset, &old_offset) in order.iter().enumerate() {
         destination[start + old_offset] = start + new_offset;
@@ -358,29 +377,46 @@ pub(crate) fn build_dep_graph<A>(
 where
     A: SchedulerAdapter,
 {
-    build_dep_graph_reusing(instructions, start, end, adapter, &mut RegTracker::new())
+    let mut graph = GraphScratch::default();
+    build_dep_graph_reusing(
+        instructions,
+        start,
+        end,
+        adapter,
+        &mut RegTracker::new(),
+        &mut graph,
+    );
+    graph.nodes.truncate(end - start);
+    graph.nodes
 }
 
-fn build_dep_graph_reusing<A>(
+fn build_dep_graph_reusing<'a, A>(
     instructions: &[A::Inst],
     start: usize,
     end: usize,
     adapter: &A,
     regs: &mut RegTracker<A::Reg>,
-) -> Vec<SchedNode>
+    graph: &'a mut GraphScratch,
+) -> &'a mut [SchedNode]
 where
     A: SchedulerAdapter,
 {
     let block_len = end - start;
-    let mut nodes: Vec<SchedNode> = instructions[start..end]
-        .iter()
-        .map(|inst| SchedNode::new(adapter.latency(inst)))
-        .collect();
+    graph.nodes.resize_with(block_len, || SchedNode::new(0));
+    for (node, inst) in graph.nodes[..block_len]
+        .iter_mut()
+        .zip(&instructions[start..end])
+    {
+        node.reset(adapter.latency(inst));
+    }
     // Every edge discovered while visiting instruction `to` comes from an
     // earlier dense instruction index. Remember the most recent target seen
     // for each predecessor: equal targets are duplicate edges, while a later
     // target starts a new edge without clearing the whole table.
-    let mut last_edge_target = vec![usize::MAX; block_len];
+    graph.last_edge_target.clear();
+    graph.last_edge_target.resize(block_len, usize::MAX);
+    let nodes = &mut graph.nodes[..block_len];
+    let last_edge_target = &mut graph.last_edge_target;
 
     // Track the last writer and the readers since that write, per register
     // class (see `RegTracker`). Retain map capacity across blocks in one MIR.
@@ -399,14 +435,14 @@ where
         // RAW (Read After Write): this instruction reads what another wrote.
         for reg in &reads {
             if let Some(writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
-                add_edge(&mut nodes, &mut last_edge_target, writer, i);
+                add_edge(nodes, last_edge_target, writer, i);
             }
         }
 
         // WAW (Write After Write): this instruction writes what another wrote.
         for reg in &writes {
             if let Some(prev_writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
-                add_edge(&mut nodes, &mut last_edge_target, prev_writer, i);
+                add_edge(nodes, last_edge_target, prev_writer, i);
             }
         }
 
@@ -415,7 +451,7 @@ where
             if let Some(readers) = regs.last_readers(adapter.reg_class(*reg), reg) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, &mut last_edge_target, reader, i);
+                        add_edge(nodes, last_edge_target, reader, i);
                     }
                 }
             }
@@ -425,19 +461,19 @@ where
         if adapter.reads_flags(inst)
             && let Some(writer) = last_flags_writer
         {
-            add_edge(&mut nodes, &mut last_edge_target, writer, i);
+            add_edge(nodes, last_edge_target, writer, i);
         }
 
         if adapter.writes_flags(inst)
             && let Some(prev_writer) = last_flags_writer
         {
-            add_edge(&mut nodes, &mut last_edge_target, prev_writer, i);
+            add_edge(nodes, last_edge_target, prev_writer, i);
         }
 
         if adapter.writes_flags(inst) {
             for &reader in &last_flags_readers {
                 if reader != i {
-                    add_edge(&mut nodes, &mut last_edge_target, reader, i);
+                    add_edge(nodes, last_edge_target, reader, i);
                 }
             }
         }
@@ -445,7 +481,7 @@ where
         // Memory dependencies (conservative: order all memory accesses).
         if adapter.accesses_memory(inst) {
             if let Some(prev) = last_memory_access {
-                add_edge(&mut nodes, &mut last_edge_target, prev, i);
+                add_edge(nodes, last_edge_target, prev, i);
             }
             last_memory_access = Some(i);
         }
@@ -459,13 +495,13 @@ where
             if let Some(readers) = regs.last_readers(class, &clobbered) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, &mut last_edge_target, reader, i);
+                        add_edge(nodes, last_edge_target, reader, i);
                     }
                 }
             }
             // And after the last writer.
             if let Some(writer) = regs.last_writer(class, &clobbered) {
-                add_edge(&mut nodes, &mut last_edge_target, writer, i);
+                add_edge(nodes, last_edge_target, writer, i);
             }
         }
 
@@ -793,12 +829,48 @@ mod tests {
         let gp0 = ClassedReg(RegClass::Gp, 0);
         let instructions = vec![inst(&[], &[gp0]), inst(&[gp0], &[])];
         let mut tracker = RegTracker::new();
+        let mut graph = GraphScratch::default();
 
-        let first = build_dep_graph_reusing(&instructions, 0, 1, &TestAdapter, &mut tracker);
-        let second = build_dep_graph_reusing(&instructions, 1, 2, &TestAdapter, &mut tracker);
-
+        let first =
+            build_dep_graph_reusing(&instructions, 0, 1, &TestAdapter, &mut tracker, &mut graph);
         assert!(first[0].deps.is_empty());
+        let second =
+            build_dep_graph_reusing(&instructions, 1, 2, &TestAdapter, &mut tracker, &mut graph);
+
         assert!(second[0].deps.is_empty());
+    }
+
+    #[test]
+    fn reused_graph_scratch_resets_nodes_and_edge_deduplication() {
+        let gp0 = ClassedReg(RegClass::Gp, 0);
+        let instructions = vec![
+            inst(&[], &[gp0]),
+            inst(&[gp0], &[]),
+            independent_inst(2, 5, false),
+            independent_inst(3, 6, false),
+            inst(&[], &[gp0]),
+            inst(&[gp0], &[]),
+        ];
+        let mut tracker = RegTracker::new();
+        let mut graph = GraphScratch::default();
+
+        let first =
+            build_dep_graph_reusing(&instructions, 0, 2, &TestAdapter, &mut tracker, &mut graph);
+        calculate_priorities(first);
+        assert_eq!(first[0].users.as_slice(), [1]);
+        assert_eq!(first[1].deps.as_slice(), [0]);
+        assert!(first.iter().any(|node| node.priority != 0));
+
+        let independent =
+            build_dep_graph_reusing(&instructions, 2, 4, &TestAdapter, &mut tracker, &mut graph);
+        assert!(independent.iter().all(|node| node.deps.is_empty()));
+        assert!(independent.iter().all(|node| node.users.is_empty()));
+        assert!(independent.iter().all(|node| node.priority == 0));
+
+        let repeated =
+            build_dep_graph_reusing(&instructions, 4, 6, &TestAdapter, &mut tracker, &mut graph);
+        assert_eq!(repeated[0].users.as_slice(), [1]);
+        assert_eq!(repeated[1].deps.as_slice(), [0]);
     }
 
     #[test]
