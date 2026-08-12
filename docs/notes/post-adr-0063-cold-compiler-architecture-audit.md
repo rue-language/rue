@@ -1516,9 +1516,18 @@ the existing nested-batch proof semantics while avoiding shared
 20 balanced Lattice pairs reduced retired instructions by 0.2067% (MAD 0.0313%)
 with neutral wall time, cycles, and RSS. Four allocation-accounting pairs
 removed a median 155,870.5 allocation calls and 5,286,240 requested bytes.
-Compiler work, source metrics, emitted-output
-metrics, and executable digest remained exact.
+Compiler work, source metrics, emitted-output metrics, and executable digest
+remained exact.
 
+RUE-1444 applies the same retained-identity hasher to the temporary maps and
+visited set built by terminal-cone promotion. Those structures contain only
+runtime-owned incarnation, semantic-stamp, and revision tuples, but previously
+paid SipHash while selecting and walking every published root cone. Sixteen
+balanced Lattice pairs reduced retired instructions by 1.7378% (MAD 0.0521%),
+compiler clock by 1.5903% (MAD 1.5903%), and cycles by 1.2335% (MAD 0.9286%);
+RSS was neutral. Four allocation-accounting pairs were neutral at a median
+-33.5 calls and -27,530 requested bytes. Compiler work, source metrics,
+emitted-output metrics, and executable digest remained exact.
 ## Next actions and decision boundary
 
 Authorized low-risk work:
