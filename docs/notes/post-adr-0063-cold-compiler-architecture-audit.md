@@ -1612,6 +1612,21 @@ and +0.0416% respectively. Four allocation-accounting pairs removed a median
 from 405,868 to 366,331; every other compiler-work counter, source/output
 metric, and executable byte remained identical.
 
+RUE-1452 records terminal-lease attempts as disjoint unique and duplicate
+outcomes. A duplicate previously incremented the public attempt total and then
+incremented the duplicate outcome, even though the total is their exact sum.
+Snapshots, task transfer, and aggregate reset now derive the unchanged public
+total, matching the validation runtime's traversal, memo, endorsement, and
+demand counters. Cold Lattice therefore removes exactly 6,363 redundant
+task-local atomic updates from its 199,098 lease observations.
+
+Sixteen balanced fixed one-worker cold Lattice pairs were neutral: compiler
+clock +0.1361% paired median (0.5372% MAD), retired instructions -0.0111%
+(0.0657% MAD), cycles +0.0703% (0.6177% MAD), and peak RSS +0.2496%
+(0.3077% MAD). Four allocation-accounting pairs were also neutral at a median
++198 calls and +37,008 requested bytes. Every published compiler-work counter,
+source/output metric, and executable byte remained identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

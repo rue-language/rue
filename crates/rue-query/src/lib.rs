@@ -2995,9 +2995,9 @@ impl ValidationWork {
 /// Task-local storage for the independent validation outcomes.
 ///
 /// `traversals`, `registry_probes`, `node_visits`, `memo_misses`,
-/// `endorsement_probes`, and `demands` are exact sums of fields below, so
-/// snapshots derive them instead of paying a second atomic update on the
-/// validation hot path.
+/// `endorsement_probes`, `terminal_lease_observations`, and `demands` are exact
+/// sums of fields below, so snapshots derive them instead of paying a second
+/// atomic update on the validation hot path.
 #[derive(Debug, Default)]
 struct AtomicValidationWork {
     successful_traversals: AtomicU64,
@@ -3013,7 +3013,7 @@ struct AtomicValidationWork {
     proof_reacquisition_misses: AtomicU64,
     endorsement_misses: AtomicU64,
     endorsement_hits: AtomicU64,
-    terminal_lease_observations: AtomicU64,
+    unique_terminal_lease_observations: AtomicU64,
     duplicate_terminal_lease_observations: AtomicU64,
     demand_without_results: AtomicU64,
     demand_reuses: AtomicU64,
@@ -3046,6 +3046,12 @@ impl AtomicValidationWork {
         work.endorsement_probes = work
             .endorsement_probes
             .saturating_add(work.endorsement_hits);
+        // `terminal_lease_observations` carries unique observations inside the
+        // task accumulator. Every attempted lease is either unique or a
+        // duplicate, so the public attempt total is their exact sum.
+        work.terminal_lease_observations = work
+            .terminal_lease_observations
+            .saturating_add(work.duplicate_terminal_lease_observations);
         // `demands` carries demands which ended before producing a query
         // result inside the task accumulator. Every other demand has exactly
         // one published execution outcome.
@@ -3073,7 +3079,9 @@ impl AtomicValidationWork {
             proof_reacquisition_misses: self.proof_reacquisition_misses.load(Ordering::Relaxed),
             endorsement_probes: self.endorsement_misses.load(Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.load(Ordering::Relaxed),
-            terminal_lease_observations: self.terminal_lease_observations.load(Ordering::Relaxed),
+            terminal_lease_observations: self
+                .unique_terminal_lease_observations
+                .load(Ordering::Relaxed),
             duplicate_terminal_lease_observations: self
                 .duplicate_terminal_lease_observations
                 .load(Ordering::Relaxed),
@@ -3104,7 +3112,7 @@ impl AtomicValidationWork {
             endorsement_probes: self.endorsement_misses.swap(0, Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.swap(0, Ordering::Relaxed),
             terminal_lease_observations: self
-                .terminal_lease_observations
+                .unique_terminal_lease_observations
                 .swap(0, Ordering::Relaxed),
             duplicate_terminal_lease_observations: self
                 .duplicate_terminal_lease_observations
@@ -3141,7 +3149,6 @@ impl AtomicValidationWork {
             certificate_misses,
             proof_reacquisition_misses,
             endorsement_hits,
-            terminal_lease_observations,
             duplicate_terminal_lease_observations,
             demand_reuses,
             demand_computes,
@@ -3156,6 +3163,13 @@ impl AtomicValidationWork {
         if endorsement_misses != 0 {
             self.endorsement_misses
                 .fetch_add(endorsement_misses, Ordering::Relaxed);
+        }
+        let unique_terminal_lease_observations = work
+            .terminal_lease_observations
+            .saturating_sub(work.duplicate_terminal_lease_observations);
+        if unique_terminal_lease_observations != 0 {
+            self.unique_terminal_lease_observations
+                .fetch_add(unique_terminal_lease_observations, Ordering::Relaxed);
         }
         let demand_results = work
             .demand_reuses
@@ -7055,14 +7069,12 @@ where
     /// cone promotion can select the exact proof path; unrelated pins remain
     /// task-scoped and are excluded from the promoted graph walk.
     fn lease_observed_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
-        task.validation_work
-            .terminal_lease_observations
-            .fetch_add(1, Ordering::Relaxed);
-        if !self.insert_task_lease(task, pin) {
-            task.validation_work
-                .duplicate_terminal_lease_observations
-                .fetch_add(1, Ordering::Relaxed);
-        }
+        let counter = if self.insert_task_lease(task, pin) {
+            &task.validation_work.unique_terminal_lease_observations
+        } else {
+            &task.validation_work.duplicate_terminal_lease_observations
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Transfers exact terminals already held by the adoption capability.
@@ -11056,6 +11068,10 @@ mod tests {
         work.certificate_misses.fetch_add(8, Ordering::Relaxed);
         work.proof_reacquisition_misses
             .fetch_add(9, Ordering::Relaxed);
+        work.unique_terminal_lease_observations
+            .fetch_add(10, Ordering::Relaxed);
+        work.duplicate_terminal_lease_observations
+            .fetch_add(2, Ordering::Relaxed);
 
         let expected = ValidationWork {
             traversals: 9,
@@ -11070,6 +11086,8 @@ mod tests {
             memo_misses: 17,
             certificate_misses: 8,
             proof_reacquisition_misses: 9,
+            terminal_lease_observations: 12,
+            duplicate_terminal_lease_observations: 2,
             ..ValidationWork::default()
         };
         assert_eq!(work.snapshot(), expected);
