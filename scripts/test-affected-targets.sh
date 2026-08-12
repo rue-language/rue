@@ -155,7 +155,7 @@ check_lane() { # check_lane <desc> <expected-status> <full> <lanes> <lane>
 # Every gated lane must be recognized; an unrecognized name would silently fall
 # through to the corpus path and be treated as an unknown target (fail-open),
 # which is safe but would make the lane permanently ungated.
-for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility; do
+for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
   TESTS=$((TESTS + 1))
   if "${AFFECTED[@]}" is-selectable-lane "$lane"; then
     pass "lane: $lane is selectable"
@@ -166,7 +166,7 @@ done
 
 # Each lane must name at least one representative Buck target, or it could never
 # be selected and would be deselected on every selective run.
-for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility; do
+for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility rue-program-digests; do
   TESTS=$((TESTS + 1))
   if [ -n "$("${AFFECTED[@]}" lane-targets "$lane")" ]; then
     pass "lane: $lane declares representative targets"

@@ -307,6 +307,32 @@ Two consequences are worth knowing before changing a corpus target:
    corpus *produces* that outlives the run belongs in the action's outputs, or it
    silently stops existing the moment the suite starts being cache-served.
 
+### rue_program compile actions (ADR-0070, RUE-1404)
+
+`rue_program` (`rue_rules.bzl`) is the second cacheable writer class after the
+corpus actions: its scan (`rue --emit deps`), manifest derivation, and compile
+all set `allow_cache_upload`, so a PR run's program compiles are served to the
+merge-group run like any rustc action. Three properties matter for cache
+reasoning:
+
+- **The scan's output is machine-unstable but its key is not.** The dependency
+  envelope embeds absolute paths and inode/mtime identity, and a cache-served
+  envelope from another checkout is expected; the derivation step re-anchors
+  through the envelope's recorded roots and emits manifest entries relative to
+  the manifest's own directory, so the derived manifest is byte-identical
+  across checkout roots. Consequently a scan/derive cache miss on one machine
+  still converges to a compile cache HIT, because the compile is keyed on the
+  manifest's content, not the envelope's.
+- **The declared boundary is enforced at derivation, not by the cache.** An
+  accepted read outside `srcs ∪ std` fails the build in-band; see
+  `scripts/rue-program-derive-manifest.py` for why that check must not be
+  simplified away.
+- **`scripts/check-rue-program-digests.sh` is the standing control** (the
+  `rue-program-digests` CI lane): declared mutations re-run the chain,
+  undeclared neighbours do not, asserted as steady-state convergence because
+  OSS buck2 has no persistent digest-keyed local action cache and
+  "revert-is-a-cache-hit" is not a property it promises.
+
 ### Reading whether a corpus was cache-served
 
 The thin `sh_test` reports `Pass: root//:NAME (0.0s)` whether the corpus ran for
