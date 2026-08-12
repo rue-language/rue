@@ -69,6 +69,24 @@ pub(crate) enum ParsedSemanticSignature {
     Destructor,
 }
 
+impl ParsedSemanticSignature {
+    pub(crate) fn callable_type_syntax(&self) -> Option<rue_air::DurableCallableTypeSyntax> {
+        let Self::Callable {
+            parameters, result, ..
+        } = self
+        else {
+            return None;
+        };
+        Some(rue_air::DurableCallableTypeSyntax {
+            parameters: parameters
+                .iter()
+                .map(|parameter| parameter.ty.clone())
+                .collect(),
+            result: result.clone(),
+        })
+    }
+}
+
 /// The body an accessor's signature reparse carries, or the empty stand-in
 /// every ordinary signature reconstructs with.
 fn accessor_body_source(
@@ -967,6 +985,10 @@ pub(crate) struct ResolvedDeclarationSignature {
     /// merely to recover the same key.
     pub(crate) definition: StableDefinitionKey,
     pub(crate) signature: DeclarationSignatureProjection,
+    /// Exact callable type fragments captured by the same canonical parse as
+    /// `signature`. Body specialization needs these for dependent types and
+    /// must not reparse the raw declaration to recover them.
+    pub(crate) callable_type_syntax: Option<rue_air::DurableCallableTypeSyntax>,
     pub(crate) anonymous_nominals: Arc<[DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[SemanticDeclarationDependency]>,
     pub(crate) deferred_ownership: Arc<[DeferredOwnershipGate]>,
@@ -1196,9 +1218,16 @@ impl RetainedCharge for DeclarationSignatureProjection {
 
 impl RetainedCharge for ResolvedDeclarationSignature {
     fn retained_charge(&self) -> u64 {
+        let callable_type_syntax = self.callable_type_syntax.as_ref().map_or(0, |syntax| {
+            syntax
+                .parameters
+                .retained_charge()
+                .saturating_add(syntax.result.retained_charge())
+        });
         self.definition
             .retained_charge()
             .saturating_add(self.signature.retained_charge())
+            .saturating_add(callable_type_syntax)
             .saturating_add(self.anonymous_nominals.retained_charge())
             .saturating_add(self.dependencies.retained_charge())
             .saturating_add(self.deferred_ownership.retained_charge())

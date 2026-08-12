@@ -13800,6 +13800,8 @@ impl RevisionedQueryDatabase {
                                                     crate::semantic_query_nucleus::ResolvedDeclarationSignature {
                                                         definition: provider.dependency_source.clone(),
                                                         signature,
+                                                        callable_type_syntax: parsed
+                                                            .callable_type_syntax(),
                                                         anonymous_nominals: provider
                                                             .anonymous_nominals
                                                             .values()
@@ -17454,7 +17456,6 @@ impl BodyTransactionEvaluator {
             context,
             parse_modules: self.parse_modules.clone(),
             module_source_bases: self.module_source_bases.clone(),
-            raw_declaration_signatures: self.raw_declaration_signatures.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
             semantic_nucleus: self.semantic_nucleus.clone(),
@@ -17469,7 +17470,6 @@ impl BodyTransactionEvaluator {
             observed,
             positive_references,
             meter: self.provider_observation_meter.clone(),
-            callable_type_syntax: Rc::new(std::cell::RefCell::new(HashMap::new())),
         }
     }
 
@@ -21112,8 +21112,6 @@ pub(crate) struct CompilerBodyProviderQueries<'a> {
     context: &'a rue_query::QueryContext,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
-    raw_declaration_signatures:
-        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
     semantic_nucleus: QueryFamily<
@@ -21135,14 +21133,6 @@ pub(crate) struct CompilerBodyProviderQueries<'a> {
     positive_references:
         std::rc::Rc<std::cell::RefCell<BTreeSet<crate::body_query::BodyReference>>>,
     meter: Arc<ProviderObservationCounters>,
-    callable_type_syntax: Rc<
-        std::cell::RefCell<
-            HashMap<
-                crate::declaration_candidate::DeclarationCandidateKey,
-                Option<(Vec<Arc<str>>, Arc<str>)>,
-            >,
-        >,
-    >,
 }
 
 #[allow(dead_code)]
@@ -22148,6 +22138,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let candidate = self.candidate(key)?;
         let signature = self.signature_for_candidate(&candidate.declaration)?;
+        let type_syntax = signature.callable_type_syntax;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,
@@ -22167,6 +22158,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
                 .map(provider_signature_parameter)
                 .collect(),
             result,
+            type_syntax,
             is_public: candidate.identity.is_public,
             is_unchecked,
             is_extern,
@@ -22183,6 +22175,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let owner = key.owner()?;
         let signature = self.signature(key)?;
+        let type_syntax = signature.callable_type_syntax;
         let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
             parameters,
             result,
@@ -22208,6 +22201,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
                 .map(provider_signature_parameter)
                 .collect(),
             result,
+            type_syntax,
             has_self,
             self_mode: match self_mode {
                 crate::durable_semantics::DurableParameterMode::Value => {
@@ -22222,14 +22216,6 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             },
             is_accessor,
         })
-    }
-
-    fn callable_type_syntax(
-        &self,
-        key: &crate::StableDefinitionKey,
-    ) -> Option<(Vec<Arc<str>>, Arc<str>)> {
-        self.provider
-            .callable_type_syntax(&self.candidate(key)?.declaration)
     }
 
     fn uses_deferred_body_type_placeholders(&self) -> bool {
@@ -22774,62 +22760,6 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 None
             }
         }
-    }
-
-    /// Observe the exact body-free declaration syntax used by body-local
-    /// specialization. This remains a separate dependency from the reduced
-    /// semantic signature because dependent type expressions cannot be
-    /// reconstructed from its comptime placeholders.
-    fn callable_type_syntax(
-        &self,
-        declaration: &crate::declaration_candidate::DeclarationCandidateKey,
-    ) -> Option<(Vec<Arc<str>>, Arc<str>)> {
-        if let Some(syntax) = self.queries.callable_type_syntax.borrow().get(declaration) {
-            return syntax.clone();
-        }
-        let terminal = match self.queries.context.query_registered(
-            &self.queries.raw_declaration_signatures,
-            RawDeclarationSignatureQueryKey(declaration.clone()),
-        ) {
-            Ok(terminal) => terminal,
-            Err(abort) => {
-                self.observe_abort(abort);
-                self.queries
-                    .callable_type_syntax
-                    .borrow_mut()
-                    .insert(declaration.clone(), None);
-                return None;
-            }
-        };
-        let rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(syntax)) =
-            terminal.outcome()
-        else {
-            self.queries
-                .callable_type_syntax
-                .borrow_mut()
-                .insert(declaration.clone(), None);
-            return None;
-        };
-        let result =
-            match crate::semantic_query_nucleus::parse_semantic_signature(declaration, syntax) {
-                Ok(crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
-                    parameters,
-                    result,
-                    ..
-                }) => Some((
-                    parameters
-                        .iter()
-                        .map(|parameter| parameter.ty.clone())
-                        .collect(),
-                    result,
-                )),
-                _ => None,
-            };
-        self.queries
-            .callable_type_syntax
-            .borrow_mut()
-            .insert(declaration.clone(), result.clone());
-        result
     }
 
     fn import_target(&self, module: &ModuleId, specifier: &str) -> Option<ModuleId> {
@@ -24283,7 +24213,6 @@ impl RevisionedQueryDatabase {
             context,
             parse_modules: self.parse_modules.clone(),
             module_source_bases: self.module_source_bases.clone(),
-            raw_declaration_signatures: self.raw_declaration_signatures.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
             semantic_nucleus: self.semantic_nucleus.clone(),
@@ -24298,7 +24227,6 @@ impl RevisionedQueryDatabase {
             observed: std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new())),
             positive_references: std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new())),
             meter: self.provider_observation_meter.clone(),
-            callable_type_syntax: Rc::new(std::cell::RefCell::new(HashMap::new())),
         }
     }
 }
@@ -24695,6 +24623,7 @@ pub(crate) mod test_support {
             Some(rue_air::DurableFunction {
                 parameters: parameters.iter().map(provider_durable_param).collect(),
                 result: result.clone(),
+                type_syntax: None,
                 is_public: decl.is_public,
                 is_unchecked: *is_unchecked,
                 is_extern: false,
@@ -24741,6 +24670,7 @@ pub(crate) mod test_support {
                 receiver: rue_air::SemanticImportType::Nominal(owner_key),
                 parameters: parameters.iter().map(provider_durable_param).collect(),
                 result: result.clone(),
+                type_syntax: None,
                 has_self: *has_self,
                 self_mode: match self_mode {
                     crate::durable_semantics::DurableParameterMode::Value => {
@@ -27455,6 +27385,7 @@ fn main() -> i32 {
                     is_linear: false,
                     is_repr_c: false,
                 },
+                callable_type_syntax: None,
                 anonymous_nominals: Arc::from([]),
                 dependencies: vec![
                     crate::semantic_query_nucleus::SemanticDeclarationDependency {
@@ -27484,6 +27415,7 @@ fn main() -> i32 {
             signature: Signature::Callable {
                 parameters, result, ..
             },
+            callable_type_syntax,
             ..
         }) = signature
         else {
@@ -27492,6 +27424,12 @@ fn main() -> i32 {
         assert_eq!(parameters[0].ty, T::ComptimeType);
         assert_eq!(parameters[1].ty, T::GenericParameter(0));
         assert_eq!(result, T::GenericParameter(0));
+        let callable_type_syntax = callable_type_syntax.expect("choose is callable");
+        assert_eq!(
+            &*callable_type_syntax.parameters,
+            &[Arc::from("type"), Arc::from("T")]
+        );
+        assert_eq!(&*callable_type_syntax.result, "T");
     }
 
     #[test]

@@ -107,10 +107,10 @@ pub use aggregate_resolution::{
 pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
     BodyRirBundle, BodyRirView, DurableAnonymousMethod, DurableAnonymousMethodType,
-    DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableConst,
-    DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
-    DurableNominalSource, DurableSignatureParameter, ProviderBodyAnalysisState,
-    ProviderIdentityContext,
+    DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource,
+    DurableCallableTypeSyntax, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
+    DurableNominal, DurableNominalBody, DurableNominalSource, DurableSignatureParameter,
+    ProviderBodyAnalysisState, ProviderIdentityContext,
 };
 pub use call_resolution::ProviderCallFacts;
 pub use provider_body_host::{

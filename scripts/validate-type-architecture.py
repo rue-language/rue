@@ -95,6 +95,7 @@ PUBLIC_TYPE_DECLARATION_ALLOWLIST = {
     ("rue-air", "sema/binding_manifest.rs", "SemanticExportType"): "stable semantic export schema",
     ("rue-air", "sema/binding_manifest.rs", "SemanticAnonymousMethodType"): "source semantic export method-type schema",
     ("rue-air", "sema/body_identity.rs", "DurableAnonymousMethodType"): "provider-stable anonymous-method type schema",
+    ("rue-air", "sema/body_identity.rs", "DurableCallableTypeSyntax"): "provider-stable callable type-syntax fragments",
     ("rue-air", "sema/provider_body_host.rs", "SemanticProducedAnonymousMethodType"): "body-produced semantic method-type schema",
     ("rue-air", "sema/info.rs", "AnonMethodType"): "anonymous method signature metadata",
     ("rue-air", "sema/output.rs", "DeclarationTypeDependencySourceKind"): "dependency metadata",
