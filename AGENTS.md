@@ -304,7 +304,7 @@ parallel Markdown backlog.
   linked with `relatedTo` or a real `blockedBy` dependency.
 - Priorities are Urgent, High, Medium, and Low. Use `bug`, `feature`, `task`, or
   `chore` labels consistently.
-- A PR body carries at most one magic word: the closing word for the issue that
+- A PR body uses magic words deliberately: a closing word for each issue that
   PR completes, and only when the issue is actually done. Relationships between
   issues are recorded in Linear, never by citing an ID in a PR — see "Linear
   integration". After integration, verify the issue actually reached Done; do
@@ -313,8 +313,9 @@ parallel Markdown backlog.
 ## Linear integration
 
 A magic word in a PR is a command that manipulates issue state. It is never a
-citation. Use one only to drive the state of the single issue that PR
-completes; every other mention of an issue belongs in Linear, not in PR text.
+citation. Use one deliberately, for each issue whose state the PR should
+actually change; every other mention of an issue belongs in Linear, not in PR
+text.
 
 **A "non-closing" word is not a read-only word.** It only opts out of the
 *merge* step; the issue still walks the earlier workflow statuses, and this
@@ -356,10 +357,10 @@ relates to, related to
 
 Rules:
 
-- At most one magic word per PR: a closing word for the one issue the PR
-  completes, used only when the PR meets every acceptance criterion on that
-  issue (tests, docs, ADR updates included). If it doesn't, use no magic word
-  at all and say what's left in the PR body.
+- Use a closing word for each issue the PR actually completes — one PR may
+  legitimately close several — and only when the PR meets every acceptance
+  criterion on that issue (tests, docs, ADR updates included). If it doesn't,
+  use no magic word at all and say what's left in the PR body.
 - Never use a non-closing word to cite background, prior, parent, or follow-up
   issues. Record those relationships in Linear itself — `relatedTo`,
   `blockedBy`, or a parent issue — where they persist and don't touch state.
@@ -372,9 +373,9 @@ Rules:
   appear somewhere that does link (e.g. a carried-over branch name), add
   `skip RUE-NN` or `ignore RUE-NN` to the PR description to suppress it.
 - A magic word applies to every ID that follows it — `Fixes RUE-1067, RUE-1068
-  and RUE-1069` closes all three. A PR that genuinely completes several issues
-  needs each ID spelled with its own word; anything it merely touches is not
-  listed at all.
+  and RUE-1069` closes all three. That is correct only if all three are done.
+  Spell each ID with its own word (`Fixes RUE-1067. Fixes RUE-1068.`) so the
+  list can never quietly pick up an issue the PR merely touches.
 
 `implement*` and `complete*` are the trap word class: GitHub doesn't treat them
 as closing keywords, so they get written as ordinary prose, but Linear closes on
