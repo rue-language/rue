@@ -42,6 +42,7 @@ mod canonical_merge;
 mod canonical_semantic;
 mod cfg_query;
 mod codegen_query;
+mod content_digest;
 mod declaration_candidate;
 mod definition_snapshot;
 mod dependency_envelope;

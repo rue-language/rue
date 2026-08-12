@@ -4,7 +4,6 @@
 //! linker.  It records only compiler-owned link inputs; the fresh adapter
 //! retains the existing object writer and internal/system linker behavior.
 
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, OnceLock},
@@ -16,7 +15,9 @@ use crate::FunctionWithCfg;
 
 use crate::{
     CompileError, CompileErrors, CompileOptions, CompileOutput, CompileWarning, ErrorKind,
-    LinkerMode, MultiErrorResult, Target, backend, linking,
+    LinkerMode, MultiErrorResult, Target, backend,
+    content_digest::{ContentDigest, bytes_digest},
+    linking,
     object_query::CollectedObjectProjection,
 };
 
@@ -72,10 +73,6 @@ pub(crate) struct ProgramImagePlan {
 /// Stable local representation avoids making the linker implementation type
 /// part of the plan's API surface.
 pub(crate) use crate::object_query::ObjectFormat as ProgramObjectFormat;
-
-/// Collision-resistant, deterministic content identity. Every digest below is
-/// SHA-256 over a domain-separated, length-framed byte encoding.
-pub(crate) type ContentDigest = [u8; 32];
 
 /// Exact per-unit transition between two plans.  Linker placement/state is
 /// intentionally absent: a later incremental linker can consume these facts.
@@ -240,9 +237,9 @@ impl ProgramImage {
                     .map(|bytes| CollectedObjectProjection {
                         function: collected.function,
                         unit: collected.unit,
-                        object: std::sync::Arc::new(crate::object_query::ObjectProjection {
-                            bytes: bytes.into(),
-                        }),
+                        object: std::sync::Arc::new(
+                            crate::object_query::ObjectProjection::from_bytes(bytes),
+                        ),
                     })
             })
             .collect::<Result<Vec<_>, _>>()
@@ -322,7 +319,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity,
                 defined_symbol: collected.unit.defined_symbol.clone(),
-                content_digest: object_digest(&collected.object.bytes),
+                content_digest: collected.object.content_digest,
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -363,7 +360,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity: stable_function_identity(&collected.function),
                 defined_symbol: collected.unit.defined_symbol.clone(),
-                content_digest: object_digest(&collected.object.bytes),
+                content_digest: collected.object.content_digest,
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -611,16 +608,6 @@ fn validate_program_image_plan(plan: &ProgramImagePlan) -> MultiErrorResult<()> 
     Ok(())
 }
 
-fn object_digest(bytes: &[u8]) -> ContentDigest {
-    bytes_digest(b"rue.program-image.object\0v1\0", bytes)
-}
-
-fn bytes_digest(domain: &[u8], bytes: &[u8]) -> ContentDigest {
-    let mut digest = StableDigest::new(domain);
-    digest.bytes(bytes);
-    digest.finish()
-}
-
 static X86_64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_MACOS_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
@@ -671,32 +658,6 @@ impl RuntimeArchiveIdentity {
                 linking::runtime_for_target(self.target),
             )
         })
-    }
-}
-
-/// SHA-256 writer with a fixed domain and explicit length framing. This avoids
-/// boundary ambiguity while retaining deterministic, collision-resistant plan
-/// identities across processes and platforms.
-struct StableDigest(Sha256);
-
-impl StableDigest {
-    fn new(domain: &[u8]) -> Self {
-        let mut digest = Sha256::new();
-        digest.update(domain);
-        Self(digest)
-    }
-
-    fn bytes(&mut self, bytes: &[u8]) {
-        self.u64(bytes.len() as u64);
-        self.0.update(bytes);
-    }
-
-    fn u64(&mut self, value: u64) {
-        self.0.update(value.to_le_bytes());
-    }
-
-    fn finish(self) -> ContentDigest {
-        self.0.finalize().into()
     }
 }
 
@@ -808,9 +769,11 @@ mod tests {
     #[test]
     fn delta_tracks_serialized_object_bytes_not_only_codegen_metadata() {
         let mut before = unit("same", 1);
-        before.content_digest = object_digest(b"first object encoding");
+        before.content_digest =
+            bytes_digest(b"rue.program-image.object\0v1\0", b"first object encoding");
         let mut after = before.clone();
-        after.content_digest = object_digest(b"second object encoding");
+        after.content_digest =
+            bytes_digest(b"rue.program-image.object\0v1\0", b"second object encoding");
         let delta = plan(vec![after.clone()])
             .delta_from(&plan(vec![before]))
             .unwrap();
