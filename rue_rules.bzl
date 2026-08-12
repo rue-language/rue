@@ -362,6 +362,12 @@ def rue_program_test(name, tier = "premerge", labels = [], **kwargs):
     )
 
 
+# Name of the inventory file inside a staging directory. Shared with the CLI
+# harness, which fails a run when a root listed here has no case that consumes
+# it (crates/rue-cli-tests/src/main.rs, STAGED_ROOTS_MANIFEST).
+_STAGED_ROOTS_MANIFEST = "staged-roots.txt"
+
+
 def _rue_program_staging_impl(ctx: AnalysisContext) -> list[Provider]:
     """One directory of prebuilt executables, keyed by each program's root.
 
@@ -395,6 +401,17 @@ def _rue_program_staging_impl(ctx: AnalysisContext) -> list[Provider]:
                 info.rue_target,
             ))
         staged[info.root] = info.executable
+
+    # The directory declares its own inventory. Without it the harness can only
+    # ask "is there a file at this case's source_path", and the answer NO is
+    # ambiguous — it is the deliberate exclusion for a root no rue_program
+    # owns, and it is also what key drift looks like. The manifest separates
+    # the two: a root listed here MUST be consumed, so a case edit or a staging
+    # key that stops matching fails the run instead of quietly compiling.
+    staged[_STAGED_ROOTS_MANIFEST] = ctx.actions.write(
+        _STAGED_ROOTS_MANIFEST,
+        sorted(staged.keys()),
+    )
     return [DefaultInfo(
         default_output = ctx.actions.symlinked_dir("staged-programs", staged),
     )]
