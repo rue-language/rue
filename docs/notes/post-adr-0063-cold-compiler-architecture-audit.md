@@ -1455,6 +1455,24 @@ allocation-accounted pairs are neutral at median deltas of +76 calls and
 -0.03 MB requested. Every published compiler-work counter, source/output
 metric, and executable byte remains identical.
 
+RUE-1438 extends the runtime-owned retained-identity hasher from semantic
+`(incarnation, stamp)` authority to the adjacent exact-terminal
+`(incarnation, stamp, revision)` deduplication index. Every component is minted
+by the runtime, exact equality remains authoritative, and caller-controlled
+query-key maps stay randomized. This closes the published `RetainedPinSet`
+counterpart to RUE-1378's request-local task lease index without adding another
+hashing policy.
+
+A randomized AHash prototype reduced instructions by the same amount but moved
+peak RSS +0.43% at the paired median, so it was rejected. Sixteen balanced
+alternating fixed one-worker cold Lattice pairs with the existing zero-sized
+runtime hasher reduce retired instructions by a 0.498% paired median with 0.049%
+paired MAD. Compiler clock moves -1.05% with 1.04% paired MAD, cycles move
+-0.76% with 0.67% paired MAD, and peak RSS moves -0.52% with 0.23% paired MAD.
+Four allocation-accounted pairs are neutral at a median -82 calls and save
+0.15 MB of requested bytes. Every compiler-work counter,
+source/output metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
