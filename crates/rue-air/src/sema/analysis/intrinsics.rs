@@ -247,14 +247,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .collect();
         let known = &self.known_symbols();
 
-        // Raw-pointer and heap intrinsics are unchecked operations: they may
-        // only be used inside a `checked` block (spec 9.1:1, chapter 9). Gate
-        // them before the per-intrinsic dispatch so every one shares a single
-        // diagnostic. `@syscall` has its own gating; the set here is
-        // @raw/@raw_mut/@field_ptr/@ptr_read/@ptr_write/@ptr_offset/
-        // @ptr_to_int/@int_to_ptr plus the unified byte allocation family
-        // @alloc/@alloc_zeroed/@free/@realloc/@resize (RUE-1, RUE-301,
-        // ADR-0059 Phase 3).
+        // Raw-pointer, heap, and syscall intrinsics are unchecked operations:
+        // they may only be used inside a `checked` block (spec 9.1:1, chapter
+        // 9). Gate them before the per-intrinsic dispatch so every one shares a
+        // single diagnostic. The set is @raw/@raw_mut/@field_ptr/@ptr_read/
+        // @ptr_write/@ptr_offset/@ptr_to_int/@int_to_ptr, the unified byte
+        // allocation family @alloc/@alloc_zeroed/@free/@realloc/@resize, and
+        // @syscall (RUE-1, RUE-301, RUE-1369, ADR-0059 Phase 3).
         if ctx.checked_depth == 0
             && (name == known.ptr_read
                 || name == known.ptr_write
@@ -275,7 +274,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 || name == known.byte_move
                 || name == known.byte_set
                 || name == known.arg_ptr
-                || name == known.env_ptr)
+                || name == known.env_ptr
+                || name == known.syscall)
         {
             let intrinsic_name_str = self.body_interner().resolve(&name);
             let kind = if name == known.alloc
@@ -285,6 +285,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 || name == known.resize
             {
                 "heap"
+            } else if name == known.syscall {
+                "syscall"
             } else {
                 "raw-pointer"
             };

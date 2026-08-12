@@ -90,6 +90,38 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "expects 7 arguments"
 
+# @syscall outside a `checked` block is a compile error (RUE-1369): the
+# intrinsic was excluded from the shared checked-block gate and compiled
+# anywhere, even though 9.2 has always described it as unchecked.
+[[case]]
+name = "syscall_outside_checked_rejected"
+spec = ["9.2:3a"]
+source = """
+fn main() -> i32 {
+    let syscall_num: u64 = 39;
+    @syscall(syscall_num);
+    0
+}
+"""
+compile_fail = true
+error_contains = "requires a `checked` block"
+
+# The same call inside a `checked` block is legal. Compile-only: the point is
+# the gate, and every executable syscall number is platform-specific.
+[[case]]
+name = "syscall_in_checked_accepted"
+spec = ["9.2:3a"]
+compile_only = true
+source = """
+fn main() -> i32 {
+    let syscall_num: u64 = 39;
+    checked {
+        @syscall(syscall_num);
+    };
+    0
+}
+"""
+
 # Test that @syscall accepts up to 7 arguments
 [[case]]
 name = "syscall_max_args"

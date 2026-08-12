@@ -1,0 +1,64 @@
+[section]
+id = "diagnostics.unchecked-syscall"
+name = "@syscall outside a `checked` block reports the unchecked-operation error"
+description = """
+`@syscall` is an unchecked operation (spec 9.2:3a, 9.1:12), but it was excluded
+from the shared checked-block gate in semantic analysis and compiled anywhere —
+only its doc comment and §9.2's prose claimed the requirement (RUE-1369). It now
+reports E1300 like the raw-pointer and allocation intrinsics, with the same
+`checked { ... }` help.
+"""
+
+[[case]]
+name = "syscall_outside_checked_is_e1300"
+description = "A bare @syscall reports E1300 naming the intrinsic, plus the wrap-in-checked help."
+source = """
+fn main() -> i32 {
+    let syscall_num: u64 = 39;
+    @syscall(syscall_num);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1300",
+    "syscall intrinsic `@syscall` requires a `checked` block",
+    "wrap the operation in a `checked { ... }` block",
+]
+
+# An `unchecked fn` body is not itself a checked context (9.1:1): it marks the
+# CALL as requiring `checked`, so unchecked operations inside still need their
+# own block.
+[[case]]
+name = "syscall_in_unchecked_fn_body_still_needs_checked"
+description = "An `unchecked fn` body does not lift the gate; @syscall there still reports E1300."
+source = """
+unchecked fn raw_exit(code: u64) -> i64 {
+    let syscall_num: u64 = 39;
+    @syscall(syscall_num, code)
+}
+
+fn main() -> i32 {
+    checked { raw_exit(0); };
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1300",
+    "syscall intrinsic `@syscall` requires a `checked` block",
+]
+
+[[case]]
+name = "syscall_inside_checked_compiles"
+description = "The same call inside a `checked` block compiles."
+source = """
+fn main() -> i32 {
+    let syscall_num: u64 = 39;
+    checked {
+        @syscall(syscall_num);
+    };
+    0
+}
+"""
+compile_only = true
