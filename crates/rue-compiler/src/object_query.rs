@@ -11,7 +11,12 @@ use rue_query::{
     QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput, QueryTerminalKind,
 };
 
-use crate::retained_charge::RetainedCharge;
+use crate::{
+    content_digest::{ContentDigest, bytes_digest},
+    retained_charge::RetainedCharge,
+};
+
+const OBJECT_DIGEST_DOMAIN: &[u8] = b"rue.program-image.object\0v1\0";
 
 /// Object-container format selected unambiguously by the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,10 +73,24 @@ impl QueryKey for ObjectProjectionQueryKey {
     }
 }
 
-/// Retained object-container bytes for one codegen unit.
+/// Retained object-container bytes and their stable content identity for one
+/// codegen unit. The digest is computed once with the immutable bytes so every
+/// downstream program-image assembly can reuse it without a serialized hash
+/// pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ObjectProjection {
     pub(crate) bytes: Arc<[u8]>,
+    pub(crate) content_digest: ContentDigest,
+}
+
+impl ObjectProjection {
+    pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {
+        let content_digest = bytes_digest(OBJECT_DIGEST_DOMAIN, &bytes);
+        Self {
+            bytes: bytes.into(),
+            content_digest,
+        }
+    }
 }
 
 impl RetainedCharge for ObjectProjection {
@@ -142,9 +161,9 @@ pub(crate) fn evaluate_object_projection(
     };
     context.record_work(rue_query::WorkItem::new("object.projection.attempts", 1));
     let value = match crate::backend::project_backend_object(unit.backend_product(), key.target) {
-        Ok(bytes) => ObjectProjectionValue::Available(Arc::new(ObjectProjection {
-            bytes: bytes.into(),
-        })),
+        Ok(bytes) => {
+            ObjectProjectionValue::Available(Arc::new(ObjectProjection::from_bytes(bytes)))
+        }
         Err(error) => return Ok(object_failure(error.into())),
     };
     Ok(QueryOutput::success(value))
@@ -174,14 +193,22 @@ mod tests {
 
     #[test]
     fn retained_charge_accounts_object_bytes() {
-        let object = ObjectProjection {
-            bytes: Arc::from([1_u8, 2, 3, 4]),
-        };
+        let object = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 4]);
         assert_eq!(object.retained_charge(), 4);
         assert_eq!(
             ObjectProjectionValue::Available(Arc::new(object)).retained_charge(),
             std::mem::size_of::<ObjectProjection>() as u64 + 4
         );
+    }
+
+    #[test]
+    fn object_projection_owns_a_stable_content_digest() {
+        let first = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 4]);
+        let same = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 4]);
+        let changed = ObjectProjection::from_bytes(vec![1_u8, 2, 3, 5]);
+
+        assert_eq!(first.content_digest, same.content_digest);
+        assert_ne!(first.content_digest, changed.content_digest);
     }
 
     #[test]

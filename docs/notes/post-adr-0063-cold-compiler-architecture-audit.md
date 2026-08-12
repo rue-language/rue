@@ -1705,6 +1705,24 @@ RSS at +0.1173% (0.3600% MAD), and peak footprint at -0.2005% (0.1693% MAD).
 Every compiler-work counter, source/output metric, and executable byte remains
 identical.
 
+RUE-1459 makes each immutable object projection own its stable content digest.
+Fresh program-image assembly previously serialized 1,280 SHA-256 operations
+over 3,011,805 already-retained object bytes on cold Lattice, then repeated
+that same work whenever a retained session assembled another no-edit plan.
+Computing the digest beside object serialization lets the query graph retain
+it, distributes cold hashing with object production, and removes hashing from
+the single-threaded aggregation tail. Export-thunk and lazy runtime-archive
+digests keep their existing ownership and domains.
+
+Across 16 balanced fixed one-worker cold Lattice pairs, the
+`program_image_plan` phase improves by 86.6184% at the paired median (0.5715%
+MAD). End-to-end compiler clock is neutral at -0.1217% (4.2710% MAD), retired
+instructions at -0.1234% (0.1090% MAD), cycles at +0.2814% (2.0873% MAD), and
+peak RSS at -0.0873% (0.3057% MAD). Sixteen default-worker pairs independently
+improve the plan phase by 86.6063% (0.8512% MAD); whole-compiler clock remains
+host-noisy, while cycles improve by 1.6730% (0.6974% MAD). Every compiler-work
+counter, source/output metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
