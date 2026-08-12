@@ -1154,6 +1154,21 @@ dispersion. Every published compiler-work counter and emitted executable byte
 remains identical. The architectural result is the linear validation bound,
 not a claimed clock improvement on the current corpus.
 
+RUE-1419 makes each body-pool anonymous identity own one successful registry
+publication. Anonymous structs must publish a recursive shell before resolving
+their fields, while anonymous enums publish after resolving their payloads;
+each minting arm now performs its required registration, and the shared success
+path no longer clones and rehashes the complete producer key only to replace
+the same forward entry. Rollback and poisoning remain in the shared failure
+path.
+
+Four fixed one-worker allocation probes save 42,241--42,492 calls and
+1.86--2.06 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are favorable but clock-neutral at a -0.97% paired
+median, with 1.43% paired MAD and a -2.94% to +1.96% range. Median peak RSS
+moves +0.71 MiB within dispersion. Every published compiler-work counter and
+emitted executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

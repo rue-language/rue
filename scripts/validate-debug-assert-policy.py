@@ -39,6 +39,9 @@ ALLOWANCES = {
     "crates/rue-air/src/sema/analysis/intrinsics.rs": Allowance(1, "redundant intrinsic signature inventory check"),
     "crates/rue-air/src/sema/analysis/ownership.rs": Allowance(1, "redundant non-negative arena-index check"),
     "crates/rue-air/src/sema/binding_manifest.rs": Allowance(2, "redundant binding-manifest construction checks"),
+    "crates/rue-air/src/sema/body_identity.rs": Allowance(
+        1, "redundant anonymous-identity publication check"
+    ),
     "crates/rue-air/src/sema/comptime_eval.rs": Allowance(2, "redundant semantic phase preconditions"),
     "crates/rue-air/src/sema/declaration_index.rs": Allowance(4, "redundant declaration indexing counters"),
     "crates/rue-air/src/sema/declarations.rs": Allowance(7, "redundant declaration-resolution lifecycle checks"),
