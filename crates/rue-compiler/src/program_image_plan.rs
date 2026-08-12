@@ -7,7 +7,7 @@
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
 };
 use tracing::{info, info_span};
 
@@ -30,7 +30,7 @@ pub(crate) struct ProgramImageUnit {
     /// key below is only its deterministic ordering/map projection.
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) identity: String,
-    pub(crate) defined_symbol: String,
+    pub(crate) defined_symbol: Arc<str>,
     pub(crate) content_digest: ContentDigest,
 }
 
@@ -177,7 +177,7 @@ impl ProgramImage {
         // stayed outside every phase span until RUE-1257, so ADR-0067's
         // taxonomy could only report its cost as `unattributed`.
         let _span = info_span!("program_image_plan", phase = "object_generation").entered();
-        validate_rooted_program_image_inputs(&objects, &exports)?;
+        let unit_identities = validate_rooted_program_image_inputs(&objects, &exports)?;
         let export_thunk_objects: Vec<Vec<u8>> = exports
             .iter()
             .map(|export| {
@@ -191,6 +191,7 @@ impl ProgramImage {
             .collect();
         let plan = ProgramImagePlan::from_rooted_inputs(
             &objects,
+            unit_identities,
             &exports,
             options,
             &export_thunk_objects,
@@ -309,16 +310,18 @@ impl ProgramImage {
 impl ProgramImagePlan {
     fn from_rooted_inputs(
         units: &[CollectedObjectProjection],
+        unit_identities: Vec<String>,
         exports: &[RootedExportThunk],
         options: &CompileOptions,
         export_thunk_objects: &[Vec<u8>],
     ) -> MultiErrorResult<Self> {
         let mut plan_units = units
             .iter()
-            .map(|collected| ProgramImageUnit {
+            .zip(unit_identities)
+            .map(|(collected, identity)| ProgramImageUnit {
                 function: collected.function.clone(),
-                identity: stable_function_identity(&collected.function),
-                defined_symbol: collected.unit.defined_symbol.to_string(),
+                identity,
+                defined_symbol: collected.unit.defined_symbol.clone(),
                 content_digest: object_digest(&collected.object.bytes),
             })
             .collect::<Vec<_>>();
@@ -359,7 +362,7 @@ impl ProgramImagePlan {
             .map(|collected| ProgramImageUnit {
                 function: collected.function.clone(),
                 identity: stable_function_identity(&collected.function),
-                defined_symbol: collected.unit.defined_symbol.to_string(),
+                defined_symbol: collected.unit.defined_symbol.clone(),
                 content_digest: object_digest(&collected.object.bytes),
             })
             .collect::<Vec<_>>();
@@ -437,7 +440,9 @@ impl ProgramImagePlan {
             runtime_archive: RuntimeArchiveIdentity::for_target(options.target),
             required_runtime_symbols: required_runtime_symbols.into_iter().collect(),
         };
-        validate_program_image_plan(&plan)?;
+        // Both private construction paths validate their raw unit and export
+        // identities before translating them into this canonical plan.
+        // Retained-plan deltas independently validate both compared plans.
         Ok(plan)
     }
 }
@@ -520,9 +525,10 @@ fn validate_program_image_inputs(
 fn validate_rooted_program_image_inputs(
     units: &[CollectedObjectProjection],
     exports: &[RootedExportThunk],
-) -> MultiErrorResult<()> {
+) -> MultiErrorResult<Vec<String>> {
     let mut units_by_identity = BTreeMap::new();
     let mut defined_symbols = BTreeSet::new();
+    let mut unit_identities = Vec::with_capacity(units.len());
     for collected in units {
         let identity = stable_function_identity(&collected.function);
         if units_by_identity
@@ -531,6 +537,7 @@ fn validate_rooted_program_image_inputs(
         {
             return duplicate_plan_input("codegen unit identity", &identity);
         }
+        unit_identities.push(identity);
         if !defined_symbols.insert(collected.unit.defined_symbol.as_ref()) {
             return duplicate_plan_input("defined symbol", &collected.unit.defined_symbol);
         }
@@ -564,7 +571,7 @@ fn validate_rooted_program_image_inputs(
             )));
         }
     }
-    Ok(())
+    Ok(unit_identities)
 }
 
 #[cfg(test)]
@@ -578,7 +585,7 @@ fn stable_function_identity(function: &crate::FunctionInstanceKey) -> String {
     ))
 }
 
-fn duplicate_plan_input(kind: &str, identity: &str) -> MultiErrorResult<()> {
+fn duplicate_plan_input<T>(kind: &str, identity: &str) -> MultiErrorResult<T> {
     Err(CompileErrors::from(CompileError::without_span(
         ErrorKind::InternalError(format!("program image has duplicate {kind} `{identity}`")),
     )))
@@ -591,7 +598,7 @@ fn validate_program_image_plan(plan: &ProgramImagePlan) -> MultiErrorResult<()> 
         if !unit_identities.insert(unit.identity.as_str()) {
             return duplicate_plan_input("codegen unit identity", &unit.identity);
         }
-        if !defined_symbols.insert(unit.defined_symbol.as_str()) {
+        if !defined_symbols.insert(unit.defined_symbol.as_ref()) {
             return duplicate_plan_input("defined symbol", &unit.defined_symbol);
         }
     }
@@ -762,7 +769,7 @@ mod tests {
         ProgramImageUnit {
             function: crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64)),
             identity: identity.to_owned(),
-            defined_symbol: identity.to_owned(),
+            defined_symbol: Arc::from(identity),
             content_digest: [digest_byte; 32],
         }
     }
