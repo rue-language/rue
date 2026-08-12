@@ -10,13 +10,15 @@
 # serves every flag set of a root.
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-    echo "usage: rue-program-scan OUT COMPILER ROOT" >&2
+if [[ $# -lt 3 ]]; then
+    echo "usage: rue-program-scan OUT ROOT COMPILER [COMPILER_ARGS...]" >&2
     exit 2
 fi
 
 out="$1"
-compiler="$2"
-root="$3"
+root="$2"
+shift 2
 
-"$compiler" --emit deps "$root" > "$out"
+# The compiler arrives as trailing argv so a wrapped RunInfo (a script plus
+# fixed arguments) keeps working, not only a bare binary.
+"$@" --emit deps "$root" > "$out"

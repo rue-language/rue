@@ -80,8 +80,8 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
     scan_cmd = cmd_args(
         ctx.attrs._scan[RunInfo],
         envelope.as_output(),
-        toolchain.compiler,
         ctx.attrs.root,
+        toolchain.compiler,
         hidden = [ctx.attrs.srcs, toolchain.std, ctx.attrs.extra_scan_inputs],
     )
     ctx.actions.run(
@@ -107,7 +107,10 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
         std_dir,
         "--out",
         manifest.as_output(),
-        hidden = [ctx.attrs.srcs, toolchain.std],
+        # The envelope embeds per-file content fingerprints, so srcs changes
+        # already re-key this action transitively; only the std tree is read
+        # directly (the unconditional union walks it).
+        hidden = [toolchain.std],
     )
     if expect_violation:
         derive_cmd.add("--expect-violation", expect_violation)
@@ -133,10 +136,23 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
         "--target",
         resolved_target,
         "-O{}".format(opt_level),
+        # Pinned (ADR-0070 key table): the internal linker is in-process on
+        # every supported target (ELF and Mach-O), while an external linker
+        # would execute an undeclared $PATH binary. Cases that exist to test
+        # external linkers stay harness cases.
+        "--linker",
+        "internal",
         "-o",
         executable.as_output(),
         hidden = [ctx.attrs.srcs, toolchain.std],
     )
+    for feature in ctx.attrs.preview_features:
+        compile_cmd.add("--preview", feature)
+    for archive in ctx.attrs.link_archives:
+        # The archive BYTES are read at link time, so the flag carries the
+        # artifact itself — a bare path string would key the path, not the
+        # contents (ADR-0070 key table).
+        compile_cmd.add("--link-archive", archive)
     ctx.actions.run(
         compile_cmd,
         env = {"RUE_STD_PATH": std_dir},
@@ -198,6 +214,8 @@ _PROGRAM_COMMON_ATTRS = {
     "srcs": attrs.list(attrs.source()),
     "rue_target": attrs.option(attrs.string(), default = None),
     "opt_level": attrs.option(attrs.string(), default = None),
+    "preview_features": attrs.list(attrs.string(), default = []),
+    "link_archives": attrs.list(attrs.source(), default = []),
     # Negative-control plumbing: inputs materialized for the scan but NOT part
     # of the declared srcs boundary. Ordinary programs never set this.
     "extra_scan_inputs": attrs.list(attrs.source(), default = []),
