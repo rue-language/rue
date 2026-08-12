@@ -1334,6 +1334,22 @@ save 478,839--479,274 allocations and 109.31--109.61 MB requested. Every other
 published compiler-work counter, emitted-output metric, source metric, and
 executable byte remains identical.
 
+RUE-1431 derives flattened ABI slot widths once alongside the canonical
+by-value containment graph. Complete struct, enum, and array entries already
+have enough alignment padding for the four-byte width, so frozen consumers
+replace repeated recursive aggregate walks with O(1) reads without enlarging a
+retained type entry or adding a side table. Provisional semantic construction
+keeps the recursive fallback until containment metadata is complete.
+
+Sixteen balanced fixed one-worker cold Lattice pairs reduce retired
+instructions by a 0.369% paired median with 0.089% paired MAD. Compile clock is
+neutral at -0.68% with 1.78% paired MAD. Peak RSS is neutral at +0.18% with
+0.45% paired MAD; the baseline and candidate medians are 403.5 and 404.7 MiB
+with cross-pair outliers larger than that difference. Four allocation-accounted
+pairs are neutral at -38 to +153 calls and -0.07 to +0.05 MB requested. Every
+published compiler-work counter, emitted-output metric, source metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

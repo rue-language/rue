@@ -75,7 +75,11 @@ pub enum TypeData {
     ///
     /// Arrays with the same element type and length are the same type,
     /// regardless of where they were defined.
-    Array { element: Type, len: u64 },
+    Array {
+        element: Type,
+        abi_slots: u32,
+        len: u64,
+    },
 
     /// Raw const pointer (structural type).
     ///
@@ -101,7 +105,7 @@ pub enum TypeValidationError {
     RecoveryType,
 }
 
-/// Canonical ownership properties derived from the by-value containment graph.
+/// Canonical properties derived from the by-value containment graph.
 ///
 /// The mutable pool may temporarily leave an entry unanalyzed while named
 /// declarations are incomplete. Semantic finalization computes the whole graph
@@ -111,6 +115,12 @@ pub enum TypeValidationError {
 struct TypeContainmentFacts {
     carries_linear: bool,
     needs_drop: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TypeDerivedFacts {
+    containment: TypeContainmentFacts,
+    abi_slots: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +159,20 @@ impl TypeData {
             Self::Array { .. } => PoolEntryKind::Array,
             Self::PtrConst { .. } => PoolEntryKind::PtrConst,
             Self::PtrMut { .. } => PoolEntryKind::PtrMut,
+        }
+    }
+
+    fn set_abi_slots(&mut self, abi_slots: u32) {
+        match self {
+            Self::Struct(data) => data.abi_slots = abi_slots,
+            Self::Enum(data) => data.abi_slots = abi_slots,
+            Self::Array {
+                abi_slots: stored, ..
+            } => *stored = abi_slots,
+            Self::PtrConst { .. } | Self::PtrMut { .. } => {}
+            Self::ReservedStruct | Self::DeclaredStruct(_) | Self::DeclaredEnum(_) => {
+                unreachable!("incomplete type has no derived ABI width")
+            }
         }
     }
 }
@@ -411,6 +435,8 @@ impl std::fmt::Debug for EnumDefEntry {
 pub struct StructData {
     /// The name symbol (interned string).
     pub name: Spur,
+    /// Flattened runtime ABI width, derived with containment metadata.
+    abi_slots: u32,
     /// The canonical struct definition stored at this pool index.
     pub def: Arc<StructDefEntry>,
 }
@@ -423,6 +449,8 @@ pub struct StructData {
 pub struct EnumData {
     /// The name symbol (interned string).
     pub name: Spur,
+    /// Flattened runtime ABI width, derived with containment metadata.
+    abi_slots: u32,
     /// The canonical enum definition stored at this pool index.
     pub def: Arc<EnumDefEntry>,
 }
@@ -487,7 +515,7 @@ pub(crate) struct EnumDeclarationMetadata {
 ///     match data {
 ///         TypeData::Struct(s) => println!("struct {}", s.def.name),
 ///         TypeData::Enum(e) => println!("enum {}", e.def.name),
-///         TypeData::Array { element, len } => println!("array of {:?}; {}", element, len),
+///         TypeData::Array { element, len, .. } => println!("array of {:?}; {}", element, len),
 ///     }
 /// }
 /// ```
@@ -1122,7 +1150,7 @@ impl TypeInternPoolInner {
         }
     }
 
-    /// Compute cycle, linearity, and drop facts from the one canonical
+    /// Compute cycle, ownership, and ABI-width facts from the one canonical
     /// by-value graph. The explicit DFS stack makes both cycle detection and
     /// postorder construction independent of the host call stack.
     fn finalize_containment_metadata(
@@ -1224,6 +1252,63 @@ impl TypeInternPoolInner {
             }
         }
 
+        // The same postorder is the canonical dynamic-programming order for
+        // flattened ABI widths. Store each result directly in the padding of
+        // its type entry, so frozen consumers get O(1) reads without a second
+        // per-universe side table or a larger retained entry.
+        for &index in &postorder {
+            if !facts_available[index] {
+                continue;
+            }
+            let child_slots = |ty: Type| {
+                if let Some(child) = self.by_value_child_index(ty) {
+                    facts_available[child].then(|| self.entry_abi_slots(child))
+                } else {
+                    Some(Self::leaf_derived_facts(ty).abi_slots)
+                }
+            };
+            let abi_slots = match self.entry(index) {
+                TypeData::Struct(data) => data.def.fields.iter().try_fold(0u32, |total, field| {
+                    Some(total.saturating_add(child_slots(field.ty)?))
+                }),
+                TypeData::Enum(data) => {
+                    let mut max_payload = 0u32;
+                    let mut available = true;
+                    for variant in &data.def.variant_payloads {
+                        let mut payload = 0u32;
+                        for &ty in variant {
+                            let Some(slots) = child_slots(ty) else {
+                                available = false;
+                                break;
+                            };
+                            payload = payload.saturating_add(slots);
+                        }
+                        if !available {
+                            break;
+                        }
+                        max_payload = max_payload.max(payload);
+                    }
+                    available.then(|| 1u32.saturating_add(max_payload))
+                }
+                TypeData::Array { element, len, .. } => {
+                    if *len == 0 {
+                        Some(0)
+                    } else {
+                        child_slots(*element).map(|slots| {
+                            u32::try_from(u64::from(slots).saturating_mul(*len)).unwrap_or(u32::MAX)
+                        })
+                    }
+                }
+                TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => Some(1),
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => None,
+            };
+            if let Some(abi_slots) = abi_slots {
+                self.set_entry_abi_slots(index, abi_slots);
+            }
+        }
+
         for (index, value) in facts.iter().copied().enumerate() {
             if facts_available[index]
                 && value.carries_linear
@@ -1252,49 +1337,164 @@ impl TypeInternPoolInner {
             TypeKind::Struct(id) => self.facts_at(id.pool_index() as usize)?,
             TypeKind::Enum(id) => self.facts_at(id.pool_index() as usize)?,
             TypeKind::Array(id) => self.facts_at(id.pool_index() as usize)?,
-            TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => Some(TypeContainmentFacts::default()),
             _ => Some(TypeContainmentFacts::default()),
         }
     }
 
-    fn incremental_facts(&self, entry: &TypeData) -> Option<TypeContainmentFacts> {
+    fn leaf_derived_facts(ty: Type) -> TypeDerivedFacts {
+        let abi_slots = match ty.kind() {
+            TypeKind::I8
+            | TypeKind::I16
+            | TypeKind::I32
+            | TypeKind::I64
+            | TypeKind::U8
+            | TypeKind::U16
+            | TypeKind::U32
+            | TypeKind::U64
+            | TypeKind::Bool
+            | TypeKind::Error
+            | TypeKind::PtrConst(_)
+            | TypeKind::PtrMut(_) => 1,
+            TypeKind::Unit
+            | TypeKind::Never
+            | TypeKind::ComptimeType
+            | TypeKind::Module(_)
+            | TypeKind::Struct(_)
+            | TypeKind::Enum(_)
+            | TypeKind::Array(_) => 0,
+        };
+        TypeDerivedFacts {
+            abi_slots,
+            ..TypeDerivedFacts::default()
+        }
+    }
+
+    fn derived_facts_for_type(&self, ty: Type) -> Option<TypeDerivedFacts> {
+        Some(TypeDerivedFacts {
+            containment: self.facts_for_type(ty)?,
+            abi_slots: self.stored_abi_slot_count(ty)?,
+        })
+    }
+
+    fn stored_abi_slot_count(&self, ty: Type) -> Option<u32> {
+        if self.containment_dirty
+            && matches!(
+                ty.kind(),
+                TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_)
+            )
+        {
+            return None;
+        }
+        match ty.kind() {
+            TypeKind::Struct(id) => match self.try_entry(id.pool_index() as usize)? {
+                TypeData::Struct(data) => Some(data.abi_slots),
+                _ => None,
+            },
+            TypeKind::Enum(id) => match self.try_entry(id.pool_index() as usize)? {
+                TypeData::Enum(data) => Some(data.abi_slots),
+                _ => None,
+            },
+            TypeKind::Array(id) => match self.try_entry(id.pool_index() as usize)? {
+                TypeData::Array { abi_slots, .. } => Some(*abi_slots),
+                _ => None,
+            },
+            _ => Some(Self::leaf_derived_facts(ty).abi_slots),
+        }
+    }
+
+    fn entry_abi_slots(&self, index: usize) -> u32 {
+        match self.entry(index) {
+            TypeData::Struct(data) => data.abi_slots,
+            TypeData::Enum(data) => data.abi_slots,
+            TypeData::Array { abi_slots, .. } => *abi_slots,
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => 1,
+            TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+                unreachable!("unavailable child has no derived ABI width")
+            }
+        }
+    }
+
+    fn set_entry_abi_slots(&mut self, index: usize, abi_slots: u32) {
+        let current = match self.entry(index) {
+            TypeData::Struct(data) => Some(data.abi_slots),
+            TypeData::Enum(data) => Some(data.abi_slots),
+            TypeData::Array { abi_slots, .. } => Some(*abi_slots),
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => return,
+            TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+                return;
+            }
+        };
+        if current == Some(abi_slots) {
+            return;
+        }
+        match self.entry_mut(index) {
+            TypeData::Struct(data) => data.abi_slots = abi_slots,
+            TypeData::Enum(data) => data.abi_slots = abi_slots,
+            TypeData::Array {
+                abi_slots: stored, ..
+            } => *stored = abi_slots,
+            TypeData::PtrConst { .. }
+            | TypeData::PtrMut { .. }
+            | TypeData::ReservedStruct
+            | TypeData::DeclaredStruct(_)
+            | TypeData::DeclaredEnum(_) => unreachable!(),
+        }
+    }
+
+    fn incremental_facts(&self, entry: &TypeData) -> Option<TypeDerivedFacts> {
         if self.containment_dirty {
             return None;
         }
         let mut facts = match entry {
-            TypeData::Struct(data) => TypeContainmentFacts {
-                carries_linear: data.def.is_linear,
-                needs_drop: data.def.destructor.is_some(),
+            TypeData::Struct(data) => TypeDerivedFacts {
+                containment: TypeContainmentFacts {
+                    carries_linear: data.def.is_linear,
+                    needs_drop: data.def.destructor.is_some(),
+                },
+                abi_slots: 0,
             },
-            TypeData::Enum(_)
-            | TypeData::Array { .. }
-            | TypeData::PtrConst { .. }
-            | TypeData::PtrMut { .. } => TypeContainmentFacts::default(),
+            TypeData::Enum(_) => TypeDerivedFacts {
+                abi_slots: 1,
+                ..TypeDerivedFacts::default()
+            },
+            TypeData::Array { .. } => TypeDerivedFacts::default(),
+            TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => TypeDerivedFacts {
+                abi_slots: 1,
+                ..TypeDerivedFacts::default()
+            },
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
                 return None;
             }
         };
-        let mut merge = |child: Type| -> Option<()> {
-            if self.by_value_child_index(child).is_none() {
-                return Some(());
-            }
-            let child = self.facts_for_type(child)?;
-            facts.carries_linear |= child.carries_linear;
-            facts.needs_drop |= child.needs_drop;
-            Some(())
-        };
         match entry {
             TypeData::Struct(data) => {
                 for field in &data.def.fields {
-                    merge(field.ty)?;
+                    let child = self.derived_facts_for_type(field.ty)?;
+                    facts.containment.carries_linear |= child.containment.carries_linear;
+                    facts.containment.needs_drop |= child.containment.needs_drop;
+                    facts.abi_slots = facts.abi_slots.saturating_add(child.abi_slots);
                 }
             }
             TypeData::Enum(data) => {
-                for &child in data.def.variant_payloads.iter().flatten() {
-                    merge(child)?;
+                let mut max_payload_slots = 0u32;
+                for variant in &data.def.variant_payloads {
+                    let mut payload_slots = 0u32;
+                    for &ty in variant {
+                        let child = self.derived_facts_for_type(ty)?;
+                        facts.containment.carries_linear |= child.containment.carries_linear;
+                        facts.containment.needs_drop |= child.containment.needs_drop;
+                        payload_slots = payload_slots.saturating_add(child.abi_slots);
+                    }
+                    max_payload_slots = max_payload_slots.max(payload_slots);
                 }
+                facts.abi_slots = facts.abi_slots.saturating_add(max_payload_slots);
             }
-            TypeData::Array { element, len } if *len != 0 => merge(*element)?,
+            TypeData::Array { element, len, .. } if *len != 0 => {
+                let child = self.derived_facts_for_type(*element)?;
+                facts.containment = child.containment;
+                facts.abi_slots = u32::try_from(u64::from(child.abi_slots).saturating_mul(*len))
+                    .unwrap_or(u32::MAX);
+            }
             TypeData::Array { .. } => {}
             TypeData::PtrConst { .. } | TypeData::PtrMut { .. } => {}
             TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
@@ -1435,7 +1635,7 @@ impl TypeInternPoolInner {
 
     fn array_def(&self, id: ArrayTypeId) -> (Type, u64) {
         match self.data(id.0) {
-            TypeData::Array { element, len } => (*element, *len),
+            TypeData::Array { element, len, .. } => (*element, *len),
             // See `struct_def`: inside the capacity-latch window an array
             // handle can name an entry of another kind. A zero-length array of
             // the error type terminates every dependent walk.
@@ -1446,7 +1646,7 @@ impl TypeInternPoolInner {
 
     fn try_array_def(&self, id: ArrayTypeId) -> Option<(Type, u64)> {
         match self.try_entry(id.0 as usize)? {
-            TypeData::Array { element, len } => Some((*element, *len)),
+            TypeData::Array { element, len, .. } => Some((*element, *len)),
             _ => None,
         }
     }
@@ -1661,6 +1861,17 @@ impl TypeInternPoolInner {
     }
 
     fn abi_slot_count(&self, ty: Type) -> u32 {
+        // Complete type universes derive widths together with ownership facts
+        // from the canonical by-value DAG. Provisional semantic construction
+        // can still reach this method while that metadata is dirty, so retain
+        // the recursive computation as a fail-safe for that phase only.
+        if let Some(abi_slots) = self.stored_abi_slot_count(ty) {
+            return abi_slots;
+        }
+        self.compute_abi_slot_count(ty)
+    }
+
+    fn compute_abi_slot_count(&self, ty: Type) -> u32 {
         match ty.kind() {
             TypeKind::I8
             | TypeKind::I16
@@ -1676,11 +1887,11 @@ impl TypeInternPoolInner {
             | TypeKind::PtrMut(_) => 1,
             TypeKind::Unit | TypeKind::Never | TypeKind::ComptimeType | TypeKind::Module(_) => 0,
             TypeKind::Struct(id) => self.struct_def(id).fields.iter().fold(0, |total, field| {
-                total.saturating_add(self.abi_slot_count(field.ty))
+                total.saturating_add(self.compute_abi_slot_count(field.ty))
             }),
             TypeKind::Array(id) => {
                 let (element, length) = self.array_def(id);
-                let slots = u64::from(self.abi_slot_count(element));
+                let slots = u64::from(self.compute_abi_slot_count(element));
                 u32::try_from(slots.saturating_mul(length)).unwrap_or(u32::MAX)
             }
             TypeKind::Enum(id) => {
@@ -1688,7 +1899,7 @@ impl TypeInternPoolInner {
                 let payload = (0..def.variant_count())
                     .map(|index| {
                         def.variant_payload(index).iter().fold(0u32, |total, &ty| {
-                            total.saturating_add(self.abi_slot_count(ty))
+                            total.saturating_add(self.compute_abi_slot_count(ty))
                         })
                     })
                     .max()
@@ -2382,16 +2593,20 @@ impl TypeInternPool {
 
         let mut entry = TypeData::Struct(StructData {
             name,
+            abi_slots: 0,
             def: Arc::new(StructDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
-        if facts.is_some_and(|facts| facts.carries_linear) {
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
+        }
+        if facts.is_some_and(|facts| facts.containment.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
             Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
         }
-        inner.push_entry(entry, facts);
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
         inner.struct_by_file_name.insert(key, ty);
 
         (struct_id, true)
@@ -2424,6 +2639,7 @@ impl TypeInternPool {
         inner.push_entry(
             TypeData::DeclaredStruct(StructData {
                 name,
+                abi_slots: 0,
                 def: Arc::new(StructDefEntry::new(shell)),
             }),
             None,
@@ -2514,17 +2730,21 @@ impl TypeInternPool {
         let key = (def.file_id, name);
         let mut entry = TypeData::Struct(StructData {
             name,
+            abi_slots: 0,
             def: Arc::new(StructDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
-        if facts.is_some_and(|facts| facts.carries_linear) {
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
+        }
+        if facts.is_some_and(|facts| facts.containment.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
             Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
         }
         *inner.entry_mut(pool_index) = entry;
-        inner.set_facts(pool_index, facts);
+        inner.set_facts(pool_index, facts.map(|facts| facts.containment));
 
         // Register in the defining-file lookup.
         inner
@@ -2560,6 +2780,7 @@ impl TypeInternPool {
                 );
                 *entry = TypeData::Struct(StructData {
                     name: data.name,
+                    abi_slots: 0,
                     def: Arc::new(StructDefEntry::new(def)),
                 });
             }
@@ -2607,12 +2828,16 @@ impl TypeInternPool {
         let enum_id = EnumId::from_pool_index(pool_index);
         let ty = Type::new_enum(enum_id);
 
-        let entry = TypeData::Enum(EnumData {
+        let mut entry = TypeData::Enum(EnumData {
             name,
+            abi_slots: 0,
             def: Arc::new(EnumDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
-        inner.push_entry(entry, facts);
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
+        }
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
         inner.enum_by_file_name.insert(key, ty);
 
         (enum_id, true)
@@ -2645,6 +2870,7 @@ impl TypeInternPool {
         inner.push_entry(
             TypeData::DeclaredEnum(EnumData {
                 name,
+                abi_slots: 0,
                 def: Arc::new(EnumDefEntry::new(shell)),
             }),
             None,
@@ -2681,6 +2907,7 @@ impl TypeInternPool {
                 );
                 *entry = TypeData::Enum(EnumData {
                     name: data.name,
+                    abi_slots: 0,
                     def: Arc::new(EnumDefEntry::new(def)),
                 });
             }
@@ -2718,9 +2945,16 @@ impl TypeInternPool {
         let pool_index = inner.next_pool_index();
         let ty = Type::new_array(ArrayTypeId::from_pool_index(pool_index));
 
-        let entry = TypeData::Array { element, len };
+        let mut entry = TypeData::Array {
+            element,
+            abi_slots: 0,
+            len,
+        };
         let facts = inner.incremental_facts(&entry);
-        inner.push_entry(entry, facts);
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
+        }
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
         inner.array_map.insert(key, ty);
 
         Ok(ty)
@@ -2752,7 +2986,7 @@ impl TypeInternPool {
 
         let entry = TypeData::PtrConst { pointee };
         let facts = inner.incremental_facts(&entry);
-        inner.push_entry(entry, facts);
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
         inner.ptr_const_map.insert(pointee, ty);
 
         Ok(ty)
@@ -2784,7 +3018,7 @@ impl TypeInternPool {
 
         let entry = TypeData::PtrMut { pointee };
         let facts = inner.incremental_facts(&entry);
-        inner.push_entry(entry, facts);
+        inner.push_entry(entry, facts.map(|facts| facts.containment));
         inner.ptr_mut_map.insert(pointee, ty);
 
         Ok(ty)
@@ -2885,7 +3119,7 @@ impl TypeInternPool {
     /// Get array info (element type, length) if this is an array type.
     pub fn get_array_info(&self, ty: Type) -> Option<(Type, u64)> {
         match self.get(ty)? {
-            TypeData::Array { element, len } => Some((element, len)),
+            TypeData::Array { element, len, .. } => Some((element, len)),
             _ => None,
         }
     }
@@ -4508,6 +4742,81 @@ mod tests {
     }
 
     #[test]
+    fn frozen_abi_widths_share_canonical_containment_facts() {
+        assert_eq!(std::mem::size_of::<Spur>(), 4);
+        assert_eq!(std::mem::size_of::<StructData>(), 16);
+        assert_eq!(std::mem::size_of::<EnumData>(), 16);
+        assert_eq!(std::mem::size_of::<TypeData>(), 24);
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (pair, _) = pool.register_struct(
+            declarations.get_or_intern("Pair"),
+            struct_def(
+                "Pair",
+                vec![
+                    StructField {
+                        name: "left".into(),
+                        ty: Type::I64,
+                    },
+                    StructField {
+                        name: "right".into(),
+                        ty: Type::U8,
+                    },
+                ],
+            ),
+        );
+        // Force the graph-wide finalization path. Every type registered below
+        // starts without facts and is derived once in canonical postorder.
+        pool.set_struct_destructor(pair, "Pair.__drop".into());
+        let pairs = pool.try_intern_array(Type::new_struct(pair), 3).unwrap();
+        let saturated = pool.try_intern_array(Type::I64, u64::MAX).unwrap();
+        let pointer = pool.try_intern_ptr_const(Type::new_struct(pair)).unwrap();
+        let choice = EnumDef {
+            name: "Choice".into(),
+            variants: Arc::from(["Many".into(), "One".into()]),
+            variant_payloads: vec![vec![pairs, Type::I8], vec![pointer]],
+            is_pub: false,
+            file_id: FileId::DEFAULT,
+        };
+        let (choice, _) = pool.register_enum(declarations.get_or_intern("Choice"), choice);
+        let (wrapper, _) = pool.register_struct(
+            declarations.get_or_intern("Wrapper"),
+            struct_def(
+                "Wrapper",
+                vec![
+                    StructField {
+                        name: "choice".into(),
+                        ty: Type::new_enum(choice),
+                    },
+                    StructField {
+                        name: "pointer".into(),
+                        ty: pointer,
+                    },
+                ],
+            ),
+        );
+
+        pool.finalize_containment_metadata().unwrap();
+        let frozen = pool.freeze();
+        let pair_ty = Type::new_struct(pair);
+        let choice_ty = Type::new_enum(choice);
+        let wrapper_ty = Type::new_struct(wrapper);
+
+        assert_eq!(frozen.inner.stored_abi_slot_count(pair_ty), Some(2));
+        assert_eq!(frozen.inner.stored_abi_slot_count(pairs), Some(6));
+        assert_eq!(
+            frozen.inner.stored_abi_slot_count(saturated),
+            Some(u32::MAX)
+        );
+        assert_eq!(frozen.inner.stored_abi_slot_count(pointer), Some(1));
+        assert_eq!(frozen.inner.stored_abi_slot_count(choice_ty), Some(8));
+        assert_eq!(frozen.inner.stored_abi_slot_count(wrapper_ty), Some(9));
+        assert_eq!(frozen.abi_slot_count(wrapper_ty), 9);
+        assert_eq!(frozen.struct_field_slot_offset(wrapper, 1), 8);
+        assert_eq!(frozen.enum_payload_slot_offset(choice, 0, 1), 7);
+    }
+
+    #[test]
     #[should_panic(expected = "complete canonical type handle")]
     fn frozen_containment_queries_reject_wrong_kind_handles() {
         let declarations = ThreadedRodeo::default();
@@ -4803,7 +5112,7 @@ mod tests {
         let arr_ty = pool.try_intern_array(Type::I32, 10).unwrap();
         let arr_data = pool.get(arr_ty).expect("should get array data");
         match arr_data {
-            TypeData::Array { element, len } => {
+            TypeData::Array { element, len, .. } => {
                 assert_eq!(element, Type::I32);
                 assert_eq!(len, 10);
             }
