@@ -3058,6 +3058,102 @@ fn resolve_contract(
     }
 }
 
+/// Inventory file a staging directory carries, written by `rue_program_staging`
+/// (see `_STAGED_ROOTS_MANIFEST` in `rue_rules.bzl`).
+const STAGED_ROOTS_MANIFEST: &str = "staged-roots.txt";
+
+/// Staged roots that no case consumes.
+///
+/// The staging directory is the authority on what Buck built, and the corpus is
+/// the authority on what wants it. A root in the first set and not the second
+/// means the two stopped agreeing — a renamed root, an edited `source_path`, a
+/// case that grew a compile-touching field — and the symptom is invisible
+/// without this check: every affected case just quietly compiles its own root
+/// again, which is the coverage-shaped failure RUE-924 describes rather than a
+/// red test.
+///
+/// The reverse direction is deliberately not an error. An eligible case whose
+/// root is absent from the directory is the documented exclusion for roots no
+/// `rue_program` owns (the repo-relative `source_path` fixture, the
+/// one-scenario wordfreq root), and those must keep compiling in the harness.
+fn unconsumed_staged_roots(staged: &[String], consumed: &HashSet<String>) -> Vec<String> {
+    staged
+        .iter()
+        .filter(|root| !consumed.contains(*root))
+        .cloned()
+        .collect()
+}
+
+/// Validate the staging directory against the complete, unfiltered inventory.
+///
+/// Like [`validate_contract_metadata`], this runs before `libtest2` applies
+/// filters, so a shard or a focused run checks the whole corpus rather than its
+/// own slice — the staged/consumed agreement is a property of the build graph,
+/// not of the cases a given runner happens to execute.
+///
+/// Returns the number of cases that will run staged, or an error describing the
+/// disagreement. With `RUE_CLI_STAGED_PROGRAMS` unset — the developer entry
+/// point — there is nothing to check and every case compiles.
+fn validate_staged_programs(corpus: &LoadedCorpus) -> Result<Option<usize>, String> {
+    let Some(dir) = std::env::var_os(STAGED_PROGRAMS_ENV) else {
+        return Ok(None);
+    };
+    let dir = PathBuf::from(dir);
+    let manifest = dir.join(STAGED_ROOTS_MANIFEST);
+    let listed = std::fs::read_to_string(&manifest).map_err(|error| {
+        format!(
+            "{STAGED_PROGRAMS_ENV} is set to '{}' but its {STAGED_ROOTS_MANIFEST} is unreadable: \
+             {error}",
+            dir.display(),
+        )
+    })?;
+    let staged: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    for root in &staged {
+        if !dir.join(root).is_file() {
+            return Err(format!(
+                "staged program '{root}' is listed in {STAGED_ROOTS_MANIFEST} but absent from '{}'",
+                dir.display(),
+            ));
+        }
+    }
+
+    let mut consumed = HashSet::new();
+    let mut staged_cases = 0;
+    for (_, file) in &corpus.files {
+        for case in &file.cases {
+            if !case_runs_prebuilt_program(case) {
+                continue;
+            }
+            let Some(root) = case.source_path.as_ref() else {
+                continue;
+            };
+            if staged.contains(root) {
+                consumed.insert(root.clone());
+                staged_cases += 1;
+            }
+        }
+    }
+
+    let unconsumed = unconsumed_staged_roots(&staged, &consumed);
+    if !unconsumed.is_empty() {
+        return Err(format!(
+            "staged program(s) no case consumes: {}. Every root in {STAGED_ROOTS_MANIFEST} must \
+             have at least one case naming it in `source_path` and leaving the compile alone; \
+             otherwise those cases silently compile the root again and the staged artifact is \
+             dead weight.",
+            unconsumed.join(", "),
+        ));
+    }
+
+    Ok(Some(staged_cases))
+}
+
 /// Validate the contract graph against the complete, unfiltered inventory.
 /// This happens before `libtest2` sees command-line filters, so a focused run
 /// cannot silently lose a budget or scheduling classification.
@@ -3441,6 +3537,20 @@ fn main() {
             eprintln!("error: invalid CLI execution contract metadata: {error}");
             std::process::exit(1);
         });
+    // A staged program the corpus stopped consuming degrades silently: the
+    // cases compile their own root again and nothing turns red. Fail the run
+    // instead, and report the count so a lane that loses staging entirely is
+    // visible in its log rather than only in its wall clock.
+    match validate_staged_programs(&corpus) {
+        Ok(Some(staged_cases)) => {
+            eprintln!("cli-tests: {staged_cases} case(s) run prebuilt rue_program executables");
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("error: staged rue_program inventory disagrees with the corpus: {error}");
+            std::process::exit(1);
+        }
+    }
 
     let mut discovered_names = corpus
         .files
@@ -4143,6 +4253,49 @@ mod tests {
                 "a case setting `{field}` must compile its own root"
             );
         }
+    }
+
+    #[test]
+    fn a_staged_root_every_case_consumes_is_not_drift() {
+        let staged = vec![
+            "examples/mosaic/main.rue".to_string(),
+            "examples/rill/main.rue".to_string(),
+        ];
+        let consumed = staged.iter().cloned().collect::<HashSet<_>>();
+
+        assert!(unconsumed_staged_roots(&staged, &consumed).is_empty());
+    }
+
+    #[test]
+    fn a_staged_root_no_case_consumes_is_reported() {
+        // What a renamed root, an edited `source_path`, or a case that grew a
+        // compile-touching field looks like from the build graph's side: Buck
+        // still stages the artifact, and every case that wanted it silently
+        // went back to compiling.
+        let staged = vec![
+            "examples/mosaic/main.rue".to_string(),
+            "examples/rill/main.rue".to_string(),
+        ];
+        let consumed = HashSet::from(["examples/mosaic/main.rue".to_string()]);
+
+        assert_eq!(
+            unconsumed_staged_roots(&staged, &consumed),
+            vec!["examples/rill/main.rue".to_string()],
+        );
+    }
+
+    #[test]
+    fn an_eligible_case_for_an_unstaged_root_is_not_drift() {
+        // The documented exclusion: the repo-relative `source_path` fixture and
+        // the one-scenario wordfreq root name checked-in roots that no
+        // rue_program owns. They must keep compiling without failing the run.
+        let staged = vec!["examples/mosaic/main.rue".to_string()];
+        let consumed = HashSet::from([
+            "examples/mosaic/main.rue".to_string(),
+            "examples/wordfreq/main.rue".to_string(),
+        ]);
+
+        assert!(unconsumed_staged_roots(&staged, &consumed).is_empty());
     }
 
     #[test]
