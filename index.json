@@ -5735,6 +5735,22 @@
       "platform": "x86_64-linux",
       "run": "af07352426d8671af167fcf917c174e02520c463fbc4fb103bfa702f30d170c2",
       "suite_revision": 1
+    },
+    {
+      "commit": "126bb796b1ba101c88eae3a4a75d9416a86fb654",
+      "epoch": 2,
+      "finished_at": "2026-08-12T03:51:54Z",
+      "platform": "aarch64-linux",
+      "run": "ded82eb0f85b2d0e9dab571a1d8385cf581dfc8962a767834010cd24cf9a6097",
+      "suite_revision": 1
+    },
+    {
+      "commit": "126bb796b1ba101c88eae3a4a75d9416a86fb654",
+      "epoch": 2,
+      "finished_at": "2026-08-12T03:52:22Z",
+      "platform": "aarch64-macos",
+      "run": "32376f4b305ae2b29ba8dfce52348e354a94dfdcd351d81bc34f9847835bbdde",
+      "suite_revision": 1
     }
   ],
   "schema_version": 1
