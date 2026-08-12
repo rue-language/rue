@@ -4816,10 +4816,10 @@ impl CompilerSession {
                 .revisioned
                 .warning_body_references(
                     graph.revision,
-                    crate::body_query::BodyQueryKey {
-                        instance: crate::FunctionInstanceKey::Definition(declaration.key.clone()),
-                        configuration: graph.configuration.clone(),
-                    },
+                    crate::body_query::BodyQueryKey::new(
+                        crate::FunctionInstanceKey::Definition(declaration.key.clone()),
+                        graph.configuration.clone(),
+                    ),
                     cancellation.clone(),
                 )
                 .map_err(PipelineRequestControl::Abort)?;
@@ -7451,13 +7451,13 @@ mod tests {
             .unwrap()
             .stable_key()
             .clone();
-        crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Definition(definition),
-            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Definition(definition),
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
             },
-        }
+        )
     }
 
     /// The comptime arguments of a specialization of the definition named
@@ -11074,15 +11074,15 @@ fn main() -> i32 { 0 }
                 })
             })
             .unwrap();
-        let choose_true_key = crate::body_query::BodyQueryKey {
-            instance: choose_true.semantic_identity.clone(),
-            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        let choose_true_key = crate::body_query::BodyQueryKey::new(
+            choose_true.semantic_identity.clone(),
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: CompileOptions::default().target,
                 preview_features: StablePreviewFeatures::new(
                     &CompileOptions::default().preview_features,
                 ),
             },
-        };
+        );
         let transaction = retained_body_transaction(&session, &choose_true_key).2;
         assert!(
             transaction.references().0.iter().any(|reference| matches!(
@@ -12185,22 +12185,22 @@ fn main() -> i32 {
         let cold = session.canonical_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
         let make_definition = body_query_key(&mut session, &options, "Make");
-        let make = crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Specialization {
-                base: Box::new(make_definition.instance),
+        let make = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Specialization {
+                base: Box::new(make_definition.instance.clone()),
                 arguments: crate::CanonicalArguments::default(),
             },
-            configuration: main.configuration.clone(),
-        };
+            main.configuration.clone(),
+        );
         let size = cold
             .functions()
             .iter()
             .find(|function| specialization_arguments(function, "size").is_some())
             .unwrap();
-        let size = crate::body_query::BodyQueryKey {
-            instance: size.semantic_identity.clone(),
-            configuration: main.configuration.clone(),
-        };
+        let size = crate::body_query::BodyQueryKey::new(
+            size.semantic_identity.clone(),
+            main.configuration.clone(),
+        );
         let first_make_stamps = retained_body_query_stamps(&session, &make);
         let first_size_stamps = retained_body_query_stamps(&session, &size);
         let make_dependencies = retained_body_dependency_nodes(&session, &make);
@@ -12328,21 +12328,19 @@ fn main() -> i32 {
         let mut warm = CompilerSession::new();
         warm.update(&missing).into_result().unwrap();
         assert!(warm.canonical_semantic(&options).is_err());
-        let main = crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Definition(
-                crate::StableDefinitionKey::from_stable_parts(
-                    crate::ModuleId::from_logical_path("main.rue").unwrap(),
-                    crate::StableDefinitionNamespace::Value,
-                    crate::StableDefinitionKind::Function,
-                    "main",
-                    None,
-                ),
-            ),
-            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        let main = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+                crate::ModuleId::from_logical_path("main.rue").unwrap(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                "main",
+                None,
+            )),
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
             },
-        };
+        );
         let dependencies = retained_body_dependency_nodes(&warm, &main);
         assert!(
             dependencies
@@ -12636,21 +12634,19 @@ fn main() -> i32 {
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
         assert!(session.canonical_semantic(&options).is_err());
-        let key = crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Definition(
-                crate::StableDefinitionKey::from_stable_parts(
-                    crate::ModuleId::from_logical_path("main.rue").unwrap(),
-                    crate::StableDefinitionNamespace::Value,
-                    crate::StableDefinitionKind::Function,
-                    Arc::from("main"),
-                    None,
-                ),
-            ),
-            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        let key = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+                crate::ModuleId::from_logical_path("main.rue").unwrap(),
+                crate::StableDefinitionNamespace::Value,
+                crate::StableDefinitionKind::Function,
+                Arc::from("main"),
+                None,
+            )),
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
             },
-        };
+        );
         let revision = session
             .queries
             .revisioned

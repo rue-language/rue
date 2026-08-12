@@ -3802,10 +3802,7 @@ fn closure_callable_has_body(
     }
     let terminal = context.query_registered(
         body_inputs,
-        crate::body_query::BodyQueryKey {
-            instance: callable.clone(),
-            configuration: configuration.clone(),
-        },
+        crate::body_query::BodyQueryKey::new(callable.clone(), configuration.clone()),
     )?;
     let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
         unreachable!("BodyInput publishes typed values")
@@ -4806,10 +4803,7 @@ fn query_anonymous_nominal(
     };
     let produced = context.query_registered(
         body_produced_anonymous,
-        crate::body_query::BodyQueryKey {
-            instance: producer.as_ref().clone(),
-            configuration: configuration.clone(),
-        },
+        crate::body_query::BodyQueryKey::new(producer.as_ref().clone(), configuration.clone()),
     )?;
     let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
         unreachable!("BodyProducedAnonymous publishes typed values")
@@ -14341,13 +14335,10 @@ impl RevisionedQueryDatabase {
                                     } else {
                                         let producer = context.query_registered(
                                             &produced_anonymous_for_semantic_nucleus,
-                                            crate::body_query::BodyQueryKey {
-                                                instance: (**function).clone(),
-                                                configuration: query
-                                                    .producer
-                                                    .configuration
-                                                    .clone(),
-                                            },
+                                            crate::body_query::BodyQueryKey::new(
+                                                (**function).clone(),
+                                                query.producer.configuration.clone(),
+                                            ),
                                         )?;
                                         let rue_query::QueryOutcome::Success(producer) =
                                             producer.outcome()
@@ -15562,9 +15553,11 @@ impl RevisionedQueryDatabase {
                                 .collect::<Vec<_>>();
                             let frontier_keys = instances
                                 .iter()
-                                .map(|instance| crate::body_query::BodyQueryKey {
-                                    instance: instance.as_ref().clone(),
-                                    configuration: key.configuration.clone(),
+                                .map(|instance| {
+                                    crate::body_query::BodyQueryKey::new(
+                                        instance.as_ref().clone(),
+                                        key.configuration.clone(),
+                                    )
                                 })
                                 .collect::<Vec<_>>();
                             let demands = context.query_registered_batch(
@@ -15597,10 +15590,10 @@ impl RevisionedQueryDatabase {
                                 {
                                     let remaining_demand = context.query_registered(
                                         &toolchain_for_body_closure,
-                                        crate::body_query::BodyQueryKey {
-                                            instance: remaining_instance.as_ref().clone(),
-                                            configuration: key.configuration.clone(),
-                                        },
+                                        crate::body_query::BodyQueryKey::new(
+                                            remaining_instance.as_ref().clone(),
+                                            key.configuration.clone(),
+                                        ),
                                     )?;
                                     let rue_query::QueryOutcome::Success(remaining_demand) =
                                         remaining_demand.outcome()
@@ -15734,10 +15727,10 @@ impl RevisionedQueryDatabase {
                             break;
                         }
 
-                        let body_key = crate::body_query::BodyQueryKey {
-                            instance: instance.as_ref().clone(),
-                            configuration: key.configuration.clone(),
-                        };
+                        let body_key = crate::body_query::BodyQueryKey::new(
+                            instance.as_ref().clone(),
+                            key.configuration.clone(),
+                        );
                         let demand = context
                             .query_registered(&toolchain_for_body_closure, body_key.clone())?;
                         let rue_query::QueryOutcome::Success(demand) = demand.outcome() else {
@@ -15761,10 +15754,10 @@ impl RevisionedQueryDatabase {
                                 if visited.contains(pending_instance) {
                                     continue;
                                 }
-                                let pending_key = crate::body_query::BodyQueryKey {
-                                    instance: pending_instance.as_ref().clone(),
-                                    configuration: key.configuration.clone(),
-                                };
+                                let pending_key = crate::body_query::BodyQueryKey::new(
+                                    pending_instance.as_ref().clone(),
+                                    key.configuration.clone(),
+                                );
                                 let pending_demand = context.query_registered(
                                     &toolchain_for_body_closure,
                                     pending_key,
@@ -16222,9 +16215,11 @@ impl RevisionedQueryDatabase {
                         .reached
                         .iter()
                         .cloned()
-                        .map(|instance| crate::body_query::BodyQueryKey {
-                            instance,
-                            configuration: key.configuration.clone(),
+                        .map(|instance| {
+                            crate::body_query::BodyQueryKey::new(
+                                instance,
+                                key.configuration.clone(),
+                            )
                         })
                         .collect::<Vec<_>>();
                     // Reachability has already produced these deep registered
@@ -17564,10 +17559,10 @@ impl BodyTransactionEvaluator {
                 {
                     let produced = match context.query_registered(
                         &self.body_produced_anonymous,
-                        crate::body_query::BodyQueryKey {
-                            instance: (**function).clone(),
-                            configuration: key.configuration.clone(),
-                        },
+                        crate::body_query::BodyQueryKey::new(
+                            (**function).clone(),
+                            key.configuration.clone(),
+                        ),
                     ) {
                         Ok(produced) => produced,
                         Err(QueryAbort::Canceled) => {
@@ -22708,10 +22703,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
         &self,
         instance: &crate::FunctionInstanceKey,
     ) -> crate::body_query::BodyQueryKey {
-        crate::body_query::BodyQueryKey {
-            instance: instance.clone(),
-            configuration: self.queries.configuration.clone(),
-        }
+        crate::body_query::BodyQueryKey::new(instance.clone(), self.queries.configuration.clone())
     }
 
     /// Observe the exact `LookupName` terminal for a consulted key, recording
@@ -25608,13 +25600,10 @@ mod tests {
     }
 
     fn main_body_key() -> crate::body_query::BodyQueryKey {
-        crate::body_query::BodyQueryKey {
-            instance: free_function_instance(
-                &ModuleId::from_logical_path("main.rue").unwrap(),
-                "main",
-            ),
-            configuration: semantic_configuration(),
-        }
+        crate::body_query::BodyQueryKey::new(
+            free_function_instance(&ModuleId::from_logical_path("main.rue").unwrap(), "main"),
+            semantic_configuration(),
+        )
     }
 
     #[test]
@@ -32530,10 +32519,7 @@ fn main() -> i32 {
         let produced = database.runtime.request_registered(
             &database.body_produced_anonymous,
             revision,
-            crate::body_query::BodyQueryKey {
-                instance: producer,
-                configuration,
-            },
+            crate::body_query::BodyQueryKey::new(producer, configuration),
             CancellationToken::new(),
         );
         let terminal = produced.terminal().unwrap();
@@ -36882,10 +36868,7 @@ fn main() -> i32 {
             arguments: arguments.clone(),
         };
         let configuration = semantic_configuration();
-        let key = crate::body_query::BodyQueryKey {
-            instance: instance.clone(),
-            configuration: configuration.clone(),
-        };
+        let key = crate::body_query::BodyQueryKey::new(instance.clone(), configuration.clone());
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
         let input = database
@@ -37090,10 +37073,8 @@ fn main() -> i32 {
             base: Box::new(free_function_instance(&module, "Pair")),
             arguments: crate::CanonicalArguments::default(),
         };
-        let registered_key = crate::body_query::BodyQueryKey {
-            instance: pair_instance.clone(),
-            configuration: configuration.clone(),
-        };
+        let registered_key =
+            crate::body_query::BodyQueryKey::new(pair_instance.clone(), configuration.clone());
 
         let provider_instance = pair_instance.clone();
         let outcome = database.probe_ready_body_facts(
@@ -37676,10 +37657,8 @@ fn main() -> i32 {
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let instance = free_function_instance(&module, "selected");
-        let key = |configuration| crate::body_query::BodyQueryKey {
-            instance: instance.clone(),
-            configuration,
-        };
+        let key =
+            |configuration| crate::body_query::BodyQueryKey::new(instance.clone(), configuration);
         let mut database = RevisionedQueryDatabase::default();
         let first_revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&first),
@@ -37790,10 +37769,10 @@ fn main() -> i32 {
             let terminal = database
                 .body_input(
                     revision,
-                    crate::body_query::BodyQueryKey {
-                        instance: crate::FunctionInstanceKey::Definition(definition.clone()),
-                        configuration: semantic_configuration(),
-                    },
+                    crate::body_query::BodyQueryKey::new(
+                        crate::FunctionInstanceKey::Definition(definition.clone()),
+                        semantic_configuration(),
+                    ),
                     CancellationToken::new(),
                 )
                 .unwrap();
@@ -37829,10 +37808,10 @@ fn main() -> i32 {
         let terminal = database
             .body_input(
                 revision,
-                crate::body_query::BodyQueryKey {
-                    instance: free_function_instance(&module, "selected"),
-                    configuration: semantic_configuration(),
-                },
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(&module, "selected"),
+                    semantic_configuration(),
+                ),
                 CancellationToken::new(),
             )
             .unwrap();
@@ -37924,10 +37903,7 @@ fn main() -> i32 {
             base: Box::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
-        let key = crate::body_query::BodyQueryKey {
-            instance: producer,
-            configuration: semantic_configuration(),
-        };
+        let key = crate::body_query::BodyQueryKey::new(producer, semantic_configuration());
         let member_syntax =
             |terminal: &rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>| {
                 let rue_query::QueryOutcome::Success(
@@ -38075,10 +38051,7 @@ fn main() -> i32 {
             &super::super::session::ExactSourceInput::new(&generic),
             &generic,
         );
-        let key = crate::body_query::BodyQueryKey {
-            instance,
-            configuration: semantic_configuration(),
-        };
+        let key = crate::body_query::BodyQueryKey::new(instance, semantic_configuration());
         let terminal = database
             .body_input(revision, key, CancellationToken::new())
             .unwrap();
@@ -38089,13 +38062,13 @@ fn main() -> i32 {
             ))
         ));
 
-        let unknown = crate::body_query::BodyQueryKey {
-            instance: free_function_instance(
+        let unknown = crate::body_query::BodyQueryKey::new(
+            free_function_instance(
                 &ModuleId::from_logical_path("other.rue").unwrap(),
                 "missing",
             ),
-            configuration: semantic_configuration(),
-        };
+            semantic_configuration(),
+        );
         let missing = database
             .body_input(revision, unknown, CancellationToken::new())
             .unwrap();
@@ -38106,16 +38079,16 @@ fn main() -> i32 {
             ))
         ));
 
-        let unsupported = crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Specialization {
+        let unsupported = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Specialization {
                 base: Box::new(free_function_instance(
                     &ModuleId::from_logical_path("main.rue").unwrap(),
                     "selected",
                 )),
                 arguments: crate::CanonicalArguments::default(),
             },
-            configuration: semantic_configuration(),
-        };
+            semantic_configuration(),
+        );
         let specialization = database
             .body_input(revision, unsupported, CancellationToken::new())
             .unwrap();
@@ -38125,18 +38098,16 @@ fn main() -> i32 {
         ));
 
         let unsupported_kind = crate::StableDefinitionKind::Struct;
-        let unsupported = crate::body_query::BodyQueryKey {
-            instance: crate::FunctionInstanceKey::Definition(
-                crate::StableDefinitionKey::from_stable_parts(
-                    ModuleId::from_logical_path("main.rue").unwrap(),
-                    crate::StableDefinitionNamespace::Type,
-                    unsupported_kind,
-                    Arc::from("NotABody"),
-                    None,
-                ),
-            ),
-            configuration: semantic_configuration(),
-        };
+        let unsupported = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+                ModuleId::from_logical_path("main.rue").unwrap(),
+                crate::StableDefinitionNamespace::Type,
+                unsupported_kind,
+                Arc::from("NotABody"),
+                None,
+            )),
+            semantic_configuration(),
+        );
         let terminal = database
             .body_input(revision, unsupported, CancellationToken::new())
             .unwrap();
@@ -38164,13 +38135,13 @@ fn main() -> i32 {
         let extern_terminal = extern_database
             .body_input(
                 extern_revision,
-                crate::body_query::BodyQueryKey {
-                    instance: free_function_instance(
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(
                         &ModuleId::from_logical_path("main.rue").unwrap(),
                         "selected",
                     ),
-                    configuration: semantic_configuration(),
-                },
+                    semantic_configuration(),
+                ),
                 CancellationToken::new(),
             )
             .unwrap();
@@ -38193,13 +38164,13 @@ fn main() -> i32 {
         let malformed_terminal = malformed_database
             .body_input(
                 malformed_revision,
-                crate::body_query::BodyQueryKey {
-                    instance: free_function_instance(
+                crate::body_query::BodyQueryKey::new(
+                    free_function_instance(
                         &ModuleId::from_logical_path("main.rue").unwrap(),
                         "selected",
                     ),
-                    configuration: semantic_configuration(),
-                },
+                    semantic_configuration(),
+                ),
                 CancellationToken::new(),
             )
             .unwrap();
@@ -38223,10 +38194,10 @@ fn main() -> i32 {
             &super::super::session::ExactSourceInput::new(&source),
             &source,
         );
-        let key = crate::body_query::BodyQueryKey {
-            instance: free_function_instance(&module, "selected"),
-            configuration: semantic_configuration(),
-        };
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "selected"),
+            semantic_configuration(),
+        );
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let attempt = database.runtime.request_registered(
@@ -38672,10 +38643,7 @@ fn main() -> i32 {
             let transaction = database.runtime.request_registered(
                 &database.body_transactions,
                 revision,
-                crate::body_query::BodyQueryKey {
-                    instance,
-                    configuration: semantic_configuration(),
-                },
+                crate::body_query::BodyQueryKey::new(instance, semantic_configuration()),
                 CancellationToken::new(),
             );
             assert_eq!(
@@ -38715,10 +38683,10 @@ fn main() -> i32 {
             roots: Arc::from([free_function_instance(&module, "main")]),
             configuration: semantic_configuration(),
         };
-        let deleted_body_key = crate::body_query::BodyQueryKey {
-            instance: free_function_instance(&module, &format!("f{}", CALLEES - 1)),
-            configuration: semantic_configuration(),
-        };
+        let deleted_body_key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, &format!("f{}", CALLEES - 1)),
+            semantic_configuration(),
+        );
         let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
 
         let full_revision = revision_for(&mut database, &full);
@@ -38871,10 +38839,8 @@ fn main() -> i32 {
         };
         let first_instance = instance("First");
         let second_instance = instance("Second");
-        let body_key = |instance| crate::body_query::BodyQueryKey {
-            instance,
-            configuration: configuration.clone(),
-        };
+        let body_key =
+            |instance| crate::body_query::BodyQueryKey::new(instance, configuration.clone());
         let first_key = body_key(first_instance.clone());
         let second_key = body_key(second_instance.clone());
 
@@ -39106,10 +39072,10 @@ fn main() -> i32 {
             base: Box::new(free_function_instance(&module, "Produced")),
             arguments: crate::CanonicalArguments::default(),
         };
-        let produced_key = crate::body_query::BodyQueryKey {
-            instance: produced_instance.clone(),
-            configuration: semantic_configuration(),
-        };
+        let produced_key = crate::body_query::BodyQueryKey::new(
+            produced_instance.clone(),
+            semantic_configuration(),
+        );
         let produced = database
             .body_produced_anonymous_projection(
                 revision,
@@ -39224,9 +39190,8 @@ fn main() -> i32 {
         };
         let body_keys = reached_instances
             .into_iter()
-            .map(|instance| crate::body_query::BodyQueryKey {
-                instance,
-                configuration: semantic_configuration(),
+            .map(|instance| {
+                crate::body_query::BodyQueryKey::new(instance, semantic_configuration())
             })
             .collect::<Vec<_>>();
         let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
