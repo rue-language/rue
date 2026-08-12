@@ -256,7 +256,8 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     fn definition_kind(&self, _definition: &K) -> Option<crate::StableDefinitionKind> {
         None
     }
-    fn definition_owner_name(&self, _definition: &K) -> Option<String> {
+    /// Shared source owner name for a durable definition.
+    fn definition_owner_name(&self, _definition: &K) -> Option<Arc<str>> {
         None
     }
     fn canonical_import(&self, _current: &K, _specifier: &str) -> Option<M> {
@@ -271,7 +272,8 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     fn language_item_nominal(&self, _current: &K, _lang_item: crate::LangItem) -> Option<K> {
         None
     }
-    fn definition_name(&self, _definition: &K) -> Option<String> {
+    /// Shared source name for a durable definition.
+    fn definition_name(&self, _definition: &K) -> Option<Arc<str>> {
         None
     }
     fn reduce_comptime_call(
@@ -697,7 +699,7 @@ where
             T::Never => "!".to_owned(),
             T::ComptimeType => "type".to_owned(),
             T::BuiltinNominal { name, .. } => name.to_string(),
-            T::Nominal(definition) => self.source.definition_name(definition)?,
+            T::Nominal(definition) => self.source.definition_name(definition)?.to_string(),
             T::AnonymousNominal(_) => return None,
             T::Array { element, len } => format!(
                 "[{}; {len}]",
@@ -855,7 +857,7 @@ where
                 (
                     self.source.free_function(&self.key, name)?,
                     self.owner_file,
-                    name.to_owned(),
+                    Arc::from(name),
                 )
             };
         let function = DurableCallableSource::function(&self.source, &key)?;

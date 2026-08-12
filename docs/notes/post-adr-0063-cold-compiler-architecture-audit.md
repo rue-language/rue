@@ -1674,6 +1674,20 @@ is neutral at +0.0000% paired median (1.0989% MAD), retired instructions at
 allocation-accounted pairs are neutral. Every other compiler-work counter,
 source/output metric, and executable byte remains identical.
 
+RUE-1456 carries stable definition and owner names through the durable body
+lookup seam as shared immutable handles. The compiler's `StableDefinitionKey`
+already owns both names in `Arc<str>`; returning a fresh `String` made
+provider-native body materialization allocate and copy equal text only to pass
+it immediately into interning, endpoint registration, or diagnostics.
+
+Four allocation-accounted cold Lattice pairs remove 5,943--6,518 allocation
+calls. Requested bytes are neutral, ranging from 112,143 fewer to 42,873 more.
+Across 16 balanced release pairs, compiler clock is neutral at -0.8376% paired
+median (0.7210% MAD), retired instructions at -0.0307% (0.0593% MAD), cycles at
+-0.4515% (0.8319% MAD), peak RSS at +0.2450% (0.4045% MAD), and peak footprint
+at -0.0580% (0.1881% MAD). Every compiler-work counter, source/output metric,
+and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
