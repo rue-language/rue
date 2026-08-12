@@ -1092,6 +1092,20 @@ median, with 1.42% paired MAD and a -4.92% to +6.84% range. Median peak RSS
 falls by 15.02 MiB. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1409 makes liveness dataflow storage reflect control-flow shape. Acyclic
+MIR retains only live-in rows, derives live-at in forward order while every
+successor row is still unmodified, and materializes live-out only when debug
+presentation requests it. Cyclic MIR still publishes both tables, but derives
+live-out once after live-in reaches its fixed point instead of rewriting both
+tables on every sweep.
+
+Four fixed one-worker allocation probes save 108,574--108,897 calls and
+14.94--15.15 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.50% paired median, with 1.22%
+paired MAD and a -5.08% to +14.67% range. Median peak RSS falls by 10.91 MiB.
+Every published compiler-work counter and emitted executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
