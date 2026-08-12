@@ -1632,8 +1632,16 @@ where
             DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(key, digest, &variants),
         };
         match minted {
+            // Both minting arms register the recursive shell before resolving
+            // its shape. That registration is the durable identity on success;
+            // inserting it again here would clone and rehash the full producer
+            // key only to replace the same forward entry.
             Ok(ty) => {
-                self.record_anonymous_identity(key.clone(), ty);
+                debug_assert_eq!(
+                    self.anon_nominals.get(key).copied(),
+                    Some(ty),
+                    "every successful anonymous mint arm registers its identity",
+                );
                 Ok(ty)
             }
             Err(error) => {
@@ -1988,7 +1996,7 @@ where
     /// spells them with, and the name never decides identity.
     fn mint_anon_enum(
         &mut self,
-        _key: &AnonymousNominalKey<K, M>,
+        key: &AnonymousNominalKey<K, M>,
         digest: u128,
         variants: &[(Arc<str>, Vec<SemanticImportType<K, M>>)],
     ) -> Result<Type, IdentityMintError> {
@@ -2038,7 +2046,9 @@ where
         );
         // See `mint_anon_struct` (RUE-1050, RUE-1193).
         self.type_pool.mark_anonymous_enum(id);
-        Ok(Type::new_enum(id))
+        let ty = Type::new_enum(id);
+        self.record_anonymous_identity(key.clone(), ty);
+        Ok(ty)
     }
 
     fn resolve_anonymous_shape_type(
@@ -4396,9 +4406,14 @@ mod tests {
         // And the `resolve` anonymous arm now finds it by the lookup the mint
         // populated.
         assert_eq!(
-            pool.resolve(&DType::AnonymousNominal(key)).unwrap(),
+            pool.resolve(&DType::AnonymousNominal(key.clone())).unwrap(),
             ty,
             "the mint records the issued id for the lookup arm",
+        );
+        assert_eq!(
+            pool.durable_anonymous_identity(ty),
+            Some(key),
+            "the recursive shell remains the reverse-export identity",
         );
     }
 
@@ -4446,6 +4461,11 @@ mod tests {
         assert_eq!(
             def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
             ["Some", "None"]
+        );
+        assert_eq!(
+            pool.durable_anonymous_identity(ty),
+            Some(key),
+            "the enum mint records its reverse-export identity",
         );
     }
 
