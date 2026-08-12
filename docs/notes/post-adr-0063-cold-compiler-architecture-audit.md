@@ -1528,6 +1528,18 @@ compiler clock by 1.5903% (MAD 1.5903%), and cycles by 1.2335% (MAD 0.9286%);
 RSS was neutral. Four allocation-accounting pairs were neutral at a median
 -33.5 calls and -27,530 requested bytes. Compiler work, source metrics,
 emitted-output metrics, and executable digest remained exact.
+
+RUE-1445 replaces the instruction scheduler's per-class physical-register hash
+maps with lazily grown dense vectors indexed by each backend's compiler-owned
+`repr(u8)` register identity. The vectors retain storage across basic blocks,
+while register classes remain disjoint and every dependency edge and schedule
+is unchanged. Sixteen balanced Lattice pairs reduced retired instructions by
+0.9496% (MAD 0.0319%), compiler clock by 1.0582% (MAD 1.0582%), cycles by
+0.7317% (MAD 0.7106%), and RSS by 0.3146% (MAD 0.4213%). Four
+allocation-accounting pairs removed a median 17,737 calls while requested bytes
+were neutral at +143,128. Compiler work, source metrics, emitted-output metrics,
+and both AArch64 and x86-64 executable digests remained exact.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

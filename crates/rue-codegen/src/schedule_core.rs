@@ -5,8 +5,7 @@
 //! traversal used by both machine backends.
 
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
-use std::hash::Hash;
+use std::collections::BinaryHeap;
 use std::ops::Deref;
 
 use smallvec::{IntoIter, SmallVec};
@@ -100,7 +99,7 @@ pub trait SchedulerAdapter {
     /// Backend MIR instruction type.
     type Inst;
     /// Backend physical register type.
-    type Reg: Copy + Eq + Hash;
+    type Reg: Copy;
 
     /// The register class `reg` belongs to.
     ///
@@ -110,6 +109,14 @@ pub trait SchedulerAdapter {
     /// the two collide. Both backends answer [`RegClass::Gp`] for every
     /// register today (RUE-1067).
     fn reg_class(&self, reg: Self::Reg) -> RegClass;
+
+    /// Dense compiler-owned index of `reg` within its register class.
+    ///
+    /// Equal registers in one class must have equal indices and distinct
+    /// registers must have distinct indices. Backends use their `repr(u8)`
+    /// physical-register discriminants; the tracker grows lazily to the
+    /// greatest index a function actually names.
+    fn reg_index(&self, reg: Self::Reg) -> usize;
 
     /// Latency in cycles until an instruction's result is ready.
     fn latency(&self, inst: &Self::Inst) -> u32;
@@ -142,63 +149,77 @@ pub trait SchedulerAdapter {
 ///
 /// "Which instruction last wrote this register" and "which instructions have
 /// read it since" are what every RAW, WAW, WAR, and clobber edge is built
-/// from. The maps are held one pair per register class rather than one pair
+/// from. The tables are held one pair per register class rather than one pair
 /// overall because registers of different classes are different registers:
 /// nothing a floating-point register does can order an integer register's
 /// readers, and a backend that numbers its floating-point registers
-/// independently of its integer ones must not have the two share a map key.
+/// independently of its integer ones must not have the two share an index.
 ///
 /// Every register both backends name is [`RegClass::Gp`] today, so the `Fp`
 /// partition stays empty and the resulting graph is exactly the one a single
-/// pair of maps produced (RUE-1067).
-struct RegTracker<Reg> {
-    last_writer: [HashMap<Reg, usize>; RegClass::COUNT],
-    last_readers: [HashMap<Reg, DependencyReaderList>; RegClass::COUNT],
+/// pair of tables produced (RUE-1067).
+struct RegTracker {
+    last_writer: [Vec<Option<usize>>; RegClass::COUNT],
+    last_readers: [Vec<DependencyReaderList>; RegClass::COUNT],
 }
 
-impl<Reg: Copy + Eq + Hash> RegTracker<Reg> {
+impl RegTracker {
     fn new() -> Self {
         Self {
-            last_writer: std::array::from_fn(|_| HashMap::new()),
-            last_readers: std::array::from_fn(|_| HashMap::new()),
+            last_writer: std::array::from_fn(|_| Vec::new()),
+            last_readers: std::array::from_fn(|_| Vec::new()),
         }
     }
 
-    /// Forget one block's facts while retaining the maps' backing storage.
+    /// Forget one block's facts while retaining the tables' backing storage.
     fn clear(&mut self) {
         for writers in &mut self.last_writer {
-            writers.clear();
+            writers.fill(None);
         }
         for readers in &mut self.last_readers {
-            readers.clear();
+            for entries in readers {
+                entries.clear();
+            }
+        }
+    }
+
+    fn ensure(&mut self, class: RegClass, reg: usize) {
+        let writers = &mut self.last_writer[class.index()];
+        if writers.len() <= reg {
+            writers.resize(reg + 1, None);
+        }
+        let readers = &mut self.last_readers[class.index()];
+        if readers.len() <= reg {
+            readers.resize_with(reg + 1, DependencyReaderList::new);
         }
     }
 
     /// The instruction that last wrote or clobbered `reg`, if any.
-    fn last_writer(&self, class: RegClass, reg: &Reg) -> Option<usize> {
-        self.last_writer[class.index()].get(reg).copied()
+    fn last_writer(&self, class: RegClass, reg: usize) -> Option<usize> {
+        self.last_writer[class.index()].get(reg).copied().flatten()
     }
 
     /// The instructions that have read `reg` since it was last written.
-    fn last_readers(&self, class: RegClass, reg: &Reg) -> Option<&DependencyReaderList> {
-        self.last_readers[class.index()].get(reg)
+    fn last_readers(&self, class: RegClass, reg: usize) -> Option<&DependencyReaderList> {
+        self.last_readers[class.index()]
+            .get(reg)
+            .filter(|readers| !readers.is_empty())
     }
 
     /// Record that instruction `idx` wrote or clobbered `reg`.
     ///
     /// Readers recorded before the write belong to the previous value, so they
     /// are dropped: a later instruction cannot have a WAR dependency on them.
-    fn record_write(&mut self, class: RegClass, reg: Reg, idx: usize) {
-        self.last_writer[class.index()].insert(reg, idx);
-        self.last_readers[class.index()].remove(&reg);
+    fn record_write(&mut self, class: RegClass, reg: usize, idx: usize) {
+        self.ensure(class, reg);
+        self.last_writer[class.index()][reg] = Some(idx);
+        self.last_readers[class.index()][reg].clear();
     }
 
     /// Record that instruction `idx` read `reg`.
-    fn record_read(&mut self, class: RegClass, reg: Reg, idx: usize) {
-        self.last_readers[class.index()]
-            .entry(reg)
-            .or_default()
-            .push(idx);
+    fn record_read(&mut self, class: RegClass, reg: usize, idx: usize) {
+        self.ensure(class, reg);
+        self.last_readers[class.index()][reg].push(idx);
     }
 }
 
@@ -335,7 +356,7 @@ fn record_block_permutation<A>(
     start: usize,
     sched_end: usize,
     destination: &mut [usize],
-    regs: &mut RegTracker<A::Reg>,
+    regs: &mut RegTracker,
     graph: &mut GraphScratch,
     schedule: &mut ScheduleScratch,
 ) where
@@ -407,7 +428,7 @@ fn build_dep_graph_reusing<'a, A>(
     start: usize,
     end: usize,
     adapter: &A,
-    regs: &mut RegTracker<A::Reg>,
+    regs: &mut RegTracker,
     graph: &'a mut GraphScratch,
 ) -> &'a mut [SchedNode]
 where
@@ -431,7 +452,7 @@ where
     let last_edge_target = &mut graph.last_edge_target;
 
     // Track the last writer and the readers since that write, per register
-    // class (see `RegTracker`). Retain map capacity across blocks in one MIR.
+    // class (see `RegTracker`). Retain dense storage across blocks in one MIR.
     regs.clear();
     // Track last memory access (conservative).
     let mut last_memory_access: Option<usize> = None;
@@ -446,21 +467,26 @@ where
 
         // RAW (Read After Write): this instruction reads what another wrote.
         for reg in &reads {
-            if let Some(writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
+            if let Some(writer) = regs.last_writer(adapter.reg_class(*reg), adapter.reg_index(*reg))
+            {
                 add_edge(nodes, last_edge_target, writer, i);
             }
         }
 
         // WAW (Write After Write): this instruction writes what another wrote.
         for reg in &writes {
-            if let Some(prev_writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
+            if let Some(prev_writer) =
+                regs.last_writer(adapter.reg_class(*reg), adapter.reg_index(*reg))
+            {
                 add_edge(nodes, last_edge_target, prev_writer, i);
             }
         }
 
         // WAR (Write After Read): this instruction writes what another read.
         for reg in &writes {
-            if let Some(readers) = regs.last_readers(adapter.reg_class(*reg), reg) {
+            if let Some(readers) =
+                regs.last_readers(adapter.reg_class(*reg), adapter.reg_index(*reg))
+            {
                 for &reader in readers {
                     if reader != i {
                         add_edge(nodes, last_edge_target, reader, i);
@@ -504,7 +530,7 @@ where
             let class = adapter.reg_class(clobbered);
             // This instruction clobbers the register, so it must come after
             // any readers.
-            if let Some(readers) = regs.last_readers(class, &clobbered) {
+            if let Some(readers) = regs.last_readers(class, adapter.reg_index(clobbered)) {
                 for &reader in readers {
                     if reader != i {
                         add_edge(nodes, last_edge_target, reader, i);
@@ -512,7 +538,7 @@ where
                 }
             }
             // And after the last writer.
-            if let Some(writer) = regs.last_writer(class, &clobbered) {
+            if let Some(writer) = regs.last_writer(class, adapter.reg_index(clobbered)) {
                 add_edge(nodes, last_edge_target, writer, i);
             }
         }
@@ -521,13 +547,17 @@ where
         // that writes (WAW) or reads (RAW) a clobbered register must not be
         // scheduled above the clobberer, or the clobber destroys its value.
         for &clobbered in clobbers {
-            regs.record_write(adapter.reg_class(clobbered), clobbered, i);
+            regs.record_write(
+                adapter.reg_class(clobbered),
+                adapter.reg_index(clobbered),
+                i,
+            );
         }
         for reg in writes {
-            regs.record_write(adapter.reg_class(reg), reg, i);
+            regs.record_write(adapter.reg_class(reg), adapter.reg_index(reg), i);
         }
         for reg in reads {
-            regs.record_read(adapter.reg_class(reg), reg, i);
+            regs.record_read(adapter.reg_class(reg), adapter.reg_index(reg), i);
         }
 
         if adapter.writes_flags(inst) {
@@ -715,18 +745,17 @@ mod tests {
     /// A register named by class and number, so the same number can appear in
     /// two classes — the aliasing case the partitioned [`RegTracker`] rules
     /// out. No backend has such a register type yet.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     struct ClassedReg(RegClass, u32);
 
     #[test]
     fn common_dependency_reader_lists_stay_inline() {
-        let reg = ClassedReg(RegClass::Gp, 0);
         let mut tracker = RegTracker::new();
 
-        tracker.record_read(RegClass::Gp, reg, 3);
-        tracker.record_read(RegClass::Gp, reg, 7);
+        tracker.record_read(RegClass::Gp, 0, 3);
+        tracker.record_read(RegClass::Gp, 0, 7);
 
-        let readers = tracker.last_readers(RegClass::Gp, &reg).unwrap();
+        let readers = tracker.last_readers(RegClass::Gp, 0).unwrap();
         assert_eq!(readers.as_slice(), [3, 7]);
         assert!(!readers.spilled());
     }
@@ -749,6 +778,10 @@ mod tests {
 
         fn reg_class(&self, reg: Self::Reg) -> RegClass {
             reg.0
+        }
+
+        fn reg_index(&self, reg: Self::Reg) -> usize {
+            reg.1 as usize
         }
 
         fn latency(&self, inst: &Self::Inst) -> u32 {
