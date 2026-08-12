@@ -620,7 +620,7 @@ pub(crate) fn evaluate_codegen_unit(
     };
     Ok(QueryOutput::success(CodegenUnitValue::Available(Arc::new(
         CodegenUnit {
-            defined_symbol: Arc::from(product.machine_name.as_str()),
+            defined_symbol: record.codegen.defined_symbol.clone(),
             referenced_symbols,
             relocations,
             sections,
