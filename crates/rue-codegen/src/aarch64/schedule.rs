@@ -42,6 +42,10 @@ impl SchedulerAdapter for Aarch64Scheduler {
         reg.class()
     }
 
+    fn reg_index(&self, reg: Self::Reg) -> usize {
+        reg as usize
+    }
+
     fn latency(&self, inst: &Self::Inst) -> u32 {
         get_latency(inst)
     }
