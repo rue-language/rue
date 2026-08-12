@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_span::FileId;
 
@@ -592,17 +593,19 @@ enum LocalNominal {
 
 /// A fresh AIR-owned interning epoch joined to caller-owned stable keys.
 ///
-/// Stable keys never become AIR IDs. The boundary retains deterministic
-/// stable-to-local maps for import and local-to-stable indexes for export.
-/// Imported types and constants are returned through opaque, epoch-branded
-/// wrappers, so request-local IDs cannot cross epoch boundaries.
+/// Stable keys never become AIR IDs. Constructors sort exact facts before
+/// minting any local ID or symbol; that ordered input, not map iteration,
+/// defines the deterministic allocation order. The nominal and callable maps
+/// are independently keyed exact-lookup joins, while local-to-stable indexes
+/// support export. Imported types and constants are returned through opaque,
+/// epoch-branded wrappers, so request-local IDs cannot cross epoch boundaries.
 pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     epoch: Arc<()>,
     interner: ThreadedRodeo,
     type_pool: TypeInternPool,
     module_registry: ModuleRegistry,
-    nominals: BTreeMap<NominalInstanceKey<K, M>, LocalNominal>,
-    functions: BTreeMap<FunctionInstanceKey<K, M>, Spur>,
+    nominals: AHashMap<NominalInstanceKey<K, M>, LocalNominal>,
+    functions: AHashMap<FunctionInstanceKey<K, M>, Spur>,
     modules: BTreeMap<M, ModuleId>,
     builtins: BTreeMap<(Arc<str>, SemanticImportNominalKind), LocalNominal>,
     nominal_exports: HashMap<LocalNominal, NominalInstanceKey<K, M>>,
@@ -614,8 +617,8 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
 
 impl<K, M> SemanticImportEpoch<K, M>
 where
-    K: Clone + Ord,
-    M: Clone + Ord,
+    K: Clone + Ord + Hash,
+    M: Clone + Ord + Hash,
 {
     fn rebuild_export_indexes(&mut self) {
         self.nominal_exports = self
@@ -1200,7 +1203,7 @@ where
             modules.insert(key, id);
         }
 
-        let mut functions = BTreeMap::new();
+        let mut functions = AHashMap::with_capacity(function_keys.len());
         let mut function_identities = std::collections::BTreeSet::new();
         for (key, name) in function_keys {
             if !function_identities.insert(name.clone()) {
@@ -1228,7 +1231,7 @@ where
                 .map(|(path, file_id)| (*file_id, path.to_string()))
                 .collect(),
         );
-        let mut local = BTreeMap::new();
+        let mut local = AHashMap::with_capacity(nominals.len());
         let mut local_identities = std::collections::BTreeSet::new();
         for nominal in nominals {
             if local.contains_key(&NominalInstanceKey::Named(nominal.key.clone())) {
@@ -1368,6 +1371,8 @@ where
             return Err(SemanticImportFailure::DuplicateModule);
         }
         let mut epoch = Self::new(Vec::new(), Vec::new(), modules)?;
+        epoch.functions.reserve(callables.len());
+        epoch.nominals.reserve(nominals.len());
 
         let mut callable_symbols = std::collections::BTreeSet::new();
         for callable in &callables {
