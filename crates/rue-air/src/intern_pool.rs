@@ -507,6 +507,10 @@ pub struct TypeInternPool {
 #[derive(Debug, Clone)]
 pub struct FrozenTypeInternPool {
     inner: Arc<TypeInternPoolInner>,
+    /// Whole-universe validation is immutable after freezing. A successful
+    /// certificate lets every backend fact query validate only its compact
+    /// root handle instead of rewalking the same reachable type graph.
+    success_validation: Result<(), TypeValidationError>,
 }
 
 /// A semantic epoch's canonical type universe, optionally layered on an
@@ -1486,6 +1490,35 @@ impl TypeInternPoolInner {
         self.validate_type_inner(ty, ValidationMode::Complete, &mut TypeVisitSet::new())
     }
 
+    /// Validate the complete immutable universe in one graph traversal.
+    ///
+    /// Reusing one visit set across roots is important: starting a fresh walk
+    /// for every entry makes a chain of aggregate types quadratic even though
+    /// each node and edge needs to be checked only once.
+    fn validate_for_success(&self) -> Result<(), TypeValidationError> {
+        let mut visited = TypeVisitSet::new();
+        for (index, entry) in self.types.iter().enumerate() {
+            assert!(self.base.is_none(), "a frozen pool is flat");
+            let index = checked_pool_index(index).expect("type pool index invariant");
+            let ty = match entry {
+                TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
+                TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
+                TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
+                TypeData::PtrConst { .. } => {
+                    Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
+                }
+                TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+                TypeData::ReservedStruct
+                | TypeData::DeclaredStruct(_)
+                | TypeData::DeclaredEnum(_) => {
+                    return Err(TypeValidationError::IncompleteDefinition);
+                }
+            };
+            self.validate_type_inner(ty, ValidationMode::Complete, &mut visited)?;
+        }
+        Ok(())
+    }
+
     /// Validate a query's root handle without rewalking a frozen pool's
     /// already-validated graph. This catches invalid encodings, out-of-range
     /// indices, and wrong-kind compact handles while keeping canonical fact
@@ -2190,8 +2223,10 @@ impl TypeInternPool {
                     cycle.path.join(" -> ")
                 )
             });
+        let success_validation = inner.validate_for_success();
         FrozenTypeInternPool {
             inner: Arc::new(inner),
+            success_validation,
         }
     }
 
@@ -3527,33 +3562,21 @@ impl FrozenTypeInternPool {
     /// distinguishable here; artifact branding and durable boundaries establish
     /// ownership before validation.
     pub fn validate_complete_type(&self, ty: Type) -> Result<(), TypeValidationError> {
-        self.inner.validate_complete_type(ty)
+        if self.success_validation.is_ok() {
+            self.inner.validate_complete_root(ty)
+        } else {
+            // Recovery pools remain queryable while diagnostics are assembled.
+            // Preserve their root-specific result instead of letting one
+            // invalid entry taint unrelated valid roots.
+            self.inner.validate_complete_type(ty)
+        }
     }
 
     /// Validate every pool entry before crossing the successful sema-to-CFG
     /// boundary. Freeze remains recovery-tolerant; the operation-specific
     /// success boundary rejects recovery-only graphs.
     pub fn validate_for_success(&self) -> Result<(), TypeValidationError> {
-        for (index, entry) in self.inner.types.iter().enumerate() {
-            assert!(self.inner.base.is_none(), "a frozen pool is flat");
-            let index = checked_pool_index(index).expect("type pool index invariant");
-            let ty = match entry {
-                TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
-                TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
-                TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
-                TypeData::PtrConst { .. } => {
-                    Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
-                }
-                TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
-                TypeData::ReservedStruct
-                | TypeData::DeclaredStruct(_)
-                | TypeData::DeclaredEnum(_) => {
-                    return Err(TypeValidationError::IncompleteDefinition);
-                }
-            };
-            self.validate_complete_type(ty)?;
-        }
-        Ok(())
+        self.success_validation
     }
 
     /// Borrow a completed nominal struct definition without locking or cloning.
@@ -4110,6 +4133,45 @@ mod tests {
         assert_eq!(
             frozen.validate_for_success(),
             Err(TypeValidationError::RecoveryType)
+        );
+        assert_eq!(frozen.validate_complete_type(Type::I64), Ok(()));
+        assert_eq!(
+            frozen.validate_complete_type(Type::new_array(array_id)),
+            Err(TypeValidationError::RecoveryType)
+        );
+    }
+
+    #[test]
+    fn frozen_success_certificate_preserves_exact_root_validation() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (leaf, _) = pool.register_struct(
+            declarations.get_or_intern("Leaf"),
+            struct_def(
+                "Leaf",
+                vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+            ),
+        );
+        let array = pool.try_intern_array(Type::new_struct(leaf), 4).unwrap();
+        let frozen = pool.freeze();
+
+        assert_eq!(frozen.success_validation, Ok(()));
+        assert_eq!(frozen.validate_for_success(), Ok(()));
+        assert_eq!(frozen.validate_complete_type(array), Ok(()));
+        assert_eq!(frozen.abi_slot_count(array), 4);
+
+        let wrong_kind = Type::new_enum(EnumId::from_pool_index(leaf.pool_index()));
+        assert_eq!(
+            frozen.validate_complete_type(wrong_kind),
+            Err(TypeValidationError::KindMismatch)
+        );
+        let out_of_range = Type::new_struct(StructId::from_pool_index(10_000));
+        assert_eq!(
+            frozen.validate_complete_type(out_of_range),
+            Err(TypeValidationError::PoolIndexOutOfRange)
         );
     }
 

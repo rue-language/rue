@@ -1300,6 +1300,22 @@ at a -1.03% paired median with 1.76% paired MAD, while peak RSS is neutral at
 published compiler-work counter, emitted-output metric, source metric, and
 executable byte remains identical.
 
+RUE-1429 certifies an immutable frozen type pool once. The successful semantic
+boundary already requires every pool entry and reachable structural edge to be
+complete and free of recovery types, but layout and ABI queries subsequently
+re-walked each requested type graph. Freezing now validates the whole universe
+with one shared visit set in O(types + edges); successful pools need only check
+the compact root handle on later queries. Recovery pools retain the exact deep
+root validation path, so one invalid entry does not taint unrelated roots.
+
+Sixteen balanced fixed one-worker cold Lattice pairs reduce retired
+instructions by a 0.474% paired median with 0.062% paired MAD. Clock is neutral
+at a -1.01% paired median with 2.02% paired MAD, and peak RSS is neutral at
+-0.11% with 0.65% paired MAD. Four allocation-accounted pairs are neutral,
+with deltas of -32 to +319 calls and -0.01 to +0.13 MB requested. Every
+published compiler-work counter, emitted-output metric, source metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
