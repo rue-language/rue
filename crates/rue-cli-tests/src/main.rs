@@ -49,7 +49,10 @@
 //! - `args`: explicit compiler args (default: `[<first file>, "-o", "prog"]`);
 //!   `${SOURCE}` expands to the resolved `source_path`
 //! - `source_path`: repo-root-relative source path to compile instead of
-//!   inline `files`, for cases that should pin a checked-in example/program
+//!   inline `files`, for cases that should pin a checked-in example/program.
+//!   When Buck has staged a prebuilt `rue_program` for that root and the case
+//!   says nothing about the compile, the case RUNS THAT EXECUTABLE instead of
+//!   compiling — see "Execution modes" below
 //! - `output`: name of produced executable (default `"prog"`)
 //! - `env`: extra env vars for the compiler; the value `"${REAL_STD}"`
 //!   expands to the absolute path of the repo's `std/` directory
@@ -100,6 +103,34 @@
 //! - `no_symbol_table = true`: assert the produced executable carries no
 //!   symbol table entries, pinning that default internal-linker output is
 //!   unsymbolized (the documented motivation for the profiling workflow)
+//!
+//! # Execution modes
+//!
+//! A case reaches its program one of two ways (ADR-0070 Phase 2 / RUE-1406).
+//!
+//! **Compile.** The default: spawn the real driver in the case's temp
+//! directory and run what it produced. Every inline-source case works this
+//! way, and so does any case that says something about the compile itself.
+//!
+//! **Staged.** A case naming a checked-in root runs a prebuilt executable when
+//! Buck staged one for that root in `RUE_CLI_STAGED_PROGRAMS`. The compile
+//! still happens — it moved into a `rue_program` build action, which is keyed
+//! on its real inputs, uploadable, and shared by every scenario naming the
+//! root, instead of being repeated once per scenario inside a test execution
+//! that never reaches the action cache. That is what makes Meridian's six
+//! scenarios affordable: the only way to run the sixth used to be compiling
+//! 36k lines a sixth time, so RUE-1083 disabled all six.
+//!
+//! [`case_runs_prebuilt_program`] decides, and it decides structurally rather
+//! than from a list of case names: a case qualifies only if it changes nothing
+//! about the compile the `rue_program` action already performed. Everything
+//! after that point — working directory, `argv`, stdin, environment,
+//! timeouts, expectations — is one shared path, [`run_case_program`].
+//!
+//! With `RUE_CLI_STAGED_PROGRAMS` unset, which is how the developer entry
+//! point (`//crates/rue-cli-tests:cli`) and any hand-run harness invocation
+//! behave, every case compiles. The staged mode is an optimization of where
+//! the compile happens, never a change to what a case asserts.
 //!
 //! # ICE detection
 //!
@@ -1870,6 +1901,130 @@ fn run_phase_with_timeout(
     })
 }
 
+/// Directory of prebuilt `rue_program` executables, keyed by the repo-relative
+/// root each was compiled from (ADR-0070 Phase 2 / RUE-1406). Buck stages it
+/// for the CLI corpus actions through `$(location //:cli-staged-programs)`;
+/// a developer entry point that runs this harness outside Buck simply leaves
+/// it unset, and every case compiles its own root as before.
+const STAGED_PROGRAMS_ENV: &str = "RUE_CLI_STAGED_PROGRAMS";
+
+/// Is this case's compile the one `rue_program` already performed for its root?
+///
+/// A staged run reuses an executable compiled by
+/// `rue <root> --source-manifest M --target <native> -O0 --linker internal`,
+/// which is what a case's *default* invocation produces. So the answer is yes
+/// only when the case names a checked-in root and touches nothing about the
+/// compile: no argument override, no compiler environment beyond the standard
+/// library the program already declares, no per-level opt driving, and no
+/// assertion about the compile itself (a compile the harness does not run
+/// cannot be asserted on).
+///
+/// The predicate destructures `Case` exhaustively on purpose. A new field is
+/// then a compile error here rather than a silent decision that the new knob
+/// does not affect the compile — which is precisely the drift ADR-0070's
+/// Consequences section warns the two execution modes can develop.
+fn case_runs_prebuilt_program(case: &Case) -> bool {
+    let Case {
+        // Identity, scheduling, and reporting: none of these reach the
+        // compiler command line.
+        name: _,
+        description: _,
+        contract: _,
+        known_bug: _,
+        known_bug_on: _,
+        only_on: _,
+        skip: _,
+        // Runtime inputs and expectations. The staged path runs the program
+        // from the same temp directory with the same argv, stdin, and
+        // environment as the compile path, so all of these carry over.
+        files: _,
+        program_args: _,
+        program_env: _,
+        stdin: _,
+        stdout: _,
+        stdout_contains: _,
+        runtime_error_contains: _,
+        exit_code: _,
+        // The subject: a case must name a checked-in root...
+        source_path: Some(root),
+        // ...and must leave the compile exactly as `rue <root> -o prog`.
+        args: None,
+        output: None,
+        env,
+        executable_target: None,
+        compile_fail: false,
+        compile_only: false,
+        execute_if_native: false,
+        differential_opt: false,
+        ffi_answer_archive: false,
+        json_diagnostics: false,
+        no_symbol_table: false,
+        requires_system_linker: false,
+        // Compile-time assertions, checked below: a staged case must make none.
+        error_contains,
+        json_diagnostic_order,
+        compile_stdout_contains,
+        compile_stdout_not_contains,
+        compile_stderr_contains,
+        compile_stderr_not_contains,
+        symbols_contain,
+    } = case
+    else {
+        return false;
+    };
+
+    // `source_path` is the staging key, so it must be the repo-relative form
+    // the rule declared rather than an absolute path.
+    Path::new(root).is_relative()
+        && error_contains.is_empty()
+        && json_diagnostic_order.is_empty()
+        && compile_stdout_contains.is_empty()
+        && compile_stdout_not_contains.is_empty()
+        && compile_stderr_contains.is_empty()
+        && compile_stderr_not_contains.is_empty()
+        && symbols_contain.is_empty()
+        // The one compiler environment a staged case may set is the standard
+        // library the `rue_program` compile already declared through its
+        // toolchain. Anything else could have produced a different executable.
+        && env
+            .iter()
+            .all(|(key, value)| key == "RUE_STD_PATH" && value == "${REAL_STD}")
+}
+
+/// The prebuilt executable for `case`, when Buck staged one and the case's
+/// compile is the one that produced it.
+///
+/// `opt_level` is `Some` only under the opt-level differential runner, which
+/// drives `-O` itself; such a case is already rejected by
+/// [`case_runs_prebuilt_program`], and naming the reason here keeps the two
+/// facts adjacent.
+fn staged_program(case: &Case, opt_level: Option<&str>) -> Option<PathBuf> {
+    if opt_level.is_some() || !case_runs_prebuilt_program(case) {
+        return None;
+    }
+    let staged =
+        PathBuf::from(std::env::var_os(STAGED_PROGRAMS_ENV)?).join(case.source_path.as_ref()?);
+    staged.is_file().then_some(staged)
+}
+
+/// Place a staged executable where the compile path would have written one, so
+/// everything downstream — working directory, `argv[0]`, the runtime timeout —
+/// is the compile path verbatim. A symlink, because the executables are large
+/// and nothing writes through this name.
+fn stage_prebuilt_program(prebuilt: &Path, destination: &Path) -> TestResult {
+    #[cfg(unix)]
+    let staged = std::os::unix::fs::symlink(prebuilt, destination);
+    #[cfg(not(unix))]
+    let staged = std::fs::copy(prebuilt, destination).map(|_| ());
+    staged.map_err(|error| {
+        TestFailure::fatal(format!(
+            "failed to stage prebuilt program '{}' as '{}': {error}",
+            prebuilt.display(),
+            destination.display(),
+        ))
+    })
+}
+
 fn resolve_source_path(path: &str, real_std: &Path, repo_root: &Path) -> PathBuf {
     let source_path = Path::new(path);
     if source_path.is_absolute() {
@@ -1919,6 +2074,19 @@ fn run_case(
     }
 
     let output_name = case.output.clone().unwrap_or_else(|| "prog".to_string());
+
+    // ADR-0070 Phase 2 (RUE-1406): a case naming a checked-in root whose
+    // compile is already a `rue_program` build action runs that prebuilt
+    // executable. The compile did not disappear — it moved into a cached,
+    // uploadable action that every scenario naming the root shares. That is
+    // what makes cases/examples_meridian.toml affordable again: RUE-1083
+    // disabled all six of its scenarios because the only way to run the sixth
+    // was to compile 36k lines a sixth time.
+    if let Some(prebuilt) = staged_program(case, opt_level) {
+        let program = dir.join(&output_name);
+        stage_prebuilt_program(&prebuilt, &program)?;
+        return run_case_program(case, contract, dir, &program);
+    }
 
     // Default invocation mirrors what a user types: `rue main.rue -o prog`,
     // with RELATIVE paths and the temp dir as the working directory.
@@ -2109,13 +2277,30 @@ fn run_case(
         return Ok(RunOutcome::default());
     }
 
-    // Run the produced binary from the temp dir.
+    run_case_program(case, contract, dir, &program)
+}
 
+/// Run the case's program from its temp directory and check every runtime
+/// expectation.
+///
+/// This is the half both execution modes share (ADR-0070 / RUE-1406): the
+/// program either came out of the compile above or was staged from a
+/// `rue_program` build action, and from here on the two are indistinguishable
+/// — same path, same working directory, same argv, same timeout. Keeping it in
+/// one place is what stops the staged path from drifting away from the compile
+/// path, which is the cost ADR-0070's Consequences section names for this
+/// phase.
+fn run_case_program(
+    case: &Case,
+    contract: &ExecutionContract,
+    dir: &Path,
+    program: &Path,
+) -> TestResult<RunOutcome> {
     // Run the produced binary under a per-case wall-clock timeout. An infinite
     // loop in generated code must fail this one case (as a distinct TIMEOUT
     // class), not hang the whole suite. `run_with_timeout` puts the program in
     // its own process group and kills the group on timeout.
-    let mut run_cmd = Command::new(&program);
+    let mut run_cmd = Command::new(program);
     run_cmd.current_dir(dir);
     // Runtime argv/env for the compiled program (RUE-935): `program_args`
     // become `argv[1..]` and `program_env` layers over the inherited
@@ -3860,6 +4045,112 @@ mod tests {
             ..Default::default()
         };
         assert!(!compile_fail_missing_assertion(&case));
+    }
+
+    /// The shape every one of ADR-0070 Phase 2's 64 migrating cases has: a
+    /// checked-in root, the real standard library, runtime argv and inline
+    /// runtime fixtures, and nothing said about the compile.
+    fn staged_shaped_case() -> Case {
+        Case {
+            name: "runs_a_checked_in_root".to_string(),
+            source_path: Some("examples/mosaic/main.rue".to_string()),
+            env: HashMap::from([("RUE_STD_PATH".to_string(), "${REAL_STD}".to_string())]),
+            files: vec![SourceFile {
+                path: "site.mosaic".to_string(),
+                source: "page index\n".to_string(),
+            }],
+            program_args: vec!["build".to_string(), "site.mosaic".to_string()],
+            stdout_contains: vec!["pages=1".to_string()],
+            exit_code: Some(0),
+            contract: Some("heavyweight_long".to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_checked_in_root_case_runs_the_prebuilt_program() {
+        assert!(case_runs_prebuilt_program(&staged_shaped_case()));
+    }
+
+    #[test]
+    fn inline_source_case_has_no_prebuilt_program() {
+        // No checked-in root: the ~4,050 inline-source cases compile a source
+        // that exists only inside the TOML, and no rue_program can own it.
+        let case = Case {
+            name: "inline".to_string(),
+            source_path: None,
+            files: vec![SourceFile {
+                path: "main.rue".to_string(),
+                source: "fn main() -> i32 { 0 }".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(!case_runs_prebuilt_program(&case));
+    }
+
+    #[test]
+    fn compile_touching_cases_keep_compiling_their_root() {
+        // Each knob below either changes the compiler command line, changes
+        // the compiler's environment, or asserts something about a compile the
+        // staged path never runs. ADR-0070 keeps every one of these cases
+        // compile-in-harness.
+        let overrides: [(&str, fn(&mut Case)); 16] = [
+            // The one differential_opt calculator case: four compiles by
+            // design, at opt levels the runner drives.
+            ("differential_opt", |case| case.differential_opt = true),
+            // The cross-target cli-test-fixtures cases: one consumer per
+            // (root, target) tuple, and the staged executable is native.
+            ("executable_target", |case| {
+                case.executable_target = Some("aarch64-linux".to_string())
+            }),
+            ("args", |case| {
+                case.args = Some(vec!["${SOURCE}".to_string(), "-O2".to_string()])
+            }),
+            ("output", |case| case.output = Some("other".to_string())),
+            ("env", |case| {
+                case.env
+                    .insert("RUE_STD_PATH".to_string(), "/elsewhere".to_string());
+            }),
+            ("compile_fail", |case| case.compile_fail = true),
+            ("compile_only", |case| case.compile_only = true),
+            ("execute_if_native", |case| case.execute_if_native = true),
+            ("ffi_answer_archive", |case| case.ffi_answer_archive = true),
+            ("json_diagnostics", |case| case.json_diagnostics = true),
+            ("no_symbol_table", |case| case.no_symbol_table = true),
+            ("requires_system_linker", |case| {
+                case.requires_system_linker = true
+            }),
+            ("compile_stdout_contains", |case| {
+                case.compile_stdout_contains = vec!["Compiled".to_string()]
+            }),
+            ("compile_stderr_not_contains", |case| {
+                case.compile_stderr_not_contains = vec!["DEBUG:".to_string()]
+            }),
+            ("symbols_contain", |case| {
+                case.symbols_contain = vec!["main".to_string()]
+            }),
+            ("absolute source_path", |case| {
+                case.source_path = Some("/abs/examples/mosaic/main.rue".to_string())
+            }),
+        ];
+
+        for (field, apply) in overrides {
+            let mut case = staged_shaped_case();
+            apply(&mut case);
+            assert!(
+                !case_runs_prebuilt_program(&case),
+                "a case setting `{field}` must compile its own root"
+            );
+        }
+    }
+
+    #[test]
+    fn opt_level_driven_run_never_takes_a_staged_program() {
+        // run_case_differential drives -O itself, so no single prebuilt
+        // artifact can answer for the run — belt and braces over the
+        // differential_opt rejection above.
+        assert!(staged_program(&staged_shaped_case(), Some("-O2")).is_none());
     }
 
     #[test]

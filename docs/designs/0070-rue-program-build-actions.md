@@ -716,7 +716,7 @@ internal CI scheduling and would not ship in a ruleset.
       establish the mechanism. This phase owns the positive warm-cache check: a
       relocated or cross-lane second build must show the canary scan and compile
       actions cache-served under multiple consuming scenarios.
-- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** —
+- [x] **Phase 2: break the weld for CLI cases naming a checked-in root** —
       RUE-1406 — the
       64 cases keep their TOML form and their existing corpus actions; what
       changes is that each CLI corpus action declares the 9 program artifacts as

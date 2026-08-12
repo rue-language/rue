@@ -213,14 +213,17 @@ cache can only change speed, never correctness, so a dead or non-populating
 cache turns no lane red. Without a recurring genuinely-cold-then-warm probe, the
 regression surfaces only as CI gradually becoming expensive.
 
-The same workflow carries `rue-program-warm`, ADR-0070 Phase 1's positive
-warm-cache control (RUE-1405, `scripts/check-rue-program-warm-cache.sh`). It
-cold-builds the two canary `rue_program` targets under the same nonce
-mechanism, then runs their four consuming scenarios from a *relocated*
-checkout root and fails unless every canary scan/derive/compile action was a
-cache hit. Cross-root service is the property the derive step's manifest
-re-anchoring exists to guarantee, and it is what lets a `pull_request` run's
-compile be consumed by the `merge_group` run.
+The same workflow carries `rue-program-warm`, ADR-0070's positive warm-cache
+control (RUE-1405, extended by RUE-1406;
+`scripts/check-rue-program-warm-cache.sh`). It cold-builds the two canary
+`rue_program` targets and the nine staged CLI programs under the same nonce
+mechanism, then from a *relocated* checkout root runs the canaries' four
+consuming scenarios and rebuilds `//:cli-staged-programs`, failing unless every
+scan/derive/compile action was a cache hit. Cross-root service is the property
+the derive step's manifest re-anchoring exists to guarantee, and it is what
+lets a `pull_request` run's compile be consumed by the `merge_group` run. Both
+consumer shapes are covered deliberately: `rue_program_test` scenarios, and the
+CLI corpus actions that declare the staged directory as an input.
 
 Required CI also records per-step wall time and aggregate cached/remote/local
 command counts in each job summary via `scripts/ci-timed`. The probe answers

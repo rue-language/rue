@@ -31,7 +31,7 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
-load("//:rue_rules.bzl", "rue_program_family", "rue_program_test")
+load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_staging", "rue_program_test")
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
 load(":corpus.bzl", "cached_corpus_suite")
 
@@ -268,16 +268,98 @@ cached_corpus_suite(
     ],
 )
 
+# ADR-0070 Phase 2 (RUE-1406): the CLI cases that name a checked-in root stop
+# compiling it inside the harness. Each root is one `rue_program` build action —
+# keyed on its real inputs, uploadable, and shared by every scenario naming it —
+# and the corpus actions below declare the staged executables the way they
+# declare every other input, through `$(location ...)` in their `attrs.arg()`
+# env. The weld this breaks is not a speed problem but a coverage one: the only
+# way to run Meridian's sixth scenario was to compile 36k lines a sixth time,
+# so RUE-1083 disabled all six rather than pay for them.
+#
+# 64 of the 73 cases naming a checked-in root migrate, over 9 roots. Only 8 are
+# new: `examples/meridian/main.rue` is already a Phase 1 large-example program,
+# so one artifact serves both suites — the "many scenarios, one compile"
+# property reaching across two suites.
+#
+# What stays compile-in-harness, all of it deliberate: the 6 cross-target
+# `cli-test-fixtures` cases (each (root, target) tuple has exactly one consumer
+# and compiles in milliseconds), the repo-relative `source_path` fixture case
+# (whose subject IS the TOML resolution mechanism it would be leaving), the one
+# `differential_opt` calculator case (four compiles by design, at opt levels the
+# runner drives), and the one-scenario wordfreq root. The harness decides this
+# structurally rather than from a list — see `case_runs_prebuilt_program`.
+#
+# The RUE-48 automatic example smokes are untouched: `run_example` still
+# compiles each root it discovers through the ordinary driver, so every example
+# still proves it compiles the way a user compiles it.
+#
+# `examples/first/` holds three sibling roots, so `first-stats` names its one
+# file instead of globbing the directory; every other root owns its directory
+# and takes the directory-bounded glob ADR-0070's over-declaration audit
+# documents.
+[
+    rue_program(
+        name = _name,
+        root = "examples/{}.rue".format(_root),
+        srcs = _srcs,
+    )
+    for _name, _root, _srcs in [
+        ("first-stats", "first/stats", ["examples/first/stats.rue"]),
+        ("harbor", "harbor/main", glob(["examples/harbor/**/*.rue"])),
+        ("jsonfmt", "jsonfmt/main", glob(["examples/jsonfmt/**/*.rue"])),
+        ("lattice", "lattice/main", glob(["examples/lattice/**/*.rue"])),
+        ("mosaic", "mosaic/main", glob(["examples/mosaic/**/*.rue"])),
+        ("rill", "rill/main", glob(["examples/rill/**/*.rue"])),
+        ("ruelex", "ruelex/main", glob(["examples/ruelex/**/*.rue"])),
+        ("second-calculator", "second/calculator", glob(["examples/second/**/*.rue"])),
+    ]
+]
+
+# The nine artifacts as one directory keyed by root path, so a corpus action
+# declares a single `$(location ...)` and the harness's lookup key is the
+# case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
+# and the four shards.
+#
+# Every consumer declares all nine even though no single corpus target runs
+# cases against all nine — mosaic's section is slow-tier, so the premerge
+# targets carry it for nothing. That is the simplest correct form ADR-0070
+# chose deliberately: it is a mild over-declaration of each action's key (an
+# edit to any root already re-runs every CLI corpus action today, since the
+# roots live inside the declared `:examples` filegroup) and it fails closed,
+# because a case whose program is absent from the staging environment cannot
+# silently run a stale one.
+rue_program_staging(
+    name = "cli-staged-programs",
+    programs = [
+        ":first-stats",
+        ":harbor",
+        ":jsonfmt",
+        ":lattice",
+        ":meridian",
+        ":mosaic",
+        ":rill",
+        ":ruelex",
+        ":second-calculator",
+    ],
+)
+
 # Shared verbatim by //:cli-tests and its shards so a slice runs exactly the
-# same cases the monolithic target would. The full Caldera and Meridian roots
-# deliberately live outside the required pre-merge corpus: reduced canaries
-# below exercise their core compiler/runtime paths, while the real applications
-# compile and run in the explicit slow tier.
+# same cases the monolithic target would. What the two skips exclude is the
+# automatic RUE-48 smoke over each large application's full root, which still
+# COMPILES that root in the harness and cannot fit a per-case budget on a cold
+# runner (linux-arm64 killed the meridian one at 300.022s/300s). Reduced
+# canaries exercise both applications' core compiler/runtime paths pre-merge,
+# and the real roots compile and run in the explicit slow tier.
+#
+# `cli.examples_meridian` — the six declarative scenarios, not the smoke — is
+# no longer skipped. RUE-1083 disabled it because each of its cases paid a full
+# 80.7s compile of the same root; they share one staged executable now, so what
+# the corpus pays is six runtime scenarios.
 _CLI_TEST_ARGS = [
     "--quiet",
     "--skip", "cli.examples::caldera::main",
     "--skip", "cli.examples::meridian::main",
-    "--skip", "cli.examples_meridian",
 ]
 
 _CLI_TEST_BASE_ENV = {
@@ -288,21 +370,39 @@ _CLI_TEST_BASE_ENV = {
     "RUE_STD_DIR": "$(location :std)/std",
 }
 
-_CLI_TEST_ENV = dict(_CLI_TEST_BASE_ENV.items() + [
-    ("RUE_CLI_CASE_TIER", "premerge"),
-])
+# The staged-program directory, carried by every corpus target whose inventory
+# can contain a case that names one of the nine roots. //:release-smoke is
+# deliberately not one of them: it runs the `differential_opt` filter, whose
+# cases compile four times each at runner-driven opt levels and so can never
+# consume a staged artifact. Declaring it there would add nine
+# release-configured program compiles to a deliberately bounded lane (RUE-1129)
+# in exchange for nothing.
+_CLI_STAGED_PROGRAMS_ENV = {
+    "RUE_CLI_STAGED_PROGRAMS": "$(location :cli-staged-programs)",
+}
+
+_CLI_TEST_ENV = dict(
+    _CLI_TEST_BASE_ENV.items() +
+    _CLI_STAGED_PROGRAMS_ENV.items() + [
+        ("RUE_CLI_CASE_TIER", "premerge"),
+    ],
+)
 
 # Every _CLI_TEST_ENV entry is a path the harness hands to a compiler spawned
 # with a case's temp directory as cwd, so all of them must be absolute (see
 # corpus.bzl). The harness's find_dir fallbacks would otherwise resolve against
-# the action's working directory and silently miss the real corpus.
-_CLI_TEST_ABSOLUTIZE = [
+# the action's working directory and silently miss the real corpus. The staged
+# directory needs it for the same reason one step later: a case runs its
+# prebuilt program from that case's temp directory.
+_CLI_TEST_BASE_ABSOLUTIZE = [
     "RUE_BINARY",
     "RUE_CLI_CASES",
     "RUE_EXAMPLES_DIR",
     "RUE_REPO_DIR",
     "RUE_STD_DIR",
 ]
+
+_CLI_TEST_ABSOLUTIZE = _CLI_TEST_BASE_ABSOLUTIZE + ["RUE_CLI_STAGED_PROGRAMS"]
 
 # RUE-1083 recalibrated several per-case heavyweight compile budgets upward, so
 # the serialized aggregate can exceed a short outer bound. These replace the
@@ -348,9 +448,12 @@ cached_corpus_suite(
     labels = ["rue_heavy_suite"],
     harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet"],
-    env = dict(_CLI_TEST_BASE_ENV.items() + [
-        ("RUE_CLI_CASE_TIER", "slow"),
-    ]),
+    env = dict(
+        _CLI_TEST_BASE_ENV.items() +
+        _CLI_STAGED_PROGRAMS_ENV.items() + [
+            ("RUE_CLI_CASE_TIER", "slow"),
+        ],
+    ),
     absolutize = _CLI_TEST_ABSOLUTIZE,
     timeout_seconds = 7200,
 )
@@ -364,8 +467,10 @@ cached_corpus_suite(
     name = "release-smoke",
     harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "differential_opt"],
-    env = _CLI_TEST_ENV,
-    absolutize = _CLI_TEST_ABSOLUTIZE,
+    env = dict(_CLI_TEST_BASE_ENV.items() + [
+        ("RUE_CLI_CASE_TIER", "premerge"),
+    ]),
+    absolutize = _CLI_TEST_BASE_ABSOLUTIZE,
 )
 
 # RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
@@ -423,6 +528,10 @@ rue_program_family(
     },
 )
 
+# `:meridian` is the ninth staged CLI program as well as the slow-tier
+# large-example root (ADR-0070 Phase 2): one compile, consumed by the six
+# scheduled scenarios below AND by the six CLI corpus scenarios of
+# cases/examples_meridian.toml.
 rue_program_family(
     name = "large-example-meridian",
     srcs = glob(["examples/meridian/**/*.rue"]),

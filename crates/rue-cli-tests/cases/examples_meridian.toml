@@ -3,12 +3,18 @@
 id = "cli.examples_meridian"
 name = "Meridian relational database and query engine written in Rue"
 description = "exercise parsing, validation, catalogs, planning, optimization, execution, transactions, recovery, replication, analysis, reporting, and generated scaling workloads"
-# RUE-1083: Meridian's cold compile no longer fits a reasonable per-case
-# budget on cold CI runners while per-body incremental work continues
-# (linux-x64 killed a case at 120.025s/120s; linux-arm64 killed the automatic
-# example at 300.022s/300s), so CI skips this section and the automatic
-# example (see _CLI_TEST_ARGS in BUCK). The extra-long contract still bounds
-# filtered local runs.
+# RUE-1083 disabled this section: each of its six cases paid a full cold
+# compile of the same 36K-line root, and one was killed at 120.025s/120s on
+# linux-x64. ADR-0070 Phase 2 (RUE-1406) restored it by removing the reason —
+# `examples/meridian/main.rue` is a `rue_program` build action now, so the six
+# scenarios share one cached compile and each case is a runtime run. CI runs
+# this section again; the `cli.examples::meridian::main` automatic smoke stays
+# skipped, because that one still compiles its root in the harness (it was
+# killed at 300.022s/300s on linux-arm64).
+#
+# The extra-long contract stays: it bounds the runtime phase, and it still
+# bounds the compile phase for a filtered local run outside Buck, where no
+# staged executable is present and every case compiles its own root.
 contract = "heavyweight_extra_long"
 
 [[case]]
