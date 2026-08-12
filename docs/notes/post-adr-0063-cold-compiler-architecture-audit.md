@@ -1381,6 +1381,23 @@ allocation-accounted pairs are neutral at -170 to -72 calls and -0.03 to
 +0.06 MB requested. Every published compiler-work counter, emitted-output
 metric, source metric, and executable byte remains identical.
 
+RUE-1434 keeps repeated semantic-nucleus reads inside one body request on the
+terminal that request has already observed. The exact provider remains the
+canonical query consumer on every miss; a fixed eight-entry direct-mapped
+cache merely reuses the immutable terminal for an immediately repeated key.
+Deterministic keyed hashing makes the work result repeatable, and the inline
+slots keep the cache's memory bounded independently of body size.
+
+An unbounded request-local map was rejected despite removing 30,526 Lattice
+query reuses because it added about 34 MB of requested allocation traffic. The
+bounded form removes exactly 19,486 query-runtime reuses. Sixteen balanced
+release pairs are clock-neutral at +0.51% with 1.46% paired MAD; retired
+instructions are neutral at -0.046% with 0.035% paired MAD, and peak RSS is
+neutral at -0.16% with 0.34% paired MAD. Four allocation-accounted comparisons
+are neutral at -211 to +274 calls and -0.20 to +0.00 MB requested. Semantic-
+provider counters, every compiler-work counter other than the removed reuses,
+source/output metrics, and executable bytes remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

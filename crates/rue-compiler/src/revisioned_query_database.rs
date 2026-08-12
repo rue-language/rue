@@ -13,6 +13,8 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use ahash::RandomState;
+
 #[derive(Debug, Default)]
 struct BodyReachabilityMeter {
     frontier_scans: std::sync::atomic::AtomicU64,
@@ -21170,7 +21172,24 @@ impl<'a> CompilerBodyProviderQueries<'a> {
 
 pub(crate) struct CompilerBodyFactProvider<'a> {
     queries: CompilerBodyProviderQueries<'a>,
+    // One provider belongs to one query task. Its first read records the exact
+    // terminal edge; an equal repeat may therefore use that already-observed
+    // terminal without crossing the runtime again. Direct mapping bounds this
+    // optimization independently of body size, and collisions only cause a
+    // canonical query miss.
+    nucleus_cache: std::cell::RefCell<[Option<SemanticNucleusCacheEntry>; 8]>,
+    #[cfg(test)]
+    nucleus_cache_hits: std::cell::Cell<u64>,
 }
+
+struct SemanticNucleusCacheEntry {
+    key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    terminal: Arc<rue_query::QueryTerminal<crate::semantic_query_nucleus::SemanticNucleusValue>>,
+}
+
+// Fixed keys make cache collisions, and therefore published work counters,
+// deterministic. Exact key equality remains authoritative at every slot.
+const SEMANTIC_NUCLEUS_CACHE_HASHER: RandomState = RandomState::with_seeds(0, 1, 2, 3);
 
 #[derive(Default)]
 struct CanonicalAnonymousNominalRegistry {
@@ -22548,7 +22567,12 @@ fn project_provider_produced_anonymous_nominals(
 #[allow(dead_code)]
 impl<'a> CompilerBodyFactProvider<'a> {
     pub(crate) fn new(queries: CompilerBodyProviderQueries<'a>) -> Self {
-        Self { queries }
+        Self {
+            queries,
+            nucleus_cache: std::cell::RefCell::new(std::array::from_fn(|_| None)),
+            #[cfg(test)]
+            nucleus_cache_hits: std::cell::Cell::new(0),
+        }
     }
 
     /// Take the observed lookup-pin set for promotion into the session lease.
@@ -22744,22 +22768,52 @@ impl<'a> CompilerBodyFactProvider<'a> {
         &self,
         key: crate::semantic_query_nucleus::SemanticNucleusKey,
     ) -> Result<Option<crate::semantic_query_nucleus::SemanticNucleusValue>, QueryAbort> {
-        let terminal = self
-            .queries
-            .context
-            .query_registered(&self.queries.semantic_nucleus, key)?;
+        let terminal = self.nucleus_terminal_result(key)?;
         Ok(match terminal.outcome() {
             rue_query::QueryOutcome::Success(value) => Some(value.clone()),
             _ => None,
         })
     }
 
+    fn nucleus_terminal_result(
+        &self,
+        key: crate::semantic_query_nucleus::SemanticNucleusKey,
+    ) -> Result<
+        Arc<rue_query::QueryTerminal<crate::semantic_query_nucleus::SemanticNucleusValue>>,
+        QueryAbort,
+    > {
+        self.queries
+            .context
+            .query_registered(&self.queries.semantic_nucleus, key)
+    }
+
     fn nucleus(
         &self,
         key: crate::semantic_query_nucleus::SemanticNucleusKey,
     ) -> Option<crate::semantic_query_nucleus::SemanticNucleusValue> {
-        match self.nucleus_result(key) {
-            Ok(value) => value,
+        let cache_slot = SEMANTIC_NUCLEUS_CACHE_HASHER.hash_one(&key) as usize
+            % self.nucleus_cache.borrow().len();
+        if let Some(entry) = &self.nucleus_cache.borrow()[cache_slot]
+            && entry.key == key
+        {
+            #[cfg(test)]
+            self.nucleus_cache_hits
+                .set(self.nucleus_cache_hits.get() + 1);
+            return match entry.terminal.outcome() {
+                rue_query::QueryOutcome::Success(value) => Some(value.clone()),
+                _ => None,
+            };
+        }
+        match self.nucleus_terminal_result(key.clone()) {
+            Ok(terminal) => {
+                let value = match terminal.outcome() {
+                    rue_query::QueryOutcome::Success(value) => Some(value.clone()),
+                    _ => None,
+                };
+                self.nucleus_cache.borrow_mut()[cache_slot] =
+                    Some(SemanticNucleusCacheEntry { key, terminal });
+                value
+            }
             Err(abort) => {
                 self.observe_abort(abort);
                 None
@@ -34079,6 +34133,38 @@ fn main() -> i32 {
                     || *family == "compiler.body-toolchain-demands"),
             "declaration facts observe only their exact backing terminals: {families:?}"
         );
+    }
+
+    #[test]
+    fn provider_repeated_nucleus_fact_reuses_the_request_local_terminal() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "fn helper(x: i32) -> i32 { x }\nfn main() -> i32 { helper(0) }\n",
+            )],
+            1,
+        );
+        let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let helper = declaration_candidate(&database, revision, &m, Cat::Function, "helper");
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "repeated-nucleus-fact",
+            move |provider| {
+                let first = provider.signature(&helper);
+                let second = provider.signature(&helper);
+                (first, second, provider.nucleus_cache_hits.get())
+            },
+        );
+
+        assert_eq!(outcome.result.0, outcome.result.1);
+        assert_eq!(outcome.result.2, 1);
     }
 
     // ---- RUE-1091 r4b-1: call-resolution ProviderFacts differentials --------
