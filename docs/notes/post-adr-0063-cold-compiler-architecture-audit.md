@@ -1528,7 +1528,6 @@ compiler clock by 1.5903% (MAD 1.5903%), and cycles by 1.2335% (MAD 0.9286%);
 RSS was neutral. Four allocation-accounting pairs were neutral at a median
 -33.5 calls and -27,530 requested bytes. Compiler work, source metrics,
 emitted-output metrics, and executable digest remained exact.
-
 RUE-1445 replaces the instruction scheduler's per-class physical-register hash
 maps with lazily grown dense vectors indexed by each backend's compiler-owned
 `repr(u8)` register identity. The vectors retain storage across basic blocks,
@@ -1539,6 +1538,43 @@ is unchanged. Sixteen balanced Lattice pairs reduced retired instructions by
 allocation-accounting pairs removed a median 17,737 calls while requested bytes
 were neutral at +143,128. Compiler work, source metrics, emitted-output metrics,
 and both AArch64 and x86-64 executable digests remained exact.
+
+RUE-1446 keeps each task's first eight nested registered-validation proof states
+inline. RUE-1443 removed shared state from each traversal, but the replacement
+`Vec<u8>` still allocated its first tiny buffer once a task validated anything;
+the inline stack preserves the same lexical proof, locking, batch-parent, and
+deep spill behavior. Sixteen balanced Lattice pairs reduced retired
+instructions by 0.2373% (MAD 0.0602%); compiler clock, cycles, and RSS were
+neutral. Allocation accounting removed a median 94,580.5 calls and 709,786
+requested bytes. Compiler work, source metrics, emitted-output metrics, and
+executable digest remained exact.
+
+RUE-1447 tested reading the final validation-proof byte once instead of taking
+the same task-local mutex separately for the registered-only and retryable
+results. Across 32 balanced Lattice pairs, retired instructions and clock were
+neutral, while peak RSS increased by a 0.9028% paired median with 0.5174%
+paired MAD. Allocation accounting, compiler work, source/output metrics, and
+the executable digest were neutral. The candidate was rejected under the
+no-regression memory boundary.
+
+RUE-1448 tested applying the query runtime's retained-identity hasher to its
+remaining runtime-owned exact-terminal sets. Replacing all four task, batch,
+and lexical sets increased peak RSS by a 0.9922% paired median (0.5932% MAD)
+over 16 balanced Lattice pairs, with neutral instructions and clock. Keeping
+the batch lease tree and task lease hash set unchanged reduced allocator
+requests by 3.10 MB but still increased peak RSS by a repeatable 1.2662%
+(0.5270% MAD), while instructions and clock remained neutral. Both variants
+preserved every compiler-work counter, source/output metric, and executable
+byte, but were rejected under the no-regression memory boundary.
+
+RUE-1449 tested replacing the stable symbol encoder's formatted constant
+version prefix with a direct string copy. The direct copy lost the formatter's
+useful incidental starting capacity: across 16 balanced Lattice pairs it added
+a median 41,662 allocation calls and 2.27 MB of requested bytes, increased
+retired instructions by 0.1688% (0.0497% MAD), and increased peak RSS by
+1.2218% (0.2941% MAD). Compiler clock was neutral and every work,
+source/output, and executable invariant remained exact. The candidate was
+rejected.
 
 ## Next actions and decision boundary
 
