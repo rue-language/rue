@@ -10,6 +10,7 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, PreviewFeatures};
 use rue_rir::{InstData, InstRef, Rir, RirParam, RirParamMode};
@@ -475,41 +476,44 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     owner_name: Option<Arc<str>>,
     source: S,
     key: K,
-    function_infos: RefCell<HashMap<Spur, FunctionCallInfo>>,
-    function_tokens: RefCell<HashMap<Spur, (SemanticDefinitionToken, K)>>,
-    anonymous_definition_tokens: RefCell<HashMap<K, SemanticDefinitionToken>>,
-    function_alias_keys: RefCell<HashMap<Spur, K>>,
+    // Request-local exact-lookup registries. Their iteration order is never a
+    // semantic input, so independently keyed fast maps avoid paying the
+    // standard hasher's collision-resistance cost on compiler-owned keys.
+    function_infos: RefCell<AHashMap<Spur, FunctionCallInfo>>,
+    function_tokens: RefCell<AHashMap<Spur, (SemanticDefinitionToken, K)>>,
+    anonymous_definition_tokens: RefCell<AHashMap<K, SemanticDefinitionToken>>,
+    function_alias_keys: RefCell<AHashMap<Spur, K>>,
     specialized_function_identities:
-        RefCell<HashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+        RefCell<AHashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
     observed_comptime_producers:
-        RefCell<HashSet<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+        RefCell<AHashSet<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
     anonymous_function_identities:
-        RefCell<HashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
-    durable_comptime_type_flags: RefCell<HashMap<ParamRange, Vec<bool>>>,
-    durable_param_type_symbols: RefCell<HashMap<ParamRange, Vec<Spur>>>,
-    durable_signature_files: RefCell<HashMap<ParamRange, FileId>>,
-    named_method_infos: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
-    const_infos: RefCell<HashMap<(FileId, Spur), ConstInfo>>,
-    observed_named_definitions: RefCell<HashSet<K>>,
+        RefCell<AHashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+    durable_comptime_type_flags: RefCell<AHashMap<ParamRange, Vec<bool>>>,
+    durable_param_type_symbols: RefCell<AHashMap<ParamRange, Vec<Spur>>>,
+    durable_signature_files: RefCell<AHashMap<ParamRange, FileId>>,
+    named_method_infos: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
+    const_infos: RefCell<AHashMap<(FileId, Spur), ConstInfo>>,
+    observed_named_definitions: RefCell<AHashSet<K>>,
     /// Request-local state for recursive named-import identity closures. The
     /// in-progress state breaks type cycles; the complete state skips repeated
     /// registrations only after every nested field succeeded. A failed outer
     /// walk clears the request-local cache, so no partial cycle member survives.
     /// Compact endpoint tokens avoid retaining a second copy of each durable key.
     import_nominal_registrations:
-        RefCell<HashMap<SemanticDefinitionToken, ImportNominalRegistration>>,
-    nominal_tokens: RefCell<HashMap<Type, (SemanticDefinitionToken, K)>>,
-    modules_by_file: RefCell<HashMap<FileId, M>>,
-    module_tokens: RefCell<HashMap<ModuleId, (SemanticModuleToken, M)>>,
+        RefCell<AHashMap<SemanticDefinitionToken, ImportNominalRegistration>>,
+    nominal_tokens: RefCell<AHashMap<Type, (SemanticDefinitionToken, K)>>,
+    modules_by_file: RefCell<AHashMap<FileId, M>>,
+    module_tokens: RefCell<AHashMap<ModuleId, (SemanticModuleToken, M)>>,
     next_module_file: Cell<u32>,
     generated_structs: HashMap<Spur, StructId>,
     generated_enums: HashMap<Spur, EnumId>,
-    anonymous_methods: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
+    anonymous_methods: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
     /// Anonymous method endpoints whose complete durable signature set has
     /// already been installed in this body request. Provider type resolution
     /// handles recursive nominal shells inside the type pool and does not call
     /// back into endpoint installation, so only successful walks are cached.
-    anonymous_method_registrations: RefCell<HashSet<Type>>,
+    anonymous_method_registrations: RefCell<AHashSet<Type>>,
     anonymous_struct_ids: HashSet<StructId>,
     anonymous_enum_ids: HashSet<EnumId>,
     anon_struct_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
@@ -622,31 +626,31 @@ where
             owner_name: owner_name.map(Arc::from),
             source,
             key: key.clone(),
-            function_infos: RefCell::new(HashMap::new()),
-            function_tokens: RefCell::new(HashMap::from([(
+            function_infos: RefCell::new(AHashMap::new()),
+            function_tokens: RefCell::new(AHashMap::from([(
                 function_symbol,
                 (function_token, key),
             )])),
-            anonymous_definition_tokens: RefCell::new(HashMap::new()),
-            function_alias_keys: RefCell::new(HashMap::new()),
-            specialized_function_identities: RefCell::new(HashMap::new()),
-            observed_comptime_producers: RefCell::new(HashSet::new()),
-            anonymous_function_identities: RefCell::new(HashMap::new()),
-            durable_comptime_type_flags: RefCell::new(HashMap::new()),
-            durable_param_type_symbols: RefCell::new(HashMap::new()),
-            durable_signature_files: RefCell::new(HashMap::new()),
-            named_method_infos: RefCell::new(HashMap::new()),
-            const_infos: RefCell::new(HashMap::new()),
-            observed_named_definitions: RefCell::new(HashSet::new()),
-            import_nominal_registrations: RefCell::new(HashMap::new()),
-            nominal_tokens: RefCell::new(HashMap::new()),
-            modules_by_file: RefCell::new(HashMap::new()),
-            module_tokens: RefCell::new(HashMap::new()),
+            anonymous_definition_tokens: RefCell::new(AHashMap::new()),
+            function_alias_keys: RefCell::new(AHashMap::new()),
+            specialized_function_identities: RefCell::new(AHashMap::new()),
+            observed_comptime_producers: RefCell::new(AHashSet::new()),
+            anonymous_function_identities: RefCell::new(AHashMap::new()),
+            durable_comptime_type_flags: RefCell::new(AHashMap::new()),
+            durable_param_type_symbols: RefCell::new(AHashMap::new()),
+            durable_signature_files: RefCell::new(AHashMap::new()),
+            named_method_infos: RefCell::new(AHashMap::new()),
+            const_infos: RefCell::new(AHashMap::new()),
+            observed_named_definitions: RefCell::new(AHashSet::new()),
+            import_nominal_registrations: RefCell::new(AHashMap::new()),
+            nominal_tokens: RefCell::new(AHashMap::new()),
+            modules_by_file: RefCell::new(AHashMap::new()),
+            module_tokens: RefCell::new(AHashMap::new()),
             next_module_file: Cell::new(u32::MAX),
             generated_structs: HashMap::new(),
             generated_enums: HashMap::new(),
-            anonymous_methods: RefCell::new(HashMap::new()),
-            anonymous_method_registrations: RefCell::new(HashSet::new()),
+            anonymous_methods: RefCell::new(AHashMap::new()),
+            anonymous_method_registrations: RefCell::new(AHashSet::new()),
             anonymous_struct_ids: HashSet::new(),
             anonymous_enum_ids: HashSet::new(),
             anon_struct_identities: HashMap::new(),
