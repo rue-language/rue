@@ -47,6 +47,8 @@ pub struct ThreadedRodeo<K = Spur, S = RandomState> {
     pub(crate) strings: DashMap<K, &'static str, S>,
     /// The current key value
     key: AtomicUsize,
+    /// Exact logical UTF-8 bytes held by the unique interned strings.
+    utf8_bytes: AtomicUsize,
     /// The arena where all strings are stored
     arena: LockfreeArena,
 }
@@ -252,6 +254,7 @@ where
             map: DashMap::with_capacity_and_hasher(strings, hash_builder.clone()),
             strings: DashMap::with_capacity_and_hasher(strings, hash_builder),
             key: AtomicUsize::new(0),
+            utf8_bytes: AtomicUsize::new(0),
             arena: LockfreeArena::new(bytes, max_memory_usage)
                 .expect("failed to allocate memory for interner"),
         }
@@ -341,6 +344,8 @@ where
                     let key = K::try_from_usize(self.key.fetch_add(1, Ordering::SeqCst))
                         .ok_or_else(|| LassoError::new(LassoErrorKind::KeySpaceExhaustion))?;
 
+                    self.utf8_bytes
+                        .fetch_add(string.len(), Ordering::Relaxed);
                     self.strings.insert(key, string);
                     // Safety: insert_slot was just returned by find_insert_slot and we have not mutated the shard.
                     unsafe {
@@ -417,6 +422,8 @@ where
                 Entry::Vacant(v) => {
                     let key = K::try_from_usize(self.key.fetch_add(1, Ordering::SeqCst))
                         .ok_or_else(|| LassoError::new(LassoErrorKind::KeySpaceExhaustion))?;
+                    self.utf8_bytes
+                        .fetch_add(string.len(), Ordering::Relaxed);
                     self.strings.insert(key, string);
                     v.insert(key);
 
@@ -553,6 +560,17 @@ where
     #[cfg_attr(feature = "inline-more", inline)]
     pub fn len(&self) -> usize {
         self.strings.len()
+    }
+
+    /// Returns the exact logical number of UTF-8 bytes in unique interned
+    /// strings without traversing the interner.
+    ///
+    /// This excludes hash-table and arena capacity. Static and dynamically
+    /// copied strings are counted identically because both occupy one logical
+    /// interner entry.
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub fn utf8_bytes(&self) -> usize {
+        self.utf8_bytes.load(Ordering::Relaxed)
     }
 
     /// Returns `true` if there are no currently interned strings
@@ -777,6 +795,7 @@ where
         f.debug_struct("ThreadedRodeo")
             .field("map", &self.map)
             .field("strings", &self.strings)
+            .field("utf8_bytes", &self.utf8_bytes.load(Ordering::Relaxed))
             .field("arena", &self.arena)
             .finish()
     }
@@ -961,8 +980,9 @@ where
         D: Deserializer<'de>,
     {
         let deser_map: HashMap<String, K> = HashMap::deserialize(deserializer)?;
+        let logical_utf8_bytes = deser_map.keys().map(|s| s.len()).sum::<usize>();
         let capacity = {
-            let total_bytes = deser_map.keys().map(|s| s.len()).sum::<usize>();
+            let total_bytes = logical_utf8_bytes;
             let total_bytes =
                 NonZeroUsize::new(total_bytes).unwrap_or_else(|| Capacity::default().bytes());
 
@@ -995,6 +1015,7 @@ where
             map,
             strings,
             key: AtomicUsize::new(highest),
+            utf8_bytes: AtomicUsize::new(logical_utf8_bytes),
             arena,
         })
     }
