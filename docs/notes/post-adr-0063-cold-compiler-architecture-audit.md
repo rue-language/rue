@@ -1723,6 +1723,18 @@ improve the plan phase by 86.6063% (0.8512% MAD); whole-compiler clock remains
 host-noisy, while cycles improve by 1.6730% (0.6974% MAD). Every compiler-work
 counter, source/output metric, and executable byte remains identical.
 
+RUE-1460 keeps the canonical shared defined-symbol owner from
+`CfgCodegenDomain` in each `CodegenUnit`. The evaluator previously copied that
+symbol into its backend product and then allocated an equal `Arc<str>` even
+though the canonical owner remained in scope. Four allocation-accounted cold
+Lattice pairs remove 1,144--1,390 allocation calls and 34,292--270,796 requested
+bytes. Across 16 balanced fixed one-worker release pairs, end-to-end compiler
+clock is neutral at +0.9866% (2.9942% MAD), the `codegen_unit` phase at -0.6757%
+(1.7548% MAD), retired instructions at -0.0266% (0.0972% MAD), cycles at
++0.5352% (1.7221% MAD), and peak RSS at -0.5406% (0.5881% MAD). Every
+compiler-work counter, source/output metric, and executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
