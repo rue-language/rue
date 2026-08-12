@@ -733,7 +733,7 @@ pub(crate) fn materialize_semantic_body(
         rue_air::SemanticLocalNominal {
             key: rue_air::NominalInstanceKey::Anonymous(nominal.identity.clone()),
             module_path: Arc::from("<anonymous>"),
-            name: Arc::from(format!("anonymous-{:?}", nominal.identity)),
+            name: nominal.materialization_name().clone(),
             kind,
             is_public: false,
             lang_item: None,
@@ -1214,15 +1214,8 @@ pub(crate) fn select_materialization_facts(
                                 }
                             }
                         };
-                        self.selected_anonymous.insert(
-                            key,
-                            DurableAnonymousNominal {
-                                identity: nominal.identity.clone(),
-                                shape,
-                                type_captures: nominal.type_captures.clone(),
-                                value_captures: nominal.value_captures.clone(),
-                            },
-                        );
+                        self.selected_anonymous
+                            .insert(key, nominal.with_shape(shape));
                     }
                 }
             }
@@ -1665,6 +1658,72 @@ mod tests {
             &[],
         )
         .expect("fallback destructor symbols materialize without violating AIR invariants");
+    }
+
+    #[test]
+    fn anonymous_fact_selection_preserves_the_carried_materialization_name() {
+        use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
+
+        let module = ModuleId::from_validated_canonical("main.rue");
+        let function = definition(module, StableDefinitionKind::Function, "probe", None);
+        let identity = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(function.clone()),
+            anchor: RirStructuralAnchor::new(vec![
+                RirStructuralPathSegment::Body,
+                RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let nominal = DurableAnonymousNominal::new(
+            identity.clone(),
+            DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([(Arc::from("value"), rue_air::SemanticImportType::I32)]),
+                methods: Arc::from([]),
+            },
+            Arc::from([]),
+            Arc::from([]),
+        );
+        let expected_name = format!("anonymous-{:?}", identity.with_canonical_producer());
+        assert_eq!(expected_name, format!("anonymous-{identity:?}"));
+        assert_eq!(nominal.materialization_name().as_ref(), expected_name);
+        let (index, _) = LocalFactSelectionIndex::new(&[], std::slice::from_ref(&nominal));
+        let symbols = std::collections::BTreeMap::from([(
+            FunctionInstanceKey::Definition(function.clone()),
+            Arc::from("probe"),
+        )]);
+
+        let select = |return_type| {
+            let mut body = body();
+            body.return_type = return_type;
+            select_materialization_facts(
+                &FunctionInstanceKey::Definition(function.clone()),
+                &body,
+                &index,
+                &symbols,
+            )
+            .unwrap()
+        };
+        let full = select(rue_air::SemanticImportType::AnonymousNominal(
+            identity.clone(),
+        ));
+        let opaque = select(rue_air::SemanticImportType::PtrConst(Box::new(
+            rue_air::SemanticImportType::AnonymousNominal(identity),
+        )));
+
+        assert!(Arc::ptr_eq(
+            nominal.materialization_name(),
+            full.anonymous_nominals[0].materialization_name()
+        ));
+        assert!(Arc::ptr_eq(
+            nominal.materialization_name(),
+            opaque.anonymous_nominals[0].materialization_name()
+        ));
+        assert!(matches!(
+            &opaque.anonymous_nominals[0].shape,
+            DurableAnonymousNominalShape::Struct { fields, methods }
+                if fields.is_empty() && methods.is_empty()
+        ));
     }
 
     #[test]

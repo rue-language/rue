@@ -8337,24 +8337,22 @@ impl SemanticConstEvaluator<'_, '_> {
         .into_owned();
         self.provider.anonymous_nominals.insert(
             identity.clone(),
-            DurableAnonymousNominal {
-                identity: identity.clone(),
+            DurableAnonymousNominal::new(
+                identity.clone(),
                 shape,
-                type_captures: self
-                    .provider
+                self.provider
                     .substitutions
                     .iter()
                     .map(|(name, ty)| (name.clone(), ty.clone()))
                     .collect::<Vec<_>>()
                     .into(),
-                value_captures: self
-                    .provider
+                self.provider
                     .value_substitutions
                     .iter()
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect::<Vec<_>>()
                     .into(),
-            },
+            ),
         );
         Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
             V::Type(DurableType::AnonymousNominal(identity)),
@@ -22519,22 +22517,22 @@ fn project_provider_produced_anonymous_nominals(
                         .into(),
                 },
             };
-            Ok(Nominal {
+            Ok(Nominal::new(
                 identity,
                 shape,
-                type_captures: value
+                value
                     .type_captures
                     .iter()
                     .map(|(name, ty)| Ok((name.clone(), map_type(ty)?)))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
-                value_captures: value
+                value
                     .value_captures
                     .iter()
                     .map(|(name, value)| Ok((name.clone(), map_value(value)?)))
                     .collect::<Result<Vec<_>, _>>()?
                     .into(),
-            })
+            ))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|values| crate::body_query::BodyProducedAnonymousNominals(values.into()))
@@ -29775,18 +29773,18 @@ fn main() -> i32 {
                 arguments: crate::CanonicalArguments::default(),
             },
         ));
-        let thin = crate::durable_semantics::DurableAnonymousNominal {
-            identity: wrapped.clone(),
-            shape: crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+        let thin = crate::durable_semantics::DurableAnonymousNominal::new(
+            wrapped.clone(),
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([]),
                 methods: Arc::from([]),
             },
-            type_captures: Arc::from([]),
-            value_captures: Arc::from([]),
-        };
-        let rich = crate::durable_semantics::DurableAnonymousNominal {
-            identity: canonical.clone(),
-            shape: crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+            Arc::from([]),
+            Arc::from([]),
+        );
+        let rich = crate::durable_semantics::DurableAnonymousNominal::new(
+            canonical.clone(),
+            crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                 fields: Arc::from([]),
                 methods: Arc::from([crate::durable_semantics::DurableAnonymousMethodSignature {
                     name: Arc::from("method"),
@@ -29799,9 +29797,9 @@ fn main() -> i32 {
                     body: None,
                 }]),
             },
-            type_captures: Arc::from([]),
-            value_captures: Arc::from([]),
-        };
+            Arc::from([]),
+            Arc::from([]),
+        );
 
         let mut registry = CanonicalAnonymousNominalRegistry::default();
         registry.extend([thin.clone()]);
