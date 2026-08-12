@@ -1066,6 +1066,18 @@ paired MAD and a -5.44% to +2.36% range. Median peak RSS falls by 2.62 MiB
 within dispersion. Every published compiler-work counter and emitted
 executable byte remains identical.
 
+RUE-1402 reuses the instruction scheduler's list-scheduling storage across
+basic blocks in one function. The output order, remaining-dependency counts,
+and ready heap are logically cleared before each block, while their backing
+allocations remain available until that function's scheduling completes.
+
+Four fixed one-worker allocation probes save 28,390--28,683 calls and
+2.60--2.74 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.68% paired median, with 1.13%
+paired MAD and a -10.96% to +5.83% range. Median peak RSS falls by 0.68 MiB
+within dispersion. Every published compiler-work counter and emitted
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
