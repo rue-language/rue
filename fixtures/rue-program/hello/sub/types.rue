@@ -1,0 +1,5 @@
+// "shared.rue" resolves root-relative to ../shared.rue; resolution observes
+// the absent importer-relative arm sub/shared.rue first.
+const shared = @import("shared.rue");
+
+pub fn value() -> i32 { shared.base() }

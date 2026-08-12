@@ -1,0 +1,5 @@
+// beta reads common.rue too, so the family report finds no dead files even
+// though each target's glob contains its sibling's root.
+const common = @import("common.rue");
+
+fn main() -> i32 { common.shared() + 1 }

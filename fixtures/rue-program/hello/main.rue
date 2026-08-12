@@ -1,0 +1,14 @@
+// ADR-0070 Phase 0 fixture: deliberately exercises the two mechanisms the
+// scan-derived manifest exists for. `sub/types.rue` imports "shared.rue",
+// which probes the ABSENT importer-relative arm sub/shared.rue before
+// resolving root-relative (ADR-0051) — a glob-derived manifest would fail
+// E1400 here. And @parse_i32 demands trusted std WITHOUT @import("std"),
+// which the scan cannot see — a manifest without the std union would fail
+// hermetic denial. The binding is deliberately unused: acquisition is
+// triggered by the fallible intrinsic itself.
+const types = @import("sub/types.rue");
+
+fn main() -> i32 {
+    let _parsed = @parse_i32("2");
+    types.value()
+}

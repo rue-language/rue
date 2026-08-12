@@ -1,0 +1,7 @@
+// Negative control 1 (ADR-0070): imports a sibling module that EXISTS
+// (materialized as a hidden scan input) but is deliberately excluded from
+// the declared srcs, so the scan accepts the read and the derive boundary
+// check must reject it — in every execution environment, sandboxed or not.
+const extra = @import("extra.rue");
+
+fn main() -> i32 { extra.value() }

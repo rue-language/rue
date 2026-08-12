@@ -66,6 +66,25 @@ sh_binary(
     visibility = ["PUBLIC"],
 )
 
+# The rue_program tool surface (ADR-0070 / RUE-1404): the scan wrapper, the
+# manifest derivation script that owns the declared-boundary check, the two
+# advisory precision reports, and the scenario runner. rue_rules.bzl reaches
+# them by default attr, so they are PUBLIC.
+[
+    sh_binary(
+        name = _tool,
+        main = "scripts/{}".format(_main),
+        visibility = ["PUBLIC"],
+    )
+    for _tool, _main in [
+        ("rue-program-scan", "rue-program-scan"),
+        ("rue-program-derive-manifest", "rue-program-derive-manifest.py"),
+        ("rue-program-srcs-precision", "rue-program-srcs-precision.py"),
+        ("rue-program-family-report", "rue-program-family-report.py"),
+        ("rue-program-test-runner", "rue-program-test-runner.py"),
+    ]
+]
+
 # The formatting and lint gates are per-crate, not here. A `fmt-check` sh_test
 # used to sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`.
 # A Buck glob does not descend into subpackages, and every crate owning a BUCK
@@ -1085,6 +1104,21 @@ rue_sh_test(
     env = {
         "RUE_CORPUS_SCRIPTS_ROOT": "$(location :corpus-script-inputs)",
     },
+)
+
+# RUE-1404: the derive script owns rue_program's declared-boundary check and
+# machine-stable re-anchoring, so its set arithmetic is pinned by unit tests
+# independently of any fixture building — the fixtures cannot distinguish
+# "boundary enforced" from "boundary accidentally never violated".
+filegroup(
+    name = "rue-program-derive-inputs",
+    srcs = ["scripts/rue-program-derive-manifest.py"],
+)
+
+rue_sh_test(
+    name = "rue-program-derive-manifest-tests",
+    test = "scripts/test-rue-program-derive-manifest.py",
+    resources = [":rue-program-derive-inputs"],
 )
 
 filegroup(

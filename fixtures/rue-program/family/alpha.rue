@@ -1,0 +1,4 @@
+// Family fixture: two sibling roots sharing one glob. alpha reads common.rue;
+const common = @import("common.rue");
+
+fn main() -> i32 { common.shared() }
