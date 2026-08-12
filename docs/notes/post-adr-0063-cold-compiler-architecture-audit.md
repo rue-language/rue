@@ -1418,6 +1418,26 @@ and executable bytes. The selected 16-slot cache remains request-scoped,
 allocation-free, deterministic and bounded independently of body size; misses
 still cross the canonical query path.
 
+RUE-1436 makes a validation certificate's retention invariant eager. A node
+previously rescanned its retained-attempt deque on every certificate hit to
+prove that the certified terminal was still present. All attempt removal now
+passes through one helper that clears the certificate exactly when its backing
+terminal leaves, so the hot certificate lookup becomes O(1). A focused
+regression removes an older terminal before the certified terminal and proves
+that invalidation is neither premature nor omitted.
+
+Fixed one-worker cold Lattice records 558,465 validation-certificate memo hits
+and 55,149 retention-proof reacquisition misses. Both outcomes previously
+completed the retained-attempt scan, so the change removes at least 613,614
+scans; current-revision certificates already missing their terminal were
+included in the broader certificate-miss counter and can only raise that total.
+Sixteen balanced alternating release pairs reduce retired instructions by a
+0.171% paired median with 0.060% paired MAD. Compiler clock moves -1.03% with
+1.03% paired MAD, and peak RSS is neutral at -0.60% with 0.74% paired MAD. Four
+allocation-accounted pairs are neutral at a median delta of +44 calls and -0.05
+MB requested. Every published compiler-work counter, source/output metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
