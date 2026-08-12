@@ -1076,13 +1076,19 @@ mod registered_batch_tests {
                 0,
                 move |context, _, _| {
                     let _proof = context.endorse_registered_validations();
+                    context.query_registered(&root_for_publication, Key("unrelated"))?;
                     let first = context.query_registered(&root_for_publication, Key("first"))?;
                     let second = context.query_registered(&root_for_publication, Key("second"))?;
                     let before = runtime_for_publication.metrics().active_retained_pins;
                     let retained = context
-                        .retain_observed_terminal_cones_from(&[first, second], &[])
+                        .retain_observed_terminal_cones_from(&[first.clone(), second, first], &[])
                         .unwrap();
-                    assert_eq!(retained.len(), 3, "the shared leaf is retained once");
+                    assert_eq!(
+                        retained.len(),
+                        3,
+                        "duplicate roots and their shared leaf are retained once, while the \
+                         unrelated observed root is excluded"
+                    );
                     assert_eq!(
                         runtime_for_publication.metrics().active_retained_pins,
                         before + 3,
@@ -7893,17 +7899,25 @@ impl QueryContext {
             .iter()
             .map(|authority| authority.leases.held.len())
             .sum::<usize>();
-        let mut current_exact = RetainedIdentityMap::with_capacity_and_hasher(
-            leases.held.len(),
-            BuildHasherDefault::default(),
-        );
+        let mut current_roots: RetainedIdentityMap<_, Option<&dyn ObservedLease>> =
+            RetainedIdentityMap::with_capacity_and_hasher(
+                roots.len(),
+                BuildHasherDefault::default(),
+            );
+        for root in roots {
+            current_roots
+                .entry((root.node_incarnation, root.stamp, root.revision))
+                .or_insert(None);
+        }
         let mut selected = RetainedIdentityMap::with_capacity_and_hasher(
             leases.held.len() + batch_lease_count,
             BuildHasherDefault::default(),
         );
         for lease in &leases.held {
             let identity = lease.identity();
-            current_exact.insert(identity, lease.as_ref());
+            if let Some(root) = current_roots.get_mut(&identity) {
+                *root = Some(lease.as_ref());
+            }
             let selected_for_stamp = selected
                 .entry((identity.0, identity.1))
                 .or_insert(lease.as_ref());
@@ -7944,8 +7958,10 @@ impl QueryContext {
         let mut pending = Vec::with_capacity(roots.len());
         for root in roots {
             pending.push(
-                *current_exact
+                current_roots
                     .get(&(root.node_incarnation, root.stamp, root.revision))
+                    .copied()
+                    .flatten()
                     .ok_or(RetainTerminalConeError::RootNotObserved)?,
             );
         }

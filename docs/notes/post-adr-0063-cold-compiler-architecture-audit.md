@@ -1642,6 +1642,22 @@ Compiler clock and cycles were neutral at +0.0000% (1.0485% MAD) and -0.1220%
 improved by 0.2856% (0.1430% MAD). Every published compiler-work counter,
 source/output metric, and executable byte remained identical.
 
+RUE-1454 bounds exact-root indexing during registered terminal-cone promotion
+by the requested roots rather than by every lease held by the publishing task.
+Promotion still performs its required linear lease scan to build the
+stamp-equivalent dependency index, but it now seeds exact identities from the
+roots and fills only those matches during that scan. This removes an exact-key
+hash-table entry for every unrelated task lease while preserving exact root
+selection, fallback dependency substitution, and fail-closed missing roots.
+
+Against the exact RUE-1453 candidate, 16 balanced fixed one-worker cold Lattice
+pairs were neutral for compiler clock (+0.0000%, 0.0000% paired MAD), retired
+instructions (+0.0061%, 0.0293% MAD), cycles (-0.1512%, 0.4381% MAD), and peak
+RSS (-0.1984%, 0.2794% MAD). Peak footprint improved by 0.7468% (0.2660%
+MAD). Four allocation-accounted pairs were neutral in allocation count and
+removed 4.38--4.48 MB of requested bytes. Every published compiler-work
+counter, source/output metric, and executable byte remained identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
