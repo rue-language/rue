@@ -1122,6 +1122,21 @@ they count the memo nodes and key bytes named by the query graph, not duplicate
 physical string allocations. Every other published compiler-work counter and
 emitted executable byte remains identical.
 
+RUE-1412 completes each body-local semantic epoch's nominal universe behind
+one type-pool transaction. The constructor previously opened one transaction
+per struct or enum; because every rollback snapshot deep-clones the growing
+pool, local materialization repeated an increasing prefix of type metadata for
+every nominal. The existing single-operation completion APIs remain
+transactional, while the unpublished constructor now has one atomic batch
+boundary for every shape and destructor assignment.
+
+Four fixed one-worker Lattice allocation probes save 119,411--119,633 calls
+and 36.31--36.48 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a -0.38% paired median, with 0.71%
+paired MAD and a -4.86% to +1.35% range. Median peak RSS falls by 1.07 MiB.
+Every published compiler-work counter and emitted executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

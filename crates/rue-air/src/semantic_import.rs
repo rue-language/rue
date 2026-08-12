@@ -1473,35 +1473,7 @@ where
             }
         }
 
-        for nominal in &nominals {
-            match &nominal.shape {
-                SemanticLocalNominalShape::Struct {
-                    fields,
-                    is_copy,
-                    is_linear,
-                    destructor,
-                } => {
-                    epoch.complete_nominal_struct(&nominal.key, fields, *is_copy, *is_linear)?;
-                    if let Some(destructor) = destructor {
-                        let symbol = epoch
-                            .functions
-                            .get(destructor)
-                            .copied()
-                            .ok_or(SemanticImportFailure::MissingFunction)?;
-                        let Some(LocalNominal::Struct(id)) = epoch.nominals.get(&nominal.key)
-                        else {
-                            return Err(SemanticImportFailure::NominalKindMismatch);
-                        };
-                        epoch
-                            .type_pool
-                            .set_struct_destructor(*id, epoch.interner.resolve(&symbol).to_owned());
-                    }
-                }
-                SemanticLocalNominalShape::Enum { variants } => {
-                    epoch.complete_nominal_enum(&nominal.key, variants)?
-                }
-            }
-        }
+        epoch.complete_local_nominals(&nominals)?;
         epoch.local_completeness = Some(SemanticLocalCompleteness {
             nominals_declared: nominals.len(),
             nominals_completed: nominals.len(),
@@ -2075,6 +2047,19 @@ where
         is_copy: bool,
         is_linear: bool,
     ) -> Result<(), SemanticImportFailure> {
+        self.type_pool.transaction(|type_pool| {
+            self.complete_nominal_struct_in_pool(type_pool, key, fields, is_copy, is_linear)
+        })
+    }
+
+    fn complete_nominal_struct_in_pool(
+        &self,
+        type_pool: &TypeInternPool,
+        key: &NominalInstanceKey<K, M>,
+        fields: &[(Arc<str>, SemanticImportType<K, M>)],
+        is_copy: bool,
+        is_linear: bool,
+    ) -> Result<(), SemanticImportFailure> {
         let LocalNominal::Struct(id) = self
             .nominals
             .get(key)
@@ -2083,38 +2068,36 @@ where
         else {
             return Err(SemanticImportFailure::NominalKindMismatch);
         };
-        self.type_pool.transaction(|type_pool| {
-            let metadata = type_pool.struct_declaration_metadata(id).ok_or_else(|| {
-                if type_pool.try_struct_def(id).is_some() {
-                    SemanticImportFailure::NominalAlreadyComplete
-                } else {
-                    SemanticImportFailure::NominalKindMismatch
-                }
-            })?;
-            let fields = fields
-                .iter()
-                .map(|(name, ty)| {
-                    Ok(StructField {
-                        name: name.to_string(),
-                        ty: self.import_type_local_with(ty, type_pool, None)?,
-                    })
+        let metadata = type_pool.struct_declaration_metadata(id).ok_or_else(|| {
+            if type_pool.try_struct_def(id).is_some() {
+                SemanticImportFailure::NominalAlreadyComplete
+            } else {
+                SemanticImportFailure::NominalKindMismatch
+            }
+        })?;
+        let fields = fields
+            .iter()
+            .map(|(name, ty)| {
+                Ok(StructField {
+                    name: name.to_string(),
+                    ty: self.import_type_local_with(ty, type_pool, None)?,
                 })
-                .collect::<Result<_, _>>()?;
-            type_pool.complete_declared_struct(
-                id,
-                StructDef {
-                    name: metadata.name,
-                    fields,
-                    is_copy,
-                    is_linear,
-                    destructor: metadata.destructor,
-                    is_builtin: metadata.is_builtin,
-                    is_pub: metadata.is_pub,
-                    file_id: metadata.file_id,
-                },
-            );
-            Ok(())
-        })
+            })
+            .collect::<Result<_, _>>()?;
+        type_pool.complete_declared_struct(
+            id,
+            StructDef {
+                name: metadata.name,
+                fields,
+                is_copy,
+                is_linear,
+                destructor: metadata.destructor,
+                is_builtin: metadata.is_builtin,
+                is_pub: metadata.is_pub,
+                file_id: metadata.file_id,
+            },
+        );
+        Ok(())
     }
 
     pub fn complete_enum(
@@ -2130,6 +2113,16 @@ where
         key: &NominalInstanceKey<K, M>,
         variants: &[(Arc<str>, Arc<[SemanticImportType<K, M>]>)],
     ) -> Result<(), SemanticImportFailure> {
+        self.type_pool
+            .transaction(|type_pool| self.complete_nominal_enum_in_pool(type_pool, key, variants))
+    }
+
+    fn complete_nominal_enum_in_pool(
+        &self,
+        type_pool: &TypeInternPool,
+        key: &NominalInstanceKey<K, M>,
+        variants: &[(Arc<str>, Arc<[SemanticImportType<K, M>]>)],
+    ) -> Result<(), SemanticImportFailure> {
         let LocalNominal::Enum(id) = self
             .nominals
             .get(key)
@@ -2138,33 +2131,82 @@ where
         else {
             return Err(SemanticImportFailure::NominalKindMismatch);
         };
+        let metadata = type_pool.enum_declaration_metadata(id).ok_or_else(|| {
+            if type_pool.try_enum_def(id).is_some() {
+                SemanticImportFailure::NominalAlreadyComplete
+            } else {
+                SemanticImportFailure::NominalKindMismatch
+            }
+        })?;
+        let variant_payloads = variants
+            .iter()
+            .map(|(_, payload)| {
+                payload
+                    .iter()
+                    .map(|ty| self.import_type_local_with(ty, type_pool, None))
+                    .collect()
+            })
+            .collect::<Result<_, _>>()?;
+        type_pool.complete_declared_enum(
+            id,
+            EnumDef {
+                name: metadata.name,
+                variants: variants.iter().map(|(name, _)| name.clone()).collect(),
+                variant_payloads,
+                is_pub: metadata.is_pub,
+                file_id: metadata.file_id,
+            },
+        );
+        Ok(())
+    }
+
+    /// Complete one constructor's nominal universe behind one rollback
+    /// boundary. The epoch is still unpublished, so cloning the growing type
+    /// pool once per nominal would add no isolation beyond this batch.
+    fn complete_local_nominals(
+        &self,
+        nominals: &[SemanticLocalNominal<K, M>],
+    ) -> Result<(), SemanticImportFailure> {
+        if nominals.is_empty() {
+            return Ok(());
+        }
         self.type_pool.transaction(|type_pool| {
-            let metadata = type_pool.enum_declaration_metadata(id).ok_or_else(|| {
-                if type_pool.try_enum_def(id).is_some() {
-                    SemanticImportFailure::NominalAlreadyComplete
-                } else {
-                    SemanticImportFailure::NominalKindMismatch
+            for nominal in nominals {
+                match &nominal.shape {
+                    SemanticLocalNominalShape::Struct {
+                        fields,
+                        is_copy,
+                        is_linear,
+                        destructor,
+                    } => {
+                        self.complete_nominal_struct_in_pool(
+                            type_pool,
+                            &nominal.key,
+                            fields,
+                            *is_copy,
+                            *is_linear,
+                        )?;
+                        if let Some(destructor) = destructor {
+                            let symbol = self
+                                .functions
+                                .get(destructor)
+                                .copied()
+                                .ok_or(SemanticImportFailure::MissingFunction)?;
+                            let Some(LocalNominal::Struct(id)) = self.nominals.get(&nominal.key)
+                            else {
+                                return Err(SemanticImportFailure::NominalKindMismatch);
+                            };
+                            type_pool.set_struct_destructor(
+                                *id,
+                                self.interner.resolve(&symbol).to_owned(),
+                            );
+                        }
+                    }
+                    SemanticLocalNominalShape::Enum { variants } => {
+                        self.complete_nominal_enum_in_pool(type_pool, &nominal.key, variants)?;
+                    }
                 }
-            })?;
-            let variant_payloads = variants
-                .iter()
-                .map(|(_, payload)| {
-                    payload
-                        .iter()
-                        .map(|ty| self.import_type_local_with(ty, type_pool, None))
-                        .collect()
-                })
-                .collect::<Result<_, _>>()?;
-            type_pool.complete_declared_enum(
-                id,
-                EnumDef {
-                    name: metadata.name,
-                    variants: variants.iter().map(|(name, _)| name.clone()).collect(),
-                    variant_payloads,
-                    is_pub: metadata.is_pub,
-                    file_id: metadata.file_id,
-                },
-            );
+            }
             Ok(())
         })
     }
@@ -2586,6 +2628,74 @@ mod tests {
         };
         assert!(epoch.type_pool().try_enum_def(id).is_none());
         assert!(epoch.type_pool().enum_declaration_metadata(id).is_some());
+    }
+
+    #[test]
+    fn local_nominal_batch_rolls_back_every_completion() {
+        let epoch = Epoch::new(
+            vec![
+                nominal("good", "Good", SemanticImportNominalKind::Struct),
+                nominal("bad", "Bad", SemanticImportNominalKind::Struct),
+            ],
+            vec![],
+            vec!["pkg/main.rue"],
+        )
+        .unwrap();
+        let facts = vec![
+            SemanticLocalNominal {
+                key: NominalInstanceKey::Named("good"),
+                module_path: Arc::from("pkg/main.rue"),
+                name: Arc::from("Good"),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([(
+                        Arc::from("items"),
+                        ImportType::Array {
+                            element: Box::new(ImportType::U8),
+                            len: 4,
+                        },
+                    )]),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                },
+            },
+            SemanticLocalNominal {
+                key: NominalInstanceKey::Named("bad"),
+                module_path: Arc::from("pkg/main.rue"),
+                name: Arc::from("Bad"),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([(
+                        Arc::from("invalid"),
+                        ImportType::PtrConst(Box::new(ImportType::Module("pkg/main.rue"))),
+                    )]),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                },
+            },
+        ];
+        let before = epoch.type_pool().stats();
+
+        assert_eq!(
+            epoch.complete_local_nominals(&facts),
+            Err(SemanticImportFailure::InvalidStructuralType)
+        );
+
+        assert_eq!(epoch.type_pool().stats(), before);
+        assert_eq!(epoch.type_pool().get_array(Type::U8, 4), None);
+        for key in ["good", "bad"] {
+            let LocalNominal::Struct(id) = epoch.nominals[&NominalInstanceKey::Named(key)] else {
+                panic!("{key} must be a struct")
+            };
+            assert!(epoch.type_pool().try_struct_def(id).is_none());
+            assert!(epoch.type_pool().struct_declaration_metadata(id).is_some());
+        }
     }
 
     #[test]
