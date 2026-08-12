@@ -68,6 +68,27 @@ RueProgramInternalInfo = provider(fields = [
 ])
 
 
+# The cache probe's positive warm-cache control asserts that its FIRST build
+# executes these actions cold. The nonce reaches Rust actions as an otherwise
+# unused `--cfg` (toolchains/rust/BUCK, RUE-1034), but that re-keys only the
+# Rust actions: an unused cfg does not change the compiler's emitted bytes, and
+# the actions below are keyed on the compiler ARTIFACT, so they kept being
+# served from the shared cache and the probe failed its own cold-namespace
+# assertion the first time it ran. Carrying the nonce into these actions re-keys
+# them directly. Ordinary builds leave the setting empty and keep their existing
+# action keys — `_probe_env` returns its argument untouched, and an action that
+# declares no env still declares none.
+_CACHE_PROBE_NONCE = read_root_config("rue", "cache_probe_nonce", "")
+
+
+def _probe_env(env = {}):
+    if not _CACHE_PROBE_NONCE:
+        return env
+    tagged = dict(env)
+    tagged["RUE_CACHE_PROBE_NONCE"] = _CACHE_PROBE_NONCE
+    return tagged
+
+
 def _resolve(ctx: AnalysisContext):
     toolchain = ctx.attrs._rue_toolchain[RueToolchainInfo]
     resolved_target = ctx.attrs.rue_target or toolchain.native_target
@@ -94,7 +115,7 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
     )
     ctx.actions.run(
         scan_cmd,
-        env = {"RUE_STD_PATH": std_dir},
+        env = _probe_env({"RUE_STD_PATH": std_dir}),
         category = "rue_scan",
         identifier = ctx.label.name,
         allow_cache_upload = True,
@@ -124,6 +145,7 @@ def _scan_and_derive(ctx: AnalysisContext, toolchain, std_dir, expect_violation 
         derive_cmd.add("--expect-violation", expect_violation)
     ctx.actions.run(
         derive_cmd,
+        env = _probe_env(),
         category = "rue_derive_manifest",
         identifier = ctx.label.name,
         allow_cache_upload = True,
@@ -163,7 +185,7 @@ def _rue_program_impl(ctx: AnalysisContext) -> list[Provider]:
         compile_cmd.add("--link-archive", archive)
     ctx.actions.run(
         compile_cmd,
-        env = {"RUE_STD_PATH": std_dir},
+        env = _probe_env({"RUE_STD_PATH": std_dir}),
         category = "rue_compile",
         identifier = ctx.label.name,
         allow_cache_upload = True,

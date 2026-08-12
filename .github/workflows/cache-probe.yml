@@ -131,9 +131,10 @@ jobs:
   # this rides the scheduled probe rather than a per-PR lane.
   rue-program-warm:
     runs-on: ubuntu-latest
-    # Raised from 60 with RUE-1406: the cold half now also compiles the nine
-    # staged CLI programs, meridian's full 36k-line root among them.
-    timeout-minutes: 90
+    # Measured, not guessed (RUE-1406, run 31615598448): the nine staged CLI
+    # programs add ~78s wall to the cold half — meridian, the long pole, is
+    # ~30-40s of it — so 60 keeps the headroom it already had.
+    timeout-minutes: 60
     env:
       RUE_CACHE_PROBE_NONCE: rue-program-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
