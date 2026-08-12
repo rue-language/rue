@@ -608,11 +608,12 @@ fn compute_dataflow(
 
     let mut live_in: Vec<FixedBitSet> =
         vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
-    // The transfer function needs two temporary sets regardless of instruction
-    // count or convergence rounds. Reuse their backing storage instead of
-    // allocating two full-width bitsets for every row on every pass.
+    // The transfer function needs one temporary set regardless of instruction
+    // count or convergence rounds. Build live-out directly in that set, then
+    // apply defs and uses in place to obtain live-in. Reusing one backing store
+    // avoids both a full-width scratch allocation and one full-width clone for
+    // every row on every pass.
     let mut new_live_in = FixedBitSet::with_capacity(vreg_count_usize);
-    let mut new_live_out = FixedBitSet::with_capacity(vreg_count_usize);
     #[cfg(test)]
     let mut sweeps = 0;
 
@@ -624,13 +625,12 @@ fn compute_dataflow(
         // Process instructions in reverse order for faster convergence
         for idx in (0..num_insts).rev() {
             // Compute live_out as union of live_in of all successors
-            new_live_out.clear();
+            new_live_in.clear();
             for &succ in &successors[idx] {
-                new_live_out.union_with(&live_in[succ]);
+                new_live_in.union_with(&live_in[succ]);
             }
 
             // Compute live_in = uses ∪ (live_out - defs)
-            new_live_in.clone_from(&new_live_out);
             for vreg in &inst_defs[idx] {
                 new_live_in.set(vreg.index() as usize, false);
             }
