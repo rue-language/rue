@@ -1350,6 +1350,22 @@ pairs are neutral at -38 to +153 calls and -0.07 to +0.05 MB requested. Every
 published compiler-work counter, emitted-output metric, source metric, and
 executable byte remains identical.
 
+RUE-1432 carries each anonymous nominal's exact body-local materialization name
+with the durable fact that establishes its identity. Full and opaque fact
+selection share that immutable name, so body materialization no longer repeats
+the full structural Debug formatting for every selected local fact. The name is
+a derived cache rather than semantic identity: equality, ordering, and hashing
+retain the pre-cache field set, and the cached bytes are included in retained-
+charge accounting. This preserves the historical spelling without deciding
+the separate canonical anonymous-symbol question tracked by RUE-1295.
+
+Sixteen balanced fixed one-worker cold Lattice pairs reduce retired
+instructions by a 1.485% paired median with 0.057% paired MAD. Compiler clock
+moves -1.35% with 1.37% paired MAD, while peak RSS falls 2.45% with 0.25%
+paired MAD. Four allocation-accounted pairs save 113,732--114,528 allocations
+and 39.46--39.70 MB of requested bytes. Every published compiler-work counter,
+emitted-output metric, source metric, and executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

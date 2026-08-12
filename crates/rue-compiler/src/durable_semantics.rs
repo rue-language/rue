@@ -4,6 +4,7 @@
 //! conversion is only sound while the successful declaration binder, its type
 //! pool, and the exact-revision stable-definition join are available together.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use rue_air::{
@@ -40,12 +41,99 @@ fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
 /// Query-owned materialization payload for one anonymous nominal referenced by
 /// declaration semantics. Identity remains separate from shape so recursive
 /// uses and structurally equal aliases can be joined before fields are filled.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone)]
 pub struct DurableAnonymousNominal {
     pub identity: crate::AnonymousNominalKey,
+    /// Exact body-local type-pool name derived once with the durable fact.
+    ///
+    /// This deliberately preserves the historical full-identity Debug
+    /// spelling. It is not the canonical source symbol and therefore does not
+    /// participate in the RUE-1295 spelling decision.
+    materialization_name: Arc<str>,
     pub shape: DurableAnonymousNominalShape,
     pub type_captures: Arc<[(Arc<str>, DurableType)]>,
     pub value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+}
+
+impl DurableAnonymousNominal {
+    fn semantic_parts(
+        &self,
+    ) -> (
+        &crate::AnonymousNominalKey,
+        &DurableAnonymousNominalShape,
+        &Arc<[(Arc<str>, DurableType)]>,
+        &Arc<[(Arc<str>, DurableConstValue)]>,
+    ) {
+        (
+            &self.identity,
+            &self.shape,
+            &self.type_captures,
+            &self.value_captures,
+        )
+    }
+
+    pub(crate) fn new(
+        identity: crate::AnonymousNominalKey,
+        shape: DurableAnonymousNominalShape,
+        type_captures: Arc<[(Arc<str>, DurableType)]>,
+        value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
+    ) -> Self {
+        let materialization_name = Arc::from(format!(
+            "anonymous-{:?}",
+            identity.with_canonical_producer()
+        ));
+        Self {
+            identity,
+            materialization_name,
+            shape,
+            type_captures,
+            value_captures,
+        }
+    }
+
+    pub(crate) fn with_shape(&self, shape: DurableAnonymousNominalShape) -> Self {
+        Self {
+            identity: self.identity.clone(),
+            materialization_name: self.materialization_name.clone(),
+            shape,
+            type_captures: self.type_captures.clone(),
+            value_captures: self.value_captures.clone(),
+        }
+    }
+
+    pub(crate) fn materialization_name(&self) -> &Arc<str> {
+        &self.materialization_name
+    }
+}
+
+// The carried name is a cache derived entirely from `identity`, not a new part
+// of the durable fact's semantic identity. Keep equality, ordering, and hashing
+// identical to the pre-cache representation so query keys do not hash the
+// formatted name or invalidate merely because the cache representation changes.
+impl PartialEq for DurableAnonymousNominal {
+    fn eq(&self, other: &Self) -> bool {
+        self.semantic_parts() == other.semantic_parts()
+    }
+}
+
+impl Eq for DurableAnonymousNominal {}
+
+impl PartialOrd for DurableAnonymousNominal {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DurableAnonymousNominal {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.semantic_parts().cmp(&other.semantic_parts())
+    }
+}
+
+impl Hash for DurableAnonymousNominal {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.semantic_parts().hash(state);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -148,6 +236,7 @@ impl RetainedCharge for DurableAnonymousNominal {
     fn retained_charge(&self) -> u64 {
         self.identity
             .retained_charge()
+            .saturating_add(self.materialization_name.retained_charge())
             .saturating_add(self.shape.retained_charge())
             .saturating_add(self.type_captures.retained_charge())
             .saturating_add(self.value_captures.retained_charge())
