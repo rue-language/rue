@@ -8988,6 +8988,53 @@ mod tests {
     }
 
     #[test]
+    fn repeated_named_imports_register_their_identity_closure_once_per_body() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Item { value: i32 } \
+                 fn identity(item: Item) -> Item { item } \
+                 fn main() -> i32 { identity(Item { value: 7 }).value }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("the program analyzes");
+
+        let metrics = crate::unstable::provider_observation_metrics(&session);
+        assert_eq!(metrics.name_lookups, 16, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 21, "{metrics:?}");
+        assert_eq!(metrics.identity_facts, 11, "{metrics:?}");
+        assert_eq!(metrics.signature_facts, 10, "{metrics:?}");
+        assert_eq!(metrics.materializations, 10, "{metrics:?}");
+    }
+
+    #[test]
+    fn recursive_named_import_identity_closure_terminates() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "enum List { Nil, More(ptr const List) } \
+                 fn identity(value: List) -> List { value } \
+                 fn main() -> i32 { let _value = identity(List.Nil); 0 }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("recursive named imports use the in-progress cycle break");
+    }
+
+    #[test]
     fn published_lookup_root_lease_retains_production_body_lookups() {
         // Production body analysis publishes its exact lookup-name terminals
         // into the session lease. The lease owns retention independently from

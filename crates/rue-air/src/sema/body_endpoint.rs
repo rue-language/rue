@@ -740,6 +740,13 @@ where
         self.identity.pool().durable_named_identity(ty)
     }
 
+    /// Return the request-local token already assigned to a durable nominal.
+    /// This is a lookup only: callers that need to mint the endpoint still use
+    /// [`Self::register_named_nominal`].
+    pub fn registered_named_nominal_token(&self, key: &K) -> Option<SemanticDefinitionToken> {
+        self.overlay.borrow().definition_tokens.get(key).copied()
+    }
+
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal
     /// key, recording the `(file, name, kind)` endpoint and the `(file, name)`
     /// preimage the `Named`-nominal arm of [`resolve_instance_type`] reverses. A
