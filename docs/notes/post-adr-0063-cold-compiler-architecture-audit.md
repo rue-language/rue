@@ -1249,6 +1249,23 @@ peak RSS is neutral at -0.014% with 0.142% paired MAD. Four allocation-accounted
 pairs save a median 21,951 allocations and 1.99 MiB of requested bytes. Source
 metrics, emitted-output metrics, and executable bytes remain identical.
 
+RUE-1425 derives validation-endorsement probe totals from their disjoint hit
+and miss outcomes. A successful authority lookup previously updated the total
+probe counter and then the hit counter, even though every active lookup has
+exactly one outcome. Task-local accumulation now records only that outcome;
+snapshot and transfer preserve the public probe total by summing hits and
+misses with saturating arithmetic.
+
+Fixed one-worker cold Lattice performs 745,097 endorsement probes, including
+546,386 hits that bypass validation. The change therefore removes exactly
+546,386 redundant task-local atomic updates. Sixteen balanced alternating
+release pairs are clock-neutral at a 0.00% paired median with 1.46% paired MAD;
+retired instructions are neutral at +0.038% with 0.023% paired MAD, and peak
+RSS is neutral at +0.36% with 0.38% paired MAD. Four allocation-accounted pairs
+are neutral at median deltas of +48 calls and +0.06 MiB requested. Every
+published compiler-work counter, emitted-output metric, and executable byte
+remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

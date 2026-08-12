@@ -2931,9 +2931,9 @@ impl ValidationWork {
 
 /// Task-local storage for the independent validation outcomes.
 ///
-/// `traversals`, `registry_probes`, `node_visits`, and `memo_misses` are exact
-/// sums of fields below, so snapshots derive them instead of paying a second
-/// atomic update on the validation hot path.
+/// `traversals`, `registry_probes`, `node_visits`, `memo_misses`, and
+/// `endorsement_probes` are exact sums of fields below, so snapshots derive
+/// them instead of paying a second atomic update on the validation hot path.
 #[derive(Debug, Default)]
 struct AtomicValidationWork {
     successful_traversals: AtomicU64,
@@ -2947,7 +2947,7 @@ struct AtomicValidationWork {
     memo_hits: AtomicU64,
     certificate_misses: AtomicU64,
     proof_reacquisition_misses: AtomicU64,
-    endorsement_probes: AtomicU64,
+    endorsement_misses: AtomicU64,
     endorsement_hits: AtomicU64,
     terminal_lease_observations: AtomicU64,
     duplicate_terminal_lease_observations: AtomicU64,
@@ -2976,6 +2976,12 @@ impl AtomicValidationWork {
             .active_cycle_prunes
             .saturating_add(work.memo_hits)
             .saturating_add(work.memo_misses);
+        // `endorsement_probes` carries misses inside the task accumulator.
+        // A lookup either bypasses validation or it does not, so the public
+        // probe total is the exact sum of those independent outcomes.
+        work.endorsement_probes = work
+            .endorsement_probes
+            .saturating_add(work.endorsement_hits);
         work
     }
 
@@ -2992,7 +2998,7 @@ impl AtomicValidationWork {
             memo_hits: self.memo_hits.load(Ordering::Relaxed),
             certificate_misses: self.certificate_misses.load(Ordering::Relaxed),
             proof_reacquisition_misses: self.proof_reacquisition_misses.load(Ordering::Relaxed),
-            endorsement_probes: self.endorsement_probes.load(Ordering::Relaxed),
+            endorsement_probes: self.endorsement_misses.load(Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.load(Ordering::Relaxed),
             terminal_lease_observations: self.terminal_lease_observations.load(Ordering::Relaxed),
             duplicate_terminal_lease_observations: self
@@ -3022,7 +3028,7 @@ impl AtomicValidationWork {
             memo_hits: self.memo_hits.swap(0, Ordering::Relaxed),
             certificate_misses: self.certificate_misses.swap(0, Ordering::Relaxed),
             proof_reacquisition_misses: self.proof_reacquisition_misses.swap(0, Ordering::Relaxed),
-            endorsement_probes: self.endorsement_probes.swap(0, Ordering::Relaxed),
+            endorsement_probes: self.endorsement_misses.swap(0, Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.swap(0, Ordering::Relaxed),
             terminal_lease_observations: self
                 .terminal_lease_observations
@@ -3061,7 +3067,6 @@ impl AtomicValidationWork {
             memo_hits,
             certificate_misses,
             proof_reacquisition_misses,
-            endorsement_probes,
             endorsement_hits,
             terminal_lease_observations,
             duplicate_terminal_lease_observations,
@@ -3073,6 +3078,13 @@ impl AtomicValidationWork {
             superseded,
             certificates_published,
         );
+        let endorsement_misses = work
+            .endorsement_probes
+            .saturating_sub(work.endorsement_hits);
+        if endorsement_misses != 0 {
+            self.endorsement_misses
+                .fetch_add(endorsement_misses, Ordering::Relaxed);
+        }
     }
 }
 
@@ -5098,9 +5110,6 @@ where
                         | ValidationEndorsementAuthority::TaskLocal
                         | ValidationEndorsementAuthority::Borrowed
                 ) {
-                    if endorsement_authority != ValidationEndorsementAuthority::Inactive {
-                        task.record_validation_endorsement_hit();
-                    }
                     if !certificate.registered_only {
                         task.taint_validation_proofs();
                     }
@@ -5955,9 +5964,6 @@ where
                 // checks those direct observations.
                 let endorsement_hit =
                     endorsement_authority == ValidationEndorsementAuthority::TaskLocal;
-                if endorsement_hit {
-                    task.record_validation_endorsement_hit();
-                }
                 let mut validation = if endorsement_hit {
                     Ok((true, true, false))
                 } else {
@@ -9330,11 +9336,17 @@ impl Task {
         &self,
         terminal: &QueryTerminal<V>,
     ) -> ValidationEndorsementAuthority {
-        self.validation_endorsement_authority_at(
+        let authority = self.validation_endorsement_authority_at_raw(
             terminal.node_incarnation,
             terminal.stamp,
             terminal.revision,
-        )
+        );
+        if authority != ValidationEndorsementAuthority::Inactive {
+            // This helper inspects authority in tests; it does not bypass
+            // validation, so preserve the production counter's meaning.
+            self.record_validation_endorsement_outcome(false);
+        }
+        authority
     }
 
     /// Tests the only retention authority which may bypass validation of a
@@ -9351,13 +9363,10 @@ impl Task {
         let Some(scope) = scopes.first() else {
             return ValidationEndorsementAuthority::Inactive;
         };
-        self.validation_work
-            .endorsement_probes
-            .fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
-        if scope.identities.contains(&(
+        let authority = if scope.identities.contains(&(
             terminal.node_incarnation,
             terminal.stamp,
             terminal.revision,
@@ -9365,10 +9374,33 @@ impl Task {
             ValidationEndorsementAuthority::TaskLocal
         } else {
             ValidationEndorsementAuthority::Missing
-        }
+        };
+        drop(scopes);
+        self.record_validation_endorsement_outcome(
+            authority == ValidationEndorsementAuthority::TaskLocal,
+        );
+        authority
     }
 
     fn validation_endorsement_authority_at(
+        &self,
+        incarnation: u64,
+        stamp: u64,
+        exact_revision: Revision,
+    ) -> ValidationEndorsementAuthority {
+        let authority =
+            self.validation_endorsement_authority_at_raw(incarnation, stamp, exact_revision);
+        if authority != ValidationEndorsementAuthority::Inactive {
+            self.record_validation_endorsement_outcome(matches!(
+                authority,
+                ValidationEndorsementAuthority::TaskLocal
+                    | ValidationEndorsementAuthority::Borrowed
+            ));
+        }
+        authority
+    }
+
+    fn validation_endorsement_authority_at_raw(
         &self,
         incarnation: u64,
         stamp: u64,
@@ -9378,9 +9410,6 @@ impl Task {
         let Some(scope) = scopes.first() else {
             return ValidationEndorsementAuthority::Inactive;
         };
-        self.validation_work
-            .endorsement_probes
-            .fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
@@ -9407,10 +9436,16 @@ impl Task {
         authority
     }
 
-    fn record_validation_endorsement_hit(&self) {
-        self.validation_work
-            .endorsement_hits
-            .fetch_add(1, Ordering::Relaxed);
+    fn record_validation_endorsement_outcome(&self, hit: bool) {
+        if hit {
+            self.validation_work
+                .endorsement_hits
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.validation_work
+                .endorsement_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     #[cfg(test)]
@@ -9425,7 +9460,7 @@ impl Task {
             return false;
         };
         self.validation_work
-            .endorsement_probes
+            .endorsement_misses
             .fetch_add(1, Ordering::Relaxed);
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
@@ -10746,6 +10781,24 @@ mod tests {
                 <= work.demands
         );
         assert!(work.certificates_published <= work.successful_traversals);
+    }
+
+    #[test]
+    fn endorsement_probe_totals_are_derived_from_disjoint_outcomes() {
+        let work = AtomicValidationWork::default();
+        work.endorsement_hits.fetch_add(3, Ordering::Relaxed);
+        work.endorsement_misses.fetch_add(2, Ordering::Relaxed);
+
+        let snapshot = work.snapshot();
+        assert_eq!(snapshot.endorsement_hits, 3);
+        assert_eq!(snapshot.endorsement_probes, 5);
+
+        let transferred = work.take();
+        assert_eq!(transferred, snapshot);
+        assert_eq!(work.snapshot(), ValidationWork::default());
+
+        work.add(transferred);
+        assert_eq!(work.snapshot(), snapshot);
     }
 
     #[test]
