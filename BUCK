@@ -31,6 +31,7 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
+load("//:rue_rules.bzl", "rue_program_family", "rue_program_test")
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
 load(":corpus.bzl", "cached_corpus_suite")
 
@@ -403,64 +404,133 @@ CLI_TEST_SHARD_COUNT = 4
     for _shard in range(CLI_TEST_SHARD_COUNT)
 ]
 
+# ADR-0070 Phase 1 (RUE-1405): each large maintained application compiles
+# once as a `rue_program` build action — cached, shared across lanes — and
+# every runtime scenario below is its own `rue_program_test` consuming that
+# executable. A test execution never reaches the action cache, so the compile
+# must not live inside one.
+#
+# Each sibling pair shares a directory glob (main does not import canary.rue,
+# or vice versa): the precision trade ADR-0070's over-declaration audit
+# documents. The executor's 600s default (RUE-1156) now bounds only a runtime
+# scenario, which finishes in seconds even at stress scale.
+rue_program_family(
+    name = "large-example-caldera",
+    srcs = glob(["examples/caldera/**/*.rue"]),
+    programs = {
+        "caldera": {"root": "examples/caldera/main.rue"},
+        "caldera-canary": {"root": "examples/caldera/canary.rue"},
+    },
+)
+
+rue_program_family(
+    name = "large-example-meridian",
+    srcs = glob(["examples/meridian/**/*.rue"]),
+    programs = {
+        "meridian": {"root": "examples/meridian/main.rue"},
+        "meridian-canary": {"root": "examples/meridian/canary.rue"},
+    },
+)
+
 # The required pre-merge canaries compile a reduced root from each maintained
 # application and execute its core path. They are intentionally honest about
-# their scope: neither target claims to compile the complete generated graph.
-#
-# None of the large-example sh_tests declares a per-rule timeout:
-# `test_rule_timeout_ms` is parsed but ignored by the OSS test executor
-# (RUE-1156), so the effective outer bound on each of them is the executor's
-# 600-second default. Scheduled runs finish well inside it; a target that ever
-# needs more must pass `-- --timeout N` at the invocation site, the one
-# executor mechanism that works.
+# their scope: neither claims to compile the complete generated graph. Each
+# canary executable deliberately has two consuming scenarios — the core-path
+# check, and a staged-cwd run — which is the "one compile, many scenarios"
+# shape scripts/check-rue-program-warm-cache.sh asserts is cache-served.
 [
-    rue_sh_test(
+    rue_program_test(
         name = "large-example-{}-canary".format(_program),
-        test = "scripts/run-large-example.sh",
-        args = [_program, "canary"],
-        env = {
-            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
-            "RUE_STD_DIR": "$(location :std)/std",
-        },
+        program = ":{}-canary".format(_program),
     )
     for _program in ["caldera", "meridian"]
 ]
 
-# Scheduled slow coverage compiles each complete application exactly once and
-# reuses the resulting executable across its help/demo/file/selftest/scaling
-# and benchmark runtime scenarios. The release workflow selects these targets
-# explicitly under //platforms:release.
 [
-    rue_sh_test(
+    rue_program_test(
+        name = "large-example-{}-canary-workdir".format(_program),
+        program = ":{}-canary".format(_program),
+        files = [{"path": "data/staged.txt", "source": "staged\n"}],
+    )
+    for _program in ["caldera", "meridian"]
+]
+
+# Scheduled slow coverage: the complete application graphs, one compile each,
+# reused by every scenario. Every marker lands on stdout.
+_LARGE_EXAMPLE_SLOW_SCENARIOS = {
+    "caldera": [
+        ("selftest", [], ["selftest checks=23", "valid=true"], {}),
+        ("demo", ["demo"], ["entities=8", "valid=true"], {}),
+        (
+            "scenario",
+            ["run", "demo.caldera"],
+            ["script_oracle=true", "valid=true"],
+            {"demo.caldera": "examples/caldera/demo.caldera"},
+        ),
+        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
+        ("benchmark", ["benchmark"], ["benchmark tiers=2", "valid=true"], {}),
+    ],
+    "meridian": [
+        ("help", [], ["usage: meridian"], {}),
+        ("demo", ["demo"], ["database=meridian", "result_valid=true"], {}),
+        (
+            "workload",
+            ["run", "demo.sql"],
+            ["plan_valid=true", "result_valid=true"],
+            {"demo.sql": "examples/meridian/demo.sql"},
+        ),
+        ("selftest", ["selftest"], ["selftest checks=24", "valid=true"], {}),
+        ("stress1", ["stress1"], ["stress scale=1", "valid=true"], {}),
+        (
+            "benchmark",
+            ["benchmark"],
+            ["benchmark=meridian-complete", "valid=true"],
+            {},
+        ),
+    ],
+}
+
+[
+    rue_program_test(
+        name = "large-example-{}-{}".format(_program, _scenario),
+        tier = "slow",
+        labels = ["rue_scheduled_large_example"],
+        program = ":{}".format(_program),
+        program_args = _args,
+        stdout_contains = _markers,
+        data = _data,
+    )
+    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
+    for _scenario, _args, _markers, _data in _scenarios
+]
+
+# The release workflow's matrix selects one application per job by these
+# names, exactly as it selected the retired monolithic sh_tests; each suite
+# fans out to the per-scenario tests above, which share one compiled artifact.
+[
+    rue_test_suite(
         name = "large-example-{}-slow".format(_program),
         tier = "slow",
         labels = ["rue_scheduled_large_example"],
-        test = "scripts/run-large-example.sh",
-        args = [_program, "slow"],
-        env = {
-            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
-            "RUE_STD_DIR": "$(location :std)/std",
-        },
+        tests = [
+            ":large-example-{}-{}".format(_program, _scenario)
+            for _scenario, _args, _markers, _data in _scenarios
+        ],
     )
-    for _program in ["caldera", "meridian"]
+    for _program, _scenarios in _LARGE_EXAMPLE_SLOW_SCENARIOS.items()
 ]
 
 # The 4x generated workload is an extreme scaling experiment rather than a
-# correctness smoke, so it has explicit stress-tier ownership.
+# correctness smoke, so it has explicit stress-tier ownership. It consumes
+# the same compiled artifact as the slow tier.
 [
-    rue_sh_test(
+    rue_program_test(
         name = "large-example-{}-stress".format(_program),
         tier = "stress",
         labels = ["rue_scheduled_large_example"],
-        test = "scripts/run-large-example.sh",
-        args = [_program, "stress"],
-        env = {
-            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
-            "RUE_STD_DIR": "$(location :std)/std",
-        },
+        program = ":{}".format(_program),
+        program_args = ["stress4"],
+        stdout_contains = ["stress scale=4", "valid=true"],
     )
     for _program in ["caldera", "meridian"]
 ]
@@ -1073,7 +1143,6 @@ filegroup(
         "scripts/rue-bin": "scripts/rue-bin",
         "scripts/rue-storage": "scripts/rue-storage",
         "scripts/provision-build-cache": "scripts/provision-build-cache",
-        "scripts/run-large-example.sh": "scripts/run-large-example.sh",
         "scripts/run-sanitizer.sh": "scripts/run-sanitizer.sh",
         "test.sh": "test.sh",
     },

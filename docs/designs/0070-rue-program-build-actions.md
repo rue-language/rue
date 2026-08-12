@@ -704,7 +704,7 @@ internal CI scheduling and would not ship in a ruleset.
       stale-`--prefer-remote` documentation fix noted in the References (RUE-320
       is Done, so `AGENTS.md`'s condition no longer holds). No existing target
       changes.
-- [ ] **Phase 1: Large examples** — RUE-1405 — convert the six
+- [x] **Phase 1: Large examples** — RUE-1405 — convert the six
       `large-example-*` `sh_test`s
       over their four roots; each scenario in `scripts/run-large-example.sh`
       becomes its own `rue_program_test`, retiring the script. **The justification

@@ -213,6 +213,15 @@ cache can only change speed, never correctness, so a dead or non-populating
 cache turns no lane red. Without a recurring genuinely-cold-then-warm probe, the
 regression surfaces only as CI gradually becoming expensive.
 
+The same workflow carries `rue-program-warm`, ADR-0070 Phase 1's positive
+warm-cache control (RUE-1405, `scripts/check-rue-program-warm-cache.sh`). It
+cold-builds the two canary `rue_program` targets under the same nonce
+mechanism, then runs their four consuming scenarios from a *relocated*
+checkout root and fails unless every canary scan/derive/compile action was a
+cache hit. Cross-root service is the property the derive step's manifest
+re-anchoring exists to guarantee, and it is what lets a `pull_request` run's
+compile be consumed by the `merge_group` run.
+
 Required CI also records per-step wall time and aggregate cached/remote/local
 command counts in each job summary via `scripts/ci-timed`. The probe answers
 whether unchanged actions are reusable; the job summaries answer the different
