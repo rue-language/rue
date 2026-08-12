@@ -1283,6 +1283,23 @@ neutral at median deltas of -63 calls and -0.01 MiB requested. Every published
 compiler-work counter, emitted-output metric, and executable byte remains
 identical.
 
+RUE-1428 memoizes successful anonymous-method endpoint installation within one
+provider body request. Durable type resolution already interns recursive
+nominal shells in the request's type pool; once every method signature for one
+compact owner type has been installed, later encounters can reuse those facts
+instead of repeatedly re-issuing its identity, formatting and interning its
+callable names, cloning member keys, allocating parameter ranges, and probing
+the endpoint tables. Failed walks are not cached, so retry and error behavior
+remain unchanged.
+
+Sixteen balanced fixed one-worker cold Lattice pairs reduce retired
+instructions by a 1.674% paired median with 0.052% paired MAD. Clock is neutral
+at a -1.03% paired median with 1.76% paired MAD, while peak RSS is neutral at
++0.20% with 0.32% paired MAD. Four allocation-accounted pairs save
+336,987--337,377 allocations and 24.46--24.61 MB of requested bytes. Every
+published compiler-work counter, emitted-output metric, source metric, and
+executable byte remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
