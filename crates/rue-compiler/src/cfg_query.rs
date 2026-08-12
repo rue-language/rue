@@ -531,62 +531,50 @@ impl RetainedCharge for lasso::ThreadedRodeo {
     }
 }
 
-fn measure_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> (u64, u64, u64) {
+fn measure_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> (u64, u64) {
     let entries = interner.len() as u64;
-    let utf8_bytes = interner.strings().fold(0_u64, |bytes, value| {
-        bytes.saturating_add(value.len() as u64)
-    });
+    let utf8_bytes = interner.utf8_bytes() as u64;
     (
         entries
             .saturating_mul(std::mem::size_of::<lasso::Spur>() as u64)
             .saturating_add(utf8_bytes),
         entries,
-        utf8_bytes,
     )
+}
+
+fn interner_header_retained_charge(interner: &lasso::ThreadedRodeo) -> u64 {
+    // `utf8_bytes` is measurement-only bookkeeping added to the vendored
+    // interner. Exclude that one atomic from the logical artifact charge so
+    // replacing the traversal does not change retention policy.
+    (std::mem::size_of_val(interner) as u64)
+        .saturating_sub(std::mem::size_of::<std::sync::atomic::AtomicUsize>() as u64)
 }
 
 fn refresh_interner_retained_charge(
     interner: &lasso::ThreadedRodeo,
     charge: &std::sync::atomic::AtomicU64,
     published_entries: u64,
-) -> Option<(u64, u64)> {
+) -> bool {
     if interner.len() as u64 == published_entries {
-        return None;
+        return false;
     }
-    let (payload, entries, utf8_bytes) = measure_interner_retained_charge(interner);
+    let (payload, _) = measure_interner_retained_charge(interner);
     charge.fetch_max(
-        (std::mem::size_of_val(interner) as u64).saturating_add(payload),
+        interner_header_retained_charge(interner).saturating_add(payload),
         std::sync::atomic::Ordering::Relaxed,
     );
-    Some((entries, utf8_bytes))
+    true
 }
 
-struct InternerChargeRefresh<'a> {
-    context: &'a QueryContext,
+struct InternerChargeRefresh {
     interner: Arc<lasso::ThreadedRodeo>,
     charge: Arc<std::sync::atomic::AtomicU64>,
     published_entries: u64,
 }
 
-impl Drop for InternerChargeRefresh<'_> {
+impl Drop for InternerChargeRefresh {
     fn drop(&mut self) {
-        let Some((entries, utf8_bytes)) =
-            refresh_interner_retained_charge(&self.interner, &self.charge, self.published_entries)
-        else {
-            return;
-        };
-        self.context.record_work(rue_query::WorkItem::new(
-            "cfg.retained-interner-charge-scans",
-            1,
-        ));
-        self.context.record_work(rue_query::WorkItem::new(
-            "cfg.retained-interner-entries-scanned",
-            entries,
-        ));
-        self.context.record_work(rue_query::WorkItem::new(
-            "cfg.retained-interner-utf8-bytes-scanned",
-            utf8_bytes,
-        ));
+        refresh_interner_retained_charge(&self.interner, &self.charge, self.published_entries);
     }
 }
 
@@ -1322,23 +1310,11 @@ fn build_cfg(
         // the live type pool for same-named structs outside this CFG's domain.
         implicit_destructor_targets.insert(owner.clone());
     }
-    let (interner_payload_charge, interner_entries, interner_utf8_bytes) =
+    let (interner_payload_charge, interner_entries) =
         measure_interner_retained_charge(&materialized.interner);
     let interner_retained_charge = Arc::new(std::sync::atomic::AtomicU64::new(
-        (std::mem::size_of_val(materialized.interner.as_ref()) as u64)
+        interner_header_retained_charge(materialized.interner.as_ref())
             .saturating_add(interner_payload_charge),
-    ));
-    context.record_work(rue_query::WorkItem::new(
-        "cfg.retained-interner-charge-scans",
-        1,
-    ));
-    context.record_work(rue_query::WorkItem::new(
-        "cfg.retained-interner-entries-scanned",
-        interner_entries,
-    ));
-    context.record_work(rue_query::WorkItem::new(
-        "cfg.retained-interner-utf8-bytes-scanned",
-        interner_utf8_bytes,
     ));
     let value = CfgValue::Available(Arc::new(CfgRecord {
         air: Arc::new(materialized.air),
@@ -1408,7 +1384,6 @@ pub(crate) fn evaluate_optimized_cfg(
     // append-only symbol universe. Refresh on every exit, including partial
     // import and optimization failures, before the returned terminal publishes.
     let _interner_charge_refresh = InternerChargeRefresh {
-        context,
         interner: interner.clone(),
         charge: record.interner_retained_charge.clone(),
         published_entries: record.interner_retained_entries,
@@ -1725,23 +1700,58 @@ mod accessor_graph_tests {
 
         let interner = lasso::ThreadedRodeo::new();
         interner.get_or_intern("caller");
-        let (payload, published_entries, _) = measure_interner_retained_charge(&interner);
+        let (payload, published_entries) = measure_interner_retained_charge(&interner);
         let charge =
-            AtomicU64::new((std::mem::size_of_val(&interner) as u64).saturating_add(payload));
+            AtomicU64::new(interner_header_retained_charge(&interner).saturating_add(payload));
 
         interner.get_or_intern("callee-only");
-        assert_eq!(
-            refresh_interner_retained_charge(&interner, &charge, published_entries),
-            Some((2, 17))
-        );
-        let (payload, current_entries, _) = measure_interner_retained_charge(&interner);
+        assert!(refresh_interner_retained_charge(
+            &interner,
+            &charge,
+            published_entries
+        ));
+        let (payload, current_entries) = measure_interner_retained_charge(&interner);
         assert_eq!(
             charge.load(Ordering::Relaxed),
-            (std::mem::size_of_val(&interner) as u64).saturating_add(payload)
+            interner_header_retained_charge(&interner).saturating_add(payload)
         );
+        assert!(!refresh_interner_retained_charge(
+            &interner,
+            &charge,
+            current_entries
+        ));
+    }
+
+    #[test]
+    fn interner_utf8_bytes_tracks_unique_dynamic_static_and_concurrent_strings() {
+        let interner = Arc::new(lasso::ThreadedRodeo::<lasso::Spur>::new());
+        interner.get_or_intern(String::from("dynamic"));
+        interner.get_or_intern("dynamic");
+        interner.get_or_intern_static("static");
+        interner.get_or_intern("");
+        interner.get_or_intern_static("");
+
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let interner = interner.clone();
+                scope.spawn(move || {
+                    interner.get_or_intern("shared");
+                    interner.get_or_intern(format!("worker-{index}"));
+                });
+            }
+        });
+
+        let expected = "dynamic".len()
+            + "static".len()
+            + "shared".len()
+            + (0..8)
+                .map(|index| format!("worker-{index}").len())
+                .sum::<usize>();
+        assert_eq!(interner.len(), 12);
+        assert_eq!(interner.utf8_bytes(), expected);
         assert_eq!(
-            refresh_interner_retained_charge(&interner, &charge, current_entries),
-            None
+            interner.strings().map(str::len).sum::<usize>(),
+            interner.utf8_bytes()
         );
     }
 

@@ -8618,22 +8618,20 @@ mod tests {
             "{cfg_work:?}"
         );
         assert_eq!(
-            cfg_work.retained_interner_charge_scans, cfg_work.cfg_builds_succeeded,
-            "without accessor imports, each newly built CFG scans its body-local interner charge exactly once: {cfg_work:?}"
+            cfg_work.retained_interner_charge_scans, 0,
+            "logical interner charge is maintained during insertion, not reconstructed at CFG publication: {cfg_work:?}"
         );
-        assert!(cfg_work.retained_interner_charge_scans > 0, "{cfg_work:?}");
         assert_eq!(
             cfg_work.prerequisite_type_fact_requests, 0,
             "drop-glue prerequisites already own the exact type-fact dependency: {cfg_work:?}"
         );
         assert!(cfg_work.prerequisite_drop_glue_requests > 0, "{cfg_work:?}");
-        assert!(
-            cfg_work.retained_interner_entries_scanned >= cfg_work.retained_interner_charge_scans,
+        assert_eq!(
+            cfg_work.retained_interner_entries_scanned, 0,
             "{cfg_work:?}"
         );
-        assert!(
-            cfg_work.retained_interner_utf8_bytes_scanned
-                >= cfg_work.retained_interner_entries_scanned,
+        assert_eq!(
+            cfg_work.retained_interner_utf8_bytes_scanned, 0,
             "{cfg_work:?}"
         );
         let names = semantic
