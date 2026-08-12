@@ -241,6 +241,14 @@ struct GraphScratch {
     last_edge_target: Vec<usize>,
 }
 
+/// List-scheduling storage reused across blocks in one function.
+#[derive(Default)]
+struct ScheduleScratch {
+    scheduled: Vec<usize>,
+    remaining_deps: Vec<usize>,
+    ready: BinaryHeap<ReadyInst>,
+}
+
 /// A ready instruction with its priority, for the scheduling queue.
 #[derive(Debug, Eq, PartialEq)]
 struct ReadyInst {
@@ -284,6 +292,7 @@ where
     let mut block_start = 0;
     let mut regs = RegTracker::new();
     let mut graph = GraphScratch::default();
+    let mut schedule = ScheduleScratch::default();
 
     for block_end in 0..instructions.len() {
         if !adapter.is_barrier(&instructions[block_end]) {
@@ -298,6 +307,7 @@ where
             &mut destination,
             &mut regs,
             &mut graph,
+            &mut schedule,
         );
         block_start = block_end + 1;
     }
@@ -311,6 +321,7 @@ where
             &mut destination,
             &mut regs,
             &mut graph,
+            &mut schedule,
         );
     }
 
@@ -326,6 +337,7 @@ fn record_block_permutation<A>(
     destination: &mut [usize],
     regs: &mut RegTracker<A::Reg>,
     graph: &mut GraphScratch,
+    schedule: &mut ScheduleScratch,
 ) where
     A: SchedulerAdapter,
 {
@@ -335,7 +347,7 @@ fn record_block_permutation<A>(
 
     let nodes = build_dep_graph_reusing(instructions, start, sched_end, adapter, regs, graph);
     calculate_priorities(nodes);
-    let order = schedule_block(nodes);
+    let (order, _) = schedule_block_reusing(nodes, schedule);
 
     for (new_offset, &old_offset) in order.iter().enumerate() {
         destination[start + old_offset] = start + new_offset;
@@ -570,6 +582,7 @@ pub(crate) fn calculate_priorities(nodes: &mut [SchedNode]) {
 }
 
 /// Schedule instructions within a basic block using list scheduling.
+#[cfg(test)]
 pub(crate) fn schedule_block(nodes: &[SchedNode]) -> Vec<usize> {
     schedule_block_with_work(nodes).0
 }
@@ -610,19 +623,33 @@ impl ScheduleWork {
     }
 }
 
+#[cfg(test)]
 fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
+    let mut scratch = ScheduleScratch::default();
+    let (scheduled, work) = schedule_block_reusing(nodes, &mut scratch);
+    (scheduled.to_vec(), work)
+}
+
+fn schedule_block_reusing<'a>(
+    nodes: &[SchedNode],
+    scratch: &'a mut ScheduleScratch,
+) -> (&'a [usize], ScheduleWork) {
+    scratch.scheduled.clear();
+    scratch.remaining_deps.clear();
+    scratch
+        .remaining_deps
+        .extend(nodes.iter().map(|node| node.deps.len()));
+    scratch.ready.clear();
+
     if nodes.is_empty() {
-        return (Vec::new(), ScheduleWork::default());
+        return (&scratch.scheduled, ScheduleWork::default());
     }
 
-    let mut scheduled = Vec::with_capacity(nodes.len());
-    let mut remaining_deps = nodes.iter().map(|node| node.deps.len()).collect::<Vec<_>>();
-    let mut ready: BinaryHeap<ReadyInst> = BinaryHeap::new();
     let mut work = ScheduleWork::default();
 
     for (idx, node) in nodes.iter().enumerate() {
-        if remaining_deps[idx] == 0 {
-            ready.push(ReadyInst {
+        if scratch.remaining_deps[idx] == 0 {
+            scratch.ready.push(ReadyInst {
                 priority: node.priority,
                 idx,
             });
@@ -630,15 +657,15 @@ fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
         }
     }
 
-    while let Some(ReadyInst { idx, .. }) = ready.pop() {
+    while let Some(ReadyInst { idx, .. }) = scratch.ready.pop() {
         work.ready_heap_popped();
-        scheduled.push(idx);
+        scratch.scheduled.push(idx);
 
         for &user in &nodes[idx].users {
-            remaining_deps[user] -= 1;
+            scratch.remaining_deps[user] -= 1;
             work.dependency_edge_completed();
-            if remaining_deps[user] == 0 {
-                ready.push(ReadyInst {
+            if scratch.remaining_deps[user] == 0 {
+                scratch.ready.push(ReadyInst {
                     priority: nodes[user].priority,
                     idx: user,
                 });
@@ -647,7 +674,7 @@ fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
         }
     }
 
-    (scheduled, work)
+    (&scratch.scheduled, work)
 }
 
 #[cfg(test)]
@@ -871,6 +898,37 @@ mod tests {
             build_dep_graph_reusing(&instructions, 4, 6, &TestAdapter, &mut tracker, &mut graph);
         assert_eq!(repeated[0].users.as_slice(), [1]);
         assert_eq!(repeated[1].deps.as_slice(), [0]);
+    }
+
+    #[test]
+    fn reused_schedule_scratch_discards_previous_block_state() {
+        let mut first = vec![SchedNode::new(1), SchedNode::new(2), SchedNode::new(3)];
+        calculate_priorities(&mut first);
+        let mut scratch = ScheduleScratch::default();
+
+        let (first_order, _) = schedule_block_reusing(&first, &mut scratch);
+        assert_eq!(first_order, [2, 1, 0]);
+        let retained_capacities = (
+            scratch.scheduled.capacity(),
+            scratch.remaining_deps.capacity(),
+            scratch.ready.capacity(),
+        );
+
+        let mut second = vec![SchedNode::new(1), SchedNode::new(1)];
+        let mut last_edge_target = vec![usize::MAX; second.len()];
+        add_edge(&mut second, &mut last_edge_target, 0, 1);
+        calculate_priorities(&mut second);
+        let (second_order, _) = schedule_block_reusing(&second, &mut scratch);
+
+        assert_eq!(second_order, [0, 1]);
+        assert_eq!(
+            retained_capacities,
+            (
+                scratch.scheduled.capacity(),
+                scratch.remaining_deps.capacity(),
+                scratch.ready.capacity(),
+            )
+        );
     }
 
     #[test]
