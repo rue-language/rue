@@ -1201,6 +1201,25 @@ paired MAD and an outlier-sensitive -11.27% to +6.36% range. Median peak RSS is
 unchanged at -0.03 MiB paired. Every published compiler-work counter and
 emitted executable byte remains identical.
 
+RUE-1422 derives four validation totals from their independent outcome
+counters instead of storing and updating duplicate task-local atomics.
+`traversals`, `node_visits`, `memo_misses`, and `registry_probes` remain public
+and byte-identical; snapshot and transfer compute their exact sums with
+saturating arithmetic. An outcome guard records successful, dirty, error, and
+unwind exits exactly once, so every started traversal still contributes one
+outcome. This removes four atomic fields (32 bytes) from every task accumulator
+and 1,116,430 redundant atomic updates from the fixed cold Lattice build:
+154,956 traversal totals, 614,202 node-visit totals, 55,737 memo-miss totals,
+154,244 successful-root registry totals, and 137,291 non-empty dependency-batch
+registry totals.
+
+Four paired allocation probes are allocation-count neutral and save
+2.90--3.11 MiB of requested bytes. Sixteen balanced alternating ordinary-
+release pairs are clock-neutral at a -0.45% paired median, with 1.90% paired
+MAD; median peak RSS falls 2.26 MiB and retired instructions fall 0.08%.
+Every published compiler-work counter and emitted executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
