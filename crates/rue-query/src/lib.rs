@@ -8075,7 +8075,10 @@ struct BatchValidationAuthorityState {
 
 #[derive(Default)]
 struct BatchValidationLeases {
-    observed: BTreeSet<(u64, u64, Revision)>,
+    /// Exact terminal identities have runtime-assigned numeric components and
+    /// no observable order. Match task-local lease deduplication instead of
+    /// paying ordered-tree insertion for every completed batch child.
+    observed: AHashSet<(u64, u64, Revision)>,
     held: Vec<Box<dyn ObservedLease>>,
 }
 

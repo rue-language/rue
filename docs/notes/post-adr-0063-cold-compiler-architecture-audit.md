@@ -1760,6 +1760,19 @@ RSS at +0.6267% (0.4606% MAD), and peak footprint at +0.2693% (1.5085% MAD).
 Every compiler-work counter, source/output metric, and executable byte remains
 identical.
 
+RUE-1463 makes structured-batch validation leases use unordered exact-identity
+membership, matching ordinary task leases. The identity components are assigned
+by the runtime and no consumer observes their order, so the previous tree paid
+ordered comparisons solely as an implementation accident. Across 16 balanced
+fixed one-worker cold Lattice pairs, retired instructions improve by 0.1030%
+(0.0690% MAD); end-to-end clock is neutral at -0.8874% (2.6105% MAD), cycles at
+-0.5005% (1.2074% MAD), peak RSS at -0.7588% (1.0378% MAD), and peak footprint
+at -1.1603% (1.2188% MAD). Four allocation-accounted pairs remove 890--1,292
+allocation calls while hash-table capacity adds 6.57--6.75 MB of cumulative
+requested bytes (0.28% of the run); the peak-memory comparisons above remain
+neutral. Every compiler-work counter, source/output metric, and executable byte
+remains identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
