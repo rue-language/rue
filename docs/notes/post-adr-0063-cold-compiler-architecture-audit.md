@@ -995,6 +995,23 @@ paired MAD and a -20.15% to +8.39% range on the loaded host. Median peak RSS
 falls by 0.41 MiB within dispersion. Every published compiler-work counter and
 emitted executable byte remains identical.
 
+RUE-1397 narrows the remaining durable-key comparison leaf in body-local
+semantic materialization. `SemanticImportEpoch` already sorts exact nominal
+and callable facts before assigning local IDs, but then stored those two
+stable-to-local joins in ordered trees used only for lookup. Independently
+keyed, pre-sized AHash maps now provide expected constant-time joins; sorted
+input remains the sole authority for deterministic local ID and symbol order.
+Small builtin/module registries and compact reverse joins remain unchanged.
+
+Three fixed one-worker allocation probes save 4,582--4,994 calls and
+1.55--1.79 MiB of requested bytes. Sixteen balanced alternating
+ordinary-release pairs are clock-neutral at a +0.50% paired median, with 3.31%
+paired MAD and a -18.33% to +11.91% range on the loaded host. Median peak RSS
+falls by 6.54 MiB, within dispersion. Across three follow-up profiles,
+`StableDefinitionKey::cmp` falls from 17/17/8 top-of-stack samples to 5/0/0.
+Every published compiler-work counter and emitted executable byte remains
+identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
