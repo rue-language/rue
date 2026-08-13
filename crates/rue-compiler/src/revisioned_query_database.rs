@@ -766,6 +766,7 @@ pub(crate) struct ProviderObservationCounters {
     function_materializations: std::sync::atomic::AtomicU64,
     method_materializations: std::sync::atomic::AtomicU64,
     nominal_materialization_reuses: std::sync::atomic::AtomicU64,
+    function_materialization_reuses: std::sync::atomic::AtomicU64,
     anonymous_facts: std::sync::atomic::AtomicU64,
     producer_facts: std::sync::atomic::AtomicU64,
     toolchain_facts: std::sync::atomic::AtomicU64,
@@ -836,6 +837,7 @@ impl ProviderObservationCounters {
             function_materializations,
             method_materializations,
             nominal_materialization_reuses: self.nominal_materialization_reuses.load(Relaxed),
+            function_materialization_reuses: self.function_materialization_reuses.load(Relaxed),
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
             toolchain_facts: self.toolchain_facts.load(Relaxed),
@@ -21444,23 +21446,27 @@ impl CanonicalAnonymousNominalRegistry {
     }
 }
 
+#[derive(Default)]
+struct BodyDurablePayloadCache {
+    /// One body transaction can ask for the same canonical declaration payload
+    /// through type minting, endpoint installation, and export. Keep the exact
+    /// provider result once per durable key so those consumers share immutable
+    /// signature payloads instead of rebuilding their candidate projection.
+    named_nominals: AHashMap<
+        crate::StableDefinitionKey,
+        rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>,
+    >,
+    named_functions: AHashMap<
+        crate::StableDefinitionKey,
+        rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>,
+    >,
+}
+
 #[derive(Clone)]
 pub(crate) struct CompilerBodyDurableSource<'a> {
     provider: &'a CompilerBodyFactProvider<'a>,
     dynamic_anonymous: Rc<std::cell::RefCell<CanonicalAnonymousNominalRegistry>>,
-    /// One body transaction can ask for the same canonically shared nominal
-    /// payload through type minting, endpoint installation, and export. Keep
-    /// the exact provider result once per durable key so those consumers share
-    /// the same immutable field/variant Arcs instead of rebuilding the
-    /// candidate and signature projection.
-    named_nominals: Rc<
-        std::cell::RefCell<
-            AHashMap<
-                crate::StableDefinitionKey,
-                rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>,
-            >,
-        >,
-    >,
+    durable_payloads: Rc<std::cell::RefCell<BodyDurablePayloadCache>>,
     source_paths: Rc<std::cell::RefCell<HashMap<crate::FileId, Arc<str>>>>,
     source_locators: Rc<std::cell::RefCell<HashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
@@ -21488,7 +21494,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
         Self {
             provider,
             dynamic_anonymous: Rc::new(std::cell::RefCell::new(dynamic_anonymous)),
-            named_nominals: Rc::new(std::cell::RefCell::new(AHashMap::new())),
+            durable_payloads: Rc::new(std::cell::RefCell::new(BodyDurablePayloadCache::default())),
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
         }
@@ -22279,7 +22285,13 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
         &self,
         key: &crate::StableDefinitionKey,
     ) -> Option<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>> {
-        if let Some(nominal) = self.named_nominals.borrow().get(key).cloned() {
+        if let Some(nominal) = self
+            .durable_payloads
+            .borrow()
+            .named_nominals
+            .get(key)
+            .cloned()
+        {
             self.provider
                 .meter()
                 .nominal_materialization_reuses
@@ -22339,8 +22351,9 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             ),
             body,
         };
-        self.named_nominals
+        self.durable_payloads
             .borrow_mut()
+            .named_nominals
             .insert(key.clone(), nominal.clone());
         Some(nominal)
     }
@@ -22353,6 +22366,19 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         &self,
         key: &crate::StableDefinitionKey,
     ) -> Option<rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>> {
+        if let Some(function) = self
+            .durable_payloads
+            .borrow()
+            .named_functions
+            .get(key)
+            .cloned()
+        {
+            self.provider
+                .meter()
+                .function_materialization_reuses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(function);
+        }
         self.provider
             .meter()
             .function_materializations
@@ -22373,14 +22399,19 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         if key.kind().requires_owner() {
             return None;
         }
-        Some(rue_air::DurableFunction {
+        let function = rue_air::DurableFunction {
             parameters,
             result,
             type_syntax,
             is_public: candidate.identity.is_public,
             is_unchecked,
             is_extern,
-        })
+        };
+        self.durable_payloads
+            .borrow_mut()
+            .named_functions
+            .insert(key.clone(), function.clone());
+        Some(function)
     }
 
     fn method(

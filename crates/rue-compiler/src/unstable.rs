@@ -263,6 +263,9 @@ pub struct ProviderObservationMetrics {
     /// Named nominal materialization requests satisfied by the body
     /// transaction's exact durable-payload cache.
     pub nominal_materialization_reuses: u64,
+    /// Free-function materialization requests satisfied by the body
+    /// transaction's exact durable-payload cache.
+    pub function_materialization_reuses: u64,
     /// Anonymous-nominal fact observations.
     pub anonymous_facts: u64,
     /// Producer-body fact observations.
