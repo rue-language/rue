@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 22;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 23;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,6 +201,9 @@ pub struct CompilerWork {
     pub semantic_provider: SemanticProviderWork,
     /// Work performed while discovering and scheduling reachable bodies.
     pub semantic_reachability: SemanticReachabilityWork,
+    /// Exact body-lowering and inference-precompute structural attribution.
+    #[serde(default)]
+    pub semantic_body_structure: SemanticBodyStructureWork,
     /// Request-local lookup preparation for exact CFG materialization facts.
     pub cfg_materialization: CfgMaterializationWork,
     /// Stable-type scans and registered prerequisite requests for CFG bodies.
@@ -214,6 +217,40 @@ pub struct CompilerWork {
     pub cfg_local_epoch: CfgLocalEpochWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
+}
+
+/// Deterministic structural work behind successful body lowerings and
+/// inference precompute. `body_lowerings` is the success denominator for every
+/// body-lowering work field; failed or recovered attempts publish no bundle and
+/// therefore contribute no structural result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticBodyStructureWork {
+    pub body_lowerings: u64,
+    pub source_bytes: u64,
+    pub declaration_fragments: u64,
+    pub rir_instructions: u64,
+    pub rir_payload_words: u64,
+    pub index_builds: u64,
+    pub index_rir_instructions_visited: u64,
+    pub index_method_references_visited: u64,
+    pub index_shell_declarations_visited: u64,
+    pub index_named_methods_indexed: u64,
+    pub index_const_declarations_indexed: u64,
+    pub precompute_bodies: u64,
+    pub precompute_alias_nodes_visited: u64,
+    pub precompute_alias_block_statements: u64,
+    pub precompute_alias_allocations_examined: u64,
+    pub precompute_alias_filter_accepts: u64,
+    pub precompute_alias_filter_skips: u64,
+    pub precompute_alias_eval_attempts: u64,
+    pub precompute_alias_type_successes: u64,
+    pub precompute_inline_scan_pops: u64,
+    pub precompute_inline_scan_child_edges: u64,
+    pub precompute_inline_raw_candidates: u64,
+    pub precompute_inline_final_candidates: u64,
+    pub precompute_inline_eval_attempts: u64,
+    pub precompute_inline_type_successes: u64,
 }
 
 /// Deterministic provider operations performed by semantic body analysis.
@@ -522,11 +559,16 @@ question = "small maintained compiler frontend"
         let object = encoded.as_object_mut().unwrap();
         object.remove("cfg_prerequisites");
         object.remove("cfg_retained_charge");
+        object.remove("semantic_body_structure");
         let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.cfg_prerequisites, CfgPrerequisiteWork::default());
         assert_eq!(
             decoded.cfg_retained_charge,
             CfgRetainedChargeWork::default()
+        );
+        assert_eq!(
+            decoded.semantic_body_structure,
+            SemanticBodyStructureWork::default()
         );
     }
 

@@ -11,6 +11,9 @@ use std::time::Instant;
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct InferenceBreakdown {
     pub(crate) precompute_ns: u64,
+    pub(crate) precompute_structural_ns: u64,
+    pub(crate) precompute_eval_provider_ns: u64,
+    pub(crate) precompute_work: super::super::comptime_eval::ComptimePrecomputeAttribution,
     pub(crate) constraint_generation_ns: u64,
     pub(crate) unification_resolution_ns: u64,
 }
@@ -55,8 +58,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .iter()
             .filter_map(|(name, _, _, is_comptime)| (!is_comptime).then_some(*name))
             .collect();
-        let comptime_local_bindings =
-            self.precompute_comptime_type_locals(body, type_subst, value_subst, &runtime_params);
+        let precompute_attribution_enabled = tracing::enabled!(
+            target: "rue::timing",
+            tracing::Level::INFO
+        );
+        let (comptime_local_bindings, mut precompute_work) = self.precompute_comptime_type_locals(
+            body,
+            type_subst,
+            value_subst,
+            &runtime_params,
+            precompute_attribution_enabled,
+        );
 
         // The inline-head pre-reduction below evaluates head expressions
         // without walking the body, so it can't replay lexical scope; give it
@@ -88,13 +100,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // constrained and an integer payload literal defaulted to `i32`
         // (RUE-599). Runs before the lazy-method collection below so methods
         // registered while reducing a head are included in it.
-        let inline_ctor_head_types = self.precompute_inline_ctor_head_types(
+        let (inline_ctor_head_types, inline_work) = self.precompute_inline_ctor_head_types(
             body,
             type_subst,
             value_subst,
             &comptime_local_types,
+            precompute_attribution_enabled,
         );
+        precompute_work.accrue(inline_work);
         let precompute_ns = elapsed_ns(precompute_started);
+        let precompute_eval_provider_ns = precompute_work.eval_provider_ns.min(precompute_ns);
+        let precompute_structural_ns = precompute_ns - precompute_eval_provider_ns;
 
         // Demand-population provider for the inference-context families
         // (RUE-1091 slice r5b). It materializes each consulted function/method
@@ -359,6 +375,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             resolved_types,
             InferenceBreakdown {
                 precompute_ns,
+                precompute_structural_ns,
+                precompute_eval_provider_ns,
+                precompute_work,
                 constraint_generation_ns,
                 unification_resolution_ns,
             },

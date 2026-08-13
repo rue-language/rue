@@ -1072,6 +1072,18 @@ fn compiler_critical_path_evidence(
         semantic_body_closure: timing.pass_duration_distribution("body_closure_collection"),
         semantic_body_graph_projection: timing.pass_duration_distribution("body_graph_projection"),
         semantic_body_input_lowering: timing.pass_duration_distribution("body_input_lowering"),
+        semantic_body_input_attributed_total: timing
+            .pass_duration_distribution("semantic_body_input_attributed_total"),
+        semantic_body_input_assembly_snapshot: timing
+            .pass_duration_distribution("semantic_body_input_assembly_snapshot"),
+        semantic_body_input_lex_parse: timing
+            .pass_duration_distribution("semantic_body_input_lex_parse"),
+        semantic_body_input_rir_lower: timing
+            .pass_duration_distribution("semantic_body_input_rir_lower"),
+        semantic_body_input_span_remap_validation: timing
+            .pass_duration_distribution("semantic_body_input_span_remap_validation"),
+        semantic_body_input_rir_index: timing
+            .pass_duration_distribution("semantic_body_input_rir_index"),
         semantic_provider_analysis: timing.pass_duration_distribution("semantic_provider_analysis"),
         semantic_provider_host_setup: timing
             .pass_duration_distribution("semantic_provider_host_setup"),
@@ -1080,6 +1092,10 @@ fn compiler_critical_path_evidence(
         semantic_expression_setup: timing.pass_duration_distribution("semantic_expression_setup"),
         semantic_inference_precompute: timing
             .pass_duration_distribution("semantic_inference_precompute"),
+        semantic_inference_precompute_structural: timing
+            .pass_duration_distribution("semantic_inference_precompute_structural"),
+        semantic_inference_precompute_eval_provider: timing
+            .pass_duration_distribution("semantic_inference_precompute_eval_provider"),
         semantic_constraint_generation: timing
             .pass_duration_distribution("semantic_constraint_generation"),
         semantic_unification_resolution: timing
@@ -1163,6 +1179,7 @@ fn benchmark_compiler_work(
             transactions_prefetched: reachability.transactions_prefetched,
             transactions_serial: reachability.transactions_serial,
         },
+        semantic_body_structure: rue_perf_schema::SemanticBodyStructureWork::default(),
         cfg_materialization: rue_perf_schema::CfgMaterializationWork {
             index_builds: metrics.semantic.cfg.materialization_index_builds as u64,
             declarations_scanned: metrics.semantic.cfg.materialization_declarations_scanned as u64,
@@ -1273,6 +1290,42 @@ fn benchmark_compiler_work(
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
         },
+    }
+}
+
+fn benchmark_semantic_body_structure(
+    timing: &timing::TimingData,
+) -> rue_perf_schema::SemanticBodyStructureWork {
+    rue_perf_schema::SemanticBodyStructureWork {
+        body_lowerings: timing.counter_total("body_lowerings"),
+        source_bytes: timing.counter_total("source_bytes"),
+        declaration_fragments: timing.counter_total("declaration_fragments"),
+        rir_instructions: timing.counter_total("rir_instructions"),
+        rir_payload_words: timing.counter_total("rir_payload_words"),
+        index_builds: timing.counter_total("index_builds"),
+        index_rir_instructions_visited: timing.counter_total("index_rir_instructions_visited"),
+        index_method_references_visited: timing.counter_total("index_method_references_visited"),
+        index_shell_declarations_visited: timing.counter_total("index_shell_declarations_visited"),
+        index_named_methods_indexed: timing.counter_total("index_named_methods_indexed"),
+        index_const_declarations_indexed: timing.counter_total("index_const_declarations_indexed"),
+        precompute_bodies: timing.counter_total("precompute_bodies"),
+        precompute_alias_nodes_visited: timing.counter_total("precompute_alias_nodes_visited"),
+        precompute_alias_block_statements: timing
+            .counter_total("precompute_alias_block_statements"),
+        precompute_alias_allocations_examined: timing
+            .counter_total("precompute_alias_allocations_examined"),
+        precompute_alias_filter_accepts: timing.counter_total("precompute_alias_filter_accepts"),
+        precompute_alias_filter_skips: timing.counter_total("precompute_alias_filter_skips"),
+        precompute_alias_eval_attempts: timing.counter_total("precompute_alias_eval_attempts"),
+        precompute_alias_type_successes: timing.counter_total("precompute_alias_type_successes"),
+        precompute_inline_scan_pops: timing.counter_total("precompute_inline_scan_pops"),
+        precompute_inline_scan_child_edges: timing
+            .counter_total("precompute_inline_scan_child_edges"),
+        precompute_inline_raw_candidates: timing.counter_total("precompute_inline_raw_candidates"),
+        precompute_inline_final_candidates: timing
+            .counter_total("precompute_inline_final_candidates"),
+        precompute_inline_eval_attempts: timing.counter_total("precompute_inline_eval_attempts"),
+        precompute_inline_type_successes: timing.counter_total("precompute_inline_type_successes"),
     }
 }
 
@@ -1783,7 +1836,13 @@ fn main() {
                         functions: source_stats.semantic.cfg.functions_considered,
                     }
                 }),
-                benchmark_metrics.map(benchmark_compiler_work),
+                benchmark_metrics.and_then(|metrics| {
+                    timing_data.as_ref().map(|timing| {
+                        let mut work = benchmark_compiler_work(metrics);
+                        work.semantic_body_structure = benchmark_semantic_body_structure(timing);
+                        work
+                    })
+                }),
                 benchmark_emitted_output.as_deref(),
                 compiler_boundary.as_ref(),
                 critical_path.as_ref(),

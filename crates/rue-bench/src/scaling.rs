@@ -605,7 +605,7 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n### Provider analysis detail\n\n");
-    out.push_str("These five adjacent intervals explain most of provider-backed body analysis. Small gaps remain for branch dispatch and timer boundaries, so the rows are diagnostic rather than an exact partition of the enclosing provider interval.\n\n");
+    out.push_str("These five intervals are published only for successful provider analyses and share that success denominator; the enclosing provider-analysis span counts all attempts, including ordinary semantic failures. Small gaps remain for branch dispatch and timer boundaries, so the rows are diagnostic rather than an exact partition of the enclosing provider interval.\n\n");
     out.push_str("| workload / workers | host setup total/max ms | expression engine total/max ms | specialization selection total/max ms | body export total/max ms | result projection total/max ms |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
@@ -643,8 +643,74 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n### Body structural-plan attribution\n\n");
+    out.push_str("The five lowering intervals are adjacent and partition the attributed lowering total for successfully produced body bundles; the enclosing body-input span counts all attempts, including failures recovered by ordinary semantic analysis. The two precompute intervals partition inference precompute. The existing inclusive body-lowering/provider spans remain separate explanatory parents.\n\n");
+    out.push_str("| workload / workers | assembly/snapshot ms | lex/parse ms | RIR lower ms | span remap/validation ms | BodyRirIndex ms | precompute structural ms | precompute eval/provider ms |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let total = |select: fn(&CompilerCriticalPathEvidence) -> &DurationDistribution| {
+            summarize(evidence.clone().map(|value| select(&value).total_ns))
+        };
+        let assembly = total(|value| &value.semantic_body_input_assembly_snapshot);
+        let parse = total(|value| &value.semantic_body_input_lex_parse);
+        let rir = total(|value| &value.semantic_body_input_rir_lower);
+        let remap = total(|value| &value.semantic_body_input_span_remap_validation);
+        let index = total(|value| &value.semantic_body_input_rir_index);
+        let structural = total(|value| &value.semantic_inference_precompute_structural);
+        let eval = total(|value| &value.semantic_inference_precompute_eval_provider);
+        out.push_str(&format!(
+            "| {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |\n",
+            observation_label(observation),
+            assembly.median as f64 / 1_000_000.0,
+            parse.median as f64 / 1_000_000.0,
+            rir.median as f64 / 1_000_000.0,
+            remap.median as f64 / 1_000_000.0,
+            index.median as f64 / 1_000_000.0,
+            structural.median as f64 / 1_000_000.0,
+            eval.median as f64 / 1_000_000.0,
+        ));
+    }
+
+    out.push_str("\nExact one-worker structural totals used to decide whether immutable body plans merit a prototype:\n\n");
+    out.push_str("| workload | successful lowerings / attempts | source bytes | RIR inst/payload | index builds/inst visits/shell visits | alias nodes/evals | inline pops/edges/evals |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.semantic_body_structure;
+        let lowering_attempts = observation
+            .samples
+            .first()
+            .and_then(|sample| sample.boundary_evidence.first())
+            .map_or(0, |evidence| {
+                evidence.critical_path.semantic_body_input_lowering.count
+            });
+        out.push_str(&format!(
+            "| {} | {}/{} | {} | {}/{} | {}/{}/{} | {}/{} | {}/{}/{} |\n",
+            observation.workload,
+            work.body_lowerings,
+            lowering_attempts,
+            work.source_bytes,
+            work.rir_instructions,
+            work.rir_payload_words,
+            work.index_builds,
+            work.index_rir_instructions_visited,
+            work.index_shell_declarations_visited,
+            work.precompute_alias_nodes_visited,
+            work.precompute_alias_eval_attempts,
+            work.precompute_inline_scan_pops,
+            work.precompute_inline_scan_child_edges,
+            work.precompute_inline_eval_attempts,
+        ));
+    }
+
     out.push_str("\n### Expression engine detail\n\n");
-    out.push_str("These five adjacent intervals partition the successful analysis core inside the enclosing expression-engine interval. They separate body setup, compile-time precomputation, constraint generation, unification/type projection, and AIR emission with its semantic postchecks; provider lookup and dispatch remain in the enclosing interval.\n\n");
+    out.push_str("These five adjacent intervals partition the successful analysis core inside the successful expression-engine denominator. They separate body setup, compile-time precomputation, constraint generation, unification/type projection, and AIR emission with its semantic postchecks; provider lookup and dispatch remain in the enclosing interval.\n\n");
     out.push_str("| workload / workers | setup total/max ms | inference precompute total/max ms | constraint generation total/max ms | unification/resolution total/max ms | AIR emission/validation total/max ms |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
@@ -1128,6 +1194,21 @@ mod tests {
                         transactions_serial: 0,
                         ..Default::default()
                     },
+                    semantic_body_structure: rue_perf_schema::SemanticBodyStructureWork {
+                        body_lowerings: 2,
+                        source_bytes: 101,
+                        rir_instructions: 103,
+                        rir_payload_words: 107,
+                        index_builds: 2,
+                        index_rir_instructions_visited: 109,
+                        index_shell_declarations_visited: 113,
+                        precompute_alias_nodes_visited: 127,
+                        precompute_alias_eval_attempts: 131,
+                        precompute_inline_scan_pops: 137,
+                        precompute_inline_scan_child_edges: 139,
+                        precompute_inline_eval_attempts: 149,
+                        ..Default::default()
+                    },
                     cfg_materialization: rue_perf_schema::CfgMaterializationWork {
                         index_builds: 1,
                         declarations_scanned: 3,
@@ -1236,6 +1317,10 @@ mod tests {
         assert!(rendered.contains("Query display identities"));
         assert!(rendered.contains("bytes/token"));
         assert!(rendered.contains("Expression engine detail"));
+        assert!(rendered.contains("Body structural-plan attribution"));
+        assert!(rendered.contains("assembly/snapshot ms"));
+        assert!(rendered.contains("precompute eval/provider ms"));
+        assert!(rendered.contains("index builds/inst visits/shell visits"));
         assert!(rendered.contains("provider lookup and dispatch remain"));
     }
 
@@ -1245,6 +1330,19 @@ mod tests {
         let encoded = canonical_json(&report).unwrap();
         let decoded: ScalingReport = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn report_schema_revision_participates_in_the_stored_identity() {
+        let report = report();
+        assert_eq!(report.schema_version, SCALING_REPORT_SCHEMA_VERSION);
+
+        let mut previous_schema = report.clone();
+        previous_schema.schema_version -= 1;
+        assert_ne!(
+            content_address(&previous_schema).unwrap(),
+            content_address(&report).unwrap()
+        );
     }
 
     #[test]
