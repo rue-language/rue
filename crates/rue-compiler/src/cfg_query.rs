@@ -934,6 +934,17 @@ fn collect_plan_types(
     output
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CfgConstructionBreakdown {
+    input_preparation_ns: u64,
+    semantic_materialization_ns: u64,
+    domain_prerequisites_ns: u64,
+}
+
+fn elapsed_ns(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 fn materialize_and_build_cfg(
     context: &QueryContext,
     layouts: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
@@ -948,6 +959,7 @@ fn materialize_and_build_cfg(
     >,
     key: &CfgQueryKey,
 ) -> Result<CfgValue, QueryAbort> {
+    let input_preparation_started = std::time::Instant::now();
     let synthesized;
     let (body, body_span, facts) = match &key.semantic_input {
         CfgSemanticInput::Body {
@@ -1027,6 +1039,7 @@ fn materialize_and_build_cfg(
         );
     }
     context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
+    let input_preparation_ns = elapsed_ns(input_preparation_started);
     let materialization_started = std::time::Instant::now();
     let materialized = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => {
@@ -1057,14 +1070,8 @@ fn materialize_and_build_cfg(
             )
         }
     };
-    let materialization_ns =
-        u64::try_from(materialization_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-    tracing::event!(
-        name: "semantic_materialization",
-        target: "rue::timing",
-        tracing::Level::INFO,
-        duration_ns = materialization_ns,
-    );
+    let semantic_materialization_ns = elapsed_ns(materialization_started);
+    let domain_prerequisites_started = std::time::Instant::now();
     let materialized = match materialized {
         Ok(value) => value,
         Err(error) => {
@@ -1140,7 +1147,12 @@ fn materialize_and_build_cfg(
         .collect::<Vec<_>>();
     context.query_registered_batch(type_facts, drop_dependencies.iter().cloned())?;
     context.query_registered_batch(drop_glues, drop_dependencies)?;
-    build_cfg(context, call_abis, key, materialized, domains)
+    let breakdown = CfgConstructionBreakdown {
+        input_preparation_ns,
+        semantic_materialization_ns,
+        domain_prerequisites_ns: elapsed_ns(domain_prerequisites_started),
+    };
+    build_cfg(context, call_abis, key, materialized, domains, breakdown)
 }
 
 /// The published composite-type ceiling was reached while this body's type
@@ -1170,12 +1182,14 @@ fn build_cfg(
     key: &CfgQueryKey,
     materialized: crate::local_semantic_materialization::LocalSemanticMaterialization,
     domains: crate::durable_cfg::CfgDomainProjection,
+    breakdown: CfgConstructionBreakdown,
 ) -> Result<CfgValue, QueryAbort> {
     context.record_work(rue_query::WorkItem::new("cfg.build.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.air.instructions",
         materialized.air.instructions().len() as u64,
     ));
+    let builder_started = std::time::Instant::now();
     let output = rue_cfg::CfgBuilder::build(
         &materialized.air,
         materialized.num_locals,
@@ -1187,6 +1201,8 @@ fn build_cfg(
         materialized.allow_unreachable_code,
         materialized.callable_kind,
     );
+    let cfg_builder_ns = elapsed_ns(builder_started);
+    let publication_started = std::time::Instant::now();
     if !output.errors.is_empty() {
         context.record_work(rue_query::WorkItem::new("cfg.build.failures", 1));
         return Ok(CfgValue::Failure {
@@ -1294,7 +1310,7 @@ fn build_cfg(
         "cfg.retained-interner-utf8-bytes-scanned",
         interner_utf8_bytes,
     ));
-    Ok(CfgValue::Available(Arc::new(CfgRecord {
+    let value = CfgValue::Available(Arc::new(CfgRecord {
         air: Arc::new(materialized.air),
         source_name: materialized.name.into(),
         num_locals: materialized.num_locals,
@@ -1319,7 +1335,19 @@ fn build_cfg(
             .into(),
         implicit_destructor_dependencies_complete: materialized.completeness.is_complete()
             && !output.anonymous_destructor_dependency_incomplete,
-    })))
+    }));
+    let cfg_publication_ns = elapsed_ns(publication_started);
+    tracing::event!(
+        name: "cfg_construction_breakdown",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        input_preparation_ns = breakdown.input_preparation_ns,
+        semantic_materialization_ns = breakdown.semantic_materialization_ns,
+        domain_prerequisites_ns = breakdown.domain_prerequisites_ns,
+        cfg_builder_ns,
+        cfg_publication_ns,
+    );
+    Ok(value)
 }
 
 pub(crate) fn evaluate_optimized_cfg(

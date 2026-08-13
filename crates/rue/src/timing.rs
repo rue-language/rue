@@ -1147,6 +1147,15 @@ struct TimingFlushVisitor(bool);
 #[derive(Default)]
 struct TimingDurationVisitor(Option<u64>);
 
+#[derive(Default)]
+struct CfgConstructionBreakdownVisitor {
+    input_preparation_ns: Option<u64>,
+    semantic_materialization_ns: Option<u64>,
+    domain_prerequisites_ns: Option<u64>,
+    cfg_builder_ns: Option<u64>,
+    cfg_publication_ns: Option<u64>,
+}
+
 impl tracing::field::Visit for TimingFlushVisitor {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "timing_flush" {
@@ -1161,6 +1170,21 @@ impl tracing::field::Visit for TimingDurationVisitor {
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
         if field.name() == "duration_ns" {
             self.0 = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl tracing::field::Visit for CfgConstructionBreakdownVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        match field.name() {
+            "input_preparation_ns" => self.input_preparation_ns = Some(value),
+            "semantic_materialization_ns" => self.semantic_materialization_ns = Some(value),
+            "domain_prerequisites_ns" => self.domain_prerequisites_ns = Some(value),
+            "cfg_builder_ns" => self.cfg_builder_ns = Some(value),
+            "cfg_publication_ns" => self.cfg_publication_ns = Some(value),
+            _ => {}
         }
     }
 
@@ -1226,6 +1250,39 @@ where
                 self.data.flush_local();
                 #[cfg(test)]
                 self.data.record_flush_marker();
+            }
+            return;
+        }
+        if event.metadata().target() == "rue::timing"
+            && event.metadata().name() == "cfg_construction_breakdown"
+        {
+            let mut visitor = CfgConstructionBreakdownVisitor::default();
+            event.record(&mut visitor);
+            let (
+                Some(input_preparation_ns),
+                Some(semantic_materialization_ns),
+                Some(domain_prerequisites_ns),
+                Some(cfg_builder_ns),
+                Some(cfg_publication_ns),
+            ) = (
+                visitor.input_preparation_ns,
+                visitor.semantic_materialization_ns,
+                visitor.domain_prerequisites_ns,
+                visitor.cfg_builder_ns,
+                visitor.cfg_publication_ns,
+            )
+            else {
+                return;
+            };
+            for (name, duration_ns) in [
+                ("cfg_input_preparation", input_preparation_ns),
+                ("semantic_materialization", semantic_materialization_ns),
+                ("cfg_domain_prerequisites", domain_prerequisites_ns),
+                ("cfg_builder", cfg_builder_ns),
+                ("cfg_publication", cfg_publication_ns),
+            ] {
+                self.data
+                    .record_span(name, Duration::from_nanos(duration_ns), false, true);
             }
             return;
         }
@@ -2422,6 +2479,37 @@ mod phase_accounting_tests {
         assert_eq!(distribution.max_ns, 64);
         assert_eq!(distribution.log2_buckets[5], 1);
         assert_eq!(distribution.log2_buckets[6], 1);
+    }
+
+    #[test]
+    fn cfg_breakdown_event_populates_each_bounded_distribution() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(
+                name: "cfg_construction_breakdown",
+                target: "rue::timing",
+                tracing::Level::INFO,
+                input_preparation_ns = 2_u64,
+                semantic_materialization_ns = 4_u64,
+                domain_prerequisites_ns = 8_u64,
+                cfg_builder_ns = 16_u64,
+                cfg_publication_ns = 32_u64,
+            );
+        });
+
+        for (name, expected_ns) in [
+            ("cfg_input_preparation", 2),
+            ("semantic_materialization", 4),
+            ("cfg_domain_prerequisites", 8),
+            ("cfg_builder", 16),
+            ("cfg_publication", 32),
+        ] {
+            let distribution = data.pass_duration_distribution(name);
+            assert_eq!(distribution.count, 1, "{name}");
+            assert_eq!(distribution.total_ns, expected_ns, "{name}");
+            assert_eq!(distribution.max_ns, expected_ns, "{name}");
+        }
     }
 
     #[test]

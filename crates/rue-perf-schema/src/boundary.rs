@@ -376,9 +376,21 @@ pub struct CompilerCriticalPathEvidence {
     /// Inclusive duration of reached-toolchain acquisition inside compiler root.
     pub toolchain_acquisition_ns: u64,
     pub semantic_bodies: DurationDistribution,
+    /// Stable-input preparation before body-local semantic materialization.
+    #[serde(default)]
+    pub cfg_input_preparation_bodies: DurationDistribution,
     /// Fresh body-local semantic epoch construction and body import.
     #[serde(default)]
     pub semantic_materialization_bodies: DurationDistribution,
+    /// Stable-domain projection and layout/drop prerequisite queries.
+    #[serde(default)]
+    pub cfg_domain_prerequisite_bodies: DurationDistribution,
+    /// AIR-to-CFG construction excluding publication and ABI projection.
+    #[serde(default)]
+    pub cfg_builder_bodies: DurationDistribution,
+    /// Runtime-call ABI projection, retained-charge accounting, and publication.
+    #[serde(default)]
+    pub cfg_publication_bodies: DurationDistribution,
     pub cfg_construction_bodies: DurationDistribution,
     pub cfg_optimization_bodies: DurationDistribution,
     /// Contention evidence the runtime can support exactly.
@@ -539,7 +551,11 @@ impl BuildBoundaryEvidence {
 
         let critical = &self.critical_path;
         if !critical.semantic_bodies.validate()
+            || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
+            || !critical.cfg_domain_prerequisite_bodies.validate()
+            || !critical.cfg_builder_bodies.validate()
+            || !critical.cfg_publication_bodies.validate()
             || !critical.cfg_construction_bodies.validate()
             || !critical.cfg_optimization_bodies.validate()
         {
@@ -580,9 +596,21 @@ impl BuildBoundaryEvidence {
         target: &str,
     ) -> Result<(), String> {
         self.validate_against(policy, target)?;
-        if self.critical_path.semantic_materialization_bodies.count == 0 {
+        let critical = &self.critical_path;
+        let breakdown_counts = [
+            critical.cfg_input_preparation_bodies.count,
+            critical.semantic_materialization_bodies.count,
+            critical.cfg_domain_prerequisite_bodies.count,
+            critical.cfg_builder_bodies.count,
+            critical.cfg_publication_bodies.count,
+        ];
+        if critical.cfg_construction_bodies.count == 0
+            || breakdown_counts
+                .iter()
+                .any(|count| *count != critical.cfg_construction_bodies.count)
+        {
             return Err(
-                "compiler omitted semantic-materialization critical-path evidence".to_string(),
+                "compiler omitted or split CFG-construction breakdown evidence".to_string(),
             );
         }
         Ok(())
@@ -664,7 +692,11 @@ mod tests {
                 peak_query_workers: 1,
                 toolchain_acquisition_ns: 1,
                 semantic_bodies: distribution(),
+                cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
+                cfg_domain_prerequisite_bodies: distribution(),
+                cfg_builder_bodies: distribution(),
+                cfg_publication_bodies: distribution(),
                 cfg_construction_bodies: distribution(),
                 cfg_optimization_bodies: distribution(),
                 joins: 0,
@@ -693,16 +725,38 @@ mod tests {
     }
 
     #[test]
-    fn historical_critical_path_evidence_defaults_semantic_materialization() {
+    fn historical_critical_path_evidence_defaults_cfg_breakdown() {
         let mut encoded = serde_json::to_value(evidence()).unwrap();
-        encoded["critical_path"]
-            .as_object_mut()
-            .unwrap()
-            .remove("semantic_materialization_bodies");
+        let critical = encoded["critical_path"].as_object_mut().unwrap();
+        for field in [
+            "cfg_input_preparation_bodies",
+            "semantic_materialization_bodies",
+            "cfg_domain_prerequisite_bodies",
+            "cfg_builder_bodies",
+            "cfg_publication_bodies",
+        ] {
+            critical.remove(field);
+        }
 
         let decoded: BuildBoundaryEvidence = serde_json::from_value(encoded).unwrap();
         assert_eq!(
+            decoded.critical_path.cfg_input_preparation_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
             decoded.critical_path.semantic_materialization_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_domain_prerequisite_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_builder_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_publication_bodies,
             DurationDistribution::default()
         );
         decoded
