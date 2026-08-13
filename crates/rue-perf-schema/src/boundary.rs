@@ -403,6 +403,21 @@ pub struct CompilerCriticalPathEvidence {
     /// Provider-backed semantic analysis after body-fragment lowering.
     #[serde(default)]
     pub semantic_provider_analysis: DurationDistribution,
+    /// Provider-host construction and pre-engine body setup.
+    #[serde(default)]
+    pub semantic_provider_host_setup: DurationDistribution,
+    /// Canonical expression inference and body analysis engine.
+    #[serde(default)]
+    pub semantic_provider_expression_engine: DurationDistribution,
+    /// Post-analysis specialization selection and identity installation.
+    #[serde(default)]
+    pub semantic_provider_specialization_selection: DurationDistribution,
+    /// Projection from analyzed local AIR into the durable semantic body.
+    #[serde(default)]
+    pub semantic_provider_body_export: DurationDistribution,
+    /// Final durable references, tokens, and produced-nominal projection.
+    #[serde(default)]
+    pub semantic_provider_result_projection: DurationDistribution,
     /// Stable-input preparation before body-local semantic materialization.
     #[serde(default)]
     pub cfg_input_preparation_bodies: DurationDistribution,
@@ -596,6 +611,13 @@ impl BuildBoundaryEvidence {
             || !critical.semantic_body_graph_projection.validate()
             || !critical.semantic_body_input_lowering.validate()
             || !critical.semantic_provider_analysis.validate()
+            || !critical.semantic_provider_host_setup.validate()
+            || !critical.semantic_provider_expression_engine.validate()
+            || !critical
+                .semantic_provider_specialization_selection
+                .validate()
+            || !critical.semantic_provider_body_export.validate()
+            || !critical.semantic_provider_result_projection.validate()
             || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_domain_prerequisite_bodies.validate()
@@ -654,6 +676,11 @@ impl BuildBoundaryEvidence {
             || critical.semantic_body_graph_projection.count == 0
             || critical.semantic_body_input_lowering.count == 0
             || critical.semantic_provider_analysis.count == 0
+            || critical.semantic_provider_host_setup.count == 0
+            || critical.semantic_provider_expression_engine.count == 0
+            || critical.semantic_provider_specialization_selection.count == 0
+            || critical.semantic_provider_body_export.count == 0
+            || critical.semantic_provider_result_projection.count == 0
         {
             return Err("compiler omitted semantic critical-path evidence".to_string());
         }
@@ -764,6 +791,11 @@ mod tests {
                 semantic_body_graph_projection: distribution(),
                 semantic_body_input_lowering: distribution(),
                 semantic_provider_analysis: distribution(),
+                semantic_provider_host_setup: distribution(),
+                semantic_provider_expression_engine: distribution(),
+                semantic_provider_specialization_selection: distribution(),
+                semantic_provider_body_export: distribution(),
+                semantic_provider_result_projection: distribution(),
                 cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
                 cfg_domain_prerequisite_bodies: distribution(),
@@ -813,6 +845,11 @@ mod tests {
             "semantic_body_graph_projection",
             "semantic_body_input_lowering",
             "semantic_provider_analysis",
+            "semantic_provider_host_setup",
+            "semantic_provider_expression_engine",
+            "semantic_provider_specialization_selection",
+            "semantic_provider_body_export",
+            "semantic_provider_result_projection",
             "cfg_input_preparation_bodies",
             "semantic_materialization_bodies",
             "cfg_domain_prerequisite_bodies",
@@ -862,6 +899,28 @@ mod tests {
         );
         assert_eq!(
             decoded.critical_path.semantic_provider_analysis,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_provider_host_setup,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_provider_expression_engine,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded
+                .critical_path
+                .semantic_provider_specialization_selection,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_provider_body_export,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_provider_result_projection,
             DurationDistribution::default()
         );
         assert_eq!(

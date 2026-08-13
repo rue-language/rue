@@ -604,6 +604,45 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n### Provider analysis detail\n\n");
+    out.push_str("These five adjacent intervals explain most of provider-backed body analysis. Small gaps remain for branch dispatch and timer boundaries, so the rows are diagnostic rather than an exact partition of the enclosing provider interval.\n\n");
+    out.push_str("| workload / workers | host setup total/max ms | expression engine total/max ms | specialization selection total/max ms | body export total/max ms | result projection total/max ms |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let pair = |select: fn(&CompilerCriticalPathEvidence) -> &DurationDistribution| {
+            (
+                summarize(evidence.clone().map(|value| select(&value).total_ns)),
+                summarize(evidence.clone().map(|value| select(&value).max_ns)),
+            )
+        };
+        let setup = pair(|value| &value.semantic_provider_host_setup);
+        let engine = pair(|value| &value.semantic_provider_expression_engine);
+        let specialization = pair(|value| &value.semantic_provider_specialization_selection);
+        let export = pair(|value| &value.semantic_provider_body_export);
+        let projection = pair(|value| &value.semantic_provider_result_projection);
+        out.push_str(&format!(
+            "| {} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} |\n",
+            observation_label(observation),
+            setup.0.median as f64 / 1_000_000.0,
+            setup.1.median as f64 / 1_000_000.0,
+            engine.0.median as f64 / 1_000_000.0,
+            engine.1.median as f64 / 1_000_000.0,
+            specialization.0.median as f64 / 1_000_000.0,
+            specialization.1.median as f64 / 1_000_000.0,
+            export.0.median as f64 / 1_000_000.0,
+            export.1.median as f64 / 1_000_000.0,
+            projection.0.median as f64 / 1_000_000.0,
+            projection.1.median as f64 / 1_000_000.0,
+        ));
+    }
+
     out.push_str("\n## Deterministic query work\n\n");
     out.push_str("Counts are exact for one fresh compiler process and must agree across the measured one-worker samples. Parallel scheduling outcomes remain available in each raw boundary proof but are not collapsed into an allegedly deterministic count. Request outcomes expose all query traffic before validation detail: claims start computations, reuses return compatible retained or task-local terminals, and joins share in-flight work. Declined joins are included in joins and identify wait-graph avoidance.\n\n");
     out.push_str("| workload | claims | reuses | joins declined/total | body completions | publications red/green | cancellations/cycles |\n");

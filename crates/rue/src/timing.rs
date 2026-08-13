@@ -1159,6 +1159,15 @@ struct CfgConstructionBreakdownVisitor {
     cfg_publication_ns: Option<u64>,
 }
 
+#[derive(Default)]
+struct SemanticProviderBreakdownVisitor {
+    host_setup_ns: Option<u64>,
+    expression_engine_ns: Option<u64>,
+    specialization_selection_ns: Option<u64>,
+    body_export_ns: Option<u64>,
+    result_projection_ns: Option<u64>,
+}
+
 impl tracing::field::Visit for TimingFlushVisitor {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "timing_flush" {
@@ -1190,6 +1199,21 @@ impl tracing::field::Visit for CfgConstructionBreakdownVisitor {
             "prerequisite_queries_ns" => self.prerequisite_queries_ns = Some(value),
             "cfg_builder_ns" => self.cfg_builder_ns = Some(value),
             "cfg_publication_ns" => self.cfg_publication_ns = Some(value),
+            _ => {}
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl tracing::field::Visit for SemanticProviderBreakdownVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        match field.name() {
+            "host_setup_ns" => self.host_setup_ns = Some(value),
+            "expression_engine_ns" => self.expression_engine_ns = Some(value),
+            "specialization_selection_ns" => self.specialization_selection_ns = Some(value),
+            "body_export_ns" => self.body_export_ns = Some(value),
+            "result_projection_ns" => self.result_projection_ns = Some(value),
             _ => {}
         }
     }
@@ -1295,6 +1319,42 @@ where
                 ("cfg_prerequisite_queries", prerequisite_queries_ns),
                 ("cfg_builder", cfg_builder_ns),
                 ("cfg_publication", cfg_publication_ns),
+            ] {
+                self.data
+                    .record_span(name, Duration::from_nanos(duration_ns), false, true);
+            }
+            return;
+        }
+        if event.metadata().target() == "rue::timing"
+            && event.metadata().name() == "semantic_provider_breakdown"
+        {
+            let mut visitor = SemanticProviderBreakdownVisitor::default();
+            event.record(&mut visitor);
+            let (
+                Some(host_setup_ns),
+                Some(expression_engine_ns),
+                Some(specialization_selection_ns),
+                Some(body_export_ns),
+                Some(result_projection_ns),
+            ) = (
+                visitor.host_setup_ns,
+                visitor.expression_engine_ns,
+                visitor.specialization_selection_ns,
+                visitor.body_export_ns,
+                visitor.result_projection_ns,
+            )
+            else {
+                return;
+            };
+            for (name, duration_ns) in [
+                ("semantic_provider_host_setup", host_setup_ns),
+                ("semantic_provider_expression_engine", expression_engine_ns),
+                (
+                    "semantic_provider_specialization_selection",
+                    specialization_selection_ns,
+                ),
+                ("semantic_provider_body_export", body_export_ns),
+                ("semantic_provider_result_projection", result_projection_ns),
             ] {
                 self.data
                     .record_span(name, Duration::from_nanos(duration_ns), false, true);
@@ -2559,6 +2619,37 @@ mod phase_accounting_tests {
             ("cfg_prerequisite_queries", 64),
             ("cfg_builder", 128),
             ("cfg_publication", 256),
+        ] {
+            let distribution = data.pass_duration_distribution(name);
+            assert_eq!(distribution.count, 1, "{name}");
+            assert_eq!(distribution.total_ns, expected_ns, "{name}");
+            assert_eq!(distribution.max_ns, expected_ns, "{name}");
+        }
+    }
+
+    #[test]
+    fn semantic_provider_breakdown_event_populates_each_bounded_distribution() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(
+                name: "semantic_provider_breakdown",
+                target: "rue::timing",
+                tracing::Level::INFO,
+                host_setup_ns = 2_u64,
+                expression_engine_ns = 4_u64,
+                specialization_selection_ns = 8_u64,
+                body_export_ns = 16_u64,
+                result_projection_ns = 32_u64,
+            );
+        });
+
+        for (name, expected_ns) in [
+            ("semantic_provider_host_setup", 2),
+            ("semantic_provider_expression_engine", 4),
+            ("semantic_provider_specialization_selection", 8),
+            ("semantic_provider_body_export", 16),
+            ("semantic_provider_result_projection", 32),
         ] {
             let distribution = data.pass_duration_distribution(name);
             assert_eq!(distribution.count, 1, "{name}");

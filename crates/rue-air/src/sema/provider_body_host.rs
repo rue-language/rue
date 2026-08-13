@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
@@ -46,6 +47,29 @@ use crate::{
     DurableConstSource, DurableNominalSource, FunctionInstanceKey, ParamRange, ParamRangeData,
     SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
 };
+
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn publish_provider_body_breakdown(
+    host_setup_ns: u64,
+    expression_engine_ns: u64,
+    specialization_selection_ns: u64,
+    body_export_ns: u64,
+    result_projection_ns: u64,
+) {
+    tracing::event!(
+        name: "semantic_provider_breakdown",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        host_setup_ns,
+        expression_engine_ns,
+        specialization_selection_ns,
+        body_export_ns,
+        result_projection_ns,
+    );
+}
 
 fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spur {
     let mut bytes = [0_u8; 3 + 20];
@@ -4227,6 +4251,7 @@ where
             "provider body RIR does not have one source file".into(),
         ))
     })?;
+    let host_setup_started = Instant::now();
     let mut host = ProviderBodyHost::new(
         provider, source, bundle, key, owner_file, name, owner_kind, owner_name, target, preview,
         well_known,
@@ -4242,6 +4267,8 @@ where
         .cloned()
         .collect::<HashSet<_>>();
     let infer = InferenceContext::new(&host);
+    let host_setup_ns = elapsed_ns(host_setup_started);
+    let expression_engine_started = Instant::now();
     let (analyzed, body_span) = match owner_kind {
         crate::StableDefinitionKind::Function => {
             let info = host
@@ -4451,6 +4478,8 @@ where
             ));
         }
     };
+    let expression_engine_ns = elapsed_ns(expression_engine_started);
+    let specialization_selection_started = Instant::now();
     let (mut function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
     function.ordinary_owner = Some(host.owner);
     let (function, selected_calls, mut referenced_specializations) =
@@ -4472,6 +4501,8 @@ where
             .map(|((symbol, _), instance)| (*symbol, instance.clone())),
     );
     let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+    let body_export_started = Instant::now();
     let export = super::semantic_body_export::export_body(
         &host,
         host.owner,
@@ -4487,6 +4518,8 @@ where
             "provider body export failed: {failure:?}"
         )))
     })?;
+    let body_export_ns = elapsed_ns(body_export_started);
+    let result_projection_started = Instant::now();
     let mut referenced_definitions = referenced_functions
         .iter()
         .filter_map(|symbol| {
@@ -4528,6 +4561,14 @@ where
         )
         .collect();
     let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    let result_projection_ns = elapsed_ns(result_projection_started);
+    publish_provider_body_breakdown(
+        host_setup_ns,
+        expression_engine_ns,
+        specialization_selection_ns,
+        body_export_ns,
+        result_projection_ns,
+    );
     Ok(ProviderOrdinaryBody {
         owner: host.owner,
         export,
@@ -4577,6 +4618,7 @@ where
             "provider anonymous body RIR does not have one source file".into(),
         ))
     })?;
+    let host_setup_started = Instant::now();
     let mut host = ProviderBodyHost::new(
         provider,
         source,
@@ -4871,6 +4913,8 @@ where
         ))
     })?;
     let infer = InferenceContext::new(&host);
+    let host_setup_ns = elapsed_ns(host_setup_started);
+    let expression_engine_started = Instant::now();
     let analyzed = if member.kind == crate::AnonymousMemberKind::Destructor {
         OrdinaryBodyEngine::new(&mut host).analyze_anonymous_destructor(
             &infer,
@@ -4899,6 +4943,8 @@ where
             self_is_mut,
         )?
     };
+    let expression_engine_ns = elapsed_ns(expression_engine_started);
+    let specialization_selection_started = Instant::now();
     let (function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
     let (function, selected_calls, mut referenced_specializations) =
         crate::specialize::select_provider_body_specializations(&mut host, function)?;
@@ -4920,6 +4966,8 @@ where
     );
     let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
     let body_span = host.rir.rir().get(body).span;
+    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+    let body_export_started = Instant::now();
     let export = super::semantic_body_export::export_body(
         &host,
         crate::BodyOwnerToken::new(0, 0),
@@ -4939,6 +4987,8 @@ where
             "provider anonymous body export failed: {failure:?}"
         )))
     })?;
+    let body_export_ns = elapsed_ns(body_export_started);
+    let result_projection_started = Instant::now();
     let produced_anonymous_nominals = host
         .produced_anonymous_nominals(&initial_anonymous_identities)
         .map_err(|failure| {
@@ -4980,6 +5030,14 @@ where
         )
         .collect();
     let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    let result_projection_ns = elapsed_ns(result_projection_started);
+    publish_provider_body_breakdown(
+        host_setup_ns,
+        expression_engine_ns,
+        specialization_selection_ns,
+        body_export_ns,
+        result_projection_ns,
+    );
     Ok(ProviderAnonymousBody {
         export,
         function,
@@ -5023,6 +5081,7 @@ where
             "provider specialized body RIR does not have one source file".into(),
         ))
     })?;
+    let host_setup_started = Instant::now();
     let mut host = ProviderBodyHost::new(
         provider,
         source,
@@ -5084,8 +5143,11 @@ where
             ))
         })?;
     let infer = InferenceContext::new(&host);
+    let host_setup_ns = elapsed_ns(host_setup_started);
+    let expression_engine_started = Instant::now();
     let specialized =
         crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
+    let expression_engine_ns = elapsed_ns(expression_engine_started);
     let body_span = host
         .rir
         .rir()
@@ -5100,6 +5162,7 @@ where
                 .body,
         )
         .span;
+    let specialization_selection_started = Instant::now();
     let (function, selected_calls, referenced_specializations) =
         crate::specialize::select_provider_body_specializations(&mut host, specialized.function)?;
     host.specialized_function_identities.borrow_mut().extend(
@@ -5109,6 +5172,8 @@ where
             .map(|((symbol, _), instance)| (*symbol, instance.clone())),
     );
     let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let specialization_selection_ns = elapsed_ns(specialization_selection_started);
+    let body_export_started = Instant::now();
     let body = super::semantic_body_export::export_body(
         &host,
         host.owner,
@@ -5125,6 +5190,8 @@ where
         )))
     })?
     .body;
+    let body_export_ns = elapsed_ns(body_export_started);
+    let result_projection_started = Instant::now();
     let mut referenced_definitions = specialized
         .referenced_functions
         .iter()
@@ -5174,6 +5241,14 @@ where
         )
         .collect();
     let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    let result_projection_ns = elapsed_ns(result_projection_started);
+    publish_provider_body_breakdown(
+        host_setup_ns,
+        expression_engine_ns,
+        specialization_selection_ns,
+        body_export_ns,
+        result_projection_ns,
+    );
     Ok(ProviderSpecializedBody {
         export,
         function,

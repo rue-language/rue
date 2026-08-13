@@ -102,6 +102,11 @@ distinguishes repeated syntax preparation from the semantic engine without
 changing the canonical computation path. Because the signature aggregate may
 have more than one semantic parent, it is explanatory rather than additive.
 
+The provider-detail table then separates host setup, canonical expression
+analysis, specialization selection, durable body export, and final result
+projection. Those intervals are measured inside the single provider-backed
+body analyzer; they neither introduce nor select a peer semantic path.
+
 The reached-toolchain value is an inclusive host-operation envelope, not an
 exclusive phase. The operation runs the rooted semantic attempt to discover
 whether a trusted module is absent, so its duration overlaps semantic work and
