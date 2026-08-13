@@ -13,6 +13,14 @@ commit count degrades gracefully across quiet weekends while a clock does not.
 Collection legitimately lags trunk by minutes, and a single failed collection
 should not block the repository, so the threshold tolerates both.
 
+Two things can stop, and both are checked here. Points can stop arriving, which
+is what the commit-count rule catches. Points can also keep arriving while the
+headline index they exist to move goes missing — an epoch whose declared
+baseline resolves to nothing publishes a ratio for no workload, so every point
+is plotted and the index is silently absent. That failed openly nowhere: the
+collector succeeded, no run was rejected, and the page simply stopped saying
+whether the compiler is getting slower (RUE-1486).
+
 The series state comes from `rue-bench derive`, never from a status file stored
 alongside the raw records: ADR-0067 keeps everything derived out of the data
 branch, and a stored staleness flag is exactly the kind of value that would
@@ -55,6 +63,43 @@ def newest_plotted(data: dict) -> list[tuple[str, str, str]]:
         if latest is not None:
             newest.append((platform["platform"], latest["commit"], latest["finished_at"]))
     return newest
+
+
+def newest_epochs(data: dict) -> list[tuple[str, dict]]:
+    """Return each platform's live epoch: the one holding its newest point.
+
+    A retired epoch keeps whatever it published and is not the signal anyone
+    reads, so only the epoch still receiving points is held to publishing one.
+    """
+    live = []
+    for platform in data.get("platforms", []):
+        newest = None
+        for epoch in platform.get("epochs", []):
+            for point in epoch.get("points", []):
+                if newest is None or point["finished_at"] > newest[0]:
+                    newest = (point["finished_at"], epoch)
+        if newest is not None:
+            live.append((platform["platform"], newest[1]))
+    return live
+
+
+def unindexed(data: dict) -> list[tuple[str, int, int]]:
+    """Return (platform, epoch, points) for live epochs publishing no index.
+
+    An epoch with no baseline yet is the documented state of one that has just
+    been declared, and it publishes no index by design. An epoch that *has* a
+    baseline and still publishes no index is the failure: the baseline names a
+    run nothing resolves to, so no point carries a ratio and the headline index
+    is absent from a series that otherwise looks healthy.
+    """
+    missing = []
+    for platform, epoch in newest_epochs(data):
+        if not epoch.get("baseline_commit"):
+            continue
+        points = epoch.get("points", [])
+        if points and not any(point.get("index") for point in points):
+            missing.append((platform, epoch.get("epoch"), len(points)))
+    return missing
 
 
 def stalled(
@@ -127,6 +172,35 @@ def report(behind: list[tuple[str, str, int]], max_commits: int) -> str:
     return "\n".join(lines)
 
 
+def report_unindexed(missing: list[tuple[str, int, int]]) -> str:
+    lines = [
+        "The published performance series is collecting but publishes no index.",
+        "",
+    ]
+    for platform, epoch, points in missing:
+        lines.append(
+            f"  {platform}: epoch {epoch} declares a baseline, has {points} "
+            f"plotted point(s), and none of them carries a headline index"
+        )
+    lines += [
+        "",
+        "This is a repository-wide condition and almost certainly not caused by",
+        "this pull request. Points are arriving, so nothing fails on its own:",
+        "the page keeps drawing per-workload series while the one figure that",
+        "answers 'is the compiler getting slower' is quietly absent.",
+        "",
+        "An index needs a baseline that resolves. To resolve it:",
+        "",
+        "  1. Check that the run named by `[epoch.baseline]` in",
+        "     performance/manifest.toml is still stored under that name on",
+        "     performance-data-v1. A record is named by the bytes it was",
+        "     published as; nothing may rename it afterwards.",
+        "  2. Check that the epoch's runs are complete. A headline point",
+        "     publishes only from a run that measured every suite workload.",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -167,6 +241,11 @@ def main() -> int:
 
     if behind:
         print(report(behind, args.max_commits), file=sys.stderr)
+        return 1
+
+    missing = unindexed(data)
+    if missing:
+        print(report_unindexed(missing), file=sys.stderr)
         return 1
 
     for platform, commit, finished_at in plotted:

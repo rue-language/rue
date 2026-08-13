@@ -114,6 +114,104 @@ def test_the_newest_point_spans_epochs() -> None:
     assert stall.newest_plotted(subject)[0][1] == "c" * 40
 
 
+def indexed_epoch(
+    epoch: int,
+    baseline: str | None,
+    indexes: list[float | None],
+    platform: str = "x86_64-linux",
+) -> dict:
+    """One platform holding one epoch whose points carry the given indexes."""
+    return {
+        "platforms": [
+            {
+                "platform": platform,
+                "epochs": [
+                    {
+                        "epoch": epoch,
+                        "baseline_commit": baseline,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": f"2026-08-0{i + 1}T00:00:00Z",
+                                "index": None if value is None else {"latency": value},
+                            }
+                            for i, value in enumerate(indexes)
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_an_epoch_publishing_its_index_is_healthy() -> None:
+    assert stall.unindexed(indexed_epoch(5, "b" * 40, [1.0, 0.98])) == []
+
+
+def test_a_baseline_that_publishes_no_index_is_a_failure() -> None:
+    # Points keep arriving, so the commit-count rule is satisfied while the
+    # figure they exist to move is absent. This is the shape RUE-1475 took.
+    missing = stall.unindexed(indexed_epoch(5, "b" * 40, [None, None, None]))
+    assert missing == [("x86_64-linux", 5, 3)]
+
+
+def test_an_epoch_with_no_baseline_yet_publishes_no_index_by_design() -> None:
+    # The documented state of a freshly declared epoch: it accepts runs before
+    # it can express them as an index. Failing here would make declaring the
+    # next epoch — the remedy for a stall — itself a repository-wide failure.
+    assert stall.unindexed(indexed_epoch(6, None, [None, None])) == []
+
+
+def test_a_retired_epoch_is_not_held_to_publishing_an_index() -> None:
+    # Only the epoch still receiving points is the live signal. An older epoch
+    # keeps whatever it published and must not block the repository forever.
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 4,
+                        "baseline_commit": "b" * 40,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-01T00:00:00Z",
+                                "index": None,
+                            }
+                        ],
+                    },
+                    {
+                        "epoch": 5,
+                        "baseline_commit": "c" * 40,
+                        "points": [
+                            {
+                                "commit": "d" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "index": {"latency": 1.0},
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    assert stall.unindexed(subject) == []
+
+
+def test_a_partial_newest_run_does_not_fail_an_indexed_epoch() -> None:
+    # A partial run publishes no headline point by design. The epoch is still
+    # publishing an index, so the rule is about the epoch, not the last point.
+    assert stall.unindexed(indexed_epoch(5, "b" * 40, [1.0, None])) == []
+
+
+def test_the_unindexed_report_names_the_pin_to_check() -> None:
+    text = stall.report_unindexed([("x86_64-linux", 5, 25)])
+    assert "not caused by" in text
+    assert "epoch.baseline" in text
+    assert "performance/manifest.toml" in text
+
+
 def test_the_report_says_it_is_not_the_authors_fault_and_how_to_fix_it() -> None:
     # There is no bypass, so a pull request author blocked by an unrelated
     # stall must be able to act without reading the issue.

@@ -339,7 +339,12 @@ partial-run failure records), full identity (suite revision, epoch, platform,
 commit, environment fingerprint, timestamps), and the phase accounting for
 every sample. The filename hash is the SHA-256 digest of the canonical
 serialized run object — canonical JSON with sorted keys and integer raw
-values, so hashing involves no floating-point formatting. `index.json` only
+values, so hashing involves no floating-point formatting. That digest is taken
+over the bytes a record was published as, and a reader takes a stored record's
+name from the record rather than re-deriving it: record fields are additive, so
+re-serializing a parsed record names it as today's schema would have written
+it, which renames every record written before the newest field — including
+whichever record an epoch's baseline pins. `index.json` only
 points to run objects and their series. Everything derived — indexes,
 dispersion, chart data, summaries — is rebuilt from raw records at site build
 time and never stored on the data branch: no SVGs, no HTML, no derived JSON.

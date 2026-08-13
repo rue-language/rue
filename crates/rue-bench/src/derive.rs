@@ -20,8 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rue_perf_schema::{
-    Band, Completeness, Manifest, Metric, RunObject, Summary, flags_movement, geometric_mean,
-    median_absolute_deviation, ratio, sample_value, validate_run,
+    Band, Completeness, Manifest, Metric, RunObject, StoredRun, Summary, flags_movement,
+    geometric_mean, median_absolute_deviation, ratio, sample_value, validate_run,
 };
 use serde::Serialize;
 
@@ -200,7 +200,12 @@ pub struct WorkloadPoint {
 }
 
 /// Load every run object referenced by an index.
-pub fn load_data_branch(data_root: &Path) -> Result<Vec<RunObject>, String> {
+///
+/// Each record keeps the name it was published under. Deriving that name here
+/// instead would name records as this build of the schema would have written
+/// them, which is a different name for every record written before the schema's
+/// newest field — including whichever record a manifest baseline pins.
+pub fn load_data_branch(data_root: &Path) -> Result<Vec<StoredRun>, String> {
     let runs_dir = data_root.join("runs");
     if !runs_dir.is_dir() {
         // An empty data branch is the normal first state, not an error. The
@@ -219,15 +224,15 @@ pub fn load_data_branch(data_root: &Path) -> Result<Vec<RunObject>, String> {
         }
         let text = std::fs::read_to_string(&path)
             .map_err(|error| format!("could not read {}: {error}", path.display()))?;
-        let run: RunObject = serde_json::from_str(&text)
+        let stored = StoredRun::read(&text)
             .map_err(|error| format!("could not parse {}: {error}", path.display()))?;
-        runs.push(run);
+        runs.push(stored);
     }
     Ok(runs)
 }
 
 /// Derive the dashboard's view of a set of runs.
-pub fn derive(manifest: &Manifest, runs: &[RunObject]) -> SiteData {
+pub fn derive(manifest: &Manifest, runs: &[StoredRun]) -> SiteData {
     let bands = Band::all()
         .into_iter()
         .map(|band| band.wire_name().to_string())
@@ -249,15 +254,13 @@ pub fn derive(manifest: &Manifest, runs: &[RunObject]) -> SiteData {
     let mut rejected = Vec::new();
     // Group appendable runs by (platform, epoch). An unappendable run is
     // counted as evidence but never enters a series.
-    let mut grouped: BTreeMap<(String, u32), Vec<&RunObject>> = BTreeMap::new();
-    for run in runs {
+    let mut grouped: BTreeMap<(String, u32), Vec<&StoredRun>> = BTreeMap::new();
+    for stored in runs {
+        let run = stored.run();
         let outcome = validate_run(manifest, run);
-        let address = run
-            .content_address()
-            .unwrap_or_else(|_| "<unaddressable>".to_string());
         if !outcome.is_appendable() {
             rejected.push(RejectedRun {
-                run: address,
+                run: stored.address().to_string(),
                 platform: run.identity.platform.clone(),
                 epoch: run.identity.epoch,
                 commit: run.identity.commit.clone(),
@@ -268,17 +271,18 @@ pub fn derive(manifest: &Manifest, runs: &[RunObject]) -> SiteData {
         grouped
             .entry((run.identity.platform.clone(), run.identity.epoch))
             .or_default()
-            .push(run);
+            .push(stored);
     }
 
     let mut platforms: BTreeMap<String, Vec<EpochData>> = BTreeMap::new();
     for ((platform, epoch_id), mut epoch_runs) in grouped {
         // Measurement order, so the trailing window means what it says.
         epoch_runs.sort_by(|left, right| {
-            left.identity
+            left.run()
+                .identity
                 .finished_at
-                .cmp(&right.identity.finished_at)
-                .then_with(|| left.identity.commit.cmp(&right.identity.commit))
+                .cmp(&right.run().identity.finished_at)
+                .then_with(|| left.run().identity.commit.cmp(&right.run().identity.commit))
         });
         let Some(epoch) = manifest.epoch(&platform, epoch_id) else {
             continue;
@@ -311,18 +315,18 @@ fn derive_epoch(
     manifest: &Manifest,
     epoch: &rue_perf_schema::PlatformEpoch,
     suite: &rue_perf_schema::SuiteRevision,
-    runs: &[&RunObject],
+    runs: &[&StoredRun],
 ) -> EpochData {
     // The baseline is the run the epoch names, not "the first one we have":
-    // an attempted or partial run must never define ratio 1.0.
-    let baseline_run = epoch.baseline.as_ref().and_then(|baseline| {
-        runs.iter().find(|run| {
-            run.content_address()
-                .map(|address| address == baseline.run)
-                .unwrap_or(false)
-        })
-    });
-    let baseline_medians = baseline_run.map(|run| workload_medians(run, suite));
+    // an attempted or partial run must never define ratio 1.0. Matched on the
+    // name each record was published under, which is the name the manifest
+    // pins; a name re-derived from the parsed record would drift out from under
+    // the pin every time the schema gained a field.
+    let baseline_run = epoch
+        .baseline
+        .as_ref()
+        .and_then(|baseline| runs.iter().find(|stored| stored.address() == baseline.run));
+    let baseline_medians = baseline_run.map(|stored| workload_medians(stored.run(), suite));
 
     let mut points: Vec<PointData> = Vec::new();
     let mut environment_annotations = Vec::new();
@@ -334,11 +338,10 @@ fn derive_epoch(
     // over the *medians* of prior runs, matching the flagging rule's definition.
     let mut history: BTreeMap<String, Vec<Summary>> = BTreeMap::new();
 
-    for run in runs {
+    for stored in runs {
+        let run = stored.run();
         let outcome = validate_run(manifest, run);
-        let address = run
-            .content_address()
-            .unwrap_or_else(|_| "<unaddressable>".to_string());
+        let address = stored.address().to_string();
         let fingerprint = run
             .identity
             .environment
@@ -780,6 +783,19 @@ window = 3
         }
     }
 
+    /// Records as they would arrive from storage.
+    ///
+    /// Through `StoredRun::read` rather than `minted`, so a fixture is named the
+    /// way the data branch names one: by its published bytes.
+    fn stored(runs: impl IntoIterator<Item = RunObject>) -> Vec<StoredRun> {
+        runs.into_iter()
+            .map(|run| {
+                let text = rue_perf_schema::canonical_json(&run).expect("addressable");
+                StoredRun::read(&text).expect("readable")
+            })
+            .collect()
+    }
+
     fn manifest_with_baseline(runs: &[RunObject]) -> Manifest {
         let address = runs[0].content_address().expect("addressable");
         let commit = runs[0].identity.commit.clone();
@@ -805,7 +821,7 @@ window = 3
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let mut run = run_at("a", "2026-07-28T00:00:00Z", [100, 101, 102]);
         run.identity.pins.toolchain_hash = "drifted".to_string();
-        let data = derive(&manifest, &[run]);
+        let data = derive(&manifest, &stored([run]));
 
         assert!(
             data.platforms.is_empty(),
@@ -825,7 +841,7 @@ window = 3
         let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
         let manifest = manifest_with_baseline(std::slice::from_ref(&base));
         let later = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);
-        let data = derive(&manifest, &[base, later]);
+        let data = derive(&manifest, &stored([base, later]));
 
         let points = &data.platforms[0].epochs[0].points;
         assert_eq!(points.len(), 2);
@@ -842,13 +858,69 @@ window = 3
     }
 
     #[test]
+    fn a_baseline_still_resolves_after_the_record_schema_moves_on() {
+        // RUE-1486. Record fields are additive, so a stored record acquires a
+        // zero-valued field the moment the compiler gains a phase to count. If
+        // the baseline is matched on a name re-derived from the parsed record,
+        // that addition silently unnames the record the manifest pins: the
+        // epoch keeps collecting, every point loses its ratio, and the headline
+        // index disappears with no rejected run and no failed workflow.
+        //
+        // Epoch 5 lost its index this way within hours of declaring a baseline.
+        let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
+        let published = rue_perf_schema::canonical_json(&base).expect("addressable");
+
+        // The record as an older writer stored it, carrying a field this build
+        // of the schema does not write.
+        let mut value: serde_json::Value = serde_json::from_str(&published).unwrap();
+        value["workloads"][0]["samples"][0]
+            .as_object_mut()
+            .unwrap()
+            .insert("boundary_evidence".to_string(), serde_json::json!([]));
+        let as_written = rue_perf_schema::canonical_json(&value).expect("addressable");
+        let stored_base = StoredRun::read(&as_written).expect("readable");
+        assert_ne!(
+            stored_base.address(),
+            stored_base.run().content_address().unwrap(),
+            "the fixture must be a record that does not round-trip"
+        );
+
+        // The manifest pins the name the record was published under, which is
+        // the only name anything else could have written down.
+        let published_address = stored_base.address().to_string();
+        let text = format!(
+            "{MANIFEST}\n[epoch.baseline]\ncommit = \"{}\"\nrun = \"{published_address}\"\n",
+            base.identity.commit,
+        );
+        let manifest = Manifest::parse(&text).expect("fixture manifest");
+
+        let later = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);
+        let mut runs = vec![stored_base];
+        runs.extend(stored([later]));
+        let data = derive(&manifest, &runs);
+
+        let epoch = &data.platforms[0].epochs[0];
+        assert_eq!(epoch.points[0].workloads["startup"].ratio, Some(1.0));
+        assert_eq!(epoch.points[1].workloads["startup"].ratio, Some(1.1));
+        let index = epoch.points[1]
+            .index
+            .as_ref()
+            .expect("the epoch's headline index survives a schema addition");
+        assert!((index["latency"] - 1.1).abs() < 1e-9, "{index:?}");
+
+        // The plotted point names the record as stored, so a reader following
+        // it from the page reaches the file that is actually on the branch.
+        assert_eq!(epoch.points[0].run, published_address);
+    }
+
+    #[test]
     fn a_partial_run_publishes_its_workloads_but_no_headline_point() {
         let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
         let manifest = manifest_with_baseline(std::slice::from_ref(&base));
         let mut partial = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);
         // One sample short of the policy: a partial run, still appendable.
         partial.workloads[0].samples.truncate(2);
-        let data = derive(&manifest, &[base, partial]);
+        let data = derive(&manifest, &stored([base, partial]));
 
         let point = &data.platforms[0].epochs[0].points[1];
         assert!(!point.complete);
@@ -875,7 +947,7 @@ window = 3
             run_at("c", "2026-07-28T02:00:00Z", [100, 100, 100]),
             run_at("d", "2026-07-28T03:00:00Z", [100, 100, 100]),
         ];
-        let data = derive(&manifest, &runs);
+        let data = derive(&manifest, &stored(runs));
         let points = &data.platforms[0].epochs[0].points;
 
         // window = 3, so the first three have no full window behind them.
@@ -905,7 +977,7 @@ window = 3
         // reader has no way to check.
         let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
         let manifest = manifest_with_baseline(std::slice::from_ref(&base));
-        let data = derive(&manifest, &[base]);
+        let data = derive(&manifest, &stored([base]));
         let flagging = &data.platforms[0].epochs[0].flagging;
         assert_eq!(flagging.window, 3);
         assert!((flagging.k - 2.0).abs() < f64::EPSILON);
@@ -923,7 +995,7 @@ window = 3
         let manifest = Manifest::parse(&text).expect("target manifest");
         let data = derive(
             &manifest,
-            &[run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100])],
+            &stored([run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100])]),
         );
         let targets = &data.platforms[0].epochs[0].process_elapsed_targets;
         assert_eq!(targets.len(), 1);
@@ -948,7 +1020,7 @@ window = 3
             base.identity.commit
         );
         let manifest = Manifest::parse(&text).expect("ratcheted manifest");
-        let data = derive(&manifest, &[base]);
+        let data = derive(&manifest, &stored([base]));
         let ratchets = &data.platforms[0].epochs[0].process_elapsed_ratchets;
         assert_eq!(ratchets.len(), 1);
         assert_eq!(ratchets["startup"].baseline_process_elapsed_ns, 101_000_000);
@@ -969,7 +1041,7 @@ window = 3
         for batch in [1u32, 2, 5] {
             let manifest = manifest_for_batch(batch);
             let run = run_at_batched("a", "2026-07-28T00:00:00Z", [100, 130, 170], batch);
-            let data = derive(&manifest, &[run]);
+            let data = derive(&manifest, &stored([run]));
             let point = &data.platforms[0].epochs[0].points[0].workloads["startup"];
             let summed: u64 = point.bands_ns.values().sum();
             assert_eq!(
@@ -987,21 +1059,21 @@ window = 3
         // page shows a total the median contradicts.
         let unbatched = derive(
             &manifest_for_batch(1),
-            &[run_at_batched(
+            &stored([run_at_batched(
                 "a",
                 "2026-07-28T00:00:00Z",
                 [100, 100, 100],
                 1,
-            )],
+            )]),
         );
         let batched = derive(
             &manifest_for_batch(4),
-            &[run_at_batched(
+            &stored([run_at_batched(
                 "a",
                 "2026-07-28T00:00:00Z",
                 [100, 100, 100],
                 4,
-            )],
+            )]),
         );
         let one = &unbatched.platforms[0].epochs[0].points[0].workloads["startup"];
         let four = &batched.platforms[0].epochs[0].points[0].workloads["startup"];
@@ -1017,7 +1089,7 @@ window = 3
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let data = derive(
             &manifest,
-            &[run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100])],
+            &stored([run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100])]),
         );
         let point = &data.platforms[0].epochs[0].points[0].workloads["startup"];
         assert_eq!(point.driver_overhead_ns, 1_000_000);
@@ -1032,7 +1104,7 @@ window = 3
         let mut second = run_at("b", "2026-07-28T01:00:00Z", [100, 100, 100]);
         second.identity.environment = fingerprint("Intel Xeon Platinum 8370C");
 
-        let data = derive(&manifest, &[first, second]);
+        let data = derive(&manifest, &stored([first, second]));
         let annotations = &data.platforms[0].epochs[0].environment_annotations;
         assert_eq!(annotations.len(), 1);
         assert!(
@@ -1051,7 +1123,7 @@ window = 3
         let mut second = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);
         second.identity.pins.stdlib_hash = "a-new-standard-library".to_string();
 
-        let data = derive(&manifest, &[first, second]);
+        let data = derive(&manifest, &stored([first, second]));
 
         assert!(data.rejected.is_empty(), "{:?}", data.rejected);
         let epoch = &data.platforms[0].epochs[0];
@@ -1075,10 +1147,10 @@ window = 3
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let data = derive(
             &manifest,
-            &[
+            &stored([
                 run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]),
                 run_at("b", "2026-07-28T01:00:00Z", [100, 100, 100]),
-            ],
+            ]),
         );
         assert!(
             data.platforms[0].epochs[0].stdlib_annotations.is_empty(),
@@ -1092,7 +1164,7 @@ window = 3
         let manifest = Manifest::parse(MANIFEST).unwrap();
         let late = run_at("b", "2026-07-28T05:00:00Z", [100, 100, 100]);
         let early = run_at("a", "2026-07-28T01:00:00Z", [100, 100, 100]);
-        let data = derive(&manifest, &[late, early]);
+        let data = derive(&manifest, &stored([late, early]));
         let points = &data.platforms[0].epochs[0].points;
         assert!(points[0].finished_at < points[1].finished_at);
     }
@@ -1110,7 +1182,7 @@ window = 3
                 compiler_root_ns: 100,
                 attributed_ns: 600,
             });
-        let data = derive(&manifest, &[run]);
+        let data = derive(&manifest, &stored([run]));
         let point = &data.platforms[0].epochs[0].points[0].workloads["startup"];
         // The surviving two samples are both 100; a median including the
         // invalid one would still be 100, so assert on the band totals instead,
