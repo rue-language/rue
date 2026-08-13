@@ -1144,10 +1144,23 @@ struct SpanMarkerVisitor {
 #[derive(Default)]
 struct TimingFlushVisitor(bool);
 
+#[derive(Default)]
+struct TimingDurationVisitor(Option<u64>);
+
 impl tracing::field::Visit for TimingFlushVisitor {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "timing_flush" {
             self.0 = value;
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl tracing::field::Visit for TimingDurationVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "duration_ns" {
+            self.0 = Some(value);
         }
     }
 
@@ -1206,15 +1219,29 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        if event.metadata().fields().field("timing_flush").is_none() {
+        if event.metadata().fields().field("timing_flush").is_some() {
+            let mut visitor = TimingFlushVisitor::default();
+            event.record(&mut visitor);
+            if visitor.0 {
+                self.data.flush_local();
+                #[cfg(test)]
+                self.data.record_flush_marker();
+            }
             return;
         }
-        let mut visitor = TimingFlushVisitor::default();
-        event.record(&mut visitor);
-        if visitor.0 {
-            self.data.flush_local();
-            #[cfg(test)]
-            self.data.record_flush_marker();
+        if event.metadata().target() == "rue::timing"
+            && event.metadata().fields().field("duration_ns").is_some()
+        {
+            let mut visitor = TimingDurationVisitor::default();
+            event.record(&mut visitor);
+            if let Some(duration_ns) = visitor.0 {
+                self.data.record_span(
+                    event.metadata().name(),
+                    Duration::from_nanos(duration_ns),
+                    false,
+                    true,
+                );
+            }
         }
     }
 
@@ -2368,6 +2395,33 @@ mod phase_accounting_tests {
             1
         );
         assert!(distribution.validate());
+    }
+
+    #[test]
+    fn direct_duration_event_populates_the_bounded_distribution() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(
+                name: "direct_duration",
+                target: "rue::timing",
+                tracing::Level::INFO,
+                duration_ns = 64_u64,
+            );
+            tracing::event!(
+                name: "direct_duration",
+                target: "rue::timing",
+                tracing::Level::INFO,
+                duration_ns = 32_u64,
+            );
+        });
+
+        let distribution = data.pass_duration_distribution("direct_duration");
+        assert_eq!(distribution.count, 2);
+        assert_eq!(distribution.total_ns, 96);
+        assert_eq!(distribution.max_ns, 64);
+        assert_eq!(distribution.log2_buckets[5], 1);
+        assert_eq!(distribution.log2_buckets[6], 1);
     }
 
     #[test]
