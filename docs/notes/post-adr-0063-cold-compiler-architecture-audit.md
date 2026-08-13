@@ -1853,6 +1853,12 @@ workload.
 
 ## Next actions and decision boundary
 
+ADR-0071 Phase 2 extends this general architecture record with the current
+[semantic-to-CFG artifact ledger and ranked repetition findings](adr-0071-phase-2-semantic-cfg-ownership-audit.md).
+That focused review uses the hosted release-quality boundary and supersedes the
+older local-profile diagnosis for choosing the next semantic/CFG change; the
+ownership description above remains current.
+
 Authorized low-risk work:
 
 1. Keep the display-identity counters in cold and retained-session reports so

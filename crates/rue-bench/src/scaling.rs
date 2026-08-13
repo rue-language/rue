@@ -365,8 +365,8 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Worker scaling and critical path\n\n");
-    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms.\n\n");
-    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | toolchain ms | semantic total/max ms | CFG build total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
+    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
+    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | CFG build total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {
@@ -810,6 +810,8 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("Worker scaling and critical path"));
+        assert!(rendered.contains("rooted acquisition envelope ms"));
+        assert!(rendered.contains("must not be added to semantic time"));
         assert!(rendered.contains("joins declined/total"));
         assert!(rendered.contains("| probe | 41 | 43 | 2/47 | 53 | 59/61 | 67/71 |"));
         assert!(rendered.contains("nodes/token"));

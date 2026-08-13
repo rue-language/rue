@@ -68,17 +68,20 @@ Parallelism is useful but not the dominant route to the 250 ms goal:
 - Query-worker utilization falls from 78.8% on one worker to 43.1% across four
   automatic workers. Ready-wait maximum improves from 695.45 to 269.86 ms, but
   the longest producer chain remains ten nodes and total active work rises.
-- Toolchain acquisition remains 1,280.70 ms at one worker and 1,136.40 ms at
-  automatic workers. It sits inside the semantic ownership boundary and is the
-  leading current-source audit target, not linking.
+- The inclusive reached-toolchain acquisition envelope is 1,280.70 ms at one
+  worker and 1,136.40 ms at automatic workers. It wraps the rooted semantic
+  attempt used to discover a park; it is not a separate filesystem/toolchain
+  phase and must not be added to semantic time. Phase 2 audits the semantic
+  work inside that envelope rather than treating its 456 toolchain-fact reads
+  as a 1.1-second I/O bottleneck.
 - Linking is 24.33 ms at one worker and 25.60 ms at automatic workers. It is
   measurable, but cannot explain the multi-second gap.
 - External process time outside compiler root is roughly 220–235 ms for
   Lattice, so process/orchestration cost alone already approaches the final
   250 ms whole-build goal and must be decomposed later.
 
-The next step is therefore the semantic-to-CFG ownership and repetition audit
-in RUE-1474, using the exact work counts and these critical-path observations.
-It should prioritize toolchain/semantic ownership and repeated immutable fact
-observation while preserving body parallelism, fine invalidation, one canonical
-pipeline, and exact output.
+The resulting
+[semantic-to-CFG ownership and repetition audit](adr-0071-phase-2-semantic-cfg-ownership-audit.md)
+uses these exact work counts and critical-path observations. It prioritizes
+semantic ownership and repeated immutable fact materialization while preserving
+body parallelism, fine invalidation, one canonical pipeline, and exact output.
