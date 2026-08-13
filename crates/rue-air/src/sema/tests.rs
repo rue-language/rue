@@ -232,6 +232,96 @@ mod tests {
         assert!(matches!(rir.get(second[0]).data, InstData::Call { .. }));
     }
 
+    #[test]
+    fn comptime_type_alias_filter_keeps_every_type_producing_shape() {
+        let source = r#"
+            fn Make() -> type { struct { value: i32 } }
+            fn main(flag: bool, value: i32) -> i32 {
+                let Direct = i32;
+                let Name = Direct;
+                let Call = Make();
+                let QualifiedCall = module.Make();
+                let QualifiedPath = module.Item;
+                let Struct = struct { value: i32 };
+                let Enum = enum { Some(i32), None };
+                let Wrapped = comptime { i32 };
+                let Block = { let Inner = i32; Inner };
+                let Branch = if flag { i32 } else { i64 };
+                let Match = match value { 0 => i32, _ => i64 };
+                let Array = [i32; 2];
+
+                let Integer = 1;
+                let Boolean = true;
+                let Unit = ();
+                let Arithmetic = value + 1;
+                let Aggregate = [value, 2];
+                0
+            }
+        "#;
+        let (rir, interner) = lower_files(&[(source, FileId::DEFAULT)]);
+        let mut candidates = HashMap::new();
+        for (_, inst) in rir.iter() {
+            if let InstData::Alloc {
+                name: Some(name),
+                init,
+                ..
+            } = inst.data
+            {
+                candidates.insert(
+                    interner.resolve(&name).to_owned(),
+                    crate::sema::comptime_eval::initializer_may_evaluate_to_type(&rir, init),
+                );
+            }
+        }
+
+        for name in [
+            "Direct",
+            "Name",
+            "Call",
+            "QualifiedCall",
+            "QualifiedPath",
+            "Struct",
+            "Enum",
+            "Wrapped",
+            "Block",
+            "Branch",
+            "Match",
+            "Array",
+        ] {
+            assert_eq!(candidates.get(name), Some(&true), "must retain {name}");
+        }
+        for name in ["Integer", "Boolean", "Unit", "Arithmetic", "Aggregate"] {
+            assert_eq!(candidates.get(name), Some(&false), "must skip {name}");
+        }
+    }
+
+    #[test]
+    fn comptime_type_alias_filter_preserves_analysis_and_diagnostics() {
+        compile_to_air(
+            r#"
+                fn Make() -> type { struct { value: i32 } }
+                fn main() -> i32 {
+                    let runtime = 40 + 2;
+                    let Direct = i32;
+                    let Name = Direct;
+                    let Call = Make();
+
+                    let direct: Direct = runtime;
+                    let name: Name = direct;
+                    let call: Call = Call { value: name };
+                    call.value
+                }
+            "#,
+        )
+        .unwrap();
+
+        let errors =
+            compile_to_air("fn main() -> i32 { let runtime = missing + 1; runtime }").unwrap_err();
+        assert!(errors.iter().any(
+            |error| matches!(&error.kind, ErrorKind::UndefinedVariable(name) if name == "missing")
+        ));
+    }
+
     fn authoritative_test_endpoints(
         shells: &[crate::SemanticDeclarationShell],
     ) -> (
