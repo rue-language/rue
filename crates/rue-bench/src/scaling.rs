@@ -576,6 +576,38 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\nSelected body-local semantic inputs expose the aggregate size of the fresh per-body epochs created from those closures. `inputs/selection` is the mean number of selected root facts, not a transitive type-node count.\n\n");
+    out.push_str("| workload | declarations | anonymous nominals | callables | nominal metadata | modules | builtin nominals | required types | inputs/selection |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.cfg_materialization;
+        let selected_inputs = work
+            .declarations_selected
+            .saturating_add(work.anonymous_nominals_selected)
+            .saturating_add(work.callables_selected)
+            .saturating_add(work.nominal_metadata_selected)
+            .saturating_add(work.modules_selected)
+            .saturating_add(work.builtin_nominals_selected)
+            .saturating_add(work.required_types_selected);
+        let inputs_per_selection = if work.fact_selections == 0 {
+            0.0
+        } else {
+            selected_inputs as f64 / work.fact_selections as f64
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.2} |\n",
+            observation.workload,
+            work.declarations_selected,
+            work.anonymous_nominals_selected,
+            work.callables_selected,
+            work.nominal_metadata_selected,
+            work.modules_selected,
+            work.builtin_nominals_selected,
+            work.required_types_selected,
+            inputs_per_selection,
+        ));
+    }
+
     out.push_str("\n## CFG retained-charge bookkeeping\n\n");
     out.push_str("Counts are exact for logical retained-charge walks over body-local symbol tables at publication. They expose memory-policy bookkeeping independently of semantic construction and clock noise.\n\n");
     out.push_str("| workload | interner scans | entries scanned | UTF-8 bytes scanned |\n");
@@ -772,6 +804,13 @@ mod tests {
                         anonymous_nominals_scanned: 1,
                         type_nodes_scanned: 7,
                         fact_selections: 4,
+                        declarations_selected: 11,
+                        anonymous_nominals_selected: 13,
+                        callables_selected: 17,
+                        nominal_metadata_selected: 18,
+                        modules_selected: 19,
+                        builtin_nominals_selected: 23,
+                        required_types_selected: 29,
                     },
                     cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
                         interner_scans: 4,

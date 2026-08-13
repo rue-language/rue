@@ -2099,6 +2099,13 @@ pub struct SemanticCfgMetrics {
     pub materialization_anonymous_nominals_scanned: usize,
     pub materialization_type_nodes_scanned: usize,
     pub materialization_fact_selections: usize,
+    pub materialization_declarations_selected: usize,
+    pub materialization_anonymous_nominals_selected: usize,
+    pub materialization_callables_selected: usize,
+    pub materialization_nominal_metadata_selected: usize,
+    pub materialization_modules_selected: usize,
+    pub materialization_builtin_nominals_selected: usize,
+    pub materialization_required_types_selected: usize,
     pub retained_interner_charge_scans: usize,
     pub retained_interner_entries_scanned: usize,
     pub retained_interner_utf8_bytes_scanned: usize,
@@ -2181,6 +2188,23 @@ impl SemanticMetrics {
                     .materialization_anonymous_nominals_scanned,
                 materialization_type_nodes_scanned: work.cfg.materialization_type_nodes_scanned,
                 materialization_fact_selections: work.cfg.materialization_fact_selections,
+                materialization_declarations_selected: work
+                    .cfg
+                    .materialization_declarations_selected,
+                materialization_anonymous_nominals_selected: work
+                    .cfg
+                    .materialization_anonymous_nominals_selected,
+                materialization_callables_selected: work.cfg.materialization_callables_selected,
+                materialization_nominal_metadata_selected: work
+                    .cfg
+                    .materialization_nominal_metadata_selected,
+                materialization_modules_selected: work.cfg.materialization_modules_selected,
+                materialization_builtin_nominals_selected: work
+                    .cfg
+                    .materialization_builtin_nominals_selected,
+                materialization_required_types_selected: work
+                    .cfg
+                    .materialization_required_types_selected,
                 retained_interner_charge_scans: work.cfg.retained_interner_charge_scans,
                 retained_interner_entries_scanned: work.cfg.retained_interner_entries_scanned,
                 retained_interner_utf8_bytes_scanned: work.cfg.retained_interner_utf8_bytes_scanned,

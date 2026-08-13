@@ -48,7 +48,8 @@ independently verified native output digest. The report records:
 - semantic-reachability scans, scheduled keys, and fixed frontier-width
   buckets;
 - request-local CFG-materialization index builds, declaration/anonymous/type
-  scans, and exact body-local fact selections;
+  scans, exact body-local fact selections, and selected epoch-input
+  cardinalities;
 - logical CFG retained-charge walks over body-local symbol-table entries and
   UTF-8 bytes;
 - query validation, endorsement, lease, demand, and retention-scan work;
@@ -110,7 +111,11 @@ payloads rebuild an equivalent body-local transport value.
 The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build
 ratio makes accidental per-body rebuilding of request-wide declaration,
-anonymous-nominal, destructor, and slice-source indexes directly visible.
+anonymous-nominal, destructor, and slice-source indexes directly visible. The
+selected-input table then counts the declaration, anonymous-nominal, callable,
+nominal-metadata, module, builtin, and required-type roots copied into those
+closures, exposing the mean size of the fresh semantic epoch each selection
+constructs.
 
 The CFG retained-charge table counts the body-local symbol-table entries and
 UTF-8 bytes visited by memory-policy bookkeeping at publication. Keeping this

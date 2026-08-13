@@ -4960,6 +4960,17 @@ impl CompilerSession {
                         body_span,
                     )
                 })?;
+            work.cfg.materialization_declarations_selected += materialization.declarations.len();
+            work.cfg.materialization_anonymous_nominals_selected +=
+                materialization.anonymous_nominals.len();
+            work.cfg.materialization_callables_selected += materialization.callables.len();
+            work.cfg.materialization_nominal_metadata_selected +=
+                materialization.nominal_metadata.len();
+            work.cfg.materialization_modules_selected += materialization.modules.len();
+            work.cfg.materialization_builtin_nominals_selected +=
+                materialization.builtin_nominals.len();
+            work.cfg.materialization_required_types_selected +=
+                materialization.required_types.len();
             cfg_inputs.push((
                 closure_body.key.instance.clone(),
                 crate::cfg_query::CfgSemanticInput::Body {
@@ -4996,6 +5007,17 @@ impl CompilerSession {
                         fallback_span,
                     )
                 })?;
+            work.cfg.materialization_declarations_selected += materialization.declarations.len();
+            work.cfg.materialization_anonymous_nominals_selected +=
+                materialization.anonymous_nominals.len();
+            work.cfg.materialization_callables_selected += materialization.callables.len();
+            work.cfg.materialization_nominal_metadata_selected +=
+                materialization.nominal_metadata.len();
+            work.cfg.materialization_modules_selected += materialization.modules.len();
+            work.cfg.materialization_builtin_nominals_selected +=
+                materialization.builtin_nominals.len();
+            work.cfg.materialization_required_types_selected +=
+                materialization.required_types.len();
             cfg_inputs.push((
                 identity,
                 crate::cfg_query::CfgSemanticInput::DropGlue {
