@@ -421,11 +421,13 @@ fn run(options: &Options) -> Result<u8, String> {
                 compiler: &options.compiler,
                 source: &source,
                 args: &epoch.args,
+                target: Some(&epoch.target),
                 output: output.clone(),
                 std_root: options.std_root.as_deref(),
                 batch_size: policy.batch_size,
                 workload: &workload.id,
                 sample_index: index,
+                boundary_policy: epoch.boundary.as_ref(),
             };
             match measure_sample(&request) {
                 SampleOutcome::Measured(sample) => {
@@ -670,6 +672,7 @@ window = 10
                     peak_memory_bytes: 1,
                     output_binary_bytes: 1,
                     phases,
+                    boundary_evidence: Vec::new(),
                 }],
             }],
             failures: Vec::new(),

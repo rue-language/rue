@@ -11,12 +11,21 @@
 //! water mark, which includes allocator overhead the compiler's own probe
 //! cannot see.
 
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use rue_perf_schema::{CompilerWork, FailureRecord, PhaseAccounting, Sample, WorkloadShape};
+use rue_perf_schema::{
+    BuildBoundaryEvidence, BuildBoundaryPolicy, CompilerBoundaryEvidence,
+    CompilerCriticalPathEvidence, CompilerInputClass, CompilerWork, FailureRecord, PhaseAccounting,
+    RunnerBoundaryEvidence, RunnerClockBoundary, Sample, WorkloadShape,
+};
+use sha2::{Digest, Sha256};
+
+static PROCESS_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Everything needed to measure one sample.
 pub struct SampleRequest<'a> {
@@ -26,6 +35,8 @@ pub struct SampleRequest<'a> {
     pub source: &'a Path,
     /// Behaviour-affecting compiler arguments, from the epoch.
     pub args: &'a [String],
+    /// Exact target declared independently by the epoch.
+    pub target: Option<&'a str>,
     /// Where the compiled binary goes.
     pub output: PathBuf,
     /// Standard-library root, when the workload needs one.
@@ -41,6 +52,8 @@ pub struct SampleRequest<'a> {
     pub workload: &'a str,
     /// Which sample this is, for failure records.
     pub sample_index: u32,
+    /// Exhaustive source-to-native contract for protocol-v2 observations.
+    pub boundary_policy: Option<&'a BuildBoundaryPolicy>,
 }
 
 /// What measuring one sample produced.
@@ -60,6 +73,10 @@ struct BenchmarkJson {
     source_metrics: SourceMetrics,
     compiler_work: CompilerWork,
     emitted_output: EmittedOutput,
+    #[serde(default)]
+    compiler_boundary: Option<CompilerBoundaryEvidence>,
+    #[serde(default)]
+    critical_path: Option<CompilerCriticalPathEvidence>,
 }
 
 #[derive(serde::Deserialize)]
@@ -81,6 +98,7 @@ struct SourceMetrics {
 #[derive(serde::Deserialize)]
 struct EmittedOutput {
     size_bytes: u64,
+    sha256: String,
 }
 
 struct CompletedCompile {
@@ -91,6 +109,9 @@ struct CompletedCompile {
     target: String,
     compiler_build_profile: String,
     compiler_work: CompilerWork,
+    process_elapsed_ns: u64,
+    output_sha256: String,
+    boundary_evidence: Option<BuildBoundaryEvidence>,
 }
 
 /// The raw result of one fresh compiler process for the scaling report.
@@ -110,12 +131,38 @@ pub struct FreshCompile {
 pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
     let mut total: Option<PhaseAccounting> = None;
     let mut peak_memory_bytes = 0u64;
+    let mut process_elapsed_ns = 0u64;
+    let mut output_binary_bytes = None;
+    let mut output_sha256 = None;
+    let mut boundary_evidence = Vec::with_capacity(request.batch_size as usize);
 
-    let started = Instant::now();
     for _ in 0..request.batch_size {
         match run_once(request) {
             Ok(completed) => {
                 peak_memory_bytes = peak_memory_bytes.max(completed.peak_memory_bytes);
+                process_elapsed_ns =
+                    process_elapsed_ns.saturating_add(completed.process_elapsed_ns);
+                match (&output_sha256, output_binary_bytes) {
+                    (None, None) => {
+                        output_sha256 = Some(completed.output_sha256.clone());
+                        output_binary_bytes = Some(completed.output_binary_bytes);
+                    }
+                    (Some(expected_hash), Some(expected_size))
+                        if expected_hash == &completed.output_sha256
+                            && expected_size == completed.output_binary_bytes => {}
+                    _ => {
+                        return SampleOutcome::Failed(Box::new(
+                            FailureRecord::ValidationRejected {
+                                workload: request.workload.to_string(),
+                                detail: "fresh compiler processes produced different native output"
+                                    .to_string(),
+                            },
+                        ));
+                    }
+                }
+                if let Some(evidence) = completed.boundary_evidence {
+                    boundary_evidence.push(evidence);
+                }
                 total = Some(match total {
                     None => completed.accounting,
                     Some(running) => add_accounting(running, &completed.accounting),
@@ -130,8 +177,6 @@ pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
             }
         }
     }
-    let process_elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-
     let Some(phases) = total else {
         // A zero batch size cannot measure anything. The manifest rejects it,
         // so reaching here means the policy was bypassed.
@@ -141,16 +186,13 @@ pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
         }));
     };
 
-    let output_binary_bytes = std::fs::metadata(&request.output)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-
     SampleOutcome::Measured(Box::new(Sample {
         batch_size: request.batch_size,
         process_elapsed_ns,
         peak_memory_bytes,
-        output_binary_bytes,
+        output_binary_bytes: output_binary_bytes.unwrap_or(0),
         phases,
+        boundary_evidence,
     }))
 }
 
@@ -163,16 +205,15 @@ pub fn measure_fresh_compile(request: &SampleRequest<'_>) -> Result<FreshCompile
     if request.batch_size != 1 {
         return Err("a scaling sample must launch exactly one compiler process".to_string());
     }
-    let started = Instant::now();
     let completed = run_once(request)?;
-    let process_elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
     Ok(FreshCompile {
         sample: Sample {
             batch_size: 1,
-            process_elapsed_ns,
+            process_elapsed_ns: completed.process_elapsed_ns,
             peak_memory_bytes: completed.peak_memory_bytes,
             output_binary_bytes: completed.output_binary_bytes,
             phases: completed.accounting,
+            boundary_evidence: completed.boundary_evidence.into_iter().collect(),
         },
         shape: completed.shape,
         target: completed.target,
@@ -204,19 +245,51 @@ fn add_accounting(mut running: PhaseAccounting, next: &PhaseAccounting) -> Phase
 /// Run the compiler once, returning its partition and externally measured peak
 /// resident memory.
 fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
+    let sequence = PROCESS_DIRECTORY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let base = request
+        .output
+        .parent()
+        .ok_or_else(|| "benchmark output has no parent directory".to_string())?;
+    let process_root = base.join(format!(".fresh-compiler-{}-{sequence}", std::process::id()));
+    let state_directory = process_root.join("state");
+    let output_directory = process_root.join("output");
+    fs::create_dir(&process_root)
+        .map_err(|error| format!("could not create fresh process directory: {error}"))?;
+    fs::create_dir(&state_directory)
+        .map_err(|error| format!("could not create fresh state directory: {error}"))?;
+    fs::create_dir(&output_directory)
+        .map_err(|error| format!("could not create fresh output directory: {error}"))?;
+    let output_path = output_directory.join(
+        request
+            .output
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("artifact")),
+    );
+    let compiler_binary_sha256 = sha256_file(request.compiler)?;
+
     let mut command = Command::new(request.compiler);
     command
         .arg(request.source)
         .arg("-o")
-        .arg(&request.output)
+        .arg(&output_path)
         .args(request.args)
         .arg("--benchmark-json")
+        .env("RUE_BENCH_STATE_DIR", &state_directory)
+        .env_remove("RUE_DAEMON_ENDPOINT")
+        .env_remove("RUE_RETAINED_SESSION")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(target) = request.target {
+        command.arg("--target").arg(target);
+    }
     if let Some(std_root) = request.std_root {
         command.env("RUE_STD_PATH", std_root);
     }
 
+    // The external clock starts only after all setup and immediately before
+    // process creation. It stops after successful exit and independent native
+    // output verification below.
+    let started = Instant::now();
     let mut child = command
         .spawn()
         .map_err(|error| format!("could not spawn the compiler: {error}"))?;
@@ -226,34 +299,114 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     // benchmark JSON is large enough for that to be a live risk.
     let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
     let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
-    let (stdout, stderr) = std::thread::scope(|scope| {
+    let (stdout, stderr, peak, status) = std::thread::scope(|scope| {
+        let stdout_reader = scope.spawn(move || {
+            let mut buffer = String::new();
+            let _ = stdout_pipe.read_to_string(&mut buffer);
+            buffer
+        });
         let stderr_reader = scope.spawn(move || {
             let mut buffer = String::new();
             let _ = stderr_pipe.read_to_string(&mut buffer);
             buffer
         });
-        let mut stdout = String::new();
-        let _ = stdout_pipe.read_to_string(&mut stdout);
-        (stdout, stderr_reader.join().unwrap_or_default())
+        let reaped = wait_for_peak_memory(&child);
+        (
+            stdout_reader.join().unwrap_or_default(),
+            stderr_reader.join().unwrap_or_default(),
+            reaped.as_ref().map_or(0, |(peak, _)| *peak),
+            reaped.map(|(_, status)| status),
+        )
     });
-
-    let peak = wait_for_peak_memory(&child)?;
     // `wait4` above already reaped the child, so `child` must not be waited on
     // again. `Child::drop` does not reap, so letting it fall out of scope is
     // correct; calling `wait()` here would fail with ECHILD.
     drop(child);
 
-    // A workload's exit status belongs to its own program, so a nonzero status
-    // is only a failure when nothing parseable came back.
+    let status = status?;
+    if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
+        let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
+        return Err(format!(
+            "compiler exited unsuccessfully (status {status}); stderr tail:\n{tail}"
+        ));
+    }
+
     let parsed: BenchmarkJson = serde_json::from_str(stdout.trim()).map_err(|error| {
         let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
         format!("no benchmark JSON on stdout ({error}); stderr tail:\n{tail}")
     })?;
 
+    let output_bytes = fs::read(&output_path)
+        .map_err(|error| format!("could not read compiler output for verification: {error}"))?;
+    if output_bytes.is_empty()
+        || !native_output_matches_target(&output_bytes, &parsed.metadata.target)
+    {
+        return Err(format!(
+            "compiler output is not a nonempty native executable for {}",
+            parsed.metadata.target
+        ));
+    }
+    let output_sha256 = sha256_bytes(&output_bytes);
+    let output_binary_bytes = u64::try_from(output_bytes.len()).unwrap_or(u64::MAX);
+    if parsed.emitted_output.sha256 != output_sha256
+        || parsed.emitted_output.size_bytes != output_binary_bytes
+    {
+        return Err("compiler and runner disagree about emitted output bytes".to_string());
+    }
+    if !directory_contains_only(&output_directory, &output_path)? {
+        return Err(
+            "compiler produced an undeclared artifact in the fresh output directory".to_string(),
+        );
+    }
+    let process_elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+
+    let boundary_evidence = match request.boundary_policy {
+        None => None,
+        Some(policy) => {
+            let compiler = parsed.compiler_boundary.clone().ok_or_else(|| {
+                "compiler omitted protocol-v2 build-boundary evidence".to_string()
+            })?;
+            let critical_path = parsed
+                .critical_path
+                .clone()
+                .ok_or_else(|| "compiler omitted protocol-v2 critical-path evidence".to_string())?;
+            verify_input_provenance(request, &compiler)?;
+            let evidence = BuildBoundaryEvidence {
+                runner: RunnerBoundaryEvidence {
+                    compiler_binary_sha256,
+                    // Both directories were created successfully immediately
+                    // before the clock and process spawn. The output directory
+                    // is also checked above to contain only the verified
+                    // requested artifact after exit.
+                    fresh_state_directory: true,
+                    fresh_output_directory: true,
+                    daemon_endpoint_supplied: false,
+                    retained_session_handle_supplied: false,
+                    clock_boundary:
+                        RunnerClockBoundary::MonotonicPreSpawnThroughExitAndOutputVerification,
+                    successful_exit: true,
+                    native_output_verified: true,
+                    output_sha256: output_sha256.clone(),
+                    output_size_bytes: output_binary_bytes,
+                },
+                compiler,
+                critical_path,
+                compiler_work: parsed.compiler_work.clone(),
+            };
+            let expected_target = request.target.ok_or_else(|| {
+                "boundary policy has no independently declared target".to_string()
+            })?;
+            evidence
+                .validate_against(policy, expected_target)
+                .map_err(|detail| format!("build-boundary evidence rejected: {detail}"))?;
+            Some(evidence)
+        }
+    };
+
     Ok(CompletedCompile {
         accounting: parsed.phase_accounting,
         peak_memory_bytes: peak,
-        output_binary_bytes: parsed.emitted_output.size_bytes,
+        output_binary_bytes,
         shape: WorkloadShape {
             files: parsed.source_metrics.files,
             modules: parsed.source_metrics.modules,
@@ -265,6 +418,9 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
         target: parsed.metadata.target,
         compiler_build_profile: parsed.metadata.compiler_build_profile,
         compiler_work: parsed.compiler_work,
+        process_elapsed_ns,
+        output_sha256,
+        boundary_evidence,
     })
 }
 
@@ -274,7 +430,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
 /// reports a maximum across every child this process has ever reaped, so once
 /// the largest workload had run, every later workload would inherit its peak
 /// and the memory metric would be silently wrong for all but the biggest.
-fn wait_for_peak_memory(child: &std::process::Child) -> Result<u64, String> {
+fn wait_for_peak_memory(child: &std::process::Child) -> Result<(u64, libc::c_int), String> {
     let mut status: libc::c_int = 0;
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
     // SAFETY: `status` and `usage` are properly sized and aligned for `wait4`,
@@ -296,7 +452,81 @@ fn wait_for_peak_memory(child: &std::process::Child) -> Result<u64, String> {
     }
     // SAFETY: `wait4` succeeded, so the usage value is initialized.
     let usage = unsafe { usage.assume_init() };
-    Ok(max_rss_bytes(usage.ru_maxrss))
+    Ok((max_rss_bytes(usage.ru_maxrss), status))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    fs::read(path)
+        .map(|bytes| sha256_bytes(&bytes))
+        .map_err(|error| format!("could not hash {}: {error}", path.display()))
+}
+
+fn directory_contains_only(directory: &Path, expected: &Path) -> Result<bool, String> {
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("could not inspect {}: {error}", directory.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("could not inspect {}: {error}", directory.display()))?;
+    Ok(entries.len() == 1 && entries[0].path() == expected)
+}
+
+fn native_output_matches_target(bytes: &[u8], target: &str) -> bool {
+    if target.contains("linux") {
+        bytes.starts_with(b"\x7fELF")
+    } else if target.contains("macos") || target.contains("darwin") {
+        bytes.starts_with(&[0xcf, 0xfa, 0xed, 0xfe])
+    } else {
+        false
+    }
+}
+
+fn verify_input_provenance(
+    request: &SampleRequest<'_>,
+    compiler: &CompilerBoundaryEvidence,
+) -> Result<(), String> {
+    let workload_root = request
+        .source
+        .parent()
+        .ok_or_else(|| "workload source has no parent directory".to_string())?;
+    for input in &compiler.accepted_inputs {
+        let path = match input.class {
+            CompilerInputClass::WorkloadSource => {
+                let logical = Path::new(&input.logical_identity);
+                if logical.is_absolute() {
+                    return Err("compiler reported an absolute workload identity".to_string());
+                }
+                workload_root.join(logical)
+            }
+            CompilerInputClass::TrustedStandardLibrarySource => {
+                let relative = input
+                    .logical_identity
+                    .strip_prefix('\0')
+                    .and_then(|identity| identity.strip_prefix("rue-std/"))
+                    .ok_or_else(|| {
+                        "compiler reported a malformed trusted-standard-library identity"
+                            .to_string()
+                    })?;
+                request
+                    .std_root
+                    .ok_or_else(|| {
+                        "compiler used std but the runner supplied no std root".to_string()
+                    })?
+                    .join(relative)
+            }
+        };
+        let observed = sha256_file(&path)?;
+        if observed != input.sha256 {
+            return Err(format!(
+                "compiler input evidence for {:?} disagrees with {}",
+                input.logical_identity,
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Normalize `ru_maxrss` to bytes.

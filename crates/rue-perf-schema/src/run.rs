@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::RUN_SCHEMA_VERSION;
+use crate::{BuildBoundaryEvidence, RUN_SCHEMA_VERSION};
 
 /// A published wall-clock phase.
 ///
@@ -230,6 +230,12 @@ pub struct Sample {
     pub output_binary_bytes: u64,
     /// The compiler's own wall-clock partition for this sample.
     pub phases: PhaseAccounting,
+    /// One independent runner/compiler proof for each process in this sample.
+    ///
+    /// Empty only for historical protocol-v1 suites. Protocol v2 requires
+    /// exactly `batch_size` entries and validates each one against its epoch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boundary_evidence: Vec<BuildBoundaryEvidence>,
 }
 
 impl Sample {
@@ -595,6 +601,7 @@ mod tests {
             peak_memory_bytes: 1,
             output_binary_bytes: 1,
             phases: accounting(100, 100, 0, 0),
+            boundary_evidence: Vec::new(),
         };
         assert_eq!(sample.driver_overhead_ns(), Some(50));
     }
@@ -607,6 +614,7 @@ mod tests {
             peak_memory_bytes: 1,
             output_binary_bytes: 1,
             phases: accounting(100, 100, 0, 0),
+            boundary_evidence: Vec::new(),
         };
         assert_eq!(sample.driver_overhead_ns(), None);
     }

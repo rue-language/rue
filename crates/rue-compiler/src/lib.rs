@@ -245,7 +245,7 @@ static QUERY_CONCURRENCY: std::sync::atomic::AtomicUsize = std::sync::atomic::At
 /// Per-function CFG and backend work is deliberately serialized until it is
 /// represented as registered query batches, leaving one canonical concurrency
 /// authority for compiler work.
-pub fn configure_thread_pool(jobs: usize) {
+pub fn configure_thread_pool(jobs: usize) -> usize {
     let jobs = if jobs == 0 {
         std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
@@ -254,6 +254,7 @@ pub fn configure_thread_pool(jobs: usize) {
         jobs
     };
     QUERY_CONCURRENCY.store(jobs, std::sync::atomic::Ordering::Release);
+    jobs
 }
 
 pub(crate) fn query_concurrency() -> usize {

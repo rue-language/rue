@@ -149,6 +149,12 @@ pub enum ValidationError {
         /// The value found.
         value: String,
     },
+    /// Protocol-v2 process evidence is absent or disagrees with its epoch.
+    BoundaryEvidenceMismatch {
+        workload: String,
+        sample_index: u32,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for ValidationError {
@@ -241,6 +247,14 @@ impl std::fmt::Display for ValidationError {
             ValidationError::MalformedCommit { value } => {
                 write!(f, "commit {value:?} is not a 40-character hexadecimal hash")
             }
+            ValidationError::BoundaryEvidenceMismatch {
+                workload,
+                sample_index,
+                detail,
+            } => write!(
+                f,
+                "workload {workload:?} sample {sample_index} has invalid build-boundary evidence: {detail}"
+            ),
         }
     }
 }
@@ -440,6 +454,7 @@ pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
     check_pins(run, epoch, &mut errors);
     check_environment(run, epoch, &mut errors);
     check_membership(run, suite, &mut errors);
+    check_boundary_evidence(run, suite, epoch, &mut errors);
 
     let invalid_samples = collect_invalid_samples(run, epoch, &mut errors);
     check_failure_records(run, suite, &invalid_samples, &mut errors);
@@ -450,6 +465,99 @@ pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
         errors,
         invalid_samples,
         completeness,
+    }
+}
+
+fn check_boundary_evidence(
+    run: &RunObject,
+    suite: &crate::manifest::SuiteRevision,
+    epoch: &crate::manifest::PlatformEpoch,
+    errors: &mut Vec<ValidationError>,
+) {
+    for observation in &run.workloads {
+        let mut expected_output = None;
+        let mut expected_work = None;
+        for (sample_index, sample) in observation.samples.iter().enumerate() {
+            let mut detail = match (suite.protocol_version, &epoch.boundary) {
+                (1, None) if sample.boundary_evidence.is_empty() => None,
+                (1, None) => {
+                    Some("historical protocol v1 must not carry boundary-v2 evidence".to_string())
+                }
+                (2, Some(policy))
+                    if sample.boundary_evidence.len() == sample.batch_size as usize =>
+                {
+                    sample
+                        .boundary_evidence
+                        .iter()
+                        .enumerate()
+                        .find_map(|(process, evidence)| {
+                            if evidence.runner.output_size_bytes != sample.output_binary_bytes {
+                                return Some(format!(
+                                    "process {process}: proof output size {} disagrees with sample size {}",
+                                    evidence.runner.output_size_bytes,
+                                    sample.output_binary_bytes
+                                ));
+                            }
+                            evidence
+                                .validate_against(policy, &epoch.target)
+                                .err()
+                                .map(|detail| format!("process {process}: {detail}"))
+                        })
+                }
+                (2, Some(_)) => Some(format!(
+                    "expected {} process proofs, found {}",
+                    sample.batch_size,
+                    sample.boundary_evidence.len()
+                )),
+                (protocol, boundary) => Some(format!(
+                    "unsupported protocol/boundary pairing: protocol {protocol}, policy {boundary:?}"
+                )),
+            };
+            if detail.is_none() && suite.protocol_version == 2 {
+                for evidence in &sample.boundary_evidence {
+                    match &expected_output {
+                        None => expected_output = Some(evidence.runner.output_sha256.clone()),
+                        Some(expected) if expected == &evidence.runner.output_sha256 => {}
+                        Some(_) => {
+                            detail = Some(
+                                "fresh processes produced nondeterministic native output"
+                                    .to_string(),
+                            );
+                            break;
+                        }
+                    }
+                    // At one worker the complete work record is deterministic
+                    // and protects the architecture row from silent
+                    // amplification. Parallel rows deliberately include
+                    // schedule-dependent joins, reuses, and validation paths;
+                    // those are distribution evidence, not output identity.
+                    if epoch
+                        .boundary
+                        .as_ref()
+                        .is_some_and(|policy| policy.worker_setting == crate::WorkerSetting::One)
+                    {
+                        match expected_work {
+                            None => expected_work = Some(evidence.compiler_work),
+                            Some(expected) if expected == evidence.compiler_work => {}
+                            Some(_) => {
+                                detail = Some(
+                                    "one-worker fresh processes reported nondeterministic compiler work"
+                                        .to_string(),
+                                );
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(detail) = detail {
+                errors.push(ValidationError::BoundaryEvidenceMismatch {
+                    workload: observation.workload.clone(),
+                    sample_index: sample_index as u32,
+                    detail,
+                });
+            }
+        }
     }
 }
 
@@ -831,6 +939,7 @@ window = 10
             peak_memory_bytes: 64 * 1024 * 1024,
             output_binary_bytes: 131_072,
             phases: accounting(root_ns),
+            boundary_evidence: Vec::new(),
         }
     }
 

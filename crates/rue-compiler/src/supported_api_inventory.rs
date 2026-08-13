@@ -59,7 +59,7 @@ stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImport
 stable|import_graph|dependency-artifact|source-loaders+embedders|CanonicalImportResolution|pub use import_graph::CanonicalImportResolution
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirective|pub use import_graph::ImportDirective
 stable|import_graph|dependency-artifact|source-loaders+embedders|ImportDirectives|pub use import_graph::ImportDirectives
-stable|lib|runtime-config|cli+embedders|configure_thread_pool|pub fn configure_thread_pool(jobs:usize)
+stable|lib|runtime-config|cli+embedders|configure_thread_pool|pub fn configure_thread_pool(jobs:usize)->usize
 stable|queries|compilation-config|cli+embedders|CompileOptions|pub use queries::CompileOptions
 stable|queries|compilation-config|cli+embedders|LinkerMode|pub use queries::LinkerMode
 stable|queries|compile-artifact|cli+embedders|CompileOutput|pub use queries::CompileOutput

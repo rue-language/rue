@@ -61,6 +61,25 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertTrue(any("scripts/rue-bin" in error for error in errors), errors)
 
+    def test_collection_workflow_and_scaling_manifest_pin_the_boundary(self) -> None:
+        collection = "\n".join(release_configuration.COLLECTION_BOUNDARY_SNIPPETS)
+        self.assertEqual(
+            release_configuration.validate_collection_workflow(collection), []
+        )
+        self.assertTrue(
+            release_configuration.validate_collection_workflow(
+                collection.replace("//platforms:release", "//platforms:debug")
+            )
+        )
+
+        manifest = "\n".join(release_configuration.SCALING_BOUNDARY_SNIPPETS)
+        self.assertEqual(release_configuration.validate_scaling_manifest(manifest), [])
+        self.assertTrue(
+            release_configuration.validate_scaling_manifest(
+                manifest.replace('boundary = "fresh_source_to_native_v1"', "")
+            )
+        )
+
     def test_rejects_missing_or_ambiguous_rustc_action(self) -> None:
         with self.assertRaisesRegex(ValueError, "0 matching"):
             release_configuration.rustc_cfg_command("{}", "release")

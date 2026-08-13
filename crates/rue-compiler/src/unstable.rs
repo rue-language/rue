@@ -1709,10 +1709,24 @@ mod query_validation_metrics_tests {
             },
             retention_enforcements: 1,
             retention_scan_entries: 1,
+            query_worker_active_ns: 1,
+            ready_items: 1,
+            ready_wait_ns: 1,
+            max_ready_wait_ns: 1,
+            longest_query_dependency_chain: 1,
+            peak_query_workers: 1,
+            donated_permits: 1,
         };
         let mut accumulated = unit;
         accumulated.saturating_add_assign(unit);
-        assert_eq!(accumulated.saturating_sub(unit), unit);
+        let mut expected_delta = unit;
+        // High-water marks compose by maximum rather than addition. Repeating
+        // the same maximum therefore contributes no newly observed height to
+        // a cumulative-snapshot delta.
+        expected_delta.max_ready_wait_ns = 0;
+        expected_delta.longest_query_dependency_chain = 0;
+        expected_delta.peak_query_workers = 0;
+        assert_eq!(accumulated.saturating_sub(unit), expected_delta);
     }
 }
 
@@ -1736,6 +1750,14 @@ pub struct QueryRuntimeMetrics {
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by those passes.
     pub retention_scan_entries: u64,
+    /// Aggregated critical-path and worker-scheduling evidence.
+    pub query_worker_active_ns: u64,
+    pub ready_items: u64,
+    pub ready_wait_ns: u64,
+    pub max_ready_wait_ns: u64,
+    pub longest_query_dependency_chain: u64,
+    pub peak_query_workers: u64,
+    pub donated_permits: u64,
 }
 
 impl QueryRuntimeMetrics {
@@ -1767,6 +1789,21 @@ impl QueryRuntimeMetrics {
             retention_scan_entries: self
                 .retention_scan_entries
                 .saturating_sub(earlier.retention_scan_entries),
+            query_worker_active_ns: self
+                .query_worker_active_ns
+                .saturating_sub(earlier.query_worker_active_ns),
+            ready_items: self.ready_items.saturating_sub(earlier.ready_items),
+            ready_wait_ns: self.ready_wait_ns.saturating_sub(earlier.ready_wait_ns),
+            max_ready_wait_ns: self
+                .max_ready_wait_ns
+                .saturating_sub(earlier.max_ready_wait_ns),
+            longest_query_dependency_chain: self
+                .longest_query_dependency_chain
+                .saturating_sub(earlier.longest_query_dependency_chain),
+            peak_query_workers: self
+                .peak_query_workers
+                .saturating_sub(earlier.peak_query_workers),
+            donated_permits: self.donated_permits.saturating_sub(earlier.donated_permits),
         }
     }
 
@@ -1792,6 +1829,17 @@ impl QueryRuntimeMetrics {
         self.retention_scan_entries = self
             .retention_scan_entries
             .saturating_add(other.retention_scan_entries);
+        self.query_worker_active_ns = self
+            .query_worker_active_ns
+            .saturating_add(other.query_worker_active_ns);
+        self.ready_items = self.ready_items.saturating_add(other.ready_items);
+        self.ready_wait_ns = self.ready_wait_ns.saturating_add(other.ready_wait_ns);
+        self.max_ready_wait_ns = self.max_ready_wait_ns.max(other.max_ready_wait_ns);
+        self.longest_query_dependency_chain = self
+            .longest_query_dependency_chain
+            .max(other.longest_query_dependency_chain);
+        self.peak_query_workers = self.peak_query_workers.max(other.peak_query_workers);
+        self.donated_permits = self.donated_permits.saturating_add(other.donated_permits);
     }
 }
 
@@ -1811,6 +1859,13 @@ impl From<rue_query::RuntimeMetrics> for QueryRuntimeMetrics {
             display_identities: runtime.display_identities.into(),
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
+            query_worker_active_ns: runtime.query_worker_active_ns,
+            ready_items: runtime.ready_items,
+            ready_wait_ns: runtime.ready_wait_ns,
+            max_ready_wait_ns: runtime.max_ready_wait_ns,
+            longest_query_dependency_chain: runtime.longest_query_dependency_chain,
+            peak_query_workers: runtime.peak_query_workers,
+            donated_permits: runtime.donated_permits,
         }
     }
 }

@@ -104,7 +104,7 @@ const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
 #[cfg(not(rue_release_build))]
 const COMPILER_BUILD_PROFILE: &str = "debug";
 
-use rue_perf_schema::{CompilerWork, Phase, PhaseAccounting};
+use rue_perf_schema::{CompilerWork, DurationDistribution, Phase, PhaseAccounting};
 use serde::Serialize;
 
 use tracing::span::{Attributes, Id};
@@ -170,12 +170,27 @@ struct TimingDataInner {
 }
 
 /// Measurements aggregated across every span with the same name.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct PassAggregate {
     duration: Duration,
+    max_duration: Duration,
     invocations: u64,
     root_invocations: u64,
     leaf_invocations: u64,
+    duration_log2_buckets: [u64; 64],
+}
+
+impl Default for PassAggregate {
+    fn default() -> Self {
+        Self {
+            duration: Duration::ZERO,
+            max_duration: Duration::ZERO,
+            invocations: 0,
+            root_invocations: 0,
+            leaf_invocations: 0,
+            duration_log2_buckets: [0; 64],
+        }
+    }
 }
 
 /// Measurements aggregated across every driver-phase span with the same name.
@@ -253,9 +268,17 @@ impl Drop for LocalTiming {
 fn merge_pass(target: &mut HashMap<String, PassAggregate>, name: String, local: PassAggregate) {
     let aggregate = target.entry(name).or_default();
     aggregate.duration += local.duration;
+    aggregate.max_duration = aggregate.max_duration.max(local.max_duration);
     aggregate.invocations += local.invocations;
     aggregate.root_invocations += local.root_invocations;
     aggregate.leaf_invocations += local.leaf_invocations;
+    for (target, local) in aggregate
+        .duration_log2_buckets
+        .iter_mut()
+        .zip(local.duration_log2_buckets)
+    {
+        *target = target.saturating_add(local);
+    }
 }
 
 fn merge_driver_phase(
@@ -446,10 +469,41 @@ impl TimingData {
         self.with_local(|local| {
             let entry = local.passes.entry(pass.to_string()).or_default();
             entry.duration += duration;
+            entry.max_duration = entry.max_duration.max(duration);
             entry.invocations += 1;
             entry.root_invocations += u64::from(is_root);
             entry.leaf_invocations += u64::from(is_leaf);
+            entry.duration_log2_buckets[duration_bucket(duration)] += 1;
         });
+    }
+
+    /// Return the bounded per-invocation distribution for one named span.
+    ///
+    /// The histogram is accumulated with the existing thread-local timing
+    /// buffer, so enabling this evidence adds no shared write to a body query.
+    pub fn pass_duration_distribution(&self, pass: &str) -> DurationDistribution {
+        self.flush_local();
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(aggregate) = inner.passes.get(pass) else {
+            return DurationDistribution::default();
+        };
+        DurationDistribution {
+            count: aggregate.invocations,
+            total_ns: duration_ns(aggregate.duration),
+            max_ns: duration_ns(aggregate.max_duration),
+            log2_buckets: aggregate.duration_log2_buckets.to_vec(),
+        }
+    }
+
+    /// Return the inclusive total for one named span in integer nanoseconds.
+    pub fn pass_total_ns(&self, pass: &str) -> u64 {
+        self.flush_local();
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .passes
+            .get(pass)
+            .map_or(0, |aggregate| duration_ns(aggregate.duration))
     }
 
     /// Record one driver-phase span outside the compiler's timing root.
@@ -710,7 +764,7 @@ impl TimingData {
         };
 
         BenchmarkTiming {
-            schema_version: 11,
+            schema_version: 12,
             timing_model: "inclusive_spans",
             phase_accounting,
             metadata,
@@ -918,6 +972,15 @@ fn phase_accounting_locked(inner: &TimingDataInner, now: Instant) -> PhaseAccoun
 /// saturation arm is unreachable for a compilation.
 fn duration_ns(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn duration_bucket(duration: Duration) -> usize {
+    let nanoseconds = duration_ns(duration);
+    if nanoseconds == 0 {
+        0
+    } else {
+        (u64::BITS - 1 - nanoseconds.leading_zeros()) as usize
+    }
 }
 
 fn ordered_aggregates(aggregates: &HashMap<String, PassAggregate>) -> Vec<String> {
@@ -2081,7 +2144,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None, None);
-        assert!(json.contains("\"schema_version\":11"));
+        assert!(json.contains("\"schema_version\":12"));
         assert!(json.contains(&format!(
             "\"compiler_build_profile\":\"{COMPILER_BUILD_PROFILE}\""
         )));
@@ -2287,8 +2350,24 @@ mod phase_accounting_tests {
         let inner = data.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let pass = inner.passes.get("worker_pass").unwrap();
         assert_eq!(pass.duration, Duration::from_millis(41));
+        assert_eq!(pass.max_duration, Duration::from_millis(17));
         assert_eq!(pass.invocations, 3);
         assert_eq!(pass.leaf_invocations, 3);
+        drop(inner);
+
+        let distribution = data.pass_duration_distribution("worker_pass");
+        assert_eq!(distribution.count, 3);
+        assert_eq!(distribution.total_ns, 41_000_000);
+        assert_eq!(distribution.max_ns, 17_000_000);
+        assert_eq!(
+            distribution.log2_buckets[duration_bucket(Duration::from_millis(11))],
+            2
+        );
+        assert_eq!(
+            distribution.log2_buckets[duration_bucket(Duration::from_millis(17))],
+            1
+        );
+        assert!(distribution.validate());
     }
 
     #[test]
@@ -2743,7 +2822,7 @@ mod phase_accounting_tests {
 
         let timing =
             data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None, None);
-        assert_eq!(timing.schema_version, 11);
+        assert_eq!(timing.schema_version, 12);
         assert_eq!(
             timing.metadata.compiler_build_profile,
             COMPILER_BUILD_PROFILE

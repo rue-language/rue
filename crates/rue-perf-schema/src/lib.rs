@@ -31,6 +31,7 @@
 //! disk. [`ValidationOutcome`] reports both, plus the run's
 //! [`Completeness`].
 
+mod boundary;
 mod canonical;
 mod incremental;
 mod manifest;
@@ -40,6 +41,13 @@ mod series;
 mod stats;
 mod validate;
 
+pub use boundary::{
+    ArtifactHitEvidence, BuildBoundary, BuildBoundaryEvidence, BuildBoundaryPolicy,
+    CompilerBoundaryEvidence, CompilerBuildProfile, CompilerConfigurationEvidence,
+    CompilerCriticalPathEvidence, CompilerInputClass, CompilerInputEvidence, CompilerPipeline,
+    CompilerStage, DurationDistribution, EmbeddedAssetClass, EmbeddedAssetEvidence, LinkPolicy,
+    OptimizationLevel, OutputKind, RunnerBoundaryEvidence, RunnerClockBoundary, WorkerSetting,
+};
 pub use canonical::{CanonicalError, canonical_json, content_address};
 pub use incremental::{
     DisplayIdentityWorkSummary, EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest,
