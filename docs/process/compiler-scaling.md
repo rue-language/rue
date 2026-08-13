@@ -61,8 +61,10 @@ independently verified native output digest. The report records:
 - query-worker active time and peak workers;
 - dependency-ready item count, summed queue delay, and maximum queue delay;
 - longest query/dependency ancestry;
-- bounded semantic-prerequisite, semantic-analysis, CFG-construction, and
-  CFG-optimization body-duration histograms;
+- bounded request-wide declaration-graph, body-closure, and rooted-body-graph
+  projection histograms, with nested declaration-nucleus,
+  semantic-prerequisite, semantic-analysis, CFG-construction, and
+  CFG-optimization distributions;
 - the inclusive reached-toolchain acquisition envelope (which contains the
   rooted semantic attempt), joins, declined joins, and permit donations;
 - output binary size.
@@ -84,6 +86,14 @@ intervals inside each reached body transaction. The prerequisite interval owns
 registered toolchain-demand, anonymous-nominal, and well-known-type queries;
 the analysis interval owns body-input lowering, semantic-provider execution,
 stable-key projection, and body-transaction publication.
+
+After a semantic request selects its root inputs, the semantic-detail table
+separates three adjacent, non-overlapping intervals: declaration-graph
+collection, rooted body-closure collection, and rooted-body-graph projection.
+Declaration occurrence-index and nucleus timings are nested inside the
+declaration interval; body prerequisite and analysis timings are nested inside
+the closure interval. Nested values explain their owner and are never added to
+the enclosing duration.
 
 The reached-toolchain value is an inclusive host-operation envelope, not an
 exclusive phase. The operation runs the rooted semantic attempt to discover

@@ -4420,6 +4420,9 @@ impl CompilerSession {
             .modules_iter()
             .map(|module| module.module_id().clone())
             .collect::<Vec<_>>();
+        let _declaration_graph_collection_span =
+            tracing::info_span!("declaration_graph_collection", phase = "semantic_analysis")
+                .entered();
         let projection = match self
             .queries
             .revisioned
@@ -4511,6 +4514,7 @@ impl CompilerSession {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),
         };
+        drop(_declaration_graph_collection_span);
         // This compiler-owned consumer boundary includes retained-terminal
         // validation, query dispatch, deterministic terminal collection, and
         // the immediate work reduction. The timing layer records it
@@ -4558,6 +4562,8 @@ impl CompilerSession {
             }
         }
         drop(_body_closure_collection_span);
+        let _body_graph_projection_span =
+            tracing::info_span!("body_graph_projection", phase = "semantic_analysis").entered();
         let mut errors = closure
             .scheduling_errors
             .iter()
