@@ -8138,6 +8138,8 @@ mod tests {
         assert_eq!(metrics.anonymous_facts, 0);
         assert_eq!(metrics.producer_facts, 0);
         assert_eq!(metrics.toolchain_facts, 4);
+        assert_eq!(metrics.import_named_nominal_probes, 0, "{metrics:?}");
+        assert_eq!(metrics.import_named_nominals_registered, 0, "{metrics:?}");
     }
 
     #[test]
@@ -8181,6 +8183,21 @@ mod tests {
                 + metrics.method_materializations,
             "the durable materialization aggregate must be exactly partitioned by declaration kind"
         );
+        assert!(
+            metrics.import_nominal_registration_requests > 0,
+            "named types must enter the imported-type registration path: {metrics:?}"
+        );
+        assert!(
+            metrics.import_named_nominal_complete_hits > 0,
+            "repeated named imports in one body must hit the complete closure cache: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.import_named_nominal_probes,
+            metrics.import_named_nominal_complete_hits
+                + metrics.import_named_nominal_cycle_hits
+                + metrics.import_named_nominals_registered,
+            "every successful named probe must be a complete hit, a cycle break, or a fresh registration"
+        );
     }
 
     #[test]
@@ -8201,6 +8218,18 @@ mod tests {
         session
             .rooted_cfg(&CompileOptions::default())
             .expect("recursive named imports use the in-progress cycle break");
+        let metrics = crate::unstable::provider_observation_metrics(&session);
+        assert!(
+            metrics.import_named_nominal_cycle_hits > 0,
+            "the recursive List edge must exercise the in-progress cycle marker: {metrics:?}"
+        );
+        assert_eq!(
+            metrics.import_named_nominal_probes,
+            metrics.import_named_nominal_complete_hits
+                + metrics.import_named_nominal_cycle_hits
+                + metrics.import_named_nominals_registered,
+            "every successful recursive named probe must be classified exactly once"
+        );
     }
 
     #[test]
