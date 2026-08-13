@@ -181,24 +181,16 @@ pub enum DurableAnonymousMethodType {
     Concrete(DurableType),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DurableParameterMode {
-    Value,
-    Borrow,
-    Inout,
-}
+/// The canonical durable parameter mode shared with the rue-air consumer.
+pub type DurableParameterMode = rue_air::SemanticParameterMode;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DurableSemanticParameter {
-    /// The parameter's source name. Carried on the durable declaration so a
-    /// consumer that reconstructs a comptime type-constructor head from the
-    /// signature alone (the provider-driven analyzer's `SignatureFacts`) can
-    /// bind arguments by name without re-consulting the declaration shell.
-    pub name: Arc<str>,
-    pub ty: DurableType,
-    pub mode: DurableParameterMode,
-    pub is_comptime: bool,
-}
+/// The durable specialization of rue-air's canonical signature parameter.
+///
+/// Keeping this as the boundary type lets retained declaration-signature
+/// payloads flow into body analysis by sharing their immutable slice instead
+/// of allocating and cloning every parameter for every materialization.
+pub type DurableSemanticParameter =
+    rue_air::DurableSignatureParameter<StableDefinitionKey, ModuleId>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DurableDeclarationPayload {
