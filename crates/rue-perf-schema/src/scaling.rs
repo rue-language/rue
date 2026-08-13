@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 14;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 15;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +278,27 @@ pub struct CfgMaterializationWork {
     pub type_nodes_scanned: u64,
     /// Exact body or drop-glue fact closures selected from the shared index.
     pub fact_selections: u64,
+    /// Durable declaration facts copied into selected body-local closures.
+    #[serde(default)]
+    pub declarations_selected: u64,
+    /// Durable anonymous nominal facts copied into selected closures.
+    #[serde(default)]
+    pub anonymous_nominals_selected: u64,
+    /// Callable facts copied into selected closures.
+    #[serde(default)]
+    pub callables_selected: u64,
+    /// Nominal metadata facts copied into selected closures.
+    #[serde(default)]
+    pub nominal_metadata_selected: u64,
+    /// Module identities copied into selected closures.
+    #[serde(default)]
+    pub modules_selected: u64,
+    /// Synthetic builtin nominal requests copied into selected closures.
+    #[serde(default)]
+    pub builtin_nominals_selected: u64,
+    /// Additional stable type roots copied into selected closures.
+    #[serde(default)]
+    pub required_types_selected: u64,
 }
 
 /// Deterministic logical retained-charge work for CFG artifacts.
@@ -456,5 +477,35 @@ question = "small maintained compiler frontend"
         assert_eq!(decoded.nominal_materializations, 0);
         assert_eq!(decoded.function_materializations, 0);
         assert_eq!(decoded.method_materializations, 0);
+    }
+
+    #[test]
+    fn older_cfg_materialization_work_defaults_selected_epoch_inputs() {
+        let mut encoded = serde_json::to_value(CfgMaterializationWork {
+            fact_selections: 11,
+            ..CfgMaterializationWork::default()
+        })
+        .unwrap();
+        let object = encoded.as_object_mut().unwrap();
+        for field in [
+            "declarations_selected",
+            "anonymous_nominals_selected",
+            "callables_selected",
+            "nominal_metadata_selected",
+            "modules_selected",
+            "builtin_nominals_selected",
+            "required_types_selected",
+        ] {
+            object.remove(field);
+        }
+        let decoded: CfgMaterializationWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.fact_selections, 11);
+        assert_eq!(decoded.declarations_selected, 0);
+        assert_eq!(decoded.anonymous_nominals_selected, 0);
+        assert_eq!(decoded.callables_selected, 0);
+        assert_eq!(decoded.nominal_metadata_selected, 0);
+        assert_eq!(decoded.modules_selected, 0);
+        assert_eq!(decoded.builtin_nominals_selected, 0);
+        assert_eq!(decoded.required_types_selected, 0);
     }
 }

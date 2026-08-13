@@ -1120,6 +1120,27 @@ fn benchmark_compiler_work(
                 as u64,
             type_nodes_scanned: metrics.semantic.cfg.materialization_type_nodes_scanned as u64,
             fact_selections: metrics.semantic.cfg.materialization_fact_selections as u64,
+            declarations_selected: metrics.semantic.cfg.materialization_declarations_selected
+                as u64,
+            anonymous_nominals_selected: metrics
+                .semantic
+                .cfg
+                .materialization_anonymous_nominals_selected
+                as u64,
+            callables_selected: metrics.semantic.cfg.materialization_callables_selected as u64,
+            nominal_metadata_selected: metrics
+                .semantic
+                .cfg
+                .materialization_nominal_metadata_selected
+                as u64,
+            modules_selected: metrics.semantic.cfg.materialization_modules_selected as u64,
+            builtin_nominals_selected: metrics
+                .semantic
+                .cfg
+                .materialization_builtin_nominals_selected
+                as u64,
+            required_types_selected: metrics.semantic.cfg.materialization_required_types_selected
+                as u64,
         },
         cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
             interner_scans: metrics.semantic.cfg.retained_interner_charge_scans as u64,
@@ -1739,6 +1760,13 @@ mod tests {
                     materialization_anonymous_nominals_scanned: 7,
                     materialization_type_nodes_scanned: 47,
                     materialization_fact_selections: 11,
+                    materialization_declarations_selected: 13,
+                    materialization_anonymous_nominals_selected: 17,
+                    materialization_callables_selected: 19,
+                    materialization_nominal_metadata_selected: 21,
+                    materialization_modules_selected: 23,
+                    materialization_builtin_nominals_selected: 29,
+                    materialization_required_types_selected: 31,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1817,6 +1845,16 @@ mod tests {
         assert_eq!(projected.cfg_materialization.anonymous_nominals_scanned, 7);
         assert_eq!(projected.cfg_materialization.type_nodes_scanned, 47);
         assert_eq!(projected.cfg_materialization.fact_selections, 11);
+        assert_eq!(projected.cfg_materialization.declarations_selected, 13);
+        assert_eq!(
+            projected.cfg_materialization.anonymous_nominals_selected,
+            17
+        );
+        assert_eq!(projected.cfg_materialization.callables_selected, 19);
+        assert_eq!(projected.cfg_materialization.nominal_metadata_selected, 21);
+        assert_eq!(projected.cfg_materialization.modules_selected, 23);
+        assert_eq!(projected.cfg_materialization.builtin_nominals_selected, 29);
+        assert_eq!(projected.cfg_materialization.required_types_selected, 31);
         let runtime = projected.query_runtime;
         assert_eq!(runtime.claims, 41);
         assert_eq!(runtime.reuses, 43);
