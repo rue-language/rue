@@ -1088,6 +1088,8 @@ fn benchmark_compiler_work(
             type_facts: provider.type_facts,
             const_facts: provider.const_facts,
             materializations: provider.materializations,
+            shared_payload_materializations: provider.shared_payload_materializations,
+            owned_payload_materializations: provider.owned_payload_materializations,
             const_materializations: provider.const_materializations,
             nominal_materializations: provider.nominal_materializations,
             function_materializations: provider.function_materializations,
@@ -1719,6 +1721,8 @@ mod tests {
                 type_facts: 17,
                 const_facts: 19,
                 materializations: 23,
+                shared_payload_materializations: 3,
+                owned_payload_materializations: 20,
                 const_materializations: 2,
                 nominal_materializations: 3,
                 function_materializations: 11,
@@ -1789,6 +1793,11 @@ mod tests {
                 + projected.semantic_provider.const_facts
         );
         assert_eq!(projected.semantic_provider.materializations, 23);
+        assert_eq!(
+            projected.semantic_provider.materializations,
+            projected.semantic_provider.shared_payload_materializations
+                + projected.semantic_provider.owned_payload_materializations
+        );
         assert_eq!(projected.semantic_provider.const_materializations, 2);
         assert_eq!(projected.semantic_provider.nominal_materializations, 3);
         assert_eq!(projected.semantic_provider.function_materializations, 11);

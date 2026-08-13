@@ -8064,6 +8064,11 @@ mod tests {
         assert_eq!(metrics.materializations, 6, "{metrics:?}");
         assert_eq!(
             metrics.materializations,
+            metrics.shared_payload_materializations + metrics.owned_payload_materializations,
+            "the durable materialization aggregate must be exactly partitioned by payload ownership"
+        );
+        assert_eq!(
+            metrics.materializations,
             metrics.const_materializations
                 + metrics.nominal_materializations
                 + metrics.function_materializations
@@ -8108,6 +8113,11 @@ mod tests {
         assert_eq!(metrics.identity_facts, 10, "{metrics:?}");
         assert_eq!(metrics.signature_facts, 10, "{metrics:?}");
         assert_eq!(metrics.materializations, 10, "{metrics:?}");
+        assert_eq!(
+            metrics.materializations,
+            metrics.shared_payload_materializations + metrics.owned_payload_materializations,
+            "the durable materialization aggregate must be exactly partitioned by payload ownership"
+        );
         assert_eq!(
             metrics.materializations,
             metrics.const_materializations

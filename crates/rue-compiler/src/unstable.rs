@@ -246,6 +246,12 @@ pub struct ProviderObservationMetrics {
     pub const_facts: u64,
     /// Durable facts materialized into a body-local overlay.
     pub materializations: u64,
+    /// Materialization requests routed through a provider adapter which shares
+    /// canonical immutable payload storage.
+    pub shared_payload_materializations: u64,
+    /// Materialization requests routed through a provider adapter which
+    /// rebuilds an owned durable payload.
+    pub owned_payload_materializations: u64,
     /// Constant facts materialized into a body-local overlay.
     pub const_materializations: u64,
     /// Named nominal facts materialized into a body-local overlay.
