@@ -16,7 +16,7 @@ relates: ["RUE-1470", "RUE-1478", "ADR-0063", "ADR-0067", "ADR-0068"]
 
 ## Status
 
-Accepted by Steve Klabnik and Dorian Taylor on 2026-08-12. This ADR sets a
+Accepted by Steve Klabnik and Dorian Scheidt on 2026-08-12. This ADR sets a
 product target and the rules for pursuing it. It does not replace the compiler
 architecture in ADR-0063 or the measurement protocols in ADR-0067 and
 ADR-0068. It turns their implemented mechanisms into an explicit performance
