@@ -26,8 +26,8 @@ retired by this ADR.
 
 ## Summary
 
-Rue gains a runtime benchmarking system whose first workload is **gazette**, a
-static site generator written in Rue that builds the live rue-lang.dev corpus
+Rue gains a runtime benchmarking system whose anchor workload is **gazette**,
+a static site generator written in Rue that builds the live rue-lang.dev corpus
 as the real site build assembles it. Gazette is measured whole-process by
 `rue-bench` on the pinned CI runner regime, validated for deterministic,
 work-equivalent output, and compared against pinned Zola (Rust) and Hugo (Go)
@@ -132,7 +132,8 @@ because it answers the headline question with production peers.
 
 ### 1. Anchor the runtime suite with one realistic workload: gazette
 
-The first runtime benchmark is **gazette**, a static site generator written in
+The anchor runtime workload — and the first cross-tool benchmark — is
+**gazette**, a static site generator written in
 Rue, living at `examples/gazette/` as a maintained example registered through
 the ADR-0070 build actions. Gazette walks a content directory, parses TOML
 front matter, renders a defined Markdown subset, expands the site's two
@@ -143,6 +144,11 @@ program — reviewed, tested, and idiomatic — not a benchmark-only artifact.
 Its supporting libraries (front matter, Markdown, templating) are modules
 inside the example. Promotion of any of them into `std` is a separate later
 decision; nothing in this ADR presumes it.
+
+Gazette anchors the suite but is not its first measured program: the durable
+runtime series begins in Phase 1 with a declared existing-example workload
+(see Implementation Phases), so measurement infrastructure exists before the
+workload that motivates it.
 
 ### 2. Build the live corpus and record its identity per observation
 
@@ -162,17 +168,25 @@ benchmark a progressively staler site.
 
 Corpus drift is handled by measurement discipline instead of pinning:
 
-- **Recorded identity.** Every observation records the corpus identity —
-  content tree hash, file count, and total bytes — so any movement in a
-  series is attributable to compiler, workload, or corpus from the data
-  alone.
+- **Recorded identity.** Every observation records the complete
+  fixture-input identity: a tree hash over everything the tools consume —
+  the Markdown content tree, the static passthrough assets (currently 33
+  files, ~1.2 MiB: more bytes than the Markdown itself), and the versioned
+  template-port and parity-config revision — plus file count and total
+  bytes. Any movement in a series is thereby attributable to compiler,
+  workload, or input from the data alone, and no input class can change
+  work without changing the recorded identity.
 - **Annotated events.** Corpus changes appear as annotated events on the
   published charts, alongside compiler releases and peer tool bumps.
-- **Peers as the drift control.** The peer tools are version-pinned, so a
-  pinned peer's series moves only when the corpus moves. Corpus effects
-  shift all three tools; Rue changes shift only gazette. The gazette-to-peer
-  ratio is therefore the drift-immune longitudinal signal, published
-  alongside the raw series.
+- **Peers as the corpus control.** The peer tools are version-pinned, so a
+  pinned peer's series moves only with the corpus and with runner noise.
+  Corpus effects shift all three tools; Rue changes shift only gazette. The
+  gazette-to-peer ratio is therefore the corpus-normalized longitudinal
+  signal, published alongside the raw series — corpus-normalized, not
+  noise-free: the denominator carries hosted-runner dispersion like any
+  other observation, which is why Decision 9's per-run peer canary exists
+  and why ratio flags stay advisory until runtime-specific calibration
+  lands (Decision 5).
 
 Template ports for each tool — gazette templates, a Zola template/config set,
 and a Hugo template/config set, each idiomatic to its tool — and the parity
@@ -269,14 +283,24 @@ speed:
 - **Across tools:** the emitted file sets (relative paths) must be identical,
   and structural checks (page count, non-empty pages, feed presence) must
   pass, so no tool can win by skipping work.
+- **Semantic oracle, on every page:** outside the timed window, a normalized
+  extraction is computed for every emitted page — front-matter metadata,
+  heading tree, visible text content, link targets, shortcode expansion
+  results, section membership, and feed entry ordering — and compared across
+  all three tools. This is the complete work-equivalence check the other
+  layers cannot provide: a renderer that consistently drops body content
+  from every un-goldened page passes determinism, file-set, and structural
+  checks, and fails the oracle.
 - **Spot goldens:** a small set of stable pages carries committed expected
-  output per tool, changed only deliberately, guarding against slow,
-  consistent output corruption that determinism and structural checks cannot
-  see.
+  output per tool, changed only deliberately, covering the rendered
+  markup-level form that the normalized oracle deliberately ignores.
 
 The file-set criterion carries a documented allowlist for tool-mandated
 differences — sitemap emission, feed filename mapping, static passthrough —
-rather than an unstated assumption of exact equality. The ports strip
+rather than an unstated assumption of exact equality. Static passthrough is
+measured work for every tool, and its inputs are part of the recorded
+fixture identity (Decision 2), so a static-asset change can never alter the
+measured job without being visible in the data. The ports strip
 build-time-varying output so the determinism check can hold byte-exactly;
 Hugo's feed `lastBuildDate` and `generator` elements are the known cases.
 Cross-tool HTML byte equality is explicitly a non-goal, per Terminology.
@@ -316,11 +340,16 @@ In-process
 iteration timing for microbenchmarks is explicitly deferred until the
 microbenchmark tier needs it; v1 is whole-process only.
 
-Rue builds of gazette are release-quality (`-O3`), matching ADR-0071's
-definition of the product. Runs execute on the same pinned GitHub Actions
-regime as the compiler suites; noise mitigation inherits that regime's
-calibration, and the order-of-magnitude goal means hosted-runner dispersion
-is acceptable for the comparison claim.
+Rue builds of runtime workloads are release-quality (`-O3`), matching
+ADR-0071's definition of the product. The v1 runtime platform matrix is
+exact and deliberately narrow: `x86_64-linux` on the pinned `ubuntu-24.04`
+regime. `aarch64-linux` joins once the Phase 2 std work is CI-verified
+there; macOS stays deferred behind the known `@syscall` error-detection
+gap. Calibration does not transfer from the compiler suites: dispersion is
+a property of the workload, so each runtime workload is calibrated per
+platform from its own repeated samples, and regression flags on a platform
+are advisory until that calibration exists. The order-of-magnitude
+comparison claim tolerates hosted-runner dispersion either way.
 
 ### 6. Close standard-library gaps on the canonical path
 
@@ -384,13 +413,20 @@ website-publish pipeline rather than adding a new schedule:
   surface attached to the compiler change that caused them, and the website
   rebuild that already follows performance collection publishes them.
 - **Peers are re-measured on events, not on a clock.** Pinned Zola and Hugo
-  results move only when their inputs move, so the peer leg runs only when
-  corpus identity changes (website content), a peer toolchain is bumped, a
-  template port or parity configuration changes, or the runner regime
-  starts a new epoch. The per-push job detects a corpus-identity change at
-  fixture-preparation time and runs the peer leg in that same run. Between
-  events, the derive step joins gazette observations against the latest
-  peer observation with matching corpus identity.
+  results move only when their inputs move, so the full peer leg runs only
+  when the recorded fixture identity changes (content, static assets,
+  template ports, parity configs), a peer toolchain is bumped, or the
+  runner regime starts a new epoch. The per-push job detects an identity
+  change at fixture-preparation time and runs the peer leg in that same
+  run. Between events, the derive step joins gazette observations against
+  the latest full peer observation with matching fixture identity.
+- **A peer canary rides every run.** One single-threaded Zola build of the
+  1x corpus runs alongside every gazette observation — cheap on this
+  corpus, and enough to give every observation a same-run ratio
+  denominator, so no segment's ratio ever leans on a single stale or noisy
+  peer sample. The full peer matrix (Hugo, scale variants, the
+  default-parallel secondary row) stays event-driven; the canary falls
+  under the same cost safety valve as the scale variants.
 - **Scale variants have a safety valve.** The 1x corpus runs per push; if
   the 10x/100x variants prove too expensive for per-push collection, they
   move to a scheduled cadence without changing any other policy.
@@ -408,10 +444,11 @@ Regression flagging respects corpus discontinuities. With site content
 changing every handful of trunk commits, a trailing window over the raw
 per-push series would routinely span a corpus change, so raw medians are
 compared only within corpus-identity-matched segments, never across one.
-The cross-segment signal is the gazette-to-peer ratio, which is
-well-defined per segment because the peer leg fires on exactly the runs
-where corpus identity changes, giving every segment a same-regime peer
-denominator. Flagged deltas get maintainer triage and no hard CI gate in
+The cross-segment signal is the gazette-to-peer ratio, computed against the
+same-run canary denominator so it never inherits the noise of a stale or
+singleton peer sample; even so, cross-segment ratio flags are advisory
+until the runtime-specific per-platform calibration of Decision 5 exists.
+Flagged deltas get maintainer triage and no hard CI gate in
 v1: the project's stated goal is order-of-magnitude placement and
 trustworthy trend lines, and a ratchet like ADR-0071's should be introduced
 only after the runtime series' dispersion is calibrated. Peer toolchain
@@ -421,7 +458,7 @@ silently.
 ## Implementation Phases
 
 - [ ] **Phase 1: rue-bench runtime measurement mode and the runtime
-  manifest, stood up on existing examples** - RUE-1046
+  manifest, stood up on the declared wordfreq workload** - RUE-1046
 - [ ] **Phase 2: Standard-library prerequisites — directory enumeration and
   substring operations** - RUE-1481, RUE-1482
 - [ ] **Phase 3: Gazette libraries — TOML front matter, Markdown subset,
@@ -433,12 +470,21 @@ silently.
 - [ ] **Phase 6: Website publication — comparison table, time series,
   side-by-side source** - RUE-1049
 
-The harness comes first, against workloads that already exist and are
-already compiled in CI: `wordfreq` at minimum, optionally `jsonfmt` or
-`ruelex`. They need no new std work, so the longitudinal Rue-only series
-and the publication path produce data immediately, and gazette later lands
-into working measurement infrastructure instead of being a prerequisite for
-it. This restores RUE-1045's requested harness-first sequencing, which an
+The harness comes first, against a precisely declared workload that already
+exists. Phase 1's initial runtime workload is `wordfreq`, run over a large
+deterministic text fixture — generated at fixture-preparation time by a
+checked-in seeded generator, with the seed and generator revision pinned in
+`performance/runtime.toml` and the generated identity recorded per
+observation, sized on the order of tens of MiB so the run measures word
+counting and map pressure rather than process startup — with fixed
+arguments and a byte-exact golden output as its correctness oracle. That
+series is permanent, not scaffolding: it remains in the suite as a
+string/map-bound realistic workload after gazette lands, joining RUE-1047's
+corpus. `jsonfmt` or `ruelex` may join the same way, each with its own
+declared fixture and oracle. No new std work is needed, so the longitudinal
+Rue-only series and the publication path produce data immediately, and
+gazette later lands into working measurement infrastructure instead of
+being a prerequisite for it. This restores RUE-1045's requested harness-first sequencing, which an
 earlier draft of this ADR had inverted. Phases 2 and 3 can proceed in
 parallel once accepted; Phase 6's longitudinal view can begin as soon as
 Phase 1 produces data. RUE-1047 (corpus principles) is partially realized
@@ -451,7 +497,7 @@ by this ADR and stays in the project as future scope.
 ### Positive
 
 - One workload advances both performance questions: gazette is simultaneously
-  the first runtime benchmark and a new compile-time scaling rung.
+  the anchor runtime benchmark and a new compile-time scaling rung.
 - Per-push measurement makes a runtime regression attributable to the
   specific compiler change that introduced it, at marginal cost on top of
   the compile the runtime harness performs anyway.
@@ -513,7 +559,7 @@ by this ADR and stays in the project as future scope.
   lattice rules. Rejected in favor of the live corpus with recorded
   identity (Decision 2): a comparative observatory does not need a fixed
   input, the site changes far too often to freeze without revision churn or
-  staleness, and the pinned peers already provide a drift control. Freezing
+  staleness, and the pinned peers already provide a corpus control. Freezing
   returns as a prerequisite if a gated target is ever attached.
 - **Gazette-first sequencing.** An earlier draft built the workload before
   the harness, leaving the longitudinal series gated behind three phases of
