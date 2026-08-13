@@ -100,7 +100,10 @@ production body-fact provider. The scaling probe performs no extra lookup or
 materialization to collect them. Keeping lookup demand, exact fact-family
 reads, and durable body-local materializations separate lets a follow-up tell
 whether body analysis is asking for the same fact too often or merely paying
-too much to represent each necessary answer.
+too much to represent each necessary answer. The materialization total is
+exactly partitioned into constant, named-nominal, free-function, and method
+events so representation changes can target the declaration kind which owns
+the measured traffic.
 
 The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build

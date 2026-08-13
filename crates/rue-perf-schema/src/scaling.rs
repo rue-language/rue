@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 12;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 13;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,8 +236,20 @@ pub struct SemanticProviderWork {
     pub type_facts: u64,
     /// Exact constant and compile-time reduction reads.
     pub const_facts: u64,
-    /// Durable facts copied into body-local representations.
+    /// Durable facts materialized into body-local representations.
     pub materializations: u64,
+    /// Constant facts materialized into body-local representations.
+    #[serde(default)]
+    pub const_materializations: u64,
+    /// Named nominal facts materialized into body-local representations.
+    #[serde(default)]
+    pub nominal_materializations: u64,
+    /// Free-function facts materialized into body-local representations.
+    #[serde(default)]
+    pub function_materializations: u64,
+    /// Method facts materialized into body-local representations.
+    #[serde(default)]
+    pub method_materializations: u64,
     /// Anonymous-nominal fact reads.
     pub anonymous_facts: u64,
     /// Anonymous-producer body fact reads.
@@ -410,5 +422,29 @@ question = "small maintained compiler frontend"
             decoded.cfg_retained_charge,
             CfgRetainedChargeWork::default()
         );
+    }
+
+    #[test]
+    fn older_semantic_provider_work_defaults_the_materialization_partition() {
+        let mut encoded = serde_json::to_value(SemanticProviderWork {
+            materializations: 23,
+            ..SemanticProviderWork::default()
+        })
+        .unwrap();
+        let object = encoded.as_object_mut().unwrap();
+        for field in [
+            "const_materializations",
+            "nominal_materializations",
+            "function_materializations",
+            "method_materializations",
+        ] {
+            object.remove(field);
+        }
+        let decoded: SemanticProviderWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.materializations, 23);
+        assert_eq!(decoded.const_materializations, 0);
+        assert_eq!(decoded.nominal_materializations, 0);
+        assert_eq!(decoded.function_materializations, 0);
+        assert_eq!(decoded.method_materializations, 0);
     }
 }
