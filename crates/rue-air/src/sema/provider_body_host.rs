@@ -912,7 +912,7 @@ where
                 )
             };
         let function = DurableCallableSource::function(&self.source, &key)?;
-        for parameter in &function.parameters {
+        for parameter in function.parameters.iter() {
             if !super::body_identity::semantic_import_type_mentions_generic_parameter(&parameter.ty)
             {
                 self.register_import_nominal_identities(&parameter.ty)
@@ -1072,7 +1072,7 @@ where
         }
         let key = self.source.qualified_free_function(&module, name)?;
         let function = DurableCallableSource::function(&self.source, &key)?;
-        for parameter in &function.parameters {
+        for parameter in function.parameters.iter() {
             if !super::body_identity::semantic_import_type_mentions_generic_parameter(&parameter.ty)
             {
                 self.register_import_nominal_identities(&parameter.ty)

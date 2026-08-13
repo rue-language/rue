@@ -2200,7 +2200,7 @@ pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
 /// projected into rue-air's durable type algebra. `name` is carried durably
 /// (r5a) so the pool assembles a `ParamRange` whose names match the epoch's
 /// without re-consulting a declaration shell.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DurableSignatureParameter<K, M> {
     pub name: Arc<str>,
     pub ty: SemanticImportType<K, M>,
@@ -2227,7 +2227,7 @@ pub struct DurableCallableTypeSyntax {
 /// (`binding_manifest.rs`: `shell.is_generic == params.any(is_comptime)`).
 #[derive(Debug, Clone)]
 pub struct DurableFunction<K, M> {
-    pub parameters: Vec<DurableSignatureParameter<K, M>>,
+    pub parameters: Arc<[DurableSignatureParameter<K, M>]>,
     pub result: SemanticImportType<K, M>,
     pub type_syntax: Option<DurableCallableTypeSyntax>,
     pub is_public: bool,
@@ -2242,7 +2242,7 @@ pub struct DurableFunction<K, M> {
 #[derive(Debug, Clone)]
 pub struct DurableMethod<K, M> {
     pub receiver: SemanticImportType<K, M>,
-    pub parameters: Vec<DurableSignatureParameter<K, M>>,
+    pub parameters: Arc<[DurableSignatureParameter<K, M>]>,
     pub result: SemanticImportType<K, M>,
     pub type_syntax: Option<DurableCallableTypeSyntax>,
     pub has_self: bool,
@@ -3473,7 +3473,7 @@ mod tests {
         is_unchecked: bool,
     ) -> DurableFunction<Key, Module> {
         DurableFunction {
-            parameters,
+            parameters: parameters.into(),
             result,
             type_syntax: None,
             is_public,
@@ -3491,7 +3491,7 @@ mod tests {
     ) -> DurableMethod<Key, Module> {
         DurableMethod {
             receiver,
-            parameters,
+            parameters: parameters.into(),
             result,
             type_syntax: None,
             has_self,

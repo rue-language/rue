@@ -798,10 +798,10 @@ impl ProviderObservationCounters {
                 .saturating_add(nominal_materializations)
                 .saturating_add(function_materializations)
                 .saturating_add(method_materializations),
-            shared_payload_materializations: nominal_materializations,
-            owned_payload_materializations: const_materializations
+            shared_payload_materializations: nominal_materializations
                 .saturating_add(function_materializations)
                 .saturating_add(method_materializations),
+            owned_payload_materializations: const_materializations,
             const_materializations,
             nominal_materializations,
             function_materializations,
@@ -22171,27 +22171,6 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
     }
 }
 
-fn provider_signature_parameter(
-    parameter: &crate::durable_semantics::DurableSemanticParameter,
-) -> rue_air::DurableSignatureParameter<crate::StableDefinitionKey, ModuleId> {
-    rue_air::DurableSignatureParameter {
-        name: parameter.name.clone(),
-        ty: parameter.ty.clone(),
-        mode: match parameter.mode {
-            crate::durable_semantics::DurableParameterMode::Value => {
-                rue_air::SemanticParameterMode::Value
-            }
-            crate::durable_semantics::DurableParameterMode::Borrow => {
-                rue_air::SemanticParameterMode::Borrow
-            }
-            crate::durable_semantics::DurableParameterMode::Inout => {
-                rue_air::SemanticParameterMode::Inout
-            }
-        },
-        is_comptime: parameter.is_comptime,
-    }
-}
-
 impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
     for CompilerBodyDurableSource<'_>
 {
@@ -22288,10 +22267,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             return None;
         }
         Some(rue_air::DurableFunction {
-            parameters: parameters
-                .iter()
-                .map(provider_signature_parameter)
-                .collect(),
+            parameters,
             result,
             type_syntax,
             is_public: candidate.identity.is_public,
@@ -22331,24 +22307,11 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         );
         Some(rue_air::DurableMethod {
             receiver: rue_air::SemanticImportType::Nominal(owner),
-            parameters: parameters
-                .iter()
-                .map(provider_signature_parameter)
-                .collect(),
+            parameters,
             result,
             type_syntax,
             has_self,
-            self_mode: match self_mode {
-                crate::durable_semantics::DurableParameterMode::Value => {
-                    rue_air::SemanticParameterMode::Value
-                }
-                crate::durable_semantics::DurableParameterMode::Borrow => {
-                    rue_air::SemanticParameterMode::Borrow
-                }
-                crate::durable_semantics::DurableParameterMode::Inout => {
-                    rue_air::SemanticParameterMode::Inout
-                }
-            },
+            self_mode,
             is_accessor,
         })
     }
@@ -24709,22 +24672,6 @@ pub(crate) mod test_support {
         }
     }
 
-    fn provider_durable_param(
-        parameter: &crate::durable_semantics::DurableSemanticParameter,
-    ) -> rue_air::DurableSignatureParameter<StableDefinitionKey, ModuleId> {
-        use crate::durable_semantics::DurableParameterMode as Mode;
-        rue_air::DurableSignatureParameter {
-            name: parameter.name.clone(),
-            ty: parameter.ty.clone(),
-            mode: match parameter.mode {
-                Mode::Value => rue_air::SemanticParameterMode::Value,
-                Mode::Borrow => rue_air::SemanticParameterMode::Borrow,
-                Mode::Inout => rue_air::SemanticParameterMode::Inout,
-            },
-            is_comptime: parameter.is_comptime,
-        }
-    }
-
     impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
         fn nominal(
             &self,
@@ -24798,7 +24745,7 @@ pub(crate) mod test_support {
                 return None;
             }
             Some(rue_air::DurableFunction {
-                parameters: parameters.iter().map(provider_durable_param).collect(),
+                parameters: parameters.clone(),
                 result: result.clone(),
                 type_syntax: None,
                 is_public: decl.is_public,
@@ -24845,21 +24792,11 @@ pub(crate) mod test_support {
                 .clone();
             Some(rue_air::DurableMethod {
                 receiver: rue_air::SemanticImportType::Nominal(owner_key),
-                parameters: parameters.iter().map(provider_durable_param).collect(),
+                parameters: parameters.clone(),
                 result: result.clone(),
                 type_syntax: None,
                 has_self: *has_self,
-                self_mode: match self_mode {
-                    crate::durable_semantics::DurableParameterMode::Value => {
-                        rue_air::SemanticParameterMode::Value
-                    }
-                    crate::durable_semantics::DurableParameterMode::Borrow => {
-                        rue_air::SemanticParameterMode::Borrow
-                    }
-                    crate::durable_semantics::DurableParameterMode::Inout => {
-                        rue_air::SemanticParameterMode::Inout
-                    }
-                },
+                self_mode: *self_mode,
                 is_accessor: false,
             })
         }
@@ -32299,6 +32236,52 @@ fn main() -> i32 {
         assert!(
             outcome.result,
             "the durable source must not rebuild an equivalent nominal field vector"
+        );
+    }
+
+    #[test]
+    fn durable_function_materialization_shares_the_canonical_parameter_payload() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper(value: i32, count: u64) -> i32 { value }\nfn main() -> i32 { helper(0, 1) }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let helper = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            Arc::from("helper"),
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "durable-function-shared-parameters",
+            move |provider| {
+                let source = CompilerBodyDurableSource::with_anonymous(provider, &[], None);
+                let signature = source.signature(&helper).expect("helper has a signature");
+                let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                    parameters: canonical_parameters,
+                    ..
+                } = signature.signature
+                else {
+                    panic!("helper has a callable signature")
+                };
+                let function = rue_air::DurableCallableSource::function(&source, &helper)
+                    .expect("helper has a durable function body");
+                Arc::ptr_eq(&canonical_parameters, &function.parameters)
+            },
+        );
+        assert!(
+            outcome.result,
+            "the durable source must not rebuild an equivalent function-parameter vector"
         );
     }
 

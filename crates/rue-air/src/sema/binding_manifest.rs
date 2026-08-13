@@ -116,7 +116,7 @@ pub enum SemanticExportType {
     Module(Arc<str>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SemanticParameterMode {
     Value,
     Borrow,
