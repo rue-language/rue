@@ -5222,6 +5222,20 @@ impl CompilerSession {
                     ));
                 }
             };
+            let local_air_payload = record.air.payload_store_stats();
+            work.cfg.local_epochs += 1;
+            work.cfg.local_air_instructions += record.air.instructions().len();
+            work.cfg.local_air_payload_bytes += local_air_payload
+                .word_store_logical_bytes
+                .saturating_add(local_air_payload.projection_store_logical_bytes)
+                .saturating_add(local_air_payload.place_store_logical_bytes);
+            work.cfg.local_type_entries += record.type_pool.len();
+            work.cfg.local_aggregate_type_aliases += record.local_aggregate_type_aliases;
+            work.cfg.local_materialized_type_handles += record.local_materialized_type_handles;
+            work.cfg.local_interner_entries += record.interner.len();
+            work.cfg.local_interner_utf8_bytes += record.interner.utf8_bytes();
+            work.cfg.local_strings += record.strings.len();
+            work.cfg.local_atoms += record.local_atoms.len();
             warnings.extend(crate::cfg_query::import_warnings(
                 &record.materialization_warnings,
                 record.body_span,
@@ -8626,12 +8640,23 @@ mod tests {
             "{cfg_work:?}"
         );
         assert_eq!(
+            cfg_work.local_epochs, cfg_work.materialization_fact_selections,
+            "one rooted CFG record reports one local semantic epoch: {cfg_work:?}"
+        );
+        assert_eq!(
             cfg_work.materialization_declarations_scanned, 0,
             "CFG selection reuses the semantic projection's declaration index: {cfg_work:?}"
         );
         assert_eq!(
             cfg_work.materialization_type_nodes_scanned, 0,
             "CFG selection reuses the semantic projection's destructor index: {cfg_work:?}"
+        );
+        assert!(cfg_work.local_air_payload_bytes > 0, "{cfg_work:?}");
+        assert!(cfg_work.local_type_entries > 0, "{cfg_work:?}");
+        assert!(cfg_work.local_interner_entries > 0, "{cfg_work:?}");
+        assert!(
+            cfg_work.local_interner_utf8_bytes >= cfg_work.local_interner_entries,
+            "{cfg_work:?}"
         );
         assert_eq!(
             cfg_work.retained_interner_charge_scans, 0,

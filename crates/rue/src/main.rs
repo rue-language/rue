@@ -1197,6 +1197,18 @@ fn benchmark_compiler_work(
             interner_utf8_bytes_scanned: metrics.semantic.cfg.retained_interner_utf8_bytes_scanned
                 as u64,
         },
+        cfg_local_epoch: rue_perf_schema::CfgLocalEpochWork {
+            epochs: metrics.semantic.cfg.local_epochs as u64,
+            air_instructions: metrics.semantic.cfg.local_air_instructions as u64,
+            air_payload_bytes: metrics.semantic.cfg.local_air_payload_bytes as u64,
+            type_entries: metrics.semantic.cfg.local_type_entries as u64,
+            aggregate_type_aliases: metrics.semantic.cfg.local_aggregate_type_aliases as u64,
+            materialized_type_handles: metrics.semantic.cfg.local_materialized_type_handles as u64,
+            interner_entries: metrics.semantic.cfg.local_interner_entries as u64,
+            interner_utf8_bytes: metrics.semantic.cfg.local_interner_utf8_bytes as u64,
+            strings: metrics.semantic.cfg.local_strings as u64,
+            local_atoms: metrics.semantic.cfg.local_atoms as u64,
+        },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
             claims: runtime.claims,
             reuses: runtime.reuses,

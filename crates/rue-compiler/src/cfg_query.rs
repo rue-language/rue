@@ -497,6 +497,11 @@ pub(crate) struct CfgRecord {
     pub(crate) strings: Arc<[String]>,
     pub(crate) local_atoms:
         Arc<[rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>]>,
+    /// Constant-time cardinalities from the original local import. Optimized
+    /// projections preserve them for performance reporting; they are never
+    /// semantic input or query authority.
+    pub(crate) local_aggregate_type_aliases: usize,
+    pub(crate) local_materialized_type_handles: usize,
     /// Owned current-domain aliases available while lowering this CFG. The
     /// domain includes cleanup aliases that optimization may leave unused; its
     /// stable identities and ABI classifications are still exact CFG-query
@@ -1312,6 +1317,8 @@ fn build_cfg(
     }
     let (interner_payload_charge, interner_entries) =
         measure_interner_retained_charge(&materialized.interner);
+    let local_aggregate_type_aliases = materialized.aggregate_types.len();
+    let local_materialized_type_handles = materialized.materialized_types.len();
     let interner_retained_charge = Arc::new(std::sync::atomic::AtomicU64::new(
         interner_header_retained_charge(materialized.interner.as_ref())
             .saturating_add(interner_payload_charge),
@@ -1331,6 +1338,8 @@ fn build_cfg(
         interner_retained_entries: interner_entries,
         strings: materialized.strings.into(),
         local_atoms: materialized.local_atoms.into(),
+        local_aggregate_type_aliases,
+        local_materialized_type_handles,
         codegen: Arc::new(codegen),
         materialization_warnings: materialized.warnings,
         body_span: materialized.body_span,
@@ -1559,6 +1568,8 @@ pub(crate) fn evaluate_optimized_cfg(
             interner_retained_entries,
             strings: strings.into(),
             local_atoms: local_atoms.into(),
+            local_aggregate_type_aliases: record.local_aggregate_type_aliases,
+            local_materialized_type_handles: record.local_materialized_type_handles,
             codegen: Arc::new(CfgCodegenDomain {
                 defined_symbol: record.codegen.defined_symbol.clone(),
                 symbol_mappings: Arc::new(symbol_mappings),
@@ -1606,6 +1617,8 @@ fn optimize_cfg_without_accessors(
             interner_retained_entries: record.interner_retained_entries,
             strings: record.strings.clone(),
             local_atoms: record.local_atoms.clone(),
+            local_aggregate_type_aliases: record.local_aggregate_type_aliases,
+            local_materialized_type_handles: record.local_materialized_type_handles,
             codegen: record.codegen.clone(),
             materialization_warnings: record.materialization_warnings.clone(),
             body_span: record.body_span,
