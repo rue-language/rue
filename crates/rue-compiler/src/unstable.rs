@@ -260,6 +260,9 @@ pub struct ProviderObservationMetrics {
     pub function_materializations: u64,
     /// Method facts materialized into a body-local overlay.
     pub method_materializations: u64,
+    /// Named nominal materialization requests satisfied by the body
+    /// transaction's exact durable-payload cache.
+    pub nominal_materialization_reuses: u64,
     /// Anonymous-nominal fact observations.
     pub anonymous_facts: u64,
     /// Producer-body fact observations.

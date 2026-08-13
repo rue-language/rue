@@ -138,6 +138,8 @@ events so representation changes can target the declaration kind which owns
 the measured traffic. It is also exactly partitioned by provider-boundary
 representation: shared payloads reuse canonical immutable storage, while owned
 payloads rebuild an equivalent body-local transport value.
+Named nominal payload reuses count repeated type-pool, endpoint, and export
+consumers satisfied from the exact body transaction's first materialization.
 
 The nominal-registration table measures the work after a durable type fact has
 crossed that boundary. A request installs the named and anonymous identities its
