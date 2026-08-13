@@ -452,7 +452,6 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
     pub(crate) body_analysis_error_recovery: bool,
     pub(crate) body_analysis_recovered_errors: Vec<rue_error::CompileError>,
-    pub(crate) body_analysis_inference_failure_incomplete: bool,
     /// Anonymous identities already installed when an exact-body-analysis attempt
     /// starts. Successful export subtracts this baseline so the transaction
     /// publishes every nominal materialized by the body, including nested
@@ -684,7 +683,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_named_dependencies,
             body_analysis_error_recovery,
             body_analysis_recovered_errors,
-            body_analysis_inference_failure_incomplete,
             body_analysis_initial_anonymous_identities,
             body_analysis_requested_producer,
             body_callable_dependencies,
@@ -762,7 +760,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_named_dependencies,
             body_analysis_error_recovery,
             body_analysis_recovered_errors,
-            body_analysis_inference_failure_incomplete,
             body_analysis_initial_anonymous_identities,
             body_analysis_requested_producer,
             body_callable_dependencies,
@@ -1240,7 +1237,6 @@ impl<'a> Sema<'a, MutableDeclarations> {
             body_named_dependencies: Vec::new(),
             body_analysis_error_recovery: false,
             body_analysis_recovered_errors: Vec::new(),
-            body_analysis_inference_failure_incomplete: false,
             body_analysis_initial_anonymous_identities: std::collections::BTreeSet::new(),
             body_analysis_requested_producer: None,
             body_callable_dependencies: Vec::new(),

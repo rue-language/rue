@@ -93,7 +93,6 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     fn is_strbuf(&self, ty: Type) -> bool;
     fn types_equivalent(&self, left: Type, right: Type) -> bool;
     fn generated_structs(&self) -> &HashMap<Spur, StructId>;
-    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool);
 
     fn body_interner(&self) -> &ThreadedRodeo;
     fn body_type_pool(&self) -> &TypeInternPool;
@@ -1194,10 +1193,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
         self.storage.body_analysis_work_mut()
-    }
-    pub(crate) fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
-        self.storage
-            .set_body_analysis_inference_failure_incomplete(value)
     }
     pub(crate) fn body_analysis_error_recovery(&self) -> bool {
         self.storage.body_analysis_error_recovery()
@@ -2456,10 +2451,6 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     fn generated_structs(&self) -> &HashMap<Spur, StructId> {
         &self.generated_structs
     }
-    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
-        self.body_analysis_inference_failure_incomplete = value;
-    }
-
     fn body_interner(&self) -> &ThreadedRodeo {
         self.interner
     }
