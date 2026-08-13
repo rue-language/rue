@@ -61,8 +61,8 @@ independently verified native output digest. The report records:
 - query-worker active time and peak workers;
 - dependency-ready item count, summed queue delay, and maximum queue delay;
 - longest query/dependency ancestry;
-- bounded semantic, CFG-construction, and CFG-optimization body-duration
-  histograms;
+- bounded semantic-prerequisite, semantic-analysis, CFG-construction, and
+  CFG-optimization body-duration histograms;
 - the inclusive reached-toolchain acquisition envelope (which contains the
   rooted semantic attempt), joins, declined joins, and permit donations;
 - output binary size.
@@ -78,6 +78,12 @@ ready-item mean and maximum wait separately because the total is additive over
 items rather than elapsed wall time. Body timing distributions use 64 bounded
 log2 buckets, exact count/total/maximum, thread-local accumulation, and bounded
 worker-completion merges; they never retain one event per body.
+
+Semantic prerequisite and analysis durations are adjacent, non-overlapping
+intervals inside each reached body transaction. The prerequisite interval owns
+registered toolchain-demand, anonymous-nominal, and well-known-type queries;
+the analysis interval owns body-input lowering, semantic-provider execution,
+stable-key projection, and body-transaction publication.
 
 The reached-toolchain value is an inclusive host-operation envelope, not an
 exclusive phase. The operation runs the rooted semantic attempt to discover

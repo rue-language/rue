@@ -376,6 +376,9 @@ pub struct CompilerCriticalPathEvidence {
     /// Inclusive duration of reached-toolchain acquisition inside compiler root.
     pub toolchain_acquisition_ns: u64,
     pub semantic_bodies: DurationDistribution,
+    /// Registered-query prerequisites acquired before each body analysis.
+    #[serde(default)]
+    pub semantic_prerequisite_bodies: DurationDistribution,
     /// Stable-input preparation before body-local semantic materialization.
     #[serde(default)]
     pub cfg_input_preparation_bodies: DurationDistribution,
@@ -560,6 +563,7 @@ impl BuildBoundaryEvidence {
 
         let critical = &self.critical_path;
         if !critical.semantic_bodies.validate()
+            || !critical.semantic_prerequisite_bodies.validate()
             || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_domain_prerequisite_bodies.validate()
@@ -609,6 +613,9 @@ impl BuildBoundaryEvidence {
     ) -> Result<(), String> {
         self.validate_against(policy, target)?;
         let critical = &self.critical_path;
+        if critical.semantic_prerequisite_bodies.count == 0 {
+            return Err("compiler omitted semantic-prerequisite evidence".to_string());
+        }
         let breakdown_counts = [
             critical.cfg_input_preparation_bodies.count,
             critical.semantic_materialization_bodies.count,
@@ -707,6 +714,7 @@ mod tests {
                 peak_query_workers: 1,
                 toolchain_acquisition_ns: 1,
                 semantic_bodies: distribution(),
+                semantic_prerequisite_bodies: distribution(),
                 cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
                 cfg_domain_prerequisite_bodies: distribution(),
@@ -747,6 +755,7 @@ mod tests {
         let mut encoded = serde_json::to_value(evidence()).unwrap();
         let critical = encoded["critical_path"].as_object_mut().unwrap();
         for field in [
+            "semantic_prerequisite_bodies",
             "cfg_input_preparation_bodies",
             "semantic_materialization_bodies",
             "cfg_domain_prerequisite_bodies",
@@ -760,6 +769,10 @@ mod tests {
         }
 
         let decoded: BuildBoundaryEvidence = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            decoded.critical_path.semantic_prerequisite_bodies,
+            DurationDistribution::default()
+        );
         assert_eq!(
             decoded.critical_path.cfg_input_preparation_bodies,
             DurationDistribution::default()
