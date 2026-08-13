@@ -376,6 +376,9 @@ pub struct CompilerCriticalPathEvidence {
     /// Inclusive duration of reached-toolchain acquisition inside compiler root.
     pub toolchain_acquisition_ns: u64,
     pub semantic_bodies: DurationDistribution,
+    /// Fresh body-local semantic epoch construction and body import.
+    #[serde(default)]
+    pub semantic_materialization_bodies: DurationDistribution,
     pub cfg_construction_bodies: DurationDistribution,
     pub cfg_optimization_bodies: DurationDistribution,
     /// Contention evidence the runtime can support exactly.
@@ -536,6 +539,7 @@ impl BuildBoundaryEvidence {
 
         let critical = &self.critical_path;
         if !critical.semantic_bodies.validate()
+            || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_construction_bodies.validate()
             || !critical.cfg_optimization_bodies.validate()
         {
@@ -560,6 +564,26 @@ impl BuildBoundaryEvidence {
             || critical.peak_query_workers > u64::from(configuration.resolved_workers)
         {
             return Err("peak query workers is outside the resolved worker budget".to_string());
+        }
+        Ok(())
+    }
+
+    /// Validate evidence emitted by the compiler version linked into the
+    /// current measurement runner.
+    ///
+    /// Stored run objects use additive defaults so newer readers can continue
+    /// to validate immutable historical evidence. The current producer has no
+    /// such exception: every field it knows about must be populated.
+    pub fn validate_current_producer_against(
+        &self,
+        policy: &BuildBoundaryPolicy,
+        target: &str,
+    ) -> Result<(), String> {
+        self.validate_against(policy, target)?;
+        if self.critical_path.semantic_materialization_bodies.count == 0 {
+            return Err(
+                "compiler omitted semantic-materialization critical-path evidence".to_string(),
+            );
         }
         Ok(())
     }
@@ -640,6 +664,7 @@ mod tests {
                 peak_query_workers: 1,
                 toolchain_acquisition_ns: 1,
                 semantic_bodies: distribution(),
+                semantic_materialization_bodies: distribution(),
                 cfg_construction_bodies: distribution(),
                 cfg_optimization_bodies: distribution(),
                 joins: 0,
@@ -665,6 +690,35 @@ mod tests {
             .push(CompilerInputClass::WorkloadSource);
         assert!(widened.validate().is_err());
         assert_eq!(WorkerSetting::REFERENCE_MATRIX.len(), 5);
+    }
+
+    #[test]
+    fn historical_critical_path_evidence_defaults_semantic_materialization() {
+        let mut encoded = serde_json::to_value(evidence()).unwrap();
+        encoded["critical_path"]
+            .as_object_mut()
+            .unwrap()
+            .remove("semantic_materialization_bodies");
+
+        let decoded: BuildBoundaryEvidence = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            decoded.critical_path.semantic_materialization_bodies,
+            DurationDistribution::default()
+        );
+        decoded
+            .validate_against(
+                &BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One),
+                "x86-64-linux",
+            )
+            .unwrap();
+        assert!(
+            decoded
+                .validate_current_producer_against(
+                    &BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One),
+                    "x86-64-linux",
+                )
+                .is_err()
+        );
     }
 
     #[test]

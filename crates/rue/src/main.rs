@@ -1061,6 +1061,8 @@ fn compiler_critical_path_evidence(
         peak_query_workers: runtime.peak_query_workers,
         toolchain_acquisition_ns: timing.pass_total_ns("toolchain_acquisition"),
         semantic_bodies: timing.pass_duration_distribution("body_analysis"),
+        semantic_materialization_bodies: timing
+            .pass_duration_distribution("semantic_materialization"),
         cfg_construction_bodies: timing.pass_duration_distribution("cfg_construction"),
         cfg_optimization_bodies: timing.pass_duration_distribution("cfg_optimization"),
         joins: runtime.joins,

@@ -1027,6 +1027,8 @@ fn materialize_and_build_cfg(
         );
     }
     context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
+    let _materialization_span =
+        tracing::info_span!("semantic_materialization", phase = "cfg_and_optimization").entered();
     let materialized = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => {
             crate::local_semantic_materialization::materialize_canonical_body(

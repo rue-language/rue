@@ -397,7 +397,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
                 "boundary policy has no independently declared target".to_string()
             })?;
             evidence
-                .validate_against(policy, expected_target)
+                .validate_current_producer_against(policy, expected_target)
                 .map_err(|detail| format!("build-boundary evidence rejected: {detail}"))?;
             Some(evidence)
         }
