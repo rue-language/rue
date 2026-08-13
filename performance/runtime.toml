@@ -19,10 +19,11 @@
 # outside the timed window (ADR-0071's boundary discipline), and a run that
 # produces wrong output fails regardless of how fast it was.
 #
-# The v1 platform matrix is exactly `x86_64-linux` on `ubuntu-24.04`.
-# `aarch64-linux` joins once ADR-0072's Phase 2 standard-library work is
-# CI-verified there; macOS stays deferred behind the known `@syscall`
-# error-detection gap.
+# The v1 platform matrix is every platform Rue targets (ADR-0072 Decisions 5
+# and 9; RUE-1488): `x86_64-linux` on `ubuntu-24.04` and `aarch64-linux` on
+# `ubuntu-24.04-arm`, both collected on every trunk push, and `aarch64-macos` on
+# `macos-15`, collected daily because its runner is the expensive one. No
+# platform inherits another's calibration, so a row arrives advisory and says so.
 schema_version = 1
 
 [[suite]]
@@ -110,9 +111,111 @@ samples = 5
 # suites — so until this workload's own repeated samples on this regime have
 # been analysed, every regression flag on it is advisory.
 
+# The arm64 Linux reference regime, on the pinned `ubuntu-24.04-arm` image.
+#
+# It joins on the condition ADR-0072 set for it — the Phase 2 standard-library
+# work CI-verified on this hardware — which RUE-1481 and RUE-1482 satisfied. That
+# verification was not a formality: the first arm64 run of RUE-1481 failed every
+# directory-listing case because `O_DIRECTORY` differs between x86-64 and aarch64
+# on Linux while the code dispatched on OS alone.
+#
+# Per push, like the x86-64 row and for the same reason: `ubuntu-24.04-arm` is
+# the same hosted-runner class as `ubuntu-24.04`, this workflow already pays for
+# one on every push for the compile-time legs, and an observation at every commit
+# cannot be collected retroactively once calibration makes it readable.
+[[epoch]]
+id = 1
+platform = "aarch64-linux"
+suite_revision = 1
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+# The runner is `ubuntu-24.04-arm`; the image it reports is `ubuntu-24.04`,
+# which is how ADR-0067's aarch64-linux epochs already record this regime. The
+# architecture is not lost — it rides every record's environment fingerprint,
+# and a run built for another target could not satisfy this epoch's `target`.
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# Five, matching the x86-64 row: same runner class, same expected dispersion,
+# and the two Linux series are easiest to read against each other when their
+# sampling policies differ in nothing.
+[epoch.sampling.wordfreq]
+samples = 5
+
+# No `[epoch.calibration]`. A new platform has none of its own and inherits none
+# from the row already collecting, so every flag here is advisory.
+
+# The Apple Silicon reference regime, on the pinned `macos-15` image.
+#
+# This row is measured, not deferred. The deferral it replaces named the
+# `@syscall` carry-flag error-detection gap, which no longer describes the macOS
+# Rue supports: RUE-945 taught the AArch64 backend to normalize Darwin's
+# carry-set positive errno to the negative convention `@syscall` presents
+# everywhere, so `wordfreq`'s open/read loop distinguishes a failure from a small
+# successful return here exactly as it does on Linux. The gap does remain open in
+# the x86-64 backend, but `x86-64-macos` is not a Rue target at all and is out of
+# scope for the project, so it defers nothing.
+#
+# Collected daily rather than per push (ADR-0072 Decision 9). Hosted macOS
+# runners are the most expensive and most concurrency-limited class in the pool,
+# and per-push attribution buys precision this platform cannot act on while its
+# flags are advisory. The schedule also gives the missing calibration the input
+# it needs: a day in which trunk did not move repeats the measurement at the
+# same compiler revision.
+[[epoch]]
+id = 1
+platform = "aarch64-macos"
+suite_revision = 1
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+# Nine, where the reference Linux regime takes five. This is an arbitrary
+# starting point pending calibration, and it is recorded as one rather than
+# dressed up: nothing has measured this workload's dispersion on this regime, so
+# no sample count here can be justified by data yet. What the number is chosen
+# *for* is reaching that data sooner — this row is off the per-push path, so four
+# extra fresh processes of a seconds-long workload cost a fraction of the release
+# build the job already pays for, and a larger n per observation makes the
+# dispersion estimate calibration will be built from converge faster.
+#
+# It is deliberately not the compiler suites' nine. `performance/manifest.toml`
+# gives every platform nine samples of the startup probe, and that is a different
+# workload on a different boundary with a batching factor this suite does not
+# have; borrowing it would be exactly the inheritance the note below refuses.
+# ADR-0067 gives the sampling policy to the epoch so that changing this one is a
+# visible event on this platform alone.
+[epoch.sampling.wordfreq]
+samples = 9
+
+# No `[epoch.calibration]` here either, and not because it was forgotten.
+# Calibration is never inherited — not from the compiler suites, and not from a
+# runtime row already collecting, however long it has been running — so every
+# regression flag on this platform is advisory until its own repeated samples on
+# this regime have been analysed.
+
 # A development epoch for local runs on an x86-64 Linux host. Not a collection
 # target: its environment policy admits only `local`, so a hosted runner cannot
 # append to it, and a laptop cannot append to the reference series.
+#
+# It is the one x86-64-Linux-only thing left in a matrix that otherwise covers
+# every platform Rue targets, so `--platform local` does not work on an Apple
+# Silicon or arm64 Linux machine. Left as it is deliberately: a second `local`
+# epoch is a maintainer convenience rather than part of this matrix, and it
+# would need its own id and a `--epoch` to select it.
 [[epoch]]
 id = 1
 platform = "local"

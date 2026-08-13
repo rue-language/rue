@@ -1,11 +1,13 @@
 # Performance collection (ADR-0067 Phase 5, RUE-1188; ADR-0072 Phase 1,
 # RUE-1046).
 #
-# Measures each platform's collection epoch on every trunk commit and appends
-# the raw records to the `performance-data-v1` orphan branch.
+# Measures each platform's collection epoch and appends the raw records to the
+# `performance-data-v1` orphan branch. Every leg but one runs on each trunk
+# commit; the `aarch64-macos` runtime leg runs on the daily schedule below, for
+# the cost reasons stated at that job.
 #
 # Two record kinds ride this workflow. The `measure` jobs answer how fast Rue
-# *compiles*; the `runtime` job answers how fast the programs it produces
+# *compiles*; the `runtime` jobs answer how fast the programs it produces
 # *run*. They share the runner regime, the publish path, and the store, and
 # nothing else: separate manifests, separate epochs, separate directories on
 # the data branch, and a separate posture — the runtime series is advisory and
@@ -31,6 +33,26 @@ name: Performance collection
 on:
   push:
     branches: [trunk]
+  # The daily cadence of the `aarch64-macos` runtime leg (ADR-0072 Decision 9,
+  # RUE-1488). Only that job runs on this trigger: the compile-time legs and the
+  # two Linux runtime legs are per-push instruments, and firing them again on a
+  # clock would append a second observation at a commit they already measured.
+  schedule:
+    - cron: "23 6 * * *"
+  # Dispatched from `trunk`, every leg runs — a manual re-collection at trunk's
+  # head. Dispatched from any other ref, only the macOS runtime leg runs, which
+  # is how a day's commit range is narrowed: point a branch at the trunk commit
+  # in question and dispatch there.
+  #
+  # That asymmetry is a guard, not a convenience. The compile-time legs feed
+  # ADR-0067's stall gate, which takes each platform's newest point by
+  # `finished_at` and fails EVERY pull request, with no bypass, when trunk has
+  # moved more than five commits past it. A compile-time record published from a
+  # branch head is newer than every trunk point and is not on trunk, so it trips
+  # that gate for the whole repository and keeps tripping it — and if the branch
+  # is later deleted, the gate cannot even resolve the commit. The runtime series
+  # is deliberately outside that gate, so the macOS leg is safe to dispatch
+  # anywhere.
   workflow_dispatch:
 
 # Measurement jobs only read. The publish job re-declares the write it needs.
@@ -40,12 +62,33 @@ permissions:
 # Never cancel in progress. A cancelled measurement wastes a runner; a cancelled
 # publish can leave the branch describing a run object it does not contain.
 # Queueing is the point, not a limitation.
+#
+# The queue is one deep, and that has a price the daily schedule raises. GitHub
+# holds at most one *pending* run per group and evicts the previously pending
+# one, so while a run occupies this group, the second of two queued runs
+# displaces the first. Both directions can lose an observation: a scheduled
+# macOS run holding the group means a push landing behind another push loses the
+# earlier commit's collection entirely, and a pending scheduled run displaced by
+# pushes means macOS collects nothing that day and reports "cancelled" rather
+# than failing. Accepted rather than solved: the alternative is a second writer
+# group, and two publish jobs racing for `index.json` would lose a whole run
+# object instead of a queue slot. Watch it — a run cancelled here is a hole in a
+# series, not a retry (ADR-0072 Decision 9).
 concurrency:
   group: performance-collection
   cancel-in-progress: false
 
 jobs:
   measure:
+    # Per push, or dispatched from trunk. Never on the schedule (that is the
+    # macOS leg's trigger alone), and never from another ref: a compile-time
+    # record published at a non-trunk commit trips the no-bypass stall gate for
+    # every pull request. See the `workflow_dispatch` note above. The event has
+    # to be tested as well as the ref, because a scheduled run also reports
+    # `refs/heads/trunk`.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/trunk')
     strategy:
       fail-fast: false
       matrix:
@@ -154,26 +197,44 @@ jobs:
 
   # Runtime performance of compiled Rue programs (ADR-0072 Phase 1, RUE-1046).
   #
-  # Rides this workflow rather than adding a schedule, so a runtime regression
-  # surfaces attached to the compiler change that caused it. The v1 platform
-  # matrix is exactly one row: `x86_64-linux` on the pinned `ubuntu-24.04`
-  # image. `aarch64-linux` joins once ADR-0072's Phase 2 standard-library work
-  # is CI-verified there, and macOS stays deferred behind the `@syscall`
-  # error-detection gap.
+  # The per-push half of the platform matrix: both Linux rows, measured on every
+  # trunk commit so a runtime regression surfaces attached to the compiler
+  # change that caused it. `aarch64-linux` collects here because
+  # `ubuntu-24.04-arm` is the same hosted-runner class as `ubuntu-24.04` and
+  # this workflow already pays for one on every push above; `aarch64-macos` is
+  # the scheduled row below, where the runner is not cheap.
   #
   # A failure here fails this job and nothing else. The runtime series sits
   # deliberately outside ADR-0067's required-CI gates, including the no-bypass
   # stall gate: a stalled runtime series is a dashboard staleness flag and a
   # maintainer triage item, never a repository-wide pull-request block.
   runtime:
-    runs-on: ubuntu-24.04
-    name: runtime (x86_64-linux)
+    # Same trigger as the compile-time legs. These records do not feed the stall
+    # gate, but a runtime observation at a commit that is not on trunk is still
+    # a point in a longitudinal series that no history explains.
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/trunk')
+    strategy:
+      # One platform's broken runtime series must not cancel the other's
+      # measurement; a partial sweep is still evidence.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: x86_64-linux
+            image: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux
+            image: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    name: runtime (${{ matrix.platform }})
     # The measured work is small — five samples of a 32 MiB text workload plus
     # one release-quality build of it, on the order of a minute. The job's
     # actual cost is dominated by building `rue` and `rue-bench` under
-    # //platforms:release on a fourth runner. Wall clock is unaffected, since
-    # this runs alongside the three `measure` legs, but it is a runner's worth
-    # of compute per trunk push and the budget below is sized for the build.
+    # //platforms:release. Wall clock is unaffected, since these run alongside
+    # the `measure` legs, but each row is a runner's worth of compute per trunk
+    # push and the budget below is sized for the build.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
@@ -189,7 +250,7 @@ jobs:
       - name: Measure compiled-program runtime
         env:
           RUE_BENCH_RUNNER_LABEL: github-hosted
-          RUE_BENCH_RUNNER_IMAGE: ubuntu-24.04
+          RUE_BENCH_RUNNER_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
           mkdir -p runtime-collected
@@ -202,11 +263,11 @@ jobs:
           set +e
           "$BENCH" runtime \
             --manifest performance/runtime.toml \
-            --platform x86_64-linux \
+            --platform "${{ matrix.platform }}" \
             --compiler "$RUE" \
             --commit "${{ github.sha }}" \
             --repo-root . \
-            --out runtime-collected/runtime-x86_64-linux.json
+            --out "runtime-collected/runtime-${{ matrix.platform }}.json"
           status=$?
           set -e
           echo "runner exit status: $status"
@@ -214,7 +275,7 @@ jobs:
             echo "::error::the runtime runner could not produce a report"
             exit 1
           fi
-          echo "status=$status" > runtime-collected/runtime-x86_64-linux.status
+          echo "status=$status" > "runtime-collected/runtime-${{ matrix.platform }}.status"
 
       - name: Upload the runtime report
         # Always, so a report that cannot enter its series is still kept as
@@ -222,14 +283,119 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: runtime-x86_64-linux
+          name: runtime-${{ matrix.platform }}
           path: runtime-collected/
           retention-days: 30
 
       - name: Report the runtime series' health
         run: |
           set -euo pipefail
-          status="$(cut -d= -f2 runtime-collected/runtime-x86_64-linux.status)"
+          status="$(cut -d= -f2 "runtime-collected/runtime-${{ matrix.platform }}.status")"
+          if [ "$status" -eq 3 ]; then
+            echo "::error::the runtime report cannot enter its series. The most" \
+                 "likely cause is a compiled program producing output that does" \
+                 "not match its committed golden, which fails regardless of speed."
+            exit 1
+          fi
+          if [ "$status" -eq 5 ]; then
+            echo "::error::the runtime report is appendable but a workload did" \
+                 "not complete; the series has a hole at this commit."
+            exit 1
+          fi
+
+  # The scheduled row of the runtime matrix: Apple Silicon (ADR-0072
+  # Decisions 5 and 9, RUE-1488).
+  #
+  # macOS is measured rather than deferred. The deferral this leg replaces named
+  # the `@syscall` carry-flag error-detection gap, which RUE-945 closed on
+  # aarch64-macos; the gap that remains is in the x86-64 backend, and
+  # `x86-64-macos` is not a Rue target at all.
+  #
+  # Daily rather than per push, and for the price of the runner alone. Hosted
+  # macOS is the most expensive and most concurrency-limited class in the pool,
+  # unlike the two Linux rows above; this platform also has no calibration, so
+  # its flags are advisory whatever the cadence, and a macOS runner on every
+  # trunk commit would buy attribution nothing can act on yet. The other rows
+  # are per push because their runners are cheap and an observation at a commit
+  # cannot be collected retroactively — that argument stops at this price.
+  # The trade is that a movement here names a day's commit range rather
+  # than one commit; narrow it by pointing a branch at the trunk commit in
+  # question and dispatching there, which runs this leg alone. A day in which
+  # trunk did not move repeats the measurement at the same commit, which is
+  # exactly the repeated-sample evidence the absent calibration needs. The
+  # schedule's own cost — holding the single writer group daily, in a queue one
+  # run deep — is at the `concurrency` block above.
+  runtime-macos:
+    if: github.event_name != 'push'
+    runs-on: macos-15
+    name: runtime (aarch64-macos)
+    # Sized for the release build of `rue` and `rue-bench` on a hosted macOS
+    # runner, which dominates this job as it does its Linux sibling; the nine
+    # measured samples of a seconds-long workload are the small part.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      # The same Xcode the compile-time macOS leg pins. It does not touch the
+      # measured executables — Rue emits Mach-O through its own linker and
+      # `rue-bench` passes the compiler nothing but `-o`, the epoch's arguments,
+      # and `--target` — but it does build `rue` and `rue-bench` themselves, and
+      # the two macOS legs should not sit on different toolchains.
+      - name: Select Xcode 16.2
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and the runner
+        run: |
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release
+
+      - name: Measure compiled-program runtime
+        env:
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: macos-15
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-collected
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
+
+          # No --epoch, for the same reason the other legs omit it: the manifest
+          # marks its own collection epoch per platform.
+          set +e
+          "$BENCH" runtime \
+            --manifest performance/runtime.toml \
+            --platform aarch64-macos \
+            --compiler "$RUE" \
+            --commit "${{ github.sha }}" \
+            --repo-root . \
+            --out runtime-collected/runtime-aarch64-macos.json
+          status=$?
+          set -e
+          echo "runner exit status: $status"
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the runtime runner could not produce a report"
+            exit 1
+          fi
+          echo "status=$status" > runtime-collected/runtime-aarch64-macos.status
+
+      - name: Upload the runtime report
+        # Always, so a report that cannot enter its series is still kept as
+        # evidence when the next step fails the job.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-aarch64-macos
+          path: runtime-collected/
+          retention-days: 30
+
+      - name: Report the runtime series' health
+        run: |
+          set -euo pipefail
+          status="$(cut -d= -f2 runtime-collected/runtime-aarch64-macos.status)"
           if [ "$status" -eq 3 ]; then
             echo "::error::the runtime report cannot enter its series. The most" \
                  "likely cause is a compiled program producing output that does" \
@@ -243,10 +409,13 @@ jobs:
           fi
 
   publish:
-    needs: [measure, runtime]
+    needs: [measure, runtime, runtime-macos]
     # Runs even when a platform failed: a partial sweep still has valid runs
     # worth storing, and a platform that is persistently broken should be
-    # visible in the data rather than absent from it.
+    # visible in the data rather than absent from it. `always()` also covers
+    # the legs a trigger skips — a scheduled run publishes the macOS runtime
+    # report alone — and the single writer group above keeps a scheduled
+    # publish and a per-push publish from racing for `index.json`.
     if: always()
     runs-on: ubuntu-24.04
     name: publish
