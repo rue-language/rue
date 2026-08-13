@@ -1,5 +1,5 @@
 ---
-id: 0071
+id: 0073
 title: "rue test: agent-first test runner on the query graph"
 status: proposal
 tags: [tooling, testing, syntax, semantics, incremental, cli, language-shape]
@@ -12,7 +12,7 @@ superseded-by:
 relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "ADR-0058", "ADR-0055", "ADR-0064", "ADR-0027", "ADR-0025", "ADR-0069"]
 ---
 
-# ADR-0071: `rue test`: agent-first test runner on the query graph
+# ADR-0073: `rue test`: agent-first test runner on the query graph
 
 ## Status
 
