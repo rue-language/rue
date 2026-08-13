@@ -1,0 +1,31 @@
+// RFC-4180-style task table suitable for spreadsheet analysis.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "task,pool,duration,cpu,memory,priority,retry_budget,cacheable,status,attempts,start,end\r\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        format.csv_id(inout out, borrow workflow, task.id); out.push(44);
+        format.csv_id(inout out, borrow workflow, task.pool_id); out.push(44);
+        text.append_u64(inout out, task.duration); out.push(44);
+        text.append_u64(inout out, task.cpu); out.push(44);
+        text.append_u64(inout out, task.memory); out.push(44);
+        text.append_u64(inout out, task.priority); out.push(44);
+        text.append_u64(inout out, task.retries); out.push(44);
+        text.append_bool(inout out, task.cacheable); out.push(44);
+        format.append_status(inout out, run.status.get_or(i, state.FAILED())); out.push(44);
+        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(44);
+        format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); out.push(44);
+        format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE()));
+        text.append_literal(inout out, "\r\n");
+        i += 1;
+    }
+    out
+}

@@ -1,0 +1,109 @@
+// Event stream statistics independent of replay’s transition proof.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Summary {
+    by_kind: model.U64s,
+    by_pool: model.U64s,
+    by_task: model.U64s,
+    first_time: u64,
+    last_time: u64,
+    simultaneous_events: u64,
+    maximum_events_at_time: u64,
+    maximum_task_events: u64,
+    maximum_pool_events: u64,
+    starts: u64,
+    completions: u64,
+    failures: u64,
+    retries: u64,
+    cache_hits: u64,
+    blocked: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut out = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { out.push(0); i += 1; }
+    out
+}
+
+fn increment(inout values: model.U64s, index: u64) {
+    if index < values.len() { values.set(index, values.get_or(index, 0) + 1); }
+}
+
+fn maximum(borrow values: model.U64s) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < values.len() {
+        let value = values.get_or(i, 0);
+        if value > result { result = value; }
+        i += 1;
+    }
+    result
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn summarize(borrow workflow: model.Workflow, borrow run: state.Run) -> Summary {
+    let mut by_kind = zeroes(7);
+    let mut by_pool = zeroes(workflow.pools.len());
+    let mut by_task = zeroes(workflow.tasks.len());
+    let mut first_time = if run.events.len() == 0 { 0 } else { run.events.get_or(0, state.empty_event()).time };
+    let mut last_time: u64 = 0;
+    let mut simultaneous_events: u64 = 0;
+    let mut maximum_events_at_time: u64 = 0;
+    let mut current_time = first_time;
+    let mut current_count: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut valid = true;
+    let mut i: u64 = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        if i > 0 && event.time < last_time { valid = false; }
+        if event.time == current_time { current_count += 1; }
+        else {
+            if current_count > 1 { simultaneous_events += current_count; }
+            if current_count > maximum_events_at_time { maximum_events_at_time = current_count; }
+            current_time = event.time;
+            current_count = 1;
+        }
+        increment(inout by_kind, event.kind);
+        increment(inout by_pool, event.pool);
+        increment(inout by_task, event.task);
+        digest = mix(digest, event.kind); digest = mix(digest, event.time);
+        digest = mix(digest, event.task); digest = mix(digest, event.attempt);
+        last_time = event.time;
+        i += 1;
+    }
+    if current_count > 1 { simultaneous_events += current_count; }
+    if current_count > maximum_events_at_time { maximum_events_at_time = current_count; }
+    let maximum_task_events = maximum(borrow by_task);
+    let maximum_pool_events = maximum(borrow by_pool);
+    let starts = by_kind.get_or(state.EVENT_START(), 0);
+    let completions = by_kind.get_or(state.EVENT_SUCCESS(), 0);
+    let failures = by_kind.get_or(state.EVENT_FAILURE(), 0);
+    let retries = by_kind.get_or(state.EVENT_RETRY(), 0);
+    let cache_hits = by_kind.get_or(state.EVENT_CACHE(), 0);
+    let blocked = by_kind.get_or(state.EVENT_BLOCKED(), 0);
+    Summary {
+        by_kind: by_kind, by_pool: by_pool, by_task: by_task,
+        first_time: first_time, last_time: last_time,
+        simultaneous_events: simultaneous_events,
+        maximum_events_at_time: maximum_events_at_time,
+        maximum_task_events: maximum_task_events,
+        maximum_pool_events: maximum_pool_events,
+        starts: starts, completions: completions, failures: failures,
+        retries: retries, cache_hits: cache_hits, blocked: blocked,
+        digest: digest, valid: valid,
+    }
+}
+
+pub fn verify(borrow run: state.Run, borrow summary: Summary) -> bool {
+    summary.valid && summary.starts == run.starts_count &&
+        summary.completions == run.succeeded && summary.retries == run.retries &&
+        summary.cache_hits == run.cached &&
+        summary.starts + summary.completions + summary.failures + summary.retries +
+            summary.cache_hits + summary.blocked == run.events.len()
+}

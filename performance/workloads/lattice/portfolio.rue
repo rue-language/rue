@@ -1,0 +1,228 @@
+// Aggregate every independent Lattice analysis pass into one deterministic portfolio.
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const duration_profile = @import("analysis_duration_profile.rue");
+const cpu_work = @import("analysis_cpu_work.rue");
+const memory_work = @import("analysis_memory_work.rue");
+const priority_pressure = @import("analysis_priority_pressure.rue");
+const retry_exposure = @import("analysis_retry_exposure.rue");
+const cache_coverage = @import("analysis_cache_coverage.rue");
+const pool_affinity = @import("analysis_pool_affinity.rue");
+const fanin_weight = @import("analysis_fanin_weight.rue");
+const fanout_weight = @import("analysis_fanout_weight.rue");
+const dependency_distance = @import("analysis_dependency_distance.rue");
+const criticality_proxy = @import("analysis_criticality_proxy.rue");
+const root_cost = @import("analysis_root_cost.rue");
+const leaf_cost = @import("analysis_leaf_cost.rue");
+const resource_product = @import("analysis_resource_product.rue");
+const slot_demand = @import("analysis_slot_demand.rue");
+const pool_cpu_share = @import("analysis_pool_cpu_share.rue");
+const pool_memory_share = @import("analysis_pool_memory_share.rue");
+const parallelism_pressure = @import("analysis_parallelism_pressure.rue");
+const contention_index = @import("analysis_contention_index.rue");
+const queue_priority = @import("analysis_queue_priority.rue");
+const failure_exposure = @import("analysis_failure_exposure.rue");
+const cache_risk = @import("analysis_cache_risk.rue");
+const dependency_density = @import("analysis_dependency_density.rue");
+const layer_proxy = @import("analysis_layer_proxy.rue");
+const path_branching = @import("analysis_path_branching.rue");
+const path_merging = @import("analysis_path_merging.rue");
+const cross_pool_edges = @import("analysis_cross_pool_edges.rue");
+const same_pool_edges = @import("analysis_same_pool_edges.rue");
+const long_edges = @import("analysis_long_edges.rue");
+const short_edges = @import("analysis_short_edges.rue");
+const high_priority_work = @import("analysis_high_priority_work.rue");
+const low_priority_work = @import("analysis_low_priority_work.rue");
+const retry_work = @import("analysis_retry_work.rue");
+const deterministic_keys = @import("analysis_deterministic_keys.rue");
+const graph_locality = @import("analysis_graph_locality.rue");
+const schedule_weight = @import("analysis_schedule_weight.rue");
+const resource_balance = @import("analysis_resource_balance.rue");
+const pool_skew = @import("analysis_pool_skew.rue");
+const duration_variance_proxy = @import("analysis_duration_variance_proxy.rue");
+const cpu_variance_proxy = @import("analysis_cpu_variance_proxy.rue");
+const memory_variance_proxy = @import("analysis_memory_variance_proxy.rue");
+const priority_variance_proxy = @import("analysis_priority_variance_proxy.rue");
+const edge_work = @import("analysis_edge_work.rue");
+const successor_load = @import("analysis_successor_load.rue");
+const predecessor_load = @import("analysis_predecessor_load.rue");
+const cacheable_work = @import("analysis_cacheable_work.rue");
+const uncached_work = @import("analysis_uncached_work.rue");
+const failure_recovery = @import("analysis_failure_recovery.rue");
+
+pub struct Summary {
+    passes: u64,
+    observations: u64,
+    warnings: u64,
+    verification_failures: u64,
+    sum: u64,
+    weighted: u64,
+    digest: u64,
+}
+
+fn record(inout summary: Summary, value: metric.Metric, verified: bool) {
+    summary.passes += 1;
+    summary.observations = metric.add(summary.observations, value.observations);
+    summary.warnings = metric.add(summary.warnings, value.warnings);
+    summary.sum = metric.add(summary.sum, value.sum);
+    summary.weighted = metric.add(summary.weighted, value.weighted);
+    summary.digest = metric.mix(summary.digest, value.tag);
+    summary.digest = metric.mix(summary.digest, value.digest);
+    if !verified { summary.verification_failures += 1; }
+}
+
+pub fn analyze(borrow workflow: model.Workflow) -> Summary {
+    let mut result = Summary {
+        passes: 0, observations: 0, warnings: 0, verification_failures: 0,
+        sum: 0, weighted: 0, digest: 14695981039346656037,
+    };
+    let duration_profile_metric = duration_profile.analyze(borrow workflow);
+    let duration_profile_verified = duration_profile.verify(borrow workflow, borrow duration_profile_metric);
+    record(inout result, duration_profile_metric, duration_profile_verified);
+    let cpu_work_metric = cpu_work.analyze(borrow workflow);
+    let cpu_work_verified = cpu_work.verify(borrow workflow, borrow cpu_work_metric);
+    record(inout result, cpu_work_metric, cpu_work_verified);
+    let memory_work_metric = memory_work.analyze(borrow workflow);
+    let memory_work_verified = memory_work.verify(borrow workflow, borrow memory_work_metric);
+    record(inout result, memory_work_metric, memory_work_verified);
+    let priority_pressure_metric = priority_pressure.analyze(borrow workflow);
+    let priority_pressure_verified = priority_pressure.verify(borrow workflow, borrow priority_pressure_metric);
+    record(inout result, priority_pressure_metric, priority_pressure_verified);
+    let retry_exposure_metric = retry_exposure.analyze(borrow workflow);
+    let retry_exposure_verified = retry_exposure.verify(borrow workflow, borrow retry_exposure_metric);
+    record(inout result, retry_exposure_metric, retry_exposure_verified);
+    let cache_coverage_metric = cache_coverage.analyze(borrow workflow);
+    let cache_coverage_verified = cache_coverage.verify(borrow workflow, borrow cache_coverage_metric);
+    record(inout result, cache_coverage_metric, cache_coverage_verified);
+    let pool_affinity_metric = pool_affinity.analyze(borrow workflow);
+    let pool_affinity_verified = pool_affinity.verify(borrow workflow, borrow pool_affinity_metric);
+    record(inout result, pool_affinity_metric, pool_affinity_verified);
+    let fanin_weight_metric = fanin_weight.analyze(borrow workflow);
+    let fanin_weight_verified = fanin_weight.verify(borrow workflow, borrow fanin_weight_metric);
+    record(inout result, fanin_weight_metric, fanin_weight_verified);
+    let fanout_weight_metric = fanout_weight.analyze(borrow workflow);
+    let fanout_weight_verified = fanout_weight.verify(borrow workflow, borrow fanout_weight_metric);
+    record(inout result, fanout_weight_metric, fanout_weight_verified);
+    let dependency_distance_metric = dependency_distance.analyze(borrow workflow);
+    let dependency_distance_verified = dependency_distance.verify(borrow workflow, borrow dependency_distance_metric);
+    record(inout result, dependency_distance_metric, dependency_distance_verified);
+    let criticality_proxy_metric = criticality_proxy.analyze(borrow workflow);
+    let criticality_proxy_verified = criticality_proxy.verify(borrow workflow, borrow criticality_proxy_metric);
+    record(inout result, criticality_proxy_metric, criticality_proxy_verified);
+    let root_cost_metric = root_cost.analyze(borrow workflow);
+    let root_cost_verified = root_cost.verify(borrow workflow, borrow root_cost_metric);
+    record(inout result, root_cost_metric, root_cost_verified);
+    let leaf_cost_metric = leaf_cost.analyze(borrow workflow);
+    let leaf_cost_verified = leaf_cost.verify(borrow workflow, borrow leaf_cost_metric);
+    record(inout result, leaf_cost_metric, leaf_cost_verified);
+    let resource_product_metric = resource_product.analyze(borrow workflow);
+    let resource_product_verified = resource_product.verify(borrow workflow, borrow resource_product_metric);
+    record(inout result, resource_product_metric, resource_product_verified);
+    let slot_demand_metric = slot_demand.analyze(borrow workflow);
+    let slot_demand_verified = slot_demand.verify(borrow workflow, borrow slot_demand_metric);
+    record(inout result, slot_demand_metric, slot_demand_verified);
+    let pool_cpu_share_metric = pool_cpu_share.analyze(borrow workflow);
+    let pool_cpu_share_verified = pool_cpu_share.verify(borrow workflow, borrow pool_cpu_share_metric);
+    record(inout result, pool_cpu_share_metric, pool_cpu_share_verified);
+    let pool_memory_share_metric = pool_memory_share.analyze(borrow workflow);
+    let pool_memory_share_verified = pool_memory_share.verify(borrow workflow, borrow pool_memory_share_metric);
+    record(inout result, pool_memory_share_metric, pool_memory_share_verified);
+    let parallelism_pressure_metric = parallelism_pressure.analyze(borrow workflow);
+    let parallelism_pressure_verified = parallelism_pressure.verify(borrow workflow, borrow parallelism_pressure_metric);
+    record(inout result, parallelism_pressure_metric, parallelism_pressure_verified);
+    let contention_index_metric = contention_index.analyze(borrow workflow);
+    let contention_index_verified = contention_index.verify(borrow workflow, borrow contention_index_metric);
+    record(inout result, contention_index_metric, contention_index_verified);
+    let queue_priority_metric = queue_priority.analyze(borrow workflow);
+    let queue_priority_verified = queue_priority.verify(borrow workflow, borrow queue_priority_metric);
+    record(inout result, queue_priority_metric, queue_priority_verified);
+    let failure_exposure_metric = failure_exposure.analyze(borrow workflow);
+    let failure_exposure_verified = failure_exposure.verify(borrow workflow, borrow failure_exposure_metric);
+    record(inout result, failure_exposure_metric, failure_exposure_verified);
+    let cache_risk_metric = cache_risk.analyze(borrow workflow);
+    let cache_risk_verified = cache_risk.verify(borrow workflow, borrow cache_risk_metric);
+    record(inout result, cache_risk_metric, cache_risk_verified);
+    let dependency_density_metric = dependency_density.analyze(borrow workflow);
+    let dependency_density_verified = dependency_density.verify(borrow workflow, borrow dependency_density_metric);
+    record(inout result, dependency_density_metric, dependency_density_verified);
+    let layer_proxy_metric = layer_proxy.analyze(borrow workflow);
+    let layer_proxy_verified = layer_proxy.verify(borrow workflow, borrow layer_proxy_metric);
+    record(inout result, layer_proxy_metric, layer_proxy_verified);
+    let path_branching_metric = path_branching.analyze(borrow workflow);
+    let path_branching_verified = path_branching.verify(borrow workflow, borrow path_branching_metric);
+    record(inout result, path_branching_metric, path_branching_verified);
+    let path_merging_metric = path_merging.analyze(borrow workflow);
+    let path_merging_verified = path_merging.verify(borrow workflow, borrow path_merging_metric);
+    record(inout result, path_merging_metric, path_merging_verified);
+    let cross_pool_edges_metric = cross_pool_edges.analyze(borrow workflow);
+    let cross_pool_edges_verified = cross_pool_edges.verify(borrow workflow, borrow cross_pool_edges_metric);
+    record(inout result, cross_pool_edges_metric, cross_pool_edges_verified);
+    let same_pool_edges_metric = same_pool_edges.analyze(borrow workflow);
+    let same_pool_edges_verified = same_pool_edges.verify(borrow workflow, borrow same_pool_edges_metric);
+    record(inout result, same_pool_edges_metric, same_pool_edges_verified);
+    let long_edges_metric = long_edges.analyze(borrow workflow);
+    let long_edges_verified = long_edges.verify(borrow workflow, borrow long_edges_metric);
+    record(inout result, long_edges_metric, long_edges_verified);
+    let short_edges_metric = short_edges.analyze(borrow workflow);
+    let short_edges_verified = short_edges.verify(borrow workflow, borrow short_edges_metric);
+    record(inout result, short_edges_metric, short_edges_verified);
+    let high_priority_work_metric = high_priority_work.analyze(borrow workflow);
+    let high_priority_work_verified = high_priority_work.verify(borrow workflow, borrow high_priority_work_metric);
+    record(inout result, high_priority_work_metric, high_priority_work_verified);
+    let low_priority_work_metric = low_priority_work.analyze(borrow workflow);
+    let low_priority_work_verified = low_priority_work.verify(borrow workflow, borrow low_priority_work_metric);
+    record(inout result, low_priority_work_metric, low_priority_work_verified);
+    let retry_work_metric = retry_work.analyze(borrow workflow);
+    let retry_work_verified = retry_work.verify(borrow workflow, borrow retry_work_metric);
+    record(inout result, retry_work_metric, retry_work_verified);
+    let deterministic_keys_metric = deterministic_keys.analyze(borrow workflow);
+    let deterministic_keys_verified = deterministic_keys.verify(borrow workflow, borrow deterministic_keys_metric);
+    record(inout result, deterministic_keys_metric, deterministic_keys_verified);
+    let graph_locality_metric = graph_locality.analyze(borrow workflow);
+    let graph_locality_verified = graph_locality.verify(borrow workflow, borrow graph_locality_metric);
+    record(inout result, graph_locality_metric, graph_locality_verified);
+    let schedule_weight_metric = schedule_weight.analyze(borrow workflow);
+    let schedule_weight_verified = schedule_weight.verify(borrow workflow, borrow schedule_weight_metric);
+    record(inout result, schedule_weight_metric, schedule_weight_verified);
+    let resource_balance_metric = resource_balance.analyze(borrow workflow);
+    let resource_balance_verified = resource_balance.verify(borrow workflow, borrow resource_balance_metric);
+    record(inout result, resource_balance_metric, resource_balance_verified);
+    let pool_skew_metric = pool_skew.analyze(borrow workflow);
+    let pool_skew_verified = pool_skew.verify(borrow workflow, borrow pool_skew_metric);
+    record(inout result, pool_skew_metric, pool_skew_verified);
+    let duration_variance_proxy_metric = duration_variance_proxy.analyze(borrow workflow);
+    let duration_variance_proxy_verified = duration_variance_proxy.verify(borrow workflow, borrow duration_variance_proxy_metric);
+    record(inout result, duration_variance_proxy_metric, duration_variance_proxy_verified);
+    let cpu_variance_proxy_metric = cpu_variance_proxy.analyze(borrow workflow);
+    let cpu_variance_proxy_verified = cpu_variance_proxy.verify(borrow workflow, borrow cpu_variance_proxy_metric);
+    record(inout result, cpu_variance_proxy_metric, cpu_variance_proxy_verified);
+    let memory_variance_proxy_metric = memory_variance_proxy.analyze(borrow workflow);
+    let memory_variance_proxy_verified = memory_variance_proxy.verify(borrow workflow, borrow memory_variance_proxy_metric);
+    record(inout result, memory_variance_proxy_metric, memory_variance_proxy_verified);
+    let priority_variance_proxy_metric = priority_variance_proxy.analyze(borrow workflow);
+    let priority_variance_proxy_verified = priority_variance_proxy.verify(borrow workflow, borrow priority_variance_proxy_metric);
+    record(inout result, priority_variance_proxy_metric, priority_variance_proxy_verified);
+    let edge_work_metric = edge_work.analyze(borrow workflow);
+    let edge_work_verified = edge_work.verify(borrow workflow, borrow edge_work_metric);
+    record(inout result, edge_work_metric, edge_work_verified);
+    let successor_load_metric = successor_load.analyze(borrow workflow);
+    let successor_load_verified = successor_load.verify(borrow workflow, borrow successor_load_metric);
+    record(inout result, successor_load_metric, successor_load_verified);
+    let predecessor_load_metric = predecessor_load.analyze(borrow workflow);
+    let predecessor_load_verified = predecessor_load.verify(borrow workflow, borrow predecessor_load_metric);
+    record(inout result, predecessor_load_metric, predecessor_load_verified);
+    let cacheable_work_metric = cacheable_work.analyze(borrow workflow);
+    let cacheable_work_verified = cacheable_work.verify(borrow workflow, borrow cacheable_work_metric);
+    record(inout result, cacheable_work_metric, cacheable_work_verified);
+    let uncached_work_metric = uncached_work.analyze(borrow workflow);
+    let uncached_work_verified = uncached_work.verify(borrow workflow, borrow uncached_work_metric);
+    record(inout result, uncached_work_metric, uncached_work_verified);
+    let failure_recovery_metric = failure_recovery.analyze(borrow workflow);
+    let failure_recovery_verified = failure_recovery.verify(borrow workflow, borrow failure_recovery_metric);
+    record(inout result, failure_recovery_metric, failure_recovery_verified);
+    result
+}
+
+pub fn valid(borrow result: Summary) -> bool {
+    result.passes == 48 && result.verification_failures == 0 && result.observations > 0
+}

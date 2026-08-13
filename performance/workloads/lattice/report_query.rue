@@ -1,0 +1,34 @@
+// Saved operational queries and ranked matches.
+const model = @import("model.rue");
+const query = @import("query.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn section(inout out: StrBuf, label: str, borrow workflow: model.Workflow, borrow result: query.Result) {
+    text.append_literal(inout out, label); text.append_literal(inout out, " matches=");
+    text.append_u64(inout out, result.matches); text.append_literal(inout out, " duration=");
+    text.append_u64(inout out, result.total_duration); out.push(10);
+    let mut i: u64 = 0;
+    while i < result.tasks.len() {
+        let index = result.tasks.get_or(i, model.NONE());
+        let task = workflow.tasks.get_or(index, model.empty_task());
+        text.append_literal(inout out, "  "); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, " priority="); text.append_u64(inout out, task.priority);
+        text.append_literal(inout out, " duration="); text.append_u64(inout out, task.duration); out.push(10);
+        i += 1;
+    }
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let risky_query = query.high_risk();
+    let candidate_query = query.cache_candidates();
+    let risky = query.execute(borrow workflow, borrow run, borrow risky_query);
+    let candidates = query.execute(borrow workflow, borrow run, borrow candidate_query);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "SAVED QUERIES\n");
+    section(inout out, "high-risk", borrow workflow, borrow risky);
+    section(inout out, "cache-candidates", borrow workflow, borrow candidates);
+    out
+}

@@ -1,0 +1,25 @@
+// Root/leaf path cardinality and bottleneck report.
+const model = @import("model.rue");
+const path_catalog = @import("path_catalog.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let paths = path_catalog.compute(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "PATH CATALOG roots="); text.append_u64(inout out, paths.roots);
+    text.append_literal(inout out, " leaves="); text.append_u64(inout out, paths.leaves);
+    text.append_literal(inout out, " total_paths="); text.append_u64(inout out, paths.total_paths);
+    text.append_literal(inout out, " saturated="); text.append_u64(inout out, paths.saturated_additions); out.push(10);
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "task="); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, " from_roots="); text.append_u64(inout out, paths.paths_from_roots.get_or(i, 0));
+        text.append_literal(inout out, " to_leaves="); text.append_u64(inout out, paths.paths_to_leaves.get_or(i, 0));
+        text.append_literal(inout out, " through="); text.append_u64(inout out, paths.paths_through_task.get_or(i, 0)); out.push(10);
+        i += 1;
+    }
+    out
+}

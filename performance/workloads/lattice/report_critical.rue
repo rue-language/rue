@@ -1,0 +1,43 @@
+// Critical path, slack table, and path-count bottlenecks.
+const critical_path = @import("critical_path.rue");
+const format = @import("format.rue");
+const model = @import("model.rue");
+const path_catalog = @import("path_catalog.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let critical = critical_path.compute(borrow workflow);
+    let paths = path_catalog.compute(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "CRITICAL PATH workflow="); text.append_id(inout out, borrow workflow, workflow.name);
+    text.append_literal(inout out, " makespan="); text.append_u64(inout out, critical.makespan);
+    text.append_literal(inout out, " critical_tasks="); text.append_u64(inout out, critical.critical_tasks.len()); out.push(10);
+    text.append_literal(inout out, "canonical=");
+    let mut i: u64 = 0;
+    while i < critical.canonical_path.len() {
+        if i > 0 { text.append_literal(inout out, " -> "); }
+        let task_index = critical.canonical_path.get_or(i, model.NONE());
+        let task = workflow.tasks.get_or(task_index, model.empty_task());
+        text.append_id(inout out, borrow workflow, task.id);
+        i += 1;
+    }
+    out.push(10);
+    text.append_literal(inout out, "task                 early late slack paths-through critical\n");
+    i = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        format.markdown_id(inout out, borrow workflow, task.id); text.append_literal(inout out, " ");
+        text.append_u64(inout out, critical.earliest_start.get_or(i, 0)); out.push(32);
+        text.append_u64(inout out, critical.latest_start.get_or(i, 0)); out.push(32);
+        text.append_u64(inout out, critical.slack.get_or(i, 0)); out.push(32);
+        text.append_u64(inout out, paths.paths_through_task.get_or(i, 0)); out.push(32);
+        text.append_bool(inout out, critical.slack.get_or(i, 1) == 0); out.push(10);
+        i += 1;
+    }
+    text.append_literal(inout out, "total_paths="); text.append_u64(inout out, paths.total_paths);
+    text.append_literal(inout out, " total_slack="); text.append_u64(inout out, critical.total_slack);
+    text.append_literal(inout out, " maximum_slack="); text.append_u64(inout out, critical.maximum_slack); out.push(10);
+    out
+}

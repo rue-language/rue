@@ -1,0 +1,33 @@
+// SARIF 2.1.0 policy-result projection for code-scanning systems.
+const model = @import("model.rue");
+const policy = @import("policy.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let profile = policy.production();
+    let evaluation = policy.evaluate(borrow workflow, borrow run, borrow profile);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "{\"version\":\"2.1.0\",\"$schema\":\"https://json.schemastore.org/sarif-2.1.0.json\",\"runs\":[{\"tool\":{\"driver\":{\"name\":\"Lattice\",\"informationUri\":\"https://github.com/rue-language/rue\"}},\"results\":[");
+    let mut i: u64 = 0;
+    while i < evaluation.violations.len() {
+        if i > 0 { out.push(44); }
+        let value = evaluation.violations.get_or(i, policy.Violation {
+            code: 0, actual: 0, expected: 0, task: model.NONE(), pool: model.NONE(),
+        });
+        text.append_literal(inout out, "{\"ruleId\":\""); text.append_literal(inout out, policy.code_name(value.code));
+        text.append_literal(inout out, "\",\"level\":\"error\",\"message\":{\"text\":\"actual ");
+        text.append_u64(inout out, value.actual); text.append_literal(inout out, " violates threshold ");
+        text.append_u64(inout out, value.expected); text.append_literal(inout out, "\"}");
+        if value.task < workflow.tasks.len() {
+            let task = workflow.tasks.get_or(value.task, model.empty_task());
+            text.append_literal(inout out, ",\"locations\":[{\"logicalLocations\":[{\"name\":");
+            text.json_id(inout out, borrow workflow, task.id); text.append_literal(inout out, "}]}]");
+        }
+        out.push(125); i += 1;
+    }
+    text.append_literal(inout out, "]}]}\n");
+    out
+}

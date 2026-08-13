@@ -1,0 +1,31 @@
+// Production SLO evaluation report.
+const model = @import("model.rue");
+const policy = @import("policy.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let profile = policy.production();
+    let evaluation = policy.evaluate(borrow workflow, borrow run, borrow profile);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "POLICY checks="); text.append_u64(inout out, evaluation.checks);
+    text.append_literal(inout out, " failures="); text.append_u64(inout out, evaluation.failures);
+    text.append_literal(inout out, " passed="); text.append_bool(inout out, evaluation.passed); out.push(10);
+    let mut i: u64 = 0;
+    while i < evaluation.violations.len() {
+        let value = evaluation.violations.get_or(i, policy.Violation {
+            code: 0, actual: 0, expected: 0, task: model.NONE(), pool: model.NONE(),
+        });
+        text.append_literal(inout out, "violation="); text.append_literal(inout out, policy.code_name(value.code));
+        text.append_literal(inout out, " actual="); text.append_u64(inout out, value.actual);
+        text.append_literal(inout out, " expected="); text.append_u64(inout out, value.expected);
+        text.append_literal(inout out, " task=");
+        if value.task < workflow.tasks.len() {
+            text.append_id(inout out, borrow workflow, workflow.tasks.get_or(value.task, model.empty_task()).id);
+        } else { text.append_literal(inout out, "<none>"); }
+        out.push(10); i += 1;
+    }
+    out
+}

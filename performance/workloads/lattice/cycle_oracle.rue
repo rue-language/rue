@@ -1,0 +1,76 @@
+// Independent transitive-closure cycle oracle. It intentionally does not use
+// topology.rue, giving selftests a differential graph check.
+const std = @import("std");
+const model = @import("model.rue");
+const Bools = std.arraybuf.ArrayBuf(bool);
+
+fn matrix(count: u64) -> Bools {
+    let mut values = Bools.with_capacity(count * count);
+    let mut i: u64 = 0;
+    while i < count * count { values.push(false); i += 1; }
+    values
+}
+
+pub struct Closure {
+    reachable: Bools,
+    size: u64,
+    cycle_vertices: u64,
+    comparable_pairs: u64,
+}
+
+pub fn compute(borrow workflow: model.Workflow) -> Closure {
+    let count = workflow.tasks.len();
+    let mut reachable = matrix(count);
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.before < count && edge.after < count {
+            reachable.set(edge.before * count + edge.after, true);
+        }
+        i += 1;
+    }
+    let mut middle: u64 = 0;
+    while middle < count {
+        let mut from: u64 = 0;
+        while from < count {
+            if reachable.get_or(from * count + middle, false) {
+                let mut to: u64 = 0;
+                while to < count {
+                    if reachable.get_or(middle * count + to, false) {
+                        reachable.set(from * count + to, true);
+                    }
+                    to += 1;
+                }
+            }
+            from += 1;
+        }
+        middle += 1;
+    }
+    let mut cycle_vertices: u64 = 0;
+    let mut comparable_pairs: u64 = 0;
+    i = 0;
+    while i < count {
+        if reachable.get_or(i * count + i, false) { cycle_vertices += 1; }
+        let mut j: u64 = i + 1;
+        while j < count {
+            if reachable.get_or(i * count + j, false) || reachable.get_or(j * count + i, false) {
+                comparable_pairs += 1;
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    Closure {
+        reachable: reachable,
+        size: count,
+        cycle_vertices: cycle_vertices,
+        comparable_pairs: comparable_pairs,
+    }
+}
+
+pub fn reaches(borrow closure: Closure, from: u64, to: u64) -> bool {
+    if from >= closure.size || to >= closure.size { false }
+    else { closure.reachable.get_or(from * closure.size + to, false) }
+}
+
+pub fn has_cycle(borrow closure: Closure) -> bool { closure.cycle_vertices > 0 }

@@ -1,0 +1,44 @@
+// Standalone HTML dashboard with no external assets.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const schedule_quality = @import("schedule_quality.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn cell(inout out: StrBuf, value: u64) {
+    text.append_literal(inout out, "<td>"); text.append_u64(inout out, value); text.append_literal(inout out, "</td>");
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let quality = schedule_quality.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "<!doctype html><html><head><meta charset=\"utf-8\"><title>Lattice ");
+    text.append_id(inout out, borrow workflow, workflow.name);
+    text.append_literal(inout out, "</title><style>body{font-family:system-ui;margin:2rem;color:#182230}table{border-collapse:collapse;width:100%}th,td{padding:.45rem;border-bottom:1px solid #ccd3dc;text-align:left}.ok{color:#08783e}.bad{color:#b42318}code{background:#f1f4f8;padding:.1rem .3rem}</style></head><body>");
+    text.append_literal(inout out, "<h1>Workflow "); text.append_id(inout out, borrow workflow, workflow.name); text.append_literal(inout out, "</h1>");
+    text.append_literal(inout out, "<section><h2>Execution</h2><ul><li>Makespan: <strong>"); text.append_u64(inout out, run.makespan);
+    text.append_literal(inout out, "</strong></li><li>Succeeded: "); text.append_u64(inout out, run.succeeded);
+    text.append_literal(inout out, "</li><li>Cached: "); text.append_u64(inout out, run.cached);
+    text.append_literal(inout out, "</li><li>Retries: "); text.append_u64(inout out, run.retries);
+    text.append_literal(inout out, "</li><li>Efficiency: "); format.append_millis(inout out, quality.efficiency_millis);
+    text.append_literal(inout out, "</li></ul></section><section><h2>Tasks</h2><table><thead><tr><th>Task</th><th>Pool</th><th>Status</th><th>Duration</th><th>Priority</th><th>Attempts</th><th>Start</th><th>End</th></tr></thead><tbody>");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let status = run.status.get_or(i, state.FAILED());
+        text.append_literal(inout out, "<tr><td><code>"); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, "</code></td><td>"); text.append_id(inout out, borrow workflow, task.pool_id);
+        text.append_literal(inout out, "</td><td class=\"");
+        if state.successful(status) { text.append_literal(inout out, "ok"); } else { text.append_literal(inout out, "bad"); }
+        text.append_literal(inout out, "\">"); format.append_status(inout out, status); text.append_literal(inout out, "</td>");
+        cell(inout out, task.duration); cell(inout out, task.priority); cell(inout out, run.attempts.get_or(i, 0));
+        text.append_literal(inout out, "<td>"); format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); text.append_literal(inout out, "</td><td>");
+        format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); text.append_literal(inout out, "</td></tr>");
+        i += 1;
+    }
+    text.append_literal(inout out, "</tbody></table></section><footer><p>fingerprint <code>"); text.append_u64(inout out, run.fingerprint);
+    text.append_literal(inout out, "</code></p></footer></body></html>\n");
+    out
+}

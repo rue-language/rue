@@ -1,0 +1,23 @@
+// Machine-readable capacity recommendation table.
+const capacity_plan = @import("capacity_plan.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let plan = capacity_plan.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "pool,current_slots,recommended_slots,current_cpu,recommended_cpu,current_memory,recommended_memory\n");
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        text.append_id(inout out, borrow workflow, pool.id); out.push(44);
+        text.append_u64(inout out, pool.slots); out.push(44); text.append_u64(inout out, plan.recommended_slots.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, pool.cpu); out.push(44); text.append_u64(inout out, plan.recommended_cpu.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, pool.memory); out.push(44); text.append_u64(inout out, plan.recommended_memory.get_or(i, 0)); out.push(10);
+        i += 1;
+    }
+    out
+}

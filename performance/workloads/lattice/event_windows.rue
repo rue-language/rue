@@ -1,0 +1,80 @@
+// Partition the event stream into equal makespan windows for burst analysis.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    events_by_window: model.U64s,
+    starts_by_window: model.U64s,
+    completions_by_window: model.U64s,
+    failures_by_window: model.U64s,
+    retries_by_window: model.U64s,
+    cache_hits_by_window: model.U64s,
+    busiest_window: u64,
+    busiest_events: u64,
+    quiet_windows: u64,
+    window_width: u64,
+    counted_events: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn increment(inout values: model.U64s, index: u64) {
+    if index < values.len() { values.set(index, values.get_or(index, 0) + 1); }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow run: state.Run, requested_windows: u64) -> Analysis {
+    let windows = if requested_windows == 0 { 1 } else { requested_windows };
+    let window_width = if run.makespan == 0 { 1 } else { (run.makespan + windows - 1) / windows };
+    let mut events_by_window = zeroes(windows);
+    let mut starts_by_window = zeroes(windows);
+    let mut completions_by_window = zeroes(windows);
+    let mut failures_by_window = zeroes(windows);
+    let mut retries_by_window = zeroes(windows);
+    let mut cache_hits_by_window = zeroes(windows);
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        let raw = event.time / window_width;
+        let window = if raw >= windows { windows - 1 } else { raw };
+        increment(inout events_by_window, window);
+        if event.kind == state.EVENT_START() { increment(inout starts_by_window, window); }
+        else if event.kind == state.EVENT_SUCCESS() { increment(inout completions_by_window, window); }
+        else if event.kind == state.EVENT_FAILURE() { increment(inout failures_by_window, window); }
+        else if event.kind == state.EVENT_RETRY() { increment(inout retries_by_window, window); }
+        else if event.kind == state.EVENT_CACHE() { increment(inout cache_hits_by_window, window); }
+        digest = mix(digest, window); digest = mix(digest, event.kind);
+        i += 1;
+    }
+    let mut busiest_window: u64 = 0;
+    let mut busiest_events: u64 = 0;
+    let mut quiet_windows: u64 = 0;
+    let mut counted_events: u64 = 0;
+    i = 0;
+    while i < windows {
+        let count = events_by_window.get_or(i, 0);
+        counted_events += count;
+        if count == 0 { quiet_windows += 1; }
+        if count > busiest_events { busiest_events = count; busiest_window = i; }
+        digest = mix(digest, count);
+        i += 1;
+    }
+    Analysis {
+        events_by_window: events_by_window, starts_by_window: starts_by_window,
+        completions_by_window: completions_by_window, failures_by_window: failures_by_window,
+        retries_by_window: retries_by_window, cache_hits_by_window: cache_hits_by_window,
+        busiest_window: busiest_window, busiest_events: busiest_events,
+        quiet_windows: quiet_windows, window_width: window_width,
+        counted_events: counted_events, digest: digest,
+        valid: counted_events == run.events.len(),
+    }
+}

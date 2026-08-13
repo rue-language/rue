@@ -1,0 +1,31 @@
+// Newline-delimited JSON event stream for incremental ingestion.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        text.append_literal(inout out, "{\"sequence\":"); text.append_u64(inout out, i);
+        text.append_literal(inout out, ",\"time\":"); text.append_u64(inout out, event.time);
+        text.append_literal(inout out, ",\"kind\":\""); format.append_event_kind(inout out, event.kind);
+        text.append_literal(inout out, "\",\"task\":");
+        if event.task < workflow.tasks.len() {
+            text.json_id(inout out, borrow workflow, workflow.tasks.get_or(event.task, model.empty_task()).id);
+        } else { text.append_literal(inout out, "null"); }
+        text.append_literal(inout out, ",\"pool\":");
+        if event.pool < workflow.pools.len() {
+            text.json_id(inout out, borrow workflow, workflow.pools.get_or(event.pool, model.empty_pool()).id);
+        } else { text.append_literal(inout out, "null"); }
+        text.append_literal(inout out, ",\"attempt\":"); text.append_u64(inout out, event.attempt);
+        text.append_literal(inout out, ",\"cpu\":"); text.append_u64(inout out, event.cpu);
+        text.append_literal(inout out, ",\"memory\":"); text.append_u64(inout out, event.memory);
+        text.append_literal(inout out, "}\n"); i += 1;
+    }
+    out
+}

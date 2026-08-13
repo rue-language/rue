@@ -1,0 +1,46 @@
+// Canonical workflow and run fingerprints for determinism checks.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn workflow(borrow value: model.Workflow) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    hash = mix(hash, value.strings.hash(value.name));
+    let mut i: u64 = 0;
+    while i < value.pools.len() {
+        let item = value.pools.get_or(i, model.empty_pool());
+        hash = mix(hash, value.strings.hash(item.id));
+        hash = mix(hash, item.slots); hash = mix(hash, item.cpu); hash = mix(hash, item.memory);
+        i += 1;
+    }
+    i = 0;
+    while i < value.tasks.len() {
+        let item = value.tasks.get_or(i, model.empty_task());
+        hash = mix(hash, value.strings.hash(item.id)); hash = mix(hash, item.pool);
+        hash = mix(hash, item.duration); hash = mix(hash, item.cpu); hash = mix(hash, item.memory);
+        hash = mix(hash, item.priority); hash = mix(hash, item.retries);
+        hash = mix(hash, if item.cacheable { 1 } else { 0 }); hash = mix(hash, item.fail_attempt);
+        i += 1;
+    }
+    i = 0;
+    while i < value.edges.len() {
+        let edge = value.edges.get_or(i, model.empty_edge());
+        hash = mix(hash, edge.before); hash = mix(hash, edge.after); i += 1;
+    }
+    hash
+}
+
+pub fn run(borrow value: state.Run) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < value.events.len() {
+        let event = value.events.get_or(i, state.empty_event());
+        hash = mix(hash, event.kind); hash = mix(hash, event.time); hash = mix(hash, event.task);
+        hash = mix(hash, event.pool); hash = mix(hash, event.attempt); hash = mix(hash, event.cpu); hash = mix(hash, event.memory);
+        i += 1;
+    }
+    hash = mix(hash, value.makespan); hash = mix(hash, value.succeeded);
+    hash = mix(hash, value.failed); hash = mix(hash, value.cached); hash = mix(hash, value.retries);
+    hash
+}

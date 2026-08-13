@@ -1,0 +1,152 @@
+// SLO policy evaluation over workflow declarations and a realized schedule.
+const cache_analysis = @import("cache_analysis.rue");
+const model = @import("model.rue");
+const queue_analysis = @import("queue_analysis.rue");
+const resource_audit = @import("resource_audit.rue");
+const schedule_quality = @import("schedule_quality.rue");
+const state = @import("state.rue");
+const std = @import("std");
+
+pub fn MAX_MAKESPAN() -> u64 { 1 }
+pub fn MAX_FAILURES() -> u64 { 2 }
+pub fn MAX_RETRIES() -> u64 { 3 }
+pub fn MAX_QUEUE_DELAY() -> u64 { 4 }
+pub fn MAX_RESOURCE_WAITS() -> u64 { 5 }
+pub fn MIN_EFFICIENCY() -> u64 { 6 }
+pub fn MIN_CACHE_RATE() -> u64 { 7 }
+pub fn MAX_RESOURCE_VIOLATIONS() -> u64 { 8 }
+pub fn MAX_UNCACHEABLE_LONG_TASKS() -> u64 { 9 }
+
+pub struct Policy {
+    maximum_makespan: u64,
+    maximum_failures: u64,
+    maximum_retries: u64,
+    maximum_queue_delay: u64,
+    maximum_resource_waits: u64,
+    minimum_efficiency_millis: u64,
+    minimum_cache_rate_millis: u64,
+    maximum_resource_violations: u64,
+    maximum_uncacheable_long_tasks: u64,
+    long_task_threshold: u64,
+}
+
+pub struct Violation {
+    code: u64,
+    actual: u64,
+    expected: u64,
+    task: u64,
+    pool: u64,
+}
+
+pub const Violations = std.arraybuf.ArrayBuf(Violation);
+
+pub struct Evaluation {
+    violations: Violations,
+    checks: u64,
+    failures: u64,
+    makespan: u64,
+    retries: u64,
+    queue_delay: u64,
+    efficiency_millis: u64,
+    cache_rate_millis: u64,
+    resource_violations: u64,
+    uncacheable_long_tasks: u64,
+    digest: u64,
+    passed: bool,
+}
+
+pub fn permissive() -> Policy {
+    Policy {
+        maximum_makespan: model.NONE(), maximum_failures: 0,
+        maximum_retries: model.NONE(), maximum_queue_delay: model.NONE(),
+        maximum_resource_waits: model.NONE(), minimum_efficiency_millis: 0,
+        minimum_cache_rate_millis: 0, maximum_resource_violations: 0,
+        maximum_uncacheable_long_tasks: model.NONE(), long_task_threshold: 5,
+    }
+}
+
+pub fn production() -> Policy {
+    Policy {
+        maximum_makespan: 500, maximum_failures: 0, maximum_retries: 20,
+        maximum_queue_delay: 1000, maximum_resource_waits: 100000,
+        minimum_efficiency_millis: 500, minimum_cache_rate_millis: 0,
+        maximum_resource_violations: 0, maximum_uncacheable_long_tasks: 100,
+        long_task_threshold: 7,
+    }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn maximum(inout result: Evaluation, code: u64, actual: u64, expected: u64, task: u64) {
+    result.checks += 1;
+    if expected != model.NONE() && actual > expected {
+        result.failures += 1;
+        result.violations.push(Violation { code: code, actual: actual, expected: expected, task: task, pool: model.NONE() });
+    }
+}
+
+fn minimum(inout result: Evaluation, code: u64, actual: u64, expected: u64) {
+    result.checks += 1;
+    if actual < expected {
+        result.failures += 1;
+        result.violations.push(Violation { code: code, actual: actual, expected: expected, task: model.NONE(), pool: model.NONE() });
+    }
+}
+
+fn uncacheable_long_tasks(borrow workflow: model.Workflow, threshold: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        if task.duration >= threshold && !task.cacheable { count += 1; }
+        i += 1;
+    }
+    count
+}
+
+pub fn evaluate(borrow workflow: model.Workflow, borrow run: state.Run, borrow policy: Policy) -> Evaluation {
+    let queue = queue_analysis.compute(borrow workflow, borrow run);
+    let quality = schedule_quality.compute(borrow workflow, borrow run);
+    let cache = cache_analysis.compute(borrow workflow, borrow run);
+    let resources = resource_audit.audit(borrow workflow, borrow run);
+    let resource_violations = resources.underflows + resources.slot_violations +
+        resources.cpu_violations + resources.memory_violations + resources.terminal_active;
+    let long_tasks = uncacheable_long_tasks(borrow workflow, policy.long_task_threshold);
+    let mut result = Evaluation {
+        violations: Violations.new(), checks: 0, failures: 0,
+        makespan: run.makespan, retries: run.retries,
+        queue_delay: queue.maximum_queue_delay,
+        efficiency_millis: quality.efficiency_millis,
+        cache_rate_millis: cache.hit_rate_millis,
+        resource_violations: resource_violations,
+        uncacheable_long_tasks: long_tasks,
+        digest: 14695981039346656037, passed: false,
+    };
+    maximum(inout result, MAX_MAKESPAN(), run.makespan, policy.maximum_makespan, model.NONE());
+    maximum(inout result, MAX_FAILURES(), run.failed, policy.maximum_failures, model.NONE());
+    maximum(inout result, MAX_RETRIES(), run.retries, policy.maximum_retries, model.NONE());
+    maximum(inout result, MAX_QUEUE_DELAY(), queue.maximum_queue_delay, policy.maximum_queue_delay, queue.maximum_queue_task);
+    maximum(inout result, MAX_RESOURCE_WAITS(), run.resource_waits, policy.maximum_resource_waits, model.NONE());
+    minimum(inout result, MIN_EFFICIENCY(), quality.efficiency_millis, policy.minimum_efficiency_millis);
+    minimum(inout result, MIN_CACHE_RATE(), cache.hit_rate_millis, policy.minimum_cache_rate_millis);
+    maximum(inout result, MAX_RESOURCE_VIOLATIONS(), resource_violations, policy.maximum_resource_violations, model.NONE());
+    maximum(inout result, MAX_UNCACHEABLE_LONG_TASKS(), long_tasks, policy.maximum_uncacheable_long_tasks, model.NONE());
+    result.digest = mix(result.digest, result.makespan); result.digest = mix(result.digest, result.retries);
+    result.digest = mix(result.digest, result.queue_delay); result.digest = mix(result.digest, result.efficiency_millis);
+    result.digest = mix(result.digest, result.cache_rate_millis); result.digest = mix(result.digest, result.failures);
+    result.passed = result.failures == 0;
+    result
+}
+
+pub fn code_name(code: u64) -> str {
+    if code == MAX_MAKESPAN() { "maximum_makespan" }
+    else if code == MAX_FAILURES() { "maximum_failures" }
+    else if code == MAX_RETRIES() { "maximum_retries" }
+    else if code == MAX_QUEUE_DELAY() { "maximum_queue_delay" }
+    else if code == MAX_RESOURCE_WAITS() { "maximum_resource_waits" }
+    else if code == MIN_EFFICIENCY() { "minimum_efficiency" }
+    else if code == MIN_CACHE_RATE() { "minimum_cache_rate" }
+    else if code == MAX_RESOURCE_VIOLATIONS() { "resource_violations" }
+    else if code == MAX_UNCACHEABLE_LONG_TASKS() { "uncacheable_long_tasks" }
+    else { "unknown" }
+}

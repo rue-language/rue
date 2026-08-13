@@ -1,0 +1,130 @@
+// Kahn topological ordering plus graph-shape counters. Other passes consume
+// this canonical order; cycle_oracle.rue supplies an independent check.
+const std = @import("std");
+const model = @import("model.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Order {
+    tasks: U64s,
+    indegrees: U64s,
+    has_cycle: bool,
+    roots: u64,
+    leaves: u64,
+    maximum_indegree: u64,
+    maximum_outdegree: u64,
+}
+
+fn zeroes(count: u64) -> U64s {
+    let mut values = U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn compute_indegrees(borrow workflow: model.Workflow) -> U64s {
+    let mut values = zeroes(workflow.tasks.len());
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after < values.len() {
+            values.set(edge.after, values.get_or(edge.after, 0) + 1);
+        }
+        i += 1;
+    }
+    values
+}
+
+fn outdegree(borrow workflow: model.Workflow, task: u64) -> u64 {
+    let mut value: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        if workflow.edges.get_or(i, model.empty_edge()).before == task { value += 1; }
+        i += 1;
+    }
+    value
+}
+
+pub fn sort(borrow workflow: model.Workflow) -> Order {
+    let original = compute_indegrees(borrow workflow);
+    let mut remaining = compute_indegrees(borrow workflow);
+    let mut emitted = model.Bools.with_capacity(workflow.tasks.len());
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() { emitted.push(false); i += 1; }
+    let mut tasks = U64s.with_capacity(workflow.tasks.len());
+
+    while tasks.len() < workflow.tasks.len() {
+        let mut best = model.NONE();
+        i = 0;
+        while i < workflow.tasks.len() {
+            if !emitted.get_or(i, true) && remaining.get_or(i, 1) == 0 {
+                if best == model.NONE() { best = i; }
+                else {
+                    let candidate = workflow.tasks.get_or(i, model.empty_task());
+                    let current = workflow.tasks.get_or(best, model.empty_task());
+                    if candidate.priority > current.priority ||
+                        (candidate.priority == current.priority && candidate.id < current.id) {
+                        best = i;
+                    }
+                }
+            }
+            i += 1;
+        }
+        if best == model.NONE() { break; }
+        emitted.set(best, true);
+        tasks.push(best);
+        i = 0;
+        while i < workflow.edges.len() {
+            let edge = workflow.edges.get_or(i, model.empty_edge());
+            if edge.before == best && edge.after < remaining.len() {
+                let old = remaining.get_or(edge.after, 0);
+                if old > 0 { remaining.set(edge.after, old - 1); }
+            }
+            i += 1;
+        }
+    }
+
+    let mut roots: u64 = 0;
+    let mut leaves: u64 = 0;
+    let mut maximum_indegree: u64 = 0;
+    let mut maximum_outdegree: u64 = 0;
+    i = 0;
+    while i < workflow.tasks.len() {
+        let inside = original.get_or(i, 0);
+        let outside = outdegree(borrow workflow, i);
+        if inside == 0 { roots += 1; }
+        if outside == 0 { leaves += 1; }
+        if inside > maximum_indegree { maximum_indegree = inside; }
+        if outside > maximum_outdegree { maximum_outdegree = outside; }
+        i += 1;
+    }
+    let has_cycle = tasks.len() != workflow.tasks.len();
+    Order {
+        tasks: tasks,
+        indegrees: original,
+        has_cycle: has_cycle,
+        roots: roots,
+        leaves: leaves,
+        maximum_indegree: maximum_indegree,
+        maximum_outdegree: maximum_outdegree,
+    }
+}
+
+pub fn position(borrow order: Order, task: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < order.tasks.len() {
+        if order.tasks.get_or(i, model.NONE()) == task { return i; }
+        i += 1;
+    }
+    model.NONE()
+}
+
+pub fn valid(borrow workflow: model.Workflow, borrow order: Order) -> bool {
+    if order.has_cycle || order.tasks.len() != workflow.tasks.len() { return false; }
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if position(borrow order, edge.before) >= position(borrow order, edge.after) { return false; }
+        i += 1;
+    }
+    true
+}

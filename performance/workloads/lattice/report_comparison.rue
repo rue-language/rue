@@ -1,0 +1,30 @@
+// Comparison report for the primary seed and a cache-perturbed seed.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const run_comparison = @import("run_comparison.rue");
+const schedule = @import("schedule.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow first: state.Run, alternate_seed: u64) -> StrBuf {
+    let second = schedule.run(borrow workflow, alternate_seed);
+    let comparison = run_comparison.compare(borrow workflow, borrow first, borrow second);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "RUN COMPARISON first_makespan="); text.append_u64(inout out, comparison.first_makespan);
+    text.append_literal(inout out, " second_makespan="); text.append_u64(inout out, comparison.second_makespan);
+    text.append_literal(inout out, " changed_tasks="); text.append_u64(inout out, comparison.changed_task_count); out.push(10);
+    let mut i: u64 = 0;
+    while i < comparison.changed_tasks.len() {
+        let index = comparison.changed_tasks.get_or(i, model.NONE());
+        let task = workflow.tasks.get_or(index, model.empty_task());
+        text.append_literal(inout out, "task="); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, " first="); format.append_status(inout out, first.status.get_or(index, state.FAILED()));
+        text.append_literal(inout out, " second="); format.append_status(inout out, second.status.get_or(index, state.FAILED()));
+        text.append_literal(inout out, " first_end="); format.append_optional_u64(inout out, first.ends.get_or(index, model.NONE()));
+        text.append_literal(inout out, " second_end="); format.append_optional_u64(inout out, second.ends.get_or(index, model.NONE())); out.push(10);
+        i += 1;
+    }
+    out
+}

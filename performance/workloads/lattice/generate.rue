@@ -1,0 +1,78 @@
+// Deterministic in-memory workflow generator for selftests and scaling tiers.
+const model = @import("model.rue");
+const poolmod = @import("pool.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn name(prefix: str, index: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, prefix);
+    text.append_u64(inout out, index);
+    out
+}
+
+pub fn workflow(tasks: u64, pools: u64, width: u64, seed: u64) -> model.Workflow {
+    let mut strings = poolmod.Pool.new();
+    let title = name("generated-", seed);
+    let title_id = strings.intern(borrow title);
+    let mut result = model.new_workflow(strings);
+    result.name = title_id;
+    let pool_count = if pools == 0 { 1 } else { pools };
+    let mut i: u64 = 0;
+    while i < pool_count {
+        let label = name("pool-", i);
+        let id = result.strings.intern(borrow label);
+        result.pools.push(model.WorkerPool {
+            id: id, slots: 2 + (i % 4), cpu: 4 + (i % 3) * 2,
+            memory: 8 + (i % 5) * 4,
+        });
+        i += 1;
+    }
+    i = 0;
+    while i < tasks {
+        let label = name("task-", i);
+        let id = result.strings.intern(borrow label);
+        let pool_index = (i * 7 + seed) % pool_count;
+        let pool = result.pools.get_or(pool_index, model.empty_pool());
+        result.tasks.push(model.Task {
+            id: id, pool_id: pool.id, pool: pool_index,
+            duration: 1 + ((i * 5 + seed) % 9),
+            cpu: 1 + (i % 2), memory: 1 + (i % 4),
+            priority: 1 + ((i * 11 + seed) % 20),
+            retries: i % 3, cacheable: i % 4 == 0,
+            // Generated retries are recoverable; unrecoverable failure and
+            // downstream blocking have separate fixture coverage.
+            fail_attempt: if i % 17 == 8 && i % 3 > 0 { 1 } else { 0 },
+        });
+        i += 1;
+    }
+    let span = if width < 2 { 2 } else { width };
+    i = 1;
+    while i < tasks {
+        let before = i - 1;
+        let first = result.tasks.get_or(before, model.empty_task());
+        let second = result.tasks.get_or(i, model.empty_task());
+        result.edges.push(model.Edge {
+            before_id: first.id, after_id: second.id, before: before, after: i,
+        });
+        if i >= span && i % 2 == 0 {
+            let extra = i - span;
+            let source = result.tasks.get_or(extra, model.empty_task());
+            result.edges.push(model.Edge {
+                before_id: source.id, after_id: second.id, before: extra, after: i,
+            });
+        }
+        if i >= 3 && i % 5 == 0 {
+            let extra = i - 3;
+            let source = result.tasks.get_or(extra, model.empty_task());
+            if !model.has_edge(borrow result, extra, i) {
+                result.edges.push(model.Edge {
+                    before_id: source.id, after_id: second.id, before: extra, after: i,
+                });
+            }
+        }
+        i += 1;
+    }
+    result
+}

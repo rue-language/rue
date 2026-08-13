@@ -1,0 +1,99 @@
+// Name/reference/range/resource validation and graph-cycle proof.
+const cycle_oracle = @import("cycle_oracle.rue");
+const model = @import("model.rue");
+const topology = @import("topology.rue");
+
+fn duplicate_pool(borrow workflow: model.Workflow, at: u64) -> bool {
+    let candidate = workflow.pools.get_or(at, model.empty_pool());
+    let mut i: u64 = 0;
+    while i < at {
+        if workflow.strings.ids_equal(candidate.id, workflow.pools.get_or(i, model.empty_pool()).id) { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn duplicate_task(borrow workflow: model.Workflow, at: u64) -> bool {
+    let candidate = workflow.tasks.get_or(at, model.empty_task());
+    let mut i: u64 = 0;
+    while i < at {
+        if workflow.strings.ids_equal(candidate.id, workflow.tasks.get_or(i, model.empty_task()).id) { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn validate_pools(inout workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let item = workflow.pools.get_or(i, model.empty_pool());
+        if duplicate_pool(borrow workflow, i) { model.add_error(inout workflow, 200, item.id, "duplicate pool name"); }
+        if item.slots == 0 { model.add_error(inout workflow, 202, item.id, "pool slots must be positive"); }
+        if item.cpu == 0 { model.add_error(inout workflow, 202, item.id, "pool cpu must be positive"); }
+        if item.memory == 0 { model.add_error(inout workflow, 202, item.id, "pool memory must be positive"); }
+        i += 1;
+    }
+}
+
+fn validate_tasks(inout workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let mut item = workflow.tasks.get_or(i, model.empty_task());
+        if duplicate_task(borrow workflow, i) { model.add_error(inout workflow, 200, item.id, "duplicate task name"); }
+        item.pool = model.find_pool(borrow workflow, item.pool_id);
+        if item.pool == model.NONE() {
+            model.add_error(inout workflow, 201, item.id, "unknown worker pool");
+        } else {
+            let pool = workflow.pools.get_or(item.pool, model.empty_pool());
+            if item.cpu > pool.cpu { model.add_error(inout workflow, 204, item.id, "task cpu exceeds pool capacity"); }
+            if item.memory > pool.memory { model.add_error(inout workflow, 204, item.id, "task memory exceeds pool capacity"); }
+        }
+        if item.duration == 0 { model.add_error(inout workflow, 202, item.id, "duration must be positive"); }
+        if item.cpu == 0 { model.add_error(inout workflow, 202, item.id, "cpu must be positive"); }
+        if item.memory == 0 { model.add_error(inout workflow, 202, item.id, "memory must be positive"); }
+        if item.priority > 100 { model.add_error(inout workflow, 202, item.id, "priority must be at most 100"); }
+        if item.retries > 20 { model.add_error(inout workflow, 202, item.id, "retries must be at most 20"); }
+        workflow.tasks.set(i, item);
+        i += 1;
+    }
+}
+
+fn validate_edges(inout workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let mut edge = workflow.edges.get_or(i, model.empty_edge());
+        edge.before = model.find_task(borrow workflow, edge.before_id);
+        edge.after = model.find_task(borrow workflow, edge.after_id);
+        if edge.before == model.NONE() { model.add_error(inout workflow, 201, edge.before_id, "unknown prerequisite task"); }
+        if edge.after == model.NONE() { model.add_error(inout workflow, 201, edge.after_id, "unknown dependent task"); }
+        if edge.before != model.NONE() && edge.before == edge.after {
+            model.add_error(inout workflow, 203, edge.before_id, "task cannot depend on itself");
+        }
+        let mut earlier: u64 = 0;
+        while earlier < i {
+            let other = workflow.edges.get_or(earlier, model.empty_edge());
+            if other.before_id == edge.before_id && other.after_id == edge.after_id {
+                model.add_error(inout workflow, 200, edge.after_id, "duplicate dependency");
+            }
+            earlier += 1;
+        }
+        workflow.edges.set(i, edge);
+        i += 1;
+    }
+}
+
+pub fn workflow(inout value: model.Workflow) {
+    if value.name == model.NONE() { model.add_error(inout value, 101, model.NONE(), "missing workflow declaration"); }
+    if value.pools.len() == 0 { model.add_error(inout value, 101, value.name, "workflow has no worker pools"); }
+    if value.tasks.len() == 0 { model.add_error(inout value, 101, value.name, "workflow has no tasks"); }
+    validate_pools(inout value);
+    validate_tasks(inout value);
+    validate_edges(inout value);
+    if value.diagnostics.len() == 0 {
+        let order = topology.sort(borrow value);
+        let closure = cycle_oracle.compute(borrow value);
+        if order.has_cycle || cycle_oracle.has_cycle(borrow closure) {
+            model.add_error(inout value, 203, value.name, "dependency graph contains a cycle");
+        }
+    }
+}

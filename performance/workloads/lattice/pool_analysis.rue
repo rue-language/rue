@@ -1,0 +1,121 @@
+// Assignment balance, declared work, and saturation pressure per worker pool.
+const model = @import("model.rue");
+const resource_audit = @import("resource_audit.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    assigned_tasks: model.U64s,
+    declared_work: model.U64s,
+    cpu_ticks: model.U64s,
+    memory_ticks: model.U64s,
+    starts: model.U64s,
+    completed: model.U64s,
+    failed: model.U64s,
+    peak_slots: model.U64s,
+    peak_cpu: model.U64s,
+    peak_memory: model.U64s,
+    slot_pressure: model.U64s,
+    cpu_pressure: model.U64s,
+    memory_pressure: model.U64s,
+    busiest_pool: u64,
+    most_constrained_pool: u64,
+    cross_pool_edges: u64,
+    same_pool_edges: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn add(inout values: model.U64s, index: u64, amount: u64) {
+    if index < values.len() { values.set(index, values.get_or(index, 0) + amount); }
+}
+
+fn ratio(numerator: u64, denominator: u64) -> u64 {
+    if denominator == 0 { 0 } else { (numerator * 1000) / denominator }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let count = workflow.pools.len();
+    let mut assigned_tasks = zeroes(count);
+    let mut declared_work = zeroes(count);
+    let mut cpu_ticks = zeroes(count);
+    let mut memory_ticks = zeroes(count);
+    let mut starts = zeroes(count);
+    let mut completed = zeroes(count);
+    let mut failed = zeroes(count);
+    let audit = resource_audit.audit(borrow workflow, borrow run);
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        add(inout assigned_tasks, task.pool, 1);
+        add(inout declared_work, task.pool, task.duration);
+        add(inout cpu_ticks, task.pool, task.duration * task.cpu);
+        add(inout memory_ticks, task.pool, task.duration * task.memory);
+        i += 1;
+    }
+    i = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        if event.kind == state.EVENT_START() { add(inout starts, event.pool, 1); }
+        else if event.kind == state.EVENT_SUCCESS() { add(inout completed, event.pool, 1); }
+        else if event.kind == state.EVENT_FAILURE() { add(inout failed, event.pool, 1); }
+        i += 1;
+    }
+    let mut slot_pressure = zeroes(count);
+    let mut cpu_pressure = zeroes(count);
+    let mut memory_pressure = zeroes(count);
+    let mut busiest_pool = model.NONE();
+    let mut most_constrained_pool = model.NONE();
+    let mut maximum_work: u64 = 0;
+    let mut maximum_pressure: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    i = 0;
+    while i < count {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        let slot_value = ratio(audit.maximum_slots.get_or(i, 0), pool.slots);
+        let cpu_value = ratio(audit.maximum_cpu.get_or(i, 0), pool.cpu);
+        let memory_value = ratio(audit.maximum_memory.get_or(i, 0), pool.memory);
+        slot_pressure.set(i, slot_value); cpu_pressure.set(i, cpu_value); memory_pressure.set(i, memory_value);
+        let pressure = if slot_value > cpu_value { if slot_value > memory_value { slot_value } else { memory_value } }
+            else { if cpu_value > memory_value { cpu_value } else { memory_value } };
+        if busiest_pool == model.NONE() || declared_work.get_or(i, 0) > maximum_work {
+            busiest_pool = i; maximum_work = declared_work.get_or(i, 0);
+        }
+        if most_constrained_pool == model.NONE() || pressure > maximum_pressure {
+            most_constrained_pool = i; maximum_pressure = pressure;
+        }
+        digest = mix(digest, assigned_tasks.get_or(i, 0)); digest = mix(digest, declared_work.get_or(i, 0));
+        digest = mix(digest, slot_value); digest = mix(digest, cpu_value); digest = mix(digest, memory_value);
+        i += 1;
+    }
+    let mut cross_pool_edges: u64 = 0;
+    let mut same_pool_edges: u64 = 0;
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        let before = workflow.tasks.get_or(edge.before, model.empty_task());
+        let after = workflow.tasks.get_or(edge.after, model.empty_task());
+        if before.pool == after.pool { same_pool_edges += 1; }
+        else { cross_pool_edges += 1; }
+        i += 1;
+    }
+    Analysis {
+        assigned_tasks: assigned_tasks, declared_work: declared_work,
+        cpu_ticks: cpu_ticks, memory_ticks: memory_ticks, starts: starts,
+        completed: completed, failed: failed,
+        peak_slots: audit.maximum_slots, peak_cpu: audit.maximum_cpu,
+        peak_memory: audit.maximum_memory, slot_pressure: slot_pressure,
+        cpu_pressure: cpu_pressure, memory_pressure: memory_pressure,
+        busiest_pool: busiest_pool, most_constrained_pool: most_constrained_pool,
+        cross_pool_edges: cross_pool_edges, same_pool_edges: same_pool_edges,
+        digest: digest, valid: audit.ok && cross_pool_edges + same_pool_edges == workflow.edges.len(),
+    }
+}

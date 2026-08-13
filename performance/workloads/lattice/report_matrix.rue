@@ -1,0 +1,31 @@
+// Compact adjacency matrix for dependency review.
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "ADJACENCY MATRIX\n    ");
+    let mut column: u64 = 0;
+    while column < workflow.tasks.len() {
+        text.append_u64(inout out, column % 10); out.push(32); column += 1;
+    }
+    out.push(10);
+    let mut row: u64 = 0;
+    while row < workflow.tasks.len() {
+        text.append_u64(inout out, row); out.push(32);
+        if row < 10 { out.push(32); }
+        if row < 100 { out.push(32); }
+        column = 0;
+        while column < workflow.tasks.len() {
+            if model.has_edge(borrow workflow, row, column) { out.push(49); }
+            else { out.push(46); }
+            out.push(32); column += 1;
+        }
+        let task = workflow.tasks.get_or(row, model.empty_task());
+        text.append_id(inout out, borrow workflow, task.id); out.push(10);
+        row += 1;
+    }
+    out
+}

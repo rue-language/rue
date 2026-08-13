@@ -1,0 +1,85 @@
+// Escaping and enum formatting shared by all machine-readable reports.
+const std = @import("std");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn append_status(inout out: StrBuf, status: u64) {
+    if status == state.PENDING() { text.append_literal(inout out, "pending"); }
+    else if status == state.RUNNING() { text.append_literal(inout out, "running"); }
+    else if status == state.SUCCEEDED() { text.append_literal(inout out, "succeeded"); }
+    else if status == state.FAILED() { text.append_literal(inout out, "failed"); }
+    else if status == state.CACHED() { text.append_literal(inout out, "cached"); }
+    else { text.append_literal(inout out, "unknown"); }
+}
+
+pub fn append_event_kind(inout out: StrBuf, kind: u64) {
+    if kind == state.EVENT_START() { text.append_literal(inout out, "start"); }
+    else if kind == state.EVENT_SUCCESS() { text.append_literal(inout out, "success"); }
+    else if kind == state.EVENT_FAILURE() { text.append_literal(inout out, "failure"); }
+    else if kind == state.EVENT_RETRY() { text.append_literal(inout out, "retry"); }
+    else if kind == state.EVENT_CACHE() { text.append_literal(inout out, "cache"); }
+    else if kind == state.EVENT_BLOCKED() { text.append_literal(inout out, "blocked"); }
+    else { text.append_literal(inout out, "unknown"); }
+}
+
+pub fn append_optional_u64(inout out: StrBuf, value: u64) {
+    if value == model.NONE() { text.append_literal(inout out, "null"); }
+    else { text.append_u64(inout out, value); }
+}
+
+pub fn append_millis(inout out: StrBuf, value: u64) {
+    text.append_u64(inout out, value / 1000);
+    out.push(46);
+    let fraction = value % 1000;
+    if fraction < 100 { out.push(48); }
+    if fraction < 10 { out.push(48); }
+    text.append_u64(inout out, fraction);
+}
+
+pub fn csv_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    out.push(34);
+    let mut i: u64 = 0;
+    while i < workflow.strings.string_len(id) {
+        let byte = workflow.strings.byte_at(id, i);
+        if byte == 34 { out.push(34); out.push(34); }
+        else { out.push(byte); }
+        i += 1;
+    }
+    out.push(34);
+}
+
+pub fn dot_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    out.push(34);
+    let mut i: u64 = 0;
+    while i < workflow.strings.string_len(id) {
+        let byte = workflow.strings.byte_at(id, i);
+        if byte == 34 { text.append_literal(inout out, "\\\""); }
+        else if byte == 92 { text.append_literal(inout out, "\\\\"); }
+        else if byte == 10 { text.append_literal(inout out, "\\n"); }
+        else { out.push(byte); }
+        i += 1;
+    }
+    out.push(34);
+}
+
+pub fn markdown_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    let mut i: u64 = 0;
+    while i < workflow.strings.string_len(id) {
+        let byte = workflow.strings.byte_at(id, i);
+        if byte == 124 { text.append_literal(inout out, "\\|"); }
+        else if byte == 10 { text.append_literal(inout out, "<br>"); }
+        else { out.push(byte); }
+        i += 1;
+    }
+}
+
+pub fn append_bar(inout out: StrBuf, numerator: u64, denominator: u64, width: u64) {
+    let filled = if denominator == 0 { 0 } else { (numerator * width) / denominator };
+    let mut i: u64 = 0;
+    while i < width {
+        if i < filled { out.push(35); } else { out.push(46); }
+        i += 1;
+    }
+}

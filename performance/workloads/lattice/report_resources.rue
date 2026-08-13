@@ -1,0 +1,47 @@
+// Pool capacity, observed peak, pressure, and recommendation report.
+const capacity_plan = @import("capacity_plan.rue");
+const format = @import("format.rue");
+const model = @import("model.rue");
+const pool_analysis = @import("pool_analysis.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn metric(
+    inout out: StrBuf,
+    label: str,
+    capacity: u64,
+    peak: u64,
+    recommended: u64,
+) {
+    text.append_literal(inout out, "  "); text.append_literal(inout out, label);
+    text.append_literal(inout out, " capacity="); text.append_u64(inout out, capacity);
+    text.append_literal(inout out, " peak="); text.append_u64(inout out, peak);
+    text.append_literal(inout out, " pressure="); text.append_percent(inout out, peak, capacity);
+    text.append_literal(inout out, " recommended="); text.append_u64(inout out, recommended);
+    text.append_literal(inout out, " ["); format.append_bar(inout out, peak, capacity, 20); text.append_literal(inout out, "]\n");
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let pools = pool_analysis.compute(borrow workflow, borrow run);
+    let plan = capacity_plan.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "RESOURCE PLAN workflow="); text.append_id(inout out, borrow workflow, workflow.name); out.push(10);
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        text.append_literal(inout out, "pool "); text.append_id(inout out, borrow workflow, pool.id);
+        text.append_literal(inout out, " tasks="); text.append_u64(inout out, pools.assigned_tasks.get_or(i, 0));
+        text.append_literal(inout out, " work="); text.append_u64(inout out, pools.declared_work.get_or(i, 0)); out.push(10);
+        metric(inout out, "slots", pool.slots, pools.peak_slots.get_or(i, 0), plan.recommended_slots.get_or(i, 0));
+        metric(inout out, "cpu", pool.cpu, pools.peak_cpu.get_or(i, 0), plan.recommended_cpu.get_or(i, 0));
+        metric(inout out, "memory", pool.memory, pools.peak_memory.get_or(i, 0), plan.recommended_memory.get_or(i, 0));
+        i += 1;
+    }
+    text.append_literal(inout out, "saturated_pools="); text.append_u64(inout out, plan.saturated_pools);
+    text.append_literal(inout out, " slot_increase="); text.append_u64(inout out, plan.total_slot_increase);
+    text.append_literal(inout out, " cpu_increase="); text.append_u64(inout out, plan.total_cpu_increase);
+    text.append_literal(inout out, " memory_increase="); text.append_u64(inout out, plan.total_memory_increase); out.push(10);
+    out
+}

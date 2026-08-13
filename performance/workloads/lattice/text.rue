@@ -1,0 +1,71 @@
+// Deterministic text helpers shared by diagnostics and reports.
+const std = @import("std");
+const model = @import("model.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn append_literal(inout out: StrBuf, value: str) {
+    let mut i: u64 = 0;
+    while i < value.len() { out.push(value[i]); i += 1; }
+}
+
+pub fn append_string(inout out: StrBuf, borrow value: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        out.push(StrBuf.byte_at_borrowed(borrow value, i));
+        i += 1;
+    }
+}
+
+pub fn append_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    if id < workflow.strings.len() { workflow.strings.append(id, inout out); }
+    else { append_literal(inout out, "<none>"); }
+}
+
+pub fn append_u64(inout out: StrBuf, value: u64) {
+    let formatted = @to_string(value);
+    append_string(inout out, borrow formatted);
+}
+
+pub fn append_bool(inout out: StrBuf, value: bool) {
+    if value { append_literal(inout out, "true"); }
+    else { append_literal(inout out, "false"); }
+}
+
+pub fn append_percent(inout out: StrBuf, numerator: u64, denominator: u64) {
+    if denominator == 0 { append_literal(inout out, "0.0%"); return; }
+    append_u64(inout out, (numerator * 100) / denominator);
+    out.push(46);
+    append_u64(inout out, ((numerator * 1000) / denominator) % 10);
+    out.push(37);
+}
+
+pub fn line(inout out: StrBuf, label: str, value: u64) {
+    append_literal(inout out, label);
+    append_u64(inout out, value);
+    out.push(10);
+}
+
+pub fn fnv1a(borrow value: StrBuf) -> u64 {
+    let mut hash: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        hash ^= @intCast(StrBuf.byte_at_borrowed(borrow value, i));
+        hash = @wrapping_mul(hash, 1099511628211);
+        i += 1;
+    }
+    hash
+}
+
+pub fn json_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    out.push(34);
+    let mut i: u64 = 0;
+    while i < workflow.strings.string_len(id) {
+        let byte = workflow.strings.byte_at(id, i);
+        if byte == 34 { append_literal(inout out, "\\\""); }
+        else if byte == 92 { append_literal(inout out, "\\\\"); }
+        else if byte == 10 { append_literal(inout out, "\\n"); }
+        else { out.push(byte); }
+        i += 1;
+    }
+    out.push(34);
+}

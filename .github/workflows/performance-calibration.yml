@@ -21,6 +21,10 @@ on:
         description: Calibration runs per platform
         required: false
         default: "12"
+      epoch:
+        description: Manifest epoch to calibrate on every platform
+        required: false
+        default: "3"
 
 # Read-only. Calibration must not be able to publish.
 permissions:
@@ -64,7 +68,8 @@ jobs:
 
       - name: Build the compiler and the runner
         run: |
-          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release
 
       - name: Run the calibration repetitions
         env:
@@ -76,8 +81,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p calibration-runs
-          RUE="$(scripts/rue-bin)"
-          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
           COMMIT="${{ github.sha }}"
 
           for index in $(seq 1 "${{ inputs.repetitions }}"); do
@@ -89,7 +95,7 @@ jobs:
             "$BENCH" \
               --manifest performance/manifest.toml \
               --platform "${{ matrix.platform }}" \
-              --epoch 1 \
+              --epoch "${{ inputs.epoch }}" \
               --compiler "$RUE" \
               --commit "$COMMIT" \
               --repo-root . \
@@ -105,7 +111,8 @@ jobs:
 
       - name: Analyse
         run: |
-          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
           "$BENCH" calibrate \
             --runs calibration-runs \
             --report "calibration-${{ matrix.platform }}.md"

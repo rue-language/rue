@@ -1,0 +1,32 @@
+// Chrome Trace Event JSON for timeline visualization in tracing tools.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "{\"displayTimeUnit\":\"ms\",\"traceEvents\":[");
+    let mut emitted: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let start = run.starts.get_or(i, model.NONE());
+        let end = run.ends.get_or(i, model.NONE());
+        if start != model.NONE() && end != model.NONE() {
+            if emitted > 0 { out.push(44); }
+            let task = workflow.tasks.get_or(i, model.empty_task());
+            text.append_literal(inout out, "{\"name\":"); text.json_id(inout out, borrow workflow, task.id);
+            text.append_literal(inout out, ",\"cat\":"); text.json_id(inout out, borrow workflow, task.pool_id);
+            text.append_literal(inout out, ",\"ph\":\"X\",\"ts\":"); text.append_u64(inout out, start * 1000);
+            text.append_literal(inout out, ",\"dur\":"); text.append_u64(inout out, (end - start) * 1000);
+            text.append_literal(inout out, ",\"pid\":1,\"tid\":"); text.append_u64(inout out, task.pool);
+            text.append_literal(inout out, ",\"args\":{\"priority\":"); text.append_u64(inout out, task.priority);
+            text.append_literal(inout out, ",\"attempts\":"); text.append_u64(inout out, run.attempts.get_or(i, 0)); text.append_literal(inout out, "}}");
+            emitted += 1;
+        }
+        i += 1;
+    }
+    text.append_literal(inout out, "]}\n");
+    out
+}

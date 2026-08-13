@@ -1,0 +1,51 @@
+// OpenTelemetry-style span export with dependency links and task attributes.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn links(inout out: StrBuf, borrow workflow: model.Workflow, task: u64) {
+    out.push(91);
+    let mut emitted: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task {
+            if emitted > 0 { out.push(44); }
+            text.append_literal(inout out, "{\"spanId\":\""); text.append_u64(inout out, edge.before + 1);
+            text.append_literal(inout out, "\"}"); emitted += 1;
+        }
+        i += 1;
+    }
+    out.push(93);
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"lattice\"}}]},\"scopeSpans\":[{\"scope\":{\"name\":\"lattice.scheduler\"},\"spans\":[");
+    let mut emitted: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let start = run.starts.get_or(i, model.NONE());
+        let end = run.ends.get_or(i, model.NONE());
+        if start != model.NONE() && end != model.NONE() {
+            if emitted > 0 { out.push(44); }
+            let task = workflow.tasks.get_or(i, model.empty_task());
+            text.append_literal(inout out, "{\"traceId\":\""); text.append_u64(inout out, run.fingerprint);
+            text.append_literal(inout out, "\",\"spanId\":\""); text.append_u64(inout out, i + 1);
+            text.append_literal(inout out, "\",\"name\":"); text.json_id(inout out, borrow workflow, task.id);
+            text.append_literal(inout out, ",\"startTimeUnixNano\":\""); text.append_u64(inout out, start * 1000000);
+            text.append_literal(inout out, "\",\"endTimeUnixNano\":\""); text.append_u64(inout out, end * 1000000);
+            text.append_literal(inout out, "\",\"attributes\":[{\"key\":\"lattice.pool\",\"value\":{\"stringValue\":");
+            text.json_id(inout out, borrow workflow, task.pool_id);
+            text.append_literal(inout out, "}},{\"key\":\"lattice.priority\",\"value\":{\"intValue\":\"");
+            text.append_u64(inout out, task.priority); text.append_literal(inout out, "\"}},{\"key\":\"lattice.attempts\",\"value\":{\"intValue\":\"");
+            text.append_u64(inout out, run.attempts.get_or(i, 0)); text.append_literal(inout out, "\"}}],\"links\":");
+            links(inout out, borrow workflow, i); out.push(125); emitted += 1;
+        }
+        i += 1;
+    }
+    text.append_literal(inout out, "]}]}]}\n");
+    out
+}

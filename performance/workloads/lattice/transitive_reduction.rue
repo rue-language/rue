@@ -1,0 +1,88 @@
+// Classify dependencies as essential or transitively redundant.
+const cycle_oracle = @import("cycle_oracle.rue");
+const model = @import("model.rue");
+const std = @import("std");
+
+pub struct Reduction {
+    essential: model.U64s,
+    redundant: model.U64s,
+    essential_count: u64,
+    redundant_count: u64,
+    cross_pool_essential: u64,
+    same_pool_essential: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn alternate_path(
+    borrow workflow: model.Workflow,
+    borrow closure: cycle_oracle.Closure,
+    edge_index: u64,
+) -> bool {
+    let target = workflow.edges.get_or(edge_index, model.empty_edge());
+    let mut middle: u64 = 0;
+    while middle < workflow.tasks.len() {
+        if middle != target.before && middle != target.after &&
+            cycle_oracle.reaches(borrow closure, target.before, middle) &&
+            cycle_oracle.reaches(borrow closure, middle, target.after) {
+            return true;
+        }
+        middle += 1;
+    }
+    false
+}
+
+pub fn compute(borrow workflow: model.Workflow) -> Reduction {
+    let closure = cycle_oracle.compute(borrow workflow);
+    let mut essential = model.U64s.new();
+    let mut redundant = model.U64s.new();
+    let mut cross_pool_essential: u64 = 0;
+    let mut same_pool_essential: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if alternate_path(borrow workflow, borrow closure, i) {
+            redundant.push(i);
+            digest = mix(digest, i + 0x5000);
+        } else {
+            essential.push(i);
+            let before = workflow.tasks.get_or(edge.before, model.empty_task());
+            let after = workflow.tasks.get_or(edge.after, model.empty_task());
+            if before.pool == after.pool { same_pool_essential += 1; }
+            else { cross_pool_essential += 1; }
+            digest = mix(digest, i + 0x1000);
+        }
+        digest = mix(digest, edge.before);
+        digest = mix(digest, edge.after);
+        i += 1;
+    }
+    let essential_count = essential.len();
+    let redundant_count = redundant.len();
+    Reduction {
+        essential: essential, redundant: redundant,
+        essential_count: essential_count, redundant_count: redundant_count,
+        cross_pool_essential: cross_pool_essential,
+        same_pool_essential: same_pool_essential,
+        digest: digest,
+        valid: !cycle_oracle.has_cycle(borrow closure),
+    }
+}
+
+pub fn verify(borrow workflow: model.Workflow, borrow reduction: Reduction) -> bool {
+    if !reduction.valid || reduction.essential_count + reduction.redundant_count != workflow.edges.len() { return false; }
+    if reduction.cross_pool_essential + reduction.same_pool_essential != reduction.essential_count { return false; }
+    let mut i: u64 = 0;
+    while i < reduction.essential.len() {
+        if reduction.essential.get_or(i, model.NONE()) >= workflow.edges.len() { return false; }
+        i += 1;
+    }
+    i = 0;
+    while i < reduction.redundant.len() {
+        if reduction.redundant.get_or(i, model.NONE()) >= workflow.edges.len() { return false; }
+        i += 1;
+    }
+    true
+}

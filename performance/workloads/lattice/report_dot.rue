@@ -1,0 +1,42 @@
+// Graphviz DOT export with pool, priority, status, and critical-path styling.
+const critical_path = @import("critical_path.rue");
+const format = @import("format.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn critical(borrow analysis: critical_path.Analysis, task: u64) -> bool {
+    analysis.slack.get_or(task, 1) == 0
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let analysis = critical_path.compute(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "digraph lattice {\n  rankdir=LR;\n  label=");
+    format.dot_id(inout out, borrow workflow, workflow.name); text.append_literal(inout out, ";\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "  t"); text.append_u64(inout out, i); text.append_literal(inout out, " [label=");
+        out.push(34); workflow.strings.append(task.id, inout out); text.append_literal(inout out, "\\npool=");
+        workflow.strings.append(task.pool_id, inout out); text.append_literal(inout out, " priority="); text.append_u64(inout out, task.priority);
+        text.append_literal(inout out, "\\n"); format.append_status(inout out, run.status.get_or(i, state.FAILED())); out.push(34);
+        text.append_literal(inout out, ",shape=");
+        if critical(borrow analysis, i) { text.append_literal(inout out, "doubleoctagon,color=red"); }
+        else if task.cacheable { text.append_literal(inout out, "box,color=blue"); }
+        else { text.append_literal(inout out, "ellipse,color=black"); }
+        text.append_literal(inout out, "];\n");
+        i += 1;
+    }
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        text.append_literal(inout out, "  t"); text.append_u64(inout out, edge.before);
+        text.append_literal(inout out, " -> t"); text.append_u64(inout out, edge.after); text.append_literal(inout out, ";\n");
+        i += 1;
+    }
+    text.append_literal(inout out, "}\n");
+    out
+}

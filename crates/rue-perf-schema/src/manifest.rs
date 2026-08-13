@@ -111,6 +111,21 @@ pub struct SamplingPolicy {
     pub batch_size: u32,
 }
 
+/// An externally observed fresh-process latency target for one workload.
+///
+/// Targets live on platform epochs rather than suite workloads because an
+/// absolute duration is meaningful only in its declared runner regime. The
+/// dashboard may show the same workload on other platforms, but it must not
+/// imply that their clocks adjudicate this target.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessElapsedTarget {
+    /// Maximum process-spawn-through-exit duration, in nanoseconds.
+    pub process_elapsed_ns: u64,
+    /// The reviewed decision that established this target.
+    pub reference: String,
+}
+
 /// When a workload's movement counts as movement.
 ///
 /// A workload is flagged only when the difference between its current median
@@ -181,6 +196,13 @@ pub struct PlatformEpoch {
     pub environment: EnvironmentPolicy,
     /// Sampling policy per workload.
     pub sampling: BTreeMap<String, SamplingPolicy>,
+    /// Absolute process-time targets adjudicated by this platform epoch.
+    ///
+    /// A workload omitted here has no absolute target in this regime. This is
+    /// intentionally sparse: copying a reference-platform target onto every
+    /// directional platform would turn unlike clocks into an apparent gate.
+    #[serde(default)]
+    pub process_elapsed_targets: BTreeMap<String, ProcessElapsedTarget>,
     /// The regression-flagging rule.
     pub flagging: FlaggingPolicy,
     /// The headline baseline, once a complete valid run has established one.
@@ -275,6 +297,24 @@ pub enum ManifestError {
         /// The workload whose policy is empty.
         workload: String,
     },
+    /// An epoch declares an absolute target for a workload outside its suite.
+    UnknownTargetWorkload {
+        /// The platform carrying the target.
+        platform: String,
+        /// The offending epoch.
+        epoch: u32,
+        /// The undeclared workload.
+        workload: String,
+    },
+    /// An absolute target has no positive duration or reviewed reference.
+    InvalidProcessElapsedTarget {
+        /// The platform carrying the target.
+        platform: String,
+        /// The offending epoch.
+        epoch: u32,
+        /// The workload whose target is invalid.
+        workload: String,
+    },
     /// A platform declares more than one collection epoch.
     ///
     /// Collection measures one epoch per platform. Two would make "the epoch
@@ -334,7 +374,25 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "epoch {epoch} on {platform} samples workload {workload:?} zero times or in \
-                 zero-sized batches"
+                zero-sized batches"
+            ),
+            ManifestError::UnknownTargetWorkload {
+                platform,
+                epoch,
+                workload,
+            } => write!(
+                f,
+                "epoch {epoch} on {platform} declares a process target for undeclared workload \
+                 {workload:?}"
+            ),
+            ManifestError::InvalidProcessElapsedTarget {
+                platform,
+                epoch,
+                workload,
+            } => write!(
+                f,
+                "epoch {epoch} on {platform} declares an invalid process target for workload \
+                 {workload:?}"
             ),
             ManifestError::DuplicateCollectionEpoch {
                 platform,
@@ -458,6 +516,22 @@ impl Manifest {
             for (workload, policy) in &epoch.sampling {
                 if policy.samples == 0 || policy.batch_size == 0 {
                     return Err(ManifestError::EmptySamplingPolicy {
+                        platform: epoch.platform.clone(),
+                        epoch: epoch.id,
+                        workload: workload.clone(),
+                    });
+                }
+            }
+            for (workload, target) in &epoch.process_elapsed_targets {
+                if !declared.contains(&workload.as_str()) {
+                    return Err(ManifestError::UnknownTargetWorkload {
+                        platform: epoch.platform.clone(),
+                        epoch: epoch.id,
+                        workload: workload.clone(),
+                    });
+                }
+                if target.process_elapsed_ns == 0 || target.reference.trim().is_empty() {
+                    return Err(ManifestError::InvalidProcessElapsedTarget {
                         platform: epoch.platform.clone(),
                         epoch: epoch.id,
                         workload: workload.clone(),
@@ -617,6 +691,75 @@ window = 10
             .expect("baseline is present");
         assert_eq!(baseline.commit, "abc123");
         assert_eq!(baseline.run, "deadbeef");
+    }
+
+    #[test]
+    fn a_platform_epoch_may_publish_an_external_latency_target() {
+        let text = format!(
+            "{SUITE}{}",
+            EPOCH.replace(
+                "[epoch.flagging]",
+                "[epoch.process_elapsed_targets.caldera]\n\
+                 process_elapsed_ns = 250000000\n\
+                 reference = \"ADR-0071\"\n\n\
+                 [epoch.flagging]"
+            )
+        );
+        let manifest = Manifest::parse(&text).expect("target belongs to the platform epoch");
+        let target = &manifest
+            .epoch("x86_64-linux", 1)
+            .expect("epoch")
+            .process_elapsed_targets["caldera"];
+        assert_eq!(target.process_elapsed_ns, 250_000_000);
+        assert_eq!(target.reference, "ADR-0071");
+    }
+
+    #[test]
+    fn a_target_for_an_undeclared_workload_is_rejected() {
+        let text = format!(
+            "{SUITE}{}",
+            EPOCH.replace(
+                "[epoch.flagging]",
+                "[epoch.process_elapsed_targets.unknown]\n\
+                 process_elapsed_ns = 250000000\n\
+                 reference = \"ADR-0071\"\n\n\
+                 [epoch.flagging]"
+            )
+        );
+        assert_eq!(
+            Manifest::parse(&text).unwrap_err(),
+            ManifestError::UnknownTargetWorkload {
+                platform: "x86_64-linux".to_string(),
+                epoch: 1,
+                workload: "unknown".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn an_empty_or_zero_target_is_rejected() {
+        for declaration in [
+            "process_elapsed_ns = 0\nreference = \"ADR-0071\"",
+            "process_elapsed_ns = 250000000\nreference = \"   \"",
+        ] {
+            let text = format!(
+                "{SUITE}{}",
+                EPOCH.replace(
+                    "[epoch.flagging]",
+                    &format!(
+                        "[epoch.process_elapsed_targets.caldera]\n{declaration}\n\n[epoch.flagging]"
+                    )
+                )
+            );
+            assert_eq!(
+                Manifest::parse(&text).unwrap_err(),
+                ManifestError::InvalidProcessElapsedTarget {
+                    platform: "x86_64-linux".to_string(),
+                    epoch: 1,
+                    workload: "caldera".to_string(),
+                }
+            );
+        }
     }
 
     #[test]

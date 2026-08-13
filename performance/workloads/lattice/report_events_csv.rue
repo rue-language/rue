@@ -1,0 +1,32 @@
+// Append-only event ledger export.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "sequence,time,kind,task,pool,attempt,cpu,memory\r\n");
+    let mut i: u64 = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        text.append_u64(inout out, i); out.push(44); text.append_u64(inout out, event.time); out.push(44);
+        format.append_event_kind(inout out, event.kind); out.push(44);
+        if event.task < workflow.tasks.len() {
+            let task = workflow.tasks.get_or(event.task, model.empty_task());
+            format.csv_id(inout out, borrow workflow, task.id);
+        } else { text.append_literal(inout out, "\"<none>\""); }
+        out.push(44);
+        if event.pool < workflow.pools.len() {
+            let pool = workflow.pools.get_or(event.pool, model.empty_pool());
+            format.csv_id(inout out, borrow workflow, pool.id);
+        } else { text.append_literal(inout out, "\"<none>\""); }
+        out.push(44); text.append_u64(inout out, event.attempt); out.push(44);
+        text.append_u64(inout out, event.cpu); out.push(44); text.append_u64(inout out, event.memory);
+        text.append_literal(inout out, "\r\n");
+        i += 1;
+    }
+    out
+}

@@ -1,0 +1,32 @@
+// Readable YAML snapshot for configuration and artifact tooling.
+const format = @import("format.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "workflow: "); text.append_id(inout out, borrow workflow, workflow.name); out.push(10);
+    text.append_literal(inout out, "summary:\n  makespan: "); text.append_u64(inout out, run.makespan);
+    text.append_literal(inout out, "\n  succeeded: "); text.append_u64(inout out, run.succeeded);
+    text.append_literal(inout out, "\n  cached: "); text.append_u64(inout out, run.cached);
+    text.append_literal(inout out, "\n  failed: "); text.append_u64(inout out, run.failed);
+    text.append_literal(inout out, "\n  retries: "); text.append_u64(inout out, run.retries);
+    text.append_literal(inout out, "\ntasks:\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "  - id: "); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, "\n    pool: "); text.append_id(inout out, borrow workflow, task.pool_id);
+        text.append_literal(inout out, "\n    duration: "); text.append_u64(inout out, task.duration);
+        text.append_literal(inout out, "\n    priority: "); text.append_u64(inout out, task.priority);
+        text.append_literal(inout out, "\n    status: "); format.append_status(inout out, run.status.get_or(i, state.FAILED()));
+        text.append_literal(inout out, "\n    attempts: "); text.append_u64(inout out, run.attempts.get_or(i, 0));
+        text.append_literal(inout out, "\n    start: "); format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE()));
+        text.append_literal(inout out, "\n    end: "); format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); out.push(10);
+        i += 1;
+    }
+    out
+}

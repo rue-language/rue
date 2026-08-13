@@ -1,0 +1,84 @@
+// Retry budgets, attempts, recovery, and exhaustion statistics.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    attempts_by_pool: model.U64s,
+    retries_by_pool: model.U64s,
+    budget_by_pool: model.U64s,
+    configured_budget: u64,
+    total_attempts: u64,
+    observed_retries: u64,
+    recovered_tasks: u64,
+    exhausted_tasks: u64,
+    untouched_fallible_tasks: u64,
+    budget_violations: u64,
+    maximum_attempts: u64,
+    maximum_attempt_task: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn add(inout values: model.U64s, index: u64, amount: u64) {
+    if index < values.len() { values.set(index, values.get_or(index, 0) + amount); }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let mut attempts_by_pool = zeroes(workflow.pools.len());
+    let mut retries_by_pool = zeroes(workflow.pools.len());
+    let mut budget_by_pool = zeroes(workflow.pools.len());
+    let mut configured_budget: u64 = 0;
+    let mut total_attempts: u64 = 0;
+    let mut observed_retries: u64 = 0;
+    let mut recovered_tasks: u64 = 0;
+    let mut exhausted_tasks: u64 = 0;
+    let mut untouched_fallible_tasks: u64 = 0;
+    let mut budget_violations: u64 = 0;
+    let mut maximum_attempts: u64 = 0;
+    let mut maximum_attempt_task = model.NONE();
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let attempts = run.attempts.get_or(i, 0);
+        let retries = if attempts > 0 { attempts - 1 } else { 0 };
+        configured_budget += task.retries;
+        total_attempts += attempts;
+        observed_retries += retries;
+        add(inout attempts_by_pool, task.pool, attempts);
+        add(inout retries_by_pool, task.pool, retries);
+        add(inout budget_by_pool, task.pool, task.retries);
+        if attempts > task.retries + 1 { budget_violations += 1; }
+        if attempts > 1 && run.status.get_or(i, state.FAILED()) == state.SUCCEEDED() {
+            recovered_tasks += 1;
+        }
+        if run.status.get_or(i, state.PENDING()) == state.FAILED() && attempts > 0 {
+            exhausted_tasks += 1;
+        }
+        if task.fail_attempt > 0 && attempts == 0 { untouched_fallible_tasks += 1; }
+        if maximum_attempt_task == model.NONE() || attempts > maximum_attempts {
+            maximum_attempts = attempts; maximum_attempt_task = i;
+        }
+        digest = mix(digest, i); digest = mix(digest, attempts); digest = mix(digest, task.retries);
+        i += 1;
+    }
+    Analysis {
+        attempts_by_pool: attempts_by_pool, retries_by_pool: retries_by_pool,
+        budget_by_pool: budget_by_pool, configured_budget: configured_budget,
+        total_attempts: total_attempts, observed_retries: observed_retries,
+        recovered_tasks: recovered_tasks, exhausted_tasks: exhausted_tasks,
+        untouched_fallible_tasks: untouched_fallible_tasks,
+        budget_violations: budget_violations, maximum_attempts: maximum_attempts,
+        maximum_attempt_task: maximum_attempt_task, digest: digest,
+        valid: budget_violations == 0 && observed_retries == run.retries,
+    }
+}
