@@ -1137,6 +1137,7 @@ fn benchmark_compiler_work(
             nominal_materializations: provider.nominal_materializations,
             function_materializations: provider.function_materializations,
             method_materializations: provider.method_materializations,
+            nominal_materialization_reuses: provider.nominal_materialization_reuses,
             anonymous_facts: provider.anonymous_facts,
             producer_facts: provider.producer_facts,
             toolchain_facts: provider.toolchain_facts,
@@ -1817,6 +1818,7 @@ mod tests {
                 nominal_materializations: 3,
                 function_materializations: 11,
                 method_materializations: 7,
+                nominal_materialization_reuses: 8,
                 anonymous_facts: 29,
                 producer_facts: 31,
                 toolchain_facts: 37,
@@ -1911,6 +1913,10 @@ mod tests {
         assert_eq!(projected.semantic_provider.nominal_materializations, 3);
         assert_eq!(projected.semantic_provider.function_materializations, 11);
         assert_eq!(projected.semantic_provider.method_materializations, 7);
+        assert_eq!(
+            projected.semantic_provider.nominal_materialization_reuses,
+            8
+        );
         assert_eq!(
             projected.semantic_provider.materializations,
             projected.semantic_provider.const_materializations

@@ -8163,13 +8163,15 @@ mod tests {
 
         let metrics = crate::unstable::provider_observation_metrics(&session);
         assert_eq!(
-            metrics.name_lookups, 15,
-            "provider body analysis must reuse exact parameter facts while resolving the body-local return spelling once: {metrics:?}"
+            metrics.name_lookups, 11,
+            "the first Item payload must serve type minting and endpoint installation without repeating candidate/destructor lookups: {metrics:?}"
         );
-        assert_eq!(metrics.declaration_facts, 20, "{metrics:?}");
-        assert_eq!(metrics.identity_facts, 10, "{metrics:?}");
-        assert_eq!(metrics.signature_facts, 10, "{metrics:?}");
-        assert_eq!(metrics.materializations, 10, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 16, "{metrics:?}");
+        assert_eq!(metrics.identity_facts, 8, "{metrics:?}");
+        assert_eq!(metrics.signature_facts, 8, "{metrics:?}");
+        assert_eq!(metrics.materializations, 8, "{metrics:?}");
+        assert_eq!(metrics.nominal_materializations, 2, "{metrics:?}");
+        assert_eq!(metrics.nominal_materialization_reuses, 2, "{metrics:?}");
         assert_eq!(
             metrics.materializations,
             metrics.shared_payload_materializations + metrics.owned_payload_materializations,

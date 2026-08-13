@@ -775,12 +775,12 @@ fn render(report: &ScalingReport) -> String {
             work.import_anonymous_nominals_registered,
         ));
     }
-    out.push_str("\n| workload | durable materializations total (shared/owned; const/nominal/function/method) | anonymous facts | producer facts | toolchain facts |\n");
-    out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
+    out.push_str("\n| workload | durable materializations total (shared/owned; const/nominal/function/method) | nominal payload reuses | anonymous facts | producer facts | toolchain facts |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in reference_observations(report) {
         let work = observation.work.semantic_provider;
         out.push_str(&format!(
-            "| {} | {} ({}/{}; {}/{}/{}/{}) | {} | {} | {} |\n",
+            "| {} | {} ({}/{}; {}/{}/{}/{}) | {} | {} | {} | {} |\n",
             observation.workload,
             work.materializations,
             work.shared_payload_materializations,
@@ -789,6 +789,7 @@ fn render(report: &ScalingReport) -> String {
             work.nominal_materializations,
             work.function_materializations,
             work.method_materializations,
+            work.nominal_materialization_reuses,
             work.anonymous_facts,
             work.producer_facts,
             work.toolchain_facts,
@@ -1101,6 +1102,7 @@ mod tests {
                         nominal_materializations: 3,
                         function_materializations: 11,
                         method_materializations: 7,
+                        nominal_materialization_reuses: 8,
                         anonymous_facts: 29,
                         producer_facts: 31,
                         toolchain_facts: 37,
@@ -1217,6 +1219,7 @@ mod tests {
         assert!(rendered.contains("Semantic provider observations"));
         assert!(rendered.contains("durable materializations"));
         assert!(rendered.contains("23 (3/20; 2/3/11/7)"));
+        assert!(rendered.contains("| 8 | 29 | 31 | 37 |"));
         assert!(rendered.contains("nominal registration requests"));
         assert!(rendered.contains("41 | 43 | 47 (53/59/61) | 67 | 71"));
         assert!(rendered.contains("Semantic reachability scheduling"));

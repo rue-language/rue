@@ -13,7 +13,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use ahash::RandomState;
+use ahash::{AHashMap, RandomState};
 
 #[derive(Debug, Default)]
 struct BodyReachabilityMeter {
@@ -765,6 +765,7 @@ pub(crate) struct ProviderObservationCounters {
     nominal_materializations: std::sync::atomic::AtomicU64,
     function_materializations: std::sync::atomic::AtomicU64,
     method_materializations: std::sync::atomic::AtomicU64,
+    nominal_materialization_reuses: std::sync::atomic::AtomicU64,
     anonymous_facts: std::sync::atomic::AtomicU64,
     producer_facts: std::sync::atomic::AtomicU64,
     toolchain_facts: std::sync::atomic::AtomicU64,
@@ -834,6 +835,7 @@ impl ProviderObservationCounters {
             nominal_materializations,
             function_materializations,
             method_materializations,
+            nominal_materialization_reuses: self.nominal_materialization_reuses.load(Relaxed),
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
             toolchain_facts: self.toolchain_facts.load(Relaxed),
@@ -21446,6 +21448,19 @@ impl CanonicalAnonymousNominalRegistry {
 pub(crate) struct CompilerBodyDurableSource<'a> {
     provider: &'a CompilerBodyFactProvider<'a>,
     dynamic_anonymous: Rc<std::cell::RefCell<CanonicalAnonymousNominalRegistry>>,
+    /// One body transaction can ask for the same canonically shared nominal
+    /// payload through type minting, endpoint installation, and export. Keep
+    /// the exact provider result once per durable key so those consumers share
+    /// the same immutable field/variant Arcs instead of rebuilding the
+    /// candidate and signature projection.
+    named_nominals: Rc<
+        std::cell::RefCell<
+            AHashMap<
+                crate::StableDefinitionKey,
+                rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>,
+            >,
+        >,
+    >,
     source_paths: Rc<std::cell::RefCell<HashMap<crate::FileId, Arc<str>>>>,
     source_locators: Rc<std::cell::RefCell<HashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
@@ -21473,6 +21488,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
         Self {
             provider,
             dynamic_anonymous: Rc::new(std::cell::RefCell::new(dynamic_anonymous)),
+            named_nominals: Rc::new(std::cell::RefCell::new(AHashMap::new())),
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
         }
@@ -22263,6 +22279,13 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
         &self,
         key: &crate::StableDefinitionKey,
     ) -> Option<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>> {
+        if let Some(nominal) = self.named_nominals.borrow().get(key).cloned() {
+            self.provider
+                .meter()
+                .nominal_materialization_reuses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(nominal);
+        }
         self.provider
             .meter()
             .nominal_materializations
@@ -22293,7 +22316,7 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             Projection::Enum { variants } => rue_air::DurableNominalBody::Enum { variants },
             _ => return None,
         };
-        Some(rue_air::DurableNominal {
+        let nominal = rue_air::DurableNominal {
             name: Arc::from(key.name()),
             module_path: Arc::from(key.module().logical_path()),
             is_public: candidate.identity.is_public,
@@ -22315,7 +22338,11 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 rue_air::NameResolution::Unique(_)
             ),
             body,
-        })
+        };
+        self.named_nominals
+            .borrow_mut()
+            .insert(key.clone(), nominal.clone());
+        Some(nominal)
     }
 }
 
