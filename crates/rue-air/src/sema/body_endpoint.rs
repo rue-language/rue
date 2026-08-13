@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::InstRef;
 use rue_span::FileId;
@@ -521,12 +522,15 @@ struct EndpointEntry {
 /// [`BodyEndpointProvider::name_symbol`] hands back.
 struct EndpointOverlay<K> {
     next_slot: u32,
-    tokens: HashMap<SemanticDefinitionToken, EndpointEntry>,
-    definition_tokens: HashMap<K, SemanticDefinitionToken>,
-    by_file_name: HashMap<(u32, Spur), K>,
-    functions_by_file_name: HashMap<(u32, Spur), (Spur, K)>,
-    function_keys: HashMap<Spur, K>,
-    module_tokens: HashMap<SemanticModuleToken, SemanticModuleEndpoint>,
+    // These request-local registries expose only exact lookup. Their iteration
+    // order is never semantic, so compiler-keyed fast maps avoid paying the
+    // standard hasher's collision-resistance cost in recursive nominal walks.
+    tokens: AHashMap<SemanticDefinitionToken, EndpointEntry>,
+    definition_tokens: AHashMap<K, SemanticDefinitionToken>,
+    by_file_name: AHashMap<(u32, Spur), K>,
+    functions_by_file_name: AHashMap<(u32, Spur), (Spur, K)>,
+    function_keys: AHashMap<Spur, K>,
+    module_tokens: AHashMap<SemanticModuleToken, SemanticModuleEndpoint>,
     /// Generated slice-struct identities minted on demand (RUE-1091 r6a): the
     /// provider-side analog of the epoch's `generated_structs` name→id map. A
     /// caller seeds one per `[T]` slice with [`ProviderEndpointFacts::
@@ -534,20 +538,20 @@ struct EndpointOverlay<K> {
     /// [`ProviderEndpointFacts::register_named_nominal`]), so the `Slice` arm of
     /// [`resolve_instance_type`] resolves the generated-struct name the epoch
     /// mints during declaration gathering.
-    generated_slices: HashMap<Spur, StructId>,
+    generated_slices: AHashMap<Spur, StructId>,
 }
 
 impl<K> Default for EndpointOverlay<K> {
     fn default() -> Self {
         Self {
             next_slot: 0,
-            tokens: HashMap::new(),
-            definition_tokens: HashMap::new(),
-            by_file_name: HashMap::new(),
-            functions_by_file_name: HashMap::new(),
-            function_keys: HashMap::new(),
-            module_tokens: HashMap::new(),
-            generated_slices: HashMap::new(),
+            tokens: AHashMap::new(),
+            definition_tokens: AHashMap::new(),
+            by_file_name: AHashMap::new(),
+            functions_by_file_name: AHashMap::new(),
+            function_keys: AHashMap::new(),
+            module_tokens: AHashMap::new(),
+            generated_slices: AHashMap::new(),
         }
     }
 }
@@ -574,7 +578,7 @@ pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     /// [`Self::register_anonymous_nominal`], exactly as it seeds a named nominal
     /// with [`Self::register_named_nominal`]. The `anon_struct`/`anon_enum` arms
     /// then mint through the pool's [`BodyIdentityPool::find_or_create_anon`].
-    anon_by_issued: RefCell<HashMap<IssuedAnonymousNominalKey, crate::AnonymousNominalKey<K, M>>>,
+    anon_by_issued: RefCell<AHashMap<IssuedAnonymousNominalKey, crate::AnonymousNominalKey<K, M>>>,
 }
 
 impl<'a, P, S, K, M> ProviderEndpointFacts<'a, P, S, K, M>
@@ -624,7 +628,7 @@ where
             identity,
             rir,
             overlay: RefCell::new(EndpointOverlay::default()),
-            anon_by_issued: RefCell::new(HashMap::new()),
+            anon_by_issued: RefCell::new(AHashMap::new()),
         }
     }
 
