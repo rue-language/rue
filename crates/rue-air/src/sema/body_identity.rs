@@ -2810,14 +2810,41 @@ pub struct BodyRirBundle {
     rir_index: Arc<BodyRirIndex>,
 }
 
+/// Structural work attribution for building one request-local body RIR index.
+/// `duration_ns` is charged by the compiler-owned contiguous lowering clock;
+/// the values contain no request-local instruction identities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BodyRirIndexAttribution {
+    pub duration_ns: u64,
+    pub declaration_index: super::RirDeclarationIndexWork,
+    pub shell_declarations_visited: u64,
+    pub named_methods_indexed: u64,
+    pub const_declarations_indexed: u64,
+}
+
 impl BodyRirBundle {
     pub fn new(rir: ValidatedRir, rir_interner: ThreadedRodeo) -> Self {
-        let rir_index = Arc::new(BodyRirIndex::new(&rir));
-        Self {
-            rir,
-            rir_interner: Rc::new(rir_interner),
-            rir_index,
-        }
+        Self::new_with_index_attribution(rir, rir_interner, false).0
+    }
+
+    /// Construct the canonical bundle while returning bounded index-build
+    /// attribution. The ordinary constructor delegates here so measurement
+    /// cannot select a peer construction path.
+    pub fn new_with_index_attribution(
+        rir: ValidatedRir,
+        rir_interner: ThreadedRodeo,
+        attribution_enabled: bool,
+    ) -> (Self, BodyRirIndexAttribution) {
+        let (rir_index, attribution) =
+            BodyRirIndex::new_with_attribution(&rir, attribution_enabled);
+        (
+            Self {
+                rir,
+                rir_interner: Rc::new(rir_interner),
+                rir_index: Arc::new(rir_index),
+            },
+            attribution,
+        )
     }
 
     /// The one interner authority for this body RIR and its provider facades.
@@ -2921,10 +2948,25 @@ impl BodyRirIndex {
     /// owner edges it already classified — no second arena walk of the method
     /// universe, no durable metadata, no pool.
     pub(in crate::sema) fn new(rir: &Rir) -> Self {
+        Self::new_with_attribution(rir, false).0
+    }
+
+    fn new_with_attribution(
+        rir: &Rir,
+        attribution_enabled: bool,
+    ) -> (Self, BodyRirIndexAttribution) {
         let declarations = RirDeclarationIndex::new(rir);
+        let declaration_index = declarations.work();
         let mut named_methods_by_owner = HashMap::new();
         let mut const_declarations = HashMap::new();
+        let mut attribution = BodyRirIndexAttribution {
+            declaration_index,
+            ..BodyRirIndexAttribution::default()
+        };
         for shell in declarations.shell_declarations() {
+            if attribution_enabled {
+                attribution.shell_declarations_visited += 1;
+            }
             // `named_method_owner` is `Some` exactly for named methods (free
             // functions, nominals, consts, and destructors carry `None`); the
             // owner is the enclosing struct's source-name symbol. A named
@@ -2938,7 +2980,12 @@ impl BodyRirIndex {
                 // frozen epoch can expose a `ConstInfo`.
                 const_declarations
                     .entry((inst.span.file_id, name))
-                    .or_insert(shell.declaration);
+                    .or_insert_with(|| {
+                        if attribution_enabled {
+                            attribution.const_declarations_indexed += 1;
+                        }
+                        shell.declaration
+                    });
             }
             let Some(owner) = shell.named_method_owner else {
                 continue;
@@ -2949,14 +2996,22 @@ impl BodyRirIndex {
                 // of a duplicate `(struct, method)`.
                 named_methods_by_owner
                     .entry((inst.span.file_id, owner, name))
-                    .or_insert(shell.declaration);
+                    .or_insert_with(|| {
+                        if attribution_enabled {
+                            attribution.named_methods_indexed += 1;
+                        }
+                        shell.declaration
+                    });
             }
         }
-        Self {
-            declarations,
-            named_methods_by_owner,
-            const_declarations,
-        }
+        (
+            Self {
+                declarations,
+                named_methods_by_owner,
+                const_declarations,
+            },
+            attribution,
+        )
     }
 
     /// The first free-function RIR declaration for `(source, file)`. The exact
@@ -6104,6 +6159,29 @@ mod tests {
             self_is_mut: *self_is_mut,
             returns_borrow: *returns_borrow,
         }
+    }
+
+    #[test]
+    fn body_rir_index_supplemental_counters_are_attribution_only() {
+        let file = FileId::new(4);
+        let source = r#"
+            const LIMIT: i64 = 7;
+            pub struct Widget {
+                id: u32,
+                fn bump(self, delta: i32) -> u32 { self.id }
+            }
+        "#;
+        let (rir, _) = lower_rir(source, file);
+        let (_, ordinary) = BodyRirIndex::new_with_attribution(&rir, false);
+        let (_, attributed) = BodyRirIndex::new_with_attribution(&rir, true);
+
+        assert_eq!(ordinary.declaration_index, attributed.declaration_index);
+        assert_eq!(ordinary.shell_declarations_visited, 0);
+        assert_eq!(ordinary.named_methods_indexed, 0);
+        assert_eq!(ordinary.const_declarations_indexed, 0);
+        assert!(attributed.shell_declarations_visited > 0);
+        assert_eq!(attributed.named_methods_indexed, 1);
+        assert_eq!(attributed.const_declarations_indexed, 1);
     }
 
     #[test]

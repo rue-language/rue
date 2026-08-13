@@ -397,13 +397,32 @@ pub struct CompilerCriticalPathEvidence {
     /// Projection of the closure and declaration graph into the rooted body graph.
     #[serde(default)]
     pub semantic_body_graph_projection: DurationDistribution,
-    /// Exact body-fragment parsing and lowering inside body analysis.
+    /// Every body-fragment lowering attempt, including attempts that return an
+    /// error for ordinary semantic recovery.
     #[serde(default)]
     pub semantic_body_input_lowering: DurationDistribution,
-    /// Provider-backed semantic analysis after body-fragment lowering.
+    /// Successful body-fragment lowerings only, partitioned by the five
+    /// same-clock intervals below. Failed or recovered attempts have no
+    /// completed structural result and are excluded.
+    #[serde(default)]
+    pub semantic_body_input_attributed_total: DurationDistribution,
+    #[serde(default)]
+    pub semantic_body_input_assembly_snapshot: DurationDistribution,
+    #[serde(default)]
+    pub semantic_body_input_lex_parse: DurationDistribution,
+    #[serde(default)]
+    pub semantic_body_input_rir_lower: DurationDistribution,
+    #[serde(default)]
+    pub semantic_body_input_span_remap_validation: DurationDistribution,
+    #[serde(default)]
+    pub semantic_body_input_rir_index: DurationDistribution,
+    /// Every provider-backed semantic-analysis attempt after body-fragment
+    /// lowering, including attempts that return an ordinary semantic error.
     #[serde(default)]
     pub semantic_provider_analysis: DurationDistribution,
-    /// Provider-host construction and pre-engine body setup.
+    /// Provider-host construction and pre-engine body setup for successful
+    /// provider analyses. The five provider-detail fields through result
+    /// projection share this success denominator.
     #[serde(default)]
     pub semantic_provider_host_setup: DurationDistribution,
     /// Canonical expression inference and body analysis engine.
@@ -415,6 +434,10 @@ pub struct CompilerCriticalPathEvidence {
     /// Compile-time alias and inline-constructor preparation before constraints.
     #[serde(default)]
     pub semantic_inference_precompute: DurationDistribution,
+    #[serde(default)]
+    pub semantic_inference_precompute_structural: DurationDistribution,
+    #[serde(default)]
+    pub semantic_inference_precompute_eval_provider: DurationDistribution,
     /// Constraint generation over the body RIR.
     #[serde(default)]
     pub semantic_constraint_generation: DurationDistribution,
@@ -625,11 +648,23 @@ impl BuildBoundaryEvidence {
             || !critical.semantic_body_closure.validate()
             || !critical.semantic_body_graph_projection.validate()
             || !critical.semantic_body_input_lowering.validate()
+            || !critical.semantic_body_input_attributed_total.validate()
+            || !critical.semantic_body_input_assembly_snapshot.validate()
+            || !critical.semantic_body_input_lex_parse.validate()
+            || !critical.semantic_body_input_rir_lower.validate()
+            || !critical
+                .semantic_body_input_span_remap_validation
+                .validate()
+            || !critical.semantic_body_input_rir_index.validate()
             || !critical.semantic_provider_analysis.validate()
             || !critical.semantic_provider_host_setup.validate()
             || !critical.semantic_provider_expression_engine.validate()
             || !critical.semantic_expression_setup.validate()
             || !critical.semantic_inference_precompute.validate()
+            || !critical.semantic_inference_precompute_structural.validate()
+            || !critical
+                .semantic_inference_precompute_eval_provider
+                .validate()
             || !critical.semantic_constraint_generation.validate()
             || !critical.semantic_unification_resolution.validate()
             || !critical.semantic_air_emission_validation.validate()
@@ -695,11 +730,19 @@ impl BuildBoundaryEvidence {
             || critical.semantic_body_closure.count == 0
             || critical.semantic_body_graph_projection.count == 0
             || critical.semantic_body_input_lowering.count == 0
+            || critical.semantic_body_input_attributed_total.count == 0
+            || critical.semantic_body_input_assembly_snapshot.count == 0
+            || critical.semantic_body_input_lex_parse.count == 0
+            || critical.semantic_body_input_rir_lower.count == 0
+            || critical.semantic_body_input_span_remap_validation.count == 0
+            || critical.semantic_body_input_rir_index.count == 0
             || critical.semantic_provider_analysis.count == 0
             || critical.semantic_provider_host_setup.count == 0
             || critical.semantic_provider_expression_engine.count == 0
             || critical.semantic_expression_setup.count == 0
             || critical.semantic_inference_precompute.count == 0
+            || critical.semantic_inference_precompute_structural.count == 0
+            || critical.semantic_inference_precompute_eval_provider.count == 0
             || critical.semantic_constraint_generation.count == 0
             || critical.semantic_unification_resolution.count == 0
             || critical.semantic_air_emission_validation.count == 0
@@ -708,6 +751,85 @@ impl BuildBoundaryEvidence {
             || critical.semantic_provider_result_projection.count == 0
         {
             return Err("compiler omitted semantic critical-path evidence".to_string());
+        }
+        let lowering_counts = [
+            critical.semantic_body_input_attributed_total.count,
+            critical.semantic_body_input_assembly_snapshot.count,
+            critical.semantic_body_input_lex_parse.count,
+            critical.semantic_body_input_rir_lower.count,
+            critical.semantic_body_input_span_remap_validation.count,
+            critical.semantic_body_input_rir_index.count,
+        ];
+        let successful_lowerings = critical.semantic_body_input_attributed_total.count;
+        if lowering_counts
+            .iter()
+            .any(|count| *count != successful_lowerings)
+            || successful_lowerings > critical.semantic_body_input_lowering.count
+            || critical.semantic_body_input_attributed_total.total_ns
+                != critical
+                    .semantic_body_input_assembly_snapshot
+                    .total_ns
+                    .saturating_add(critical.semantic_body_input_lex_parse.total_ns)
+                    .saturating_add(critical.semantic_body_input_rir_lower.total_ns)
+                    .saturating_add(critical.semantic_body_input_span_remap_validation.total_ns)
+                    .saturating_add(critical.semantic_body_input_rir_index.total_ns)
+        {
+            return Err("compiler body-lowering attribution is incomplete".to_string());
+        }
+        let successful_provider_analyses = critical.semantic_provider_expression_engine.count;
+        let provider_counts = [
+            critical.semantic_provider_host_setup.count,
+            critical.semantic_provider_expression_engine.count,
+            critical.semantic_provider_specialization_selection.count,
+            critical.semantic_provider_body_export.count,
+            critical.semantic_provider_result_projection.count,
+        ];
+        if provider_counts
+            .iter()
+            .any(|count| *count != successful_provider_analyses)
+            || successful_provider_analyses > critical.semantic_provider_analysis.count
+        {
+            return Err("compiler provider-analysis attribution is incomplete".to_string());
+        }
+        if critical.semantic_inference_precompute_structural.count
+            != critical.semantic_inference_precompute.count
+            || critical.semantic_inference_precompute_eval_provider.count
+                != critical.semantic_inference_precompute.count
+            || critical.semantic_inference_precompute.total_ns
+                != critical
+                    .semantic_inference_precompute_structural
+                    .total_ns
+                    .saturating_add(
+                        critical
+                            .semantic_inference_precompute_eval_provider
+                            .total_ns,
+                    )
+        {
+            return Err("compiler precompute attribution is incomplete".to_string());
+        }
+        let structure = self.compiler_work.semantic_body_structure;
+        if structure.body_lowerings != successful_lowerings
+            || structure.index_builds != structure.body_lowerings
+            || structure.rir_instructions != structure.index_rir_instructions_visited
+            || structure.precompute_bodies != critical.semantic_inference_precompute.count
+            || structure.precompute_alias_eval_attempts != structure.precompute_alias_filter_accepts
+            || structure
+                .precompute_alias_filter_accepts
+                .saturating_add(structure.precompute_alias_filter_skips)
+                > structure.precompute_alias_allocations_examined
+            || structure.precompute_alias_type_successes > structure.precompute_alias_eval_attempts
+            || structure.precompute_inline_scan_pops
+                != structure
+                    .precompute_inline_scan_child_edges
+                    .saturating_add(structure.precompute_bodies)
+            || structure.precompute_inline_final_candidates
+                > structure.precompute_inline_raw_candidates
+            || structure.precompute_inline_eval_attempts
+                != structure.precompute_inline_final_candidates
+            || structure.precompute_inline_type_successes
+                > structure.precompute_inline_eval_attempts
+        {
+            return Err("compiler body structural-work attribution is inconsistent".to_string());
         }
         let expression_counts = [
             critical.semantic_expression_setup.count,
@@ -764,6 +886,19 @@ mod tests {
             max_ns: 100,
             log2_buckets,
         }
+    }
+
+    fn distribution_total(total_ns: u64) -> DurationDistribution {
+        DurationDistribution {
+            total_ns,
+            max_ns: total_ns,
+            ..distribution()
+        }
+    }
+
+    fn add_success(distribution: &mut DurationDistribution) {
+        distribution.count += 1;
+        distribution.log2_buckets[6] += 1;
     }
 
     fn evidence() -> BuildBoundaryEvidence {
@@ -830,11 +965,19 @@ mod tests {
                 semantic_body_closure: distribution(),
                 semantic_body_graph_projection: distribution(),
                 semantic_body_input_lowering: distribution(),
+                semantic_body_input_attributed_total: distribution_total(500),
+                semantic_body_input_assembly_snapshot: distribution(),
+                semantic_body_input_lex_parse: distribution(),
+                semantic_body_input_rir_lower: distribution(),
+                semantic_body_input_span_remap_validation: distribution(),
+                semantic_body_input_rir_index: distribution(),
                 semantic_provider_analysis: distribution(),
                 semantic_provider_host_setup: distribution(),
                 semantic_provider_expression_engine: distribution(),
                 semantic_expression_setup: distribution(),
-                semantic_inference_precompute: distribution(),
+                semantic_inference_precompute: distribution_total(200),
+                semantic_inference_precompute_structural: distribution(),
+                semantic_inference_precompute_eval_provider: distribution(),
                 semantic_constraint_generation: distribution(),
                 semantic_unification_resolution: distribution(),
                 semantic_air_emission_validation: distribution(),
@@ -855,7 +998,16 @@ mod tests {
                 declined_joins: 0,
                 donated_permits: 0,
             },
-            compiler_work: CompilerWork::default(),
+            compiler_work: CompilerWork {
+                semantic_body_structure: crate::SemanticBodyStructureWork {
+                    body_lowerings: 1,
+                    index_builds: 1,
+                    precompute_bodies: 1,
+                    precompute_inline_scan_pops: 1,
+                    ..crate::SemanticBodyStructureWork::default()
+                },
+                ..CompilerWork::default()
+            },
         }
     }
 
@@ -889,11 +1041,19 @@ mod tests {
             "semantic_body_closure",
             "semantic_body_graph_projection",
             "semantic_body_input_lowering",
+            "semantic_body_input_attributed_total",
+            "semantic_body_input_assembly_snapshot",
+            "semantic_body_input_lex_parse",
+            "semantic_body_input_rir_lower",
+            "semantic_body_input_span_remap_validation",
+            "semantic_body_input_rir_index",
             "semantic_provider_analysis",
             "semantic_provider_host_setup",
             "semantic_provider_expression_engine",
             "semantic_expression_setup",
             "semantic_inference_precompute",
+            "semantic_inference_precompute_structural",
+            "semantic_inference_precompute_eval_provider",
             "semantic_constraint_generation",
             "semantic_unification_resolution",
             "semantic_air_emission_validation",
@@ -1049,6 +1209,82 @@ mod tests {
                 "x86-64-linux",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn current_producer_separates_attempts_from_successful_attribution() {
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+        let mut recovered = evidence();
+        add_success(&mut recovered.critical_path.semantic_body_input_lowering);
+        add_success(&mut recovered.critical_path.semantic_provider_analysis);
+        recovered
+            .validate_current_producer_against(&policy, "x86-64-linux")
+            .unwrap();
+
+        let mut too_many_body_successes = evidence();
+        for distribution in [
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_attributed_total,
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_assembly_snapshot,
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_lex_parse,
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_rir_lower,
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_span_remap_validation,
+            &mut too_many_body_successes
+                .critical_path
+                .semantic_body_input_rir_index,
+        ] {
+            add_success(distribution);
+        }
+        too_many_body_successes
+            .compiler_work
+            .semantic_body_structure
+            .body_lowerings = 2;
+        too_many_body_successes
+            .compiler_work
+            .semantic_body_structure
+            .index_builds = 2;
+        assert_eq!(
+            too_many_body_successes
+                .validate_current_producer_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler body-lowering attribution is incomplete"
+        );
+
+        let mut too_many_provider_successes = evidence();
+        for distribution in [
+            &mut too_many_provider_successes
+                .critical_path
+                .semantic_provider_host_setup,
+            &mut too_many_provider_successes
+                .critical_path
+                .semantic_provider_expression_engine,
+            &mut too_many_provider_successes
+                .critical_path
+                .semantic_provider_specialization_selection,
+            &mut too_many_provider_successes
+                .critical_path
+                .semantic_provider_body_export,
+            &mut too_many_provider_successes
+                .critical_path
+                .semantic_provider_result_projection,
+        ] {
+            add_success(distribution);
+        }
+        assert_eq!(
+            too_many_provider_successes
+                .validate_current_producer_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler provider-analysis attribution is incomplete"
+        );
     }
 
     #[test]

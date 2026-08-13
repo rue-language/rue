@@ -48,6 +48,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
+use std::time::Instant;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind};
@@ -117,6 +118,10 @@ pub(super) fn validate_comptime_value_for_type_impl(
 use super::{DeferredOwnershipGate, DeferredOwnershipGateKind};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
+
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 /// Empty type substitution map for evaluation contexts without one.
 static EMPTY_TYPE_SUBST: LazyLock<HashMap<Spur, Type>> = LazyLock::new(HashMap::new);
@@ -2234,7 +2239,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
         runtime_params: &[Spur],
-    ) -> HashMap<InstRef, Type> {
+        attribution_enabled: bool,
+    ) -> (HashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+        let mut attribution = ComptimePrecomputeAttribution {
+            enabled: attribution_enabled,
+            ..ComptimePrecomputeAttribution::default()
+        };
         let mut discovered: HashMap<InstRef, Type> = HashMap::new();
         let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
@@ -2247,8 +2257,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &eval_values,
             &mut runtime_bindings,
             &mut root_frame,
+            &mut attribution,
         );
-        discovered
+        (discovered, attribution)
     }
 
     /// In-order walk over statement positions for
@@ -2268,12 +2279,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         eval_values: &HashMap<Spur, ConstValue>,
         runtime_bindings: &mut HashSet<Spur>,
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
+        attribution: &mut ComptimePrecomputeAttribution,
     ) {
+        if attribution.enabled {
+            attribution.alias_nodes_visited += 1;
+        }
         match &self.body_rir_ref().get(inst_ref).data {
             InstData::Block { instructions } => {
                 let instructions = instructions.clone();
                 let statement_count = self.body_rir_ref().block_inst_count(&instructions);
                 let mut inner_frame = Vec::new();
+                if attribution.enabled {
+                    attribution.alias_block_statements += statement_count as u64;
+                }
                 for index in 0..statement_count {
                     let stmt = self
                         .body_rir_ref()
@@ -2286,6 +2304,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         eval_values,
                         runtime_bindings,
                         &mut inner_frame,
+                        attribution,
                     );
                 }
                 for (name, old_type, was_runtime) in inner_frame.into_iter().rev() {
@@ -2301,16 +2320,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
             InstData::Alloc { name, init, .. } => {
+                if attribution.enabled {
+                    attribution.alias_allocations_examined += 1;
+                }
                 let (name, init) = (*name, *init);
                 if let Some(name) = name {
                     let alias = if initializer_may_evaluate_to_type(self.body_rir_ref(), init) {
-                        self.try_eval_type_alias_init(
+                        let started = attribution.enabled.then(Instant::now);
+                        if attribution.enabled {
+                            attribution.alias_filter_accepts += 1;
+                            attribution.alias_eval_attempts += 1;
+                        }
+                        let result = self.try_eval_type_alias_init(
                             init,
                             eval_types,
                             eval_values,
                             runtime_bindings,
-                        )
+                        );
+                        if let Some(started) = started {
+                            attribution.eval_provider_ns = attribution
+                                .eval_provider_ns
+                                .saturating_add(elapsed_ns(started));
+                            attribution.alias_type_successes += u64::from(result.is_some());
+                        }
+                        result
                     } else {
+                        if attribution.enabled {
+                            attribution.alias_filter_skips += 1;
+                        }
                         None
                     };
                     let old_type = eval_types.remove(&name);
@@ -2337,6 +2374,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     eval_values,
                     runtime_bindings,
                     frame,
+                    attribution,
                 );
                 if let Some(else_block) = else_block {
                     self.walk_comptime_type_locals(
@@ -2346,6 +2384,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         eval_values,
                         runtime_bindings,
                         frame,
+                        attribution,
                     );
                 }
             }
@@ -2358,6 +2397,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     eval_values,
                     runtime_bindings,
                     frame,
+                    attribution,
                 );
             }
             InstData::Match { arms, .. } => {
@@ -2375,6 +2415,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         eval_values,
                         runtime_bindings,
                         frame,
+                        attribution,
                     );
                 }
             }
@@ -2438,28 +2479,100 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
         comptime_local_types: &HashMap<Spur, Type>,
-    ) -> HashMap<InstRef, Type> {
+        attribution_enabled: bool,
+    ) -> (HashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
         // A head is the receiver of a `.NAME(..)` path whose receiver is
         // itself a call (`F(args).Ok(x)`, or module-qualified
         // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
         // struct literal's explicit `ctor_head`. Runtime shapes like
         // `foo(x).bar()` are collected too but fail the reduction cheaply
         // (the comptime engine rejects callees with runtime parameters).
-        let candidates = inline_ctor_head_candidates(self.body_rir_ref(), body);
+        let (candidates, scan) =
+            inline_ctor_head_candidates_with_work(self.body_rir_ref(), body, attribution_enabled);
+        let mut attribution = ComptimePrecomputeAttribution {
+            enabled: attribution_enabled,
+            inline_scan_pops: scan.pops,
+            inline_scan_child_edges: scan.child_edges,
+            inline_raw_candidates: scan.raw_candidates,
+            inline_final_candidates: if attribution_enabled {
+                candidates.len() as u64
+            } else {
+                0
+            },
+            ..ComptimePrecomputeAttribution::default()
+        };
         let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         eval_types.extend(comptime_local_types);
         let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
         let mut reduced = HashMap::new();
         for head in candidates {
-            if let Some(ConstValue::Type(ty)) =
-                self.try_evaluate_const_with_subst(head, &eval_types, &eval_values)
+            let started = attribution.enabled.then(Instant::now);
+            if attribution.enabled {
+                attribution.inline_eval_attempts += 1;
+            }
+            let result = self.try_evaluate_const_with_subst(head, &eval_types, &eval_values);
+            if let Some(started) = started {
+                attribution.eval_provider_ns = attribution
+                    .eval_provider_ns
+                    .saturating_add(elapsed_ns(started));
+            }
+            if let Some(ConstValue::Type(ty)) = result
                 && (ty.is_enum() || ty.as_struct().is_some())
             {
+                if attribution.enabled {
+                    attribution.inline_type_successes += 1;
+                }
                 reduced.insert(head, ty);
             }
         }
-        reduced
+        (reduced, attribution)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ComptimePrecomputeAttribution {
+    enabled: bool,
+    pub(crate) eval_provider_ns: u64,
+    pub(crate) alias_nodes_visited: u64,
+    pub(crate) alias_block_statements: u64,
+    pub(crate) alias_allocations_examined: u64,
+    pub(crate) alias_filter_accepts: u64,
+    pub(crate) alias_filter_skips: u64,
+    pub(crate) alias_eval_attempts: u64,
+    pub(crate) alias_type_successes: u64,
+    pub(crate) inline_scan_pops: u64,
+    pub(crate) inline_scan_child_edges: u64,
+    pub(crate) inline_raw_candidates: u64,
+    pub(crate) inline_final_candidates: u64,
+    pub(crate) inline_eval_attempts: u64,
+    pub(crate) inline_type_successes: u64,
+}
+
+impl ComptimePrecomputeAttribution {
+    pub(crate) fn accrue(&mut self, other: Self) {
+        self.enabled |= other.enabled;
+        self.eval_provider_ns = self.eval_provider_ns.saturating_add(other.eval_provider_ns);
+        self.alias_nodes_visited += other.alias_nodes_visited;
+        self.alias_block_statements += other.alias_block_statements;
+        self.alias_allocations_examined += other.alias_allocations_examined;
+        self.alias_filter_accepts += other.alias_filter_accepts;
+        self.alias_filter_skips += other.alias_filter_skips;
+        self.alias_eval_attempts += other.alias_eval_attempts;
+        self.alias_type_successes += other.alias_type_successes;
+        self.inline_scan_pops += other.inline_scan_pops;
+        self.inline_scan_child_edges += other.inline_scan_child_edges;
+        self.inline_raw_candidates += other.inline_raw_candidates;
+        self.inline_final_candidates += other.inline_final_candidates;
+        self.inline_eval_attempts += other.inline_eval_attempts;
+        self.inline_type_successes += other.inline_type_successes;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InlineCtorScanWork {
+    pops: u64,
+    child_edges: u64,
+    raw_candidates: u64,
 }
 
 /// Whether the comptime evaluator can possibly return a type value for an
@@ -2510,11 +2623,24 @@ pub(super) fn initializer_may_evaluate_to_type(rir: &rue_rir::Rir, inst_ref: Ins
     }
 }
 
+#[cfg(test)]
 pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
+    inline_ctor_head_candidates_with_work(rir, body, false).0
+}
+
+fn inline_ctor_head_candidates_with_work(
+    rir: &rue_rir::Rir,
+    body: InstRef,
+    attribution_enabled: bool,
+) -> (Vec<InstRef>, InlineCtorScanWork) {
     let mut pending = vec![body];
     let mut candidates = Vec::new();
+    let mut work = InlineCtorScanWork::default();
 
     while let Some(current) = pending.pop() {
+        if attribution_enabled {
+            work.pops += 1;
+        }
         if current != body
             && matches!(
                 rir.get(current).data,
@@ -2536,19 +2662,31 @@ pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> 
                     InstData::Call { .. } | InstData::MethodCall { .. }
                 ) {
                     candidates.push(receiver);
+                    if attribution_enabled {
+                        work.raw_candidates += 1;
+                    }
                 }
             }
             InstData::StructInit {
                 ctor_head: Some(head),
                 ..
-            } => candidates.push(head),
+            } => {
+                candidates.push(head);
+                if attribution_enabled {
+                    work.raw_candidates += 1;
+                }
+            }
             _ => {}
         }
 
+        let before = attribution_enabled.then_some(pending.len());
         rir.child_instructions(current, &mut pending);
+        if let Some(before) = before {
+            work.child_edges += (pending.len() - before) as u64;
+        }
     }
 
     candidates.sort_unstable_by_key(|candidate| candidate.as_u32());
     candidates.dedup();
-    candidates
+    (candidates, work)
 }

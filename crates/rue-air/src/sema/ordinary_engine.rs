@@ -64,6 +64,9 @@ pub(crate) fn reject_runtime_type_value(
 pub(crate) struct ExpressionAnalysisBreakdown {
     pub(crate) setup_ns: u64,
     pub(crate) inference_precompute_ns: u64,
+    pub(crate) inference_precompute_structural_ns: u64,
+    pub(crate) inference_precompute_eval_provider_ns: u64,
+    pub(crate) precompute_work: super::comptime_eval::ComptimePrecomputeAttribution,
     pub(crate) constraint_generation_ns: u64,
     pub(crate) unification_resolution_ns: u64,
     pub(crate) air_emission_validation_ns: u64,
@@ -2398,6 +2401,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .record_expression_analysis_breakdown(ExpressionAnalysisBreakdown {
                 setup_ns: expression_setup_ns,
                 inference_precompute_ns: inference_breakdown.precompute_ns,
+                inference_precompute_structural_ns: inference_breakdown.precompute_structural_ns,
+                inference_precompute_eval_provider_ns: inference_breakdown
+                    .precompute_eval_provider_ns,
+                precompute_work: inference_breakdown.precompute_work,
                 constraint_generation_ns: inference_breakdown.constraint_generation_ns,
                 unification_resolution_ns: inference_breakdown.unification_resolution_ns,
                 air_emission_validation_ns,

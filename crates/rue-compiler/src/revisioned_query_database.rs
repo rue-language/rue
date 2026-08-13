@@ -3940,6 +3940,54 @@ struct OwnedBodyLowering {
     owner_kind: crate::StableDefinitionKind,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BodyInputLoweringAttribution {
+    assembly_snapshot_ns: u64,
+    lex_parse_ns: u64,
+    rir_lower_ns: u64,
+    span_remap_validation_ns: u64,
+    index: rue_air::BodyRirIndexAttribution,
+    source_bytes: u64,
+    declaration_fragments: u64,
+    rir_instructions: u64,
+    rir_payload_words: u64,
+}
+
+fn elapsed_ns(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn publish_body_input_lowering_attribution(attribution: BodyInputLoweringAttribution) {
+    let attributed_total_ns = attribution
+        .assembly_snapshot_ns
+        .saturating_add(attribution.lex_parse_ns)
+        .saturating_add(attribution.rir_lower_ns)
+        .saturating_add(attribution.span_remap_validation_ns)
+        .saturating_add(attribution.index.duration_ns);
+    let declaration = attribution.index.declaration_index;
+    tracing::event!(
+        name: "semantic_body_lowering_breakdown",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        attributed_total_ns,
+        assembly_snapshot_ns = attribution.assembly_snapshot_ns,
+        lex_parse_ns = attribution.lex_parse_ns,
+        rir_lower_ns = attribution.rir_lower_ns,
+        span_remap_validation_ns = attribution.span_remap_validation_ns,
+        body_rir_index_ns = attribution.index.duration_ns,
+        source_bytes = attribution.source_bytes,
+        declaration_fragments = attribution.declaration_fragments,
+        rir_instructions = attribution.rir_instructions,
+        rir_payload_words = attribution.rir_payload_words,
+        index_builds = declaration.build_invocations as u64,
+        index_rir_instructions_visited = declaration.rir_instructions_visited as u64,
+        index_method_references_visited = declaration.method_references_visited as u64,
+        index_shell_declarations_visited = attribution.index.shell_declarations_visited,
+        index_named_methods_indexed = attribution.index.named_methods_indexed,
+        index_const_declarations_indexed = attribution.index.const_declarations_indexed,
+    );
+}
+
 impl OwnedBodyLowering {
     fn instruction_count(&self) -> usize {
         self.bundle.instruction_count()
@@ -3987,6 +4035,11 @@ fn lower_owned_body_input(
 ) -> Result<OwnedBodyLowering, Arc<str>> {
     let _body_input_lowering_span =
         tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
+    let attribution_started = tracing::enabled!(
+        target: "rue::timing",
+        tracing::Level::INFO
+    )
+    .then(std::time::Instant::now);
     // Constructing this parser input is deliberately just concatenation of the
     // two exact syntax terminals. No module source, declaration slice, RIR, or
     // live interner is consulted here.
@@ -4016,6 +4069,7 @@ fn lower_owned_body_input(
     ) {
         source.push('}');
     }
+    let source_bytes = source.len() as u64;
 
     let metadata = crate::SourceMetadata::new(
         input.source.file_id,
@@ -4034,6 +4088,7 @@ fn lower_owned_body_input(
         .module_id(input.source.file_id)
         .cloned()
         .ok_or_else(|| Arc::from("owned body snapshot has no synthetic module"))?;
+    let assembly_finished_ns = attribution_started.map(elapsed_ns);
     let (parsed, _) = crate::parsed_modules::parse_source_snapshot_module(&snapshot, &module_id);
     let module = parsed.map_err(|errors| Arc::from(errors.to_string()))?;
     let expected_item = match input.owner.kind() {
@@ -4064,6 +4119,7 @@ fn lower_owned_body_input(
             "owned body input did not lower to exactly one body owner",
         ));
     }
+    let parse_finished_ns = attribution_started.map(elapsed_ns);
     let signature_len = signature_prefix
         + input
             .signature
@@ -4102,6 +4158,7 @@ fn lower_owned_body_input(
         &anchors,
     )
     .map_err(|(error, _)| Arc::from(error.to_string()))?;
+    let rir_finished_ns = attribution_started.map(elapsed_ns);
     let local_body_start = u32::try_from(signature_len)
         .map_err(|_| Arc::from("owned body signature exceeds span capacity"))?;
     let local_prefix = u32::try_from(signature_prefix)
@@ -4123,15 +4180,42 @@ fn lower_owned_body_input(
             input.source.declaration_start
         }
     };
-    let bundle = rir
-        .into_remapped_body_rir_bundle(input.source.file_id, input.source.source_length, |span| {
-            rue_span::Span::with_file(
-                input.source.file_id,
-                remap_offset(span.start),
-                remap_offset(span.end),
-            )
-        })
+    let (bundle, remap) = rir
+        .into_remapped_body_rir_bundle_with_attribution(
+            input.source.file_id,
+            input.source.source_length,
+            |span| {
+                rue_span::Span::with_file(
+                    input.source.file_id,
+                    remap_offset(span.start),
+                    remap_offset(span.end),
+                )
+            },
+            attribution_started
+                .zip(rir_finished_ns)
+                .map(|(started, rir_lower_finished_ns)| {
+                    crate::canonical_lower::BodyRirAttributionClock {
+                        started,
+                        rir_lower_finished_ns,
+                    }
+                }),
+        )
         .map_err(Arc::from)?;
+    if let (Some(assembly_finished_ns), Some(parse_finished_ns), Some(rir_finished_ns)) =
+        (assembly_finished_ns, parse_finished_ns, rir_finished_ns)
+    {
+        publish_body_input_lowering_attribution(BodyInputLoweringAttribution {
+            assembly_snapshot_ns: assembly_finished_ns,
+            lex_parse_ns: parse_finished_ns.saturating_sub(assembly_finished_ns),
+            rir_lower_ns: rir_finished_ns.saturating_sub(parse_finished_ns),
+            span_remap_validation_ns: remap.span_remap_validation_ns,
+            index: remap.index,
+            source_bytes,
+            declaration_fragments: input.signature.declaration_fragments.len() as u64,
+            rir_instructions: remap.rir_instructions,
+            rir_payload_words: remap.rir_payload_words,
+        });
+    }
     Ok(OwnedBodyLowering {
         module,
         bundle,
@@ -4719,6 +4803,11 @@ fn lower_anonymous_member_body_input(
 ) -> Result<OwnedBodyLowering, Arc<str>> {
     let _body_input_lowering_span =
         tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
+    let attribution_started = tracing::enabled!(
+        target: "rue::timing",
+        tracing::Level::INFO
+    )
+    .then(std::time::Instant::now);
     // Anonymous members are lowered from the exact fragment published by their
     // producer. The synthetic named owner exists only to give the standalone
     // parser the grammar context the member declaration requires; it carries
@@ -4748,6 +4837,7 @@ fn lower_anonymous_member_body_input(
     source.push_str(&declaration);
     source.push_str(input.body.body.as_ref());
     source.push('}');
+    let source_bytes = source.len() as u64;
 
     let snapshot = crate::SourceSnapshot::single("<rue-anonymous-body-input>", source)
         .map_err(|errors| Arc::from(errors.to_string()))?;
@@ -4755,6 +4845,7 @@ fn lower_anonymous_member_body_input(
         .module_id(crate::FileId::DEFAULT)
         .cloned()
         .ok_or_else(|| Arc::from("anonymous body snapshot has no synthetic module"))?;
+    let assembly_finished_ns = attribution_started.map(elapsed_ns);
     let (parsed, _) = crate::parsed_modules::parse_source_snapshot_module(&snapshot, &module_id);
     let module = parsed.map_err(|errors| Arc::from(errors.to_string()))?;
     if module.ast().items.len() != 1
@@ -4768,6 +4859,7 @@ fn lower_anonymous_member_body_input(
             "anonymous member input did not lower to exactly one synthetic owner",
         ));
     }
+    let parse_finished_ns = attribution_started.map(elapsed_ns);
     let signature_len = prefix.len() + declaration.len();
     let body_len = input.body.body.len();
     let anchors = input
@@ -4800,6 +4892,7 @@ fn lower_anonymous_member_body_input(
         &anchors,
     )
     .map_err(|(error, _)| Arc::from(error.to_string()))?;
+    let rir_finished_ns = attribution_started.map(elapsed_ns);
     let source_length = source_locator.source_length;
     let local_prefix = u32::try_from(prefix.len())
         .map_err(|_| Arc::from("anonymous owner prefix exceeds span capacity"))?;
@@ -4830,17 +4923,45 @@ fn lower_anonymous_member_body_input(
                 .min(source_length)
         }
     };
-    Ok(OwnedBodyLowering {
-        module,
-        bundle: rir
-            .into_remapped_body_rir_bundle(source_locator.file_id, source_length, |span| {
+    let (bundle, remap) = rir
+        .into_remapped_body_rir_bundle_with_attribution(
+            source_locator.file_id,
+            source_length,
+            |span| {
                 rue_span::Span::with_file(
                     source_locator.file_id,
                     remap_offset(span.start),
                     remap_offset(span.end),
                 )
-            })
-            .map_err(Arc::from)?,
+            },
+            attribution_started
+                .zip(rir_finished_ns)
+                .map(|(started, rir_lower_finished_ns)| {
+                    crate::canonical_lower::BodyRirAttributionClock {
+                        started,
+                        rir_lower_finished_ns,
+                    }
+                }),
+        )
+        .map_err(Arc::from)?;
+    if let (Some(assembly_finished_ns), Some(parse_finished_ns), Some(rir_finished_ns)) =
+        (assembly_finished_ns, parse_finished_ns, rir_finished_ns)
+    {
+        publish_body_input_lowering_attribution(BodyInputLoweringAttribution {
+            assembly_snapshot_ns: assembly_finished_ns,
+            lex_parse_ns: parse_finished_ns.saturating_sub(assembly_finished_ns),
+            rir_lower_ns: rir_finished_ns.saturating_sub(parse_finished_ns),
+            span_remap_validation_ns: remap.span_remap_validation_ns,
+            index: remap.index,
+            source_bytes,
+            declaration_fragments: input.signature.declaration_fragments.len() as u64,
+            rir_instructions: remap.rir_instructions,
+            rir_payload_words: remap.rir_payload_words,
+        });
+    }
+    Ok(OwnedBodyLowering {
+        module,
+        bundle,
         owner_kind: crate::StableDefinitionKind::Method,
     })
 }

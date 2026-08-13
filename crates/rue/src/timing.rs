@@ -136,6 +136,8 @@ struct TimingDataInner {
     /// Accumulated measurements per pass name.
     /// Key is the span name (e.g., "lexer", "parser").
     passes: HashMap<String, PassAggregate>,
+    /// Exact structural counters published by wide timing events.
+    counters: HashMap<String, u64>,
 
     /// Accumulated measurements per driver-phase name.
     ///
@@ -221,6 +223,7 @@ enum AccountingTransition {
 struct LocalTiming {
     target: Weak<Mutex<TimingDataInner>>,
     passes: HashMap<String, PassAggregate>,
+    counters: HashMap<String, u64>,
     driver_phases: HashMap<String, DriverPhaseAggregate>,
     accounting_events: Vec<AccountingEvent>,
     #[cfg(test)]
@@ -234,6 +237,7 @@ impl LocalTiming {
         Self {
             target,
             passes: HashMap::new(),
+            counters: HashMap::new(),
             driver_phases: HashMap::new(),
             accounting_events: Vec::new(),
             #[cfg(test)]
@@ -252,6 +256,10 @@ impl Drop for LocalTiming {
         let mut inner = target.lock().unwrap_or_else(PoisonError::into_inner);
         for (name, local) in self.passes.drain() {
             merge_pass(&mut inner.passes, name, local);
+        }
+        for (name, local) in self.counters.drain() {
+            let aggregate = inner.counters.entry(name).or_default();
+            *aggregate = aggregate.saturating_add(local);
         }
         for (name, local) in self.driver_phases.drain() {
             merge_driver_phase(&mut inner.driver_phases, name, local);
@@ -399,6 +407,7 @@ impl TimingData {
             id: NEXT_TIMING_DATA_ID.fetch_add(1, Ordering::Relaxed),
             inner: Arc::new(Mutex::new(TimingDataInner {
                 passes: HashMap::new(),
+                counters: HashMap::new(),
                 driver_phases: HashMap::new(),
                 accounting_events: Vec::new(),
                 #[cfg(test)]
@@ -475,6 +484,24 @@ impl TimingData {
             entry.leaf_invocations += u64::from(is_leaf);
             entry.duration_log2_buckets[duration_bucket(duration)] += 1;
         });
+    }
+
+    fn record_counter(&self, name: &str, value: u64) {
+        self.with_local(|local| {
+            let aggregate = local.counters.entry(name.to_string()).or_default();
+            *aggregate = aggregate.saturating_add(value);
+        });
+    }
+
+    pub fn counter_total(&self, name: &str) -> u64 {
+        self.flush_local();
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .counters
+            .get(name)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Return the bounded per-invocation distribution for one named span.
@@ -1168,9 +1195,23 @@ struct SemanticProviderBreakdownVisitor {
     result_projection_ns: Option<u64>,
     setup_ns: Option<u64>,
     inference_precompute_ns: Option<u64>,
+    inference_precompute_structural_ns: Option<u64>,
+    inference_precompute_eval_provider_ns: Option<u64>,
     constraint_generation_ns: Option<u64>,
     unification_resolution_ns: Option<u64>,
     air_emission_validation_ns: Option<u64>,
+    counters: HashMap<&'static str, u64>,
+}
+
+#[derive(Default)]
+struct SemanticBodyLoweringBreakdownVisitor {
+    attributed_total_ns: Option<u64>,
+    assembly_snapshot_ns: Option<u64>,
+    lex_parse_ns: Option<u64>,
+    rir_lower_ns: Option<u64>,
+    span_remap_validation_ns: Option<u64>,
+    body_rir_index_ns: Option<u64>,
+    counters: HashMap<&'static str, u64>,
 }
 
 impl tracing::field::Visit for TimingFlushVisitor {
@@ -1221,10 +1262,37 @@ impl tracing::field::Visit for SemanticProviderBreakdownVisitor {
             "result_projection_ns" => self.result_projection_ns = Some(value),
             "setup_ns" => self.setup_ns = Some(value),
             "inference_precompute_ns" => self.inference_precompute_ns = Some(value),
+            "inference_precompute_structural_ns" => {
+                self.inference_precompute_structural_ns = Some(value)
+            }
+            "inference_precompute_eval_provider_ns" => {
+                self.inference_precompute_eval_provider_ns = Some(value)
+            }
             "constraint_generation_ns" => self.constraint_generation_ns = Some(value),
             "unification_resolution_ns" => self.unification_resolution_ns = Some(value),
             "air_emission_validation_ns" => self.air_emission_validation_ns = Some(value),
+            name if name.starts_with("precompute_") => {
+                self.counters.insert(field.name(), value);
+            }
             _ => {}
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
+}
+
+impl tracing::field::Visit for SemanticBodyLoweringBreakdownVisitor {
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        match field.name() {
+            "attributed_total_ns" => self.attributed_total_ns = Some(value),
+            "assembly_snapshot_ns" => self.assembly_snapshot_ns = Some(value),
+            "lex_parse_ns" => self.lex_parse_ns = Some(value),
+            "rir_lower_ns" => self.rir_lower_ns = Some(value),
+            "span_remap_validation_ns" => self.span_remap_validation_ns = Some(value),
+            "body_rir_index_ns" => self.body_rir_index_ns = Some(value),
+            name => {
+                self.counters.insert(name, value);
+            }
         }
     }
 
@@ -1336,6 +1404,61 @@ where
             return;
         }
         if event.metadata().target() == "rue::timing"
+            && event.metadata().name() == "semantic_body_lowering_breakdown"
+        {
+            let mut visitor = SemanticBodyLoweringBreakdownVisitor::default();
+            event.record(&mut visitor);
+            let (
+                Some(attributed_total_ns),
+                Some(assembly_snapshot_ns),
+                Some(lex_parse_ns),
+                Some(rir_lower_ns),
+                Some(span_remap_validation_ns),
+                Some(body_rir_index_ns),
+            ) = (
+                visitor.attributed_total_ns,
+                visitor.assembly_snapshot_ns,
+                visitor.lex_parse_ns,
+                visitor.rir_lower_ns,
+                visitor.span_remap_validation_ns,
+                visitor.body_rir_index_ns,
+            )
+            else {
+                return;
+            };
+            if assembly_snapshot_ns
+                .saturating_add(lex_parse_ns)
+                .saturating_add(rir_lower_ns)
+                .saturating_add(span_remap_validation_ns)
+                .saturating_add(body_rir_index_ns)
+                != attributed_total_ns
+            {
+                return;
+            }
+            for (name, duration_ns) in [
+                ("semantic_body_input_attributed_total", attributed_total_ns),
+                (
+                    "semantic_body_input_assembly_snapshot",
+                    assembly_snapshot_ns,
+                ),
+                ("semantic_body_input_lex_parse", lex_parse_ns),
+                ("semantic_body_input_rir_lower", rir_lower_ns),
+                (
+                    "semantic_body_input_span_remap_validation",
+                    span_remap_validation_ns,
+                ),
+                ("semantic_body_input_rir_index", body_rir_index_ns),
+            ] {
+                self.data
+                    .record_span(name, Duration::from_nanos(duration_ns), false, true);
+            }
+            self.data.record_counter("body_lowerings", 1);
+            for (name, value) in visitor.counters {
+                self.data.record_counter(name, value);
+            }
+            return;
+        }
+        if event.metadata().target() == "rue::timing"
             && event.metadata().name() == "semantic_provider_breakdown"
         {
             let mut visitor = SemanticProviderBreakdownVisitor::default();
@@ -1348,6 +1471,8 @@ where
                 Some(result_projection_ns),
                 Some(setup_ns),
                 Some(inference_precompute_ns),
+                Some(inference_precompute_structural_ns),
+                Some(inference_precompute_eval_provider_ns),
                 Some(constraint_generation_ns),
                 Some(unification_resolution_ns),
                 Some(air_emission_validation_ns),
@@ -1359,6 +1484,8 @@ where
                 visitor.result_projection_ns,
                 visitor.setup_ns,
                 visitor.inference_precompute_ns,
+                visitor.inference_precompute_structural_ns,
+                visitor.inference_precompute_eval_provider_ns,
                 visitor.constraint_generation_ns,
                 visitor.unification_resolution_ns,
                 visitor.air_emission_validation_ns,
@@ -1366,6 +1493,12 @@ where
             else {
                 return;
             };
+            if inference_precompute_structural_ns
+                .saturating_add(inference_precompute_eval_provider_ns)
+                != inference_precompute_ns
+            {
+                return;
+            }
             for (name, duration_ns) in [
                 ("semantic_provider_host_setup", host_setup_ns),
                 ("semantic_provider_expression_engine", expression_engine_ns),
@@ -1377,6 +1510,14 @@ where
                 ("semantic_provider_result_projection", result_projection_ns),
                 ("semantic_expression_setup", setup_ns),
                 ("semantic_inference_precompute", inference_precompute_ns),
+                (
+                    "semantic_inference_precompute_structural",
+                    inference_precompute_structural_ns,
+                ),
+                (
+                    "semantic_inference_precompute_eval_provider",
+                    inference_precompute_eval_provider_ns,
+                ),
                 ("semantic_constraint_generation", constraint_generation_ns),
                 ("semantic_unification_resolution", unification_resolution_ns),
                 (
@@ -1386,6 +1527,10 @@ where
             ] {
                 self.data
                     .record_span(name, Duration::from_nanos(duration_ns), false, true);
+            }
+            self.data.record_counter("precompute_bodies", 1);
+            for (name, value) in visitor.counters {
+                self.data.record_counter(name, value);
             }
             return;
         }
@@ -2671,6 +2816,9 @@ mod phase_accounting_tests {
                 result_projection_ns = 32_u64,
                 setup_ns = 64_u64,
                 inference_precompute_ns = 128_u64,
+                inference_precompute_structural_ns = 80_u64,
+                inference_precompute_eval_provider_ns = 48_u64,
+                precompute_alias_nodes_visited = 7_u64,
                 constraint_generation_ns = 256_u64,
                 unification_resolution_ns = 512_u64,
                 air_emission_validation_ns = 1024_u64,
@@ -2685,6 +2833,8 @@ mod phase_accounting_tests {
             ("semantic_provider_result_projection", 32),
             ("semantic_expression_setup", 64),
             ("semantic_inference_precompute", 128),
+            ("semantic_inference_precompute_structural", 80),
+            ("semantic_inference_precompute_eval_provider", 48),
             ("semantic_constraint_generation", 256),
             ("semantic_unification_resolution", 512),
             ("semantic_air_emission_validation", 1024),
@@ -2694,6 +2844,42 @@ mod phase_accounting_tests {
             assert_eq!(distribution.total_ns, expected_ns, "{name}");
             assert_eq!(distribution.max_ns, expected_ns, "{name}");
         }
+        assert_eq!(data.counter_total("precompute_bodies"), 1);
+        assert_eq!(data.counter_total("precompute_alias_nodes_visited"), 7);
+    }
+
+    #[test]
+    fn semantic_body_lowering_event_partitions_time_and_aggregates_work() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::event!(
+                name: "semantic_body_lowering_breakdown",
+                target: "rue::timing",
+                tracing::Level::INFO,
+                attributed_total_ns = 31_u64,
+                assembly_snapshot_ns = 1_u64,
+                lex_parse_ns = 2_u64,
+                rir_lower_ns = 4_u64,
+                span_remap_validation_ns = 8_u64,
+                body_rir_index_ns = 16_u64,
+                source_bytes = 100_u64,
+                index_builds = 1_u64,
+            );
+        });
+        for (name, expected) in [
+            ("semantic_body_input_attributed_total", 31),
+            ("semantic_body_input_assembly_snapshot", 1),
+            ("semantic_body_input_lex_parse", 2),
+            ("semantic_body_input_rir_lower", 4),
+            ("semantic_body_input_span_remap_validation", 8),
+            ("semantic_body_input_rir_index", 16),
+        ] {
+            assert_eq!(data.pass_duration_distribution(name).total_ns, expected);
+        }
+        assert_eq!(data.counter_total("body_lowerings"), 1);
+        assert_eq!(data.counter_total("source_bytes"), 100);
+        assert_eq!(data.counter_total("index_builds"), 1);
     }
 
     #[test]

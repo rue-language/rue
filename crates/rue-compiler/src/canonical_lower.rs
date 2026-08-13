@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
@@ -74,6 +75,20 @@ pub(crate) struct ModuleRirOutput {
     work: CanonicalRirWork,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RemappedBodyRirAttribution {
+    pub(crate) span_remap_validation_ns: u64,
+    pub(crate) index: rue_air::BodyRirIndexAttribution,
+    pub(crate) rir_instructions: u64,
+    pub(crate) rir_payload_words: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BodyRirAttributionClock {
+    pub(crate) started: Instant,
+    pub(crate) rir_lower_finished_ns: u64,
+}
+
 impl ModuleRirOutput {
     pub(crate) fn revision(&self) -> &crate::ModuleRevision {
         &self.revision
@@ -83,12 +98,31 @@ impl ModuleRirOutput {
         self.work
     }
 
+    #[allow(dead_code)]
     pub(crate) fn into_remapped_body_rir_bundle(
         self,
         file_id: FileId,
         source_length: u32,
         remap_span: impl FnMut(rue_span::Span) -> rue_span::Span,
     ) -> Result<rue_air::BodyRirBundle, String> {
+        self.into_remapped_body_rir_bundle_with_attribution(
+            file_id,
+            source_length,
+            remap_span,
+            None,
+        )
+        .map(|(bundle, _)| bundle)
+    }
+
+    pub(crate) fn into_remapped_body_rir_bundle_with_attribution(
+        self,
+        file_id: FileId,
+        source_length: u32,
+        remap_span: impl FnMut(rue_span::Span) -> rue_span::Span,
+        attribution_clock: Option<BodyRirAttributionClock>,
+    ) -> Result<(rue_air::BodyRirBundle, RemappedBodyRirAttribution), String> {
+        let rir_instructions = self.rir.len() as u64;
+        let rir_payload_words = self.rir.extra_len() as u64;
         let mut editor = RirEditor::new();
         editor
             .append_remapped_with_spans(&self.rir, std::convert::identity, remap_span)
@@ -99,10 +133,32 @@ impl ModuleRirOutput {
             source_lengths: &source_lengths,
         };
         let rir = ValidatedRir::finish(editor, &validation).map_err(|error| error.to_string())?;
-        Ok(rue_air::BodyRirBundle::new(
+        let remap_finished_ns = attribution_clock
+            .map(|clock| u64::try_from(clock.started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        let (bundle, mut index) = rue_air::BodyRirBundle::new_with_index_attribution(
             rir,
             Arc::try_unwrap(self.symbols.into_interner())
                 .expect("module RIR owns its semantic symbol interner"),
+            attribution_clock.is_some(),
+        );
+        let span_remap_validation_ns = attribution_clock
+            .zip(remap_finished_ns)
+            .map_or(0, |(clock, finished)| {
+                finished.saturating_sub(clock.rir_lower_finished_ns)
+            });
+        if let (Some(clock), Some(remap_finished_ns)) = (attribution_clock, remap_finished_ns) {
+            let index_finished_ns =
+                u64::try_from(clock.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            index.duration_ns = index_finished_ns.saturating_sub(remap_finished_ns);
+        }
+        Ok((
+            bundle,
+            RemappedBodyRirAttribution {
+                span_remap_validation_ns,
+                index,
+                rir_instructions,
+                rir_payload_words,
+            },
         ))
     }
 }
