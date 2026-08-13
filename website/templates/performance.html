@@ -126,6 +126,8 @@
         Fresh-process wall time from process spawn through successful native
         output and exit. Absolute targets appear only on the platform epoch
         that adjudicates them; other platforms remain useful directional series.
+        A separate fixed ratchet preserves the best accepted baseline without
+        mistaking normal hosted-runner noise for a regression.
       </p>
       <figure style="margin-top: 0.75rem;">
         <svg id="perf-target" role="img" width="100%" height="240" viewBox="0 0 900 240"

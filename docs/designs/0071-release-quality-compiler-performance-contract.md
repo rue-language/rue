@@ -414,7 +414,7 @@ the fresh-process result.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Pin the reference regime, publish the frozen Lattice workload
+- [x] **Phase 1: Pin the reference regime, publish the frozen Lattice workload
   and target dashboard, establish the baseline ratchet, and produce the
   critical-path scaling report** — RUE-1475 and RUE-1478.
 - [ ] **Phase 2: Publish the semantic-to-CFG ownership and repetition audit** —

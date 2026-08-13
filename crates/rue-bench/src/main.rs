@@ -27,8 +27,9 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rue_perf_schema::{
-    Completeness, FailureRecord, Invocation, Manifest, RUN_SCHEMA_VERSION, ResolvedPins,
-    RunIdentity, RunObject, Sample, ValidationOutcome, WorkloadObservation, validate_run,
+    Completeness, FailureRecord, Invocation, Manifest, ProcessElapsedRegression,
+    RUN_SCHEMA_VERSION, ResolvedPins, RunIdentity, RunObject, Sample, ValidationOutcome,
+    WorkloadObservation, process_elapsed_regressions, validate_run,
 };
 
 use crate::measure::{SampleOutcome, SampleRequest, measure_sample};
@@ -45,6 +46,9 @@ mod exit {
     /// Distinct from `USAGE` because the evidence still exists and is worth
     /// collecting; only publication is blocked.
     pub const NOT_APPENDABLE: u8 = 3;
+    /// The run is valid and publishable, but crossed a reviewed performance
+    /// ratchet. The raw evidence still belongs in its series.
+    pub const REGRESSION: u8 = 4;
 }
 
 struct Options {
@@ -490,6 +494,7 @@ fn run(options: &Options) -> Result<u8, String> {
     };
 
     let outcome = validate_run(&manifest, &run);
+    let regressions = process_elapsed_regressions(&manifest, &run, &outcome);
 
     // The run object is written whatever the verdict. Evidence of a broken
     // collection is worth more than a missing file.
@@ -506,16 +511,23 @@ fn run(options: &Options) -> Result<u8, String> {
     std::fs::write(&options.output, &serialized)
         .map_err(|error| format!("could not write {}: {error}", options.output.display()))?;
 
-    report(&run, &outcome, &options.output);
+    report(&run, &outcome, &regressions, &options.output);
 
-    Ok(if outcome.is_appendable() {
-        exit::OK
-    } else {
+    Ok(if !outcome.is_appendable() {
         exit::NOT_APPENDABLE
+    } else if !regressions.is_empty() {
+        exit::REGRESSION
+    } else {
+        exit::OK
     })
 }
 
-fn report(run: &RunObject, outcome: &ValidationOutcome, output: &Path) {
+fn report(
+    run: &RunObject,
+    outcome: &ValidationOutcome,
+    regressions: &[ProcessElapsedRegression],
+    output: &Path,
+) {
     let address = run
         .content_address()
         .unwrap_or_else(|_| "<unaddressable>".to_string());
@@ -528,6 +540,13 @@ fn report(run: &RunObject, outcome: &ValidationOutcome, output: &Path) {
         eprintln!(
             "rue-bench: invalid sample {}[{}]: {}",
             sample.workload, sample.sample_index, sample.reason
+        );
+    }
+    for regression in regressions {
+        eprintln!(
+            "rue-bench: performance regression: workload {:?} fresh-process median {} ns \
+             exceeds the fixed {} ns ratchet",
+            regression.workload, regression.current_median_ns, regression.limit_ns
         );
     }
     match &outcome.completeness {

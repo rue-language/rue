@@ -663,6 +663,10 @@
       targeted.forEach(function (entry) {
         values.push(entry.epoch.process_elapsed_targets[state.workload].process_elapsed_ns);
       });
+      series.forEach(function (entry) {
+        var ratchet = (entry.epoch.process_elapsed_ratchets || {})[state.workload];
+        if (ratchet) { values.push(ratchet.process_elapsed_limit_ns); }
+      });
       var hi = Math.max.apply(null, values) * 1.12;
       var x = function (i) { return 40 + (i / Math.max(series.length - 1, 1)) * 840; };
       var y = function (v) { return 210 - (v / hi) * 180; };
@@ -708,6 +712,31 @@
         svg.appendChild(label);
       });
 
+      // The ratchet is distinct from the product target: it preserves the best
+      // accepted baseline while the target shows where Rue is going.
+      var drawnRatchets = {};
+      series.forEach(function (entry, i) {
+        var ratchet = (entry.epoch.process_elapsed_ratchets || {})[state.workload];
+        if (!ratchet || drawnRatchets[entry.epoch.epoch]) { return; }
+        drawnRatchets[entry.epoch.epoch] = true;
+        var last = i;
+        while (last + 1 < series.length &&
+               series[last + 1].epoch.epoch === entry.epoch.epoch) { last++; }
+        var left = i === 0 ? 40 : (x(i - 1) + x(i)) / 2;
+        var right = last === series.length - 1 ? 880 : (x(last) + x(last + 1)) / 2;
+        svg.appendChild(element("line", {
+          x1: left, y1: y(ratchet.process_elapsed_limit_ns),
+          x2: right, y2: y(ratchet.process_elapsed_limit_ns),
+          stroke: "#b45309", "stroke-width": 2, "stroke-dasharray": "2 4"
+        }));
+        var label = element("text", {
+          x: left + 4, y: y(ratchet.process_elapsed_limit_ns) + 14,
+          fill: "#b45309", "font-size": 11
+        });
+        label.textContent = "ratchet: " + fmtMs(ratchet.process_elapsed_limit_ns);
+        svg.appendChild(label);
+      });
+
       series.forEach(function (entry, i) {
         svg.appendChild(element("circle", {
           cx: x(i), cy: y(entry.point.workloads[state.workload].process_elapsed_ns), r: 2.5,
@@ -741,6 +770,15 @@
           lines.push(target.reference + " target: " + fmtMs(target.process_elapsed_ns) +
             ". This point is " + fmtMs(Math.abs(difference)) +
             (difference <= 0 ? " under the ceiling." : " over the ceiling."));
+        }
+        var ratchet = (entry.epoch.process_elapsed_ratchets || {})[state.workload];
+        if (ratchet) {
+          var ratchetDifference = elapsed - ratchet.baseline_process_elapsed_ns;
+          lines.push("Non-regression ratchet: " + fmtMs(ratchet.baseline_process_elapsed_ns) +
+            " baseline, ± " + fmtMs(ratchet.baseline_mad_ns) + " MAD; fixed gate " +
+            fmtMs(ratchet.process_elapsed_limit_ns) + ". This point is " +
+            fmtMs(Math.abs(ratchetDifference)) +
+            (ratchetDifference <= 0 ? " faster than the ratchet." : " slower than its center."));
         }
         lines.push(pinnedNote(state.pinned.target));
         setTooltip(tooltip, lines);
@@ -776,7 +814,8 @@
         " against its declared release target. Use left and right arrow keys to move " +
         "between measured commits.");
       caption.textContent = series.length + " measured commit(s). Green is external process " +
-        "time; the dashed violet rule is the absolute target for this reference epoch only.";
+        "time; violet is the absolute target and amber is the noise-aware non-regression " +
+        "ratchet for this reference epoch only.";
       selectMark(state.targetCursor === null
         ? series.length - 1
         : Math.min(state.targetCursor, series.length - 1));

@@ -138,6 +138,11 @@ jobs:
                  "performance/manifest.toml, marking it \`collection = true\`."
             exit 1
           fi
+          if [ "$status" -eq 4 ]; then
+            echo "::error::the valid run has been retained as evidence, but it exceeds" \
+                 "the reviewed fresh-process non-regression ratchet in performance/manifest.toml."
+            exit 1
+          fi
 
   publish:
     needs: measure

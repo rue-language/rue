@@ -88,6 +88,8 @@ pub struct EpochData {
     ///
     /// Kept per epoch because hosted platform clocks are not interchangeable.
     pub process_elapsed_targets: BTreeMap<String, ProcessElapsedTargetData>,
+    /// Noise-aware non-regression ratchets for this reference epoch.
+    pub process_elapsed_ratchets: BTreeMap<String, ProcessElapsedRatchetData>,
     /// Standard-library changes within this epoch.
     ///
     /// Deliberately *not* advisory, unlike an environment annotation. `std` is
@@ -111,6 +113,15 @@ pub struct FlaggingRule {
 pub struct ProcessElapsedTargetData {
     pub process_elapsed_ns: u64,
     pub reference: String,
+}
+
+/// One pinned fresh-process non-regression ratchet rendered by the dashboard.
+#[derive(Debug, Serialize)]
+pub struct ProcessElapsedRatchetData {
+    pub baseline_process_elapsed_ns: u64,
+    pub baseline_mad_ns: u64,
+    pub process_elapsed_limit_ns: u64,
+    pub reference_run: String,
 }
 
 /// A point at which the standard library changed underneath a series.
@@ -502,6 +513,21 @@ fn derive_epoch(
                     ProcessElapsedTargetData {
                         process_elapsed_ns: target.process_elapsed_ns,
                         reference: target.reference.clone(),
+                    },
+                )
+            })
+            .collect(),
+        process_elapsed_ratchets: epoch
+            .process_elapsed_ratchets
+            .iter()
+            .map(|(workload, ratchet)| {
+                (
+                    workload.clone(),
+                    ProcessElapsedRatchetData {
+                        baseline_process_elapsed_ns: ratchet.baseline_process_elapsed_ns,
+                        baseline_mad_ns: ratchet.baseline_mad_ns,
+                        process_elapsed_limit_ns: ratchet.process_elapsed_limit_ns,
+                        reference_run: ratchet.reference_run.clone(),
                     },
                 )
             })
@@ -903,6 +929,31 @@ window = 3
         assert_eq!(targets.len(), 1);
         assert_eq!(targets["startup"].process_elapsed_ns, 250_000_000);
         assert_eq!(targets["startup"].reference, "ADR-0071");
+    }
+
+    #[test]
+    fn the_epoch_publishes_its_baseline_ratchet_separately_from_the_target() {
+        let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
+        let address = base.content_address().expect("addressable");
+        let text = format!(
+            "{MANIFEST}\n\
+             [epoch.baseline]\n\
+             commit = \"{}\"\n\
+             run = \"{address}\"\n\n\
+             [epoch.process_elapsed_ratchets.startup]\n\
+             baseline_process_elapsed_ns = 101000000\n\
+             baseline_mad_ns = 1000000\n\
+             process_elapsed_limit_ns = 107000000\n\
+             reference_run = \"{address}\"\n",
+            base.identity.commit
+        );
+        let manifest = Manifest::parse(&text).expect("ratcheted manifest");
+        let data = derive(&manifest, &[base]);
+        let ratchets = &data.platforms[0].epochs[0].process_elapsed_ratchets;
+        assert_eq!(ratchets.len(), 1);
+        assert_eq!(ratchets["startup"].baseline_process_elapsed_ns, 101_000_000);
+        assert_eq!(ratchets["startup"].process_elapsed_limit_ns, 107_000_000);
+        assert_eq!(ratchets["startup"].reference_run, address);
     }
 
     #[test]

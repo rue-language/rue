@@ -30,6 +30,7 @@ COLLECTION_BOUNDARY_SNIPPETS = (
     "--target-platforms //platforms:release",
     'RUE="$(scripts/rue-bin --target-platforms //platforms:release)"',
     "--manifest performance/manifest.toml",
+    'if [ "$status" -eq 4 ]',
 )
 SCALING_BOUNDARY_SNIPPETS = (
     "schema_version = 3",

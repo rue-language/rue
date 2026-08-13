@@ -131,6 +131,27 @@ pub struct ProcessElapsedTarget {
     pub reference: String,
 }
 
+/// A noise-aware non-regression ratchet for fresh-process latency.
+///
+/// The center and dispersion are reviewed evidence derived from the immutable
+/// baseline run named by the epoch. The limit is fixed policy chosen from that
+/// evidence: it absorbs calibrated hosted-runner noise without allowing a
+/// later noisy observation to widen its own gate.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessElapsedRatchet {
+    /// The current best accepted process-spawn-through-exit median.
+    pub baseline_process_elapsed_ns: u64,
+    /// Calibrated dispersion of the baseline regime, in nanoseconds.
+    pub baseline_mad_ns: u64,
+    /// Fixed gate derived from the baseline and its calibrated dispersion.
+    /// It changes only in a reviewed manifest update and never expands because
+    /// a later run happened to be noisy.
+    pub process_elapsed_limit_ns: u64,
+    /// Content address of the immutable run from which the ratchet was set.
+    pub reference_run: String,
+}
+
 /// When a workload's movement counts as movement.
 ///
 /// A workload is flagged only when the difference between its current median
@@ -211,6 +232,13 @@ pub struct PlatformEpoch {
     /// directional platform would turn unlike clocks into an apparent gate.
     #[serde(default)]
     pub process_elapsed_targets: BTreeMap<String, ProcessElapsedTarget>,
+    /// Noise-aware fresh-process non-regression ratchets.
+    ///
+    /// Ratchets are separate from absolute targets: the former prevents Rue
+    /// from losing accepted progress, while the latter says where the product
+    /// is going. Only the reference platform normally carries one.
+    #[serde(default)]
+    pub process_elapsed_ratchets: BTreeMap<String, ProcessElapsedRatchet>,
     /// The regression-flagging rule.
     pub flagging: FlaggingPolicy,
     /// The headline baseline, once a complete valid run has established one.
@@ -323,6 +351,25 @@ pub enum ManifestError {
         /// The workload whose target is invalid.
         workload: String,
     },
+    /// An epoch declares a ratchet for a workload outside its suite.
+    UnknownRatchetWorkload {
+        /// The platform carrying the ratchet.
+        platform: String,
+        /// The offending epoch.
+        epoch: u32,
+        /// The undeclared workload.
+        workload: String,
+    },
+    /// A ratchet has no positive center, no reference, or names a run other
+    /// than the epoch's baseline.
+    InvalidProcessElapsedRatchet {
+        /// The platform carrying the ratchet.
+        platform: String,
+        /// The offending epoch.
+        epoch: u32,
+        /// The workload whose ratchet is invalid.
+        workload: String,
+    },
     /// A platform declares more than one collection epoch.
     ///
     /// Collection measures one epoch per platform. Two would make "the epoch
@@ -406,6 +453,24 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "epoch {epoch} on {platform} declares an invalid process target for workload \
+                 {workload:?}"
+            ),
+            ManifestError::UnknownRatchetWorkload {
+                platform,
+                epoch,
+                workload,
+            } => write!(
+                f,
+                "epoch {epoch} on {platform} declares a process ratchet for undeclared workload \
+                 {workload:?}"
+            ),
+            ManifestError::InvalidProcessElapsedRatchet {
+                platform,
+                epoch,
+                workload,
+            } => write!(
+                f,
+                "epoch {epoch} on {platform} declares an invalid process ratchet for workload \
                  {workload:?}"
             ),
             ManifestError::DuplicateCollectionEpoch {
@@ -593,6 +658,29 @@ impl Manifest {
                     });
                 }
             }
+            for (workload, ratchet) in &epoch.process_elapsed_ratchets {
+                if !declared.contains(&workload.as_str()) {
+                    return Err(ManifestError::UnknownRatchetWorkload {
+                        platform: epoch.platform.clone(),
+                        epoch: epoch.id,
+                        workload: workload.clone(),
+                    });
+                }
+                if ratchet.baseline_process_elapsed_ns == 0
+                    || ratchet.process_elapsed_limit_ns < ratchet.baseline_process_elapsed_ns
+                    || ratchet.reference_run.trim().is_empty()
+                    || epoch
+                        .baseline
+                        .as_ref()
+                        .is_none_or(|baseline| baseline.run != ratchet.reference_run)
+                {
+                    return Err(ManifestError::InvalidProcessElapsedRatchet {
+                        platform: epoch.platform.clone(),
+                        epoch: epoch.id,
+                        workload: workload.clone(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -767,6 +855,34 @@ window = 10
             .process_elapsed_targets["caldera"];
         assert_eq!(target.process_elapsed_ns, 250_000_000);
         assert_eq!(target.reference, "ADR-0071");
+    }
+
+    #[test]
+    fn a_ratchet_must_name_the_epochs_immutable_baseline_run() {
+        let text = format!(
+            "{SUITE}{EPOCH}\n\
+             [epoch.baseline]\n\
+             commit = \"abc123\"\n\
+             run = \"deadbeef\"\n\n\
+             [epoch.process_elapsed_ratchets.caldera]\n\
+             baseline_process_elapsed_ns = 250000000\n\
+             baseline_mad_ns = 1000000\n\
+             process_elapsed_limit_ns = 256000000\n\
+             reference_run = \"deadbeef\"\n"
+        );
+        let manifest = Manifest::parse(&text).expect("ratchet names the baseline run");
+        let ratchet = &manifest
+            .epoch("x86_64-linux", 1)
+            .unwrap()
+            .process_elapsed_ratchets["caldera"];
+        assert_eq!(ratchet.baseline_process_elapsed_ns, 250_000_000);
+        assert_eq!(ratchet.reference_run, "deadbeef");
+
+        let mismatched = text.replace("reference_run = \"deadbeef\"", "reference_run = \"other\"");
+        assert!(matches!(
+            Manifest::parse(&mismatched),
+            Err(ManifestError::InvalidProcessElapsedRatchet { .. })
+        ));
     }
 
     #[test]
