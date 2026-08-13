@@ -24,13 +24,18 @@
 #      filesystem order would pass a single-directory ordering check on many
 #      filesystems and fail this one.
 #
-# PLATFORMS. These run on the two Linux targets AND on aarch64-macos. Linux uses
+# PLATFORMS. These are UNGATED, so they run wherever the suite runs. Linux uses
 # getdents64 with `struct linux_dirent64`; macOS uses the `getdirentries64` BSD
 # trap with Darwin's `struct dirent`, and std.fs carries both layouts. Every line
 # above the syscall — record walking, name extraction, `.`/`..` filtering, path
 # joining, sorting, and the walk's pre-order traversal — is shared, so the macOS
-# leg exercises the same logic through the other syscall. x86-64 macOS is
-# excluded because Rue has no x86-64 macOS compiler target.
+# leg exercises the same logic through the other syscall.
+#
+# An `only_on` naming today's three targets would be equivalent right up until a
+# fourth appears, at which point it SKIPS these cases rather than running them.
+# That silence is the failure mode RUE-1487 was: a Linux-only gate on the stat
+# cases meant no lane ran the one that would have reported Darwin's `fstatat`
+# trap decoding against the wrong struct layout. No gate fails loudly instead.
 #
 # SYMLINKS come from the harness's `symlinks` fixture list, not from the program:
 # `std.fs` has no `symlinkat`, and a `files` entry can only produce a regular
@@ -50,7 +55,6 @@ description = "read_dir over getdents64 and the deterministic recursive walk, ag
 # implementation reports 2 and 4 here.
 [[case]]
 name = "read_dir_empty_then_dot_entries_skipped"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -104,7 +108,6 @@ exit_code = 0
 # each entry's kind, and that `path(i)` is the parent joined with the name.
 [[case]]
 name = "read_dir_mixed_files_and_dirs_sorted"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -185,7 +188,6 @@ exit_code = 0
 # string-shaped assertion above.
 [[case]]
 name = "read_dir_entry_path_is_openable"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -245,7 +247,6 @@ exit_code = 17
 # comparison and output filename subtly wrong.
 [[case]]
 name = "read_dir_trailing_separator_joins_once"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -292,7 +293,6 @@ exit_code = 0
 # or append-at-the-end traversal produces a different sequence and fails.
 [[case]]
 name = "walk_nested_tree_is_depth_first_preorder"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -366,7 +366,6 @@ exit_code = 0
 # sorted-look check on some filesystems and fail here on all of them.
 [[case]]
 name = "read_dir_order_is_creation_order_independent"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -460,7 +459,6 @@ exit_code = 0
 # for the count (600 does not fit an exit status); stdout carries it.
 [[case]]
 name = "read_dir_refill_loop_600_entries"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -557,7 +555,6 @@ exit_code = 0
 # std/fs.rue.
 [[case]]
 name = "read_dir_missing_and_not_a_directory_err"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -619,7 +616,6 @@ exit_code = 0
 # about it.
 [[case]]
 name = "read_dir_through_a_directory_symlink"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 symlinks = [{ link = "dir_link", target = "real_dir" }]
 files = [
@@ -676,7 +672,6 @@ exit_code = 0
 # count: the case would hang or fail the sequence, not merely disagree.
 [[case]]
 name = "walk_does_not_descend_into_symlinks"
-only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 symlinks = [
     { link = "tree/dir_link", target = "sub" },
