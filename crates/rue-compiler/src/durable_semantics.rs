@@ -47,12 +47,10 @@ fn builtin_nominal_kind(name: &str) -> Option<SemanticImportNominalKind> {
 #[derive(Debug, Clone)]
 pub struct DurableAnonymousNominal {
     pub identity: crate::AnonymousNominalKey,
-    /// Exact body-local type-pool name derived once with the durable fact.
-    ///
-    /// This deliberately preserves the historical full-identity Debug
-    /// spelling. It is not the canonical source symbol and therefore does not
-    /// participate in the RUE-1295 spelling decision.
-    materialization_name: Arc<str>,
+    /// Canonical compact symbol spelling derived once with the durable fact.
+    /// The structured identity remains the semantic authority; this cache only
+    /// avoids repeatedly rendering and hashing it in body-local type pools.
+    source_symbol: Arc<str>,
     pub shape: DurableAnonymousNominalShape,
     pub type_captures: Arc<[(Arc<str>, DurableType)]>,
     pub value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
@@ -81,13 +79,12 @@ impl DurableAnonymousNominal {
         type_captures: Arc<[(Arc<str>, DurableType)]>,
         value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
     ) -> Self {
-        let materialization_name = Arc::from(format!(
-            "anonymous-{:?}",
-            identity.with_canonical_producer()
+        let source_symbol = Arc::from(crate::semantic_identity::anonymous_nominal_source_symbol(
+            &identity,
         ));
         Self {
             identity,
-            materialization_name,
+            source_symbol,
             shape,
             type_captures,
             value_captures,
@@ -97,19 +94,19 @@ impl DurableAnonymousNominal {
     pub(crate) fn with_shape(&self, shape: DurableAnonymousNominalShape) -> Self {
         Self {
             identity: self.identity.clone(),
-            materialization_name: self.materialization_name.clone(),
+            source_symbol: self.source_symbol.clone(),
             shape,
             type_captures: self.type_captures.clone(),
             value_captures: self.value_captures.clone(),
         }
     }
 
-    pub(crate) fn materialization_name(&self) -> &Arc<str> {
-        &self.materialization_name
+    pub(crate) fn source_symbol(&self) -> &Arc<str> {
+        &self.source_symbol
     }
 }
 
-// The carried name is a cache derived entirely from `identity`, not a new part
+// The carried symbol is a cache derived entirely from `identity`, not a new part
 // of the durable fact's semantic identity. Keep equality, ordering, and hashing
 // identical to the pre-cache representation so query keys do not hash the
 // formatted name or invalidate merely because the cache representation changes.
@@ -231,7 +228,7 @@ impl RetainedCharge for DurableAnonymousNominal {
     fn retained_charge(&self) -> u64 {
         self.identity
             .retained_charge()
-            .saturating_add(self.materialization_name.retained_charge())
+            .saturating_add(self.source_symbol.retained_charge())
             .saturating_add(self.shape.retained_charge())
             .saturating_add(self.type_captures.retained_charge())
             .saturating_add(self.value_captures.retained_charge())

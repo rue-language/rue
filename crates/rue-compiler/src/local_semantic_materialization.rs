@@ -802,7 +802,7 @@ pub(crate) fn materialize_semantic_body(
         rue_air::SemanticLocalNominal {
             key: rue_air::NominalInstanceKey::Anonymous(nominal.identity.clone()),
             module_path: Arc::from("<anonymous>"),
-            name: nominal.materialization_name().clone(),
+            name: nominal.source_symbol().clone(),
             kind,
             is_public: false,
             lang_item: None,
@@ -1724,7 +1724,7 @@ mod tests {
     }
 
     #[test]
-    fn anonymous_fact_selection_preserves_the_carried_materialization_name() {
+    fn anonymous_fact_selection_preserves_the_carried_source_symbol() {
         use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
 
         let module = ModuleId::from_validated_canonical("main.rue");
@@ -1747,9 +1747,8 @@ mod tests {
             Arc::from([]),
             Arc::from([]),
         );
-        let expected_name = format!("anonymous-{:?}", identity.with_canonical_producer());
-        assert_eq!(expected_name, format!("anonymous-{identity:?}"));
-        assert_eq!(nominal.materialization_name().as_ref(), expected_name);
+        let expected_symbol = crate::semantic_identity::anonymous_nominal_source_symbol(&identity);
+        assert_eq!(nominal.source_symbol().as_ref(), expected_symbol);
         let shared = SharedDeclarationFactIndex::new(&[]);
         let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal));
         let symbols = std::collections::BTreeMap::from([(
@@ -1776,12 +1775,12 @@ mod tests {
         )));
 
         assert!(Arc::ptr_eq(
-            nominal.materialization_name(),
-            full.anonymous_nominals[0].materialization_name()
+            nominal.source_symbol(),
+            full.anonymous_nominals[0].source_symbol()
         ));
         assert!(Arc::ptr_eq(
-            nominal.materialization_name(),
-            opaque.anonymous_nominals[0].materialization_name()
+            nominal.source_symbol(),
+            opaque.anonymous_nominals[0].source_symbol()
         ));
         assert!(matches!(
             &opaque.anonymous_nominals[0].shape,

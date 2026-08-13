@@ -1404,6 +1404,7 @@ where
         );
         let mut local_identities = std::collections::BTreeSet::new();
         for nominal in &nominals {
+            let is_anonymous = matches!(&nominal.key, NominalInstanceKey::Anonymous(_));
             let builtin_key = match &nominal.key {
                 NominalInstanceKey::Builtin { kind, name } => Some((
                     name.clone(),
@@ -1448,6 +1449,9 @@ where
                     if let Some(lang_item) = nominal.lang_item {
                         epoch.type_pool.set_struct_lang_item(id, lang_item);
                     }
+                    if is_anonymous {
+                        epoch.type_pool.mark_anonymous_struct(id);
+                    }
                     LocalNominal::Struct(id)
                 }
                 SemanticImportNominalKind::Enum => {
@@ -1464,6 +1468,9 @@ where
                             file_id,
                         },
                     );
+                    if is_anonymous {
+                        epoch.type_pool.mark_anonymous_enum(id);
+                    }
                     LocalNominal::Enum(id)
                 }
             };
@@ -3452,6 +3459,17 @@ mod tests {
         )
         .unwrap();
         assert!(output.aggregate_types.values().any(|ty| ty == &owner_type));
+        let local = output
+            .aggregate_types
+            .iter()
+            .find_map(|(local, stable)| (stable == &owner_type).then_some(*local))
+            .unwrap();
+        let struct_id = local.as_struct().unwrap();
+        assert!(output.type_pool.is_anonymous_struct(struct_id));
+        assert_eq!(
+            output.type_pool.struct_symbol_name(struct_id),
+            "anonymous-record"
+        );
     }
 
     #[test]
