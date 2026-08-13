@@ -285,6 +285,8 @@ mod tests {
         assert!(engine.contains("pub(crate) trait OrdinaryBodyAnalysisHost"));
         assert!(engine.contains("pub(crate) struct OrdinaryBodyEngine"));
         assert!(engine.contains("pub(crate) fn analyze_single_function"));
+        assert!(engine.contains("pub(crate) fn analyze_single_function_resolved"));
+        assert!(engine.contains("pub(crate) fn analyze_named_method_resolved"));
         assert!(engine.contains("pub(crate) fn analyze_function_internal"));
         assert!(!engine.contains("#[allow(dead_code)]"));
         assert!(engine.contains("semantic_type_syntax_compile_error("));
@@ -346,6 +348,22 @@ mod tests {
                     )"
             ),
             "analyze_function_internal must be exactly one forwarding expression"
+        );
+
+        let provider = include_str!("provider_body_host.rs");
+        assert!(provider.contains(".analyze_single_function_resolved("));
+        assert!(provider.contains(".analyze_named_method_resolved("));
+        assert!(
+            !provider.contains(".analyze_single_function("),
+            "provider-owned functions must not re-resolve their exact durable signatures"
+        );
+        assert!(
+            !provider.contains(".analyze_named_method("),
+            "provider-owned methods must not regain a syntax-resolving facade"
+        );
+        assert!(
+            !engine.contains("pub(crate) fn analyze_named_method("),
+            "the obsolete named-method facade must not return"
         );
     }
 

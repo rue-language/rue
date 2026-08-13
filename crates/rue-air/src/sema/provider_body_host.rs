@@ -4288,22 +4288,24 @@ where
                     ))
                 })?;
             host.reject_free_function_accessor(declaration)?;
-            let (params, return_type, body) = match &host.rir.rir().get(declaration).data {
+            let (return_type, body) = match &host.rir.rir().get(declaration).data {
                 InstData::FnDecl {
-                    params,
-                    return_type,
-                    body,
-                    ..
-                } => (params.clone(), *return_type, *body),
+                    return_type, body, ..
+                } => (*return_type, *body),
                 _ => unreachable!("registered provider function points at FnDecl"),
             };
             let body_span = host.rir.rir().get(body).span;
+            // The durable call-site signature may normalize body-local types
+            // such as `Str(N)` to their coercion surface. Resolve the exact
+            // declared return spelling for body checking; explicit parameters
+            // retain their exact canonical facts and need no second lookup.
+            let return_type = host.resolve_body_type(return_type, info.span)?;
             let params = host
-                .rir
-                .rir()
-                .params(&params)
-                .values()
-                .collect::<Vec<RirParam>>();
+                .state
+                .param_data(info.params)
+                .iter()
+                .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
+                .collect();
             host.endpoint
                 .finalize_containment_metadata()
                 .ok_or_else(|| {
@@ -4312,11 +4314,11 @@ where
                     ))
                 })?;
             (
-                OrdinaryBodyEngine::new(&mut host).analyze_single_function(
+                OrdinaryBodyEngine::new(&mut host).analyze_single_function_resolved(
                     &infer,
                     name,
                     return_type,
-                    params.into_iter(),
+                    params,
                     body,
                     info.span,
                     info.allow_unused_variable,
@@ -4347,41 +4349,30 @@ where
                         name.to_owned(),
                     ))
                 })?;
-            let (params, return_type, body, has_self, self_mode, self_is_mut, returns_borrow) =
-                match &host.rir.rir().get(declaration).data {
-                    InstData::FnDecl {
-                        params,
-                        return_type,
-                        body,
-                        has_self,
-                        self_mode,
-                        self_is_mut,
-                        returns_borrow,
-                        ..
-                    } => (
-                        params.clone(),
-                        *return_type,
-                        *body,
-                        *has_self,
-                        *self_mode,
-                        *self_is_mut,
-                        *returns_borrow,
-                    ),
-                    _ => unreachable!("registered provider member points at FnDecl"),
-                };
+            let (return_type, body) = match &host.rir.rir().get(declaration).data {
+                InstData::FnDecl {
+                    return_type, body, ..
+                } => (*return_type, *body),
+                _ => unreachable!("registered provider member points at FnDecl"),
+            };
             let body_span = host.rir.rir().get(body).span;
+            let return_type = if host.interner.resolve(&return_type) == "Self" {
+                info.struct_type
+            } else {
+                host.resolve_body_type(return_type, info.span)?
+            };
             let params = host
-                .rir
-                .rir()
-                .params(&params)
-                .values()
-                .collect::<Vec<RirParam>>();
+                .state
+                .param_data(info.params)
+                .iter()
+                .map(|(name, ty, mode, comptime)| (*name, *ty, *mode, *comptime))
+                .collect();
             let full_name = host.member_callable_name(
                 info.struct_type
                     .as_struct()
                     .expect("named method receiver must be a struct"),
                 name,
-                has_self,
+                info.has_self,
             );
             let full_symbol = host.interner.get_or_intern(&full_name);
             let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
@@ -4396,18 +4387,18 @@ where
                     ))
                 })?;
             (
-                OrdinaryBodyEngine::new(&mut host).analyze_named_method(
+                OrdinaryBodyEngine::new(&mut host).analyze_named_method_resolved(
                     &infer,
                     &full_name,
                     return_type,
-                    params.into_iter(),
+                    params,
                     body,
                     info.span,
                     info.struct_type,
-                    has_self,
-                    self_mode,
-                    self_is_mut,
-                    returns_borrow,
+                    info.has_self,
+                    info.self_mode,
+                    info.self_is_mut,
+                    info.returns_borrow,
                 )?,
                 body_span,
             )

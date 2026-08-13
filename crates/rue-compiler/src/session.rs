@@ -8143,7 +8143,10 @@ mod tests {
             .expect("the program analyzes");
 
         let metrics = crate::unstable::provider_observation_metrics(&session);
-        assert_eq!(metrics.name_lookups, 16, "{metrics:?}");
+        assert_eq!(
+            metrics.name_lookups, 15,
+            "provider body analysis must reuse exact parameter facts while resolving the body-local return spelling once: {metrics:?}"
+        );
         assert_eq!(metrics.declaration_facts, 20, "{metrics:?}");
         assert_eq!(metrics.identity_facts, 10, "{metrics:?}");
         assert_eq!(metrics.signature_facts, 10, "{metrics:?}");

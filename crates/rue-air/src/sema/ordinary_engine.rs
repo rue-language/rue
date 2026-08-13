@@ -1451,6 +1451,49 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 Ok((p.name, ty, p.mode, p.is_comptime))
             })
             .collect::<CompileResult<Vec<_>>>()?;
+        self.analyze_single_function_resolved(
+            infer_ctx,
+            fn_name,
+            ret_type,
+            param_info,
+            body,
+            span,
+            allow_unused_variable,
+            allow_unreachable_code,
+        )
+    }
+
+    /// Analyze a function whose body-exact return type and canonical parameter
+    /// facts are already resolved in this engine's type and parameter authority.
+    ///
+    /// Provider-backed body analysis mints those facts while selecting the
+    /// current callable. Re-resolving the explicit parameter spellings would
+    /// duplicate nominal registration and type construction without adding a
+    /// distinct correctness check; the body input already depends on the exact
+    /// raw signature terminal. The caller still resolves the declared return
+    /// spelling because a call-site signature may expose a coercion-normalized
+    /// type instead of the exact type checked inside the body.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn analyze_single_function_resolved(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        fn_name: &str,
+        ret_type: Type,
+        param_info: Vec<(Spur, Type, RirParamMode, bool)>,
+        body: InstRef,
+        span: Span,
+        allow_unused_variable: bool,
+        allow_unreachable_code: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        for (_, ty, _, is_comptime) in &param_info {
+            reject_runtime_type_value(*ty, *is_comptime, span)?;
+        }
         let function_symbol = self.storage.body_interner().get_or_intern(fn_name);
         let producer = self
             .canonical_function_producer(function_symbol, &HashMap::new(), &HashMap::new())
@@ -1514,12 +1557,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         ))
     }
 
-    pub(crate) fn analyze_named_method<P>(
+    /// Analyze a named member from its already-resolved canonical signature.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn analyze_named_method_resolved(
         &mut self,
         infer_ctx: &InferenceContext,
         full_name: &str,
-        return_type: Spur,
-        params: P,
+        return_type: Type,
+        params: Vec<(Spur, Type, RirParamMode, bool)>,
         body: InstRef,
         span: Span,
         struct_type: Type,
@@ -1533,10 +1578,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<String>,
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
-    )>
-    where
-        P: ExactSizeIterator<Item = RirParam> + Clone,
-    {
+    )> {
         let symbol = self.storage.body_interner().get_or_intern(full_name);
         let identity = crate::FunctionInstanceKey::Definition(
             self.storage.function_identity(symbol).map_err(|failure| {
@@ -1548,17 +1590,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 )
             })?,
         );
-        self.analyze_method_with_identity_kind(
+        let self_name = self.storage.body_interner().get_or_intern("self");
+        let mut resolved_params = Vec::with_capacity(params.len() + usize::from(has_self));
+        if has_self {
+            resolved_params.push((self_name, struct_type, self_mode, false));
+        }
+        resolved_params.extend(params);
+        self.analyze_method_with_identity_kind_resolved(
             infer_ctx,
             identity,
             full_name,
             return_type,
-            params,
+            resolved_params,
             body,
             span,
             struct_type,
-            has_self,
-            self_mode,
             self_is_mut,
             false,
             returns_borrow,
@@ -1657,6 +1703,48 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             reject_runtime_type_value(ty, parameter.is_comptime, span)?;
             resolved_params.push((parameter.name, ty, parameter.mode, parameter.is_comptime));
         }
+        self.analyze_method_with_identity_kind_resolved(
+            infer_ctx,
+            identity,
+            full_name,
+            return_type,
+            resolved_params,
+            body,
+            span,
+            struct_type,
+            self_is_mut,
+            is_destructor,
+            is_accessor,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn analyze_method_with_identity_kind_resolved(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        identity: crate::FunctionInstanceKey<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+        full_name: &str,
+        return_type: Type,
+        resolved_params: Vec<(Spur, Type, RirParamMode, bool)>,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        self_is_mut: bool,
+        is_destructor: bool,
+        is_accessor: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        for (_, ty, _, is_comptime) in &resolved_params {
+            reject_runtime_type_value(*ty, *is_comptime, span)?;
+        }
         let producer = (
             crate::StableProducerId::Function(Box::new(identity.clone())),
             crate::CanonicalArguments::default(),
@@ -1667,6 +1755,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let struct_id = struct_type
             .as_struct()
             .expect("method receiver must be a struct");
+        let self_type_name = self.storage.body_interner().get_or_intern("Self");
         let mut type_subst = self.storage.anon_struct_type_subst(struct_id);
         type_subst.insert(self_type_name, struct_type);
         let captured_values = self.storage.anon_struct_captured_values(struct_id);
