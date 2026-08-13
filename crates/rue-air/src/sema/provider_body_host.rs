@@ -1137,6 +1137,9 @@ where
         defining_file: FileId,
         is_public: bool,
     ) -> bool {
+        if is_public || accessing_file == defining_file {
+            return true;
+        }
         let domain = |file| {
             self.source.source_path(file).map_or_else(
                 || AggregateFactsTrait::visibility_domain(&self.aggregate, file),

@@ -37165,26 +37165,31 @@ fn main() -> i32 {
 
     #[test]
     fn provider_aggregate_facts_is_accessible_matches_epoch() {
-        // Two files in DISTINCT directories: the visibility domain is the parent
-        // directory, so a private item is visible within its own file but not
-        // across directories; a public item is visible either way. The driver
-        // reproduces the epoch's decision from the SAME registered physical paths
-        // (a request-local body-query input, not a durable fact — no
-        // seam-signature change), proving the visibility short-circuit.
+        // The visibility domain is the parent directory, so a private item is
+        // visible within its own file and from a sibling file, but not across
+        // directories; a public item is visible either way. The driver reproduces
+        // the epoch's decision from the SAME registered physical paths (a
+        // request-local body-query input, not a durable fact — no seam-signature
+        // change), proving the visibility short-circuit.
         let root_src = "pub struct A { x: i32 }\n\
              fn main() -> i32 { 0 }\n";
         let leaf_src = "pub struct B { y: i32 }\n";
+        let sibling_src = "pub struct C { z: i32 }\n";
         let root_file = FileId::new(1);
         let leaf_file = FileId::new(2);
+        let sibling_file = FileId::new(3);
+        let unknown_file = FileId::new(4);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
             root_file,
             HashMap::from([
                 (root_file, "/project/main.rue".to_owned()),
                 (leaf_file, "/project/std/leaf.rue".to_owned()),
+                (sibling_file, "/project/helper.rue".to_owned()),
             ]),
             HashMap::from([
                 (root_file, "main.rue".to_owned()),
                 (leaf_file, "\0rue-std/leaf.rue".to_owned()),
+                (sibling_file, "helper.rue".to_owned()),
             ]),
             std::collections::HashSet::from([leaf_file]),
         )
@@ -37194,9 +37199,10 @@ fn main() -> i32 {
             vec![
                 (root_file, Arc::new(root_src.to_owned())),
                 (leaf_file, Arc::new(leaf_src.to_owned())),
+                (sibling_file, Arc::new(sibling_src.to_owned())),
             ],
         )
-        .expect("two-file snapshot is valid");
+        .expect("three-file snapshot is valid");
 
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
         let merged = &stages.merged;
@@ -37220,11 +37226,12 @@ fn main() -> i32 {
         // Register the SAME physical paths the epoch's `get_file_path` returns.
         facts.register_file_path(root_file, &bound.epoch_file_path(root_file).unwrap());
         facts.register_file_path(leaf_file, &bound.epoch_file_path(leaf_file).unwrap());
+        facts.register_file_path(sibling_file, &bound.epoch_file_path(sibling_file).unwrap());
 
         // Every combination of (accessing, defining, is_public) must match the
         // epoch's decision from the same paths.
-        for &accessing in &[root_file, leaf_file] {
-            for &defining in &[root_file, leaf_file] {
+        for &accessing in &[root_file, leaf_file, sibling_file] {
+            for &defining in &[root_file, leaf_file, sibling_file] {
                 for &is_public in &[false, true] {
                     assert_eq!(
                         facts.is_accessible(accessing, defining, is_public),
@@ -37241,12 +37248,21 @@ fn main() -> i32 {
             "same file sees private"
         );
         assert!(
+            facts.is_accessible(root_file, sibling_file, false),
+            "same-directory sibling sees private"
+        );
+        assert!(
             !facts.is_accessible(root_file, leaf_file, false),
             "cross-dir private hidden"
         );
         assert!(
             facts.is_accessible(root_file, leaf_file, true),
             "public crosses directories"
+        );
+        assert!(
+            facts.is_accessible(root_file, unknown_file, false)
+                && facts.is_accessible(unknown_file, root_file, false),
+            "an unknown path remains permissive"
         );
     }
 

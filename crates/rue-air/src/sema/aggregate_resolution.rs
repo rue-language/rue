@@ -340,6 +340,9 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
     defining_file: FileId,
     is_public: bool,
 ) -> bool {
+    if is_public || accessing_file == defining_file {
+        return true;
+    }
     let accessing = facts.visibility_domain(accessing_file);
     let defining = facts.visibility_domain(defining_file);
     defining.is_visible_from(&accessing, is_public)
