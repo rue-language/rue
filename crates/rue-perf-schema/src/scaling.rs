@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 16;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 17;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +203,9 @@ pub struct CompilerWork {
     pub semantic_reachability: SemanticReachabilityWork,
     /// Request-local lookup preparation for exact CFG materialization facts.
     pub cfg_materialization: CfgMaterializationWork,
+    /// Stable-type scans and registered prerequisite requests for CFG bodies.
+    #[serde(default)]
+    pub cfg_prerequisites: CfgPrerequisiteWork,
     /// Logical retained-charge bookkeeping for CFG artifacts.
     #[serde(default)]
     pub cfg_retained_charge: CfgRetainedChargeWork,
@@ -299,6 +302,20 @@ pub struct CfgMaterializationWork {
     /// Additional stable type roots copied into selected closures.
     #[serde(default)]
     pub required_types_selected: u64,
+}
+
+/// Deterministic prerequisite work performed before AIR-to-CFG construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CfgPrerequisiteWork {
+    /// Stable types scanned across every body-local domain.
+    pub stable_types_scanned: u64,
+    /// Unique layout terminals requested across all CFG bodies.
+    pub layout_requests: u64,
+    /// Unique type-fact terminals requested for drop-relevant types.
+    pub type_fact_requests: u64,
+    /// Unique drop-glue terminals requested for drop-relevant types.
+    pub drop_glue_requests: u64,
 }
 
 /// Deterministic logical retained-charge work for CFG artifacts.
@@ -438,13 +455,13 @@ question = "small maintained compiler frontend"
     }
 
     #[test]
-    fn older_compiler_work_defaults_the_new_retained_charge_category() {
+    fn older_compiler_work_defaults_additive_cfg_categories() {
         let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
-        encoded
-            .as_object_mut()
-            .unwrap()
-            .remove("cfg_retained_charge");
+        let object = encoded.as_object_mut().unwrap();
+        object.remove("cfg_prerequisites");
+        object.remove("cfg_retained_charge");
         let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.cfg_prerequisites, CfgPrerequisiteWork::default());
         assert_eq!(
             decoded.cfg_retained_charge,
             CfgRetainedChargeWork::default()

@@ -1152,6 +1152,9 @@ struct CfgConstructionBreakdownVisitor {
     input_preparation_ns: Option<u64>,
     semantic_materialization_ns: Option<u64>,
     domain_prerequisites_ns: Option<u64>,
+    domain_projection_ns: Option<u64>,
+    prerequisite_collection_ns: Option<u64>,
+    prerequisite_queries_ns: Option<u64>,
     cfg_builder_ns: Option<u64>,
     cfg_publication_ns: Option<u64>,
 }
@@ -1182,6 +1185,9 @@ impl tracing::field::Visit for CfgConstructionBreakdownVisitor {
             "input_preparation_ns" => self.input_preparation_ns = Some(value),
             "semantic_materialization_ns" => self.semantic_materialization_ns = Some(value),
             "domain_prerequisites_ns" => self.domain_prerequisites_ns = Some(value),
+            "domain_projection_ns" => self.domain_projection_ns = Some(value),
+            "prerequisite_collection_ns" => self.prerequisite_collection_ns = Some(value),
+            "prerequisite_queries_ns" => self.prerequisite_queries_ns = Some(value),
             "cfg_builder_ns" => self.cfg_builder_ns = Some(value),
             "cfg_publication_ns" => self.cfg_publication_ns = Some(value),
             _ => {}
@@ -1262,12 +1268,18 @@ where
                 Some(input_preparation_ns),
                 Some(semantic_materialization_ns),
                 Some(domain_prerequisites_ns),
+                Some(domain_projection_ns),
+                Some(prerequisite_collection_ns),
+                Some(prerequisite_queries_ns),
                 Some(cfg_builder_ns),
                 Some(cfg_publication_ns),
             ) = (
                 visitor.input_preparation_ns,
                 visitor.semantic_materialization_ns,
                 visitor.domain_prerequisites_ns,
+                visitor.domain_projection_ns,
+                visitor.prerequisite_collection_ns,
+                visitor.prerequisite_queries_ns,
                 visitor.cfg_builder_ns,
                 visitor.cfg_publication_ns,
             )
@@ -1278,6 +1290,9 @@ where
                 ("cfg_input_preparation", input_preparation_ns),
                 ("semantic_materialization", semantic_materialization_ns),
                 ("cfg_domain_prerequisites", domain_prerequisites_ns),
+                ("cfg_domain_projection", domain_projection_ns),
+                ("cfg_prerequisite_collection", prerequisite_collection_ns),
+                ("cfg_prerequisite_queries", prerequisite_queries_ns),
                 ("cfg_builder", cfg_builder_ns),
                 ("cfg_publication", cfg_publication_ns),
             ] {
@@ -2493,8 +2508,11 @@ mod phase_accounting_tests {
                 input_preparation_ns = 2_u64,
                 semantic_materialization_ns = 4_u64,
                 domain_prerequisites_ns = 8_u64,
-                cfg_builder_ns = 16_u64,
-                cfg_publication_ns = 32_u64,
+                domain_projection_ns = 16_u64,
+                prerequisite_collection_ns = 32_u64,
+                prerequisite_queries_ns = 64_u64,
+                cfg_builder_ns = 128_u64,
+                cfg_publication_ns = 256_u64,
             );
         });
 
@@ -2502,8 +2520,11 @@ mod phase_accounting_tests {
             ("cfg_input_preparation", 2),
             ("semantic_materialization", 4),
             ("cfg_domain_prerequisites", 8),
-            ("cfg_builder", 16),
-            ("cfg_publication", 32),
+            ("cfg_domain_projection", 16),
+            ("cfg_prerequisite_collection", 32),
+            ("cfg_prerequisite_queries", 64),
+            ("cfg_builder", 128),
+            ("cfg_publication", 256),
         ] {
             let distribution = data.pass_duration_distribution(name);
             assert_eq!(distribution.count, 1, "{name}");
