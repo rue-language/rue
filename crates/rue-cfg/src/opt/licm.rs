@@ -89,7 +89,7 @@ use super::CfgOptimizationError;
 use super::classify;
 use super::loops::{LoopId, NaturalLoop, ensure_preheader, loops};
 use crate::dominators::DominatorTree;
-use crate::{BlockId, Cfg, CfgInstData, CfgValue};
+use crate::{BlockId, Cfg, CfgInstData, CfgValue, Terminator};
 
 /// Bounded-work counters for one LICM run (RUE-794 discipline).
 ///
@@ -121,6 +121,17 @@ pub struct Stats {
 /// pool feeds preheader materialization's typed block-param payloads (RUE-840),
 /// whose capacity failures propagate as the pass error.
 pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
+    // Every directed cycle contains an edge whose target is no later than its
+    // source in the total block-id order. Proving that no such edge exists is
+    // therefore enough to skip both dominator construction and loop discovery.
+    // This summary is computed from the post-O2 CFG itself, so earlier edge
+    // rewrites cannot leave behind a falsely cleared bit. A non-forward edge in
+    // an acyclic graph is only a conservative false positive: LICM runs as
+    // before.
+    if !may_have_cycle_by_block_order(cfg) {
+        return Ok(Stats::default());
+    }
+
     let mut stats = Stats::default();
 
     // Recompute dominators + loops from scratch after each actual CFG-edge
@@ -157,6 +168,32 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
     }
 
     Ok(stats)
+}
+
+fn may_have_cycle_by_block_order(cfg: &Cfg) -> bool {
+    for raw in 0..cfg.block_count() {
+        let block = BlockId::from_raw(raw as u32);
+        let observe = |target: BlockId| target.as_u32() <= block.as_u32();
+        let may_cycle = match &cfg.get_block(block).terminator {
+            Terminator::Goto { target, .. } => observe(*target),
+            Terminator::Branch {
+                then_block,
+                else_block,
+                ..
+            } => observe(*then_block) || observe(*else_block),
+            Terminator::Switch { cases, default, .. } => {
+                cfg.switch_cases(cases)
+                    .iter()
+                    .any(|(_, target)| observe(*target))
+                    || observe(*default)
+            }
+            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => false,
+        };
+        if may_cycle {
+            return true;
+        }
+    }
+    false
 }
 
 /// Hoist every trap-free invariant instruction out of `lp` into its preheader.
@@ -772,7 +809,8 @@ mod tests {
 
     #[test]
     fn no_loops_is_a_no_op() {
-        // A straight-line function has no loops; LICM must do nothing.
+        // A straight-line function has no loops; the one-sided cycle summary
+        // proves this without constructing dominators or a loop forest.
         let mut cfg = make_cfg();
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -782,8 +820,69 @@ mod tests {
         cfg.set_terminator(entry, Terminator::Return { value: None });
 
         let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.forest_computations, 0);
         assert_eq!(stats.loops_analyzed, 0);
         assert_eq!(stats.invariants_hoisted, 0);
+    }
+
+    #[test]
+    fn cycle_summary_covers_branch_switch_and_self_edges() {
+        // Forward-only branch and switch edges form a DAG. Block ids were
+        // minted in topological order, so the summary can prove it acyclic.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let exit = cfg.new_block();
+        let cond = bool_const(&mut cfg, entry);
+        let scrutinee = push(&mut cfg, left, CfgInstData::Const(0), Type::I32);
+        cfg.set_terminator(entry, branch(cond, left, right));
+        let cases = cfg.push_switch_cases([(0, exit)]).unwrap();
+        cfg.set_terminator(
+            left,
+            Terminator::Switch {
+                scrutinee,
+                cases,
+                default: exit,
+            },
+        );
+        cfg.set_terminator(right, goto(exit));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        assert!(!may_have_cycle_by_block_order(&cfg));
+
+        // Every directed cycle has a non-forward edge in any total ordering.
+        // Exercise both a switch back edge and the equality case (self-loop),
+        // which are enough to prevent the one-sided proof from false-clearing.
+        let cases = cfg.push_switch_cases([(0, entry)]).unwrap();
+        cfg.get_block_mut(left).terminator = Terminator::Switch {
+            scrutinee,
+            cases,
+            default: exit,
+        };
+        assert!(may_have_cycle_by_block_order(&cfg));
+
+        cfg.get_block_mut(left).terminator = goto(exit);
+        cfg.get_block_mut(right).terminator = goto(right);
+        assert!(may_have_cycle_by_block_order(&cfg));
+    }
+
+    #[test]
+    fn cycle_summary_allows_conservative_acyclic_false_positive() {
+        // Block ids need not be a topological ordering. This entry-to-earlier
+        // edge is acyclic, but deliberately retains the old LICM analysis path
+        // instead of risking a false proof.
+        let mut cfg = make_cfg();
+        let exit = cfg.new_block();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.set_terminator(entry, goto(exit));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        assert!(may_have_cycle_by_block_order(&cfg));
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_analyzed, 0);
     }
 
     #[test]
