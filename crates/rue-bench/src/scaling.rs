@@ -365,10 +365,10 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Worker scaling and critical path\n\n");
-    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. The five top-level CFG breakdown columns are non-overlapping lexical intervals inside each successful CFG body; projection, dependency collection, and prerequisite queries further partition the domain/prerequisite interval. CFG total remains the inclusive query duration and can be slightly larger because it also contains timing publication and outer query bookkeeping. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
-    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | CFG input total/max ms | local epoch total/max ms | domain/prereq total/max ms | domain projection total/max ms | prerequisite collection total/max ms | prerequisite queries total/max ms | CFG builder total/max ms | publication total/max ms | CFG total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
+    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. Semantic prerequisite and analysis columns are adjacent, non-overlapping lexical intervals inside each body transaction. The five top-level CFG breakdown columns are non-overlapping lexical intervals inside each successful CFG body; projection, dependency collection, and prerequisite queries further partition the domain/prerequisite interval. CFG total remains the inclusive query duration and can be slightly larger because it also contains timing publication and outer query bookkeeping. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
+    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic prerequisites total/max ms | semantic analysis total/max ms | CFG input total/max ms | local epoch total/max ms | domain/prereq total/max ms | domain projection total/max ms | prerequisite collection total/max ms | prerequisite queries total/max ms | CFG builder total/max ms | publication total/max ms | CFG total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
     out.push_str(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
     );
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {
@@ -402,6 +402,16 @@ fn render(report: &ScalingReport) -> String {
         let ready_max = summarize(evidence.clone().map(|e| e.max_ready_wait_ns));
         let chain = summarize(evidence.clone().map(|e| e.longest_query_dependency_chain));
         let toolchain = summarize(evidence.clone().map(|e| e.toolchain_acquisition_ns));
+        let semantic_prerequisite_total = summarize(
+            evidence
+                .clone()
+                .map(|e| e.semantic_prerequisite_bodies.total_ns),
+        );
+        let semantic_prerequisite_max = summarize(
+            evidence
+                .clone()
+                .map(|e| e.semantic_prerequisite_bodies.max_ns),
+        );
         let semantic_total = summarize(evidence.clone().map(|e| e.semantic_bodies.total_ns));
         let semantic_max = summarize(evidence.clone().map(|e| e.semantic_bodies.max_ns));
         let input_total = summarize(
@@ -477,7 +487,7 @@ fn render(report: &ScalingReport) -> String {
         let declined = summarize(evidence.clone().map(|e| e.declined_joins));
         let donated = summarize(evidence.map(|e| e.donated_permits));
         out.push_str(&format!(
-            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
+            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
             observation_label(observation),
             utilization.median as f64 / 100.0,
             active.median as f64 / 1_000_000.0,
@@ -485,6 +495,8 @@ fn render(report: &ScalingReport) -> String {
             ready_max.median as f64 / 1_000_000.0,
             chain.median,
             toolchain.median as f64 / 1_000_000.0,
+            semantic_prerequisite_total.median as f64 / 1_000_000.0,
+            semantic_prerequisite_max.median as f64 / 1_000_000.0,
             semantic_total.median as f64 / 1_000_000.0,
             semantic_max.median as f64 / 1_000_000.0,
             input_total.median as f64 / 1_000_000.0,
