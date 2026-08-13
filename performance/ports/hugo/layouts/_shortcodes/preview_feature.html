@@ -1,0 +1,6 @@
+{{- /* Hugo port of `website/templates/shortcodes/preview_feature.html`. */ -}}
+<div class="preview-notice">
+    <strong>Preview Feature</strong>:
+    This feature requires <code>--preview {{ .Get "feature" }}</code> to use.
+    {{ with .Get "adr" }}See <a href="/designs/{{ . | lower }}">{{ . | upper }}</a> for the design.{{ end }}
+</div>

@@ -1,0 +1,45 @@
+{{/*
+  The recursive specification sidebar, and the single most fairness-sensitive
+  template in the Hugo port (ADR-0072 Decisions 3 and 5).
+
+  Both the `active` class and the recursion are gated on a prefix test against
+  the CURRENT page's permalink, exactly as the production Tera macro and the
+  gazette port are. That is what makes the sidebar a different document on
+  every page, and what makes its cost scale with the section tree.
+
+  The test is `strings.HasPrefix`, evaluated BY THE TEMPLATE ENGINE. Computing
+  the open branch outside the template — in the content, in a data file, or by
+  precomputing a map once per build — would move measured work out of the
+  measured program, and no check in Decision 4 would notice: a flattened
+  sidebar emits the same link targets and the same visible text on every page.
+  The same rule binds all three ports.
+
+  `partial` recursing on itself is Go templates' equivalent of Tera's
+  `self::render_nav`; the depth parameter production carries is not read for
+  output there either.
+*/}}
+{{- $current := .current -}}
+<ul class="spec-nav-list">
+    {{ range .section.RegularPages }}
+    <li class="spec-nav-item">
+        <a href="{{ .Permalink }}" class="spec-nav-link {{ if eq .Permalink $current }}active{{ end }}">
+            {{ .Title }}
+        </a>
+    </li>
+    {{ end }}
+
+    {{/* Sorted by path, as the Tera macro sorts `section.subsections`. The
+         corpus's numbered chapter directories make that the reading order, and
+         it stays total on the duplicated corpus of the scale variants, where
+         every copy ties with its original on weight and on title. */}}
+    {{ range sort .section.Sections "Path" }}
+    <li class="spec-nav-section">
+        <a href="{{ .Permalink }}" class="spec-nav-section-title {{ if strings.HasPrefix $current .Permalink }}active{{ end }}">
+            {{ .Title }}
+        </a>
+        {{ if strings.HasPrefix $current .Permalink }}
+        {{ partial "spec-nav.html" (dict "section" . "current" $current) }}
+        {{ end }}
+    </li>
+    {{ end }}
+</ul>

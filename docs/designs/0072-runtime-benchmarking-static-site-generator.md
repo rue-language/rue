@@ -653,6 +653,20 @@ website-publish pipeline rather than adding a new schedule:
   peer sample. The full peer matrix (Hugo, scale variants, the
   default-parallel secondary row) stays event-driven; the canary falls
   under the same cost safety valve as the scale variants.
+
+  Phase 5 refined "the 1x corpus" to "the workload's own corpus": each
+  measured rung carries its own canary, so the 10x rung's denominator is a
+  10x peer build. A 1x denominator for a 10x numerator would not be a
+  ratio of anything. The cost is the reason the wording started where it
+  did, and it is bounded by the same valve — a rung that becomes too
+  expensive leaves per-push collection with its canary.
+
+  Between events, the derived comparison table JOINS each observation to the
+  latest full peer leg with a matching fixture identity, and marks which rows
+  came from which run. Without that join the table is whatever the newest run
+  happened to carry, which is the canary alone — one peer, one thread policy —
+  so the three-tool comparison this ADR promises would appear for one push
+  after each event and then disappear.
 - **Scale variants have a safety valve.** The 1x corpus runs per push; if
   the 10x/100x variants prove too expensive for per-push collection, they
   move to a scheduled cadence without changing any other policy.
@@ -691,7 +705,7 @@ silently.
   template engine** - RUE-1483
 - [x] **Phase 4: Gazette, live-corpus fixture preparation, output validation,
   and the scaling-curve rung** - RUE-1484
-- [ ] **Phase 5: Cross-tool comparison — Hugo pin, parity configs, CI runs;
+- [x] **Phase 5: Cross-tool comparison — Hugo pin, parity configs, CI runs;
   and gazette's entry in `performance/runtime.toml`** - RUE-1485
 - [ ] **Phase 6: Website publication — comparison table, time series,
   side-by-side source** - RUE-1049
@@ -711,6 +725,64 @@ job runs are defined. Until then the fixture preparation, identity recording,
 and validation are driven by `scripts/gazette-corpus-diff.py site`, which is
 the reference implementation the harness mode should adopt rather than
 reinvent.
+
+Phase 5 landed the comparison, and four things it found are worth recording
+because each changes what a later reader should expect.
+
+- **The corpus, not the configurations, is where equivalence is won — and one
+  of those normalizations hides a Rue gap.** Two differences were fixed by
+  normalizing the corpus for all three tools at fixture-preparation time rather
+  than by configuring one of them. `paginate_by` is the one excluded feature the
+  content turns on, and Zola honours it by emitting a paginated view no other
+  tool builds. Three upper-case file names route differently, and here **gazette
+  is the odd tool out**: Zola slugifies a content path into its route and Hugo
+  lower-cases it into its page identity, so both agree with the production site,
+  while gazette does not slugify at all. Lower-casing the three names buys an
+  exact file-set check instead of an allowlist entry that a tool dropping a page
+  could later hide behind, at the cost of suppressing a genuine two-against-one
+  difference in which Rue is the outlier. The work either way is one pass over
+  96 paths and cannot move a measurement; teaching gazette to slugify would
+  close it properly. Both normalizations, and the two excluded pages, are
+  disclosed on the published page rather than only here.
+
+  Neither normalization is visible in the content digest, since that digest is
+  taken over the tree the rules have already rewritten. The preparer's own
+  revision and digest are therefore inside the recorded fixture identity, so a
+  change to an assembly rule opens a new comparable segment exactly as a content
+  change does — without that, Decision 2's segmentation mechanism would not fire
+  for the rules that decide what every tool consumes.
+- **The allowlist has one entry, and the rest were configured away.** Zola
+  always writes a `404.html` and offers no switch; Hugo emits one only with a
+  layout, and the port has none. Everything else the ADR anticipated — Hugo's
+  sitemap, its robots.txt, its per-section feeds, and the feed *filename*
+  mapping — is handled in the parity configurations, so the emitted file sets
+  are compared as equal sets rather than through excuses.
+- **The cross-tool oracle compares the facets Decision 4 names, not the event
+  stream.** Goldmark and pulldown-cmark do not emit the same markup for the
+  same Markdown, so the three-way comparison is the heading tree, visible text,
+  and link and image targets, with link targets resolved to one spelling —
+  Zola resolves a bare `#fragment` and a relative `math/` against the page and
+  Hugo leaves both as written. That is weaker than the gazette-vs-Zola body
+  oracle, which stays as it was, and it still catches every way a tool can do
+  less work. It caught two real port defects: Hugo's URL escaping turned every
+  one of the corpus's 1,224 rule anchors into a link to a target that does not
+  exist, and `.PrevInSection`/`.NextInSection` are the opposite way round from
+  Zola's `page.lower`/`page.higher`, so the port sent every reader backwards.
+- **The scale variants needed the oracle too, and a real defect was sitting in
+  the gap.** The cross-tool comparison first ran at 1x only, on the argument
+  that the copies are the same documents at other permalinks. They are not the
+  same documents to a tool that picks templates by PATH: Hugo routed every
+  duplicated page out of the specification layout and rendered it with no
+  sidebar — nine tenths of the corpus at 10x, the port's most expensive
+  template skipped — and fell back to its built-in feed for the duplicated blog
+  sections, which renders every post body into the feed. The emitted file set
+  and the page count were exactly right throughout. The comparison now checks
+  one copy of every page as well as every original, and fixture preparation
+  gives each page its type explicitly, which is the same translation the corpus
+  already performs for Zola through `template`.
+- **Hugo is pinned at v0.152.2 rather than at the newest release**, because
+  from v0.153.0 Hugo publishes macOS only as a `.pkg` installer, which DotSlash
+  cannot extract, and `aarch64-macos` is a row of this matrix.
 
 The harness comes first, against a precisely declared workload that already
 exists. Phase 1's initial runtime workload is `wordfreq`, run over a large

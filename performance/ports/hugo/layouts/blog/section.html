@@ -1,0 +1,53 @@
+{{/*
+  Hugo port of `website/templates/blog.html` (ADR-0072 Decision 3).
+
+  Pagination is outside the equivalence subset for every tool, so this lists
+  `.Pages` directly rather than `.Paginator.Pages`, exactly as the Zola and
+  gazette ports list the section's pages directly. The corpus's eight posts sit
+  under a `paginate_by = 10` that fixture preparation strips for all three
+  tools, so no tool builds a paginated view.
+
+  Ordering is Hugo's own default page order for a section — weight, then date
+  descending, then title, then file path — which resolves to newest-first here
+  because no post carries a weight. The final tie-break on path is what makes
+  the order total on the duplicated corpus of the scale variants, where every
+  copy of a post ties with its original on date; the validation recomputes that
+  order from the source tree rather than assuming it.
+*/}}
+{{ define "title" }}Lab Notes | {{ .Site.Title }}{{ end }}
+{{ define "main" }}
+<section class="py-12">
+    <div class="max-w-3xl mx-auto px-6">
+        <header class="mb-10">
+            <h1 style="font-family: var(--font-display); font-weight: 460; font-size: 2.3rem;" class="mb-2">{{ .Title }}</h1>
+            <p class="text-muted mb-4" style="font-style: italic;">{{ .Content }}</p>
+            <a href="{{ "blog/rss.xml" | absURL }}" class="inline-flex items-center gap-2 text-muted text-sm hover:text-[var(--color-accent)]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="6.18" cy="17.82" r="2.18"/>
+                    <path d="M4 4.44v2.83c7.03 0 12.73 5.7 12.73 12.73h2.83c0-8.59-6.97-15.56-15.56-15.56zm0 5.66v2.83c3.9 0 7.07 3.17 7.07 7.07h2.83c0-5.47-4.43-9.9-9.9-9.9z"/>
+                </svg>
+                RSS Feed
+            </a>
+        </header>
+
+        <ul class="note-list">
+            {{ range .Pages }}
+            <li>
+                <span class="note-date"><time datetime="{{ .Date.Format "2006-01-02" }}">{{ .Date.Format "2006 · 01 · 02" }}</time></span>
+                <div>
+                    <a class="note-title" href="{{ .Permalink }}">{{ .Title }}</a>
+                    {{ with .Params.extra.authors }}
+                    <span class="text-faint text-sm" style="font-style: italic;">
+                        — {{ partial "authors.html" (dict "authors" . "linked" false) }}
+                    </span>
+                    {{ end }}
+                    {{ with .Summary }}
+                    <p class="note-summary">{{ . }}</p>
+                    {{ end }}
+                </div>
+            </li>
+            {{ end }}
+        </ul>
+    </div>
+</section>
+{{ end }}

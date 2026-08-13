@@ -357,7 +357,7 @@
       drawWorkloads(points);
       drawChart(data, entries);
       drawSegments(entries);
-      drawComparison(runtime);
+      drawComparison();
       drawNotes();
       drawDisclosures(runtime, entries);
     }
@@ -814,15 +814,22 @@
     // inside the figure, so this function can only ever add rows to a table
     // that already carries them (ADR-0072 Decision 3).
     //
-    // Nothing populates it yet: the peer leg needs gazette, a pinned Hugo, and
-    // the parity configurations, none of which exist. When it does, its rows
-    // arrive as `runtime.comparison` and are rendered here — an empty or absent
-    // comparison renders as the honest empty state, never as an estimate.
-    function drawComparison(runtime) {
+    // The rows come from ONE run of the selected platform — the newest one that
+    // measured peers, which is not always the newest run, because peers are
+    // re-measured on events rather than on a clock. That is the honest table to
+    // publish: both sides of every ratio were measured on the same machine in
+    // the same job. An absent comparison renders as the empty state below,
+    // never as an estimate.
+    function drawComparison() {
       var figure = document.getElementById("rt-comparison");
       var body = document.getElementById("rt-comparison-rows");
       var emptyNote = document.getElementById("rt-comparison-empty");
-      var rows = (runtime.comparison && runtime.comparison.rows) || [];
+      var epochs = current().epochs || [];
+      var comparison = null;
+      for (var i = epochs.length - 1; i >= 0 && !comparison; i--) {
+        comparison = epochs[i].comparison;
+      }
+      var rows = (comparison && comparison.rows) || [];
       body.textContent = "";
       if (!rows.length) {
         figure.hidden = true;
@@ -833,8 +840,17 @@
       emptyNote.hidden = true;
       rows.forEach(function (entry) {
         var row = document.createElement("tr");
+        // The secondary label travels with the row rather than sitting in the
+        // caption: Decision 5 requires the peers' default parallel figures to
+        // be published and clearly labelled, and a caption claiming one thread
+        // policy for the whole table would be false the moment they are.
+        var label = entry.secondary
+          ? ' <span style="color:var(--color-muted);">(secondary)</span>' : "";
+        if (entry.joined) {
+          label += ' <span style="color:var(--color-muted);">(joined)</span>';
+        }
         row.innerHTML =
-          "<td>" + escapeHtml(entry.tool || "") + "</td>" +
+          "<td>" + escapeHtml(entry.tool || "") + label + "</td>" +
           "<td>" + escapeHtml(entry.scale || "") + "</td>" +
           "<td>" + escapeHtml(entry.threads || "") + "</td>" +
           '<td class="figure">' + fmtTime(entry.median_ns || 0) + "</td>" +
@@ -843,6 +859,23 @@
           "<td>" + escapeHtml(entry.version || "") + "</td>";
         body.appendChild(row);
       });
+      // Which rows were measured beside the Rue figure they divide, and which
+      // were joined from the last full peer leg. Peers re-measure on events,
+      // so most tables are a mixture, and the distinction is the difference
+      // between controlling for the machine and only controlling for the input.
+      var provenance = document.getElementById("rt-comparison-provenance");
+      if (provenance) {
+        var joined = rows.filter(function (entry) { return entry.joined; }).length;
+        var text = "Rue and the marked same-run peer were measured together at commit " +
+          shortHash(comparison.commit) + ", against fixture " + comparison.fixture + ".";
+        if (joined) {
+          text += " " + joined + " row" + (joined === 1 ? " was" : "s were") +
+            " joined from the most recent full peer run on the same fixture, which is " +
+            "why the peers are not re-measured on every commit; those rows control for " +
+            "the input but not for the machine.";
+        }
+        provenance.textContent = text;
+      }
     }
 
     // 6. Field notes: the annotated events ADR-0072 Decision 2 asks for.

@@ -1,0 +1,10 @@
+{{/* Hugo port of `website/templates/page.html`: the plain page. */}}
+{{ define "title" }}{{ .Title }} | {{ .Site.Title }}{{ end }}
+{{ define "main" }}
+<article class="py-12">
+    <div class="max-w-3xl mx-auto px-6 prose">
+        <h1>{{ .Title }}</h1>
+        {{ .Content }}
+    </div>
+</article>
+{{ end }}

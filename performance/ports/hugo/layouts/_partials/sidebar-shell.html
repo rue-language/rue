@@ -1,0 +1,75 @@
+{{/*
+  The two-column shell the specification, standard library, and tutorial pages
+  render into — Hugo's answer to the Tera ports' `spec/base.html`,
+  `std/base.html`, and `tutorial/base.html`.
+
+  Go templates have no second level of `extends`, so the shell is a partial the
+  four leaf layouts call rather than a base they inherit. Dict keys:
+
+    page      the page or section being rendered
+    root      the section whose tree the sidebar draws
+    title     the sidebar heading and its link text
+    search    whether to render the specification's search box
+    body      the already-rendered inner HTML
+    prevnext  whether to render the previous/next pair
+
+  Prev/next comes from `.PrevInSection`/`.NextInSection`, Hugo's own neighbours
+  within the section's ordering, which is the same relation Zola spells
+  `page.lower`/`page.higher`.
+*/}}
+{{- $page := .page -}}
+{{- $current := $page.Permalink -}}
+<div class="spec-layout">
+    <aside class="spec-sidebar">
+        <div class="spec-sidebar-inner">
+            <div class="spec-sidebar-header">
+                <a href="{{ .root.Permalink }}" class="spec-title">{{ .title }}</a>
+            </div>
+            {{ if .search }}
+            <div class="spec-search">
+                <div class="spec-search-input-wrapper">
+                    <input type="text" id="spec-search-input" placeholder="Search..." autocomplete="off">
+                    <kbd class="spec-search-shortcut"><span class="spec-search-shortcut-mod"></span>K</kbd>
+                </div>
+                <div id="spec-search-results" class="spec-search-results"></div>
+            </div>
+            {{ end }}
+            <nav class="spec-nav">
+                {{ partial "spec-nav.html" (dict "section" .root "current" $current) }}
+            </nav>
+        </div>
+    </aside>
+
+    <div class="spec-main">
+        <article class="spec-content{{ with .contentClass }} {{ . }}{{ end }}">
+            {{ .body }}
+        </article>
+
+        {{ if .prevnext }}
+        {{/*
+          Hugo's `.NextInSection` is the page BEFORE this one in the section's
+          ordering and `.PrevInSection` the one after — the opposite way round
+          from Zola's `page.lower`/`page.higher`, which is a genuine trap rather
+          than a naming quibble: read the obvious way, every specification page
+          in this port sent its reader backwards. The cross-tool comparison of
+          visible text is what caught it.
+        */}}
+        <nav class="spec-page-nav">
+            {{ with $page.NextInSection }}
+            <a href="{{ .Permalink }}" class="spec-nav-prev">
+                <span class="spec-nav-label">Previous</span>
+                <span class="spec-nav-title">{{ .Title }}</span>
+            </a>
+            {{ else }}
+            <span></span>
+            {{ end }}
+            {{ with $page.PrevInSection }}
+            <a href="{{ .Permalink }}" class="spec-nav-next">
+                <span class="spec-nav-label">Next</span>
+                <span class="spec-nav-title">{{ .Title }}</span>
+            </a>
+            {{ end }}
+        </nav>
+        {{ end }}
+    </div>
+</div>

@@ -1,0 +1,41 @@
+{#
+  The Zola port's feed, and the reason it exists at all is a fairness bug this
+  port shipped without it.
+
+  Zola falls back to its BUILT-IN feed template when a site provides none, and
+  that feed is a different job from the one the other two ports do: it renders
+  every post's full body into `<description>`, escaped, plus RFC-822 dates, a
+  `<generator>`, and author elements. On today's corpus that is 6,838 bytes
+  against 2,998 for gazette's and Hugo's — Markdown rendering and escaping of
+  eight whole posts that the other two tools never perform, growing with every
+  post added. The measured cost sits inside run-to-run noise at 1x today, but
+  the parity claim in `config.toml` was untrue, the difference scales with the
+  corpus, and it is the direction that flatters Rue.
+
+  The cross-tool feed check could not see it either: comparing `<link>` order
+  says nothing about what a `<description>` contains. That check now compares
+  which entries carry a description as well, so this cannot regress silently.
+
+  The shape mirrors `examples/gazette/templates/rss.xml` and the Hugo port's
+  `blog/section.rss.xml` deliberately: the feed is one of the outputs Decision 4
+  compares across tools, so the three should emit the same entries with the same
+  fields. `| safe` on URLs is required rather than stylistic — Tera escapes by
+  file type, and a permalink reaching a feed reader as `https:&#x2F;&#x2F;…` is
+  a link nobody can follow.
+#}<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+        <title>{{ config.title }}</title>
+        <link>{{ section.permalink | safe }}</link>
+        <description>{{ section.description | default(value=config.description) }}</description>
+        <language>en</language>
+        <atom:link href="{{ feed_url | safe }}" rel="self" type="application/rss+xml"/>
+{% for page in pages %}        <item>
+            <title>{{ page.title }}</title>
+            <pubDate>{{ page.date }}</pubDate>
+            <link>{{ page.permalink | safe }}</link>
+            <guid>{{ page.permalink | safe }}</guid>
+            <description>{{ page.description | default(value="") }}</description>
+        </item>
+{% endfor %}    </channel>
+</rss>

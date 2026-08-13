@@ -1,0 +1,11 @@
+{{/* Hugo port of `website/templates/tutorial/section.html`. */}}
+{{ define "title" }}{{ .Title }} - Learn Rue{{ end }}
+{{ define "main" }}
+{{ partial "sidebar-shell.html" (dict
+     "page" .
+     "root" (site.GetPage "/tutorial")
+     "title" "Learn Rue"
+     "search" false
+     "prevnext" false
+     "body" (partial "section-body.html" (dict "page" . "heading" "Chapters" "subsections" false))) }}
+{{ end }}

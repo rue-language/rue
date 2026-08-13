@@ -1,0 +1,22 @@
+{{/*
+  Hugo port of `website/templates/spec/section.html`.
+
+  A section that declares `redirect_to` renders through `layouts/redirect.html`
+  instead of this file — Hugo selects that by the `layout` key, which is Hugo's
+  own idiom for the choice Zola makes natively from `redirect_to` and gazette
+  makes by reaching for its `redirect.html`. `docs/spec/src/_index.md` is the
+  corpus's one case. Honouring the key at all is what keeps the three tools'
+  emitted file sets equal at `/spec/index.html` (Decision 4): refusing it would
+  leave a hole and rendering the section normally would put a page where the
+  peers serve a redirect.
+*/}}
+{{ define "title" }}{{ .Title }} - Rue Language Specification{{ end }}
+{{ define "main" }}
+{{ partial "sidebar-shell.html" (dict
+     "page" .
+     "root" (site.GetPage "/spec")
+     "title" "Rue Specification"
+     "search" true
+     "prevnext" false
+     "body" (partial "section-body.html" (dict "page" . "heading" "In this section" "subsections" true))) }}
+{{ end }}

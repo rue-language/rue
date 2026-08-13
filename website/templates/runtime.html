@@ -117,8 +117,8 @@
       </p>
       <p>
         The cross-segment signal ADR-0072 defines is the ratio of Rue's time to a
-        pinned peer tool's time on the same corpus. That needs the peer leg,
-        which is not collected yet — see below.
+        pinned peer tool's time on the same corpus, measured in the same run —
+        see the comparison below, and the caveats that travel with it.
       </p>
     </details>
     <figure style="margin-top: 0.75rem;">
@@ -214,6 +214,24 @@
           and pagination. The parity configurations are versioned in the
           repository beside the template ports.
         </p>
+        {#
+          The corpus modifications, disclosed here rather than only in the ADR
+          and the preparer's source. A reader told only about configuration
+          switches would reasonably assume the input was the site as it stands,
+          and one of these three is a place where Rue is the tool out of step.
+        #}
+        <p>
+          <strong>The corpus is modified before any tool sees it, identically
+          for all three.</strong> Two pages are removed — the performance and
+          runtime dashboards, whose templates read derived benchmark data, which
+          would make this benchmark an input to itself. The blog's
+          <code>paginate_by</code> key is stripped, because pagination is
+          outside the subset and only one tool would otherwise build a paginated
+          view. And three specification appendix filenames are lower-cased:
+          Zola and Hugo both route them the way the live site does, and gazette,
+          which does not slugify paths, is the tool out of step — so this one
+          hides a Rue gap rather than a peer quirk.
+        </p>
         <p>
           <strong>This compares a corpus-specialized Rue program against
           general-purpose tools.</strong> Gazette implements the subset of
@@ -223,13 +241,35 @@
           but a subset engine is structurally leaner than a general one, and no
           amount of validation removes that asymmetry.
         </p>
+        {#
+          The scale caveats live here, in the figure, for the same reason the
+          two captions above do: the rows are written by a script, and a table
+          with a 10x row in it must not be renderable without them. All three
+          are findings rather than hedges — the third was measured in Phase 4.
+        #}
+        <p>
+          <strong>The corpus-scale column is a page-count axis, not a
+          site-size one.</strong> The 10x rows build ten copies of the same
+          corpus under path prefixes, so per-page work scales while site shape
+          does not: internal links and section lookups still resolve into the
+          original tree, and cross-reference resolution stays constant.
+          A duplicated section also still redirects to the original target.
+          And the specification sidebar <em>collapses</em> on a duplicated page,
+          because a copy's permalink prefixes nothing in the original tree that
+          the section lookup returns — at 10x, 630 of 700 specification pages
+          render one 2,534-byte navigation where the 70 originals average 4,446.
+          A 10x row therefore understates per-page templating work relative to
+          1x, and cannot be read as "the 1x figure, times ten".
+        </p>
+        <p id="rt-comparison-provenance"></p>
       </figcaption>
     </figure>
     <p id="rt-comparison-empty" style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
-      No peer measurements have been collected yet. Gazette, the pinned Hugo
-      toolchain, and the parity configurations do not exist in the repository
-      yet; this table fills in when the cross-tool leg of collection first runs.
-      Nothing is estimated here in the meantime.
+      No peer measurements have been collected on this platform yet. The peer
+      leg runs when the recorded fixture identity, a pinned peer's version, or
+      the runner epoch changes, and the per-run canary rides every observation
+      after that; this table fills in with the first such run. Nothing is
+      estimated here in the meantime.
     </p>
 
     <h2 style="margin-top: 2.5rem;">Field notes</h2>

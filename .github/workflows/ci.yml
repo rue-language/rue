@@ -386,6 +386,26 @@ jobs:
       - name: Check the gazette template port and its spot goldens
         run: scripts/ci-timed "gazette goldens" -- scripts/gazette-corpus-diff.py golden
 
+      # The cross-tool work-equivalence check (ADR-0072 Decisions 3 and 4,
+      # RUE-1485). Builds the live corpus with gazette, the pinned Zola, and the
+      # pinned Hugo, and asserts the three emit the same file set, the same page
+      # count, and the same normalized page semantics.
+      #
+      # This is a CORRECTNESS lane, not a measurement one: it runs on a shared
+      # CI runner and its timings are discarded, exactly as the ADR's boundary
+      # discipline requires of anything not taken on the pinned regime. What it
+      # exists to catch is drift in the parity configurations and the template
+      # ports — a peer left doing work gazette skips, or a port quietly doing
+      # less — which is the failure that would make the published comparison
+      # dishonest rather than merely wrong, and which nothing else checks before
+      # the numbers are already collected. Two samples per tool, because
+      # determinism needs at least two; the peers' default-parallel row is
+      # skipped because it answers a measurement question, not this one.
+      - name: Check cross-tool work equivalence against pinned Zola and Hugo
+        run: >-
+          scripts/ci-timed "gazette peers" --
+          scripts/gazette-corpus-diff.py peers --samples 2 --no-secondary
+
       - name: Run explicit cross-backend compilation and encoding coverage
         # Both the x86-64 and AArch64 encoders are host-independent Rust tests.
         # Keep this named step visible even though the broad suite also reaches

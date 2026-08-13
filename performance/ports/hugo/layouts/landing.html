@@ -1,0 +1,10 @@
+{{/*
+  The landing page as an ordinary section layout, for the duplicated roots the
+  scale variants create (`x10-00/_index.md` and its siblings). Hugo renders the
+  site root through `home.html`; these are sections to it, and without this they
+  rendered as plain section listings while gazette and Zola built the whole
+  landing page — a page class per copy, skipped.
+*/}}
+{{ define "main" }}
+{{ partial "landing.html" . }}
+{{ end }}
