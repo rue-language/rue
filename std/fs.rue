@@ -25,14 +25,18 @@
 // Buffering and stdin/stdout unification remain deferred (out of ADR-0057 scope).
 //
 // PER-TARGET STAT LAYOUT: `stat` is the fiddliest v1 piece because the kernel's
-// `struct stat` byte layout differs per OS AND per arch. This module decodes
-// only two fields (st_mode, st_size) at documented offsets (see the stat
-// section below). x86-64-linux and aarch64-linux offsets are exercised by CI
-// here; the macOS 64-bit-inode offsets and Darwin stat/at-syscall numbers are
-// the DOCUMENTED, NOT-YET-CI-VERIFIED follow-up (this host is Linux). New v1
-// CLI cases are therefore `only_on` the two Linux targets, mirroring how v0's
-// error-detection cases were Linux-scoped until a macOS device could confirm.
-// Darwin stat decoding is in fact broken today — the open issue is RUE-1487.
+// `struct stat` byte layout differs per OS AND per arch, and a trap number and a
+// field-offset table that disagree produce plausible garbage rather than an
+// error. This module decodes only two fields (st_mode, st_size) at documented
+// offsets (see the stat section below).
+//
+// Darwin exposes BOTH inode widths as separate traps: `fstat`/`fstatat` fill the
+// legacy 32-bit-inode `struct stat`, while `fstat64`/`fstatat64` fill the
+// 64-bit-inode layout. The offsets here (st_mode @4, st_size @96) are the
+// 64-bit-inode layout, so `_sys_fstat` and `_sys_newfstatat` must both select
+// the `*64` trap; pairing them with the 32-bit-inode trap decodes unrelated
+// bytes and reports size 0 for every file. The macOS rows are exercised by the
+// `fs_stat_`/`fs_metadata_` CLI cases, which run on aarch64-macos.
 //
 // PATHS are byte-string `StrBuf`s; the syscall boundary copies the bytes into a
 // NUL-terminated buffer and never exposes that terminator to the caller.
@@ -41,17 +45,14 @@
 // escapes. Linux and macOS give the same logical error different integers
 // (e.g. EAGAIN is 11 on Linux, 35 on macOS), so the tables are per-OS.
 //
-// PLATFORM ERROR-DETECTION CAVEAT (ADR-0057, "macOS error-detection gap"):
-// error detection here relies on a failed syscall returning `-errno` (a
-// negative value). Linux does exactly that. macOS/Darwin instead returns a
-// POSITIVE errno and signals failure with the carry flag — and the current
-// `@syscall` codegen lowering discards the carry flag (it just moves x0),
-// so on macOS a failed syscall is indistinguishable from a success that
-// returns a small value (a failed openat returning ENOENT=2 looks exactly
-// like a successful openat returning fd 2). Success paths are correct on
-// macOS; error DETECTION is not, until the `@syscall` lowering is taught to
-// negate-on-carry the way the Rust runtime wrappers already do. Tracked as a
-// codegen follow-up (see ADR-0057). Linux behavior is correct and CI-validated.
+// ERROR DETECTION relies on a failed syscall returning `-errno` (a negative
+// value), which is the Linux convention directly. macOS/Darwin instead returns
+// a POSITIVE errno and signals failure with the carry flag, so a raw Darwin
+// return is ambiguous on its own — a failed openat returning ENOENT=2 is
+// bit-identical to a successful openat returning fd 2. The `@syscall` lowering
+// closes that gap in codegen rather than here: on Mach-O it branches on carry
+// after the trap and negates x0, so every target this module compiles for
+// presents the same negative-errno convention (RUE-945).
 
 const result = @import("result.rue");
 const option = @import("option.rue");
@@ -198,7 +199,7 @@ fn _sys_write() -> u64 {
 }
 
 // lseek(2) — reposition the file offset. Linux: 8 (x86-64), 62 (aarch64,
-// asm-generic). macOS raw BSD trap 199 (DOCUMENTED, not CI-verified here).
+// asm-generic). macOS raw BSD trap 199.
 fn _sys_lseek() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -217,7 +218,8 @@ fn _sys_lseek() -> u64 {
 }
 
 // fstat(2) — stat an open fd. Linux: 5 (x86-64), 80 (aarch64). macOS raw BSD
-// fstat64 trap 339 (DOCUMENTED, not CI-verified — see the stat-layout note).
+// `fstat64` trap 339: the 64-bit-inode variant, matching the field offsets this
+// module decodes (see the stat-layout note at the top of this file).
 fn _sys_fstat() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -237,20 +239,23 @@ fn _sys_fstat() -> u64 {
 
 // newfstatat(2)/fstatat — stat a path relative to a dirfd. Used uniformly with
 // AT_FDCWD for path-based stat (aarch64 Linux has no bare `stat`, exactly like
-// openat). Linux: 262 (x86-64), 79 (aarch64). macOS raw BSD fstatat trap 469
-// (DOCUMENTED, not CI-verified).
+// openat). Linux: 262 (x86-64), 79 (aarch64). macOS raw BSD `fstatat64` trap
+// 470 — the 64-bit-inode variant, matching the layout `_stat_mode_offset`/
+// `_stat_size_offset` decode and pairing with the `fstat64` trap `_sys_fstat`
+// uses. Darwin also has a `fstatat` trap at 469, but that one fills the legacy
+// 32-bit-inode `struct stat`, whose fields sit at different offsets.
 fn _sys_newfstatat() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
             match @target_os() {
                 Os.Linux => 262,
-                Os.Macos => 469,
+                Os.Macos => 470,
             }
         },
         Arch.Aarch64 => {
             match @target_os() {
                 Os.Linux => 79,
-                Os.Macos => 469,
+                Os.Macos => 470,
             }
         },
     }
@@ -258,7 +263,7 @@ fn _sys_newfstatat() -> u64 {
 
 // renameat(2) — rename oldpath to newpath, both relative to a dirfd. Used with
 // AT_FDCWD for both ends. Linux: 264 (x86-64), 38 (aarch64). macOS raw BSD
-// renameat trap 465 (DOCUMENTED, not CI-verified).
+// renameat trap 465.
 fn _sys_renameat() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -279,7 +284,7 @@ fn _sys_renameat() -> u64 {
 // unlinkat(2) — remove a path relative to a dirfd; with AT_REMOVEDIR it removes
 // a directory instead of a file. Used with AT_FDCWD for both `remove` and
 // `remove_dir`. Linux: 263 (x86-64), 35 (aarch64). macOS raw BSD unlinkat trap
-// 472 (DOCUMENTED, not CI-verified).
+// 472.
 fn _sys_unlinkat() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -298,8 +303,7 @@ fn _sys_unlinkat() -> u64 {
 }
 
 // mkdirat(2) — create a directory relative to a dirfd. Used with AT_FDCWD.
-// Linux: 258 (x86-64), 34 (aarch64). macOS raw BSD mkdirat trap 475
-// (DOCUMENTED, not CI-verified).
+// Linux: 258 (x86-64), 34 (aarch64). macOS raw BSD mkdirat trap 475.
 fn _sys_mkdirat() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -368,6 +372,9 @@ fn _o_creat() -> u64 {
     }
 }
 
+// Pinned by `fs_create_truncates_longer_existing_file`, which is the only case
+// that creates over a LONGER existing file — the one shape where a wrong value
+// is observable, as a stale tail behind the new contents.
 fn _o_trunc() -> u64 {
     match @target_os() {
         Os.Linux => 512,  // 0o1000
@@ -414,9 +421,15 @@ fn _o_append() -> u64 {
 // changes, dropping the flag entirely would be invisible to a test, so `read_dir`
 // on a regular file pins the behavior and not this constant.
 //
-// The constant itself is pinned by `read_dir_through_a_directory_symlink`, which
-// is what caught the swap above: a wrong value here fails a listing THROUGH a
-// symlinked directory while leaving every error path looking correct.
+// The LINUX rows are pinned by `read_dir_through_a_directory_symlink`, which is
+// what caught the swap above: a wrong value there fails a listing THROUGH a
+// symlinked directory while leaving every error path looking correct. That works
+// because a wrong aarch64 value is O_DIRECT, which the open rejects outright.
+//
+// The macOS row is NOT pinned — Darwin has no O_DIRECT for a wrong value to
+// collide with, so a bad flag is simply ignored and every case still passes.
+// It is header-checked (BSD 0x00100000 on both arches) and unvalidated by test,
+// like `_at_symlink_nofollow` below.
 fn _o_directory() -> u64 {
     match @target_arch() {
         Arch.X86_64 => {
@@ -441,8 +454,7 @@ fn _create_mode() -> u64 { 420 }
 fn _dir_mode() -> u64 { 493 }
 
 // AT_REMOVEDIR: the unlinkat flag that makes it remove a directory (like rmdir)
-// instead of a file. Linux 0x200=512 (asm-generic, both arches); macOS 0x80=128
-// (DOCUMENTED, not CI-verified).
+// instead of a file. Linux 0x200=512 (asm-generic, both arches); macOS 0x80=128.
 fn _at_removedir() -> u64 {
     match @target_os() {
         Os.Linux => 512,
@@ -451,7 +463,10 @@ fn _at_removedir() -> u64 {
 }
 
 // AT_SYMLINK_NOFOLLOW: the *at flag that stats the LINK rather than its target.
-// Linux 0x100=256; macOS 0x0020=32 (DOCUMENTED, not CI-verified). Genuinely
+// Linux 0x100=256; macOS 0x0020=32. Header-checked but NOT pinned by a test on
+// any target: its only caller is the DT_UNKNOWN fallback below, and every
+// filesystem CI runs on (ext4, tmpfs, APFS) populates `d_type`, so no case
+// reaches it. Treat a change here as unvalidated. Genuinely
 // arch-independent on Linux, unlike the `O_*` flags: the `AT_*` values live in
 // `include/uapi/linux/fcntl.h`, which has no per-arch variant to override them
 // (see `_o_directory` for the flags that do). Used only by the
@@ -494,7 +509,8 @@ fn _i64_bits(x: i64) -> u64 {
 //     st_mode  unsigned int  @ 16     st_size  long  @ 48
 //   macOS (Darwin `struct stat`, _DARWIN_FEATURE_64_BIT_INODE, sys/stat.h):
 //     st_mode  __uint16_t    @ 4      st_size  __int64_t  @ 96
-//     (DOCUMENTED, not CI-verified on this Linux host.)
+//     Filled by the `fstat64`/`fstatat64` traps only — see the stat-layout note
+//     at the top of this file for the 32-bit-inode traps these must not use.
 //
 // st_mode is read as a little-endian u16 (the file-type bits fit the low 16
 // bits on every target); st_size is read as a little-endian u64.
@@ -1172,12 +1188,6 @@ pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
 // `FileKind.Other` rather than failing the whole listing; `Other` is the "not a
 // file, not a directory, do not descend" answer, which is the safe reading of an
 // entry that no longer exists.
-//
-// KNOWN LIMIT OF THAT FALLBACK ON macOS. Darwin `stat` decoding is broken here —
-// the open issue is RUE-1487, and the stat-layout note at the top of this file
-// has the details — so a DT_UNKNOWN entry on macOS degrades to `FileKind.Other`
-// rather than resolving. APFS and HFS+ both populate `d_type`, so the fallback
-// is unreachable there in practice; the Linux path is unaffected.
 //
 // ORDERING IS PART OF THE CONTRACT, not a nicety (ADR-0072 Decision 6): the
 // kernel returns entries in filesystem order, which varies with creation history

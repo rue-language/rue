@@ -283,9 +283,9 @@ Implemented under RUE-712 on 2026-07-16:
 ### Negative
 - Syscall-number, open-flag, and errno tables are hand-maintained per target; a
   new target adds rows to all three.
-- **macOS error detection is broken until the `@syscall` lowering negates on the
-  Darwin carry flag** (§3a) — a real hole, scoped out of RUE-712 and filed as a
-  codegen follow-up; macOS error tests are Linux-gated meanwhile.
+- Correct error detection depends on the `@syscall` lowering normalizing
+  Darwin's carry flag into the negative-errno convention (§3a). That landed in
+  RUE-945, so the tables here are read the same way on every target.
 - Until RUE-591, an ignored `close()` `Result` is silently dropped.
 - v0 is minimal: no seek/stat/dirs/rename/buffering.
 - The buffer API is on `ArrayBuf(u8)` and pays a temporary-copy per read/write;

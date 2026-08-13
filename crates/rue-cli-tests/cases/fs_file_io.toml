@@ -4,9 +4,16 @@
 # create/remove. The `fs_mkdir_` group also covers `create_dir_all` (RUE-995):
 # nested creation, idempotent re-creation, the separator shapes its byte scan has
 # to collapse, and the EEXIST-but-not-a-directory case.
-# They are `only_on` the two Linux targets: this repo's CI host is
-# Linux, and the macOS `struct stat` layout plus the Darwin *at/stat syscall
-# numbers are the DOCUMENTED, not-yet-device-verified follow-up (see std/fs.rue).
+# They are UNGATED, like the v0 group, because each one issues a syscall whose
+# number and struct layout are per-target data in std/fs.rue and only an
+# executing lane pins that table. They carried an `only_on` Linux gate until
+# RUE-1487: `_sys_newfstatat` selected Darwin's 32-bit-inode `fstatat` trap
+# against 64-bit-inode field offsets, so `fs.metadata` reported size 0 and
+# neither is_file nor is_dir for every path on macOS, and the gate meant no lane
+# ever ran the case that would have said so.
+# Naming the three current targets explicitly would reintroduce that failure in
+# slower motion: a fourth target would be SKIPPED by an unmatched `only_on`
+# rather than run, which is the same silence. No gate fails loudly instead.
 # Seek offsets are bound to an `i64` value before the call to dodge a caller-side
 # literal-typing limitation for imported functions (see File.seek's doc comment).
 #
@@ -19,13 +26,10 @@
 # AT_FDCWD, and errno tables are all selected by a @target_arch()/@target_os()
 # match, with no Rust runtime helper. The success-path cases run on every target
 # (openat/read/write/close all return non-error values that are interpreted the
-# same way everywhere). The ERROR-DETECTION cases run on every target too:
-# a failed syscall uniformly returns -errno since RUE-945 normalized Darwin's
-# carry-flag convention in the @syscall lowering, and the
-# current @syscall lowering discards the carry flag, so a failed syscall is
-# indistinguishable from a small-valued success on macOS (ADR-0057, "macOS
-# error-detection gap"; codegen follow-up tracked separately). Linux error paths
-# are correct and validated here on Linux CI.
+# same way everywhere). The ERROR-DETECTION cases run on every target too: a
+# failed syscall uniformly returns -errno, because the @syscall lowering
+# normalizes Darwin's carry-flag convention into the negative-errno one
+# (RUE-945).
 
 [section]
 id = "cli.fs_file_io"
@@ -121,6 +125,63 @@ fn main() -> i32 {
     if inb.get_or(1, 0) != 66 { return 72; }
     if inb.get_or(2, 0) != 67 { return 73; }
     if inb.get_or(3, 0) != 68 { return 74; }
+    @intCast(nr)
+}
+""" }]
+exit_code = 4
+
+# O_TRUNC: `File.create` over a LONGER existing file must discard the old
+# contents, not overwrite them in place. Write 12 'L' bytes, close, then create
+# the same path again and write 4 'S' bytes. A correct O_TRUNC leaves a 4-byte
+# file; a wrong or absent one leaves 12 bytes — "SSSS" followed by 8 stale 'L's —
+# so the read count alone separates the two. This is the ONLY case that pins
+# `_o_trunc`: every other create here writes over a shorter file or a new path,
+# where truncation changes nothing observable (RUE-1487).
+[[case]]
+name = "fs_create_truncates_longer_existing_file"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("trunc.dat");
+
+    // 12 'L' bytes.
+    let mut long = Buf.new();
+    let mut i: u64 = 0;
+    while i < 12 { long.push(76); i = i + 1; }
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 81; } };
+    match f.write_all(borrow long) { CR.Ok(_u) => {}, CR.Err(_e) => { return 82; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 83; } };
+
+    // 4 'S' bytes over the same path: O_TRUNC must drop the other 8.
+    let mut short = Buf.new();
+    let mut j: u64 = 0;
+    while j < 4 { short.push(83); j = j + 1; }
+    let mut g = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 84; } };
+    match g.write_all(borrow short) { CR.Ok(_u) => {}, CR.Err(_e) => { return 85; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 86; } };
+
+    let mut h = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 87; } };
+    let mut inb = Buf.with_capacity(64);
+    let nr = match h.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 88; } };
+    match h.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 89; } };
+
+    // Exactly the 4 new bytes, with no stale tail behind them.
+    if nr != 4 { return 70; }
+    let mut k: u64 = 0;
+    while k < nr {
+        if inb.get_or(k, 0) != 83 { return 71; }
+        k = k + 1;
+    }
     @intCast(nr)
 }
 """ }]
@@ -445,7 +506,6 @@ exit_code = 0
 # it. Exit code is the read count (6).
 [[case]]
 name = "fs_seek_set_read_back"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -492,7 +552,6 @@ exit_code = 6
 # value first (caller literal-typing limitation). Exit code is the final offset (7).
 [[case]]
 name = "fs_seek_cur_end_relative"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -539,7 +598,6 @@ exit_code = 7
 # size==13, is_file()==true, is_dir()==false. Exit code is the reported size (13).
 [[case]]
 name = "fs_stat_size_and_is_file"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -576,7 +634,6 @@ exit_code = 13
 # path — size==9 and is_file. Exit code is the size (9).
 [[case]]
 name = "fs_metadata_by_path_size"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -612,7 +669,6 @@ exit_code = 9
 # back. Exit code 0 on the full success path.
 [[case]]
 name = "fs_rename_old_gone_new_present"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -661,7 +717,6 @@ exit_code = 0
 # NotFound. Exit code 0 on the full success path.
 [[case]]
 name = "fs_remove_file_then_open_notfound"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -697,7 +752,6 @@ exit_code = 0
 # the full success path.
 [[case]]
 name = "fs_mkdir_stat_is_dir_then_rmdir"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -733,7 +787,6 @@ exit_code = 0
 # does. Exit code is the read count so a short read cannot pass as success.
 [[case]]
 name = "fs_mkdir_then_file_roundtrip_inside"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -787,7 +840,6 @@ exit_code = 14
 # through the full nested path. The trailing byte check is 'd' (100) of "deep".
 [[case]]
 name = "fs_mkdir_all_nested_levels_usable"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -850,7 +902,6 @@ exit_code = 0
 # unified them would flip exactly one of these @dbg lines.
 [[case]]
 name = "fs_mkdir_double_create_flat_errs_recursive_ok"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -887,7 +938,6 @@ exit_code = 0
 # anything, and the empty path must be NotFound rather than a silent success.
 [[case]]
 name = "fs_mkdir_all_separator_shapes"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
@@ -930,7 +980,6 @@ exit_code = 0
 # behind the EEXIST check, the second match here would wrongly report Ok.
 [[case]]
 name = "fs_mkdir_all_file_in_the_way_errs"
-only_on = ["x86-64-linux", "aarch64-linux"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 files = [{ path = "main.rue", source = """
 const std = @import("std");
