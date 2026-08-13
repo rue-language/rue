@@ -317,8 +317,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // constrained and an integer payload literal defaulted to `i32`
         // (RUE-599). Runs before the lazy-method collection below so methods
         // registered while reducing a head are included in it.
-        let inline_ctor_head_types =
-            self.precompute_inline_ctor_head_types(type_subst, value_subst, &comptime_local_types);
+        let inline_ctor_head_types = self.precompute_inline_ctor_head_types(
+            body,
+            type_subst,
+            value_subst,
+            &comptime_local_types,
+        );
         let precompute_ns = elapsed_ns(precompute_started);
 
         // Demand-population provider for the inference-context families

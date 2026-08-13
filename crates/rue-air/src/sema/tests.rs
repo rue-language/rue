@@ -195,6 +195,43 @@ mod tests {
         (rir, interner)
     }
 
+    #[test]
+    fn inline_constructor_precompute_candidates_are_scoped_to_the_requested_body() {
+        let source = r#"
+            fn Pair(comptime T: type) -> type { struct { value: T } }
+            fn first() -> i32 {
+                let value = Pair(i32) { value: 1 };
+                value.value
+            }
+            fn second() -> i64 {
+                let value = Pair(i64) { value: 2 };
+                value.value
+            }
+        "#;
+        let (rir, interner) = lower_files(&[(source, FileId::DEFAULT)]);
+        let body = |source_name: &str| {
+            rir.iter()
+                .find_map(|(_, inst)| match inst.data {
+                    InstData::FnDecl { name, body, .. }
+                        if interner.resolve(&name) == source_name =>
+                    {
+                        Some(body)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("missing {source_name} body"))
+        };
+
+        let first = crate::sema::comptime_eval::inline_ctor_head_candidates(&rir, body("first"));
+        let second = crate::sema::comptime_eval::inline_ctor_head_candidates(&rir, body("second"));
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_ne!(first, second);
+        assert!(matches!(rir.get(first[0]).data, InstData::Call { .. }));
+        assert!(matches!(rir.get(second[0]).data, InstData::Call { .. }));
+    }
+
     fn authoritative_test_endpoints(
         shells: &[crate::SemanticDeclarationShell],
     ) -> (

@@ -2419,20 +2419,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// skipped and sema diagnoses them later) and returns the reductions
     /// keyed by the head's own `InstRef` for the generator to look up.
     ///
-    /// The scan covers the whole RIR, not just the current body: heads
-    /// belonging to other functions evaluate under this function's
-    /// substitutions, but their keys are `InstRef`s this body's constraint
-    /// generation never visits, and reduction is idempotent (specializations
-    /// are cached, anonymous types dedup structurally), so stray entries are
-    /// inert. `comptime_local_types` carries the body's `let`-bound type
-    /// aliases so a head like `Result(T, i32)` with `let T = i64;` reduces.
-    ///
-    /// Runs on every compile (inline type-constructor heads are stable since
-    /// RUE-598). Cache the candidate scan if it shows up in `--time-passes`.
+    /// The scan follows only instructions reachable from this body and stops
+    /// at nested declaration owners. A module RIR contains every body in that
+    /// source file; scanning that whole arena once per body would multiply
+    /// unrelated work by the number of declarations in the module.
+    /// `comptime_local_types` carries the body's `let`-bound type aliases so a
+    /// head like `Result(T, i32)` with `let T = i64;` reduces.
     ///
     /// [`precompute_comptime_type_locals`]: Sema::precompute_comptime_type_locals
     pub(crate) fn precompute_inline_ctor_head_types(
         &mut self,
+        body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
         comptime_local_types: &HashMap<Spur, Type>,
@@ -2443,22 +2440,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // struct literal's explicit `ctor_head`. Runtime shapes like
         // `foo(x).bar()` are collected too but fail the reduction cheaply
         // (the comptime engine rejects callees with runtime parameters).
-        let candidates: Vec<InstRef> = self
-            .body_rir_ref()
-            .iter()
-            .filter_map(|(_, inst)| match inst.data {
-                InstData::MethodCall { receiver, .. } => matches!(
-                    self.body_rir_ref().get(receiver).data,
-                    InstData::Call { .. } | InstData::MethodCall { .. }
-                )
-                .then_some(receiver),
-                InstData::StructInit {
-                    ctor_head: Some(head),
-                    ..
-                } => Some(head),
-                _ => None,
-            })
-            .collect();
+        let candidates = inline_ctor_head_candidates(self.body_rir_ref(), body);
         let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         eval_types.extend(comptime_local_types);
         let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
@@ -2473,4 +2455,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         reduced
     }
+}
+
+pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
+    let mut pending = vec![body];
+    let mut candidates = Vec::new();
+    let mut children = Vec::new();
+
+    while let Some(current) = pending.pop() {
+        if current != body
+            && matches!(
+                rir.get(current).data,
+                InstData::FnDecl { .. }
+                    | InstData::DropFnDecl { .. }
+                    | InstData::StructDecl { .. }
+                    | InstData::EnumDecl { .. }
+                    | InstData::AnonStructType { .. }
+                    | InstData::AnonEnumType { .. }
+            )
+        {
+            continue;
+        }
+
+        match rir.get(current).data {
+            InstData::MethodCall { receiver, .. } => {
+                if matches!(
+                    rir.get(receiver).data,
+                    InstData::Call { .. } | InstData::MethodCall { .. }
+                ) {
+                    candidates.push(receiver);
+                }
+            }
+            InstData::StructInit {
+                ctor_head: Some(head),
+                ..
+            } => candidates.push(head),
+            _ => {}
+        }
+
+        children.clear();
+        rir.child_instructions(current, &mut children);
+        pending.extend(children.iter().copied());
+    }
+
+    candidates.sort_unstable_by_key(|candidate| candidate.as_u32());
+    candidates.dedup();
+    candidates
 }
