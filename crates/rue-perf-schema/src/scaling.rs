@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 18;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 19;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -209,6 +209,9 @@ pub struct CompilerWork {
     /// Logical retained-charge bookkeeping for CFG artifacts.
     #[serde(default)]
     pub cfg_retained_charge: CfgRetainedChargeWork,
+    /// Aggregate size of the rooted body-local semantic domains retained by CFG.
+    #[serde(default)]
+    pub cfg_local_epoch: CfgLocalEpochWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
 }
@@ -328,6 +331,35 @@ pub struct CfgRetainedChargeWork {
     pub interner_entries_scanned: u64,
     /// UTF-8 symbol bytes visited by those retained-charge walks.
     pub interner_utf8_bytes_scanned: u64,
+}
+
+/// Aggregate size of rooted body-local semantic domains retained by CFG.
+///
+/// These values come from constant-time container and payload-store accounting;
+/// collecting them does not add a second traversal of the local epoch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CfgLocalEpochWork {
+    /// Rooted CFG records carrying local semantic domains.
+    pub epochs: u64,
+    /// AIR instructions consumed across local epochs.
+    pub air_instructions: u64,
+    /// Logical bytes in AIR's variable-width payload stores.
+    pub air_payload_bytes: u64,
+    /// Entries in body-local type pools.
+    pub type_entries: u64,
+    /// Stable aliases for body-local aggregate types.
+    pub aggregate_type_aliases: u64,
+    /// Explicit caller-owned type handles imported for mandatory splices.
+    pub materialized_type_handles: u64,
+    /// Entries in body-local symbol interners.
+    pub interner_entries: u64,
+    /// UTF-8 bytes in body-local symbol interners.
+    pub interner_utf8_bytes: u64,
+    /// String-literal slots retained by local epochs.
+    pub strings: u64,
+    /// Stable relocation atoms retained by local epochs.
+    pub local_atoms: u64,
 }
 
 /// Deterministic work performed by database-owned semantic reachability.
@@ -524,5 +556,13 @@ question = "small maintained compiler frontend"
         assert_eq!(decoded.modules_selected, 0);
         assert_eq!(decoded.builtin_nominals_selected, 0);
         assert_eq!(decoded.required_types_selected, 0);
+    }
+
+    #[test]
+    fn older_compiler_work_defaults_local_epoch_accounting() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        encoded.as_object_mut().unwrap().remove("cfg_local_epoch");
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.cfg_local_epoch, CfgLocalEpochWork::default());
     }
 }

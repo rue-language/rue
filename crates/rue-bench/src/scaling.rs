@@ -860,6 +860,28 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Rooted CFG local semantic domains\n\n");
+    out.push_str("Counts are exact aggregate sizes of the body-local semantic domains retained by rooted CFG records. They are read from constant-time container and payload-store accounting, so observation does not add a second domain traversal. AIR remains the exact construction input; accessor-expanded records report their final rooted type, symbol, string, and atom domains.\n\n");
+    out.push_str("| workload | epochs | AIR instructions/payload bytes | type entries | aggregate aliases | splice type handles | interner entries/UTF-8 bytes | strings | local atoms |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.cfg_local_epoch;
+        out.push_str(&format!(
+            "| {} | {} | {}/{} | {} | {} | {} | {}/{} | {} | {} |\n",
+            observation.workload,
+            work.epochs,
+            work.air_instructions,
+            work.air_payload_bytes,
+            work.type_entries,
+            work.aggregate_type_aliases,
+            work.materialized_type_handles,
+            work.interner_entries,
+            work.interner_utf8_bytes,
+            work.strings,
+            work.local_atoms,
+        ));
+    }
+
     out.push_str("\n## CFG prerequisite work\n\n");
     out.push_str("Counts are exact for stable types reached from body-local CFG domains and the unique registered prerequisite requests issued before AIR-to-CFG construction. `requests/type` exposes query traffic independently of elapsed time. Drop-glue terminals transitively observe their exact type-fact terminals; direct type-fact requests remain separate here so duplicate parent edges stay visible.\n\n");
     out.push_str("| workload | stable types scanned | layout requests | type-fact requests | drop-glue requests | requests/type |\n");
@@ -1101,6 +1123,18 @@ mod tests {
                         interner_entries_scanned: 31,
                         interner_utf8_bytes_scanned: 127,
                     },
+                    cfg_local_epoch: rue_perf_schema::CfgLocalEpochWork {
+                        epochs: 4,
+                        air_instructions: 128,
+                        air_payload_bytes: 131,
+                        type_entries: 137,
+                        aggregate_type_aliases: 139,
+                        materialized_type_handles: 149,
+                        interner_entries: 151,
+                        interner_utf8_bytes: 157,
+                        strings: 163,
+                        local_atoms: 167,
+                    },
                     query_runtime: rue_perf_schema::QueryRuntimeWork {
                         claims: 41,
                         reuses: 43,
@@ -1161,6 +1195,9 @@ mod tests {
         assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("CFG materialization preparation"));
         assert!(rendered.contains("selections/build"));
+        assert!(rendered.contains("Rooted CFG local semantic domains"));
+        assert!(rendered.contains("128/131"));
+        assert!(rendered.contains("151/157"));
         assert!(rendered.contains("CFG retained-charge bookkeeping"));
         assert!(rendered.contains("UTF-8 bytes scanned"));
         assert!(rendered.contains("Query display identities"));
