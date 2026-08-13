@@ -21648,6 +21648,16 @@ impl<'a> CompilerBodyDurableSource<'a> {
     }
 }
 
+fn unique_named_member_candidate<D>(
+    candidates: Vec<rue_air::MemberCandidate<D>>,
+) -> Option<rue_air::MemberCandidate<D>> {
+    // Uniqueness spans the complete method + associated-function namespace;
+    // selecting within either receiver class first would hide mixed ambiguity.
+    let mut candidates = candidates.into_iter();
+    let candidate = candidates.next()?;
+    candidates.next().is_none().then_some(candidate)
+}
+
 impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
     for CompilerBodyDurableSource<'_>
 {
@@ -21747,25 +21757,18 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
         current: &crate::StableDefinitionKey,
         owner: &str,
         name: &str,
-        has_self: bool,
-    ) -> Option<crate::StableDefinitionKey> {
+    ) -> Option<(crate::StableDefinitionKey, bool)> {
         use rue_air::BodyFactProvider;
         let receiver = ReceiverTypeIdentity::new(
             current.module().clone(),
             owner,
             crate::declaration_candidate::DeclarationCandidateCategory::Struct,
         );
-        let mut candidates = self
-            .provider
-            .method_candidates(&receiver, name)
-            .into_iter()
-            .filter(|candidate| candidate.has_self_receiver == has_self);
-        let candidate = candidates.next()?;
-        if candidates.next().is_some() {
-            return None;
-        }
+        let candidate =
+            unique_named_member_candidate(self.provider.method_candidates(&receiver, name))?;
+        let has_self = candidate.has_self_receiver;
         let identity = self.provider.declaration_identity(&candidate.declaration)?;
-        Some(identity.key)
+        Some((identity.key, has_self))
     }
 
     fn root_module_binding(
@@ -32516,6 +32519,102 @@ fn main() -> i32 {
         assert!(
             outcome.result,
             "the durable source must not rebuild an equivalent function-parameter vector"
+        );
+    }
+
+    #[test]
+    fn durable_named_member_resolves_each_unique_candidate_with_one_probe() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Counter { value: i32, \
+                 fn get(borrow self) -> i32 { self.value } \
+                 fn make(value: i32) -> Counter { Counter { value: value } } }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let counter = crate::StableDefinitionKey::from_stable_parts(
+            ModuleId::from_logical_path("main.rue").unwrap(),
+            crate::StableDefinitionNamespace::Type,
+            crate::StableDefinitionKind::Struct,
+            Arc::from("Counter"),
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "durable-named-member-single-probes",
+            move |provider| {
+                let before = provider
+                    .meter()
+                    .method_candidates
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let source = CompilerBodyDurableSource::with_anonymous(provider, &[], None);
+                let get = rue_air::DurableBodyLookupSource::named_member(
+                    &source, &counter, "Counter", "get",
+                );
+                let make = rue_air::DurableBodyLookupSource::named_member(
+                    &source, &counter, "Counter", "make",
+                );
+                let after = provider
+                    .meter()
+                    .method_candidates
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                (get, make, after - before)
+            },
+        );
+        let (get, make, probes) = outcome.result;
+        let (get, get_has_self) = get.expect("the sole instance method resolves");
+        assert_eq!(get.kind(), crate::StableDefinitionKind::Method);
+        assert!(get_has_self);
+        let (make, make_has_self) = make.expect("the sole associated function resolves");
+        assert_eq!(make.kind(), crate::StableDefinitionKind::AssociatedFunction);
+        assert!(!make_has_self);
+        assert_eq!(probes, 2, "each member name performs one candidate probe");
+    }
+
+    #[test]
+    fn durable_named_member_rejects_every_multi_candidate_shape() {
+        fn candidate(declaration: u8, has_self_receiver: bool) -> rue_air::MemberCandidate<u8> {
+            rue_air::MemberCandidate {
+                declaration,
+                name: Arc::from("conflict"),
+                has_self_receiver,
+                kind: if has_self_receiver {
+                    rue_air::MemberKind::Method
+                } else {
+                    rue_air::MemberKind::AssociatedFunction
+                },
+                is_public: false,
+            }
+        }
+
+        let sole_instance = unique_named_member_candidate(vec![candidate(1, true)])
+            .expect("one instance method is unique");
+        assert!(sole_instance.has_self_receiver);
+        let sole_static = unique_named_member_candidate(vec![candidate(2, false)])
+            .expect("one associated function is unique");
+        assert!(!sole_static.has_self_receiver);
+        assert!(
+            unique_named_member_candidate::<u8>(Vec::new()).is_none(),
+            "an absent member does not resolve"
+        );
+        assert!(
+            unique_named_member_candidate(vec![candidate(3, true), candidate(4, true)]).is_none(),
+            "two instance methods are ambiguous"
+        );
+        assert!(
+            unique_named_member_candidate(vec![candidate(5, false), candidate(6, false)]).is_none(),
+            "two associated functions are ambiguous"
+        );
+        assert!(
+            unique_named_member_candidate(vec![candidate(7, true), candidate(8, false)]).is_none(),
+            "an instance/static pair is ambiguous"
         );
     }
 

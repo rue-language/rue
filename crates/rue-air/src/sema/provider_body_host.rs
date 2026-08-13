@@ -394,7 +394,7 @@ pub trait DurableBodyLookupSource<K, M>: Clone {
     fn free_function(&self, current: &K, name: &str) -> Option<K>;
     fn value_const(&self, current: &K, name: &str) -> Option<K>;
     fn nominal(&self, current: &K, name: &str) -> Option<(K, crate::StableDefinitionKind)>;
-    fn named_member(&self, current: &K, owner: &str, name: &str, has_self: bool) -> Option<K>;
+    fn named_member(&self, current: &K, owner: &str, name: &str) -> Option<(K, bool)>;
     fn root_module_binding(
         &self,
         current: &K,
@@ -1363,13 +1363,7 @@ where
             .or_else(|| self.endpoint.durable_named_identity(owner_type))?;
         let owner = self.source.definition_name(&receiver_key)?;
         let name = self.interner.resolve(&symbol);
-        let self_key = self.source.named_member(&receiver_key, &owner, name, true);
-        let static_key = self.source.named_member(&receiver_key, &owner, name, false);
-        let (key, has_self) = match (self_key, static_key) {
-            (Some(key), None) => (key, true),
-            (None, Some(key)) => (key, false),
-            _ => return None,
-        };
+        let (key, has_self) = self.source.named_member(&receiver_key, &owner, name)?;
         // The signature-only durable subset cannot carry the `-> borrow T`
         // accessor flag (ADR-0062); recover it from the owning struct's
         // request-local RIR declaration when that declaration is present.
