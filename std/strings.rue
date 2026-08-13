@@ -10,7 +10,73 @@
 //     std.strings.trim("  hi  ");          // "hi"
 //     std.strings.repeat("ab", 3);         // "ababab"
 //     std.strings.count_chars("café");   // 4
+//
+// SUBSTRING SURFACE (RUE-1482, ADR-0072 Decision 6). A helper whose needle is a
+// single byte keeps the plain name (`find`, `rfind`, `count`, `split`); the
+// substring form adds the `_str` suffix (`find_str`, `rfind_str`, `split_str`),
+// because the plain names were already taken by the byte forms:
+//
+//     let sep: str = ", ";
+//     std.strings.find_str(borrow "hello world", borrow "o w");   // Some(4)
+//     std.strings.split(borrow "a,b,,c", 44);                     // 44 is ','
+//                                                                 // ["a","b","","c"]
+//     std.strings.split_str(borrow "a::b", borrow "::");          // ["a","b"]
+//     std.strings.replace(borrow "aaa", borrow "aa", borrow "b"); // "ba"
+//     std.strings.join(parts, borrow sep);                        // "a, b, c"
+//     std.strings.lines(borrow "a\r\nb\n");                       // ["a","b"]
+//
+// That suffix is this module's disambiguator, not a std-wide law, and a reader
+// should not expect uniformity: `StrBuf.contains` and `StrBuf.starts_with` take
+// `str` needles WITHOUT it and are normative specification surface (§3.7:28,
+// §3.7:29), so a second spelling already exists and cannot be renamed. Nor does
+// the suffix mean "takes a `borrow str`" everywhere — `StrBuf.from_str` and
+// `StrBuf.append_str` do, but `StrBuf.push_str` takes an owned `StrBuf`.
+//
+// HAYSTACKS ARE BORROWED. Every function in this section that takes a haystack
+// takes it as `borrow s: StrBuf` and returns independently allocated results,
+// so a caller can search, split, and re-split one document without cloning. That
+// matters for the programs this surface exists for (ADR-0072's gazette parses a
+// source text and keeps it): a consuming signature would charge every such
+// caller a whole-document copy, and the runtime series is meant to measure
+// codegen rather than an avoidable copy forced by an API choice. This is a
+// deliberate break from the older helpers above (`parse_int`, `trim`, `repeat`,
+// ...), which consume their argument and keep doing so because they have
+// callers. `join` is the one new function that still consumes, for the RUE-651
+// reason documented on it.
+//
+// Everything here is byte-string semantics (ADR-0035): offsets, lengths, and
+// needles are bytes, and nothing inspects UTF-8 boundaries, so a needle may
+// legally match inside a multi-byte scalar. `borrow str` is the needle type
+// throughout, since it is the universal read interface over literals, `Str(N)`,
+// and `StrBuf`. The scanner these functions delegate to lives on `StrBuf`
+// itself, next to `contains`/`starts_with`: `matches_at`, `find_str_from`,
+// `find_str`, `rfind_str`, and `ends_with` (std/strbuf.rue).
+//
+// The shared edge-case rules, decided once so the functions agree:
+//
+//   * EMPTY NEEDLE — an empty needle/separator matches at every byte boundary,
+//     including offset 0 and offset `len`. Hence `find_str(s, "") == Some(0)`,
+//     `rfind_str(s, "") == Some(s.len())`, `contains("")` is true (its
+//     pre-existing answer), `split_str(s, "")` brackets each single byte with
+//     empty pieces, and `replace(s, "", r)` inserts `r` at every boundary. The
+//     boundaries are BYTE boundaries, not scalar boundaries as in Rust.
+//   * NEEDLE LONGER THAN THE HAYSTACK — no match: `None`, `false`, an
+//     unsplit one-element result, an unchanged copy.
+//   * OVERLAP — `replace` takes non-overlapping matches left to right and
+//     resumes after the replaced needle, never inside the replacement, so
+//     `replace("aaa", "aa", "b")` is `"ba"` and `replace("aa", "a", "aa")`
+//     terminates as `"aaaa"`.
+//   * SEPARATORS — a split never keeps its separators and always returns
+//     `matches + 1` pieces, so leading, trailing, and consecutive separators
+//     each produce an empty piece and splitting `""` yields one empty piece.
+//     `lines` is the deliberate exception: see its own note.
+//
+// Every algorithm here is the naive one (ADR-0072 wants a later algorithmic
+// improvement to be visible in the runtime time series), but `replace` and the
+// splits still build each result into one `StrBuf`/`ArrayBuf` rather than
+// rebuilding a string per match.
 
+const arraybuf = @import("arraybuf.rue");
 const ascii = @import("ascii.rue");
 const option = @import("option.rue");
 const math = @import("math.rue");
@@ -109,6 +175,19 @@ pub fn rfind(s: StrBuf, byte: u8) -> option.Option(u64) {
         }
     }
     O.None
+}
+
+// Byte index of the first occurrence of the substring `needle`, or `None`.
+// `Some(0)` for an empty needle; `None` when the needle is longer than `s`.
+pub fn find_str(borrow s: StrBuf, borrow needle: str) -> option.Option(u64) {
+    s.find_str(borrow needle)
+}
+
+// Byte index of the last occurrence of the substring `needle`, or `None`. The
+// index is the offset of the needle's first byte, so a single occurrence gives
+// the same answer as `find_str`. `Some(s.len())` for an empty needle.
+pub fn rfind_str(borrow s: StrBuf, borrow needle: str) -> option.Option(u64) {
+    s.rfind_str(borrow needle)
 }
 
 // Number of bytes equal to `byte`.
@@ -228,6 +307,187 @@ pub fn repeat(s: StrBuf, n: u64) -> StrBuf {
             i += 1;
         }
         k += 1;
+    }
+    out
+}
+
+// The pieces of `s` between occurrences of the separator byte `sep`, in order.
+// Separators are dropped, and the result always holds one more piece than there
+// were separators: `"a,b"` splits into `["a", "b"]`, `",a,"` into
+// `["", "a", ""]`, `"a,,b"` into `["a", "", "b"]`, and `""` into `[""]`.
+pub fn split(borrow s: StrBuf, sep: u8) -> arraybuf.ArrayBuf(StrBuf) {
+    let Parts = arraybuf.ArrayBuf(StrBuf);
+    let mut out = Parts.new();
+    let n = s.len();
+    let mut start: u64 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        if bounded_byte_at(borrow s, i) == sep {
+            out.push(s.byte_range(start, i - start));
+            start = i + 1;
+        }
+        i += 1;
+    }
+    out.push(s.byte_range(start, n - start));
+    out
+}
+
+// The pieces of `s` between non-overlapping occurrences of the separator
+// substring `sep`, in order, with the same piece-count rule as `split`.
+//
+// An empty separator matches at every byte boundary (module note), so it yields
+// each single byte of `s` bracketed by the boundary matches at the two ends:
+// `split_str("abc", "")` is `["", "a", "b", "c", ""]` and `split_str("", "")` is
+// `["", ""]`.
+pub fn split_str(borrow s: StrBuf, borrow sep: str) -> arraybuf.ArrayBuf(StrBuf) {
+    let Parts = arraybuf.ArrayBuf(StrBuf);
+    let O = option.Option(u64);
+    let mut out = Parts.new();
+    let n = s.len();
+    if sep.len() == 0 {
+        out.push(StrBuf.new());
+        let mut i: u64 = 0;
+        while i < n {
+            out.push(s.byte_range(i, 1));
+            i += 1;
+        }
+        out.push(StrBuf.new());
+        return out;
+    }
+    let mut start: u64 = 0;
+    let mut scanning = true;
+    while scanning {
+        match s.find_str_from(borrow sep, start) {
+            O.Some(at) => {
+                out.push(s.byte_range(start, at - start));
+                start = at + sep.len();
+            },
+            O.None => {
+                scanning = false;
+            },
+        }
+    }
+    out.push(s.byte_range(start, n - start));
+    out
+}
+
+// A copy of `s` with every occurrence of `needle` replaced by `replacement`.
+//
+// Matches are non-overlapping and taken left to right, and scanning resumes
+// after the replaced needle rather than inside the replacement it just wrote:
+// `replace("aaa", "aa", "b")` is `"ba"`, and `replace("aa", "a", "aa")` is
+// `"aaaa"` rather than looping. An empty needle matches at every byte boundary,
+// so `replace("ab", "", "-")` is `"-a-b-"`.
+//
+// The result is appended into a single buffer, so a haystack with `k` matches
+// costs one pass over the bytes plus the naive per-offset match test, not a
+// fresh string per match.
+pub fn replace(borrow s: StrBuf, borrow needle: str, borrow replacement: str) -> StrBuf {
+    let O = option.Option(u64);
+    let n = s.len();
+    let mut out = StrBuf.new();
+    if needle.len() == 0 {
+        out.append_str(borrow replacement);
+        let mut i: u64 = 0;
+        while i < n {
+            out.push(bounded_byte_at(borrow s, i));
+            out.append_str(borrow replacement);
+            i += 1;
+        }
+        return out;
+    }
+    let mut start: u64 = 0;
+    let mut scanning = true;
+    while scanning {
+        match s.find_str_from(borrow needle, start) {
+            O.Some(at) => {
+                let mut i = start;
+                while i < at {
+                    out.push(bounded_byte_at(borrow s, i));
+                    i += 1;
+                }
+                out.append_str(borrow replacement);
+                start = at + needle.len();
+            },
+            O.None => {
+                scanning = false;
+            },
+        }
+    }
+    let mut tail = start;
+    while tail < n {
+        out.push(bounded_byte_at(borrow s, tail));
+        tail += 1;
+    }
+    out
+}
+
+// The elements of `parts` concatenated with `sep` between adjacent elements.
+// Zero parts give the empty string, one part gives that part unchanged, and the
+// separator therefore appears exactly `parts.len() - 1` times. The inverse of
+// `split_str` for a non-empty separator, ignoring separators that appear inside
+// the pieces.
+//
+// `parts` is CONSUMED: `ArrayBuf(StrBuf)` holds drop-glue elements, whose only
+// sound read is the moving `pop` (RUE-651), so a borrowing `join` is not
+// expressible today. `pop` also walks back to front, hence the reversal pass
+// before the joining pass.
+pub fn join(parts: arraybuf.ArrayBuf(StrBuf), borrow sep: str) -> StrBuf {
+    let Parts = arraybuf.ArrayBuf(StrBuf);
+    let OS = option.Option(StrBuf);
+    let mut source = parts;
+    let mut reversed = Parts.new();
+    while source.len() > 0 {
+        match source.pop() {
+            OS.Some(part) => {
+                reversed.push(part);
+            },
+            OS.None => @panic("pop of a non-empty buffer"),
+        }
+    }
+    let mut out = StrBuf.new();
+    let mut first = true;
+    while reversed.len() > 0 {
+        match reversed.pop() {
+            OS.Some(part) => {
+                if !first {
+                    out.append_str(borrow sep);
+                }
+                first = false;
+                out.push_str(part);
+            },
+            OS.None => @panic("pop of a non-empty buffer"),
+        }
+    }
+    out
+}
+
+// The lines of `s`, split on `\n` with a `\r` immediately before the `\n`
+// removed. Unlike `split`, a line terminator terminates rather than separates:
+// a trailing newline does NOT produce a final empty line, so `"a\nb\n"` and
+// `"a\nb"` both give `["a", "b"]`, and `""` gives no lines at all. A blank line
+// between two terminators is still a real empty line, so `"a\n\nb"` gives
+// `["a", "", "b"]`. A `\r` is stripped only when it precedes a `\n`; a lone
+// trailing `\r` stays in its line, as does any other control byte.
+pub fn lines(borrow s: StrBuf) -> arraybuf.ArrayBuf(StrBuf) {
+    let Parts = arraybuf.ArrayBuf(StrBuf);
+    let mut out = Parts.new();
+    let n = s.len();
+    let mut start: u64 = 0;
+    let mut i: u64 = 0;
+    while i < n {
+        if bounded_byte_at(borrow s, i) == 10 {
+            let mut end = i;
+            if end > start && bounded_byte_at(borrow s, end - 1) == 13 {
+                end -= 1;
+            }
+            out.push(s.byte_range(start, end - start));
+            start = i + 1;
+        }
+        i += 1;
+    }
+    if start < n {
+        out.push(s.byte_range(start, n - start));
     }
     out
 }

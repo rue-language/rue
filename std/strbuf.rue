@@ -332,13 +332,40 @@ pub struct StrBuf {
         O.Some(read_packed_byte(self.core.buf, index))
     }
 
+    // Whether `prefix` are the leading bytes of `self` (§3.7:29). One `matches_at`
+    // at offset 0: its guard rejects exactly the too-long prefix this used to
+    // reject itself, so the byte comparison lives in the scanner alone.
     fn starts_with(borrow self, borrow prefix: str) -> bool {
-        if prefix.len() > self.len {
+        self.matches_at(0, borrow prefix)
+    }
+
+    // Whether `suffix` are the trailing bytes of `self` — the counterpart to
+    // `starts_with`, and the reason a caller selecting files by extension does
+    // not have to pair `rfind_str` with its own index arithmetic. The empty
+    // suffix matches every string, as the empty prefix and needle do.
+    fn ends_with(borrow self, borrow suffix: str) -> bool {
+        if suffix.len() > self.len {
+            return false;
+        }
+        self.matches_at(self.len - suffix.len(), borrow suffix)
+    }
+
+    // Whether the bytes of `needle` occur in `self` starting exactly at byte
+    // offset `at`. False when the needle would run past the end, and false for
+    // any `at` past the length. The empty needle matches at every offset in
+    // `0 ..= len` — the boundary rule the whole substring surface shares (see
+    // the "empty needle" note in std/strings.rue).
+    //
+    // This is the one place a needle is compared byte by byte; `starts_with`,
+    // `ends_with`, and `find_str_from` are its callers, so a faster comparison
+    // (or a skip table above it) has exactly one site to change.
+    fn matches_at(borrow self, at: u64, borrow needle: str) -> bool {
+        if at > self.len || needle.len() > self.len - at {
             return false;
         }
         let mut i: u64 = 0;
-        while i < prefix.len() {
-            if read_packed_byte(self.core.buf, i) != prefix[i] {
+        while i < needle.len() {
+            if read_packed_byte(self.core.buf, at + i) != needle[i] {
                 return false;
             }
             i += 1;
@@ -346,27 +373,77 @@ pub struct StrBuf {
         true
     }
 
-    fn contains(borrow self, borrow needle: str) -> bool {
-        if needle.len() > self.len {
-            return false;
+    // Byte index of the first occurrence of `needle` at or after byte offset
+    // `start`, or `None`. `matches_at` above is this file's single byte
+    // comparison — `starts_with`, `ends_with`, and this function are its only
+    // callers — and this function is its single *search*, which `find_str`,
+    // `contains`, and std.strings' `split_str` and `replace` resume through
+    // rather than re-implementing a scan loop. `None` when `start` is past the
+    // length or the remaining bytes are shorter than the needle.
+    //
+    // AN EMPTY NEEDLE RETURNS `Some(start)`, which is the every-byte-boundary
+    // rule (see std/strings.rue) but is also a hazard worth naming here: the
+    // conventional resume loop advances with `start = at + needle.len()`, which
+    // for an empty needle is `start = at` — the same match forever. A caller
+    // that resumes through this function must special-case the empty needle
+    // (or advance by one) to terminate, which is exactly what std.strings'
+    // `replace` and `split_str` do before they enter their scan loops.
+    //
+    // The scan is the naive O(len * needle.len()) one: every offset is compared
+    // byte by byte, with no skip table. A sublinear search (memchr-style
+    // scanning, Two-Way) is a later, deliberately visible improvement.
+    fn find_str_from(borrow self, borrow needle: str, start: u64) -> option.Option(u64) {
+        let O = option.Option(u64);
+        if start > self.len || needle.len() > self.len - start {
+            return O.None;
         }
         let limit = self.len - needle.len();
-        let mut start: u64 = 0;
-        while start <= limit {
-            let mut i: u64 = 0;
-            let mut equal = true;
-            while equal && i < needle.len() {
-                if read_packed_byte(self.core.buf, start + i) != needle[i] {
-                    equal = false;
-                }
-                i += 1;
+        let mut at = start;
+        while at <= limit {
+            if self.matches_at(at, borrow needle) {
+                return O.Some(at);
             }
-            if equal {
-                return true;
-            }
-            start += 1;
+            at += 1;
         }
-        false
+        O.None
+    }
+
+    // Byte index of the first occurrence of `needle`, or `None`. The
+    // index-returning counterpart to `contains`; `Some(0)` for an empty needle.
+    fn find_str(borrow self, borrow needle: str) -> option.Option(u64) {
+        self.find_str_from(borrow needle, 0)
+    }
+
+    // Byte index of the last occurrence of `needle`, or `None`. The returned
+    // index is still the offset of the needle's FIRST byte, so `rfind_str` and
+    // `find_str` agree whenever there is exactly one occurrence. An empty
+    // needle matches at the last boundary, `Some(len)`.
+    fn rfind_str(borrow self, borrow needle: str) -> option.Option(u64) {
+        let O = option.Option(u64);
+        if needle.len() > self.len {
+            return O.None;
+        }
+        let mut at = self.len - needle.len();
+        let mut scanning = true;
+        while scanning {
+            if self.matches_at(at, borrow needle) {
+                return O.Some(at);
+            }
+            if at == 0 {
+                scanning = false;
+            } else {
+                at -= 1;
+            }
+        }
+        O.None
+    }
+
+    fn contains(borrow self, borrow needle: str) -> bool {
+        let O = option.Option(u64);
+        match self.find_str(borrow needle) {
+            O.Some(_at) => true,
+            O.None => false,
+        }
     }
 
     fn byte_range(borrow self, start: u64, count: u64) -> Self {
