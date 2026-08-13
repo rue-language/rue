@@ -1148,10 +1148,6 @@ fn materialize_and_build_cfg(
         layout_prerequisite_requests,
     ));
     context.record_work(rue_query::WorkItem::new(
-        "cfg.prerequisite.type-fact-requests",
-        drop_prerequisite_requests,
-    ));
-    context.record_work(rue_query::WorkItem::new(
         "cfg.prerequisite.drop-glue-requests",
         drop_prerequisite_requests,
     ));
@@ -1173,7 +1169,9 @@ fn materialize_and_build_cfg(
             configuration: key.configuration.clone(),
         })
         .collect::<Vec<_>>();
-    context.query_registered_batch(type_facts, drop_dependencies.iter().cloned())?;
+    // Every DropGlue terminal observes the exact TypeFacts terminal for the
+    // same key. Keep one direct CFG edge to that transitive cone instead of
+    // issuing and validating a duplicate top-level TypeFacts request.
     context.query_registered_batch(drop_glues, drop_dependencies)?;
     let prerequisite_queries_ns = elapsed_ns(prerequisite_queries_started);
     let breakdown = CfgConstructionBreakdown {
