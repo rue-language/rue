@@ -2271,13 +2271,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) {
         match &self.body_rir_ref().get(inst_ref).data {
             InstData::Block { instructions } => {
-                let stmts: Vec<InstRef> = self
-                    .body_rir_ref()
-                    .block_insts(instructions)
-                    .values()
-                    .collect();
+                let instructions = instructions.clone();
+                let statement_count = self.body_rir_ref().block_inst_count(&instructions);
                 let mut inner_frame = Vec::new();
-                for stmt in stmts {
+                for index in 0..statement_count {
+                    let stmt = self
+                        .body_rir_ref()
+                        .block_inst(&instructions, index)
+                        .expect("the statement count came from this block payload");
                     self.walk_comptime_type_locals(
                         stmt,
                         discovered,

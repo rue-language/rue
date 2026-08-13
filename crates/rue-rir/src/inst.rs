@@ -3414,6 +3414,31 @@ impl Rir {
             (r.start(), r.extent(), RirBlockInstsRange::FAMILY)
         })
     }
+
+    /// Number of instructions in a block payload without constructing a
+    /// borrowing view over the complete payload.
+    pub fn block_inst_count(&self, range: &RirBlockInstsRange) -> usize {
+        self.payload_words(range, |r| {
+            (r.start(), r.extent(), RirBlockInstsRange::FAMILY)
+        })
+        .expect("validated RIR range")
+        .len()
+    }
+
+    /// Retrieves one instruction from a block payload in constant time.
+    ///
+    /// Recursive consumers use this accessor when retaining a borrowing
+    /// [`RirSlice`] across the recursive call would unnecessarily require an
+    /// owned copy of the block's instruction list.
+    pub fn block_inst(&self, range: &RirBlockInstsRange, index: usize) -> Option<InstRef> {
+        self.payload_words(range, |r| {
+            (r.start(), r.extent(), RirBlockInstsRange::FAMILY)
+        })
+        .expect("validated RIR range")
+        .get(index)
+        .copied()
+        .map(InstRef::from_raw)
+    }
     pub fn struct_methods(&self, range: &RirStructMethodsRange) -> RirSlice<'_, InstRef> {
         self.ref_view(range, |r| {
             (r.start(), r.extent(), RirStructMethodsRange::FAMILY)
@@ -5829,6 +5854,10 @@ mod typed_payload_tests {
             rir.block_insts(&block).values().collect::<Vec<_>>(),
             [r0, r1]
         );
+        assert_eq!(rir.block_inst_count(&block), 2);
+        assert_eq!(rir.block_inst(&block, 0), Some(r0));
+        assert_eq!(rir.block_inst(&block, 1), Some(r1));
+        assert_eq!(rir.block_inst(&block, 2), None);
         assert_eq!(
             rir.struct_methods(&methods).values().collect::<Vec<_>>(),
             [r0]
