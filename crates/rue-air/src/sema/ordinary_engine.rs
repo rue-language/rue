@@ -10,6 +10,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
@@ -54,6 +55,20 @@ pub(crate) fn reject_runtime_type_value(
     Ok(())
 }
 
+/// Adjacent intervals inside one successful canonical expression analysis.
+///
+/// Provider-backed analysis publishes these fields with its existing body
+/// completion event so detailed attribution does not add a second tracing
+/// event per body.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ExpressionAnalysisBreakdown {
+    pub(crate) setup_ns: u64,
+    pub(crate) inference_precompute_ns: u64,
+    pub(crate) constraint_generation_ns: u64,
+    pub(crate) unification_resolution_ns: u64,
+    pub(crate) air_emission_validation_ns: u64,
+}
+
 /// The neutral receiver contract consumed by the canonical ordinary-body engine.
 ///
 /// This is intentionally narrower than the eventual full engine state. It
@@ -61,6 +76,8 @@ pub(crate) fn reject_runtime_type_value(
 /// by the ordinary expression engine. Transaction publication remains outside
 /// this extraction.
 pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
+    fn record_expression_analysis_breakdown(&mut self, _breakdown: ExpressionAnalysisBreakdown) {}
+
     fn body_param_data(&self, range: ParamRange) -> ParamRangeData;
     fn allocate_method_params(
         &mut self,
@@ -2036,6 +2053,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         HashSet<Spur>,
         HashSet<(StructId, Spur)>,
     )> {
+        let expression_setup_started = Instant::now();
         let mut air = Air::new(return_type);
 
         // Preview gate (RUE-15 / ADR-0037): a `borrow self` / `inout self`
@@ -2158,7 +2176,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // ======================================================================
         // Run constraint generation and unification to determine types
         // for all expressions BEFORE emitting AIR.
-        let resolved_types = self.run_type_inference(
+        let expression_setup_ns =
+            u64::try_from(expression_setup_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        let (resolved_types, inference_breakdown) = self.run_type_inference(
             infer_ctx,
             return_type,
             params,
@@ -2166,6 +2186,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             type_subst,
             value_subst,
         )?;
+        let air_emission_started = Instant::now();
 
         // Create analysis context with resolved types
         // If type_subst is provided, initialize comptime_type_vars with the substitutions
@@ -2375,6 +2396,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .body_analysis_first_recovered_error()
                 .expect("error was checked"));
         }
+
+        let air_emission_validation_ns =
+            u64::try_from(air_emission_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.storage
+            .record_expression_analysis_breakdown(ExpressionAnalysisBreakdown {
+                setup_ns: expression_setup_ns,
+                inference_precompute_ns: inference_breakdown.precompute_ns,
+                constraint_generation_ns: inference_breakdown.constraint_generation_ns,
+                unification_resolution_ns: inference_breakdown.unification_resolution_ns,
+                air_emission_validation_ns,
+            });
 
         Ok((
             air,
