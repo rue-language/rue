@@ -62,9 +62,9 @@ independently verified native output digest. The report records:
 - dependency-ready item count, summed queue delay, and maximum queue delay;
 - longest query/dependency ancestry;
 - bounded request-wide declaration-graph, body-closure, and rooted-body-graph
-  projection histograms, with nested declaration-nucleus,
-  semantic-prerequisite, semantic-analysis, CFG-construction, and
-  CFG-optimization distributions;
+  projection histograms, with nested declaration-nucleus, exact-signature
+  parsing, semantic-prerequisite, body-input lowering, provider analysis,
+  semantic-analysis, CFG-construction, and CFG-optimization distributions;
 - the inclusive reached-toolchain acquisition envelope (which contains the
   rooted semantic attempt), joins, declined joins, and permit donations;
 - output binary size.
@@ -94,6 +94,13 @@ Declaration occurrence-index and nucleus timings are nested inside the
 declaration interval; body prerequisite and analysis timings are nested inside
 the closure interval. Nested values explain their owner and are never added to
 the enclosing duration.
+
+The semantic-leaf table further attributes exact signature-fragment parsing
+across its semantic query consumers (primarily declaration nuclei), and exact
+body-fragment lowering plus provider-backed analysis inside body analysis. This
+distinguishes repeated syntax preparation from the semantic engine without
+changing the canonical computation path. Because the signature aggregate may
+have more than one semantic parent, it is explanatory rather than additive.
 
 The reached-toolchain value is an inclusive host-operation envelope, not an
 exclusive phase. The operation runs the rooted semantic attempt to discover

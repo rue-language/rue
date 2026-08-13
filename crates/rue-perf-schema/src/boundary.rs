@@ -388,12 +388,21 @@ pub struct CompilerCriticalPathEvidence {
     /// Exact declaration-nucleus requests inside that graph.
     #[serde(default)]
     pub semantic_declaration_nuclei: DurationDistribution,
+    /// Exact signature-fragment parsing across semantic query consumers.
+    #[serde(default)]
+    pub semantic_declaration_signature_parsing: DurationDistribution,
     /// Inclusive rooted body-closure query and immediate work reduction.
     #[serde(default)]
     pub semantic_body_closure: DurationDistribution,
     /// Projection of the closure and declaration graph into the rooted body graph.
     #[serde(default)]
     pub semantic_body_graph_projection: DurationDistribution,
+    /// Exact body-fragment parsing and lowering inside body analysis.
+    #[serde(default)]
+    pub semantic_body_input_lowering: DurationDistribution,
+    /// Provider-backed semantic analysis after body-fragment lowering.
+    #[serde(default)]
+    pub semantic_provider_analysis: DurationDistribution,
     /// Stable-input preparation before body-local semantic materialization.
     #[serde(default)]
     pub cfg_input_preparation_bodies: DurationDistribution,
@@ -582,8 +591,11 @@ impl BuildBoundaryEvidence {
             || !critical.semantic_declaration_graph.validate()
             || !critical.semantic_declaration_occurrence_indexes.validate()
             || !critical.semantic_declaration_nuclei.validate()
+            || !critical.semantic_declaration_signature_parsing.validate()
             || !critical.semantic_body_closure.validate()
             || !critical.semantic_body_graph_projection.validate()
+            || !critical.semantic_body_input_lowering.validate()
+            || !critical.semantic_provider_analysis.validate()
             || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_domain_prerequisite_bodies.validate()
@@ -637,8 +649,11 @@ impl BuildBoundaryEvidence {
             || critical.semantic_declaration_graph.count == 0
             || critical.semantic_declaration_occurrence_indexes.count == 0
             || critical.semantic_declaration_nuclei.count == 0
+            || critical.semantic_declaration_signature_parsing.count == 0
             || critical.semantic_body_closure.count == 0
             || critical.semantic_body_graph_projection.count == 0
+            || critical.semantic_body_input_lowering.count == 0
+            || critical.semantic_provider_analysis.count == 0
         {
             return Err("compiler omitted semantic critical-path evidence".to_string());
         }
@@ -744,8 +759,11 @@ mod tests {
                 semantic_declaration_graph: distribution(),
                 semantic_declaration_occurrence_indexes: distribution(),
                 semantic_declaration_nuclei: distribution(),
+                semantic_declaration_signature_parsing: distribution(),
                 semantic_body_closure: distribution(),
                 semantic_body_graph_projection: distribution(),
+                semantic_body_input_lowering: distribution(),
+                semantic_provider_analysis: distribution(),
                 cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
                 cfg_domain_prerequisite_bodies: distribution(),
@@ -790,8 +808,11 @@ mod tests {
             "semantic_declaration_graph",
             "semantic_declaration_occurrence_indexes",
             "semantic_declaration_nuclei",
+            "semantic_declaration_signature_parsing",
             "semantic_body_closure",
             "semantic_body_graph_projection",
+            "semantic_body_input_lowering",
+            "semantic_provider_analysis",
             "cfg_input_preparation_bodies",
             "semantic_materialization_bodies",
             "cfg_domain_prerequisite_bodies",
@@ -824,11 +845,23 @@ mod tests {
             DurationDistribution::default()
         );
         assert_eq!(
+            decoded.critical_path.semantic_declaration_signature_parsing,
+            DurationDistribution::default()
+        );
+        assert_eq!(
             decoded.critical_path.semantic_body_closure,
             DurationDistribution::default()
         );
         assert_eq!(
             decoded.critical_path.semantic_body_graph_projection,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_body_input_lowering,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_provider_analysis,
             DurationDistribution::default()
         );
         assert_eq!(

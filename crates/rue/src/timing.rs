@@ -1705,8 +1705,8 @@ mod tests {
         assert_eq!(session_parse_file.root_invocations, 0);
         for expected in [
             ("parse_program", "parse_file"),
-            ("declaration_nucleus", "parse_file"),
-            ("body_analysis", "parse_file"),
+            ("declaration_signature_parsing", "parse_file"),
+            ("body_input_lowering", "parse_file"),
         ] {
             assert!(
                 session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
@@ -1734,6 +1734,17 @@ mod tests {
         assert!(session_edges.contains(&(
             "body_closure_collection".to_owned(),
             "body_analysis".to_owned()
+        )));
+        assert!(session_edges.contains(&(
+            "declaration_nucleus".to_owned(),
+            "declaration_signature_parsing".to_owned()
+        )));
+        assert!(
+            session_edges.contains(&("body_analysis".to_owned(), "body_input_lowering".to_owned()))
+        );
+        assert!(session_edges.contains(&(
+            "body_analysis".to_owned(),
+            "semantic_provider_analysis".to_owned()
         )));
         assert!(session_edges.contains(&(
             "optimized_cfg_collection".to_owned(),

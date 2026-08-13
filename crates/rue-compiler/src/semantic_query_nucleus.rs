@@ -376,6 +376,8 @@ pub(crate) fn parse_semantic_signature(
     if key.category == Category::ConstCandidate {
         return Err(Arc::from("constant candidates have no signature terminal"));
     }
+    let _signature_parsing_span =
+        tracing::info_span!("declaration_signature_parsing", phase = "semantic_analysis").entered();
     let source = signature_source(key, syntax);
     let parsed = crate::syntax::parse_file(
         crate::SourceView::new("<semantic-signature>", &source, rue_span::FileId::new(0)),
