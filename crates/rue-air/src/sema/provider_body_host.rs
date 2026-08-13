@@ -114,6 +114,14 @@ fn append_file_callable_name(mut module_path: String, name: &str) -> String {
     module_path
 }
 
+fn issue_anonymous_identity<K, M>(
+    durable: &crate::AnonymousNominalKey<K, M>,
+    definition: &impl Fn(&K) -> Result<SemanticDefinitionToken, ()>,
+    module: &impl Fn(&M) -> Result<SemanticModuleToken, ()>,
+) -> Option<super::anon_structs::IssuedAnonymousNominalKey> {
+    durable.try_map_identities(definition, module).ok()
+}
+
 #[cfg(test)]
 #[test]
 fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer() {
@@ -143,6 +151,122 @@ fn file_callable_names_extend_the_owned_module_path() {
     assert_eq!(
         append_file_callable_name("pkg/support.rue".to_owned(), "build"),
         "pkg/support.rue$build"
+    );
+}
+
+#[cfg(test)]
+fn nested_anonymous_identity() -> crate::AnonymousNominalKey<&'static str, &'static str> {
+    use crate::{
+        AnonymousMemberKey, AnonymousMemberKind, AnonymousNominalKey, AnonymousNominalKind,
+        CanonicalArgumentValue, CanonicalArguments, FunctionInstanceKey, NominalInstanceKey,
+        StableProducerId, TypeInstanceKey,
+    };
+
+    let nested = AnonymousNominalKey {
+        kind: AnonymousNominalKind::Struct,
+        producer: StableProducerId::Definition("nested-producer"),
+        anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+        arguments: CanonicalArguments {
+            types: Arc::from([TypeInstanceKey::Module("nested-module")]),
+            values: Arc::new([]),
+        },
+    };
+    AnonymousNominalKey {
+        kind: AnonymousNominalKind::Struct,
+        producer: StableProducerId::Function(Box::new(FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+                nested,
+            ))),
+            member: AnonymousMemberKey {
+                kind: AnonymousMemberKind::Method,
+                name: Arc::from("value"),
+            },
+        })),
+        anchor: rue_rir::RirStructuralAnchor::new(Vec::new()),
+        arguments: CanonicalArguments {
+            types: Arc::from([
+                TypeInstanceKey::Nominal(NominalInstanceKey::Named("outer-type")),
+                TypeInstanceKey::Module("outer-module"),
+            ]),
+            values: Arc::from([CanonicalArgumentValue::Function(Box::new(
+                FunctionInstanceKey::Definition("argument-function"),
+            ))]),
+        },
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn anonymous_identity_issuance_visits_nested_graph_once_in_structural_order() {
+    let durable = nested_anonymous_identity();
+    let visited = RefCell::new(Vec::new());
+    let issue = || {
+        issue_anonymous_identity(
+            &durable,
+            &|definition| {
+                visited
+                    .borrow_mut()
+                    .push(format!("definition:{definition}"));
+                Ok(SemanticDefinitionToken::new(1, 1))
+            },
+            &|module| {
+                visited.borrow_mut().push(format!("module:{module}"));
+                Ok(SemanticModuleToken::new(1, 1))
+            },
+        )
+        .expect("the complete identity graph issues")
+    };
+
+    let first = issue();
+    assert_eq!(
+        visited.take(),
+        [
+            "definition:nested-producer",
+            "module:nested-module",
+            "definition:outer-type",
+            "module:outer-module",
+            "definition:argument-function",
+        ]
+    );
+    let second = issue();
+    assert_eq!(first, second, "repeat issuance preserves the exact key");
+    assert_eq!(
+        visited.take().len(),
+        5,
+        "repeat issuance still performs exactly one graph traversal"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn anonymous_identity_issuance_preserves_partial_failure_order() {
+    let durable = nested_anonymous_identity();
+    let visited = RefCell::new(Vec::new());
+    let issued = issue_anonymous_identity(
+        &durable,
+        &|definition| {
+            visited
+                .borrow_mut()
+                .push(format!("definition:{definition}"));
+            (definition != &"outer-type")
+                .then_some(SemanticDefinitionToken::new(1, 1))
+                .ok_or(())
+        },
+        &|module| {
+            visited.borrow_mut().push(format!("module:{module}"));
+            Ok(SemanticModuleToken::new(1, 1))
+        },
+    );
+
+    assert!(issued.is_none(), "a missing nested token fails closed");
+    assert_eq!(
+        visited.take(),
+        [
+            "definition:nested-producer",
+            "module:nested-module",
+            "definition:outer-type",
+        ],
+        "callbacks before the failure remain ordered and later nodes are untouched"
     );
 }
 
@@ -754,8 +878,7 @@ where
             return Some(identity);
         }
         let durable = self.endpoint.durable_anonymous_identity(ty)?;
-        self.register_anonymous_identity_tokens(&durable)?;
-        let issued = self.issue_consulted_anonymous_identity(&durable)?;
+        let issued = self.register_and_issue_anonymous_identity(&durable)?;
         self.endpoint
             .register_anonymous_nominal(issued.clone(), durable);
         self.consulted_anonymous_types
@@ -1087,94 +1210,96 @@ where
         &self,
         durable: &crate::AnonymousNominalKey<K, M>,
     ) -> Option<super::anon_structs::IssuedAnonymousNominalKey> {
-        durable
-            .try_map_identities(
-                &|definition| {
-                    self.anonymous_definition_tokens
-                        .borrow()
-                        .get(definition)
-                        .copied()
-                        .ok_or(())
-                },
-                &|module| {
-                    self.module_tokens
-                        .borrow()
-                        .values()
-                        .find_map(|(token, candidate)| (candidate == module).then_some(*token))
-                        .ok_or(())
-                },
-            )
-            .ok()
+        issue_anonymous_identity(
+            durable,
+            &|definition| {
+                self.anonymous_definition_tokens
+                    .borrow()
+                    .get(definition)
+                    .copied()
+                    .ok_or(())
+            },
+            &|module| {
+                self.module_tokens
+                    .borrow()
+                    .values()
+                    .find_map(|(token, candidate)| (candidate == module).then_some(*token))
+                    .ok_or(())
+            },
+        )
     }
 
-    fn register_anonymous_identity_tokens(
+    fn register_and_issue_anonymous_identity(
         &self,
         durable: &crate::AnonymousNominalKey<K, M>,
-    ) -> Option<()> {
-        durable
-            .try_map_identities(
-                &|definition| {
-                    if self
-                        .anonymous_definition_tokens
-                        .borrow()
-                        .contains_key(definition)
-                    {
-                        return Ok::<(), ()>(());
+    ) -> Option<super::anon_structs::IssuedAnonymousNominalKey> {
+        // Each relocation callback publishes its token before returning it. The
+        // host owns those maps for the request lifetime, so successful
+        // registration has no later issuance-failure boundary. This keeps
+        // partial-failure order and registration-before-mint intact while
+        // constructing only the issued key for a successful graph.
+        issue_anonymous_identity(
+            durable,
+            &|definition| {
+                if let Some(token) = self
+                    .anonymous_definition_tokens
+                    .borrow()
+                    .get(definition)
+                    .copied()
+                {
+                    return Ok::<SemanticDefinitionToken, ()>(token);
+                }
+                let name = self.source.definition_name(definition).ok_or(())?;
+                let kind = self.source.definition_kind(definition).ok_or(())?;
+                let file = match self.source.foreign_definition_module(&self.key, definition) {
+                    Some(module) => self.register_module_target(module).ok_or(())?.1,
+                    None => self.owner_file,
+                };
+                let token = match kind {
+                    crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum => self
+                        .endpoint
+                        .register_named_nominal(definition.clone(), file.index(), &name, kind),
+                    crate::StableDefinitionKind::Function => {
+                        self.endpoint
+                            .register_function(definition.clone(), file, &name)
                     }
-                    let name = self.source.definition_name(definition).ok_or(())?;
-                    let kind = self.source.definition_kind(definition).ok_or(())?;
-                    let file = match self.source.foreign_definition_module(&self.key, definition) {
-                        Some(module) => self.register_module_target(module).ok_or(())?.1,
-                        None => self.owner_file,
-                    };
-                    let token = match kind {
-                        crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum => {
-                            self.endpoint.register_named_nominal(
-                                definition.clone(),
-                                file.index(),
-                                &name,
-                                kind,
-                            )
-                        }
-                        crate::StableDefinitionKind::Function => {
-                            self.endpoint
-                                .register_function(definition.clone(), file, &name)
-                        }
-                        crate::StableDefinitionKind::ValueConst
-                        | crate::StableDefinitionKind::ModuleBinding
-                        | crate::StableDefinitionKind::Destructor
-                        | crate::StableDefinitionKind::Method
-                        | crate::StableDefinitionKind::AssociatedFunction => {
-                            let owner = self.source.definition_owner_name(definition);
-                            self.endpoint.register_body_owner(
-                                definition.clone(),
-                                file,
-                                &name,
-                                kind,
-                                owner.as_deref(),
-                            )
-                        }
-                    };
-                    self.anonymous_definition_tokens
-                        .borrow_mut()
-                        .insert(definition.clone(), token);
-                    Ok::<(), ()>(())
-                },
-                &|module| {
-                    self.register_module_target(module.clone()).ok_or(())?;
-                    Ok::<(), ()>(())
-                },
-            )
-            .ok()
-            .map(|_| ())
+                    crate::StableDefinitionKind::ValueConst
+                    | crate::StableDefinitionKind::ModuleBinding
+                    | crate::StableDefinitionKind::Destructor
+                    | crate::StableDefinitionKind::Method
+                    | crate::StableDefinitionKind::AssociatedFunction => {
+                        let owner = self.source.definition_owner_name(definition);
+                        self.endpoint.register_body_owner(
+                            definition.clone(),
+                            file,
+                            &name,
+                            kind,
+                            owner.as_deref(),
+                        )
+                    }
+                };
+                self.anonymous_definition_tokens
+                    .borrow_mut()
+                    .insert(definition.clone(), token);
+                Ok::<SemanticDefinitionToken, ()>(token)
+            },
+            &|module| {
+                let (id, _) = self.register_module_target(module.clone()).ok_or(())?;
+                let token = self
+                    .module_tokens
+                    .borrow()
+                    .get(&id)
+                    .map(|(token, _)| *token);
+                token.ok_or(())
+            },
+        )
     }
 
     fn install_canonical_anonymous_identity(
         &mut self,
         durable: &crate::AnonymousNominalKey<K, M>,
     ) -> Option<Type> {
-        self.register_anonymous_identity_tokens(durable)?;
-        let issued = self.issue_consulted_anonymous_identity(durable)?;
+        let issued = self.register_and_issue_anonymous_identity(durable)?;
         self.endpoint
             .register_anonymous_nominal(issued.clone(), durable.clone());
         let ty = self.endpoint.mint_anonymous(durable)?;
@@ -1182,16 +1307,16 @@ where
         self.durable_anonymous_types.insert(ty, durable.clone());
         match ty.kind() {
             TypeKind::Struct(id) => {
-                self.anon_struct_identities.insert(issued, id);
+                self.anon_struct_identities.insert(issued.clone(), id);
                 self.anonymous_struct_ids.insert(id);
             }
             TypeKind::Enum(id) => {
-                self.anon_enum_identities.insert(issued, id);
+                self.anon_enum_identities.insert(issued.clone(), id);
                 self.anonymous_enum_ids.insert(id);
             }
             _ => return None,
         }
-        self.install_provider_anonymous_methods(durable, ty)?;
+        self.install_provider_anonymous_methods_with_issued(durable, ty, issued)?;
         Some(ty)
     }
 
@@ -1500,8 +1625,10 @@ where
             .get(&owner_type)
             .cloned()
             .or_else(|| self.endpoint.durable_anonymous_identity(owner_type))?;
-        self.register_anonymous_identity_tokens(&identity)?;
-        self.register_provider_anonymous_method_endpoints(&identity, owner_type)?;
+        let issued = self.register_and_issue_anonymous_identity(&identity)?;
+        self.register_provider_anonymous_method_endpoints_with_issued(
+            &identity, owner_type, issued,
+        )?;
         self.anonymous_methods
             .borrow()
             .get(&(struct_id, name))
@@ -1917,10 +2044,8 @@ where
             | T::Module(_)
             | T::GenericParameter(_) => {}
             T::AnonymousNominal(identity) => {
-                self.register_anonymous_identity_tokens(identity)
-                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 let issued = self
-                    .issue_consulted_anonymous_identity(identity)
+                    .register_and_issue_anonymous_identity(identity)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.endpoint
                     .register_anonymous_nominal(issued.clone(), identity.clone());
@@ -1930,8 +2055,8 @@ where
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.consulted_anonymous_types
                     .borrow_mut()
-                    .insert(ty, issued);
-                self.register_provider_anonymous_method_endpoints(identity, ty)
+                    .insert(ty, issued.clone());
+                self.register_provider_anonymous_method_endpoints_with_issued(identity, ty, issued)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.provider_body_work
                     .record(ProviderBodyWorkEvent::AnonymousRegistered);
@@ -2291,8 +2416,16 @@ where
         identity: &crate::AnonymousNominalKey<K, M>,
         owner_type: Type,
     ) -> Option<()> {
-        self.register_anonymous_identity_tokens(identity)?;
-        let issued_identity = self.issue_consulted_anonymous_identity(identity)?;
+        let issued_identity = self.register_and_issue_anonymous_identity(identity)?;
+        self.install_provider_anonymous_methods_with_issued(identity, owner_type, issued_identity)
+    }
+
+    fn install_provider_anonymous_methods_with_issued(
+        &mut self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        owner_type: Type,
+        issued_identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<()> {
         self.endpoint
             .register_anonymous_nominal(issued_identity.clone(), identity.clone());
         self.canonical_anonymous_types
@@ -2413,6 +2546,20 @@ where
         identity: &crate::AnonymousNominalKey<K, M>,
         owner_type: Type,
     ) -> Option<()> {
+        let issued_identity = self.issue_consulted_anonymous_identity(identity)?;
+        self.register_provider_anonymous_method_endpoints_with_issued(
+            identity,
+            owner_type,
+            issued_identity,
+        )
+    }
+
+    fn register_provider_anonymous_method_endpoints_with_issued(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        owner_type: Type,
+        issued_identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<()> {
         if self
             .anonymous_method_registrations
             .borrow()
@@ -2420,7 +2567,11 @@ where
         {
             return Some(());
         }
-        let result = self.register_provider_anonymous_method_endpoints_inner(identity, owner_type);
+        let result = self.register_provider_anonymous_method_endpoints_inner(
+            identity,
+            owner_type,
+            issued_identity,
+        );
         if result.is_some() {
             self.anonymous_method_registrations
                 .borrow_mut()
@@ -2433,8 +2584,8 @@ where
         &self,
         identity: &crate::AnonymousNominalKey<K, M>,
         owner_type: Type,
+        issued_identity: super::anon_structs::IssuedAnonymousNominalKey,
     ) -> Option<()> {
-        let issued_identity = self.issue_consulted_anonymous_identity(identity)?;
         self.endpoint
             .register_anonymous_nominal(issued_identity.clone(), identity.clone());
         let Some(struct_id) = owner_type.as_struct() else {
@@ -4782,17 +4933,11 @@ where
             ),
         ));
     };
-    host.register_anonymous_identity_tokens(durable_owner)
+    let issued_owner = host
+        .register_and_issue_anonymous_identity(durable_owner)
         .ok_or_else(|| {
             CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
                 "anonymous member owner identities are unavailable".into(),
-            ))
-        })?;
-    let issued_owner = host
-        .issue_consulted_anonymous_identity(durable_owner)
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member owner cannot be issued from its producer input".into(),
             ))
         })?;
     host.endpoint
@@ -4942,17 +5087,21 @@ where
     }
     let issued_identity = FunctionInstanceKey::AnonymousMember {
         owner: Box::new(TypeInstanceKey::Nominal(
-            crate::NominalInstanceKey::Anonymous(issued_owner),
+            crate::NominalInstanceKey::Anonymous(issued_owner.clone()),
         )),
         member: member.clone(),
     };
     host.current_anonymous_identity = Some(issued_identity.clone());
-    host.register_provider_anonymous_method_endpoints(durable_owner, owner_type)
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member sibling endpoints are unavailable".into(),
-            ))
-        })?;
+    host.register_provider_anonymous_method_endpoints_with_issued(
+        durable_owner,
+        owner_type,
+        issued_owner,
+    )
+    .ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "anonymous member sibling endpoints are unavailable".into(),
+        ))
+    })?;
     let full_name = host.member_callable_name(struct_id, &member.name, has_self);
     let full_symbol = host.interner.get_or_intern(&full_name);
     host.function_symbol = full_symbol;
