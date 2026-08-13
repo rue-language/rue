@@ -1061,8 +1061,13 @@ fn compiler_critical_path_evidence(
         peak_query_workers: runtime.peak_query_workers,
         toolchain_acquisition_ns: timing.pass_total_ns("toolchain_acquisition"),
         semantic_bodies: timing.pass_duration_distribution("body_analysis"),
+        cfg_input_preparation_bodies: timing.pass_duration_distribution("cfg_input_preparation"),
         semantic_materialization_bodies: timing
             .pass_duration_distribution("semantic_materialization"),
+        cfg_domain_prerequisite_bodies: timing
+            .pass_duration_distribution("cfg_domain_prerequisites"),
+        cfg_builder_bodies: timing.pass_duration_distribution("cfg_builder"),
+        cfg_publication_bodies: timing.pass_duration_distribution("cfg_publication"),
         cfg_construction_bodies: timing.pass_duration_distribution("cfg_construction"),
         cfg_optimization_bodies: timing.pass_duration_distribution("cfg_optimization"),
         joins: runtime.joins,
