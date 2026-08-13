@@ -8107,13 +8107,15 @@ mod tests {
         assert_eq!(metrics.import_lookups, 0);
         assert_eq!(metrics.method_candidates, 0);
         assert_eq!(metrics.operator_candidates, 0);
-        assert_eq!(metrics.declaration_facts, 12, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 6, "{metrics:?}");
         assert_eq!(
-            metrics.identity_facts, 6,
-            "callable type syntax must travel with the winning signature instead of resolving its candidate again: {metrics:?}"
+            metrics.identity_facts, 3,
+            "one exact function payload must serve every body-transaction consumer: {metrics:?}"
         );
-        assert_eq!(metrics.signature_facts, 6, "{metrics:?}");
-        assert_eq!(metrics.materializations, 6, "{metrics:?}");
+        assert_eq!(metrics.signature_facts, 3, "{metrics:?}");
+        assert_eq!(metrics.materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.function_materialization_reuses, 3, "{metrics:?}");
         assert_eq!(
             metrics.materializations,
             metrics.shared_payload_materializations + metrics.owned_payload_materializations,
@@ -8166,12 +8168,14 @@ mod tests {
             metrics.name_lookups, 11,
             "the first Item payload must serve type minting and endpoint installation without repeating candidate/destructor lookups: {metrics:?}"
         );
-        assert_eq!(metrics.declaration_facts, 16, "{metrics:?}");
-        assert_eq!(metrics.identity_facts, 8, "{metrics:?}");
-        assert_eq!(metrics.signature_facts, 8, "{metrics:?}");
-        assert_eq!(metrics.materializations, 8, "{metrics:?}");
+        assert_eq!(metrics.declaration_facts, 10, "{metrics:?}");
+        assert_eq!(metrics.identity_facts, 5, "{metrics:?}");
+        assert_eq!(metrics.signature_facts, 5, "{metrics:?}");
+        assert_eq!(metrics.materializations, 5, "{metrics:?}");
         assert_eq!(metrics.nominal_materializations, 2, "{metrics:?}");
         assert_eq!(metrics.nominal_materialization_reuses, 2, "{metrics:?}");
+        assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.function_materialization_reuses, 3, "{metrics:?}");
         assert_eq!(
             metrics.materializations,
             metrics.shared_payload_materializations + metrics.owned_payload_materializations,

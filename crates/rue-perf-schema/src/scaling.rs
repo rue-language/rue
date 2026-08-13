@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 21;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 22;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +265,9 @@ pub struct SemanticProviderWork {
     /// Named nominal requests satisfied by an exact body-transaction payload reuse.
     #[serde(default)]
     pub nominal_materialization_reuses: u64,
+    /// Free-function requests satisfied by an exact body-transaction payload reuse.
+    #[serde(default)]
+    pub function_materialization_reuses: u64,
     /// Anonymous-nominal fact reads.
     pub anonymous_facts: u64,
     /// Anonymous-producer body fact reads.
@@ -543,6 +546,7 @@ question = "small maintained compiler frontend"
             "function_materializations",
             "method_materializations",
             "nominal_materialization_reuses",
+            "function_materialization_reuses",
             "import_nominal_registration_requests",
             "import_nominal_type_visits",
             "import_named_nominal_probes",
@@ -563,6 +567,7 @@ question = "small maintained compiler frontend"
         assert_eq!(decoded.function_materializations, 0);
         assert_eq!(decoded.method_materializations, 0);
         assert_eq!(decoded.nominal_materialization_reuses, 0);
+        assert_eq!(decoded.function_materialization_reuses, 0);
         assert_eq!(decoded.import_nominal_registration_requests, 0);
         assert_eq!(decoded.import_nominal_type_visits, 0);
         assert_eq!(decoded.import_named_nominal_probes, 0);
