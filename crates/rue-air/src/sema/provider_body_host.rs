@@ -1198,7 +1198,7 @@ where
             .state
             .identity_context()
             .pool_mut()?
-            .resolve_function_call(&key, return_type_sym, file)
+            .resolve_function_call_from(&key, &function, return_type_sym, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, &name);
@@ -1361,7 +1361,7 @@ where
             .state
             .identity_context()
             .pool_mut()?
-            .resolve_function_call(&key, return_type_sym, file)
+            .resolve_function_call_from(&key, &function, return_type_sym, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, name);

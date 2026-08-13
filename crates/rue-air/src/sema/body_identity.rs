@@ -2371,6 +2371,30 @@ where
         })
     }
 
+    /// Assemble call information from a durable signature the caller already
+    /// read from this pool's source. Provider body hosts need that payload for
+    /// request-local metadata as well, so accepting it here avoids querying and
+    /// cloning the same body-local source value a second time.
+    pub(in crate::sema) fn resolve_function_call_from(
+        &mut self,
+        key: &K,
+        function: &DurableFunction<K, M>,
+        return_type_sym: Spur,
+        file_id: FileId,
+    ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
+        let signature = self.function_signature_from(key, function)?;
+        Ok(super::info::FunctionCallInfo {
+            params: signature.params,
+            return_type: signature.return_type,
+            return_type_sym,
+            is_generic: signature.is_generic,
+            is_pub: signature.is_pub,
+            is_unchecked: signature.is_unchecked,
+            is_extern: signature.is_extern,
+            file_id,
+        })
+    }
+
     /// Assemble a [`MethodInfo`] for a durable method key, combining the minted
     /// signature-derived subset with the caller-provided request/RIR facts.
     pub(in crate::sema) fn resolve_method(
@@ -2416,33 +2440,50 @@ where
             return Ok(signature);
         }
 
-        let DurableFunction {
-            parameters,
-            result,
-            type_syntax: _,
-            is_public,
-            is_unchecked,
-            is_extern,
-        } = self
+        let function = self
             .source
             .function(key)
             .ok_or(IdentityMintError::MissingCallable)?;
+        self.build_function_signature(key, &function)
+    }
 
-        let is_generic = parameters.iter().any(|parameter| parameter.is_comptime);
+    fn function_signature_from(
+        &mut self,
+        key: &K,
+        function: &DurableFunction<K, M>,
+    ) -> Result<CallableSignature, IdentityMintError> {
+        if let Some(err) = self.callable_poisoned.get(key) {
+            return Err(err.clone());
+        }
+        if let Some(&signature) = self.function_sigs.get(key) {
+            return Ok(signature);
+        }
+        self.build_function_signature(key, function)
+    }
+
+    fn build_function_signature(
+        &mut self,
+        key: &K,
+        function: &DurableFunction<K, M>,
+    ) -> Result<CallableSignature, IdentityMintError> {
+        let is_generic = function
+            .parameters
+            .iter()
+            .any(|parameter| parameter.is_comptime);
         // Parameters intern first (mirroring the epoch, which allocs the arena
         // before resolving the return type); a failure at either step poisons
         // the key so the append-only arena's orphaned parameters stay
         // unreachable and the repeat consult re-errors.
-        let params = self.intern_params(key, &parameters)?;
-        let return_type = self.resolve_callable_type(key, &result)?;
+        let params = self.intern_params(key, &function.parameters)?;
+        let return_type = self.resolve_callable_type(key, &function.result)?;
 
         let signature = CallableSignature {
             params,
             return_type,
             is_generic,
-            is_pub: is_public,
-            is_unchecked,
-            is_extern,
+            is_pub: function.is_public,
+            is_unchecked: function.is_unchecked,
+            is_extern: function.is_extern,
         };
         self.function_sigs.insert(key.clone(), signature);
         Ok(signature)
@@ -3276,6 +3317,7 @@ mod tests {
         nominals: HashMap<Key, DurableNominal<Key, Module>>,
         nominal_file_ids: HashMap<Key, FileId>,
         functions: HashMap<Key, DurableFunction<Key, Module>>,
+        function_reads: Rc<Cell<usize>>,
         methods: HashMap<Key, DurableMethod<Key, Module>>,
         consts: HashMap<Key, DurableConst<Key, Module>>,
         anonymous_shapes: HashMap<AnonKey, DurableAnonymousShape<Key, Module>>,
@@ -3298,6 +3340,7 @@ mod tests {
 
     impl DurableCallableSource<Key, Module> for MapSource {
         fn function(&self, key: &Key) -> Option<DurableFunction<Key, Module>> {
+            self.function_reads.set(self.function_reads.get() + 1);
             self.functions.get(key).cloned()
         }
 
@@ -3340,6 +3383,7 @@ mod tests {
             nominals: nominals.into_iter().collect(),
             nominal_file_ids: HashMap::new(),
             functions: HashMap::new(),
+            function_reads: Rc::new(Cell::new(0)),
             methods: HashMap::new(),
             consts: HashMap::new(),
             anonymous_shapes: HashMap::new(),
@@ -3365,6 +3409,7 @@ mod tests {
                 nominals: nominals.into_iter().collect(),
                 nominal_file_ids: HashMap::new(),
                 functions: functions.into_iter().collect(),
+                function_reads: Rc::new(Cell::new(0)),
                 methods: methods.into_iter().collect(),
                 consts: HashMap::new(),
                 anonymous_shapes: HashMap::new(),
@@ -3384,6 +3429,7 @@ mod tests {
                 nominals: nominals.into_iter().collect(),
                 nominal_file_ids: HashMap::new(),
                 functions: functions.into_iter().collect(),
+                function_reads: Rc::new(Cell::new(0)),
                 methods: HashMap::new(),
                 consts: consts.into_iter().collect(),
                 anonymous_shapes: HashMap::new(),
@@ -3405,6 +3451,7 @@ mod tests {
                 nominals: nominals.into_iter().collect(),
                 nominal_file_ids: HashMap::new(),
                 functions: HashMap::new(),
+                function_reads: Rc::new(Cell::new(0)),
                 methods: HashMap::new(),
                 consts: HashMap::new(),
                 anonymous_shapes: anonymous_shapes.into_iter().collect(),
@@ -5432,6 +5479,119 @@ mod tests {
             "repeat consult interns no new params"
         );
         assert!(after_first > before, "first consult interned params");
+    }
+
+    #[test]
+    fn supplied_function_signature_skips_source_read_and_matches_cached_path() {
+        let function = durable_function(
+            vec![param(
+                "value",
+                DType::I64,
+                SemanticParameterMode::Borrow,
+                false,
+            )],
+            DType::Bool,
+            true,
+            true,
+        );
+        let return_symbol = ThreadedRodeo::new().get_or_intern("bool");
+        let file = FileId::new(17);
+
+        let supplied_reads = Rc::new(Cell::new(0));
+        let mut supplied_source = source([]);
+        supplied_source.functions.insert(0, function.clone());
+        supplied_source.function_reads = Rc::clone(&supplied_reads);
+        let mut supplied_pool =
+            BodyIdentityPool::new(supplied_source, Rc::new(ThreadedRodeo::new()));
+        let first = supplied_pool
+            .resolve_function_call_from(&0, &function, return_symbol, file)
+            .unwrap();
+        let second = supplied_pool
+            .resolve_function_call_from(&0, &function, return_symbol, file)
+            .unwrap();
+        let cached_source_path = supplied_pool
+            .resolve_function_call(&0, return_symbol, file)
+            .unwrap();
+        assert_eq!(
+            supplied_reads.get(),
+            0,
+            "supplied and cached signatures never re-read the durable source"
+        );
+        assert_eq!(first.params, second.params);
+        assert_eq!(first.params, cached_source_path.params);
+
+        let ordinary_reads = Rc::new(Cell::new(0));
+        let mut ordinary_source = source([]);
+        ordinary_source.functions.insert(0, function);
+        ordinary_source.function_reads = Rc::clone(&ordinary_reads);
+        let mut ordinary_pool =
+            BodyIdentityPool::new(ordinary_source, Rc::new(ThreadedRodeo::new()));
+        let ordinary = ordinary_pool
+            .resolve_function_call(&0, return_symbol, file)
+            .unwrap();
+        assert_eq!(ordinary_reads.get(), 1);
+        assert_eq!(
+            (
+                first.params,
+                first.return_type,
+                first.return_type_sym,
+                first.is_generic,
+                first.is_pub,
+                first.is_unchecked,
+                first.is_extern,
+                first.file_id,
+            ),
+            (
+                ordinary.params,
+                ordinary.return_type,
+                ordinary.return_type_sym,
+                ordinary.is_generic,
+                ordinary.is_pub,
+                ordinary.is_unchecked,
+                ordinary.is_extern,
+                ordinary.file_id,
+            ),
+        );
+    }
+
+    #[test]
+    fn supplied_function_signature_preserves_poison_without_source_reads() {
+        let broken = durable_function(
+            vec![param(
+                "value",
+                DType::GenericParameter(0),
+                SemanticParameterMode::Value,
+                false,
+            )],
+            DType::Unit,
+            false,
+            false,
+        );
+        let valid = durable_function(Vec::new(), DType::Unit, false, false);
+        let reads = Rc::new(Cell::new(0));
+        let mut durable_source = source([]);
+        durable_source.functions.insert(0, broken.clone());
+        durable_source.function_reads = Rc::clone(&reads);
+        let mut pool = BodyIdentityPool::new(durable_source, Rc::new(ThreadedRodeo::new()));
+        let symbol = ThreadedRodeo::new().get_or_intern("unit");
+        let file = FileId::new(19);
+
+        let first = pool
+            .resolve_function_call_from(&0, &broken, symbol, file)
+            .unwrap_err();
+        let params_after_failure = pool.param_arena().total_params();
+        let second = pool
+            .resolve_function_call_from(&0, &valid, symbol, file)
+            .unwrap_err();
+        let ordinary = pool.resolve_function_call(&0, symbol, file).unwrap_err();
+        assert_eq!(first, IdentityMintError::Deferred("generic parameter"));
+        assert_eq!(
+            second, first,
+            "the supplied path replays the recorded poison"
+        );
+        assert_eq!(ordinary, first, "the source path observes the same poison");
+        assert_eq!(reads.get(), 0, "poisoned repeats do not read the source");
+        assert_eq!(pool.param_arena().total_params(), params_after_failure);
     }
 
     #[test]
