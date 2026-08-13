@@ -107,6 +107,13 @@ fn append_member_callable_name(mut owner: String, method: &str, has_self: bool) 
     owner
 }
 
+fn append_file_callable_name(mut module_path: String, name: &str) -> String {
+    module_path.reserve(1 + name.len());
+    module_path.push('$');
+    module_path.push_str(name);
+    module_path
+}
+
 #[cfg(test)]
 #[test]
 fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer() {
@@ -127,6 +134,15 @@ fn member_callable_names_extend_the_owned_owner_spelling() {
     assert_eq!(
         append_member_callable_name("Owner".to_owned(), "make", false),
         "Owner::make"
+    );
+}
+
+#[cfg(test)]
+#[test]
+fn file_callable_names_extend_the_owned_module_path() {
+    assert_eq!(
+        append_file_callable_name("pkg/support.rue".to_owned(), "build"),
+        "pkg/support.rue$build"
     );
 }
 
@@ -1186,9 +1202,10 @@ where
         }
         let module = self.modules_by_file.borrow().get(&file)?.clone();
         let name = self.interner.resolve(&source_symbol);
-        let internal = self
-            .interner
-            .get_or_intern(&format!("{}${name}", self.source.module_path(&module)));
+        let internal = self.interner.get_or_intern(append_file_callable_name(
+            self.source.module_path(&module),
+            name,
+        ));
         if self.function_infos.borrow().contains_key(&internal) {
             return Some(internal);
         }
