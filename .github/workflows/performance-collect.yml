@@ -1,7 +1,15 @@
-# Compiler-performance collection (ADR-0067 Phase 5, RUE-1188).
+# Performance collection (ADR-0067 Phase 5, RUE-1188; ADR-0072 Phase 1,
+# RUE-1046).
 #
 # Measures each platform's collection epoch on every trunk commit and appends
-# the raw run objects to the `performance-data-v1` orphan branch.
+# the raw records to the `performance-data-v1` orphan branch.
+#
+# Two record kinds ride this workflow. The `measure` jobs answer how fast Rue
+# *compiles*; the `runtime` job answers how fast the programs it produces
+# *run*. They share the runner regime, the publish path, and the store, and
+# nothing else: separate manifests, separate epochs, separate directories on
+# the data branch, and a separate posture — the runtime series is advisory and
+# outside the required-CI gates.
 #
 # Two properties this workflow exists to guarantee:
 #
@@ -144,8 +152,98 @@ jobs:
             exit 1
           fi
 
+  # Runtime performance of compiled Rue programs (ADR-0072 Phase 1, RUE-1046).
+  #
+  # Rides this workflow rather than adding a schedule, so a runtime regression
+  # surfaces attached to the compiler change that caused it. The v1 platform
+  # matrix is exactly one row: `x86_64-linux` on the pinned `ubuntu-24.04`
+  # image. `aarch64-linux` joins once ADR-0072's Phase 2 standard-library work
+  # is CI-verified there, and macOS stays deferred behind the `@syscall`
+  # error-detection gap.
+  #
+  # A failure here fails this job and nothing else. The runtime series sits
+  # deliberately outside ADR-0067's required-CI gates, including the no-bypass
+  # stall gate: a stalled runtime series is a dashboard staleness flag and a
+  # maintainer triage item, never a repository-wide pull-request block.
+  runtime:
+    runs-on: ubuntu-24.04
+    name: runtime (x86_64-linux)
+    # The measured work is small — five samples of a 32 MiB text workload plus
+    # one release-quality build of it, on the order of a minute. The job's
+    # actual cost is dominated by building `rue` and `rue-bench` under
+    # //platforms:release on a fourth runner. Wall clock is unaffected, since
+    # this runs alongside the three `measure` legs, but it is a runner's worth
+    # of compute per trunk push and the budget below is sized for the build.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and the runner
+        run: |
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release
+
+      - name: Measure compiled-program runtime
+        env:
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ubuntu-24.04
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-collected
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
+
+          # No --epoch: performance/runtime.toml marks its own collection epoch,
+          # for the same reason the compiler legs do.
+          set +e
+          "$BENCH" runtime \
+            --manifest performance/runtime.toml \
+            --platform x86_64-linux \
+            --compiler "$RUE" \
+            --commit "${{ github.sha }}" \
+            --repo-root . \
+            --out runtime-collected/runtime-x86_64-linux.json
+          status=$?
+          set -e
+          echo "runner exit status: $status"
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the runtime runner could not produce a report"
+            exit 1
+          fi
+          echo "status=$status" > runtime-collected/runtime-x86_64-linux.status
+
+      - name: Upload the runtime report
+        # Always, so a report that cannot enter its series is still kept as
+        # evidence when the next step fails the job.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-x86_64-linux
+          path: runtime-collected/
+          retention-days: 30
+
+      - name: Report the runtime series' health
+        run: |
+          set -euo pipefail
+          status="$(cut -d= -f2 runtime-collected/runtime-x86_64-linux.status)"
+          if [ "$status" -eq 3 ]; then
+            echo "::error::the runtime report cannot enter its series. The most" \
+                 "likely cause is a compiled program producing output that does" \
+                 "not match its committed golden, which fails regardless of speed."
+            exit 1
+          fi
+          if [ "$status" -eq 5 ]; then
+            echo "::error::the runtime report is appendable but a workload did" \
+                 "not complete; the series has a hole at this commit."
+            exit 1
+          fi
+
   publish:
-    needs: measure
+    needs: [measure, runtime]
     # Runs even when a platform failed: a partial sweep still has valid runs
     # worth storing, and a platform that is persistently broken should be
     # visible in the data rather than absent from it.
@@ -173,9 +271,11 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
 
+          # Both record kinds arrive here. `publish-performance-runs.py` routes
+          # each one by the `record_kind` discriminator it carries.
           runs=(incoming/*.json)
           if [ ${#runs[@]} -eq 0 ]; then
-            echo "no run objects were produced; nothing to publish"
+            echo "no records were produced; nothing to publish"
             exit 0
           fi
 

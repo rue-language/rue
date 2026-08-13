@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::digest::sha256_bytes as sha256;
 use rue_compiler::unstable::{
     EndpointQueryWork, EndpointWork, MetricsSnapshot, QueryRuntimeMetrics, QueryValidationMetrics,
 };
@@ -24,7 +25,6 @@ use rue_perf_schema::{
     validate_edit_report,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1551,10 +1551,6 @@ fn elapsed_ns(started: Instant) -> u64 {
 
 fn delta(before: usize, after: usize) -> u64 {
     after.saturating_sub(before) as u64
-}
-
-fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn warnings_identity(warnings: &[CompileWarning]) -> String {

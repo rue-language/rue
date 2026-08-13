@@ -457,7 +457,7 @@ silently.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: rue-bench runtime measurement mode and the runtime
+- [x] **Phase 1: rue-bench runtime measurement mode and the runtime
   manifest, stood up on the declared wordfreq workload** - RUE-1046
 - [ ] **Phase 2: Standard-library prerequisites — directory enumeration and
   substring operations** - RUE-1481, RUE-1482

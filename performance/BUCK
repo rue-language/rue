@@ -5,6 +5,12 @@ export_file(
 )
 
 export_file(
+    name = "runtime.toml",
+    src = "runtime.toml",
+    visibility = ["//crates/rue-perf-schema:"],
+)
+
+export_file(
     name = "incremental-fixtures.toml",
     src = "incremental-fixtures.toml",
     visibility = ["//crates/rue-bench:"],

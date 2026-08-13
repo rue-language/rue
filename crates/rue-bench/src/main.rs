@@ -11,14 +11,22 @@
 //! and hands the result to `rue_perf_schema::validate_run`. Keeping judgement
 //! out of the producer is what lets validation catch a producer that is itself
 //! wrong.
+//!
+//! The `runtime` subcommand answers ADR-0072's question instead: not how fast
+//! Rue compiles a program, but how fast the compiled program runs. It follows
+//! the same separation — record what happened, let `rue_perf_schema` decide
+//! appendability — over its own manifest and record kind.
 
 mod calibrate;
 mod check_pins;
 mod derive;
+mod digest;
 mod environment;
+mod fixture;
 mod incremental;
 mod measure;
 mod pins;
+mod runtime;
 mod scaling;
 
 use std::collections::BTreeMap;
@@ -76,9 +84,12 @@ Required:
   --out <path>         where to write the run object
 
 Subcommands:
-  derive --manifest <path> --data-root <dir> --out <path>
+  derive --manifest <path> [--runtime-manifest <path>] --data-root <dir>
+         --out <path>
                        rebuild the dashboard's view from raw records. Reads the
                        performance-data-v1 checkout; writes derived JSON.
+                       --runtime-manifest additionally derives the ADR-0072
+                       runtime record kind from the same store.
 
   check-pins --manifest <path> --compiler <path> [--repo-root <path>]
                        answer whether this tree still matches every collection
@@ -93,6 +104,14 @@ Subcommands:
   scaling --manifest <path> --compiler <path> --commit <sha> --out <path>
                        measure maintained programs with independent fresh
                        compiler processes; also writes a Markdown report.
+
+  runtime --platform <name> --compiler <path> --commit <sha> --out <path>
+                       measure how fast compiled Rue programs run (ADR-0072).
+                       Builds each workload at release quality, prepares its
+                       fixture outside the timed window, measures N fresh
+                       processes spawn-to-exit, and judges the output against a
+                       committed golden. Defaults to performance/runtime.toml;
+                       override with --manifest.
 
   incremental --commit <sha> --out <path>
                        measure retained-session edits of Mosaic and Lattice,
@@ -135,6 +154,15 @@ fn main() -> ExitCode {
             Err(message) => {
                 eprintln!("rue-bench: {message}");
                 ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("runtime") {
+        return match runtime::run() {
+            Ok(status) => ExitCode::from(status),
+            Err(message) => {
+                eprintln!("rue-bench runtime: {message}");
+                ExitCode::from(runtime::exit::USAGE)
             }
         };
     }
@@ -218,6 +246,7 @@ fn run_calibration() -> Result<(), String> {
 /// uses, so the page and the calibration can never disagree about what moved.
 fn run_derive() -> Result<(), String> {
     let mut manifest_path = None;
+    let mut runtime_manifest_path = None;
     let mut data_root = None;
     let mut out = None;
     let mut args = std::env::args().skip(2);
@@ -228,6 +257,7 @@ fn run_derive() -> Result<(), String> {
         };
         match flag.as_str() {
             "--manifest" => manifest_path = Some(PathBuf::from(value()?)),
+            "--runtime-manifest" => runtime_manifest_path = Some(PathBuf::from(value()?)),
             "--data-root" => data_root = Some(PathBuf::from(value()?)),
             "--out" => out = Some(PathBuf::from(value()?)),
             other => return Err(format!("unrecognized argument {other:?}")),
@@ -242,7 +272,32 @@ fn run_derive() -> Result<(), String> {
     let manifest = Manifest::parse(&text).map_err(|error| error.to_string())?;
 
     let runs = derive::load_data_branch(&data_root)?;
-    let data = derive::derive(&manifest, &runs);
+    let mut data = derive::derive(&manifest, &runs);
+
+    // The ADR-0072 runtime record kind, derived from the same store by the same
+    // step. Opt-in rather than implicit: a caller that does not name a runtime
+    // manifest gets no runtime section at all, so a page can tell "not asked
+    // for" from "asked for and nothing collected yet".
+    if let Some(path) = runtime_manifest_path {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("could not read {}: {error}", path.display()))?;
+        let runtime_manifest = rue_perf_schema::RuntimeManifest::parse(&text)?;
+        let (reports, unreadable) = derive::load_runtime_records(&data_root)?;
+        let runtime = derive::derive_runtime(&runtime_manifest, &reports, &unreadable);
+        let points: usize = runtime
+            .platforms
+            .iter()
+            .flat_map(|platform| platform.epochs.iter())
+            .map(|epoch| epoch.points.len())
+            .sum();
+        eprintln!(
+            "rue-bench: derived {points} runtime point(s) across {} platform(s); \
+             {} report(s) rejected",
+            runtime.platforms.len(),
+            runtime.rejected.len()
+        );
+        data.runtime = Some(runtime);
+    }
 
     let encoded = serde_json::to_string_pretty(&data)
         .map_err(|error| format!("could not serialize the site data: {error}"))?;

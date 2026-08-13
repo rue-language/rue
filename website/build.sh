@@ -51,8 +51,13 @@ fi
 
 BENCH="$("$ROOT/buck2" build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
 if [ -n "$BENCH" ] && [ -x "$BENCH" ]; then
+    # Both record kinds are derived by one call over one store: ADR-0067's
+    # compiler series and ADR-0072's runtime series. The runtime section is
+    # absent from the output until this flag is passed, so the page can tell
+    # "not derived" from "derived and empty".
     "$BENCH" derive \
         --manifest "$ROOT/performance/manifest.toml" \
+        --runtime-manifest "$ROOT/performance/runtime.toml" \
         --data-root "$PERF_DATA_ROOT" \
         --out "$ROOT/website/static/performance-data.json"
     # Tooltips need each commit's subject and its position on trunk, neither of

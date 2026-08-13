@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::sanity::{is_commit, is_sha256_digest, is_utc_timestamp};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
@@ -970,32 +971,6 @@ fn finding(path: impl Into<String>, detail: impl Into<String>) -> ValidationFind
     }
 }
 
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-fn is_commit(value: &str) -> bool {
-    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn is_utc_timestamp(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 20 {
-        return false;
-    }
-    let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
-    let dashes = [4, 7];
-    let colons = [13, 16];
-    digits.iter().all(|&index| bytes[index].is_ascii_digit())
-        && dashes.iter().all(|&index| bytes[index] == b'-')
-        && colons.iter().all(|&index| bytes[index] == b':')
-        && bytes[10] == b'T'
-        && bytes[19] == b'Z'
-}
-
 fn validate_identity(path: &str, identity: &OutcomeIdentity, errors: &mut Vec<ValidationFinding>) {
     let executable_expected = identity.kind == OutcomeKind::Success;
     if identity.executable.is_some() != executable_expected {
@@ -1004,14 +979,14 @@ fn validate_identity(path: &str, identity: &OutcomeIdentity, errors: &mut Vec<Va
             "executable identity must be present exactly for successful outcomes",
         ));
     }
-    if !is_sha256(&identity.diagnostics) || !is_sha256(&identity.warnings) {
+    if !is_sha256_digest(&identity.diagnostics) || !is_sha256_digest(&identity.warnings) {
         errors.push(finding(
             path,
             "diagnostic and warning identities must be lowercase SHA-256 values (including empty-set hashes)",
         ));
     }
     if let Some(executable) = &identity.executable
-        && !is_sha256(executable)
+        && !is_sha256_digest(executable)
     {
         errors.push(finding(
             path,
@@ -1394,8 +1369,8 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
                 ) => {
                     if logical_file.is_empty()
                         || logical_file.starts_with('/')
-                        || !is_sha256(before_sha256)
-                        || !is_sha256(after_sha256)
+                        || !is_sha256_digest(before_sha256)
+                        || !is_sha256_digest(after_sha256)
                         || before_sha256 == after_sha256
                     {
                         errors.push(finding(
@@ -1426,7 +1401,10 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
                             "successful endpoints are zero or not cumulative/monotonic",
                         ));
                     }
-                    if diagnostics.is_empty() || warnings.is_empty() || !is_sha256(executable) {
+                    if diagnostics.is_empty()
+                        || warnings.is_empty()
+                        || !is_sha256_digest(executable)
+                    {
                         errors.push(finding(
                             &sample_path,
                             "successful outcome identities are incomplete",

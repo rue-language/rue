@@ -18,12 +18,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+use crate::digest::{sha256_bytes, sha256_file};
 use rue_perf_schema::{
     BuildBoundaryEvidence, BuildBoundaryPolicy, CompilerBoundaryEvidence,
     CompilerCriticalPathEvidence, CompilerInputClass, CompilerWork, FailureRecord, PhaseAccounting,
     RunnerBoundaryEvidence, RunnerClockBoundary, Sample, WorkloadShape,
 };
-use sha2::{Digest, Sha256};
 
 static PROCESS_DIRECTORY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -290,40 +290,12 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     // process creation. It stops after successful exit and independent native
     // output verification below.
     let started = Instant::now();
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not spawn the compiler: {error}"))?;
+    let reaped = spawn_and_reap(&mut command).map_err(|error| format!("the compiler {error}"))?;
+    let stdout = String::from_utf8_lossy(&reaped.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&reaped.stderr).into_owned();
+    let peak = reaped.peak_memory_bytes;
 
-    // Drain both pipes on their own threads. Reading one to completion before
-    // the other deadlocks as soon as the unread pipe's buffer fills, and the
-    // benchmark JSON is large enough for that to be a live risk.
-    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
-    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
-    let (stdout, stderr, peak, status) = std::thread::scope(|scope| {
-        let stdout_reader = scope.spawn(move || {
-            let mut buffer = String::new();
-            let _ = stdout_pipe.read_to_string(&mut buffer);
-            buffer
-        });
-        let stderr_reader = scope.spawn(move || {
-            let mut buffer = String::new();
-            let _ = stderr_pipe.read_to_string(&mut buffer);
-            buffer
-        });
-        let reaped = wait_for_peak_memory(&child);
-        (
-            stdout_reader.join().unwrap_or_default(),
-            stderr_reader.join().unwrap_or_default(),
-            reaped.as_ref().map_or(0, |(peak, _)| *peak),
-            reaped.map(|(_, status)| status),
-        )
-    });
-    // `wait4` above already reaped the child, so `child` must not be waited on
-    // again. `Child::drop` does not reap, so letting it fall out of scope is
-    // correct; calling `wait()` here would fail with ECHILD.
-    drop(child);
-
-    let status = status?;
+    let status = reaped.status;
     if !libc::WIFEXITED(status) || libc::WEXITSTATUS(status) != 0 {
         let tail: String = stderr.lines().rev().take(5).collect::<Vec<_>>().join("\n");
         return Err(format!(
@@ -424,6 +396,77 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     })
 }
 
+/// One child process, run to completion with its output and peak RSS.
+pub(crate) struct ReapedChild {
+    /// Everything the child wrote to stdout.
+    pub stdout: Vec<u8>,
+    /// Everything it wrote to stderr.
+    pub stderr: Vec<u8>,
+    /// Its `wait4` status word.
+    pub status: libc::c_int,
+    /// Its peak resident set size, in bytes.
+    pub peak_memory_bytes: u64,
+}
+
+/// Spawn a prepared command, drain its pipes, and reap it.
+///
+/// The caller owns the clock: the compiler path stops timing only after it has
+/// verified the emitted binary, while a runtime sample stops at exit. Sharing
+/// the spawn instead of the timing keeps both honest about their own boundary
+/// while there is exactly one implementation of the pipe-draining and `wait4`
+/// dance below.
+///
+/// Bytes, not `String`: a measured program's output is judged by digest and may
+/// not be UTF-8 at all. The compiler path converts afterwards, which moves that
+/// validation and one copy out of the reader threads and into the caller's
+/// measured window — sub-millisecond against samples measured in hundreds of
+/// milliseconds, and far below the regime's dispersion, but a real change
+/// rather than a byte-for-byte preserving refactor.
+///
+/// `stdout` and `stderr` must already be piped.
+pub(crate) fn spawn_and_reap(command: &mut Command) -> Result<ReapedChild, String> {
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("could not be spawned: {error}"))?;
+
+    // Drain both pipes on their own threads. Reading one to completion before
+    // the other deadlocks as soon as the unread pipe's buffer fills, and both
+    // benchmark JSON and program output are large enough for that to be a live
+    // risk.
+    let mut stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let (stdout, stderr, reaped) = std::thread::scope(|scope| {
+        let stdout_reader = scope.spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = stdout_pipe.read_to_end(&mut buffer);
+            buffer
+        });
+        let stderr_reader = scope.spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut buffer);
+            buffer
+        });
+        let reaped = wait_for_peak_memory(&child);
+        (
+            stdout_reader.join().unwrap_or_default(),
+            stderr_reader.join().unwrap_or_default(),
+            reaped,
+        )
+    });
+    // `wait4` above already reaped the child, so `child` must not be waited on
+    // again. `Child::drop` does not reap, so letting it fall out of scope is
+    // correct; calling `wait()` here would fail with ECHILD.
+    drop(child);
+
+    let (peak_memory_bytes, status) = reaped?;
+    Ok(ReapedChild {
+        stdout,
+        stderr,
+        status,
+        peak_memory_bytes,
+    })
+}
+
 /// Reap one child and report *its* peak resident memory, in bytes.
 ///
 /// Deliberately `wait4` rather than `getrusage(RUSAGE_CHILDREN)`. The latter
@@ -446,23 +489,13 @@ fn wait_for_peak_memory(child: &std::process::Child) -> Result<(u64, libc::c_int
     };
     if reaped < 0 {
         return Err(format!(
-            "could not reap the compiler: {}",
+            "could not be reaped: {}",
             std::io::Error::last_os_error()
         ));
     }
     // SAFETY: `wait4` succeeded, so the usage value is initialized.
     let usage = unsafe { usage.assume_init() };
     Ok((max_rss_bytes(usage.ru_maxrss), status))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn sha256_file(path: &Path) -> Result<String, String> {
-    fs::read(path)
-        .map(|bytes| sha256_bytes(&bytes))
-        .map_err(|error| format!("could not hash {}: {error}", path.display()))
 }
 
 fn directory_contains_only(directory: &Path, expected: &Path) -> Result<bool, String> {

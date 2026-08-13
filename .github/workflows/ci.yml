@@ -397,6 +397,12 @@ jobs:
         # Is the series *already* stalled? A repository-wide condition, so this
         # fails every pull request rather than only the one that caused it: a
         # stalled series hides regressions instead of reporting them.
+        #
+        # Deliberately compile-time only. Do not add --runtime-manifest here:
+        # ADR-0072 Decision 9 puts the runtime series outside this gate on
+        # purpose. Its remedy can be measured in parser work rather than a small
+        # manifest change, so a stalled runtime series is a dashboard staleness
+        # flag and a triage item, never a repository-wide block.
         run: |
           set -euo pipefail
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
