@@ -1006,6 +1006,10 @@ where
     ) where
         M: Clone,
     {
+        debug_assert!(
+            !self.anonymous_poisoned.contains_key(&key),
+            "a poisoned anonymous identity cannot be registered as successful"
+        );
         self.record_anonymous_identity(key, ty);
     }
 
@@ -1626,13 +1630,16 @@ where
         // consult, registration) sees the canonical producer form.
         let key = key.with_canonical_producer();
         let key = key.as_ref();
-        if let Some(error) = self.anonymous_poisoned.get(key) {
-            return Err(error.clone());
-        }
         // Producer-nominal dedup: a key already minted resolves by lookup, so a
         // repeat consult re-mints nothing (the epoch's `anon_*_identities.get`).
         if let Some(&ty) = self.anon_nominals.get(key) {
             return Ok(ty);
+        }
+        // Successful and poisoned identities are disjoint: failed mints roll
+        // their recursive shell back before publishing the error, and the
+        // alternate registration entry point checks the invariant in debug builds.
+        if let Some(error) = self.anonymous_poisoned.get(key) {
+            return Err(error.clone());
         }
 
         let shape = self
@@ -4383,10 +4390,14 @@ mod tests {
             [],
         );
 
-        assert_eq!(
-            pool.find_or_create_anon(&outer),
-            Err(IdentityMintError::MissingAnonymousShape)
-        );
+        let expected = Err(IdentityMintError::MissingAnonymousShape);
+        assert_eq!(pool.find_or_create_anon(&outer), expected);
+        assert_eq!(pool.anonymous_poisoned.get(&outer), expected.as_ref().err());
+        assert!(!pool.anon_nominals.contains_key(&outer));
+        assert!(pool.anonymous_identities.is_empty());
+
+        assert_eq!(pool.find_or_create_anon(&outer), expected);
+        assert_eq!(pool.anonymous_poisoned.get(&outer), expected.as_ref().err());
         assert!(!pool.anon_nominals.contains_key(&outer));
         assert!(pool.anonymous_identities.is_empty());
     }

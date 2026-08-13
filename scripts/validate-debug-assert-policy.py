@@ -40,7 +40,7 @@ ALLOWANCES = {
     "crates/rue-air/src/sema/analysis/ownership.rs": Allowance(1, "redundant non-negative arena-index check"),
     "crates/rue-air/src/sema/binding_manifest.rs": Allowance(2, "redundant binding-manifest construction checks"),
     "crates/rue-air/src/sema/body_identity.rs": Allowance(
-        1, "redundant anonymous-identity publication check"
+        2, "redundant anonymous-identity publication and disjointness checks"
     ),
     "crates/rue-air/src/sema/comptime_eval.rs": Allowance(2, "redundant semantic phase preconditions"),
     "crates/rue-air/src/sema/declaration_index.rs": Allowance(4, "redundant declaration indexing counters"),
