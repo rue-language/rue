@@ -1,0 +1,280 @@
+// The one data model shared by gazette's three libraries: a POD value arena.
+//
+// Front matter parses INTO this arena, templates evaluate AGAINST it, and
+// shortcode arguments are bound into it — so there is no conversion layer
+// between "parsed TOML" and "template context", and no second representation
+// to keep in sync. Every value is an index into `values`; composite values name
+// contiguous ranges of `items` (arrays) or `entries` (maps).
+//
+// SUPPORTED VALUE KINDS: null, bool, unsigned integer, string, array, map.
+//
+// INTEGERS ARE UNSIGNED. The corpus's integers are `weight`, `paginate_by`, and
+// template literals like `slice(end=3)` — all non-negative. A negative integer
+// is REJECTED at its parse site rather than silently wrapped, which is the
+// documented-subset discipline ADR-0072 Decision 3 asks for: content that steps
+// outside the subset must fail the next benchmark run visibly.
+//
+// FLOATS ARE ABSENT because Rue has no floating-point types (ADR-0065 is
+// accepted but unimplemented). A fractional number is rejected at its parse
+// site for the same reason.
+const std = @import("std");
+const pool = @import("pool.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+
+pub fn V_NULL() -> u64 { 0 }
+pub fn V_BOOL() -> u64 { 1 }
+pub fn V_INT() -> u64 { 2 }
+pub fn V_STR() -> u64 { 3 }
+pub fn V_ARRAY() -> u64 { 4 }
+pub fn V_MAP() -> u64 { 5 }
+
+pub struct Value {
+    tag: u64,
+    // V_BOOL: 0 or 1. V_INT: the magnitude. V_STR: the pool id.
+    num: u64,
+    // V_ARRAY: `[start, start + count)` of `items`.
+    // V_MAP:   `[start, start + count)` of `entries`.
+    start: u64,
+    count: u64,
+}
+
+pub struct Entry { key: u64, value: u64 }
+
+// A parse or render failure, carried rather than thrown: Rue has no exceptions,
+// and a library that stopped at the first bad construct would hide the rest of
+// a document's problems from the person fixing it.
+pub struct Diag { code: u64, line: u64, detail: u64, subject: u64 }
+
+pub fn E_FRONT_MATTER() -> u64 { 1 }
+pub fn E_MARKDOWN() -> u64 { 2 }
+pub fn E_TEMPLATE() -> u64 { 3 }
+pub fn E_SHORTCODE() -> u64 { 4 }
+
+pub const Values = std.arraybuf.ArrayBuf(Value);
+pub const Entries = std.arraybuf.ArrayBuf(Entry);
+pub const Diags = std.arraybuf.ArrayBuf(Diag);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub fn empty_value() -> Value { Value { tag: V_NULL(), num: 0, start: 0, count: 0 } }
+pub fn empty_entry() -> Entry { Entry { key: NONE(), value: NONE() } }
+pub fn empty_diag() -> Diag { Diag { code: 0, line: 0, detail: NONE(), subject: NONE() } }
+
+pub struct Arena {
+    strings: pool.Pool,
+    values: Values,
+    items: U64s,
+    entries: Entries,
+    diags: Diags,
+    // Index 0 is always null and index 1/2 are always false/true, so the hot
+    // constants cost no allocation and compare by index.
+    null_index: u64,
+    empty_string: u64,
+
+    fn new() -> Self {
+        let mut a = Self {
+            strings: pool.Pool.new(),
+            values: Values.new(),
+            items: U64s.new(),
+            entries: Entries.new(),
+            diags: Diags.new(),
+            null_index: 0,
+            empty_string: 0,
+        };
+        a.values.push(Value { tag: V_NULL(), num: 0, start: 0, count: 0 });
+        a.values.push(Value { tag: V_BOOL(), num: 0, start: 0, count: 0 });
+        a.values.push(Value { tag: V_BOOL(), num: 1, start: 0, count: 0 });
+        a.empty_string = a.strings.intern_literal("");
+        a
+    }
+
+    fn null(borrow self) -> u64 { 0 }
+    fn boolean(borrow self, b: bool) -> u64 { if b { 2 } else { 1 } }
+
+    fn integer(inout self, n: u64) -> u64 {
+        let index = self.values.len();
+        self.values.push(Value { tag: V_INT(), num: n, start: 0, count: 0 });
+        index
+    }
+
+    fn string_id(inout self, id: u64) -> u64 {
+        let index = self.values.len();
+        self.values.push(Value { tag: V_STR(), num: id, start: 0, count: 0 });
+        index
+    }
+
+    fn string(inout self, borrow s: StrBuf) -> u64 {
+        let id = self.strings.intern(borrow s);
+        self.string_id(id)
+    }
+
+    fn literal(inout self, s: StrBuf) -> u64 { self.string(borrow s) }
+
+    // Freeze a list of value indices into an array value. The caller builds the
+    // element list in its own `U64s` and hands it over here, because arena
+    // ranges must be contiguous and a recursive parse interleaves children.
+    fn array(inout self, borrow elements: U64s) -> u64 {
+        let start = self.items.len();
+        let mut i: u64 = 0;
+        while i < elements.len() {
+            self.items.push(elements.get_or(i, 0));
+            i += 1;
+        }
+        let index = self.values.len();
+        self.values.push(Value { tag: V_ARRAY(), num: 0, start: start, count: elements.len() });
+        index
+    }
+
+    // Freeze a list of key/value entries into a map value, same reasoning.
+    // Later duplicate keys shadow earlier ones because `map_get` scans forward
+    // and returns the last match, matching TOML's last-wins reading.
+    fn map(inout self, borrow pairs: Entries) -> u64 {
+        let start = self.entries.len();
+        let mut i: u64 = 0;
+        while i < pairs.len() {
+            self.entries.push(pairs.get_or(i, empty_entry()));
+            i += 1;
+        }
+        let index = self.values.len();
+        self.values.push(Value { tag: V_MAP(), num: 0, start: start, count: pairs.len() });
+        index
+    }
+
+    fn at(borrow self, index: u64) -> Value {
+        self.values.get_or(index, empty_value())
+    }
+
+    fn tag(borrow self, index: u64) -> u64 {
+        if index == NONE() { return V_NULL(); }
+        self.at(index).tag
+    }
+
+    fn is_null(borrow self, index: u64) -> bool { self.tag(index) == V_NULL() }
+
+    // Length in the sense every template `for` and `| length`-shaped filter
+    // wants: elements for an array, entries for a map, bytes for a string.
+    fn length(borrow self, index: u64) -> u64 {
+        let v = self.at(index);
+        if v.tag == V_ARRAY() || v.tag == V_MAP() { return v.count; }
+        if v.tag == V_STR() { return self.strings.string_len(v.num); }
+        0
+    }
+
+    fn item(borrow self, index: u64, i: u64) -> u64 {
+        let v = self.at(index);
+        if v.tag != V_ARRAY() || i >= v.count { return NONE(); }
+        self.items.get_or(v.start + i, NONE())
+    }
+
+    fn entry_at(borrow self, index: u64, i: u64) -> Entry {
+        let v = self.at(index);
+        if v.tag != V_MAP() || i >= v.count { return empty_entry(); }
+        self.entries.get_or(v.start + i, empty_entry())
+    }
+
+    // Look a key up in a map value. Maps here hold a handful of keys — front
+    // matter has at most six, a page object about a dozen — so a forward scan
+    // beats a hash index, and it makes last-wins duplicate handling free.
+    fn map_get(borrow self, index: u64, key: u64) -> u64 {
+        let v = self.at(index);
+        if v.tag != V_MAP() { return NONE(); }
+        let mut found = NONE();
+        let mut i: u64 = 0;
+        while i < v.count {
+            let e = self.entries.get_or(v.start + i, empty_entry());
+            if e.key == key { found = e.value; }
+            i += 1;
+        }
+        found
+    }
+
+    fn map_get_literal(inout self, index: u64, key: StrBuf) -> u64 {
+        let id = self.strings.intern(borrow key);
+        self.map_get(index, id)
+    }
+
+    // Tera/Jinja truthiness, which the site's templates lean on heavily:
+    // `{% if page.extra.authors %}` must be false for a missing key and for an
+    // empty list, and `{% if status.spec %}` true for a populated map.
+    fn truthy(borrow self, index: u64) -> bool {
+        let v = self.at(index);
+        if v.tag == V_NULL() { return false; }
+        if v.tag == V_BOOL() { return v.num == 1; }
+        if v.tag == V_INT() { return v.num != 0; }
+        if v.tag == V_STR() { return self.strings.string_len(v.num) > 0; }
+        v.count > 0
+    }
+
+    // The rendered form of a value. Arrays and maps have no scalar rendering,
+    // so they append nothing rather than a debug spelling that would silently
+    // land in published HTML.
+    fn append_scalar(borrow self, index: u64, inout out: StrBuf) {
+        let v = self.at(index);
+        if v.tag == V_STR() { self.strings.append(v.num, inout out); }
+        else if v.tag == V_INT() { out.push_str(text.decimal(v.num)); }
+        else if v.tag == V_BOOL() { if v.num == 1 { out.push_str("true"); } else { out.push_str("false"); } }
+    }
+
+    fn scalar(borrow self, index: u64) -> StrBuf {
+        let mut out = StrBuf.new();
+        self.append_scalar(index, inout out);
+        out
+    }
+
+    // The pool id of a string value, interning a rendered form for the other
+    // scalar kinds so comparison and sorting have one representation.
+    fn scalar_id(inout self, index: u64) -> u64 {
+        let v = self.at(index);
+        if v.tag == V_STR() { return v.num; }
+        let rendered = self.scalar(index);
+        self.strings.intern(borrow rendered)
+    }
+
+    fn equal(borrow self, a: u64, b: u64) -> bool {
+        let va = self.at(a);
+        let vb = self.at(b);
+        if va.tag != vb.tag { return false; }
+        if va.tag == V_NULL() { return true; }
+        if va.tag == V_STR() { return self.strings.compare(va.num, vb.num) == 1; }
+        if va.tag == V_ARRAY() || va.tag == V_MAP() { return a == b; }
+        va.num == vb.num
+    }
+
+    fn error(inout self, code: u64, line: u64, detail: StrBuf, subject: u64) {
+        let detail_id = self.strings.intern(borrow detail);
+        self.diags.push(Diag { code: code, line: line, detail: detail_id, subject: subject });
+    }
+
+    fn error_count(borrow self) -> u64 { self.diags.len() }
+
+    // One diagnostic per line, `code:line: detail (subject)`, sorted by nothing
+    // because the arenas already record them in source order.
+    fn append_diagnostics(borrow self, inout out: StrBuf) {
+        let mut i: u64 = 0;
+        while i < self.diags.len() {
+            let d = self.diags.get_or(i, empty_diag());
+            out.push_str(code_name(d.code));
+            out.push_str(":");
+            out.push_str(text.decimal(d.line));
+            out.push_str(": ");
+            self.strings.append(d.detail, inout out);
+            if d.subject != NONE() {
+                out.push_str(" (");
+                self.strings.append(d.subject, inout out);
+                out.push_str(")");
+            }
+            out.push_str("\n");
+            i += 1;
+        }
+    }
+}
+
+pub fn code_name(code: u64) -> StrBuf {
+    if code == E_FRONT_MATTER() { "front-matter" }
+    else if code == E_MARKDOWN() { "markdown" }
+    else if code == E_TEMPLATE() { "template" }
+    else if code == E_SHORTCODE() { "shortcode" }
+    else { "unknown" }
+}

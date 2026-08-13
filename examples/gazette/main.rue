@@ -1,0 +1,628 @@
+// gazette libraries — TOML front matter, a Markdown subset, and a template
+// engine, written in Rue (ADR-0072 Phase 3, RUE-1483).
+//
+// These are the three text-processing components the gazette static site
+// generator needs to build the live rue-lang.dev corpus, and ADR-0072
+// Decision 1 keeps them as modules inside the example: promoting any of them
+// into `std` is a separate, later decision that nothing here presumes.
+//
+// This root is the libraries' driver, NOT gazette itself — content discovery,
+// the page model, section indexes, the RSS feed, and the output tree are
+// RUE-1484. What lives here is a self-test that exercises every construct in
+// the three documented subsets, and a `render` mode that runs one Markdown
+// file through the real pipeline so the libraries can be checked against the
+// actual corpus.
+//
+//   gazette                                     run the self-test
+//   gazette render [-t NAME=PATH]… [-u URL] [--template-out NAME] FILE.md
+//
+// `-t` registers a template under the name content refers to it by, which is
+// how the `render` mode gets `shortcodes/rule.html` without a directory walk;
+// `-u` supplies the page's permalink, which fragment and relative links in the
+// page's own content resolve against; `--template-out` renders the page
+// through a registered template instead of emitting the Markdown body alone.
+//
+// `scripts/gazette-corpus-diff.py` drives the body-only mode over the whole
+// live corpus and diffs it against the pinned Zola, which is how the Markdown
+// library's fidelity claim is checked rather than asserted.
+//
+// Each module documents its own subset in its header; each rejects constructs
+// outside that subset with a diagnostic rather than wrong output, which is the
+// dogfooding pressure ADR-0072 Decision 3 asks for.
+//
+// The modules: text.rue (byte helpers), pool.rue (string interning),
+// value.rue (the shared value arena and diagnostics), frontmatter.rue,
+// tmpl_ast.rue / tmpl_parse.rue / tmpl_eval.rue (the template engine),
+// markdown.rue (blocks, inlines, and the shortcode pass), this root (I/O and
+// the self-test).
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const frontmatter = @import("frontmatter.rue");
+const markdown = @import("markdown.rue");
+const text = @import("text.rue");
+const tmpl_eval = @import("tmpl_eval.rue");
+const tmpl_parse = @import("tmpl_parse.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const OptStr = std.option.Option(StrBuf);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+
+struct FileInput { data: StrBuf, ok: bool }
+
+fn read_file(borrow path: StrBuf) -> FileInput {
+    let mut raw = Bytes.new();
+    let mut f = match std.fs.File.open(borrow path) {
+        FileRes.Ok(file) => file,
+        FileRes.Err(_e) => { return FileInput { data: StrBuf.new(), ok: false }; },
+    };
+    let mut ok = true;
+    let chunk: u64 = 65536;
+    loop {
+        raw.reserve(chunk);
+        let n = match f.read(inout raw) {
+            ReadRes.Ok(k) => k,
+            ReadRes.Err(_e) => { ok = false; 0 },
+        };
+        if n == 0 { break; }
+    }
+    let _ = f.close();
+    FileInput { data: StrBuf.from_bytes(borrow raw), ok: ok }
+}
+
+fn str_eq(borrow a: StrBuf, flag: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow a, borrow flag)
+}
+
+// Bind the globals every render needs: the site base URL that `get_url` and
+// `@/…` links resolve against, the section table `get_section` reads, and the
+// current page's permalink, which fragment and relative links resolve against.
+// The page model that computes a real permalink from a content path is
+// RUE-1484; the libraries take it as an input.
+fn bind_site(inout eng: ast.Engine, base_url: StrBuf) {
+    let base_key = eng.key("__base_url");
+    let base = eng.arena.string(borrow base_url);
+    eng.bind(base_key, base);
+    let sections_key = eng.key("__sections");
+    let empty = value.Entries.new();
+    let sections = eng.arena.map(borrow empty);
+    eng.bind(sections_key, sections);
+    let page_key = eng.key("__page_url");
+    let page = eng.arena.string(borrow base_url);
+    eng.bind(page_key, page);
+}
+
+// Replace, never push: this is called once per page, and a site build uses one
+// Engine for the whole corpus (RUE-1484), so pushing would grow the binding
+// stack by one per page and push `__base_url` — bound first, found last by the
+// innermost-first `lookup` — further down on every one of them.
+fn bind_page_url(inout eng: ast.Engine, borrow url: StrBuf) {
+    let page_key = eng.key("__page_url");
+    let page = eng.arena.string(borrow url);
+    eng.set_global(page_key, page);
+}
+
+// ---------------------------------------------------------------------------
+// render mode
+// ---------------------------------------------------------------------------
+
+// Run one file through the whole pipeline: front matter, shortcode expansion,
+// Markdown rendering, and — when `--template-out` names one — a template.
+//
+// `template_out` is NONE for the plain body-only mode the corpus differential
+// uses. When it names a template, the front-matter map gains a `content` key
+// holding the rendered body and is bound as `page`, which is the shape a page
+// template reads. The page model that builds that map from a real content tree
+// is RUE-1484; this is the libraries' driver, not that model.
+fn render_mode(inout eng: ast.Engine, borrow path: StrBuf, template_out: u64) -> bool {
+    let input = read_file(borrow path);
+    if !input.ok {
+        let mut message = StrBuf.new();
+        message.push_str("gazette: cannot read ");
+        message.push_str(path.clone());
+        message.push_str("\n");
+        print(message);
+        return false;
+    }
+    let source = input.data;
+    let front = frontmatter.parse(inout eng.arena, borrow source);
+    let expanded = markdown.expand_shortcodes(
+        inout eng, borrow source, front.body_start, front.body_line,
+    );
+    let doc = markdown.render(inout eng, borrow expanded, front.body_line);
+
+    let mut out = StrBuf.new();
+    if template_out == ast.NONE() {
+        out.append_borrowed(borrow doc.html);
+    } else {
+        let content_key = eng.key("content");
+        let content = eng.arena.string(borrow doc.html);
+        let mut fields = value.Entries.new();
+        let mut i: u64 = 0;
+        while i < eng.arena.length(front.root) {
+            fields.push(eng.arena.entry_at(front.root, i));
+            i += 1;
+        }
+        fields.push(value.Entry { key: content_key, value: content });
+        let page = eng.arena.map(borrow fields);
+        let page_key = eng.key("page");
+        eng.set_global(page_key, page);
+        let _ = tmpl_eval.render(inout eng, template_out, inout out);
+    }
+    print(out);
+    // The whole run's diagnostic count, not the per-pass flags: shortcode
+    // expansion happens before block rendering, so a page whose only fault is
+    // an unknown shortcode would otherwise exit zero with a hole in it.
+    eng.arena.error_count() == 0
+}
+
+// ---------------------------------------------------------------------------
+// self-test
+// ---------------------------------------------------------------------------
+
+fn check(inout report: StrBuf, inout failures: u64, name: StrBuf, borrow got: StrBuf, want: StrBuf) {
+    if StrBuf.equals_borrowed(borrow got, borrow want) {
+        report.push_str("ok   ");
+        report.push_str(name);
+        report.push_str("\n");
+    } else {
+        failures += 1;
+        report.push_str("FAIL ");
+        report.push_str(name);
+        report.push_str("\n  want: ");
+        report.push_str(want);
+        report.push_str("\n  got:  ");
+        report.append_borrowed(borrow got);
+        report.push_str("\n");
+    }
+}
+
+fn yes_no(b: bool) -> StrBuf { if b { "yes" } else { "no" } }
+
+fn render_md(inout eng: ast.Engine, source: StrBuf) -> StrBuf {
+    let doc = markdown.render(inout eng, borrow source, 1);
+    doc.html
+}
+
+fn self_test(inout report: StrBuf) -> u64 {
+    let mut failures: u64 = 0;
+
+    // --- front matter -------------------------------------------------------
+    let mut arena = value.Arena.new();
+    let mut page = StrBuf.new();
+    page.push_str("+++\ntitle = \"Scope\"\nweight = 12\nsort_by = \"weight\"\ngenerate_feeds = true\ndate = 2026-06-11\n# a comment\n\n[extra]\nauthors = [\"steve\", \"claude\"]\nprompt = \"\"\"\nline one\nline two\n\"\"\"\n+++\n\nbody\n");
+    let front = frontmatter.parse(inout arena, borrow page);
+    let mut summary = StrBuf.new();
+    summary.push_str(arena.scalar(arena.map_get_literal(front.root, "title")));
+    summary.push_str("/");
+    summary.push_str(arena.scalar(arena.map_get_literal(front.root, "weight")));
+    summary.push_str("/");
+    summary.push_str(arena.scalar(arena.map_get_literal(front.root, "generate_feeds")));
+    summary.push_str("/");
+    summary.push_str(arena.scalar(arena.map_get_literal(front.root, "date")));
+    let extra = arena.map_get_literal(front.root, "extra");
+    let authors = arena.map_get_literal(extra, "authors");
+    summary.push_str("/");
+    summary.push_str(text.decimal(arena.length(authors)));
+    summary.push_str("/");
+    summary.push_str(arena.scalar(arena.item(authors, 1)));
+    summary.push_str("/");
+    let prompt = arena.map_get_literal(extra, "prompt");
+    summary.push_str(text.decimal(arena.length(prompt)));
+    summary.push_str("/");
+    summary.push_str(text.decimal(arena.error_count()));
+    check(inout report, inout failures, "front-matter scalars, table, array, multi-line string",
+        borrow summary, "Scope/12/true/2026-06-11/2/claude/18/0");
+
+    // Constructs outside the subset are diagnostics, not guesses.
+    let mut rejected = value.Arena.new();
+    let mut bad = StrBuf.new();
+    bad.push_str("+++\na = 'literal'\nb = { x = 1 }\nc.d = 1\n[deep.table]\ne = -3\n+++\n");
+    let _ = frontmatter.parse(inout rejected, borrow bad);
+    check(inout report, inout failures, "front-matter rejects out-of-subset constructs",
+        borrow text.decimal(rejected.error_count()), "5");
+
+    // --- markdown -----------------------------------------------------------
+    let mut eng = ast.Engine.new();
+    bind_site(inout eng, "https://rue-lang.dev");
+
+    check(inout report, inout failures, "headings carry a slug id",
+        borrow render_md(inout eng, "## Behavior Categories\n"),
+        "<h2 id=\"behavior-categories\">Behavior Categories</h2>\n");
+
+    check(inout report, inout failures, "paragraph keeps soft line breaks",
+        borrow render_md(inout eng, "first line\nsecond line\n"),
+        "<p>first line\nsecond line</p>\n");
+
+    check(inout report, inout failures, "strong, emphasis, and code spans",
+        borrow render_md(inout eng, "a **MUST** b *sharpen* c `@panic` d\n"),
+        "<p>a <strong>MUST</strong> b <em>sharpen</em> c <code>@panic</code> d</p>\n");
+
+    check(inout report, inout failures, "intraword underscores are not emphasis",
+        borrow render_md(inout eng, "the is_bare_key helper\n"),
+        "<p>the is_bare_key helper</p>\n");
+
+    // The whole info string becomes the class, as pulldown-cmark emits it.
+    check(inout report, inout failures, "fenced code escapes its content",
+        borrow render_md(inout eng, "```rue check\nlet a: u8 = 1 < 2;\n```\n"),
+        "<pre><code class=\"language-rue check\">let a: u8 = 1 &lt; 2;\n</code></pre>\n");
+
+    // CommonMark closes a fence at end of input; the specification's
+    // destructors page ends on one, so this must render rather than refuse.
+    check(inout report, inout failures, "end of input closes a fence",
+        borrow render_md(inout eng, "```rue\nlet a = 1;\n"),
+        "<pre><code class=\"language-rue\">let a = 1;\n</code></pre>\n");
+
+    check(inout report, inout failures, "tight unordered list",
+        borrow render_md(inout eng, "- one\n- two\n  wrapped\n"),
+        "<ul>\n<li>one</li>\n<li>two\nwrapped</li>\n</ul>\n");
+
+    check(inout report, inout failures, "ordered list numbering",
+        borrow render_md(inout eng, "3. three\n4. four\n"),
+        "<ol start=\"3\">\n<li>three</li>\n<li>four</li>\n</ol>\n");
+
+    check(inout report, inout failures, "block quote nests block content",
+        borrow render_md(inout eng, "> quoted **text**\n"),
+        "<blockquote>\n<p>quoted <strong>text</strong></p>\n</blockquote>\n");
+
+    check(inout report, inout failures, "thematic break",
+        borrow render_md(inout eng, "---\n"), "<hr />\n");
+
+    // GFM's `\|` cell escape applies inside code spans too, which is how the
+    // specification's operator tables spell the bitwise-or tokens.
+    check(inout report, inout failures, "pipe table, with escaped pipes in cells",
+        borrow render_md(inout eng, "| Category | Description |\n|----------|-------------|\n| `syntax` | Grammar rules |\n| `\\|\\|` | logical or |\n"),
+        "<table><thead><tr><th>Category</th><th>Description</th></tr></thead><tbody>\n<tr><td><code>syntax</code></td><td>Grammar rules</td></tr>\n<tr><td><code>||</code></td><td>logical or</td></tr>\n</tbody></table>\n");
+
+    // Link destinations take Zola's four routes: absolute and parent-relative
+    // links pass through, `#fragment` and bare relative paths gain the page's
+    // permalink, and `@/…` resolves to a site route.
+    bind_page_url(inout eng, borrow "https://rue-lang.dev/spec/02-lexical-structure/05-builtins/");
+    check(inout report, inout failures, "external, anchor, relative, and internal links",
+        borrow render_md(inout eng, "[RFC](https://example.test/x) [here](#directives) [up](../#zero-sized-types) [math](math/) [Move](@/03-types/08-move-semantics.md#the-copy-directive)\n"),
+        "<p><a href=\"https://example.test/x\">RFC</a> <a href=\"https://rue-lang.dev/spec/02-lexical-structure/05-builtins/#directives\">here</a> <a href=\"../#zero-sized-types\">up</a> <a href=\"https://rue-lang.dev/spec/02-lexical-structure/05-builtins/math/\">math</a> <a href=\"https://rue-lang.dev/03-types/08-move-semantics/#the-copy-directive\">Move</a></p>\n");
+
+    check(inout report, inout failures, "reference links resolve against their definition",
+        borrow render_md(inout eng, "see the [branch][first-attempt].\n\n[first-attempt]: https://example.test/tree\n"),
+        "<p>see the <a href=\"https://example.test/tree\">branch</a>.</p>\n");
+
+    check(inout report, inout failures, "image",
+        borrow render_md(inout eng, "![a sprig](/brand/sprig.png)\n"),
+        "<p><img src=\"/brand/sprig.png\" alt=\"a sprig\" /></p>\n");
+
+    // The summary marker emits nothing and records where the summary stops.
+    let mut with_more = StrBuf.new();
+    with_more.push_str("intro paragraph\n\n<!-- more -->\n\nrest\n");
+    let doc = markdown.render(inout eng, borrow with_more, 1);
+    let cut = text.slice(borrow doc.html, 0, doc.summary_end);
+    check(inout report, inout failures, "<!-- more --> marks the summary cut",
+        borrow cut, "<p>intro paragraph</p>\n");
+    check(inout report, inout failures, "<!-- more --> leaves Zola's anchor span",
+        borrow doc.html,
+        "<p>intro paragraph</p>\n<span id=\"continue-reading\"></span>\n<p>rest</p>\n");
+
+    // CommonMark §6.1: a code span's line endings become spaces. Eight corpus
+    // pages hard-wrap a code span across a line break.
+    check(inout report, inout failures, "code spans fold soft line breaks to spaces",
+        borrow render_md(inout eng, "takes a `inout\nstr` argument\n"),
+        "<p>takes a <code>inout str</code> argument</p>\n");
+
+    // Two trailing spaces are a hard line break, not paragraph padding.
+    check(inout report, inout failures, "hard line breaks",
+        borrow render_md(inout eng, "first  \nsecond\n"),
+        "<p>first<br />\nsecond</p>\n");
+
+    // Entity references survive prose unchanged instead of gaining an escape
+    // on every render; inside code they stay literal, as CommonMark specifies.
+    check(inout report, inout failures, "HTML entities are not double-escaped",
+        borrow render_md(inout eng, "AT&amp;T and &#169; and a bare & and `&amp;`\n"),
+        "<p>AT&amp;T and &#169; and a bare &amp; and <code>&amp;amp;</code></p>\n");
+
+    check(inout report, inout failures, "URI autolinks become links",
+        borrow render_md(inout eng, "see <https://example.test/a?b=1&c=2>\n"),
+        "<p>see <a href=\"https://example.test/a?b=1&amp;c=2\">https://example.test/a?b=1&amp;c=2</a></p>\n");
+
+    check(inout report, inout failures, "raw inline HTML still passes through",
+        borrow render_md(inout eng, "a <kbd>Ctrl</kbd> b\n"),
+        "<p>a <kbd>Ctrl</kbd> b</p>\n");
+
+    // GFM fixes every body row to the header's width.
+    check(inout report, inout failures, "table rows are padded and truncated to the header width",
+        borrow render_md(inout eng, "| a | b |\n|---|---|\n| 1 |\n| 1 | 2 | 3 |\n"),
+        "<table><thead><tr><th>a</th><th>b</th></tr></thead><tbody>\n<tr><td>1</td><td></td></tr>\n<tr><td>1</td><td>2</td></tr>\n</tbody></table>\n");
+
+    let before = eng.arena.error_count();
+    let _ = render_md(inout eng, "Heading\n=======\n\n    indented code\n\n~~struck~~\n\n- a\n  - nested\n\n<a@b.test>\n");
+    let mut rejections = StrBuf.new();
+    rejections.push_str(text.decimal(eng.arena.error_count() - before));
+    check(inout report, inout failures, "markdown rejects out-of-subset constructs",
+        borrow rejections, "5");
+
+    // BOTH setext markers. `---` under paragraph text used to slip past as a
+    // paragraph plus an `<hr />` with no diagnostic at all.
+    let dashes_before = eng.arena.error_count();
+    let _ = render_md(inout eng, "Some text\n---\n");
+    check(inout report, inout failures, "`---` setext headings are rejected too",
+        borrow text.decimal(eng.arena.error_count() - dashes_before), "1");
+
+    // A `---` after a blank line is still an ordinary thematic break.
+    let rule_before = eng.arena.error_count();
+    let _ = render_md(inout eng, "Some text\n\n---\n");
+    check(inout report, inout failures, "a freestanding `---` stays a thematic break",
+        borrow text.decimal(eng.arena.error_count() - rule_before), "0");
+
+    // Deeply nested input reports and stops instead of overflowing the stack.
+    let mut deep = StrBuf.new();
+    let mut d: u64 = 0;
+    while d < 400 { deep.push_str("> "); d += 1; }
+    deep.push_str("bottom\n");
+    let deep_before = eng.arena.error_count();
+    let _ = render_md(inout eng, deep);
+    check(inout report, inout failures, "nesting past the depth guard is a diagnostic, not a crash",
+        borrow yes_no(eng.arena.error_count() > deep_before), "yes");
+
+    // --- templates ----------------------------------------------------------
+    let mut tpl = ast.Engine.new();
+    bind_site(inout tpl, "https://rue-lang.dev/");
+
+    let mut base_src = StrBuf.new();
+    base_src.push_str("<html><title>{% block title %}{{ config.title }}{% endblock %}</title><body>{% block content %}{% endblock %}</body></html>");
+    let _ = tmpl_parse.parse_template(inout tpl, "base.html", borrow base_src);
+
+    let mut mid_src = StrBuf.new();
+    mid_src.push_str("{% extends \"base.html\" %}{% block content %}<main>{% block inner %}{% endblock %}</main>{% endblock %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "mid.html", borrow mid_src);
+
+    let mut leaf_src = StrBuf.new();
+    leaf_src.push_str("{% extends \"mid.html\" %}{% block title %}{{ page.title }} | {{ config.title }}{% endblock %}{% block inner %}{{ page.body | safe }}{% endblock %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "leaf.html", borrow leaf_src);
+
+    let mut config_fields = value.Entries.new();
+    let config_title_key = tpl.key("title");
+    let config_title = tpl.arena.literal("Rue");
+    config_fields.push(value.Entry { key: config_title_key, value: config_title });
+    let config = tpl.arena.map(borrow config_fields);
+    let config_key = tpl.key("config");
+    tpl.bind(config_key, config);
+
+    let mut page_fields = value.Entries.new();
+    let page_title_key = tpl.key("title");
+    let page_title = tpl.arena.literal("Week One");
+    let page_body_key = tpl.key("body");
+    let page_body = tpl.arena.literal("<p>rendered</p>");
+    let page_date_key = tpl.key("date");
+    let page_date = tpl.arena.literal("2025-12-24");
+    page_fields.push(value.Entry { key: page_title_key, value: page_title });
+    page_fields.push(value.Entry { key: page_body_key, value: page_body });
+    page_fields.push(value.Entry { key: page_date_key, value: page_date });
+    let page_value = tpl.arena.map(borrow page_fields);
+    let page_key = tpl.key("page");
+    tpl.bind(page_key, page_value);
+
+    let mut rendered = StrBuf.new();
+    let leaf_name = tpl.key("leaf.html");
+    let _ = tmpl_eval.render(inout tpl, leaf_name, inout rendered);
+    check(inout report, inout failures, "three-level inheritance with nested block override",
+        borrow rendered,
+        "<html><title>Week One | Rue</title><body><main><p>rendered</p></main></body></html>");
+
+    // Filters and helpers, in one template so the whole set is exercised
+    // through the ordinary parse-and-render path.
+    let mut filters_src = StrBuf.new();
+    filters_src.push_str("{{ page.date | date(format=\"%Y · %m · %d\") }}|{{ page.date | date(format=\"%-d %B %Y\") }}|{{ page.title | upper }}|{{ page.title | lower }}|{{ page.body | striptags }}|{{ page.title | truncate(length=4) }}|{{ names | join(sep=\", \") }}|{{ names | slice(end=2) | join(sep=\",\") }}|{{ names | sort | join(sep=\",\") }}|{{ missing | default(value=\"fallback\") }}|{{ one | pluralize }}{{ two | pluralize }}|{{ get_url(path='style.css') }}|{% for n in names %}{{ loop.index }}{% if not loop.last %}-{% endif %}{% endfor %}|{% if two > one and page.title != \"x\" %}cmp{% endif %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "filters.html", borrow filters_src);
+
+    let mut names = value.U64s.new();
+    let n0 = tpl.arena.literal("zeta");
+    let n1 = tpl.arena.literal("alpha");
+    let n2 = tpl.arena.literal("mu");
+    names.push(n0);
+    names.push(n1);
+    names.push(n2);
+    let names_value = tpl.arena.array(borrow names);
+    let names_key = tpl.key("names");
+    tpl.bind(names_key, names_value);
+    let one_key = tpl.key("one");
+    let one = tpl.arena.integer(1);
+    tpl.bind(one_key, one);
+    let two_key = tpl.key("two");
+    let two = tpl.arena.integer(2);
+    tpl.bind(two_key, two);
+
+    let mut filtered = StrBuf.new();
+    let filters_name = tpl.key("filters.html");
+    let _ = tmpl_eval.render(inout tpl, filters_name, inout filtered);
+    check(inout report, inout failures, "the eleven filters and the URL helper",
+        borrow filtered,
+        "2025 · 12 · 24|24 December 2025|WEEK ONE|week one|rendered|Week…|zeta, alpha, mu|zeta,alpha|alpha,mu,zeta|fallback|s|https:&#x2F;&#x2F;rue-lang.dev&#x2F;style.css|1-2-3|cmp");
+
+    // Shortcodes render through the general engine: the argument grammar is the
+    // template expression grammar and the body is an ordinary template.
+    let mut shortcode_src = StrBuf.new();
+    shortcode_src.push_str("<div class=\"rule\" id=\"r-{{ id }}\"><a href=\"#r-{{ id }}\">[{{ id }}]</a>{% if cat %} <em>{{ cat | upper }}</em>{% endif %}</div>");
+    let _ = tmpl_parse.parse_template(inout tpl, "shortcodes/rule.html", borrow shortcode_src);
+
+    let mut body = StrBuf.new();
+    body.push_str("{{ rule(id=\"1.3:1\", cat=\"normative\") }}\n\nA conforming implementation **MUST** comply.\n");
+    let expanded = markdown.expand_shortcodes(inout tpl, borrow body, 0, 1);
+    let shortcode_doc = markdown.render(inout tpl, borrow expanded, 1);
+    check(inout report, inout failures, "shortcodes expand through the template engine",
+        borrow shortcode_doc.html,
+        "<div class=\"rule\" id=\"r-1.3:1\"><a href=\"#r-1.3:1\">[1.3:1]</a> <em>NORMATIVE</em></div>\n<p>A conforming implementation <strong>MUST</strong> comply.</p>\n");
+
+    let unknown_before = tpl.arena.error_count();
+    let mut unknown = StrBuf.new();
+    unknown.push_str("{{ nowhere(x=1) }}\n");
+    let _ = markdown.expand_shortcodes(inout tpl, borrow unknown, 0, 1);
+    check(inout report, inout failures, "an unknown shortcode is an error, not silence",
+        borrow text.decimal(tpl.arena.error_count() - unknown_before), "1");
+
+    // Macros, recursion, and `starts_with` — the production navigation's whole
+    // mechanism, rendered through the general engine. `spec/base.html` defines
+    // `render_nav` and its children call it, so the macro is defined on a
+    // PARENT template and invoked from a child's block, and the recursion is
+    // gated on a prefix test the template itself evaluates.
+    let mut nav_base = StrBuf.new();
+    nav_base.push_str("{% macro render_nav(node, current, depth=0) %}<ul>{% for child in node.children %}<li class=\"{% if current | starts_with(prefix=child.url) %}active{% endif %}\">{{ child.title }}{% if current | starts_with(prefix=child.url) %}{{ self::render_nav(node=child, current=current, depth=depth) }}{% endif %}</li>{% endfor %}</ul>{% endmacro %}{% block nav %}{% endblock %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "nav/base.html", borrow nav_base);
+
+    let mut nav_page = StrBuf.new();
+    nav_page.push_str("{% extends \"nav/base.html\" %}{% block nav %}{{ self::render_nav(node=tree, current=here) }}{% endblock %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "nav/page.html", borrow nav_page);
+
+    // tree = { children: [ {url:"/a/", title:"A", children:[ {url:"/a/b/", …} ]},
+    //                      {url:"/z/", title:"Z", children:[]} ] }
+    let leaf = nav_node(inout tpl, "/a/b/", "B", NO_CHILDREN());
+    let mut leaves = value.U64s.new();
+    leaves.push(leaf);
+    let leaf_list = tpl.arena.array(borrow leaves);
+    let branch = nav_node(inout tpl, "/a/", "A", leaf_list);
+    let other = nav_node(inout tpl, "/z/", "Z", NO_CHILDREN());
+    let mut roots = value.U64s.new();
+    roots.push(branch);
+    roots.push(other);
+    let root_list = tpl.arena.array(borrow roots);
+    let tree = nav_node(inout tpl, "/", "Root", root_list);
+    let tree_key = tpl.key("tree");
+    tpl.bind(tree_key, tree);
+    let here_key = tpl.key("here");
+    let here = tpl.arena.literal("/a/b/");
+    tpl.bind(here_key, here);
+
+    let mut nav_out = StrBuf.new();
+    let nav_name = tpl.key("nav/page.html");
+    let _ = tmpl_eval.render(inout tpl, nav_name, inout nav_out);
+    check(inout report, inout failures, "recursive macro with starts_with, defined on a parent template",
+        borrow nav_out,
+        "<ul><li class=\"active\">A<ul><li class=\"active\">B<ul></ul></li></ul></li><li class=\"\">Z</li></ul>");
+
+    // A macro that recurses without a base case reports and stops.
+    let mut runaway = StrBuf.new();
+    runaway.push_str("{% macro loopy(n) %}x{{ self::loopy(n=n) }}{% endmacro %}{{ self::loopy(n=1) }}");
+    let _ = tmpl_parse.parse_template(inout tpl, "runaway.html", borrow runaway);
+    let runaway_before = tpl.arena.error_count();
+    let mut runaway_out = StrBuf.new();
+    let runaway_name = tpl.key("runaway.html");
+    let _ = tmpl_eval.render(inout tpl, runaway_name, inout runaway_out);
+    check(inout report, inout failures, "runaway macro recursion is a diagnostic, not a crash",
+        borrow yes_no(tpl.arena.error_count() > runaway_before), "yes");
+
+    // What is still out of the subset stays out, and says so.
+    let macro_before = tpl.arena.error_count();
+    let mut rejected_src = StrBuf.new();
+    rejected_src.push_str("{% include \"x.html\" %}{% filter upper %}{% endfilter %}{{ other::nav() }}{% if a is defined %}{% endif %}");
+    let _ = tmpl_parse.parse_template(inout tpl, "rejected.html", borrow rejected_src);
+    check(inout report, inout failures, "templates reject the statements still outside the subset",
+        borrow text.decimal(tpl.arena.error_count() - macro_before), "5");
+
+    failures
+}
+
+fn NO_CHILDREN() -> u64 { ast.NONE() }
+
+// A `{ url, title, children }` map, the shape the navigation macro walks.
+fn nav_node(inout tpl: ast.Engine, url: StrBuf, title: StrBuf, children: u64) -> u64 {
+    let mut fields = value.Entries.new();
+    let url_key = tpl.key("url");
+    let url_value = tpl.arena.string(borrow url);
+    let title_key = tpl.key("title");
+    let title_value = tpl.arena.string(borrow title);
+    let children_key = tpl.key("children");
+    let children_value = if children == ast.NONE() {
+        let empty = value.U64s.new();
+        tpl.arena.array(borrow empty)
+    } else {
+        children
+    };
+    fields.push(value.Entry { key: url_key, value: url_value });
+    fields.push(value.Entry { key: title_key, value: title_value });
+    fields.push(value.Entry { key: children_key, value: children_value });
+    tpl.arena.map(borrow fields)
+}
+
+fn main() -> i32 {
+    let argc = std.env.arg_count();
+    if argc <= 1 {
+        let mut report = StrBuf.new();
+        let failures = self_test(inout report);
+        report.push_str("gazette libraries self-test: ");
+        if failures == 0 { report.push_str("all checks passed\n"); }
+        else {
+            report.push_str(text.decimal(failures));
+            report.push_str(" failing check(s)\n");
+        }
+        print(report);
+        return if failures == 0 { 0 } else { 1 };
+    }
+
+    let mut eng = ast.Engine.new();
+    bind_site(inout eng, "https://rue-lang.dev");
+
+    let mut mode_render = false;
+    let mut template_out = ast.NONE();
+    let mut target = StrBuf.new();
+    let mut have_target = false;
+    let mut i: u64 = 1;
+    while i < argc {
+        match std.env.arg(i) {
+            OptStr.Some(a) => {
+                if str_eq(borrow a, "render") {
+                    mode_render = true;
+                } else if str_eq(borrow a, "-u") {
+                    i += 1;
+                    match std.env.arg(i) {
+                        OptStr.Some(url) => { bind_page_url(inout eng, borrow url); },
+                        OptStr.None => { return 2; },
+                    }
+                } else if str_eq(borrow a, "--template-out") {
+                    i += 1;
+                    match std.env.arg(i) {
+                        OptStr.Some(name) => { template_out = eng.key(name); },
+                        OptStr.None => { return 2; },
+                    }
+                } else if str_eq(borrow a, "-t") {
+                    i += 1;
+                    match std.env.arg(i) {
+                        OptStr.Some(spec) => {
+                            let eq = text.find_byte(borrow spec, 61, 0);
+                            if eq >= spec.len() {
+                                print("gazette: -t expects NAME=PATH\n");
+                                return 2;
+                            }
+                            let name = text.slice(borrow spec, 0, eq);
+                            let path = text.slice(borrow spec, eq + 1, spec.len());
+                            let loaded = read_file(borrow path);
+                            if !loaded.ok {
+                                let mut message = StrBuf.new();
+                                message.push_str("gazette: cannot read template ");
+                                message.push_str(path);
+                                message.push_str("\n");
+                                print(message);
+                                return 2;
+                            }
+                            let _ = tmpl_parse.parse_template(inout eng, name, borrow loaded.data);
+                        },
+                        OptStr.None => { return 2; },
+                    }
+                } else {
+                    target = a;
+                    have_target = true;
+                }
+            },
+            OptStr.None => {},
+        }
+        i += 1;
+    }
+
+    if !mode_render || !have_target {
+        print("usage: gazette [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
+        return 2;
+    }
+
+    let ok = render_mode(inout eng, borrow target, template_out);
+    let mut diagnostics = StrBuf.new();
+    eng.arena.append_diagnostics(inout diagnostics);
+    if diagnostics.len() > 0 { print(diagnostics); }
+    if ok { 0 } else { 1 }
+}

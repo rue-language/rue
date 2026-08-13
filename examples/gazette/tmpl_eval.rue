@@ -1,0 +1,880 @@
+// Evaluation and rendering for gazette's template language.
+//
+// FILTERS — the set ADR-0072 Decision 3 names, which is the set the site's own
+// templates use: `safe`, `default`, `date`, `upper`, `lower`, `truncate`,
+// `striptags`, `pluralize`, `sort`, `slice`, `join`. Plus `starts_with`, which
+// Decision 3 gained with the macro amendment: the production specification
+// sidebar gates its `active` class and its own recursion on Tera's
+// `x is starting_with(y)`, and the test has to be evaluated by the engine
+// rather than precomputed by the host — precomputing it would move measured
+// work out of the program the benchmark exists to measure. An unknown filter
+// is a diagnostic, not a pass-through.
+//
+// MACROS render rather than evaluate — a macro call produces output, not a
+// value — so `{{ self::name(…) }}` is handled in `render_node` and is refused
+// anywhere else. A macro shares `render_shortcode`'s argument-binding and
+// scope machinery through `bind_call_arguments`, so the two cannot drift; the
+// only difference is that a macro's declared parameters supply defaults and
+// make an undeclared argument an error. Macro output is raw, as in Tera.
+//
+// FUNCTIONS — `get_url` and `get_section`, the URL and section lookups. Neither
+// knows anything about this corpus: `get_url` joins against the `__base_url`
+// global and resolves Zola's `@/…` internal-link form, and `get_section` is a
+// lookup in the `__sections` global map. The host supplies both globals, so the
+// engine holds no site-specific data and no page or shortcode name appears
+// anywhere in this file. That is ADR-0072 Decision 3's fairness rule: the
+// corpus is 1,224 `rule` shortcodes to one `preview_feature`, and an engine
+// that recognized either name by hand would beat Tera while passing every
+// output check.
+//
+// AUTO-ESCAPING follows Tera: every `{{ … }}` is HTML-escaped unless its filter
+// chain contains `safe`. Rendered Markdown therefore reaches a page through
+// `{{ page.content | safe }}`, as it does in the production templates.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const text = @import("text.rue");
+const tmpl_parse = @import("tmpl_parse.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn NONE() -> u64 { ast.NONE() }
+
+fn MAX_DEPTH() -> u64 { ast.MAX_DEPTH() }
+
+fn fail(inout eng: ast.Engine, line: u64, detail: StrBuf, subject: u64) {
+    eng.error(value.E_TEMPLATE(), line, detail, subject);
+}
+
+// ---------------------------------------------------------------------------
+// Expression evaluation
+// ---------------------------------------------------------------------------
+
+pub fn eval(inout eng: ast.Engine, index: u64, line: u64) -> u64 {
+    if index == NONE() { return eng.arena.null(); }
+    let e = eng.expr(index);
+
+    if e.tag == ast.EX_STR() { return eng.arena.string_id(e.a); }
+    if e.tag == ast.EX_INT() { return eng.arena.integer(e.a); }
+    if e.tag == ast.EX_BOOL() { return eng.arena.boolean(e.a == 1); }
+    if e.tag == ast.EX_PATH() { return eval_path(inout eng, e); }
+    if e.tag == ast.EX_NOT() {
+        let inner = eval(inout eng, e.a, line);
+        return eng.arena.boolean(!eng.arena.truthy(inner));
+    }
+    if e.tag == ast.EX_BINOP() { return eval_binop(inout eng, e, line); }
+    if e.tag == ast.EX_CALL() { return eval_call(inout eng, e, line); }
+    if e.tag == ast.EX_FILTER() { return eval_filter(inout eng, e, line); }
+    eng.arena.null()
+}
+
+// A dotted path is a scope lookup followed by map descents. A missing root or
+// a missing key yields null, which is what the site's `{% if page.extra.authors %}`
+// guards depend on — Tera treats a missing value in a condition as false.
+fn eval_path(inout eng: ast.Engine, e: ast.Expr) -> u64 {
+    let mut current = eng.lookup(e.a);
+    if current == NONE() { return eng.arena.null(); }
+    let mut i: u64 = 0;
+    while i < e.c {
+        let key = eng.keys.get_or(e.b + i, NONE());
+        current = eng.arena.map_get(current, key);
+        if current == NONE() { return eng.arena.null(); }
+        i += 1;
+    }
+    current
+}
+
+fn eval_binop(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
+    if e.a == ast.OP_AND() {
+        let l = eval(inout eng, e.b, line);
+        if !eng.arena.truthy(l) { return eng.arena.boolean(false); }
+        let r = eval(inout eng, e.c, line);
+        return eng.arena.boolean(eng.arena.truthy(r));
+    }
+    if e.a == ast.OP_OR() {
+        let l = eval(inout eng, e.b, line);
+        if eng.arena.truthy(l) { return eng.arena.boolean(true); }
+        let r = eval(inout eng, e.c, line);
+        return eng.arena.boolean(eng.arena.truthy(r));
+    }
+    let l = eval(inout eng, e.b, line);
+    let r = eval(inout eng, e.c, line);
+    if e.a == ast.OP_EQ() { return eng.arena.boolean(eng.arena.equal(l, r)); }
+    if e.a == ast.OP_NE() { return eng.arena.boolean(!eng.arena.equal(l, r)); }
+    let order = compare_values(inout eng, l, r);
+    if e.a == ast.OP_LT() { return eng.arena.boolean(order == 0); }
+    if e.a == ast.OP_LE() { return eng.arena.boolean(order != 2); }
+    if e.a == ast.OP_GT() { return eng.arena.boolean(order == 2); }
+    if e.a == ast.OP_GE() { return eng.arena.boolean(order != 0); }
+    fail(inout eng, line, "unrecognized comparison", NONE());
+    eng.arena.boolean(false)
+}
+
+// 0 = less, 1 = equal, 2 = greater. Integers compare numerically; anything else
+// compares as its rendered bytes, which is what makes `| sort` over a list of
+// section paths agree with Zola's alphabetical ordering.
+fn compare_values(inout eng: ast.Engine, a: u64, b: u64) -> u64 {
+    if eng.arena.tag(a) == value.V_INT() && eng.arena.tag(b) == value.V_INT() {
+        let x = eng.arena.at(a).num;
+        let y = eng.arena.at(b).num;
+        if x < y { return 0; }
+        if x > y { return 2; }
+        return 1;
+    }
+    let ia = eng.arena.scalar_id(a);
+    let ib = eng.arena.scalar_id(b);
+    eng.arena.strings.compare(ia, ib)
+}
+
+// The value of a named argument, or NONE when it was not supplied.
+fn arg_of(inout eng: ast.Engine, head: u64, name: StrBuf, line: u64) -> u64 {
+    let wanted = eng.arena.strings.intern(borrow name);
+    let mut current = head;
+    while current != NONE() {
+        let a = eng.expr(current);
+        if a.a == wanted { return eval(inout eng, a.b, line); }
+        current = a.next;
+    }
+    NONE()
+}
+
+// ---------------------------------------------------------------------------
+// Functions
+// ---------------------------------------------------------------------------
+
+fn eval_call(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
+    if eng.arena.strings.equals_literal(e.a, "get_url") {
+        let path = arg_of(inout eng, e.b, "path", line);
+        if path == NONE() {
+            fail(inout eng, line, "get_url requires a `path` argument", e.a);
+            return eng.arena.null();
+        }
+        let resolved = resolve_url(inout eng, path);
+        return eng.arena.string(borrow resolved);
+    }
+    if eng.arena.strings.equals_literal(e.a, "get_section") {
+        let path = arg_of(inout eng, e.b, "path", line);
+        if path == NONE() {
+            fail(inout eng, line, "get_section requires a `path` argument", e.a);
+            return eng.arena.null();
+        }
+        let sections_key = eng.key("__sections");
+        let sections = eng.lookup(sections_key);
+        let key = eng.arena.scalar_id(path);
+        let found = eng.arena.map_get(sections, key);
+        if found == NONE() {
+            fail(inout eng, line, "get_section names an unknown section", key);
+            return eng.arena.null();
+        }
+        return found;
+    }
+    if is_macro_reference(borrow eng, e.a) {
+        fail(inout eng, line, "a macro call may only appear as `{{ … }}` output", e.a);
+        return eng.arena.null();
+    }
+    fail(inout eng, line, "unknown template function", e.a);
+    eng.arena.null()
+}
+
+// Zola's `get_url`. An `@/…` argument is an internal content path — the same
+// form the corpus's Markdown links use — and resolves to the page's route;
+// anything else is joined onto the site's base URL.
+fn resolve_url(inout eng: ast.Engine, path_value: u64) -> StrBuf {
+    let raw = eng.arena.scalar(path_value);
+    join_base(inout eng, borrow raw)
+}
+
+// `path` joined onto the site's base URL, resolving Zola's `@/…` content-path
+// form on the way. Shared by the `get_url` function and by the Markdown link
+// renderer, so a link written in content and a link written in a template
+// resolve through one implementation.
+pub fn join_base(inout eng: ast.Engine, borrow path: StrBuf) -> StrBuf {
+    let base_key = eng.key("__base_url");
+    let base_value = eng.lookup(base_key);
+    let base = eng.arena.scalar(base_value);
+
+    let mut base_end = base.len();
+    while base_end > 0 && text.byte_of(borrow base, base_end - 1) == 47 { base_end -= 1; }
+    let mut out = text.slice(borrow base, 0, base_end);
+
+    let rest = if path.starts_with(borrow "@/") {
+        content_route(borrow path, 2)
+    } else {
+        text.slice(borrow path, 0, path.len())
+    };
+    let mut start: u64 = 0;
+    while start < rest.len() && text.byte_of(borrow rest, start) == 47 { start += 1; }
+    out.push(47);
+    let tail = text.slice(borrow rest, start, rest.len());
+    out.append_borrowed(borrow tail);
+    out
+}
+
+// A link destination as authored in page content, resolved the way Zola
+// resolves one. Four cases, and the corpus exercises all four:
+//
+//   `@/…/page.md#a`  an internal content path, resolved to its route
+//   `#anchor`        a fragment on this page, prefixed with its permalink
+//   `page/`          a relative path, likewise prefixed
+//   everything else  left exactly as authored: absolute paths, `../…`
+//                    parent-relative paths, and any `scheme:` URL
+//
+// The permalink comes from the `__page_url` global the host binds per page,
+// which is the same mechanism `__base_url` and `__sections` use.
+pub fn resolve_content_link(inout eng: ast.Engine, borrow raw: StrBuf) -> StrBuf {
+    if raw.starts_with(borrow "@/") {
+        return join_base(inout eng, borrow raw);
+    }
+    if raw.starts_with(borrow "/") || raw.starts_with(borrow "..")
+        || raw.starts_with(borrow "mailto:") || has_scheme(borrow raw) {
+        return text.slice(borrow raw, 0, raw.len());
+    }
+    let page_key = eng.key("__page_url");
+    let page_value = eng.lookup(page_key);
+    let mut out = eng.arena.scalar(page_value);
+    out.append_borrowed(borrow raw);
+    out
+}
+
+// Whether the destination opens with a `scheme://` authority. Checking for the
+// separator rather than a scheme allowlist keeps `data:`-style links out and
+// every ordinary `http`, `https`, and `ftp` link in without an inventory.
+fn has_scheme(borrow raw: StrBuf) -> bool {
+    let at = text.find_from(borrow raw, borrow "://", 0);
+    if at >= raw.len() || at == 0 { return false; }
+    let mut i: u64 = 0;
+    while i < at {
+        if !text.is_alpha(text.byte_of(borrow raw, i)) { return false; }
+        i += 1;
+    }
+    true
+}
+
+// `@/spec/03-types/_index.md#anchor` -> `spec/03-types/#anchor`, matching
+// Zola's route for a content file: `_index.md` is the section itself, any other
+// `.md` becomes a directory-style route.
+pub fn content_route(borrow raw: StrBuf, from: u64) -> StrBuf {
+    let hash = text.find_byte(borrow raw, 35, from);
+    let body = text.slice(borrow raw, from, hash);
+    let mut end = hash;
+    let mut add_slash = false;
+    if body.ends_with(borrow "/_index.md") {
+        end = hash - 9;
+    } else if StrBuf.equals_borrowed(borrow body, borrow "_index.md") {
+        end = from;
+    } else if body.ends_with(borrow ".md") {
+        end = hash - 3;
+        add_slash = true;
+    }
+    let mut out = text.slice(borrow raw, from, end);
+    if add_slash { out.push(47); }
+    let fragment = text.slice(borrow raw, hash, raw.len());
+    out.append_borrowed(borrow fragment);
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Filters
+// ---------------------------------------------------------------------------
+
+fn eval_filter(inout eng: ast.Engine, e: ast.Expr, line: u64) -> u64 {
+    let name = e.b;
+    let args = e.c;
+
+    // `default` must not evaluate its input's absence as an error, and `safe`
+    // is a render-time marker, so both are handled before the input is coerced.
+    if eng.arena.strings.equals_literal(name, "safe") {
+        return eval(inout eng, e.a, line);
+    }
+    let input = eval(inout eng, e.a, line);
+    if eng.arena.strings.equals_literal(name, "default") {
+        if !eng.arena.is_null(input) { return input; }
+        let fallback = arg_of(inout eng, args, "value", line);
+        if fallback == NONE() {
+            fail(inout eng, line, "default requires a `value` argument", name);
+            return eng.arena.null();
+        }
+        return fallback;
+    }
+    if eng.arena.strings.equals_literal(name, "upper") {
+        return map_case(inout eng, input, true);
+    }
+    if eng.arena.strings.equals_literal(name, "lower") {
+        return map_case(inout eng, input, false);
+    }
+    if eng.arena.strings.equals_literal(name, "striptags") {
+        let s = eng.arena.scalar(input);
+        let stripped = text.strip_tags(borrow s);
+        return eng.arena.string(borrow stripped);
+    }
+    if eng.arena.strings.equals_literal(name, "truncate") {
+        return filter_truncate(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "pluralize") {
+        return filter_pluralize(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "date") {
+        return filter_date(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "join") {
+        return filter_join(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "slice") {
+        return filter_slice(inout eng, input, args, line);
+    }
+    if eng.arena.strings.equals_literal(name, "sort") {
+        return filter_sort(inout eng, input, args, line);
+    }
+    // Tera spells this as the test `x is starting_with(y)`. A filter needs no
+    // new grammar and reads the same way, and it must exist in the ENGINE: the
+    // production sidebar gates both the `active` class and its own recursion on
+    // it, and computing it host-side would move measured work out of the
+    // program the benchmark exists to measure.
+    if eng.arena.strings.equals_literal(name, "starts_with") {
+        let prefix = arg_of(inout eng, args, "prefix", line);
+        if prefix == NONE() {
+            fail(inout eng, line, "starts_with requires a `prefix` argument", name);
+            return eng.arena.boolean(false);
+        }
+        let subject = eng.arena.scalar(input);
+        let wanted = eng.arena.scalar(prefix);
+        return eng.arena.boolean(subject.starts_with(borrow wanted));
+    }
+    fail(inout eng, line, "unknown filter", name);
+    input
+}
+
+fn map_case(inout eng: ast.Engine, input: u64, upper: bool) -> u64 {
+    let s = eng.arena.scalar(input);
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let b = text.byte_of(borrow s, i);
+        out.push(if upper { text.upper_byte(b) } else { text.lower_byte(b) });
+        i += 1;
+    }
+    eng.arena.string(borrow out)
+}
+
+// Tera's `truncate`: cut to `length` characters and append `end` (default `…`)
+// only when the value was actually longer. Character counting is UTF-8 aware —
+// a continuation byte does not advance the count — so a truncated summary never
+// splits a multi-byte scalar.
+fn filter_truncate(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    let limit_value = arg_of(inout eng, args, "length", line);
+    if limit_value == NONE() {
+        fail(inout eng, line, "truncate requires a `length` argument", NONE());
+        return input;
+    }
+    let limit = eng.arena.at(limit_value).num;
+    let ending_value = arg_of(inout eng, args, "end", line);
+
+    let s = eng.arena.scalar(input);
+    let mut chars: u64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        let b = text.byte_of(borrow s, i);
+        if b < 128 || b >= 192 {
+            if chars == limit { break; }
+            chars += 1;
+        }
+        i += 1;
+    }
+    if i >= s.len() { return input; }
+    let mut out = text.slice(borrow s, 0, i);
+    if ending_value == NONE() {
+        out.push_str("…");
+    } else {
+        let ending = eng.arena.scalar(ending_value);
+        out.append_borrowed(borrow ending);
+    }
+    eng.arena.string(borrow out)
+}
+
+// Tera's `pluralize`: the empty string for exactly one, `suffix` (default `s`)
+// otherwise. `plural` is the explicit-form argument.
+fn filter_pluralize(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    let n = eng.arena.at(input).num;
+    if eng.arena.tag(input) == value.V_INT() && n == 1 {
+        let singular = arg_of(inout eng, args, "singular", line);
+        if singular != NONE() { return singular; }
+        let empty = eng.empty();
+        return eng.arena.string_id(empty);
+    }
+    let plural = arg_of(inout eng, args, "plural", line);
+    if plural != NONE() { return plural; }
+    let suffix = arg_of(inout eng, args, "suffix", line);
+    if suffix != NONE() { return suffix; }
+    eng.arena.literal("s")
+}
+
+fn filter_join(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    if eng.arena.tag(input) != value.V_ARRAY() {
+        fail(inout eng, line, "join expects an array", NONE());
+        return input;
+    }
+    let sep_value = arg_of(inout eng, args, "sep", line);
+    let sep = if sep_value == NONE() { StrBuf.new() } else { eng.arena.scalar(sep_value) };
+    let mut out = StrBuf.new();
+    let n = eng.arena.length(input);
+    let mut i: u64 = 0;
+    while i < n {
+        if i > 0 { out.append_borrowed(borrow sep); }
+        let element = eng.arena.item(input, i);
+        eng.arena.append_scalar(element, inout out);
+        i += 1;
+    }
+    eng.arena.string(borrow out)
+}
+
+// Tera's `slice(start=, end=)` over an array. Both bounds are optional and
+// clamped; a `start` past the end gives an empty array rather than an error.
+fn filter_slice(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    if eng.arena.tag(input) != value.V_ARRAY() {
+        fail(inout eng, line, "slice expects an array", NONE());
+        return input;
+    }
+    let n = eng.arena.length(input);
+    let start_value = arg_of(inout eng, args, "start", line);
+    let end_value = arg_of(inout eng, args, "end", line);
+    let mut from = if start_value == NONE() { 0 } else { eng.arena.at(start_value).num };
+    let mut to = if end_value == NONE() { n } else { eng.arena.at(end_value).num };
+    if from > n { from = n; }
+    if to > n { to = n; }
+    let mut elements = value.U64s.new();
+    let mut i = from;
+    while i < to {
+        elements.push(eng.arena.item(input, i));
+        i += 1;
+    }
+    eng.arena.array(borrow elements)
+}
+
+// Tera's `sort`, optionally by `attribute`. Insertion sort: the arrays this
+// filter sees are section subsection lists and page lists — tens of elements,
+// never thousands — so the simple stable algorithm is the honest choice, and
+// ADR-0072 wants a later algorithmic improvement to be VISIBLE in the runtime
+// series rather than pre-empted here.
+fn filter_sort(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    if eng.arena.tag(input) != value.V_ARRAY() {
+        fail(inout eng, line, "sort expects an array", NONE());
+        return input;
+    }
+    let attribute = arg_of(inout eng, args, "attribute", line);
+    let attribute_key = if attribute == NONE() { NONE() } else { eng.arena.scalar_id(attribute) };
+
+    let n = eng.arena.length(input);
+    let mut elements = value.U64s.new();
+    let mut i: u64 = 0;
+    while i < n { elements.push(eng.arena.item(input, i)); i += 1; }
+
+    let mut k: u64 = 1;
+    while k < elements.len() {
+        let current = elements.get_or(k, 0);
+        let current_key = sort_key(inout eng, current, attribute_key);
+        let mut j = k;
+        while j > 0 {
+            let prior = elements.get_or(j - 1, 0);
+            let prior_key = sort_key(inout eng, prior, attribute_key);
+            if compare_values(inout eng, prior_key, current_key) != 2 { break; }
+            elements.set(j, prior);
+            j -= 1;
+        }
+        elements.set(j, current);
+        k += 1;
+    }
+    eng.arena.array(borrow elements)
+}
+
+fn sort_key(inout eng: ast.Engine, element: u64, attribute_key: u64) -> u64 {
+    if attribute_key == NONE() { return element; }
+    let found = eng.arena.map_get(element, attribute_key);
+    if found == NONE() { return eng.arena.null(); }
+    found
+}
+
+// Zola's `date` filter over the `YYYY-MM-DD` strings the corpus's front matter
+// carries. Supported specifiers are the ones the template ports use plus their
+// obvious neighbours; an unsupported one is a diagnostic rather than a silently
+// literal `%Q` in published HTML.
+fn filter_date(inout eng: ast.Engine, input: u64, args: u64, line: u64) -> u64 {
+    let raw = eng.arena.scalar(input);
+    if raw.len() < 10 {
+        let subject = eng.arena.scalar_id(input);
+        fail(inout eng, line, "date expects a YYYY-MM-DD value", subject);
+        return input;
+    }
+    let year = text.parse_digits(borrow raw, 0, 4);
+    let month = text.parse_digits(borrow raw, 5, 7);
+    let day = text.parse_digits(borrow raw, 8, 10);
+    if year.count == 0 || month.count == 0 || day.count == 0 {
+        let subject = eng.arena.scalar_id(input);
+        fail(inout eng, line, "date expects a YYYY-MM-DD value", subject);
+        return input;
+    }
+
+    let format_value = arg_of(inout eng, args, "format", line);
+    let format = if format_value == NONE() {
+        StrBuf.from_str(borrow "%Y-%m-%d")
+    } else {
+        eng.arena.scalar(format_value)
+    };
+
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < format.len() {
+        let b = text.byte_of(borrow format, i);
+        if b != 37 { out.push(b); i += 1; continue; }
+        let mut pad = true;
+        let mut j = i + 1;
+        if text.byte_of(borrow format, j) == 45 { pad = false; j += 1; }
+        let spec = text.byte_of(borrow format, j);
+        if spec == 37 { out.push(37); }
+        else if spec == 89 { out.push_str(pad_number(year.value, 4)); }
+        else if spec == 121 { out.push_str(pad_number(year.value % 100, 2)); }
+        else if spec == 109 { out.push_str(if pad { pad_number(month.value, 2) } else { text.decimal(month.value) }); }
+        else if spec == 100 { out.push_str(if pad { pad_number(day.value, 2) } else { text.decimal(day.value) }); }
+        else if spec == 101 { out.push_str(text.decimal(day.value)); }
+        else if spec == 66 { out.push_str(month_name(month.value)); }
+        else if spec == 98 {
+            let full = month_name(month.value);
+            out.push_str(text.slice(borrow full, 0, 3));
+        }
+        else {
+            let subject = eng.arena.strings.intern_range(borrow format, i, j + 1);
+            fail(inout eng, line, "date format specifier is outside the supported set", subject);
+            return input;
+        }
+        i = j + 1;
+    }
+    eng.arena.string(borrow out)
+}
+
+fn pad_number(n: u64, width: u64) -> StrBuf {
+    let digits = text.decimal(n);
+    let mut out = StrBuf.new();
+    let mut pad = digits.len();
+    while pad < width { out.push(48); pad += 1; }
+    out.append_borrowed(borrow digits);
+    out
+}
+
+fn month_name(m: u64) -> StrBuf {
+    if m == 1 { "January" } else if m == 2 { "February" } else if m == 3 { "March" }
+    else if m == 4 { "April" } else if m == 5 { "May" } else if m == 6 { "June" }
+    else if m == 7 { "July" } else if m == 8 { "August" } else if m == 9 { "September" }
+    else if m == 10 { "October" } else if m == 11 { "November" } else if m == 12 { "December" }
+    else { "" }
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+fn render_body(inout eng: ast.Engine, head: u64, borrow chain: value.U64s, inout out: StrBuf) {
+    let mut current = head;
+    while current != NONE() {
+        let n = eng.node(current);
+        let next = n.next;
+        render_node(inout eng, n, borrow chain, inout out);
+        current = next;
+    }
+}
+
+fn render_node(inout eng: ast.Engine, n: ast.Node, borrow chain: value.U64s, inout out: StrBuf) {
+    if n.tag == ast.NODE_TEXT() {
+        eng.arena.strings.append(n.a, inout out);
+        return;
+    }
+    if n.tag == ast.NODE_OUTPUT() {
+        // A macro call renders rather than evaluates: it produces output, not a
+        // value, so it is handled here instead of in `eval`, and only in output
+        // position — a macro inside a condition is not in the subset.
+        let e = eng.expr(n.a);
+        if e.tag == ast.EX_CALL() && is_macro_reference(borrow eng, e.a) {
+            render_macro_call(inout eng, e, borrow chain, n.line, inout out);
+            return;
+        }
+        let v = eval(inout eng, n.a, n.line);
+        if n.b == 1 {
+            eng.arena.append_scalar(v, inout out);
+        } else {
+            let rendered = eng.arena.scalar(v);
+            text.append_escaped_html(borrow rendered, inout out);
+        }
+        return;
+    }
+    if n.tag == ast.NODE_SET() {
+        let v = eval(inout eng, n.b, n.line);
+        eng.bind(n.a, v);
+        return;
+    }
+    if n.tag == ast.NODE_IF() {
+        let condition = eval(inout eng, n.a, n.line);
+        if eng.arena.truthy(condition) {
+            render_body(inout eng, n.b, borrow chain, inout out);
+        } else {
+            render_body(inout eng, n.c, borrow chain, inout out);
+        }
+        return;
+    }
+    if n.tag == ast.NODE_FOR() {
+        render_for(inout eng, n, borrow chain, inout out);
+        return;
+    }
+    if n.tag == ast.NODE_BLOCK() {
+        render_block(inout eng, n, borrow chain, inout out);
+        return;
+    }
+}
+
+fn render_for(inout eng: ast.Engine, n: ast.Node, borrow chain: value.U64s, inout out: StrBuf) {
+    let iterable = eval(inout eng, n.b, n.line);
+    let tag = eng.arena.tag(iterable);
+    if tag != value.V_ARRAY() {
+        if tag != value.V_NULL() {
+            fail(inout eng, n.line, "for expects an array", n.a);
+        }
+        // A null iterable is an absent optional list, which Tera also treats as
+        // zero iterations; the site's templates rely on that for `page.extra`.
+        return;
+    }
+    let count = eng.arena.length(iterable);
+    let loop_key = eng.key("loop");
+    let mut i: u64 = 0;
+    while i < count {
+        let element = eng.arena.item(iterable, i);
+        let state = loop_value(inout eng, i, count);
+        eng.push_scope();
+        eng.bind(n.a, element);
+        eng.bind(loop_key, state);
+        render_body(inout eng, n.c, borrow chain, inout out);
+        eng.pop_scope();
+        i += 1;
+    }
+}
+
+// Jinja/Tera's `loop` object, rebuilt per iteration. The site's author lists
+// read `loop.index` and `loop.last` to punctuate a series with commas and
+// "and", so the whole object is five entries and costs one small map.
+fn loop_value(inout eng: ast.Engine, i: u64, count: u64) -> u64 {
+    let mut fields = value.Entries.new();
+    let index = eng.arena.integer(i + 1);
+    let index0 = eng.arena.integer(i);
+    let length = eng.arena.integer(count);
+    let first = eng.arena.boolean(i == 0);
+    let last = eng.arena.boolean(i + 1 == count);
+    let k_index = eng.key("index");
+    let k_index0 = eng.key("index0");
+    let k_first = eng.key("first");
+    let k_last = eng.key("last");
+    let k_length = eng.key("length");
+    fields.push(value.Entry { key: k_index, value: index });
+    fields.push(value.Entry { key: k_index0, value: index0 });
+    fields.push(value.Entry { key: k_first, value: first });
+    fields.push(value.Entry { key: k_last, value: last });
+    fields.push(value.Entry { key: k_length, value: length });
+    eng.arena.map(borrow fields)
+}
+
+// A `{% block %}` renders the most-derived definition of its name: the chain
+// runs child-first, so the first template in it that defines the block wins,
+// and the node's own body is the fallback when none does.
+fn render_block(inout eng: ast.Engine, n: ast.Node, borrow chain: value.U64s, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < chain.len() {
+        let owner = chain.get_or(i, NONE());
+        let body = eng.find_block(owner, n.a);
+        if body != NONE() {
+            render_body(inout eng, body, borrow chain, inout out);
+            return;
+        }
+        i += 1;
+    }
+    render_body(inout eng, n.b, borrow chain, inout out);
+}
+
+// Render the template registered under `name`. The inheritance chain is walked
+// child-to-root, then the ROOT template's body is rendered — a child that
+// extends contributes only its block overrides, which is Tera's rule.
+pub fn render(inout eng: ast.Engine, name: u64, inout out: StrBuf) -> bool {
+    let index = eng.find_template(name);
+    if index == NONE() {
+        fail(inout eng, 0, "unknown template", name);
+        return false;
+    }
+    let mut chain = value.U64s.new();
+    let mut current = index;
+    while current != NONE() {
+        if chain.len() >= MAX_DEPTH() {
+            fail(inout eng, 0, "template inheritance chain is cyclic or too deep", name);
+            return false;
+        }
+        chain.push(current);
+        let t = eng.template(current);
+        if t.base == NONE() { break; }
+        let parent = eng.find_template(t.base);
+        if parent == NONE() {
+            fail(inout eng, 0, "extends names an unregistered template", t.base);
+            return false;
+        }
+        current = parent;
+    }
+    let root = eng.template(chain.get_or(chain.len() - 1, index));
+    eng.push_scope();
+    render_body(inout eng, root.body, borrow chain, inout out);
+    eng.pop_scope();
+    true
+}
+
+// Render a shortcode: bind its named arguments as ordinary variables and run
+// its template through the same `render` every page template uses. Nothing here
+// inspects the shortcode's name.
+pub fn render_shortcode(
+    inout eng: ast.Engine,
+    call: u64,
+    template_name: u64,
+    line: u64,
+    inout out: StrBuf,
+) -> bool {
+    let e = eng.expr(call);
+    if e.tag != ast.EX_CALL() {
+        fail(inout eng, line, "shortcode is not a call", template_name);
+        return false;
+    }
+    eng.push_scope();
+    bind_call_arguments(inout eng, e.b, NONE(), line);
+    let ok = render(inout eng, template_name, inout out);
+    eng.pop_scope();
+    ok
+}
+
+// Bind a call's named arguments into the current (already pushed) scope.
+//
+// `params` is a macro's declared parameter chain, or NONE for a shortcode. With
+// parameters, each one takes its supplied argument or its default, and an
+// argument naming no parameter is an error; without them, every argument binds
+// under its own name, which is what lets a shortcode template read `{{ id }}`
+// for whatever the content wrote. One binder serves both, so a macro call and a
+// shortcode invocation cannot drift apart — which is also what keeps the
+// fairness property intact, since the two share the measured path.
+fn bind_call_arguments(inout eng: ast.Engine, args: u64, params: u64, line: u64) {
+    if params == NONE() {
+        let mut current = args;
+        while current != NONE() {
+            let a = eng.expr(current);
+            let v = eval(inout eng, a.b, line);
+            eng.bind(a.a, v);
+            current = a.next;
+        }
+        return;
+    }
+
+    // Arguments are evaluated in the CALLER's scope, so they are all computed
+    // before any parameter binding shadows a name the caller was reading.
+    let mut supplied = value.Entries.new();
+    let mut current = args;
+    while current != NONE() {
+        let a = eng.expr(current);
+        let v = eval(inout eng, a.b, line);
+        supplied.push(value.Entry { key: a.a, value: v });
+        current = a.next;
+    }
+
+    let mut param = params;
+    while param != NONE() {
+        let declared = eng.expr(param);
+        let mut bound = NONE();
+        let mut i: u64 = 0;
+        while i < supplied.len() {
+            let s = supplied.get_or(i, value.empty_entry());
+            if s.key == declared.a { bound = s.value; }
+            i += 1;
+        }
+        if bound == NONE() {
+            bound = if declared.b == NONE() {
+                eng.arena.null()
+            } else {
+                eval(inout eng, declared.b, line)
+            };
+        }
+        eng.bind(declared.a, bound);
+        param = declared.next;
+    }
+
+    // An argument that matches no parameter is a typo, not a silent no-op.
+    let mut i: u64 = 0;
+    while i < supplied.len() {
+        let s = supplied.get_or(i, value.empty_entry());
+        let mut matched = false;
+        let mut param2 = params;
+        while param2 != NONE() {
+            let declared = eng.expr(param2);
+            if declared.a == s.key { matched = true; }
+            param2 = declared.next;
+        }
+        if !matched {
+            fail(inout eng, line, "macro call names an undeclared parameter", s.key);
+        }
+        i += 1;
+    }
+}
+
+// Whether `name` is a `self::…` macro reference.
+fn is_macro_reference(borrow eng: ast.Engine, name: u64) -> bool {
+    eng.arena.strings.starts_with_literal(name, "self::")
+}
+
+// Render a `{{ self::name(…) }}` call.
+//
+// The macro is resolved against the inheritance chain, so a child template can
+// call a macro its parent defined — which is exactly the production
+// arrangement: `spec/base.html` defines `render_nav` and `spec/page.html`
+// extends it. Recursion is ordinary: the macro body may call `self::name`
+// again, bounded by the engine's shared depth guard rather than by the stack.
+//
+// Macro output is raw, matching Tera: the site's navigation macro emits markup,
+// and auto-escaping it would publish the tags as text.
+fn render_macro_call(
+    inout eng: ast.Engine,
+    e: ast.Expr,
+    borrow chain: value.U64s,
+    line: u64,
+    inout out: StrBuf,
+) {
+    let bare = macro_name_of(inout eng, e.a);
+    let mut found = NONE();
+    let mut i: u64 = 0;
+    while i < chain.len() && found == NONE() {
+        found = eng.find_macro(chain.get_or(i, NONE()), bare);
+        i += 1;
+    }
+    if found == NONE() {
+        fail(inout eng, line, "unknown macro", e.a);
+        return;
+    }
+    if !eng.enter() {
+        fail(inout eng, line, "macro calls are nested deeper than the engine renders", e.a);
+        return;
+    }
+    let definition = eng.macro_at(found);
+    eng.push_scope();
+    bind_call_arguments(inout eng, e.b, definition.params, line);
+    render_body(inout eng, definition.body, borrow chain, inout out);
+    eng.pop_scope();
+    eng.leave();
+}
+
+// `self::render_nav` -> `render_nav`. The qualified spelling is what the
+// expression carries so a call node needs no extra field; the bare name is what
+// the definition registered.
+fn macro_name_of(inout eng: ast.Engine, qualified: u64) -> u64 {
+    let full = eng.arena.strings.copy(qualified);
+    let bare = text.slice(borrow full, 6, full.len());
+    eng.arena.strings.intern(borrow bare)
+}
+
+// Convenience for the driver: parse and evaluate a standalone expression.
+pub fn eval_source(inout eng: ast.Engine, borrow src: StrBuf, line: u64) -> u64 {
+    let call = tmpl_parse.parse_call(inout eng, borrow src, 0, src.len(), line);
+    eval(inout eng, call, line)
+}

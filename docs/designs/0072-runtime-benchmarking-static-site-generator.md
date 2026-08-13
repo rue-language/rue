@@ -232,6 +232,34 @@ ports actually use (`safe`, `default`, `date`, `upper`, `lower`, `truncate`,
 section index generation with weight ordering; RSS feed generation; writing
 the output tree.
 
+The Markdown list above was written from a reading of the corpus rather than
+an audit of it. RUE-1483's audit of all 96 files found five more constructs in
+live content, and they are in scope for the same reason as the rest — the
+corpus uses them and Zola renders them, so omitting any one would fail the
+Decision 4 oracle on every page that has it:
+
+- **GFM pipe tables** — 17 tables over 232 rows across the specification and
+  tutorial, including cells whose content is an escaped `\|`.
+- **HTML blocks**, of which the corpus uses one: Zola's `<!-- more -->`
+  summary marker, on 8 blog posts.
+- **Raw inline HTML**, passed through as CommonMark specifies.
+- **Reference links with their definitions** (`[text][label]`), 2 uses.
+- **Backslash escapes.**
+
+Two template constructs join them for the same reason, both required by the
+production specification sidebar that the template port derives from:
+**macros** (`{% macro %}`/`{% endmacro %}` with named arguments, `self::name`
+invocation, and recursion) and a **`starts_with`** test. Tera spells the
+latter `x is starting_with(y)`; the exact spelling is the port's business, but
+it must be evaluated *by the template engine*. Precomputing it host-side would
+move measured work out of the program being measured, which is the same
+fairness reasoning that governs shortcodes below.
+
+This enumeration is load-bearing, not illustrative: the libraries reject
+constructs outside the *documented* subset, so a construct that is genuinely
+in use has to be documented here rather than only in a module header. Later
+phases that find further constructs should amend this list in the same way.
+
 **Out of scope for v1:** syntax highlighting, search-index generation, HTML
 minification, Sass, Tailwind or any CSS building, live reload, image
 processing, taxonomies, and pagination. Zola and Hugo are configured with

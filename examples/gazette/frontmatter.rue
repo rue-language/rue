@@ -1,0 +1,390 @@
+// TOML front matter — the subset the rue-lang.dev corpus actually uses.
+//
+// A page opens with a `+++` line, holds TOML until a closing `+++` line, and
+// the Markdown body begins on the next line. That is Zola's front-matter form
+// and the only one gazette accepts.
+//
+// THE SUBSET, audited against all 96 corpus files rather than assumed:
+//
+//   keys        bare keys only (`title`, `page_template`, `paginate_by`)
+//   tables      ONE level of `[name]` header; the corpus uses `[extra]` in 9
+//               files and nothing deeper
+//   strings     basic `"…"` with `\\ \" \n \r \t` escapes, and multi-line
+//               basic `"""…"""` (5 files carry a `prompt` written that way)
+//   integers    unsigned decimal (`weight`, `paginate_by`)
+//   booleans    `true` / `false` (`generate_feeds`)
+//   dates       bare `YYYY-MM-DD`, kept AS A STRING — see below
+//   arrays      single-line `[a, b]` of the scalar kinds above (`authors`)
+//   comments    `#` to end of line — on its own line or trailing a value, as
+//               both TOML and Zola accept; a `#` inside a string is content
+//
+// REJECTED, loudly, with a diagnostic naming the line: dotted keys, nested or
+// array-of-tables headers (`[a.b]`, `[[a]]`), inline tables (`{ … }`), literal
+// `'…'` strings, floats, negative integers, offset/local datetimes, multi-line
+// arrays, and any escape outside the five listed above. ADR-0072 Decision 3
+// makes that deliberate: the benchmark builds the LIVE corpus, so site content
+// that steps outside this subset must break the next collection run visibly
+// instead of publishing quietly wrong metadata.
+//
+// DATES ARE STRINGS. TOML's bare `2026-06-11` is a first-class local-date type,
+// but every consumer in this corpus is the `date` filter, which formats from
+// the `Y-M-D` components. Carrying the date as its authored string keeps the
+// value model free of a calendar type that only one filter would read, and
+// keeps `{{ page.date }}` — used bare in a `<time datetime>` attribute —
+// byte-identical to the source. The `date` filter parses the components back
+// out; a malformed date fails there, at the point of use.
+const std = @import("std");
+const text = @import("text.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Parsed {
+    // Index of the map value holding the front matter, or the arena's null.
+    root: u64,
+    // Byte offset in the source where the Markdown body begins.
+    body_start: u64,
+    // 1-based source line of the first body line, so Markdown diagnostics point
+    // at the real file line rather than an offset into the body.
+    body_line: u64,
+    ok: bool,
+}
+
+fn fail(inout arena: value.Arena, line: u64, detail: StrBuf, subject: u64) {
+    arena.error(value.E_FRONT_MATTER(), line, detail, subject);
+}
+
+// A scalar parsed out of `[start, end)`: `value` is an arena index, `ok` says
+// whether the range was a construct inside the subset.
+struct Scalar { value: u64, ok: bool }
+
+fn bad_scalar() -> Scalar { Scalar { value: 0, ok: false } }
+
+// Decode a basic string body — the bytes between the quotes — applying the
+// five supported escapes and rejecting everything else.
+fn decode_basic(
+    inout arena: value.Arena,
+    borrow source: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> Scalar {
+    let mut out = StrBuf.new();
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow source, i);
+        if b != 92 {
+            out.push(b);
+            i += 1;
+        } else {
+            if i + 1 >= end {
+                fail(inout arena, line, "trailing backslash in string", value.NONE());
+                return bad_scalar();
+            }
+            let e = text.byte_of(borrow source, i + 1);
+            if e == 110 { out.push(10); }
+            else if e == 116 { out.push(9); }
+            else if e == 114 { out.push(13); }
+            else if e == 34 { out.push(34); }
+            else if e == 92 { out.push(92); }
+            else {
+                let subject = arena.strings.intern_range(borrow source, i, i + 2);
+                fail(inout arena, line, "escape outside the supported set (\\\\ \\\" \\n \\r \\t)", subject);
+                return bad_scalar();
+            }
+            i += 2;
+        }
+    }
+    Scalar { value: arena.string(borrow out), ok: true }
+}
+
+// Parse the scalar occupying `[start, end)`, which the caller has already
+// trimmed. Arrays recurse back through here for their elements.
+fn parse_scalar(
+    inout arena: value.Arena,
+    borrow source: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> Scalar {
+    if start >= end {
+        fail(inout arena, line, "missing value", value.NONE());
+        return bad_scalar();
+    }
+    let first = text.byte_of(borrow source, start);
+
+    if first == 34 {
+        // `"""` is handled by the caller, which needs multi-line lookahead.
+        if end < start + 2 || text.byte_of(borrow source, end - 1) != 34 {
+            fail(inout arena, line, "unterminated string", value.NONE());
+            return bad_scalar();
+        }
+        return decode_basic(inout arena, borrow source, start + 1, end - 1, line);
+    }
+    if first == 39 {
+        fail(inout arena, line, "literal 'single-quoted' strings are outside the subset", value.NONE());
+        return bad_scalar();
+    }
+    if first == 123 {
+        fail(inout arena, line, "inline tables are outside the subset", value.NONE());
+        return bad_scalar();
+    }
+    if first == 91 {
+        if text.byte_of(borrow source, end - 1) != 93 {
+            fail(inout arena, line, "multi-line arrays are outside the subset", value.NONE());
+            return bad_scalar();
+        }
+        return parse_array(inout arena, borrow source, start + 1, end - 1, line);
+    }
+    if first == 45 || first == 43 {
+        fail(inout arena, line, "signed numbers are outside the subset", value.NONE());
+        return bad_scalar();
+    }
+    if StrBuf.equals_borrowed(borrow text.slice(borrow source, start, end), borrow "true") {
+        return Scalar { value: arena.boolean(true), ok: true };
+    }
+    if StrBuf.equals_borrowed(borrow text.slice(borrow source, start, end), borrow "false") {
+        return Scalar { value: arena.boolean(false), ok: true };
+    }
+    if text.is_digit(first) {
+        // A bare date is digits with two hyphens in the `YYYY-MM-DD` shape; it
+        // keeps its authored spelling as a string (see the module note).
+        if is_bare_date(borrow source, start, end) {
+            let id = arena.strings.intern_range(borrow source, start, end);
+            return Scalar { value: arena.string_id(id), ok: true };
+        }
+        let digits = text.parse_digits(borrow source, start, end);
+        if digits.count == 0 {
+            let subject = arena.strings.intern_range(borrow source, start, end);
+            fail(inout arena, line, "number is outside the subset (integers only, unsigned, no underscores)", subject);
+            return bad_scalar();
+        }
+        return Scalar { value: arena.integer(digits.value), ok: true };
+    }
+    let subject = arena.strings.intern_range(borrow source, start, end);
+    fail(inout arena, line, "unrecognized value", subject);
+    bad_scalar()
+}
+
+// The end of a value, stopping at an unquoted `#` comment. A `#` inside a
+// basic string or inside an array element's string is content, so the scan
+// tracks quoting and bracket depth rather than taking the first `#`.
+fn value_end(borrow source: StrBuf, start: u64, end: u64) -> u64 {
+    let mut in_string = false;
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow source, i);
+        if in_string {
+            if b == 92 { i += 2; continue; }
+            if b == 34 { in_string = false; }
+            i += 1;
+            continue;
+        }
+        if b == 34 { in_string = true; i += 1; continue; }
+        if b == 35 { return text.trim_end_at(borrow source, start, i); }
+        i += 1;
+    }
+    end
+}
+
+fn is_bare_date(borrow source: StrBuf, start: u64, end: u64) -> bool {
+    if end - start != 10 { return false; }
+    let mut i: u64 = 0;
+    while i < 10 {
+        let b = text.byte_of(borrow source, start + i);
+        if i == 4 || i == 7 {
+            if b != 45 { return false; }
+        } else if !text.is_digit(b) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// Elements of a single-line array occupying `[start, end)` (the brackets have
+// already been stripped). Splitting on top-level commas is enough because the
+// subset has no inline tables and no nested arrays in the corpus; a nested
+// array still parses, since the bracket depth is tracked.
+fn parse_array(
+    inout arena: value.Arena,
+    borrow source: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> Scalar {
+    let mut elements = U64s.new();
+    let mut depth: u64 = 0;
+    let mut in_string = false;
+    let mut piece = start;
+    let mut i = start;
+    let mut ok = true;
+    while i <= end {
+        let at_end = i == end;
+        let b = if at_end { 0 } else { text.byte_of(borrow source, i) };
+        if !at_end && in_string {
+            if b == 92 { i += 2; continue; }
+            if b == 34 { in_string = false; }
+            i += 1;
+            continue;
+        }
+        if !at_end && b == 34 { in_string = true; i += 1; continue; }
+        if !at_end && b == 91 { depth += 1; i += 1; continue; }
+        if !at_end && b == 93 { if depth > 0 { depth -= 1; } i += 1; continue; }
+        if at_end || (b == 44 && depth == 0) {
+            let s = text.trim_start_at(borrow source, piece, i);
+            let e = text.trim_end_at(borrow source, s, i);
+            if s < e {
+                let element = parse_scalar(inout arena, borrow source, s, e, line);
+                if element.ok { elements.push(element.value); } else { ok = false; }
+            } else if !at_end {
+                fail(inout arena, line, "empty array element", value.NONE());
+                ok = false;
+            }
+            piece = i + 1;
+        }
+        i += 1;
+    }
+    if in_string {
+        fail(inout arena, line, "unterminated string in array", value.NONE());
+        ok = false;
+    }
+    Scalar { value: arena.array(borrow elements), ok: ok }
+}
+
+// Whether `[start, end)` is a bare key: at least one byte of `A-Za-z0-9_-`.
+fn is_bare_key(borrow source: StrBuf, start: u64, end: u64) -> bool {
+    if start >= end { return false; }
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow source, i);
+        if !text.is_ident(b) && b != 45 { return false; }
+        i += 1;
+    }
+    true
+}
+
+// Parse the front matter at the head of `source`.
+//
+// A document with no `+++` opener is REJECTED rather than treated as an
+// all-body page: every file in the corpus has front matter, and silently
+// accepting a missing header would hide a truncated or mis-copied file.
+pub fn parse(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
+    let mut root = value.Entries.new();
+    let mut table = value.Entries.new();
+    let mut table_key = value.NONE();
+    let mut ok = true;
+
+    if !source.starts_with(borrow "+++") {
+        fail(inout arena, 1, "page does not open with a `+++` front-matter fence", value.NONE());
+        return Parsed { root: arena.null(), body_start: 0, body_line: 1, ok: false };
+    }
+
+    let mut offset = text.next_line(borrow source, 0);
+    let mut line: u64 = 2;
+    let mut closed = false;
+    while offset < source.len() && !closed {
+        let end = text.line_end(borrow source, offset);
+        let s = text.trim_start_at(borrow source, offset, end);
+        let e = text.trim_end_at(borrow source, s, end);
+
+        if s >= e || text.byte_of(borrow source, s) == 35 {
+            // blank line or comment
+        } else if e - s == 3 && text.byte_of(borrow source, s) == 43
+            && text.byte_of(borrow source, s + 1) == 43
+            && text.byte_of(borrow source, s + 2) == 43 {
+            closed = true;
+        } else if text.byte_of(borrow source, s) == 91 {
+            if text.byte_of(borrow source, s + 1) == 91 {
+                fail(inout arena, line, "array-of-tables headers are outside the subset", value.NONE());
+                ok = false;
+            } else if text.byte_of(borrow source, e - 1) != 93 {
+                fail(inout arena, line, "unterminated table header", value.NONE());
+                ok = false;
+            } else {
+                let name_start = text.trim_start_at(borrow source, s + 1, e - 1);
+                let name_end = text.trim_end_at(borrow source, name_start, e - 1);
+                if !is_bare_key(borrow source, name_start, name_end) {
+                    let subject = arena.strings.intern_range(borrow source, name_start, name_end);
+                    fail(inout arena, line, "nested or quoted table headers are outside the subset", subject);
+                    ok = false;
+                } else {
+                    if table_key != value.NONE() {
+                        root.push(value.Entry { key: table_key, value: arena.map(borrow table) });
+                        table = value.Entries.new();
+                    }
+                    table_key = arena.strings.intern_range(borrow source, name_start, name_end);
+                }
+            }
+        } else {
+            let eq = text.find_byte(borrow source, 61, s);
+            if eq >= e {
+                let subject = arena.strings.intern_range(borrow source, s, e);
+                fail(inout arena, line, "expected `key = value`", subject);
+                ok = false;
+            } else {
+                let key_end = text.trim_end_at(borrow source, s, eq);
+                if !is_bare_key(borrow source, s, key_end) {
+                    let subject = arena.strings.intern_range(borrow source, s, key_end);
+                    fail(inout arena, line, "dotted or quoted keys are outside the subset", subject);
+                    ok = false;
+                } else {
+                    let key = arena.strings.intern_range(borrow source, s, key_end);
+                    let vs = text.trim_start_at(borrow source, eq + 1, e);
+                    let multiline = source.matches_at(vs, borrow "\"\"\"");
+                    // `weight = 3  # ordering` is ordinary TOML and Zola accepts
+                    // it. Only a whole-line comment used to be handled, so a
+                    // trailing one was read as part of the value and rejected
+                    // with a misleading complaint about the number.
+                    let e = if multiline { e } else { value_end(borrow source, vs, e) };
+                    if multiline {
+                        let close = text.find_from(borrow source, borrow "\"\"\"", vs + 3);
+                        if close >= source.len() {
+                            fail(inout arena, line, "unterminated multi-line string", key);
+                            ok = false;
+                            offset = source.len();
+                            continue;
+                        }
+                        // TOML drops a newline immediately after the opener.
+                        let mut body = vs + 3;
+                        if text.byte_of(borrow source, body) == 13 { body += 1; }
+                        if text.byte_of(borrow source, body) == 10 { body += 1; }
+                        let decoded = decode_basic(inout arena, borrow source, body, close, line);
+                        if decoded.ok {
+                            if table_key != value.NONE() {
+                                table.push(value.Entry { key: key, value: decoded.value });
+                            } else {
+                                root.push(value.Entry { key: key, value: decoded.value });
+                            }
+                        } else { ok = false; }
+                        line += text.count_byte_in(borrow source, 10, vs, close + 3);
+                        offset = text.next_line(borrow source, close + 3);
+                        line += 1;
+                        continue;
+                    }
+                    let parsed = parse_scalar(inout arena, borrow source, vs, e, line);
+                    if parsed.ok {
+                        if table_key != value.NONE() {
+                            table.push(value.Entry { key: key, value: parsed.value });
+                        } else {
+                            root.push(value.Entry { key: key, value: parsed.value });
+                        }
+                    } else { ok = false; }
+                }
+            }
+        }
+
+        offset = text.next_line(borrow source, offset);
+        line += 1;
+    }
+
+    if table_key != value.NONE() {
+        root.push(value.Entry { key: table_key, value: arena.map(borrow table) });
+    }
+    if !closed {
+        fail(inout arena, line, "front matter is not closed by a `+++` line", value.NONE());
+        ok = false;
+    }
+
+    Parsed { root: arena.map(borrow root), body_start: offset, body_line: line, ok: ok }
+}

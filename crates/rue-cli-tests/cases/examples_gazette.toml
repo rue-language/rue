@@ -1,0 +1,174 @@
+# RUE-1483: gazette's three text-processing libraries — TOML front matter, a
+# Markdown subset, and a template engine (ADR-0072 Phase 3).
+#
+# The libraries' own construct-by-construct coverage lives in the program's
+# self-test, which the no-argument automatic example already runs. What these
+# cases add is the real driver path: files on disk, templates registered by the
+# name content refers to them by, and the exit code and diagnostics a caller
+# sees when content steps outside a documented subset.
+[section]
+id = "cli.examples_gazette"
+name = "gazette front-matter, Markdown, and template libraries written in Rue"
+description = "exercise TOML front matter, the Markdown subset, shortcode expansion through the template engine, and loud rejection of out-of-subset constructs"
+# Every case compiles the same maintained multi-module program, so the section
+# carries the bounded heavyweight contract, matching the automatic example.
+contract = "heavyweight"
+
+[[case]]
+name = "gazette_self_test_covers_all_three_libraries"
+description = "the no-argument self-test checks every construct in the three documented subsets"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+stdout_contains = [
+  "ok   front-matter scalars, table, array, multi-line string",
+  "ok   pipe table, with escaped pipes in cells",
+  "ok   external, anchor, relative, and internal links",
+  "ok   three-level inheritance with nested block override",
+  "ok   the eleven filters and the URL helper",
+  "ok   shortcodes expand through the template engine",
+  "ok   recursive macro with starts_with, defined on a parent template",
+  "ok   runaway macro recursion is a diagnostic, not a crash",
+  "ok   nesting past the depth guard is a diagnostic, not a crash",
+  "gazette libraries self-test: all checks passed",
+]
+
+[[case]]
+name = "gazette_reports_deep_nesting_instead_of_crashing"
+description = "pathological nesting yields a located diagnostic and a clean exit, never a signal"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  # 400 nested block quotes: far past the depth guard, far short of what used
+  # to be needed to overflow the stack (12,000 segfaulted).
+  { path = "deep.md", source = """+++
+title = "Deep"
++++
+
+>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> deep
+""" },
+]
+program_args = ["render", "deep.md"]
+exit_code = 1
+stdout_contains = ["nested deeper than the engine renders"]
+
+[[case]]
+name = "gazette_renders_a_recursive_navigation_macro"
+description = "a macro defined on a parent template, called with named arguments, recursing under a starts_with gate"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "nav.html", source = """{% macro crumb(node, depth=0) %}<i>{{ node }}{% if depth %} at {{ depth }}{% endif %}</i>{% endmacro %}{{ self::crumb(node=page.title) }}{{ self::crumb(node=page.title, depth=2) }}{% if page.title | starts_with(prefix="Sco") %}<b>match</b>{% endif %}""" },
+  { path = "page.md", source = """+++
+title = "Scope"
++++
+
+body
+""" },
+]
+program_args = ["render", "-t", "nav.html=nav.html", "--template-out", "nav.html", "page.md"]
+exit_code = 0
+stdout_contains = ["<i>Scope</i><i>Scope at 2</i><b>match</b>"]
+
+[[case]]
+name = "gazette_renders_a_page_with_front_matter_and_shortcodes"
+description = "the real driver path: front matter, blocks, inlines, and a shortcode rendered through the template engine"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "shortcodes/rule.html", source = """<div class="rule" id="r-{{ id }}"><a class="rule-link" href="#r-{{ id }}">[{{ id }}]</a></div>""" },
+  { path = "page.md", source = """+++
+title = "Scope"
+weight = 2
+
+[extra]
+authors = ["steve", "claude"]
++++
+
+# Scope
+
+{{ rule(id="1.2:1") }}
+
+This specification **MUST** describe `Rue`, per [RFC 2119](https://example.test/rfc).
+
+- lexical structure
+- types
+
+| Category | Description |
+|----------|-------------|
+| `syntax` | Grammar rules |
+
+```rue check
+fn main() -> i32 { 0 }
+```
+""" },
+]
+program_args = [
+  "render",
+  "-t", "shortcodes/rule.html=shortcodes/rule.html",
+  "-u", "https://rue-lang.dev/spec/01-introduction/",
+  "page.md",
+]
+exit_code = 0
+stdout = """<h1 id="scope">Scope</h1>
+<div class="rule" id="r-1.2:1"><a class="rule-link" href="#r-1.2:1">[1.2:1]</a></div>
+<p>This specification <strong>MUST</strong> describe <code>Rue</code>, per <a href="https://example.test/rfc">RFC 2119</a>.</p>
+<ul>
+<li>lexical structure</li>
+<li>types</li>
+</ul>
+<table><thead><tr><th>Category</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>syntax</code></td><td>Grammar rules</td></tr>
+</tbody></table>
+<pre><code class="language-rue check">fn main() -&gt; i32 { 0 }
+</code></pre>
+"""
+
+[[case]]
+name = "gazette_rejects_content_outside_the_documented_subset"
+description = "out-of-subset front matter and Markdown fail with located diagnostics instead of wrong output"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "page.md", source = """+++
+title = "Bad"
+when = 2026-06-11T09:00:00Z
+[deep.table]
+k = 1
++++
+
+Setext
+======
+
+~~struck~~
+
+- item
+  - nested
+""" },
+]
+program_args = ["render", "page.md"]
+exit_code = 1
+stdout_contains = [
+  "front-matter:3: number is outside the subset (integers only, unsigned, no underscores) (2026-06-11T09:00:00Z)",
+  "front-matter:4: nested or quoted table headers are outside the subset (deep.table)",
+  "markdown:9: setext headings are outside the subset (use `#`)",
+  "markdown:11: strikethrough is outside the subset",
+  "markdown:14: nested lists are outside the subset",
+]
+
+[[case]]
+name = "gazette_rejects_an_unknown_shortcode"
+description = "a shortcode with no registered template is an error, never a silent gap in the page"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "page.md", source = """+++
+title = "Missing"
++++
+
+{{ gallery(id="1") }}
+""" },
+]
+program_args = ["render", "page.md"]
+exit_code = 1
+stdout_contains = ["shortcode:5: unknown shortcode (gallery)"]
