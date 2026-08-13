@@ -366,8 +366,10 @@ fn render(report: &ScalingReport) -> String {
 
     out.push_str("\n## Worker scaling and critical path\n\n");
     out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
-    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | CFG build total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
-    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | local epoch total/max ms | CFG build total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
+    out.push_str(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+    );
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {
             sample
@@ -402,6 +404,16 @@ fn render(report: &ScalingReport) -> String {
         let toolchain = summarize(evidence.clone().map(|e| e.toolchain_acquisition_ns));
         let semantic_total = summarize(evidence.clone().map(|e| e.semantic_bodies.total_ns));
         let semantic_max = summarize(evidence.clone().map(|e| e.semantic_bodies.max_ns));
+        let materialization_total = summarize(
+            evidence
+                .clone()
+                .map(|e| e.semantic_materialization_bodies.total_ns),
+        );
+        let materialization_max = summarize(
+            evidence
+                .clone()
+                .map(|e| e.semantic_materialization_bodies.max_ns),
+        );
         let cfg_total = summarize(evidence.clone().map(|e| e.cfg_construction_bodies.total_ns));
         let cfg_max = summarize(evidence.clone().map(|e| e.cfg_construction_bodies.max_ns));
         let opt_total = summarize(evidence.clone().map(|e| e.cfg_optimization_bodies.total_ns));
@@ -410,7 +422,7 @@ fn render(report: &ScalingReport) -> String {
         let declined = summarize(evidence.clone().map(|e| e.declined_joins));
         let donated = summarize(evidence.map(|e| e.donated_permits));
         out.push_str(&format!(
-            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
+            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
             observation_label(observation),
             utilization.median as f64 / 100.0,
             active.median as f64 / 1_000_000.0,
@@ -420,6 +432,8 @@ fn render(report: &ScalingReport) -> String {
             toolchain.median as f64 / 1_000_000.0,
             semantic_total.median as f64 / 1_000_000.0,
             semantic_max.median as f64 / 1_000_000.0,
+            materialization_total.median as f64 / 1_000_000.0,
+            materialization_max.median as f64 / 1_000_000.0,
             cfg_total.median as f64 / 1_000_000.0,
             cfg_max.median as f64 / 1_000_000.0,
             opt_total.median as f64 / 1_000_000.0,
