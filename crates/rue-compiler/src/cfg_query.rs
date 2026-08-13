@@ -1027,6 +1027,7 @@ fn materialize_and_build_cfg(
         );
     }
     context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
+    let materialization_started = std::time::Instant::now();
     let materialized = match &key.semantic_input {
         CfgSemanticInput::Body { input, .. } => {
             crate::local_semantic_materialization::materialize_canonical_body(
@@ -1056,6 +1057,14 @@ fn materialize_and_build_cfg(
             )
         }
     };
+    let materialization_ns =
+        u64::try_from(materialization_started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    tracing::event!(
+        name: "semantic_materialization",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        duration_ns = materialization_ns,
+    );
     let materialized = match materialized {
         Ok(value) => value,
         Err(error) => {
