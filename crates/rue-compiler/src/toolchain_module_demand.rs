@@ -126,19 +126,23 @@ pub(crate) struct BodyToolchainDemand {
     modules: Arc<[TrustedToolchainModuleDemand]>,
     payload_kinds: Arc<[FalliblePayload]>,
     requester: Option<StableDefinitionKey>,
+    raw_body_available: bool,
 }
 
 impl BodyToolchainDemand {
     /// Build a demand projection for `requester` from the body's fallible-intrinsic
     /// payload kinds, deriving the trusted-module demands and carrying the payload
     /// kinds themselves so the body transaction observes ONE canonical scan rather
-    /// than rescanning the raw text (RUE-1112 C1). Sorts/deduplicates both sets so
-    /// the node's output is canonical. `requester` is `None` only for a reached
-    /// instance with no source declaration key, which always projects the empty
-    /// demand set; whenever a module is demanded the requester anchor is present.
+    /// than rescanning the raw text (RUE-1112 C1). `raw_body_available` records
+    /// whether that scan had an available raw body, allowing the projection to own
+    /// the availability edge as well. Sorts/deduplicates both sets so the node's
+    /// output is canonical. `requester` is `None` only for a reached instance with
+    /// no source declaration key, which always projects the empty demand set;
+    /// whenever a module is demanded the requester anchor is present.
     pub(crate) fn from_payload_kinds(
         payload_kinds: impl IntoIterator<Item = FalliblePayload>,
         requester: Option<StableDefinitionKey>,
+        raw_body_available: bool,
     ) -> Self {
         let mut payload_kinds: Vec<_> = payload_kinds.into_iter().collect();
         payload_kinds.sort();
@@ -156,6 +160,7 @@ impl BodyToolchainDemand {
             modules: Arc::from(modules),
             payload_kinds: Arc::from(payload_kinds),
             requester,
+            raw_body_available,
         }
     }
 
@@ -175,6 +180,15 @@ impl BodyToolchainDemand {
     /// present whenever any module is demanded.
     pub(crate) fn requester(&self) -> Option<&StableDefinitionKey> {
         self.requester.as_ref()
+    }
+
+    /// Whether the projection observed an available raw declaration body.
+    ///
+    /// This bit is part of the registered value so consumers can use this
+    /// terminal as the one raw-body availability authority without adding a
+    /// duplicate direct edge to the raw-body query.
+    pub(crate) fn raw_body_available(&self) -> bool {
+        self.raw_body_available
     }
 }
 

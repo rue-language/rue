@@ -13347,12 +13347,16 @@ impl RevisionedQueryDatabase {
                     let Some(definition) = body_source_definition_key(&key.instance).cloned()
                     else {
                         return Ok(QueryOutput::success(
-                            crate::BodyToolchainDemand::from_payload_kinds([], None),
+                            crate::BodyToolchainDemand::from_payload_kinds([], None, false),
                         ));
                     };
                     let Some(candidate) = declaration_candidate_for_stable_key(&definition) else {
                         return Ok(QueryOutput::success(
-                            crate::BodyToolchainDemand::from_payload_kinds([], Some(definition)),
+                            crate::BodyToolchainDemand::from_payload_kinds(
+                                [],
+                                Some(definition),
+                                false,
+                            ),
                         ));
                     };
                     let raw = context.query_registered(
@@ -13368,7 +13372,11 @@ impl RevisionedQueryDatabase {
                         // transaction, which runs only on a satisfied prerequisite,
                         // surfaces that failure through its ordinary path.
                         return Ok(QueryOutput::success(
-                            crate::BodyToolchainDemand::from_payload_kinds([], Some(definition)),
+                            crate::BodyToolchainDemand::from_payload_kinds(
+                                [],
+                                Some(definition),
+                                false,
+                            ),
                         ));
                     };
                     // The single canonical per-body fallible-intrinsic scan
@@ -13382,6 +13390,7 @@ impl RevisionedQueryDatabase {
                         crate::BodyToolchainDemand::from_payload_kinds(
                             payload_kinds,
                             Some(definition),
+                            true,
                         ),
                     ))
                 },
@@ -16593,7 +16602,6 @@ impl RevisionedQueryDatabase {
                     parse_modules: parse_modules.clone(),
                     module_source_bases: module_source_bases.clone(),
                     raw_declaration_signatures: raw_declaration_signatures.clone(),
-                    raw_declaration_bodies: raw_declaration_bodies.clone(),
                     body_inputs: body_inputs.clone(),
                     body_source_bases: body_source_bases.clone(),
                     body_toolchain_demands: body_toolchain_demands.clone(),
@@ -17503,7 +17511,6 @@ struct BodyTransactionEvaluator {
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
-    raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
     body_source_bases:
         QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
@@ -17616,8 +17623,8 @@ impl BodyTransactionEvaluator {
         let observed = std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new()));
         let positive_references = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new()));
         let result = (|| {
-            // The transaction's prerequisite fan-out (raw body, toolchain
-            // demands, transitive anonymous nominals, well-known `Option`
+            // The transaction's prerequisite fan-out (toolchain demand/raw-body
+            // authority, transitive anonymous nominals, well-known `Option`
             // resolution) and its trailing lookup-edge recording both run
             // per reached body around the analysis itself. They are timed
             // separately so prerequisite work remains visible beside the
@@ -17625,23 +17632,10 @@ impl BodyTransactionEvaluator {
             let prerequisites_span =
                 tracing::info_span!("body_query_prerequisites", phase = "semantic_analysis")
                     .entered();
-            if !matches!(
-                key.instance,
-                crate::FunctionInstanceKey::AnonymousMember { .. }
-            ) {
-                let raw = context.query_registered(
-                    &self.raw_declaration_bodies,
-                    RawDeclarationBodyQueryKey(candidate.clone()),
-                )?;
-                let rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(_)) =
-                    raw.outcome()
-                else {
-                    return Err(QueryAbort::Canceled);
-                };
-            }
             // Observe THIS body's exact fallible-intrinsic payload set from the
             // registered `body-toolchain-demands` node — the ONE canonical
-            // per-body scan (RUE-1112 C1) — instead of rescanning the raw text.
+            // per-body scan and raw-body availability authority (RUE-1112 C1)
+            // — instead of rescanning or adding a duplicate raw-body edge.
             // A body roots only the payloads it uses, so an unrelated body gains
             // no query edge to payloads it does not use.
             let toolchain_demand =
@@ -17650,6 +17644,13 @@ impl BodyTransactionEvaluator {
             else {
                 unreachable!("BodyToolchainDemands publishes typed values")
             };
+            if !matches!(
+                key.instance,
+                crate::FunctionInstanceKey::AnonymousMember { .. }
+            ) && !toolchain_demand.raw_body_available()
+            {
+                return Err(QueryAbort::Canceled);
+            }
             let body_payload_kinds = toolchain_demand.payload_kinds();
             let mut selected_anonymous = BTreeMap::new();
             let mut pending_anonymous = collect_instance_anonymous_nominals(&key.instance);
@@ -23405,7 +23406,7 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         self.meter()
             .toolchain_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let empty = crate::BodyToolchainDemand::from_payload_kinds([], None);
+        let empty = crate::BodyToolchainDemand::from_payload_kinds([], None, false);
         match self.queries.context.query_registered(
             &self.queries.body_toolchain_demands,
             self.body_query_key(instance),
@@ -25714,6 +25715,102 @@ fn main() -> i32 {
         assert!(database.has_retained_body_key(&key));
         assert!(database.any_body_transaction_terminal());
         assert!(!database.any_body_reference_terminal());
+    }
+
+    #[test]
+    fn body_transaction_owns_raw_body_through_canonical_projections() {
+        let first = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 1 }")], 1);
+        let second = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 2 }")], 1);
+        let mut database = RevisionedQueryDatabase::default();
+        let key = main_body_key();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let first_transaction = database
+            .runtime
+            .request_registered(
+                &database.body_transactions,
+                first_revision,
+                key.clone(),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .expect("the first body transaction succeeds");
+        let first_demand = database
+            .runtime
+            .request_registered(
+                &database.body_toolchain_demands,
+                first_revision,
+                key.clone(),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .expect("the first toolchain projection succeeds");
+        let rue_query::QueryOutcome::Success(first_demand_value) = first_demand.outcome() else {
+            unreachable!("BodyToolchainDemand publishes typed values")
+        };
+        assert!(first_demand_value.raw_body_available());
+
+        let transaction_dependencies = first_transaction
+            .dependencies()
+            .iter()
+            .map(|observation| observation.node.family())
+            .collect::<BTreeSet<_>>();
+        assert!(
+            transaction_dependencies.contains("compiler.body-toolchain-demands"),
+            "the canonical demand projection owns raw-body availability: {transaction_dependencies:?}"
+        );
+        assert!(
+            transaction_dependencies.contains("compiler.body-input"),
+            "the canonical body input owns raw-body contents: {transaction_dependencies:?}"
+        );
+        assert!(
+            !transaction_dependencies.contains("compiler.raw-declaration-body"),
+            "the body transaction must not add a third peer raw-body edge: {transaction_dependencies:?}"
+        );
+        assert!(
+            first_demand
+                .dependencies()
+                .iter()
+                .any(|observation| observation.node.family() == "compiler.raw-declaration-body"),
+            "the demand projection must retain its exact raw-body edge"
+        );
+
+        let second_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&second),
+            &second,
+        );
+        let second_demand = database
+            .runtime
+            .request_registered(
+                &database.body_toolchain_demands,
+                second_revision,
+                key.clone(),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .expect("the second toolchain projection succeeds");
+        let second_transaction = database
+            .runtime
+            .request_registered(
+                &database.body_transactions,
+                second_revision,
+                key,
+                CancellationToken::new(),
+            )
+            .into_result()
+            .expect("the second body transaction succeeds");
+        assert_eq!(
+            first_demand.stamp(),
+            second_demand.stamp(),
+            "an equal no-demand projection stays green across a body-only edit"
+        );
+        assert_ne!(
+            first_transaction.stamp(),
+            second_transaction.stamp(),
+            "the canonical body-input edge still invalidates semantic analysis"
+        );
     }
 
     #[test]
