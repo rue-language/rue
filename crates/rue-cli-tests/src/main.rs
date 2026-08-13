@@ -54,6 +54,13 @@
 //!   says nothing about the compile, the case RUNS THAT EXECUTABLE instead of
 //!   compiling — see "Execution modes" below
 //! - `output`: name of produced executable (default `"prog"`)
+//! - `symlinks`: symbolic links created in the temp directory before the
+//!   compile, as `[{ link = "name", target = "..." }]`. The target is written
+//!   verbatim and is NOT required to exist: a dangling link is a legitimate
+//!   fixture, and so is one whose target the program creates at run time. This
+//!   is the only way a case can set up a symlink — a `files` entry always
+//!   produces a regular file — which filesystem-facing cases need in order to
+//!   pin symlink behavior (`std.fs` cannot create one either)
 //! - `env`: extra env vars for the compiler; the value `"${REAL_STD}"`
 //!   expands to the absolute path of the repo's `std/` directory
 //! - `program_args`: command-line arguments for the compiled program's run
@@ -1018,6 +1025,19 @@ struct SourceFile {
     source: String,
 }
 
+/// A symbolic link staged in the temp directory before the case runs.
+///
+/// `target` is written verbatim and is deliberately not validated or resolved:
+/// a dangling link, a self-referential link, and a link whose target the
+/// compiled program creates at run time are all legitimate fixtures for
+/// filesystem-facing cases.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SymlinkFixture {
+    link: String,
+    target: String,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Case {
@@ -1033,6 +1053,11 @@ struct Case {
     /// Files written to the temp directory before invoking the compiler.
     #[serde(default)]
     files: Vec<SourceFile>,
+    /// Symbolic links staged in the temp directory alongside `files`. A `files`
+    /// entry can only produce a regular file, so this is what lets a case pin
+    /// symlink behavior.
+    #[serde(default)]
+    symlinks: Vec<SymlinkFixture>,
     /// Repo-root-relative source file to compile directly instead of copying
     /// inline source into the temp directory. Use this when a CLI case should
     /// pin a checked-in example/program rather than duplicating its source.
@@ -1938,6 +1963,7 @@ fn case_runs_prebuilt_program(case: &Case) -> bool {
         // from the same temp directory with the same argv, stdin, and
         // environment as the compile path, so all of these carry over.
         files: _,
+        symlinks: _,
         program_args: _,
         program_env: _,
         stdin: _,
@@ -2071,6 +2097,24 @@ fn run_case(
         }
         std::fs::write(&path, &file.source)
             .map_err(|e| TestFailure::fatal(format!("failed to write {}: {}", file.path, e)))?;
+    }
+
+    // Staged symlinks. Created after the regular files so a link may point at
+    // one, and with the target written verbatim so a dangling or cyclic link —
+    // the interesting cases for directory enumeration — stages successfully.
+    for symlink in &case.symlinks {
+        let path = dir.join(&symlink.link);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                TestFailure::fatal(format!("failed to create dir for {}: {}", symlink.link, e))
+            })?;
+        }
+        std::os::unix::fs::symlink(&symlink.target, &path).map_err(|e| {
+            TestFailure::fatal(format!(
+                "failed to symlink {} -> {}: {}",
+                symlink.link, symlink.target, e
+            ))
+        })?;
     }
 
     let output_name = case.output.clone().unwrap_or_else(|| "prog".to_string());
