@@ -229,9 +229,10 @@ jobs:
             image: ubuntu-24.04
     runs-on: ${{ matrix.os }}
     name: runtime (${{ matrix.platform }})
-    # The measured work is small — five samples of a 32 MiB text workload plus
-    # one release-quality build of it, on the order of a minute. The job's
-    # actual cost is dominated by building `rue` and `rue-bench` under
+    # The measured work is small — five samples of a 32 MiB text workload, five
+    # site builds of the live corpus, three of it at ten copies, plus the peer
+    # legs below and one release-quality build of each program. The job's actual
+    # cost is dominated by building `rue` and `rue-bench` under
     # //platforms:release. Wall clock is unaffected, since these run alongside
     # the `measure` legs, but each row is a runner's worth of compute per trunk
     # push and the budget below is sized for the build.
@@ -239,6 +240,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Fetches `rue`'s pinned peers as well as its own tools: `zola` and `hugo`
+      # at the repository root are dotslash shims, and the runtime leg runs both
+      # against the same corpus gazette builds (ADR-0072 Decision 5).
       - name: Install dotslash
         uses: facebook/install-dotslash@v2
 
@@ -247,13 +251,32 @@ jobs:
           ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
             --target-platforms //platforms:release
 
+      # The peer-event state of ADR-0072 Decision 9: the fixture identity, peer
+      # versions, and epoch the last FULL peer leg ran under. The per-run canary
+      # rides every observation regardless; this decides whether the rest of the
+      # peer matrix runs, and it is read at fixture-preparation time inside this
+      # same job.
+      #
+      # A cache miss costs one redundant peer leg and nothing else, which is the
+      # right direction to fail in: the alternative to a full leg is joining
+      # this run's gazette numbers to a peer sample the store may not have.
+      # Restore keys are prefix-matched newest-first, so the state survives the
+      # per-commit key changing on every push.
+      - name: Restore the peer-leg state
+        uses: actions/cache/restore@v4
+        with:
+          path: runtime-peer-state
+          key: runtime-peer-state-${{ matrix.platform }}-${{ github.sha }}
+          restore-keys: |
+            runtime-peer-state-${{ matrix.platform }}-
+
       - name: Measure compiled-program runtime
         env:
           RUE_BENCH_RUNNER_LABEL: github-hosted
           RUE_BENCH_RUNNER_IMAGE: ${{ matrix.image }}
         run: |
           set -euo pipefail
-          mkdir -p runtime-collected
+          mkdir -p runtime-collected runtime-peer-state
           RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
             --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
@@ -267,6 +290,7 @@ jobs:
             --compiler "$RUE" \
             --commit "${{ github.sha }}" \
             --repo-root . \
+            --peer-state-dir runtime-peer-state \
             --out "runtime-collected/runtime-${{ matrix.platform }}.json"
           status=$?
           set -e
@@ -302,6 +326,27 @@ jobs:
                  "not complete; the series has a hole at this commit."
             exit 1
           fi
+
+      # Saved only when the runner recorded one, which it does only after a full
+      # peer leg completed, AND only when the report it belongs to is
+      # appendable. A half-finished leg, or a leg whose report validation
+      # refused, leaves the previous state in place and the next run tries
+      # again.
+      #
+      # One ordering risk is accepted rather than solved: the record reaches
+      # `performance-data-v1` in the publish job below, so a publish failure
+      # leaves this state ahead of the store, and no full leg runs until the
+      # next event. It is bounded, because the derived comparison joins each
+      # observation to the latest full peer leg with a matching fixture
+      # identity — an unchanged identity means the previous leg's rows still
+      # describe this corpus, so the table keeps its peers rather than losing
+      # them. Clearing this cache key forces a fresh leg if that is ever wrong.
+      - name: Save the peer-leg state
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: runtime-peer-state
+          key: runtime-peer-state-${{ matrix.platform }}-${{ github.sha }}
 
   # The scheduled row of the runtime matrix: Apple Silicon (ADR-0072
   # Decisions 5 and 9, RUE-1488).
@@ -352,13 +397,24 @@ jobs:
           ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
             --target-platforms //platforms:release
 
+      # The same peer-event state the Linux rows keep, on its own key: peer
+      # measurements are per platform, so this row's full leg is due on this
+      # row's events (ADR-0072 Decision 9).
+      - name: Restore the peer-leg state
+        uses: actions/cache/restore@v4
+        with:
+          path: runtime-peer-state
+          key: runtime-peer-state-aarch64-macos-${{ github.sha }}
+          restore-keys: |
+            runtime-peer-state-aarch64-macos-
+
       - name: Measure compiled-program runtime
         env:
           RUE_BENCH_RUNNER_LABEL: github-hosted
           RUE_BENCH_RUNNER_IMAGE: macos-15
         run: |
           set -euo pipefail
-          mkdir -p runtime-collected
+          mkdir -p runtime-collected runtime-peer-state
           RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
             --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
@@ -372,6 +428,7 @@ jobs:
             --compiler "$RUE" \
             --commit "${{ github.sha }}" \
             --repo-root . \
+            --peer-state-dir runtime-peer-state \
             --out runtime-collected/runtime-aarch64-macos.json
           status=$?
           set -e
@@ -407,6 +464,15 @@ jobs:
                  "not complete; the series has a hole at this commit."
             exit 1
           fi
+
+      # Conditional for the reason the Linux rows' step states: state that says
+      # "the full leg is done" must not outlive a run whose report was refused.
+      - name: Save the peer-leg state
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: runtime-peer-state
+          key: runtime-peer-state-aarch64-macos-${{ github.sha }}
 
   publish:
     needs: [measure, runtime, runtime-macos]

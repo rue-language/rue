@@ -1,0 +1,11 @@
+{{/* Hugo port of `website/templates/spec/page.html`. */}}
+{{ define "title" }}{{ .Title }} - Rue Language Specification{{ end }}
+{{ define "main" }}
+{{ partial "sidebar-shell.html" (dict
+     "page" .
+     "root" (site.GetPage "/spec")
+     "title" "Rue Specification"
+     "search" true
+     "prevnext" true
+     "body" .Content) }}
+{{ end }}

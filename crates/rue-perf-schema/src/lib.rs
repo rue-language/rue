@@ -83,9 +83,10 @@ pub use run::{
     RunIdentity, RunObject, Sample, WorkloadObservation,
 };
 pub use runtime::{
-    FIXTURE_ARGUMENT, FIXTURE_INPUT_NAME, FixtureDeclaration, FlagPosture, GeneratedProvenance,
-    HardwareCounterPolicy, InputCategory, OracleDeclaration, OracleKind, OracleOutcome,
-    OracleVerdict, ProgramIdentity, RUNTIME_MANIFEST_SCHEMA_VERSION, RUNTIME_RECORD_KIND,
+    CorpusTreeProvenance, FIXTURE_ARGUMENT, FIXTURE_INPUT_NAME, FixtureDeclaration, FlagPosture,
+    GeneratedProvenance, HardwareCounterPolicy, InputCategory, OUTPUT_ARGUMENT, OracleDeclaration,
+    OracleKind, OracleOutcome, OracleVerdict, PeerObservation, PeerPolicy, PeerRole,
+    PeerThreadPolicy, ProgramIdentity, RUNTIME_MANIFEST_SCHEMA_VERSION, RUNTIME_RECORD_KIND,
     RUNTIME_REPORT_SCHEMA_VERSION, RecordedInput, RuntimeBoundary, RuntimeCalibration,
     RuntimeCompleteness, RuntimeEpoch, RuntimeFailure, RuntimeFlagging, RuntimeFlaggingPolicy,
     RuntimeIdentity, RuntimeInvalidSample, RuntimeInvalidSampleReason, RuntimeManifest,

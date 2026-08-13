@@ -1,0 +1,29 @@
+{{/*
+  The inner body of a section index: its title, its own Markdown, its pages,
+  and — where the section has them — its subsections. Shared by the
+  specification, standard-library, and tutorial layouts, which differ only in
+  the heading above the page list and in whether they list subsections at all.
+*/}}
+{{- $page := .page -}}
+<h1>{{ $page.Title }}</h1>
+
+{{ $page.Content }}
+
+{{ with $page.RegularPages }}
+<h2>{{ $.heading }}</h2>
+<ul class="spec-section-toc">
+    {{ range . }}
+    <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+    {{ end }}
+</ul>
+{{ end }}
+
+{{ if .subsections }}
+{{ with $page.Sections }}
+<ul class="spec-section-toc">
+    {{ range sort . "Path" }}
+    <li><a href="{{ .Permalink }}">{{ .Title }}</a></li>
+    {{ end }}
+</ul>
+{{ end }}
+{{ end }}

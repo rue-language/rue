@@ -1,0 +1,56 @@
+{#
+  Zola port of `website/templates/blog.html` (ADR-0072 Decision 3).
+
+  The carve-out below is taken here because it is taken in every port. Keeping
+  `paginator` for Zola alone would have one tool building views the others
+  never build, which is the fairness bug Decision 3 exists to prevent — the
+  peers must skip the same work gazette skips, not less and not more.
+
+  Pagination is outside the equivalence subset for every tool, so this port
+  lists `section.pages` directly where production writes
+  `{% set pages = paginator.pages | default(value=section.pages) %}`, and drops
+  the Newer/Older navigation the paginator drives. The corpus has eight posts
+  against a `paginate_by = 10`, so production renders exactly one page of them
+  today and the listing itself is unchanged; the difference is that this port
+  cannot grow a second page, which is what "pagination is out of scope" means.
+#}
+{% extends "base.html" %}
+
+{% block title %}Lab Notes | {{ config.title }}{% endblock %}
+
+{% block content %}
+<section class="py-12">
+    <div class="max-w-3xl mx-auto px-6">
+        <header class="mb-10">
+            <h1 style="font-family: var(--font-display); font-weight: 460; font-size: 2.3rem;" class="mb-2">{{ section.title }}</h1>
+            <p class="text-muted mb-4" style="font-style: italic;">{{ section.content | safe }}</p>
+            <a href="{{ get_url(path='blog/rss.xml') }}" class="inline-flex items-center gap-2 text-muted text-sm hover:text-[var(--color-accent)]">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="6.18" cy="17.82" r="2.18"/>
+                    <path d="M4 4.44v2.83c7.03 0 12.73 5.7 12.73 12.73h2.83c0-8.59-6.97-15.56-15.56-15.56zm0 5.66v2.83c3.9 0 7.07 3.17 7.07 7.07h2.83c0-5.47-4.43-9.9-9.9-9.9z"/>
+                </svg>
+                RSS Feed
+            </a>
+        </header>
+
+        <ul class="note-list">
+            {% for page in section.pages %}
+            <li>
+                <span class="note-date"><time datetime="{{ page.date }}">{{ page.date | date(format="%Y · %m · %d") }}</time></span>
+                <div>
+                    <a class="note-title" href="{{ page.permalink }}">{{ page.title }}</a>
+                    {% if page.extra.authors %}
+                    <span class="text-faint text-sm" style="font-style: italic;">
+                        — {% for author in page.extra.authors %}{% if loop.index > 1 %}{% if loop.last %} and {% else %}, {% endif %}{% endif %}{% if author == "steve" %}Steve{% elif author == "claude" %}Claude{% elif author == "codex" %}Codex{% else %}{{ author }}{% endif %}{% endfor %}
+                    </span>
+                    {% endif %}
+                    {% if page.summary %}
+                    <p class="note-summary">{{ page.summary | safe }}</p>
+                    {% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,28 @@
+{{/*
+  The stub a section with `redirect_to` emits instead of its own index page.
+
+  Standalone by construction: it defines no blocks, so Hugo renders it without
+  `baseof.html` and the stub carries no site chrome — which is what Zola's
+  built-in redirect output and gazette's `redirect.html` both emit. The markup
+  mirrors those rather than being invented, for the reason gazette's port
+  states: a redirect stub is not a page anyone reads, and the only thing that
+  matters about it is that all three tools put the same file at the same route
+  pointing at the same target.
+
+  The target is resolved here, by the template, from the corpus's own
+  `redirect_to` value. Resolving it during fixture preparation would move work
+  out of the measured program.
+*/}}
+{{- $target := printf "%s/" (strings.TrimSuffix "/" (absURL .Params.redirect_to)) -}}
+<!doctype html>
+<meta charset="utf-8">
+<title>Redirect</title>
+<script>
+  const target = "{{ $target | safeJSStr }}";
+  const hash = window.location.hash || "";
+  window.location.replace(target + hash);
+</script>
+<noscript>
+  <meta http-equiv="refresh" content="0; url={{ $target | safeURL }}">
+</noscript>
+<p><a href="{{ $target | safeURL }}">Click here</a> to be redirected.</p>

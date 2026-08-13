@@ -50,6 +50,7 @@ program_args = ["{fixture}"]
 # them changes the expected output and is therefore a suite-revision event, not
 # a tuning knob.
 [suite.workloads.fixture]
+kind = "seeded_generator"
 category = "recorded"
 generator = "zipf_ascii_text"
 generator_revision = 1
@@ -76,8 +77,144 @@ description = "32 MiB of deterministic ASCII word text with Zipf-distributed wor
 kind = "golden_stdout"
 path = "performance/fixtures/wordfreq/expected-stdout.txt"
 
-# The pinned reference regime. This is the only epoch scheduled collection
-# measures, and the only one whose numbers are comparable over time.
+# ===========================================================================
+# SUITE REVISION 2 (ADR-0072 Phase 5, RUE-1485) adds gazette.
+#
+# Adding a workload changes what the suite measures, so it is a suite-revision
+# event under ADR-0067's ordinary rules and revision 1's observations are not
+# continuous with revision 2's. Revision 1 stays declared: records already in
+# the store name it, and a manifest that forgot it could not validate them.
+#
+# Gazette could not join before this revision because the schema could not
+# express its fixture. `FixtureDeclaration` described exactly one shape — a
+# single file from a seeded generator — and gazette's input is a tree of ~96
+# Markdown files assembled from the live site at a declared scale with two
+# pages excluded. The declaration is now tagged, the corpus-tree shape relaxes
+# the single-file rule for ITSELF ALONE, and a second oracle kind judges an
+# emitted site rather than a line of stdout.
+# ===========================================================================
+[[suite]]
+revision = 2
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+# Unchanged from revision 1. A permanent member of this suite, and the reason
+# the two shapes now sit side by side: whatever the corpus-tree shape needed,
+# wordfreq's declaration and its validation are exactly what they were.
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does a compiled Rue program tokenize and count words in tens of MiB of text?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+kind = "seeded_generator"
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 33554432
+vocabulary_size = 65536
+file_name = "wordfreq-input.txt"
+description = "32 MiB of deterministic ASCII word text with Zipf-distributed word ranks"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+# The anchor workload of ADR-0072: a static site generator written in Rue,
+# building the live rue-lang.dev corpus as the real site build assembles it.
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does a compiled Rue program build the real rue-lang.dev site, against the production tools that build sites for a living?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+# The corpus is deliberately NOT frozen (ADR-0072 Decision 2). What is pinned
+# here is everything about how the tree is assembled — which preparer, at which
+# revision, at which scale, with which pages excluded — and what is recorded
+# per observation is the digest of the bytes every tool actually consumed. A
+# content change is then a discontinuity in the series rather than an invalid
+# run, and it is visible in the data rather than only in a commit log.
+#
+# `preparer` names the checked-in script rather than duplicating its rules in
+# the runner. ADR-0072 calls that script the reference implementation the
+# harness mode should adopt rather than reinvent, and a second implementation
+# of corpus assembly, routing, exclusion, and validation would be a second
+# implementation to disagree — with the peers' fixtures, which it also lays
+# out, silently diverging from gazette's.
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 1
+scale = 1
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site"
+description = "the live rue-lang.dev content plus the copied specification, as website/build.sh assembles it, minus the two pages whose templates read derived benchmark data"
+
+# A site build's answer is not a line of stdout: it is 96 pages, a feed, and a
+# redirect stub. The oracle is the checked-in comparison named here, run
+# outside the timed window, which judges every emitted page's normalized
+# semantics — heading tree, visible text, link targets, shortcode expansion,
+# section membership, feed order — against an independent authority, and at
+# Phase 5 against the two peer tools building the identical corpus.
+#
+# A committed byte golden over live corpus output would fail on every content
+# change and be re-blessed rather than read, which is the failure a golden
+# exists to prevent; the markup-level goldens live on the committed miniature
+# site in `performance/fixtures/gazette/` instead, where they stay sensitive.
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+# The 10x rung of the page-count curve. Same program, same corpus, ten copies
+# of it under path prefixes.
+#
+# The 100x variant is deliberately NOT declared here. It is the scale-variant
+# safety valve of ADR-0072 Decision 9 applied in advance: 9,600 pages per
+# sample, per push, on every Linux row is a cost nobody has measured yet, and
+# the valve exists to move a rung to a schedule rather than to discover the
+# bill in a timeout. It remains available from the harness
+# (`scripts/gazette-corpus-diff.py peers --scale 100`) and joins the collected
+# suite when the 10x rung's cost here is known.
+#
+# TWO HONESTY NOTES ride every published chart over this axis, and they are
+# recorded here because the manifest is what declares the axis exists. It is a
+# PAGE-COUNT curve, not a site-size curve: duplication scales per-page work but
+# not site shape, so internal links and `get_section` still resolve into the
+# original tree and cross-reference resolution stays constant. And the
+# specification sidebar COLLAPSES on a duplicated page — a copy's permalink
+# prefixes nothing in the original tree, so both arms of the navigation's gate
+# go cold — which at 10x is 630 of 700 spec pages rendering one 2,534-byte
+# navigation where the 70 originals average 4,446 bytes. The rung therefore
+# understates per-page templating work by roughly 57% of mean nav bytes on the
+# majority page class, and cannot be read as "what a 1x page costs, times ten".
+[[suite.workloads]]
+id = "gazette_10x"
+source = "examples/gazette/main.rue"
+question = "How does a compiled Rue site build scale with page count, at ten copies of the corpus?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 1
+scale = 10
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site-10x"
+description = "the same corpus at ten copies, by deterministic path-prefixed duplication"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+# The pinned reference regime. Epoch 1 implements suite revision 1 and no
+# longer collects; epoch 2 implements revision 2 and does. Declaring a new
+# epoch rather than moving epoch 1 to the new revision is what keeps every
+# record already in the store valid: a stored report names the epoch it ran
+# under, and that epoch must go on describing the run it describes.
 [[epoch]]
 id = 1
 platform = "x86_64-linux"
@@ -93,7 +230,9 @@ thread_policy = "single_threaded"
 # GitHub-hosted runners expose no PMU. Counters are gated on a future
 # controlled-hardware epoch (ADR-0072 Decision 5) rather than quietly missing.
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 2, which implements suite revision 2. Kept declared so
+# the reports already stored under it stay readable and valid.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -144,7 +283,8 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 2, which implements suite revision 2.
+collection = false
 
 # The runner is `ubuntu-24.04-arm`; the image it reports is `ubuntu-24.04`,
 # which is how ADR-0067's aarch64-linux epochs already record this regime. The
@@ -189,7 +329,8 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 2, which implements suite revision 2.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -245,3 +386,207 @@ runner_image = "local"
 
 [epoch.sampling.wordfreq]
 samples = 2
+
+# ===========================================================================
+# EPOCH 2: suite revision 2, the epoch that collects (RUE-1485).
+#
+# One new thing is declared per platform beyond the added workloads: the peer
+# policy. Thread policy belongs to the epoch rather than the suite because it
+# is a property of how a platform runs the workload, and on a four-vCPU hosted
+# runner it is the difference between measuring per-unit work and measuring
+# core count. Rue has no concurrency, so the PRIMARY published ratio pins Zola
+# to one rayon thread and Hugo to one `GOMAXPROCS`; their default parallel
+# configuration is measured too and published as a clearly labelled SECONDARY
+# row, so the number a user would actually experience is never hidden.
+#
+# The canary is Decision 9's: one single-threaded Zola build of the 1x corpus
+# rides every gazette observation, taking the workload's own sample count, so
+# every observation has a same-run ratio denominator instead of leaning on a
+# stale or singleton peer sample. The rest of the peer matrix — Hugo, the scale
+# variants, the secondary row — is event-driven, and the event is detected at
+# fixture-preparation time in this same job: the recorded fixture identity
+# moved, a peer version moved, or the epoch changed.
+# ===========================================================================
+[[epoch]]
+id = 2
+platform = "x86_64-linux"
+suite_revision = 2
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.wordfreq]
+samples = 5
+
+# Five, matching wordfreq: same runner class, same fresh-process boundary, and
+# two series on one platform are easiest to read against each other when their
+# sampling policies differ in nothing.
+[epoch.sampling.gazette]
+samples = 5
+
+# Three at 10x. The rung exists for the shape of the curve rather than for a
+# tight median, and it is ten times the per-sample work of the 1x row on a job
+# that already pays for a release build of the compiler.
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+
+# The 10x rung's peers ride the 10x fixture: the peers build the workload's own
+# corpus, so the canary that anchors this rung's ratio is a 10x Zola build. The
+# event-driven half — Hugo and the default-parallel secondary row — is the same
+# leg as the 1x row's and fires on the same events.
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+
+# No `[epoch.calibration]` and no `[epoch.flagging]` for either new workload.
+# Calibration is a property of a workload on a platform and is never inherited
+# — not from the compiler suites, not from wordfreq on this same runner — so
+# gazette arrives advisory exactly as wordfreq did, and says so here rather
+# than leaving a reader to infer it from an absent table.
+
+[[epoch]]
+id = 2
+platform = "aarch64-linux"
+suite_revision = 2
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+# The peer shims are dotslash files covering both Linux architectures, so this
+# row runs the same comparison as the x86-64 one against the same pinned peer
+# versions. Nothing about the comparison is inherited across platforms, though:
+# each row measures its own peers on its own hardware.
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+
+# The 10x rung's peers ride the 10x fixture: the peers build the workload's own
+# corpus, so the canary that anchors this rung's ratio is a 10x Zola build. The
+# event-driven half — Hugo and the default-parallel secondary row — is the same
+# leg as the 1x row's and fires on the same events.
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+
+[[epoch]]
+id = 2
+platform = "aarch64-macos"
+suite_revision = 2
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.wordfreq]
+samples = 9
+
+# Nine, as this row's wordfreq policy is nine, and for the same reason: the
+# platform is off the per-push path, has no calibration of its own, and a
+# larger n per observation makes the dispersion estimate that calibration will
+# be built from converge sooner.
+[epoch.sampling.gazette]
+samples = 9
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+# Hugo is pinned for macOS at v0.152.2, the newest release that ships a macOS
+# archive DotSlash can extract; from v0.153.0 Hugo publishes macOS only as a
+# `.pkg`. That pin is why this row can run the same comparison as the Linux
+# rows rather than a Linux-only one.
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+
+# The 10x rung's peers ride the 10x fixture: the peers build the workload's own
+# corpus, so the canary that anchors this rung's ratio is a 10x Zola build. The
+# event-driven half — Hugo and the default-parallel secondary row — is the same
+# leg as the 1x row's and fires on the same events.
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+
+# The development epoch for local runs, at suite revision 2. Not a collection
+# target: its environment policy admits only `local`, so a hosted runner cannot
+# append to it and a laptop cannot append to the reference series.
+[[epoch]]
+id = 2
+platform = "local"
+suite_revision = 2
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1

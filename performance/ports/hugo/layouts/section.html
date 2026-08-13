@@ -1,0 +1,23 @@
+{{/*
+  Fallback section layout. Every section in this corpus declares a template of
+  its own — blog, spec, std, tutorial — so nothing reaches this today. It
+  exists so that a new section added to the site renders as a page with its own
+  listing rather than failing the build, which is what Zola's `section.html`
+  fallback does for the same corpus.
+*/}}
+{{ define "title" }}{{ .Title }} | {{ .Site.Title }}{{ end }}
+{{ define "main" }}
+<article class="py-12">
+    <div class="max-w-3xl mx-auto px-6 prose">
+        <h1>{{ .Title }}</h1>
+        {{ .Content }}
+        {{ with .Pages }}
+        <ul class="spec-section-toc">
+            {{ range . }}
+            <li><a href="{{ .RelPermalink }}">{{ .Title }}</a></li>
+            {{ end }}
+        </ul>
+        {{ end }}
+    </div>
+</article>
+{{ end }}

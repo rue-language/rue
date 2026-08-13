@@ -1,0 +1,74 @@
+#!/usr/bin/env dotslash
+
+// The second peer of ADR-0072's cross-tool comparison, pinned exactly as `zola`
+// and `tailwindcss` are. Peer toolchain versions are bumped deliberately and
+// recorded as annotated events on the published series, never silently: every
+// runtime observation carries both peer versions, so a bump here starts a new
+// comparable stretch rather than shifting an existing one.
+//
+// v0.152.2 rather than the newest release, and for a reason worth stating:
+// from v0.153.0 Hugo publishes macOS only as a `.pkg` installer, which
+// DotSlash cannot extract. v0.152.2 is the newest release that ships a macOS
+// archive, and `aarch64-macos` is a row of this project's platform matrix
+// (ADR-0072 Decision 5), so a pin that covered only Linux would leave one
+// measured platform without a peer. Revisit when Hugo ships macOS archives
+// again or when DotSlash learns `.pkg`.
+//
+// The plain build, not `hugo_extended`. The extended build's addition is
+// embedded Sass, which the equivalence subset excludes for every tool
+// (Decision 3), so the extended binary would carry a capability the parity
+// configuration then turns off.
+
+{
+  "name": "hugo",
+  "platforms": {
+    "macos-aarch64": {
+      "size": 35660498,
+      "hash": "blake3",
+      "digest": "1129b1bbe07b284228cda7cdc54b9ed1f64e2dc8405b725445bd86cf5938ef54",
+      "format": "tar.gz",
+      "path": "hugo",
+      "providers": [
+        {
+          "url": "https://github.com/gohugoio/hugo/releases/download/v0.152.2/hugo_0.152.2_darwin-universal.tar.gz"
+        }
+      ]
+    },
+    "macos-x86_64": {
+      "size": 35660498,
+      "hash": "blake3",
+      "digest": "1129b1bbe07b284228cda7cdc54b9ed1f64e2dc8405b725445bd86cf5938ef54",
+      "format": "tar.gz",
+      "path": "hugo",
+      "providers": [
+        {
+          "url": "https://github.com/gohugoio/hugo/releases/download/v0.152.2/hugo_0.152.2_darwin-universal.tar.gz"
+        }
+      ]
+    },
+    "linux-x86_64": {
+      "size": 18177513,
+      "hash": "blake3",
+      "digest": "245704455f9d68be1d963f65bac0f078caa911e286fd53a05767911c94a496cb",
+      "format": "tar.gz",
+      "path": "hugo",
+      "providers": [
+        {
+          "url": "https://github.com/gohugoio/hugo/releases/download/v0.152.2/hugo_0.152.2_linux-amd64.tar.gz"
+        }
+      ]
+    },
+    "linux-aarch64": {
+      "size": 16585847,
+      "hash": "blake3",
+      "digest": "8b36fbe1bf0bb17e17cd0806b1d059cdae08638cfb22a711116af880eea48f84",
+      "format": "tar.gz",
+      "path": "hugo",
+      "providers": [
+        {
+          "url": "https://github.com/gohugoio/hugo/releases/download/v0.152.2/hugo_0.152.2_linux-arm64.tar.gz"
+        }
+      ]
+    }
+  }
+}

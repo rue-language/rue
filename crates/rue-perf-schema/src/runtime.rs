@@ -124,6 +124,44 @@ pub enum HardwareCounterPolicy {
 pub enum OracleKind {
     /// The program's stdout must equal a committed golden file, byte for byte.
     GoldenStdout,
+    /// The program's emitted output TREE is judged, page by page, by the
+    /// checked-in comparison the oracle declaration names.
+    ///
+    /// Gazette's oracle (ADR-0072 Decision 4). A site build's answer is not a
+    /// line of stdout: it is 96 pages, a feed, and a redirect stub, and the
+    /// thing that makes it right is that every page's normalized semantics —
+    /// heading tree, visible text, link targets, shortcode expansions, section
+    /// membership, feed order — agree with an independent authority. A byte
+    /// golden over live corpus output would fail on every content change and be
+    /// re-blessed rather than read, which is the failure a golden exists to
+    /// prevent (Decision 2), so the reference here is the JUDGE rather than an
+    /// expected output, its own identity is recorded with every observation,
+    /// and the digest compared across samples is the emitted tree's.
+    SemanticSitePages,
+}
+
+impl OracleKind {
+    /// Which per-sample digest this oracle's verdict is a claim about.
+    ///
+    /// The whole of the producer/validator separation rests on there being a
+    /// stored per-sample digest of the thing that was judged. A stdout oracle
+    /// judges stdout; a site oracle judges the emitted tree, and reading
+    /// stdout for it would check the emptiness of an empty stream while the
+    /// output tree went unexamined.
+    pub fn judged_digest(self, sample: &RuntimeSample) -> Option<&str> {
+        match self {
+            OracleKind::GoldenStdout => Some(sample.stdout_sha256.as_str()),
+            OracleKind::SemanticSitePages => sample.artifact_sha256.as_deref(),
+        }
+    }
+
+    /// The name of the digest field this oracle judges, for diagnostics.
+    pub const fn judged_field(self) -> &'static str {
+        match self {
+            OracleKind::GoldenStdout => "stdout_sha256",
+            OracleKind::SemanticSitePages => "artifact_sha256",
+        }
+    }
 }
 
 /// What the oracle said.
@@ -191,32 +229,107 @@ impl RuntimeMetric {
 
 /// How one workload's data fixture is produced.
 ///
+/// Tagged, because the suite now has two genuinely different kinds of input and
+/// a single struct could only describe both by making most of its fields
+/// optional — which is the shape that lets a wordfreq record omit its seed and
+/// still validate. Each variant carries exactly the fields its own shape
+/// requires, and validation holds a record to the variant its workload
+/// declares.
+///
 /// The declaration is pinned by the suite revision; the bytes it produces are
 /// recorded per observation. Both halves matter: the pin makes the fixture
 /// reproducible from the repository, and the recording makes any drift between
 /// the pin and the bytes visible in the data rather than only in review.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FixtureDeclaration {
-    /// Which discipline governs this input's identity. Runtime fixtures are
-    /// recorded; the field exists so a future pinned fixture cannot be added
-    /// without saying so.
-    pub category: InputCategory,
-    /// Name of the checked-in generator that produces the fixture.
-    pub generator: String,
-    /// Revision of that generator. Bumped whenever its output changes, which
-    /// invalidates any committed golden derived from it.
-    pub generator_revision: u32,
-    /// Seed handed to the generator.
-    pub seed: u64,
-    /// Exact size of the produced fixture, in bytes.
-    pub bytes: u64,
-    /// Number of distinct tokens the generator's vocabulary contains.
-    pub vocabulary_size: u32,
-    /// File name the fixture is written under inside the work directory.
-    pub file_name: String,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum FixtureDeclaration {
+    /// One file, generated deterministically from a pinned seed.
+    SeededGenerator {
+        /// Which discipline governs this input's identity. Runtime fixtures are
+        /// recorded; the field exists so a future pinned fixture cannot be added
+        /// without saying so.
+        category: InputCategory,
+        /// Name of the checked-in generator that produces the fixture.
+        generator: String,
+        /// Revision of that generator. Bumped whenever its output changes,
+        /// which invalidates any committed golden derived from it.
+        generator_revision: u32,
+        /// Seed handed to the generator.
+        seed: u64,
+        /// Exact size of the produced fixture, in bytes.
+        bytes: u64,
+        /// Number of distinct tokens the generator's vocabulary contains.
+        vocabulary_size: u32,
+        /// File name the fixture is written under inside the work directory.
+        file_name: String,
+        /// What this fixture is, for a reader of the manifest.
+        description: String,
+    },
+    /// A tree of files assembled from the repository at preparation time, at a
+    /// declared scale factor and with a declared set of exclusions.
+    ///
+    /// Gazette's corpus (ADR-0072 Decision 2). Its bytes are expected to move —
+    /// it is the live rue-lang.dev content — so the *bytes* are recorded rather
+    /// than pinned, exactly as the seeded fixture's are. What is pinned is
+    /// everything about how the tree is assembled: which preparer, at which
+    /// revision, at which scale, with which pages excluded. A record whose
+    /// scale or exclusion set differs from the declaration is measuring a
+    /// different workload, and validation refuses it for the same reason a
+    /// wordfreq record generated from another seed is refused.
+    CorpusTree {
+        /// Which discipline governs this input's identity.
+        category: InputCategory,
+        /// Repository-relative path of the checked-in preparer that assembles
+        /// the tree. ADR-0072 names `scripts/gazette-corpus-diff.py` as the
+        /// reference implementation the harness adopts rather than reinvents,
+        /// so the harness names it here instead of carrying a second copy of
+        /// the corpus-assembly, routing, and validation rules.
+        preparer: String,
+        /// Revision of that preparer. Bumped when its assembly changes.
+        preparer_revision: u32,
+        /// The scale variant this workload measures: 1x is the corpus as it
+        /// stands, 10x and 100x are the deterministic path-prefixed
+        /// duplications. Published curves over this axis are PAGE-COUNT curves
+        /// and must say so (Decision 2).
+        scale: u32,
+        /// Content paths removed from the corpus before any tool sees it, each
+        /// of which must be justified where the preparer declares it. Part of
+        /// the declaration because a page joining or leaving the set changes
+        /// the measured job.
+        excluded: Vec<String>,
+        /// Directory name the assembled fixture is written under inside the
+        /// work directory.
+        root_name: String,
+        /// What this fixture is, for a reader of the manifest.
+        description: String,
+    },
+}
+
+impl FixtureDeclaration {
+    /// Which identity discipline governs this fixture.
+    pub fn category(&self) -> InputCategory {
+        match self {
+            FixtureDeclaration::SeededGenerator { category, .. }
+            | FixtureDeclaration::CorpusTree { category, .. } => *category,
+        }
+    }
+
     /// What this fixture is, for a reader of the manifest.
-    pub description: String,
+    pub fn description(&self) -> &str {
+        match self {
+            FixtureDeclaration::SeededGenerator { description, .. }
+            | FixtureDeclaration::CorpusTree { description, .. } => description,
+        }
+    }
+
+    /// The name this fixture occupies in the work directory — a file for the
+    /// seeded shape, a directory for the corpus tree.
+    pub fn work_name(&self) -> &str {
+        match self {
+            FixtureDeclaration::SeededGenerator { file_name, .. } => file_name,
+            FixtureDeclaration::CorpusTree { root_name, .. } => root_name,
+        }
+    }
 }
 
 /// The committed expected result a workload's output is judged against.
@@ -243,10 +356,11 @@ pub struct RuntimeWorkload {
     pub question: String,
     /// Arguments passed to the compiled program, in order.
     ///
-    /// [`FIXTURE_ARGUMENT`] stands for the prepared fixture's path. The
-    /// placeholder rather than the resolved path is what the record stores: the
-    /// resolved path names a temporary directory and would make two identical
-    /// measurements differ.
+    /// [`FIXTURE_ARGUMENT`] stands for the prepared fixture's path and
+    /// [`OUTPUT_ARGUMENT`] for the directory a workload that emits a tree
+    /// writes into. The placeholders rather than the resolved paths are what
+    /// the record stores: a resolved path names a temporary directory and
+    /// would make two identical measurements differ.
     pub program_args: Vec<String>,
     /// How the workload's data is produced.
     pub fixture: FixtureDeclaration,
@@ -256,6 +370,13 @@ pub struct RuntimeWorkload {
 
 /// The token in `program_args` replaced by the prepared fixture's path.
 pub const FIXTURE_ARGUMENT: &str = "{fixture}";
+
+/// The token in `program_args` replaced by the directory the program writes to.
+///
+/// Required of a workload whose oracle judges an emitted tree: a site build
+/// that was never told where to write produced no artifact to judge, and the
+/// manifest refuses it rather than leaving the runner to discover it.
+pub const OUTPUT_ARGUMENT: &str = "{output}";
 
 /// The platform-independent contract: which programs are measured, with which
 /// arguments, over which fixtures, judged how.
@@ -397,6 +518,35 @@ pub struct RuntimeEpoch {
     /// Whether scheduled collection measures this epoch.
     #[serde(default)]
     pub collection: bool,
+    /// The cross-tool comparison this epoch runs, per workload that has one.
+    ///
+    /// Thread policy is part of the epoch rather than the suite because it is a
+    /// property of how a platform runs the workload (ADR-0072 Decision 5) — the
+    /// same reason `thread_policy` above is here. An epoch that declares no
+    /// peer policy for a workload must carry no peer observations for it, and
+    /// one that declares a canary must carry it in every observation.
+    #[serde(default)]
+    pub peers: BTreeMap<String, PeerPolicy>,
+}
+
+/// The peer legs one workload runs in one epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerPolicy {
+    /// The pinned peer tools, by the name of their repository-root shim.
+    pub tools: Vec<String>,
+    /// The thread configuration the primary published ratio is taken under.
+    pub primary_thread_policy: PeerThreadPolicy,
+    /// The configuration published beside it as a labelled secondary row.
+    /// `None` publishes no secondary row at all rather than a hidden one.
+    #[serde(default)]
+    pub secondary_thread_policy: Option<PeerThreadPolicy>,
+    /// The peer whose build rides every observation as the same-run ratio
+    /// denominator (Decision 9).
+    pub canary_tool: String,
+    /// The corpus scale the canary builds. 1x, because the canary is meant to
+    /// be cheap enough to ride a per-push job.
+    pub canary_scale: u32,
 }
 
 impl RuntimeEpoch {
@@ -509,22 +659,112 @@ impl RuntimeManifest {
                         workload.id
                     ));
                 }
-                if workload.fixture.bytes == 0 {
-                    return Err(format!(
-                        "runtime workload {:?} declares an empty fixture",
-                        workload.id
-                    ));
+                // Every rule below is per shape. Generalizing the declaration
+                // must not relax the seeded shape by one field: RUE-1046's
+                // review found nine of ten fabricated wordfreq records being
+                // accepted, and the checks that closed that are these.
+                match &workload.fixture {
+                    FixtureDeclaration::SeededGenerator {
+                        generator,
+                        bytes,
+                        vocabulary_size,
+                        file_name,
+                        ..
+                    } => {
+                        if generator.trim().is_empty() {
+                            return Err(format!(
+                                "runtime workload {:?} names no fixture generator",
+                                workload.id
+                            ));
+                        }
+                        if *bytes == 0 {
+                            return Err(format!(
+                                "runtime workload {:?} declares an empty fixture",
+                                workload.id
+                            ));
+                        }
+                        if *vocabulary_size == 0 {
+                            return Err(format!(
+                                "runtime workload {:?} declares an empty fixture vocabulary",
+                                workload.id
+                            ));
+                        }
+                        if file_name.contains('/') {
+                            return Err(format!(
+                                "runtime workload {:?} fixture file name must be a bare name",
+                                workload.id
+                            ));
+                        }
+                    }
+                    FixtureDeclaration::CorpusTree {
+                        preparer,
+                        scale,
+                        excluded,
+                        root_name,
+                        ..
+                    } => {
+                        if preparer.is_empty() || preparer.starts_with('/') {
+                            return Err(format!(
+                                "runtime workload {:?} must name a repository-relative \
+                                 fixture preparer",
+                                workload.id
+                            ));
+                        }
+                        // 1x is the corpus as it stands; anything smaller is
+                        // not a scale variant of it.
+                        if *scale == 0 {
+                            return Err(format!(
+                                "runtime workload {:?} declares corpus scale 0",
+                                workload.id
+                            ));
+                        }
+                        if root_name.contains('/') {
+                            return Err(format!(
+                                "runtime workload {:?} fixture root name must be a bare name",
+                                workload.id
+                            ));
+                        }
+                        for path in excluded {
+                            if path.is_empty() || path.starts_with('/') {
+                                return Err(format!(
+                                    "runtime workload {:?} excludes {path:?}, which is not a \
+                                     corpus-relative path",
+                                    workload.id
+                                ));
+                            }
+                        }
+                        // A tree-emitting workload that is never told where to
+                        // write produces nothing its oracle can judge.
+                        if !workload
+                            .program_args
+                            .iter()
+                            .any(|argument| argument == OUTPUT_ARGUMENT)
+                        {
+                            return Err(format!(
+                                "runtime workload {:?} emits an output tree but never receives \
+                                 a destination; one argument must be {OUTPUT_ARGUMENT:?}",
+                                workload.id
+                            ));
+                        }
+                    }
                 }
-                if workload.fixture.vocabulary_size == 0 {
+                // The oracle has to be able to judge what the workload
+                // produces. A stdout golden over a program whose answer is a
+                // directory would compare two empty streams and pass.
+                let tree_shaped = matches!(workload.fixture, FixtureDeclaration::CorpusTree { .. });
+                let tree_oracle = workload.oracle.kind == OracleKind::SemanticSitePages;
+                if tree_shaped != tree_oracle {
                     return Err(format!(
-                        "runtime workload {:?} declares an empty fixture vocabulary",
-                        workload.id
-                    ));
-                }
-                if workload.fixture.file_name.contains('/') {
-                    return Err(format!(
-                        "runtime workload {:?} fixture file name must be a bare name",
-                        workload.id
+                        "runtime workload {:?} pairs a {:?} fixture with a {:?} oracle; a \
+                         corpus-tree workload is judged by its emitted tree and a seeded \
+                         one by its stdout",
+                        workload.id,
+                        if tree_shaped {
+                            "corpus_tree"
+                        } else {
+                            "seeded_generator"
+                        },
+                        workload.oracle.kind
                     ));
                 }
                 // Wrong output must fail regardless of speed, so a workload
@@ -637,6 +877,68 @@ impl RuntimeManifest {
                     ));
                 }
             }
+            for (workload, policy) in &epoch.peers {
+                if !declared.contains(workload.as_str()) {
+                    return Err(format!(
+                        "runtime epoch {} on {} declares a peer policy for undeclared \
+                         workload {workload:?}",
+                        epoch.id, epoch.platform
+                    ));
+                }
+                if policy.tools.is_empty() {
+                    return Err(format!(
+                        "runtime epoch {} on {} declares a peer policy for {workload:?} with \
+                         no peer tools",
+                        epoch.id, epoch.platform
+                    ));
+                }
+                // A canary that is not one of the declared peers would be an
+                // unpinned denominator, and the ratio it anchors would compare
+                // against a tool the record does not describe.
+                if !policy.tools.contains(&policy.canary_tool) {
+                    return Err(format!(
+                        "runtime epoch {} on {} names {:?} as the peer canary for {workload:?}, \
+                         which is not one of its peer tools {:?}",
+                        epoch.id, epoch.platform, policy.canary_tool, policy.tools
+                    ));
+                }
+                if policy.canary_scale == 0 {
+                    return Err(format!(
+                        "runtime epoch {} on {} declares a canary at scale 0 for {workload:?}",
+                        epoch.id, epoch.platform
+                    ));
+                }
+                // The peers build the workload's OWN fixture, so a canary
+                // at another scale would be a denominator for a corpus nobody
+                // built. Declaring the scale here anyway, and checking it,
+                // keeps the manifest legible without letting it lie.
+                match suite.workload(workload).map(|declared| &declared.fixture) {
+                    Some(FixtureDeclaration::CorpusTree { scale, .. }) => {
+                        if policy.canary_scale != *scale {
+                            return Err(format!(
+                                "runtime epoch {} on {} declares a {}x canary for {workload:?}, \
+                                 whose fixture is the {scale}x corpus",
+                                epoch.id, epoch.platform, policy.canary_scale
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "runtime epoch {} on {} declares peers for {workload:?}, which does \
+                             not build a corpus tree; there is nothing for a peer to build",
+                            epoch.id, epoch.platform
+                        ));
+                    }
+                }
+                if policy.secondary_thread_policy == Some(policy.primary_thread_policy) {
+                    return Err(format!(
+                        "runtime epoch {} on {} publishes the same thread policy for \
+                         {workload:?} as both the primary ratio and the secondary row; a \
+                         secondary row that repeats the primary informs nobody",
+                        epoch.id, epoch.platform
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -720,8 +1022,36 @@ pub struct RecordedInput {
     /// Its total size in bytes.
     pub bytes: u64,
     /// How it was produced, when it was generated rather than collected.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<GeneratedProvenance>,
+    /// How it was assembled, when it is a collected tree rather than generated
+    /// bytes.
+    ///
+    /// Exactly one of the two is present, and which one is decided by the
+    /// workload's declared fixture shape rather than by whichever happens to
+    /// parse: a record carrying neither, or carrying the other shape's, is
+    /// describing an input its suite did not declare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<CorpusTreeProvenance>,
+}
+
+/// How a collected recorded input was assembled.
+///
+/// "Recorded" is not "unpinned". The corpus's BYTES are expected to move, and
+/// the digest beside these fields is what makes a movement visible; everything
+/// about how the tree was built is still a contract, and a report that changed
+/// scale or quietly dropped another page is measuring a different workload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorpusTreeProvenance {
+    /// Repository-relative path of the preparer that assembled the tree.
+    pub preparer: String,
+    /// Its revision at the time of assembly.
+    pub preparer_revision: u32,
+    /// The scale variant assembled.
+    pub scale: u32,
+    /// The content paths excluded from the corpus, sorted.
+    pub excluded: Vec<String>,
 }
 
 /// The executable that was measured.
@@ -773,6 +1103,78 @@ pub struct RuntimeSample {
     /// Digest of those bytes, so a nondeterministic run is provable from the
     /// record rather than only from the runner's summary.
     pub stdout_sha256: String,
+    /// Digest of the output TREE this sample emitted, for a workload whose
+    /// answer is an artifact rather than a stream.
+    ///
+    /// Absent for a stdout workload, and required for a tree one: it is what
+    /// makes determinism and the oracle's verdict provable from the stored
+    /// samples for a program whose stdout is empty by design. Omitted from the
+    /// serialized form when absent, so a stdout record's content address is
+    /// unchanged by this field existing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
+}
+
+/// Which of the two published thread configurations a peer ran under.
+///
+/// ADR-0072 Decision 5. Rue has no concurrency and hosted runners have four
+/// vCPUs, so a default-configuration comparison would publish thread count as
+/// though it were per-unit work. The primary ratio pins the peers to one
+/// worker thread; their default parallel configuration is measured too and
+/// published as a clearly labelled secondary row, so the number a user would
+/// actually experience is never hidden.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerThreadPolicy {
+    /// One worker thread: `RAYON_NUM_THREADS=1` for Zola, `GOMAXPROCS=1` for
+    /// Hugo. The primary published ratio's denominator.
+    PinnedSingleThread,
+    /// The peer's own default. Published as a secondary row, never as the
+    /// primary ratio.
+    ToolDefaultParallel,
+}
+
+/// Why a peer measurement was taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerRole {
+    /// The per-run canary (Decision 9): one single-threaded build of the 1x
+    /// corpus, riding every gazette observation so the ratio published for it
+    /// has a SAME-RUN denominator rather than a stale or singleton one.
+    Canary,
+    /// A leg of the full peer matrix, which runs only on an event: the recorded
+    /// fixture identity moved, a peer version moved, or the epoch changed.
+    Full,
+}
+
+/// One peer tool's measurement of the same corpus, in the same run.
+///
+/// Peer samples live inside the gazette observation they are the denominator
+/// for. The alternative — a separate record kind joined after the fact — is
+/// what Decision 9's canary exists to avoid: a ratio whose two sides were
+/// measured on different days on a hosted runner is a ratio of two different
+/// machines' moods.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerObservation {
+    /// The peer, for example `zola`.
+    pub tool: String,
+    /// Its pinned version, recorded with every observation so a bump is an
+    /// annotated event rather than a silent shift.
+    pub version: String,
+    /// Why this measurement was taken.
+    pub role: PeerRole,
+    /// The thread configuration in force.
+    pub thread_policy: PeerThreadPolicy,
+    /// The corpus scale variant built.
+    pub scale: u32,
+    /// Digest of the tree this peer emitted.
+    pub output_sha256: String,
+    /// How many files it emitted.
+    pub emitted_files: u64,
+    /// Independent raw fresh-process measurements, taken by the same harness
+    /// and the same clock as the Rue program's.
+    pub samples: Vec<RuntimeSample>,
 }
 
 /// Raw measurements of one program.
@@ -795,6 +1197,14 @@ pub struct RuntimeObservation {
     pub oracle: OracleOutcome,
     /// Independent raw fresh-process measurements.
     pub samples: Vec<RuntimeSample>,
+    /// Peer tools' measurements of the same corpus in the same run.
+    ///
+    /// Empty for a workload with no peers, and empty is the honest state:
+    /// nothing here is ever synthesized from an earlier run. Omitted from the
+    /// serialized form when empty, so a wordfreq record's content address is
+    /// unchanged by this field existing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerObservation>,
 }
 
 /// Identity of one runtime report.
@@ -1127,6 +1537,26 @@ pub enum RuntimeValidationError {
         /// Why.
         detail: String,
     },
+    /// The oracle that judged the run is not the one the suite declares.
+    ///
+    /// Separate from a reference mismatch: this is the wrong KIND of judgement,
+    /// and a stdout comparison over a program whose answer is a directory
+    /// compares two empty streams and reports a match.
+    OracleKindMismatch {
+        /// The workload.
+        workload: String,
+        /// What the record carries.
+        found: OracleKind,
+        /// What the suite declares.
+        expected: OracleKind,
+    },
+    /// A peer observation does not match the epoch's declared peer policy.
+    PeerPolicyViolation {
+        /// The workload.
+        workload: String,
+        /// What is wrong.
+        detail: String,
+    },
 }
 
 /// Why a stored runtime sample may not contribute to a statistic.
@@ -1287,6 +1717,20 @@ impl std::fmt::Display for RuntimeValidationError {
                     "workload {workload:?} program identity is impossible: {detail}"
                 )
             }
+            RuntimeValidationError::OracleKindMismatch {
+                workload,
+                found,
+                expected,
+            } => write!(
+                f,
+                "workload {workload:?} was judged by a {found:?} oracle, \
+                 but the suite declares {expected:?}"
+            ),
+            RuntimeValidationError::PeerPolicyViolation { workload, detail } => write!(
+                f,
+                "workload {workload:?} carries a peer observation its epoch does not \
+                 admit: {detail}"
+            ),
         }
     }
 }
@@ -1426,7 +1870,7 @@ pub fn validate_runtime_report(
             missing.push(workload.id.clone());
             continue;
         };
-        check_observation(observation, workload, &mut errors);
+        check_observation(observation, workload, epoch, &mut errors);
 
         if let Some(policy) = policy
             && let Some(actual) = samples_beyond_policy(observation.samples.len(), policy.samples)
@@ -1445,8 +1889,14 @@ pub fn validate_runtime_report(
         // every one of those samples is valid — the same tiering ADR-0067 uses,
         // so a truncated or partly broken observation keeps its evidence and
         // publishes no median.
-        let complete =
-            observation.samples.len() as u32 == expected_samples && invalid_samples.len() == before;
+        // The canary joins that tiering rather than blocking the report
+        // (ADR-0072 Decision 9). A run whose peer build failed still holds a
+        // valid Rue measurement worth storing, and the ratio it was meant to
+        // anchor is exactly what cannot be computed — so the evidence is kept,
+        // no point publishes, and collection health shows the hole.
+        let complete = observation.samples.len() as u32 == expected_samples
+            && invalid_samples.len() == before
+            && has_required_canary(observation, workload, epoch);
         if !complete {
             missing.push(workload.id.clone());
         }
@@ -1631,6 +2081,7 @@ fn check_regime(
 fn check_observation(
     observation: &RuntimeObservation,
     workload: &RuntimeWorkload,
+    epoch: &RuntimeEpoch,
     errors: &mut Vec<RuntimeValidationError>,
 ) {
     if observation.program_args != workload.program_args {
@@ -1664,50 +2115,104 @@ fn check_observation(
             mismatch(
                 "category",
                 format!("{:?}", input.category),
-                format!("{:?}", workload.fixture.category),
+                format!("{:?}", workload.fixture.category()),
             );
-            mismatch(
-                "bytes",
-                input.bytes.to_string(),
-                workload.fixture.bytes.to_string(),
-            );
-            // A `FixtureDeclaration` names exactly one `file_name`, so a
-            // single-file fixture claiming any other count is describing an
-            // input the suite did not declare. A multi-file recorded input —
-            // gazette's corpus — arrives with its own declaration kind.
-            mismatch("files", input.files.to_string(), 1.to_string());
-            match &input.provenance {
-                None => mismatch(
-                    "provenance",
-                    "none".to_string(),
-                    format!(
-                        "{} revision {} seed {}",
-                        workload.fixture.generator,
-                        workload.fixture.generator_revision,
-                        workload.fixture.seed
-                    ),
-                ),
-                Some(provenance) => {
-                    mismatch(
-                        "generator",
-                        provenance.generator.clone(),
-                        workload.fixture.generator.clone(),
-                    );
-                    mismatch(
-                        "generator_revision",
-                        provenance.generator_revision.to_string(),
-                        workload.fixture.generator_revision.to_string(),
-                    );
-                    mismatch(
-                        "seed",
-                        provenance.seed.to_string(),
-                        workload.fixture.seed.to_string(),
-                    );
-                    mismatch(
-                        "vocabulary_size",
-                        provenance.vocabulary_size.to_string(),
-                        workload.fixture.vocabulary_size.to_string(),
-                    );
+            match &workload.fixture {
+                FixtureDeclaration::SeededGenerator {
+                    generator,
+                    generator_revision,
+                    seed,
+                    bytes,
+                    vocabulary_size,
+                    ..
+                } => {
+                    mismatch("bytes", input.bytes.to_string(), bytes.to_string());
+                    // A seeded `FixtureDeclaration` names exactly one
+                    // `file_name`, so a single-file fixture claiming any other
+                    // count is describing an input the suite did not declare.
+                    // The corpus-tree shape below relaxes this and NOTHING
+                    // else: the seeded rules are the ones RUE-1046's review
+                    // tightened after nine of ten fabricated records were
+                    // accepted, and generalizing the declaration must not
+                    // loosen a single one of them.
+                    mismatch("files", input.files.to_string(), 1.to_string());
+                    if input.tree.is_some() {
+                        mismatch(
+                            "tree",
+                            "a corpus-tree provenance".to_string(),
+                            "none, for a seeded fixture".to_string(),
+                        );
+                    }
+                    match &input.provenance {
+                        None => mismatch(
+                            "provenance",
+                            "none".to_string(),
+                            format!("{generator} revision {generator_revision} seed {seed}"),
+                        ),
+                        Some(provenance) => {
+                            mismatch("generator", provenance.generator.clone(), generator.clone());
+                            mismatch(
+                                "generator_revision",
+                                provenance.generator_revision.to_string(),
+                                generator_revision.to_string(),
+                            );
+                            mismatch("seed", provenance.seed.to_string(), seed.to_string());
+                            mismatch(
+                                "vocabulary_size",
+                                provenance.vocabulary_size.to_string(),
+                                vocabulary_size.to_string(),
+                            );
+                        }
+                    }
+                }
+                FixtureDeclaration::CorpusTree {
+                    preparer,
+                    preparer_revision,
+                    scale,
+                    excluded,
+                    ..
+                } => {
+                    // The tree's SIZE is recorded rather than declared — that
+                    // is the whole of Decision 2 — but a fixture of no files
+                    // or no bytes is not a corpus that moved, it is a
+                    // preparation that failed.
+                    if input.files == 0 {
+                        mismatch("files", "0".to_string(), "at least one".to_string());
+                    }
+                    if input.bytes == 0 {
+                        mismatch("bytes", "0".to_string(), "more than zero".to_string());
+                    }
+                    if input.provenance.is_some() {
+                        mismatch(
+                            "provenance",
+                            "a generated provenance".to_string(),
+                            "none, for a collected tree".to_string(),
+                        );
+                    }
+                    match &input.tree {
+                        None => mismatch(
+                            "tree",
+                            "none".to_string(),
+                            format!("{preparer} revision {preparer_revision} at scale {scale}x"),
+                        ),
+                        Some(tree) => {
+                            mismatch("preparer", tree.preparer.clone(), preparer.clone());
+                            mismatch(
+                                "preparer_revision",
+                                tree.preparer_revision.to_string(),
+                                preparer_revision.to_string(),
+                            );
+                            mismatch("scale", tree.scale.to_string(), scale.to_string());
+                            // Sorted on both sides: an exclusion set that
+                            // differs only in order is the same set, and one
+                            // that differs in membership is a different job.
+                            let mut found = tree.excluded.clone();
+                            let mut expected = excluded.clone();
+                            found.sort();
+                            expected.sort();
+                            mismatch("excluded", format!("{found:?}"), format!("{expected:?}"));
+                        }
+                    }
                 }
             }
             // The digest is the only thing that makes two raw medians
@@ -1723,6 +2228,8 @@ fn check_observation(
         }
     }
 
+    check_peers(observation, workload, epoch, errors);
+
     if !is_sha256_digest(&observation.program.sha256) {
         errors.push(RuntimeValidationError::MalformedDigest {
             workload: workload.id.clone(),
@@ -1737,6 +2244,13 @@ fn check_observation(
         });
     }
 
+    if observation.oracle.kind != workload.oracle.kind {
+        errors.push(RuntimeValidationError::OracleKindMismatch {
+            workload: workload.id.clone(),
+            found: observation.oracle.kind,
+            expected: workload.oracle.kind,
+        });
+    }
     if observation.oracle.reference != workload.oracle.path {
         errors.push(RuntimeValidationError::OracleReferenceMismatch {
             workload: workload.id.clone(),
@@ -1745,6 +2259,159 @@ fn check_observation(
         });
     }
     check_oracle_against_samples(observation, workload, errors);
+}
+
+/// Hold peer observations to the epoch's declared peer policy.
+///
+/// Peers are the denominator of a published ratio, so every property the ratio
+/// depends on is checked from the record rather than trusted from the runner:
+/// which tool, which version, which thread configuration, which scale, and
+/// whether the peer's own repeated samples agreed with each other.
+///
+/// A peer whose build FAILED is not represented here at all — the runner
+/// records a [`RuntimeFailure`] instead — so an observation missing its canary
+/// is handled as incompleteness, where the evidence is kept and no ratio
+/// publishes, rather than as a malformed record.
+fn check_peers(
+    observation: &RuntimeObservation,
+    workload: &RuntimeWorkload,
+    epoch: &RuntimeEpoch,
+    errors: &mut Vec<RuntimeValidationError>,
+) {
+    // Collected rather than pushed directly, so the digest checks below can
+    // borrow `errors` in the same scope.
+    let mut details: Vec<String> = Vec::new();
+    let Some(policy) = epoch.peers.get(&workload.id) else {
+        if !observation.peers.is_empty() {
+            details.push(format!(
+                "{} peer observation(s) are stored, but this epoch declares no peer policy \
+                 for the workload",
+                observation.peers.len()
+            ));
+        }
+        flush(errors, workload, details);
+        return;
+    };
+
+    let mut canaries = 0;
+    for peer in &observation.peers {
+        if !policy.tools.contains(&peer.tool) {
+            details.push(format!(
+                "{:?} is not one of the epoch's peer tools {:?}",
+                peer.tool, policy.tools
+            ));
+        }
+        if peer.version.trim().is_empty() {
+            details.push(format!(
+                "the {:?} observation records no version; a peer whose version is unknown \
+                 cannot anchor a comparable ratio",
+                peer.tool
+            ));
+        }
+        let admitted = peer.thread_policy == policy.primary_thread_policy
+            || Some(peer.thread_policy) == policy.secondary_thread_policy;
+        if !admitted {
+            details.push(format!(
+                "the {:?} observation ran under {:?}, which is neither this epoch's primary \
+                 nor its published secondary thread policy",
+                peer.tool, peer.thread_policy
+            ));
+        }
+        if peer.samples.is_empty() {
+            details.push(format!(
+                "the {:?} observation stores no sample to have measured",
+                peer.tool
+            ));
+        }
+        if !is_sha256_digest(&peer.output_sha256) {
+            errors.push(RuntimeValidationError::MalformedDigest {
+                workload: workload.id.clone(),
+                field: format!("peers/{}/output_sha256", peer.tool),
+                found: peer.output_sha256.clone(),
+            });
+        }
+        // Decided from the stored per-sample digests, never from a flag: a peer
+        // whose repeated builds disagree is a denominator nobody should divide
+        // by, and the ports strip build-time-varying output precisely so this
+        // holds byte-exactly.
+        if let Some(index) = peer
+            .samples
+            .iter()
+            .position(|sample| sample.artifact_sha256.as_deref() != Some(&peer.output_sha256))
+        {
+            details.push(format!(
+                "the {:?} observation's sample {index} emitted {:?} rather than the recorded \
+                 {:?}; a peer that does not build the same tree twice cannot anchor a ratio",
+                peer.tool,
+                peer.samples[index]
+                    .artifact_sha256
+                    .as_deref()
+                    .unwrap_or("nothing"),
+                peer.output_sha256
+            ));
+        }
+        if peer.role == PeerRole::Canary {
+            canaries += 1;
+            if peer.tool != policy.canary_tool {
+                details.push(format!(
+                    "the canary is {:?}, but this epoch's canary is {:?}",
+                    peer.tool, policy.canary_tool
+                ));
+            }
+            if peer.scale != policy.canary_scale {
+                details.push(format!(
+                    "the canary built the {}x corpus, but this epoch's canary builds {}x",
+                    peer.scale, policy.canary_scale
+                ));
+            }
+            if peer.thread_policy != policy.primary_thread_policy {
+                details.push(format!(
+                    "the canary ran under {:?}, but the primary ratio it anchors is taken \
+                     under {:?}",
+                    peer.thread_policy, policy.primary_thread_policy
+                ));
+            }
+        }
+    }
+    if canaries > 1 {
+        details.push(format!(
+            "{canaries} observations claim to be the per-run canary; the ratio's denominator \
+             must be one measurement, not a choice between several"
+        ));
+    }
+    flush(errors, workload, details);
+}
+
+/// Turn collected peer complaints into validation errors.
+fn flush(
+    errors: &mut Vec<RuntimeValidationError>,
+    workload: &RuntimeWorkload,
+    details: Vec<String>,
+) {
+    for detail in details {
+        errors.push(RuntimeValidationError::PeerPolicyViolation {
+            workload: workload.id.clone(),
+            detail,
+        });
+    }
+}
+
+/// Whether an observation carries the same-run peer denominator its epoch asks
+/// for (ADR-0072 Decision 9).
+fn has_required_canary(
+    observation: &RuntimeObservation,
+    workload: &RuntimeWorkload,
+    epoch: &RuntimeEpoch,
+) -> bool {
+    let Some(policy) = epoch.peers.get(&workload.id) else {
+        return true;
+    };
+    observation.peers.iter().any(|peer| {
+        peer.role == PeerRole::Canary
+            && peer.tool == policy.canary_tool
+            && peer.scale == policy.canary_scale
+            && !peer.samples.is_empty()
+    })
 }
 
 /// Check the producer's summary of a run against the samples stored beside it.
@@ -1778,6 +2445,11 @@ fn check_oracle_against_samples(
         });
     }
 
+    // Which digest a verdict is a claim about depends on what the oracle
+    // judges: stdout for a stdout golden, the emitted tree for a site oracle.
+    // Reading stdout for gazette would compare two empty streams and report a
+    // match while the 96 pages went unexamined.
+    let kind = workload.oracle.kind;
     for (index, sample) in observation.samples.iter().enumerate() {
         if !is_sha256_digest(&sample.stdout_sha256) {
             errors.push(RuntimeValidationError::MalformedDigest {
@@ -1786,13 +2458,21 @@ fn check_oracle_against_samples(
                 found: sample.stdout_sha256.clone(),
             });
         }
+        match kind.judged_digest(sample) {
+            Some(digest) if is_sha256_digest(digest) => {}
+            other => errors.push(RuntimeValidationError::MalformedDigest {
+                workload: workload.id.clone(),
+                field: format!("samples/{index}/{}", kind.judged_field()),
+                found: other.unwrap_or("absent").to_string(),
+            }),
+        }
     }
 
     // Determinism is decided by the digests, never by the flag.
     let distinct: BTreeSet<&str> = observation
         .samples
         .iter()
-        .map(|sample| sample.stdout_sha256.as_str())
+        .map(|sample| kind.judged_digest(sample).unwrap_or_default())
         .collect();
     let observed_deterministic = distinct.len() <= 1;
     if oracle.deterministic_across_samples != observed_deterministic {
@@ -1848,7 +2528,13 @@ fn check_oracle_against_samples(
             });
         }
     }
-    if oracle.observed_sha256 != oracle.reference_sha256 {
+    // Only a golden comparison claims that the two digests are equal. A site
+    // oracle's `reference_sha256` is the identity of the JUDGE — the checked-in
+    // comparison that read every emitted page — so requiring it to equal the
+    // digest of the tree it judged would be requiring a program to equal its
+    // own output. What the site oracle's verdict claims instead is checked
+    // below: that every sample produced the tree that was judged.
+    if kind == OracleKind::GoldenStdout && oracle.observed_sha256 != oracle.reference_sha256 {
         contradiction(
             errors,
             &workload.id,
@@ -1864,7 +2550,7 @@ fn check_oracle_against_samples(
     if let Some(index) = observation
         .samples
         .iter()
-        .position(|sample| sample.stdout_sha256 != oracle.observed_sha256)
+        .position(|sample| kind.judged_digest(sample) != Some(oracle.observed_sha256.as_str()))
     {
         contradiction(
             errors,
@@ -1872,7 +2558,9 @@ fn check_oracle_against_samples(
             "verdict",
             format!(
                 "a match was declared, but sample {index} produced {} rather than the judged {}",
-                observation.samples[index].stdout_sha256, oracle.observed_sha256
+                kind.judged_digest(&observation.samples[index])
+                    .unwrap_or("nothing"),
+                oracle.observed_sha256
             ),
         );
     }
@@ -1937,6 +2625,7 @@ question = "How fast does compiled Rue count words in a large text?"
 program_args = ["{fixture}"]
 
 [suite.workloads.fixture]
+kind = "seeded_generator"
 category = "recorded"
 generator = "zipf_ascii_text"
 generator_revision = 1
@@ -1999,10 +2688,13 @@ samples = 5
         let workload = suite
             .workload("wordfreq")
             .expect("wordfreq is a permanent member of this suite");
-        assert_eq!(workload.fixture.category, InputCategory::Recorded);
+        assert_eq!(workload.fixture.category(), InputCategory::Recorded);
         assert_eq!(workload.oracle.kind, OracleKind::GoldenStdout);
+        let FixtureDeclaration::SeededGenerator { bytes, .. } = &workload.fixture else {
+            panic!("wordfreq's fixture is one file from a seeded generator");
+        };
         assert!(
-            workload.fixture.bytes >= 16 * 1024 * 1024,
+            *bytes >= 16 * 1024 * 1024,
             "the fixture must be large enough that the run measures counting \
              rather than process startup"
         );
@@ -2020,7 +2712,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-linux")
             .expect("aarch64-linux is a row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 1);
+        assert_eq!(epoch.suite_revision, 2);
         assert_eq!(epoch.target, "aarch64-linux");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -2048,7 +2740,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-macos")
             .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 1);
+        assert_eq!(epoch.suite_revision, 2);
         assert_eq!(epoch.target, "aarch64-macos");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -2154,6 +2846,7 @@ samples = 5
                         seed: 20260813,
                         vocabulary_size: 256,
                     }),
+                    tree: None,
                 }],
                 program: ProgramIdentity {
                     binary_bytes: 262_144,
@@ -2175,8 +2868,10 @@ samples = 5
                         exit_code: 0,
                         stdout_bytes: 42,
                         stdout_sha256: "c".repeat(64),
+                        artifact_sha256: None,
                     })
                     .collect(),
+                peers: Vec::new(),
             }],
             failures: Vec::new(),
         }
@@ -2199,7 +2894,7 @@ samples = 5
         // record can never be ambiguous about which discipline governed it.
         let manifest = manifest();
         let workload = manifest.suite(1).unwrap().workload("wordfreq").unwrap();
-        assert_eq!(workload.fixture.category, InputCategory::Recorded);
+        assert_eq!(workload.fixture.category(), InputCategory::Recorded);
     }
 
     #[test]
@@ -2818,6 +3513,501 @@ samples = 5
     fn a_malformed_record_is_reported_rather_than_guessed_at() {
         assert!(crate::StoredRuntimeReport::read("{").is_err());
         assert!(crate::StoredRuntimeReport::read(r#"{"record_kind":"runtime_v1"}"#).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // The corpus-tree fixture shape, gazette's oracle, and the peer legs
+    // (ADR-0072 Phase 5, RUE-1485).
+    //
+    // The first three tests below are the ones that matter most: generalizing a
+    // declaration is exactly how a validator gets quietly weakened, so each
+    // asserts that the new shape's relaxation applies to the new shape ALONE.
+    // -----------------------------------------------------------------------
+
+    const GAZETTE_MANIFEST: &str = r#"
+schema_version = 1
+
+[[suite]]
+revision = 1
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does compiled Rue build the real site?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 1
+scale = 1
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site"
+description = "the live corpus"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+[[epoch]]
+id = 1
+platform = "x86_64-linux"
+suite_revision = 1
+target = "x86_64-unknown-linux-gnu"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.gazette]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+"#;
+
+    fn gazette_manifest() -> RuntimeManifest {
+        RuntimeManifest::parse(GAZETTE_MANIFEST).expect("gazette manifest")
+    }
+
+    fn site_sample(elapsed: u64) -> RuntimeSample {
+        RuntimeSample {
+            process_elapsed_ns: elapsed,
+            peak_memory_bytes: 8 * 1024 * 1024,
+            exit_code: 0,
+            stdout_bytes: 0,
+            stdout_sha256: "e".repeat(64),
+            artifact_sha256: Some("7".repeat(64)),
+        }
+    }
+
+    fn canary() -> PeerObservation {
+        PeerObservation {
+            tool: "zola".to_string(),
+            version: "0.21.0".to_string(),
+            role: PeerRole::Canary,
+            thread_policy: PeerThreadPolicy::PinnedSingleThread,
+            scale: 1,
+            output_sha256: "8".repeat(64),
+            emitted_files: 131,
+            samples: vec![RuntimeSample {
+                process_elapsed_ns: 200_000_000,
+                peak_memory_bytes: 60 * 1024 * 1024,
+                exit_code: 0,
+                stdout_bytes: 64,
+                stdout_sha256: "a".repeat(64),
+                artifact_sha256: Some("8".repeat(64)),
+            }],
+        }
+    }
+
+    fn gazette_report() -> RuntimeReport {
+        let mut report = report();
+        report.identity.workload_source_hashes =
+            BTreeMap::from([("gazette".to_string(), "3".repeat(64))]);
+        report.workloads = vec![RuntimeObservation {
+            workload: "gazette".to_string(),
+            source: "examples/gazette/main.rue".to_string(),
+            question: "How fast does compiled Rue build the real site?".to_string(),
+            program_args: vec![
+                "build".to_string(),
+                FIXTURE_ARGUMENT.to_string(),
+                "-o".to_string(),
+                OUTPUT_ARGUMENT.to_string(),
+            ],
+            recorded_inputs: vec![RecordedInput {
+                name: FIXTURE_INPUT_NAME.to_string(),
+                category: InputCategory::Recorded,
+                description: "the live corpus".to_string(),
+                identity_sha256: "f".repeat(64),
+                files: 130,
+                bytes: 1_800_000,
+                provenance: None,
+                tree: Some(CorpusTreeProvenance {
+                    preparer: "scripts/gazette-corpus-diff.py".to_string(),
+                    preparer_revision: 1,
+                    scale: 1,
+                    excluded: vec!["performance.md".to_string(), "runtime.md".to_string()],
+                }),
+            }],
+            program: ProgramIdentity {
+                binary_bytes: 1_048_576,
+                sha256: "b".repeat(64),
+            },
+            oracle: OracleOutcome {
+                kind: OracleKind::SemanticSitePages,
+                reference: "scripts/gazette-corpus-diff.py".to_string(),
+                reference_sha256: "d".repeat(64),
+                observed_sha256: "7".repeat(64),
+                verdict: OracleVerdict::Match,
+                deterministic_across_samples: true,
+                detail: String::new(),
+            },
+            samples: (0..3)
+                .map(|index| site_sample(2_000_000_000 + index))
+                .collect(),
+            peers: vec![canary()],
+        }];
+        report
+    }
+
+    #[test]
+    fn a_corpus_tree_workload_is_appendable() {
+        let outcome = validate_runtime_report(&gazette_manifest(), &gazette_report());
+        assert_eq!(outcome.errors, Vec::new());
+        assert_eq!(outcome.completeness, RuntimeCompleteness::Complete);
+        assert!(outcome.publishes_workload("gazette"));
+    }
+
+    #[test]
+    fn the_multi_file_relaxation_applies_to_the_corpus_tree_alone() {
+        // The whole risk of this generalization in one test. A corpus tree may
+        // record 130 files; wordfreq may not record 2, and RUE-1046's review —
+        // which found nine of ten fabricated records being accepted — is the
+        // reason. Both halves are asserted, because a change that relaxed the
+        // seeded shape would still pass the first half alone.
+        let mut tree = gazette_report();
+        tree.workloads[0].recorded_inputs[0].files = 130;
+        assert!(
+            validate_runtime_report(&gazette_manifest(), &tree).is_appendable(),
+            "a corpus tree is many files by definition"
+        );
+
+        let mut seeded = report();
+        seeded.workloads[0].recorded_inputs[0].files = 130;
+        assert!(
+            validate_runtime_report(&manifest(), &seeded).errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::FixtureProvenanceMismatch { field, .. } if field == "files"
+            )),
+            "a seeded fixture is exactly one file, and still is"
+        );
+    }
+
+    #[test]
+    fn a_seeded_record_may_not_borrow_the_corpus_tree_s_shape() {
+        // The other direction of the same risk: a wordfreq record that dropped
+        // its generated provenance and claimed a tree provenance instead would,
+        // under a declaration with every field optional, describe an input no
+        // seed produced. Both substitutions are refused.
+        let mut report = report();
+        report.workloads[0].recorded_inputs[0].provenance = None;
+        report.workloads[0].recorded_inputs[0].tree = Some(CorpusTreeProvenance {
+            preparer: "scripts/gazette-corpus-diff.py".to_string(),
+            preparer_revision: 1,
+            scale: 1,
+            excluded: Vec::new(),
+        });
+        let outcome = validate_runtime_report(&manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::FixtureProvenanceMismatch { field, .. }
+                    if field == "provenance"
+            )),
+            "{:?}",
+            outcome.errors
+        );
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::FixtureProvenanceMismatch { field, .. } if field == "tree"
+            )),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_corpus_tree_at_another_scale_is_a_different_workload() {
+        // Recorded is not unpinned. The corpus's BYTES may move; the scale it
+        // was duplicated to may not, or a 10x observation would land in the 1x
+        // series and read as a tenfold regression.
+        let mut report = gazette_report();
+        report.workloads[0].recorded_inputs[0]
+            .tree
+            .as_mut()
+            .unwrap()
+            .scale = 10;
+        assert!(validate_runtime_report(&gazette_manifest(), &report).errors.iter().any(
+            |error| matches!(
+                error,
+                RuntimeValidationError::FixtureProvenanceMismatch { field, .. } if field == "scale"
+            )
+        ));
+    }
+
+    #[test]
+    fn a_corpus_tree_that_excluded_another_page_is_a_different_workload() {
+        let mut report = gazette_report();
+        report.workloads[0].recorded_inputs[0]
+            .tree
+            .as_mut()
+            .unwrap()
+            .excluded
+            .push("tutorial/_index.md".to_string());
+        assert!(
+            validate_runtime_report(&gazette_manifest(), &report)
+                .errors
+                .iter()
+                .any(|error| matches!(
+                    error,
+                    RuntimeValidationError::FixtureProvenanceMismatch { field, .. }
+                        if field == "excluded"
+                ))
+        );
+    }
+
+    #[test]
+    fn a_site_oracle_judges_the_emitted_tree_rather_than_empty_stdout() {
+        // Gazette writes nothing to stdout, so every sample's stdout digest is
+        // the digest of nothing and agrees with every other. A verdict read
+        // from stdout would therefore report determinism and a match for a run
+        // whose 96 pages were never looked at. This is the case that proves the
+        // verdict follows the ORACLE KIND: the trees differ, the stdouts do
+        // not, and the record is refused.
+        let mut report = gazette_report();
+        report.workloads[0].samples[1].artifact_sha256 = Some("9".repeat(64));
+        let distinct_stdout: BTreeSet<&str> = report.workloads[0]
+            .samples
+            .iter()
+            .map(|sample| sample.stdout_sha256.as_str())
+            .collect();
+        assert_eq!(distinct_stdout.len(), 1, "the stdouts agree, as they will");
+        let outcome = validate_runtime_report(&gazette_manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::NondeterministicOutput { .. }
+            )),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_site_workload_with_no_artifact_digest_is_refused() {
+        let mut report = gazette_report();
+        report.workloads[0].samples[0].artifact_sha256 = None;
+        let outcome = validate_runtime_report(&gazette_manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::MalformedDigest { field, .. }
+                    if field.ends_with("artifact_sha256")
+            )),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn an_oracle_of_the_wrong_kind_is_refused() {
+        let mut report = gazette_report();
+        report.workloads[0].oracle.kind = OracleKind::GoldenStdout;
+        assert!(
+            validate_runtime_report(&gazette_manifest(), &report)
+                .errors
+                .iter()
+                .any(|error| matches!(error, RuntimeValidationError::OracleKindMismatch { .. }))
+        );
+    }
+
+    #[test]
+    fn an_observation_without_its_canary_publishes_nothing_but_is_kept() {
+        // ADR-0072 Decision 9: the canary is the same-run ratio denominator. A
+        // run that lost it holds a valid Rue measurement worth storing and a
+        // ratio that cannot be computed, so the evidence is kept and no point
+        // publishes — the same tiering a truncated observation gets.
+        let mut report = gazette_report();
+        report.workloads[0].peers.clear();
+        let outcome = validate_runtime_report(&gazette_manifest(), &report);
+        assert!(outcome.is_appendable(), "{:?}", outcome.errors);
+        assert!(!outcome.publishes_workload("gazette"));
+    }
+
+    #[test]
+    fn a_peer_measured_under_an_undeclared_thread_policy_is_refused() {
+        // The fairness property the record has to carry. A canary taken with
+        // Zola's default rayon pool on a four-vCPU runner would publish thread
+        // count as though it were per-unit work.
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].thread_policy = PeerThreadPolicy::ToolDefaultParallel;
+        let outcome = validate_runtime_report(&gazette_manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::PeerPolicyViolation { detail, .. }
+                    if detail.contains("primary ratio it anchors")
+            )),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_peer_whose_samples_disagree_cannot_anchor_a_ratio() {
+        // The determinism trap ADR-0072 Decision 4 names: Hugo's built-in feed
+        // emits `lastBuildDate` and `generator`, so a port that kept it would
+        // produce a different tree on every sample. Decided from the stored
+        // digests rather than from any flag.
+        let mut report = gazette_report();
+        let second = RuntimeSample {
+            artifact_sha256: Some("1".repeat(64)),
+            ..report.workloads[0].peers[0].samples[0].clone()
+        };
+        report.workloads[0].peers[0].samples.push(second);
+        let outcome = validate_runtime_report(&gazette_manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(|error| matches!(
+                error,
+                RuntimeValidationError::PeerPolicyViolation { detail, .. }
+                    if detail.contains("same tree twice")
+            )),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn peer_observations_without_a_declared_policy_are_refused() {
+        // wordfreq has no peers. A record carrying some would publish a ratio
+        // against a tool this epoch never declared it would run.
+        let mut report = report();
+        report.workloads[0].peers.push(canary());
+        let outcome = validate_runtime_report(&manifest(), &report);
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| matches!(error, RuntimeValidationError::PeerPolicyViolation { .. }))
+        );
+    }
+
+    #[test]
+    fn a_fixture_table_still_refuses_unknown_fields_after_being_tagged() {
+        // The tagging must not have bought its flexibility by accepting
+        // anything. A key nobody reads in a fixture declaration is how a
+        // maintainer comes to believe a pin is in force that is not: a
+        // misspelled `vocabulary_sizes` would sit in the manifest looking
+        // authoritative while the generator ran on a default.
+        let text = MANIFEST.replace(
+            "file_name = \"input.txt\"",
+            "file_name = \"input.txt\"\nvocabulary_sizes = 512",
+        );
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("unknown field"), "{error}");
+
+        // And a field belonging to the OTHER shape is exactly as unknown, so
+        // neither declaration can quietly grow the other's fields.
+        let text = GAZETTE_MANIFEST.replace(
+            "preparer_revision = 1",
+            "preparer_revision = 1\nseed = 20260813",
+        );
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn a_manifest_pairing_a_site_fixture_with_a_stdout_oracle_is_refused() {
+        let text =
+            GAZETTE_MANIFEST.replace("kind = \"semantic_site_pages\"", "kind = \"golden_stdout\"");
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("corpus-tree workload is judged"), "{error}");
+    }
+
+    #[test]
+    fn a_site_workload_that_is_never_told_where_to_write_is_refused() {
+        let text = GAZETTE_MANIFEST.replace(
+            r#"program_args = ["build", "{fixture}", "-o", "{output}"]"#,
+            r#"program_args = ["build", "{fixture}"]"#,
+        );
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("never receives a destination"), "{error}");
+    }
+
+    #[test]
+    fn a_canary_outside_the_declared_peer_tools_is_refused_by_the_manifest() {
+        let text =
+            GAZETTE_MANIFEST.replace(r#"canary_tool = "zola""#, r#"canary_tool = "eleventy""#);
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("not one of its peer tools"), "{error}");
+    }
+
+    #[test]
+    fn a_secondary_row_that_repeats_the_primary_is_refused() {
+        let text = GAZETTE_MANIFEST.replace(
+            r#"secondary_thread_policy = "tool_default_parallel""#,
+            r#"secondary_thread_policy = "pinned_single_thread""#,
+        );
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("informs nobody"), "{error}");
+    }
+
+    #[test]
+    fn the_checked_in_manifest_measures_gazette_against_pinned_peers() {
+        // The Phase 5 entry itself: gazette in the collected suite, with the
+        // thread parity and the per-run canary ADR-0072 Decisions 5 and 9
+        // require, and advisory flags because no platform inherits calibration.
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        for platform in ["x86_64-linux", "aarch64-linux", "aarch64-macos"] {
+            let epoch = manifest
+                .collection_epoch(platform)
+                .unwrap_or_else(|| panic!("{platform} collects"));
+            let suite = manifest.suite(epoch.suite_revision).expect("suite");
+            let workload = suite.workload("gazette").expect("gazette is measured");
+            let FixtureDeclaration::CorpusTree {
+                scale, excluded, ..
+            } = &workload.fixture
+            else {
+                panic!("gazette's fixture is a corpus tree");
+            };
+            assert_eq!(*scale, 1);
+            assert_eq!(excluded, &["performance.md", "runtime.md"]);
+            assert_eq!(workload.oracle.kind, OracleKind::SemanticSitePages);
+
+            let peers = epoch.peers.get("gazette").expect("a peer policy");
+            assert_eq!(peers.tools, vec!["zola", "hugo"]);
+            assert_eq!(
+                peers.primary_thread_policy,
+                PeerThreadPolicy::PinnedSingleThread,
+                "the primary published ratio pins the peers to one worker thread"
+            );
+            assert_eq!(
+                peers.secondary_thread_policy,
+                Some(PeerThreadPolicy::ToolDefaultParallel),
+                "the peers' default parallel configuration is published, not hidden"
+            );
+            assert_eq!(peers.canary_tool, "zola");
+            assert_eq!(peers.canary_scale, 1);
+            // Each rung's peers build that rung's own corpus, so the 10x
+            // workload's canary is a 10x peer build rather than a 1x one
+            // borrowed from the row above.
+            assert_eq!(epoch.peers["gazette_10x"].canary_scale, 10);
+            assert_eq!(epoch.flag_posture("gazette"), FlagPosture::Advisory);
+            // The 10x rung is measured for Rue; the 100x one is the safety
+            // valve of Decision 9 and is deliberately not collected yet.
+            assert!(suite.workload("gazette_10x").is_some());
+            assert!(suite.workload("gazette_100x").is_none());
+        }
     }
 
     #[test]

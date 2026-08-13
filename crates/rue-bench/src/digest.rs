@@ -22,6 +22,57 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         .map_err(|error| format!("could not hash {}: {error}", path.display()))
 }
 
+/// Every file in a tree, by relative path, size, and contents.
+///
+/// The name of an artifact a workload EMITS rather than one it reads, so it
+/// answers the questions such an artifact raises: paths are hashed, so a file
+/// that only moved changes the digest, and sizes are hashed, so no file can be
+/// truncated to another's bytes unnoticed. One traversal order — sorted
+/// relative paths — because two orderings would be two digests for one tree.
+pub fn sha256_tree(root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    files.sort();
+    let mut hasher = Sha256::new();
+    for relative in &files {
+        let path = root.join(relative);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| format!("could not hash {}: {error}", path.display()))?;
+        hasher.update(relative.as_bytes());
+        hasher.update(format!("\0{}\0", bytes.len()).as_bytes());
+        hasher.update(&bytes);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// How many files a tree holds, for the structural checks a record carries.
+pub fn count_tree(root: &Path) -> Result<u64, String> {
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    Ok(files.len() as u64)
+}
+
+fn collect(root: &Path, directory: &Path, found: &mut Vec<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| format!("could not read {}: {error}", directory.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("could not read a directory entry: {error}"))?;
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|error| format!("could not stat {}: {error}", path.display()))?;
+        if kind.is_dir() {
+            collect(root, &path, found)?;
+        } else {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| format!("{} escaped its root", path.display()))?;
+            found.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

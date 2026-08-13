@@ -1,0 +1,80 @@
+# The Zola parity configuration (ADR-0072 Decisions 3 and 5, RUE-1485).
+#
+# This file and `templates/` are the Zola half of "template ports and parity
+# configurations", versioned in the repository beside gazette's port at
+# `examples/gazette/` and Hugo's at `performance/ports/hugo/`. Fixture
+# preparation copies them next to the assembled corpus and hashes them into the
+# recorded fixture identity, so a change here starts a new comparable segment
+# rather than silently shifting an existing one.
+#
+# EVERY LINE BELOW EXISTS TO MAKE ZOLA DO THE SAME JOB, not a smaller one. The
+# fairness rule runs in both directions: a parity config that left Zola
+# highlighting code would make Rue look good for a false reason, and one that
+# turned off work gazette actually does would make Zola look good for a false
+# reason. Each switch is therefore paired below with the reason gazette does not
+# do that work either.
+#
+# Derived from `website/config.toml`, which is the production configuration for
+# this same corpus. The diff against it is exactly the equivalence subset:
+# highlighting, search, and minification off; feeds and everything else the same.
+base_url = "https://rue-lang.dev"
+title = "Rue"
+description = "A systems programming language with memory safety and high-level ergonomics"
+
+# --- The equivalence subset (Decision 3, "out of scope for v1") -------------
+#
+# Production sets `minify_html = true`, `build_search_index = true`, and
+# `highlight_code = true`. Gazette implements none of the three, so the peers
+# are configured to skip them; each is an intended parity expansion, and each
+# widens the subset for all three tools at once under a new suite revision.
+compile_sass = false
+minify_html = false
+build_search_index = false
+
+# The feed IS in the subset: gazette generates one and its port carries an
+# `rss.xml` template, so turning Zola's off would be a peer doing less work.
+# What is turned off here is the SITE-WIDE feed at the root, which gazette does
+# not emit; the blog section's own `generate_feeds = true` front matter still
+# produces `blog/rss.xml`, and the file-set check asserts that it does.
+generate_feeds = false
+feed_filenames = ["rss.xml"]
+
+# Neither of these is in the subset, and neither is a feature: they are outputs
+# gazette does not emit at all. Left on, Zola would write a sitemap over every
+# page of the corpus and a robots.txt, which is work the other two tools never
+# do — and the file-set equality check of Decision 4 would then need an
+# allowlist entry for each. Turning them off makes the emitted file set exactly
+# equal across the three tools, which is a stronger check than an allowlist.
+generate_sitemap = false
+generate_robots_txt = false
+
+# Zola's `[slugify]` defaults are deliberately left alone, so this port routes
+# exactly as the production site does.
+#
+# The corpus's three upper-case file names are lower-cased during fixture
+# preparation instead, and the reason is worth stating plainly rather than
+# leaving to a digest: Zola slugifies a content path into its route and Hugo
+# lower-cases it into its page identity, so BOTH PEERS agree with production,
+# and gazette — which does not slugify at all — is the one tool that would emit
+# a different route. The normalization spares the file-set check an allowlist
+# entry, and it suppresses a real difference in which Rue is the outlier. The
+# work is one pass over 96 paths and cannot move a measurement; closing the gap
+# in gazette is a later change.
+
+[markdown]
+# The single most important line in this file. Zola renders fenced code through
+# its own writer either way, but with highlighting on it would also load
+# Sublime syntax definitions and emit per-token markup for 1,200-odd code blocks
+# — work gazette does not do and cannot do. Leaving this true is the specific
+# unfairness ADR-0072 Decision 3 names.
+highlight_code = false
+
+# `extra_syntaxes_and_themes` and `highlight_themes_css` from the production
+# configuration are deliberately absent rather than set empty: with
+# highlighting off they would load syntax definitions for nothing.
+
+[extra]
+# Read by `base.html` for the two masthead links. Same values as production, so
+# the port renders the same navigation the corpus's pages link into.
+github_url = "https://github.com/rue-language/rue"
+bluesky_url = "https://bsky.app/profile/rue-lang.dev"

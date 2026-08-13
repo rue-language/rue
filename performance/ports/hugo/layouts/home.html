@@ -1,0 +1,16 @@
+{{/*
+  Hugo port of `website/templates/index.html` (ADR-0072 Decision 3).
+
+  The production page's Field Report panel is dropped here for the reason every
+  port drops it: it is rendered from `load_data`, which is outside the
+  equivalence subset for every tool, and two of its rows are derived from the
+  performance store — so rendering it would make the benchmark an input to its
+  own workload. Dropping it in one port and keeping it in another would be the
+  fairness bug Decision 3 exists to prevent.
+
+  `.Content` is the home page's own Markdown body: the corpus's `_index.md`
+  carries the fib.rue specimen, so this is a real render rather than chrome.
+*/}}
+{{ define "main" }}
+{{ partial "landing.html" . }}
+{{ end }}

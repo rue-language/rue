@@ -1,0 +1,12 @@
+{{/* Hugo port of `website/templates/std/section.html`. */}}
+{{ define "title" }}{{ .Title }} - Standard Library{{ end }}
+{{ define "main" }}
+{{ partial "sidebar-shell.html" (dict
+     "page" .
+     "root" (site.GetPage "/std")
+     "title" "Standard Library"
+     "search" false
+     "prevnext" false
+     "contentClass" "std-content"
+     "body" (partial "section-body.html" (dict "page" . "heading" "Modules" "subsections" false))) }}
+{{ end }}

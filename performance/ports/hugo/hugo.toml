@@ -1,0 +1,115 @@
+# The Hugo parity configuration (ADR-0072 Decisions 3 and 5, RUE-1485).
+#
+# This file and `layouts/` are the Hugo half of "template ports and parity
+# configurations", versioned beside gazette's port at `examples/gazette/` and
+# Zola's at `performance/ports/zola/`. Fixture preparation copies them next to
+# the assembled corpus and hashes them into the recorded fixture identity, so a
+# change here starts a new comparable segment rather than silently shifting an
+# existing one.
+#
+# The switches below fall into three groups, and the distinction matters more
+# than any individual line:
+#
+#   1. FEATURES THE EQUIVALENCE SUBSET EXCLUDES, turned off here because
+#      gazette implements none of them and Zola's parity config turns off the
+#      same list: syntax highlighting, search indexing, minification, Sass,
+#      image processing, taxonomies, pagination, live reload.
+#
+#   2. OUTPUTS THE OTHER TOOLS DO NOT EMIT, turned off so the emitted file sets
+#      are equal without an allowlist entry excusing them: sitemap, robots.txt,
+#      per-section and site-wide feeds other than the blog's.
+#
+#   3. DIALECT ALIGNMENT, where Hugo's Markdown or routing default differs from
+#      the corpus's own dialect. Each of these makes Hugo render what the
+#      corpus means rather than making Hugo do less work.
+#
+# Nothing here turns off work gazette does. That direction of unfairness is the
+# easier one to commit and the harder one to notice.
+baseURL = "https://rue-lang.dev/"
+title = "Rue"
+languageCode = "en"
+
+# Group 2. Hugo emits a sitemap, a robots.txt, and a 404 page by default;
+# gazette emits none of the three and Zola's parity config turns off the first
+# two. The 404 is the one difference no configuration can remove from Zola, so
+# it stays on here as well and is the single documented file-set allowlist
+# entry — symmetric between the peers rather than removed from one of them.
+disableKinds = ["taxonomy", "term", "sitemap", "robotsTXT"]
+
+# Group 1 and 2 together: a section's default outputs include RSS, which would
+# give every section of the corpus a feed. Only the blog has one in the other
+# two tools, so feeds are opt-in per section; fixture preparation writes
+# `outputs = ["html", "rss"]` into the front matter of exactly the sections
+# whose `generate_feeds = true` already asks Zola for one.
+[outputs]
+home = ["html"]
+section = ["html"]
+page = ["html"]
+
+# Zola writes the blog feed to `blog/rss.xml`; Hugo's RSS format defaults to
+# `index.xml`. Renaming the output format is how Hugo spells the same
+# destination, which is better than an allowlist entry mapping one name onto
+# the other: the file-set check then compares the routes themselves.
+[outputFormats.rss]
+baseName = "rss"
+
+[params]
+description = "A systems programming language with memory safety and high-level ergonomics"
+github_url = "https://github.com/rue-language/rue"
+bluesky_url = "https://bsky.app/profile/rue-lang.dev"
+
+# Nothing here changes Hugo's routing: the corpus's three upper-case file names
+# are lower-cased during fixture preparation, for every tool at once, because
+# `disablePathToLower` does not survive into the route in this Hugo — the page
+# identity it builds is lower-case regardless. Aligning the corpus rather than
+# one tool is what keeps Decision 4's file-set check exact, and it lands all
+# three tools on the route the production site already serves.
+
+[markup]
+  [markup.goldmark.renderer]
+    # Raw HTML passes through, as CommonMark specifies and as the other two
+    # renderers do. Hugo filters it by default, which would silently DROP
+    # content rather than render it differently.
+    #
+    # MEASURED, because an earlier version of this comment claimed the oracle
+    # failed without it: on today's corpus the two settings produce a
+    # BYTE-IDENTICAL tree. The corpus's angle brackets all sit inside code
+    # spans, which are escaped either way, and its one HTML block is the
+    # `<!-- more -->` marker, which Hugo consumes as the summary divider before
+    # the renderer sees it. The setting is kept because it is the correct one
+    # for the documented subset — ADR-0072 Decision 3 lists raw inline HTML and
+    # HTML blocks as in scope — and because the day a page uses either outside
+    # a code span, the default would drop it. It buys nothing today and it is
+    # not a performance setting in either direction.
+    unsafe = true
+  [markup.goldmark.extensions]
+    # Group 3, and both are dialect rather than feature. Goldmark's typographer
+    # rewrites quotes and dashes into typographic forms; pulldown-cmark, and so
+    # Zola and gazette, do not. Linkify turns bare URLs into links, which the
+    # other two also do not. Left on, either would make Hugo's visible text
+    # differ from the other tools' on pages neither renderer got wrong.
+    typographer.disable = true
+    linkify = false
+    # GFM tables ARE in the subset: 17 of them across the specification and the
+    # tutorial, and all three tools render them.
+    table = true
+  [markup.highlight]
+    # Group 1, and the single most important line in this file. With code
+    # fences highlighted, Hugo would run Chroma over roughly 1,200 code blocks
+    # and emit per-token markup — work gazette does not do and cannot do.
+    # Leaving it on is the specific unfairness Decision 3 names.
+    codeFences = false
+  [markup.tableOfContents]
+    # Nothing in the ports renders `.TableOfContents`, and Hugo builds it
+    # lazily, so this only bounds it if a future port template asks for one.
+    startLevel = 2
+    endLevel = 3
+
+# Group 1. Hugo's build-time image processing, its asset pipeline, and its
+# development server are all outside the subset; none is reachable from these
+# layouts, and the cache directory is pinned so a run cannot pick up state from
+# a previous one. `noBuildLock` keeps a stale lock from a killed sample out of
+# the next sample's way.
+[caches]
+  [caches.modules]
+    maxAge = 0

@@ -1,0 +1,24 @@
+{{/*
+  The byline the blog listing and the blog page both render.
+
+  The production template writes this inline twice, once linked and once not;
+  Go templates make a partial the natural way to say it, and that is the sort
+  of difference a native port is allowed to have. What must not differ is the
+  VISIBLE TEXT — "Steve, Claude and Codex" — because the cross-tool semantic
+  oracle compares exactly that.
+*/}}
+{{- $authors := .authors -}}
+{{- $linked := .linked -}}
+{{- $count := len $authors -}}
+{{- range $index, $author := $authors -}}
+{{- if gt $index 0 }}{{ if eq $index (sub $count 1) }} and {{ else }}, {{ end }}{{ end -}}
+{{- if eq $author "steve" -}}
+{{- if $linked }}<a href="https://steveklabnik.com">Steve</a>{{ else }}Steve{{ end -}}
+{{- else if eq $author "claude" -}}
+{{- if $linked }}<a href="https://claude.ai">Claude</a>{{ else }}Claude{{ end -}}
+{{- else if eq $author "codex" -}}
+{{- if $linked }}<a href="https://openai.com/codex/">Codex</a>{{ else }}Codex{{ end -}}
+{{- else -}}
+{{- $author -}}
+{{- end -}}
+{{- end -}}

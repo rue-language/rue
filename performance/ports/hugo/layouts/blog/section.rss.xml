@@ -1,0 +1,35 @@
+{{- /*
+  The blog feed, written out rather than inherited from Hugo's built-in RSS
+  template, and the reason is ADR-0072 Decision 4's determinism rule.
+
+  Hugo's built-in feed emits `<lastBuildDate>` from the clock and a
+  `<generator>` element naming the build's own version and date. Both move
+  between two builds of an unchanged corpus, so with the built-in template
+  every repeated sample would produce a different output tree and the
+  byte-identical determinism check would fail on every single run — the known
+  trap this port exists to avoid. `.Site.LastChange` is deliberately absent for
+  the same reason: it is derived from page dates today, but it is one
+  front-matter edit away from moving for a reason the corpus digest already
+  records.
+
+  The shape mirrors Zola's built-in feed and gazette's `rss.xml` port, because
+  the feed is one of the outputs Decision 4 compares across tools: same file,
+  same route, same entries, same order.
+*/ -}}
+{{ printf "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" | safeHTML }}
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+        <title>{{ .Site.Title }}</title>
+        <link>{{ .Permalink }}</link>
+        <description>{{ with .Params.description }}{{ . }}{{ else }}{{ .Site.Params.description }}{{ end }}</description>
+        <language>en</language>
+        <atom:link href="{{ with .OutputFormats.Get "rss" }}{{ .Permalink }}{{ end }}" rel="self" type="application/rss+xml"/>
+{{ range .Pages }}        <item>
+            <title>{{ .Title }}</title>
+            <pubDate>{{ .Date.Format "2006-01-02" }}</pubDate>
+            <link>{{ .Permalink }}</link>
+            <guid>{{ .Permalink }}</guid>
+            <description>{{ with .Params.description }}{{ . }}{{ end }}</description>
+        </item>
+{{ end }}    </channel>
+</rss>

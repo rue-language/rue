@@ -20,10 +20,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rue_perf_schema::{
-    Band, Completeness, FIXTURE_INPUT_NAME, Manifest, Metric, RunObject, RuntimeCompleteness,
-    RuntimeManifest, RuntimeMetric, StoredRun, StoredRuntimeReport, Summary, flags_movement,
-    geometric_mean, median_absolute_deviation, ratio, sample_value, summarize, validate_run,
-    validate_runtime_report,
+    Band, Completeness, FIXTURE_INPUT_NAME, Manifest, Metric, PeerRole, PeerThreadPolicy,
+    RunObject, RuntimeCompleteness, RuntimeManifest, RuntimeMetric, StoredRun, StoredRuntimeReport,
+    Summary, flags_movement, geometric_mean, median_absolute_deviation, ratio, sample_value,
+    summarize, validate_run, validate_runtime_report,
 };
 use serde::Serialize;
 
@@ -114,6 +114,57 @@ pub struct RuntimeEpochData {
     pub annotations: Vec<RuntimeAnnotation>,
     /// Points in measurement order.
     pub points: Vec<RuntimePointData>,
+    /// The cross-tool comparison from the newest run that measured peers.
+    ///
+    /// Absent when no peer measurement exists in this epoch, and the page then
+    /// renders the honest empty state rather than an estimate. Never a mixture
+    /// of runs: a ratio whose two sides came from different commits on a hosted
+    /// runner is a ratio of two different machines' moods, which is exactly
+    /// what ADR-0072 Decision 9's per-run canary exists to prevent.
+    pub comparison: Option<RuntimeComparison>,
+}
+
+/// The cross-tool table one run produced.
+#[derive(Debug, Serialize)]
+pub struct RuntimeComparison {
+    /// The commit whose run these rows come from.
+    pub commit: String,
+    /// The fixture identity every row in the table was measured against.
+    pub fixture: String,
+    /// Rows, Rue first and then its peers, ascending by corpus scale.
+    pub rows: Vec<RuntimeComparisonRow>,
+}
+
+/// One row of the cross-tool comparison.
+#[derive(Debug, Serialize)]
+pub struct RuntimeComparisonRow {
+    /// The tool, as a reader knows it.
+    pub tool: String,
+    /// The corpus scale this row built, `1x` or `10x`.
+    pub scale: String,
+    /// The thread configuration, spelled for a reader rather than as an enum.
+    pub threads: String,
+    /// Median whole-process wall time, in nanoseconds.
+    pub median_ns: u64,
+    /// This row's median over the Rue program's median at the same scale.
+    ///
+    /// `None` on the Rue rows themselves and wherever the same-scale
+    /// denominator is missing — never a 1.0 standing in for "unknown".
+    pub ratio: Option<f64>,
+    /// The tool's version.
+    pub version: String,
+    /// Whether this row is the primary published ratio or the labelled
+    /// secondary one (ADR-0072 Decision 5).
+    pub secondary: bool,
+    /// The commit whose run this row was measured in.
+    pub commit: String,
+    /// Whether this row was joined from an earlier full peer leg rather than
+    /// measured in the same run as the Rue figure it is compared against.
+    ///
+    /// Published per row rather than inferred, because the two kinds of row
+    /// carry different weight: a same-run ratio controls for the machine, and a
+    /// joined one only controls for the input.
+    pub joined: bool,
 }
 
 /// The rule one workload's movement is judged against, as published.
@@ -916,6 +967,8 @@ fn derive_runtime_epoch(
         })
         .collect();
 
+    let comparison = latest_comparison(manifest, stored);
+
     RuntimeEpochData {
         epoch: epoch.id,
         suite_revision: epoch.suite_revision,
@@ -925,7 +978,207 @@ fn derive_runtime_epoch(
         flagging,
         annotations,
         points,
+        comparison,
     }
+}
+
+/// The cross-tool table, joining this epoch's newest run to its latest full
+/// peer leg.
+///
+/// THE JOIN IS THE POINT, and leaving it out is how this table silently became
+/// a two-tool one. Peers are re-measured on events rather than on a clock
+/// (ADR-0072 Decision 9), while the canary — one single-threaded build by one
+/// peer — rides *every* run. So the newest run carrying any peer observation is
+/// almost always canary-only, and a table built from it alone would show
+/// gazette against Zola-pinned and nothing else: no Hugo, no default-parallel
+/// row, no second scale. The three-tool table would appear for exactly one push
+/// after each event and then vanish, falsifying both the page's caption and
+/// Decision 5's promise that the parallel figures are published rather than
+/// hidden.
+///
+/// So rows come from two places, and each row says which:
+///
+///   * The Rue program and the canary come from the NEWEST run, measured in the
+///     same job on the same machine. This is the same-run denominator Decision
+///     9 exists to provide.
+///   * Every other peer configuration is JOINED from the latest run that
+///     carried a full peer leg, and only when its fixture identity matches the
+///     newest run's for that workload. A matching identity means the two runs
+///     built literally the same input, which is what makes the join meaningful;
+///     a differing one means the peer leg is due and has not run, and stale
+///     rows are dropped rather than published against a corpus they never saw.
+fn latest_comparison(
+    manifest: &RuntimeManifest,
+    stored: &[&StoredRuntimeReport],
+) -> Option<RuntimeComparison> {
+    let mut appendable: Vec<&&StoredRuntimeReport> = stored
+        .iter()
+        .filter(|report| validate_runtime_report(manifest, report.record()).is_appendable())
+        .collect();
+    appendable.sort_by(|left, right| {
+        left.record()
+            .identity
+            .finished_at
+            .cmp(&right.record().identity.finished_at)
+    });
+
+    let base = appendable
+        .iter()
+        .rev()
+        .find(|report| {
+            report
+                .record()
+                .workloads
+                .iter()
+                .any(|observation| !observation.peers.is_empty())
+        })
+        .copied();
+    let full = appendable
+        .iter()
+        .rev()
+        .find(|report| {
+            report.record().workloads.iter().any(|observation| {
+                observation
+                    .peers
+                    .iter()
+                    .any(|peer| peer.role == PeerRole::Full)
+            })
+        })
+        .copied();
+    let base = base.or(full)?;
+
+    let mut rows: Vec<RuntimeComparisonRow> = Vec::new();
+    let mut fixture = String::new();
+    let mut observations: Vec<&rue_perf_schema::RuntimeObservation> = base
+        .record()
+        .workloads
+        .iter()
+        .filter(|observation| !observation.peers.is_empty())
+        .collect();
+    // Ascending by the scale the peers built, so the table reads as a
+    // page-count ladder rather than in workload-id order.
+    observations.sort_by_key(|observation| {
+        observation
+            .peers
+            .first()
+            .map(|peer| peer.scale)
+            .unwrap_or_default()
+    });
+
+    for observation in observations {
+        let Some(rue) = summarize(observation, RuntimeMetric::WallClock) else {
+            continue;
+        };
+        let scale = observation
+            .peers
+            .first()
+            .map(|peer| peer.scale)
+            .unwrap_or_default();
+        let identity = fixture_identity(observation);
+        if fixture.is_empty() {
+            fixture = short_digest(&identity);
+        }
+        rows.push(RuntimeComparisonRow {
+            tool: format!("gazette ({})", observation.workload),
+            scale: format!("{scale}x"),
+            // Not a policy choice: Rue has no concurrency, which is the whole
+            // reason the peers are pinned to one thread for the primary ratio.
+            threads: "1 (Rue has no concurrency)".to_string(),
+            median_ns: rue.median,
+            ratio: None,
+            version: base.record().identity.compiler_version.clone(),
+            secondary: false,
+            commit: base.record().identity.commit.clone(),
+            joined: false,
+        });
+
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        let push_peers = |rows: &mut Vec<RuntimeComparisonRow>,
+                          peers: &[rue_perf_schema::PeerObservation],
+                          commit: &str,
+                          joined: bool,
+                          seen: &mut BTreeSet<(String, String)>| {
+            let mut ordered: Vec<&rue_perf_schema::PeerObservation> = peers.iter().collect();
+            ordered.sort_by(|left, right| {
+                (&left.tool, format!("{:?}", left.thread_policy))
+                    .cmp(&(&right.tool, format!("{:?}", right.thread_policy)))
+            });
+            for peer in ordered {
+                let key = (peer.tool.clone(), format!("{:?}", peer.thread_policy));
+                if !seen.insert(key) {
+                    // Already covered by the same-run rows. A joined row can
+                    // only ever ADD a configuration, never replace a
+                    // measurement taken beside the Rue number it divides.
+                    continue;
+                }
+                let values: Vec<u64> = peer
+                    .samples
+                    .iter()
+                    .map(|sample| sample.process_elapsed_ns)
+                    .collect();
+                let Some(summary) = Summary::of(&values) else {
+                    continue;
+                };
+                rows.push(RuntimeComparisonRow {
+                    tool: peer.tool.clone(),
+                    scale: format!("{}x", peer.scale),
+                    threads: match peer.thread_policy {
+                        PeerThreadPolicy::PinnedSingleThread => "1 (pinned)".to_string(),
+                        PeerThreadPolicy::ToolDefaultParallel => {
+                            "tool default (parallel)".to_string()
+                        }
+                    },
+                    median_ns: summary.median,
+                    ratio: (rue.median > 0).then(|| summary.median as f64 / rue.median as f64),
+                    version: peer.version.clone(),
+                    secondary: peer.thread_policy != PeerThreadPolicy::PinnedSingleThread,
+                    commit: commit.to_string(),
+                    joined,
+                });
+            }
+        };
+
+        push_peers(
+            &mut rows,
+            &observation.peers,
+            &base.record().identity.commit,
+            false,
+            &mut seen,
+        );
+
+        if let Some(full) = full
+            && !std::ptr::eq(*full, *base)
+            && let Some(earlier) = full.record().observation(&observation.workload)
+            && fixture_identity(earlier) == identity
+        {
+            push_peers(
+                &mut rows,
+                &earlier.peers,
+                &full.record().identity.commit,
+                true,
+                &mut seen,
+            );
+        }
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    Some(RuntimeComparison {
+        commit: base.record().identity.commit.clone(),
+        fixture,
+        rows,
+    })
+}
+
+/// The digest of the input one observation consumed, or empty when it recorded
+/// none — in which case no join is possible, which is the safe answer.
+fn fixture_identity(observation: &rue_perf_schema::RuntimeObservation) -> String {
+    observation
+        .recorded_inputs
+        .iter()
+        .find(|input| input.name == FIXTURE_INPUT_NAME)
+        .map(|input| input.identity_sha256.clone())
+        .unwrap_or_default()
 }
 
 /// A digest abbreviated for a human, never for comparison.
@@ -1832,6 +2085,7 @@ question = "How fast does compiled Rue count words?"
 program_args = ["{fixture}"]
 
 [suite.workloads.fixture]
+kind = "seeded_generator"
 category = "recorded"
 generator = "zipf_ascii_text"
 generator_revision = 1
@@ -1922,6 +2176,7 @@ samples = 3
                         seed: 20260813,
                         vocabulary_size: 256,
                     }),
+                    tree: None,
                 }],
                 program: ProgramIdentity {
                     binary_bytes: 65_536,
@@ -1944,8 +2199,10 @@ samples = 3
                         exit_code: 0,
                         stdout_bytes: 8,
                         stdout_sha256: "c".repeat(64),
+                        artifact_sha256: None,
                     })
                     .collect(),
+                peers: Vec::new(),
             }],
             failures: Vec::new(),
         }
@@ -2046,6 +2303,280 @@ samples = 3
         let workload = &data.platforms[0].epochs[0].points[0].workloads["wordfreq"];
         assert_eq!(workload.fixture_identity, "f".repeat(64));
         assert_eq!(workload.source_identity, "3".repeat(64));
+    }
+
+    /// A manifest whose workload is a corpus tree with peers, for the
+    /// cross-tool table. Separate from `RUNTIME_MANIFEST` deliberately: a peer
+    /// policy on a workload that builds no site is refused by the schema, and
+    /// adding gazette to the seeded manifest would make every other test in
+    /// this module report a workload it never measured.
+    const RUNTIME_PEER_MANIFEST: &str = r#"
+schema_version = 1
+
+[[suite]]
+revision = 1
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does compiled Rue build the real site?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 1
+scale = 1
+excluded = []
+root_name = "gazette-site"
+description = "the live corpus"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+[[epoch]]
+id = 1
+platform = "probe"
+suite_revision = 1
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "probe"
+runner_image = "probe"
+
+[epoch.sampling.gazette]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+"#;
+
+    fn peer_sample(elapsed: u64) -> rue_perf_schema::RuntimeSample {
+        rue_perf_schema::RuntimeSample {
+            process_elapsed_ns: elapsed,
+            peak_memory_bytes: 1024,
+            exit_code: 0,
+            stdout_bytes: 0,
+            stdout_sha256: "a".repeat(64),
+            artifact_sha256: Some("8".repeat(64)),
+        }
+    }
+
+    /// A gazette report carrying the canary and the secondary peer row.
+    fn gazette_peer_report() -> rue_perf_schema::RuntimeReport {
+        use rue_perf_schema::*;
+        let mut report = runtime_report('a', [4, 4, 4]);
+        report.identity.workload_source_hashes =
+            BTreeMap::from([("gazette".to_string(), "3".repeat(64))]);
+        let samples: Vec<RuntimeSample> = (0..3)
+            .map(|index| RuntimeSample {
+                process_elapsed_ns: 4_000_000_000 + index,
+                peak_memory_bytes: 1024,
+                exit_code: 0,
+                stdout_bytes: 0,
+                stdout_sha256: "e".repeat(64),
+                artifact_sha256: Some("7".repeat(64)),
+            })
+            .collect();
+        report.workloads = vec![RuntimeObservation {
+            workload: "gazette".to_string(),
+            source: "examples/gazette/main.rue".to_string(),
+            question: "How fast does compiled Rue build the real site?".to_string(),
+            program_args: vec![
+                "build".to_string(),
+                FIXTURE_ARGUMENT.to_string(),
+                "-o".to_string(),
+                OUTPUT_ARGUMENT.to_string(),
+            ],
+            recorded_inputs: vec![RecordedInput {
+                name: FIXTURE_INPUT_NAME.to_string(),
+                category: InputCategory::Recorded,
+                description: "the live corpus".to_string(),
+                identity_sha256: "f".repeat(64),
+                files: 130,
+                bytes: 1_800_000,
+                provenance: None,
+                tree: Some(CorpusTreeProvenance {
+                    preparer: "scripts/gazette-corpus-diff.py".to_string(),
+                    preparer_revision: 1,
+                    scale: 1,
+                    excluded: Vec::new(),
+                }),
+            }],
+            program: ProgramIdentity {
+                binary_bytes: 1_048_576,
+                sha256: "b".repeat(64),
+            },
+            oracle: OracleOutcome {
+                kind: OracleKind::SemanticSitePages,
+                reference: "scripts/gazette-corpus-diff.py".to_string(),
+                reference_sha256: "d".repeat(64),
+                observed_sha256: "7".repeat(64),
+                verdict: OracleVerdict::Match,
+                deterministic_across_samples: true,
+                detail: String::new(),
+            },
+            samples,
+            peers: vec![
+                PeerObservation {
+                    tool: "zola".to_string(),
+                    version: "0.21.0".to_string(),
+                    role: PeerRole::Canary,
+                    thread_policy: PeerThreadPolicy::PinnedSingleThread,
+                    scale: 1,
+                    output_sha256: "8".repeat(64),
+                    emitted_files: 131,
+                    samples: vec![peer_sample(2_000_000_000)],
+                },
+                PeerObservation {
+                    tool: "zola".to_string(),
+                    version: "0.21.0".to_string(),
+                    role: PeerRole::Full,
+                    thread_policy: PeerThreadPolicy::ToolDefaultParallel,
+                    scale: 1,
+                    output_sha256: "8".repeat(64),
+                    emitted_files: 131,
+                    samples: vec![peer_sample(1_000_000_000)],
+                },
+            ],
+        }];
+        report
+    }
+
+    #[test]
+    fn the_cross_tool_table_comes_from_one_run_and_names_its_thread_policy() {
+        // ADR-0072 Decisions 5 and 9. Two properties are asserted because both
+        // are easy to break and each breaks the published claim: the primary
+        // ratio's denominator is the peer PINNED TO ONE THREAD, and the peers'
+        // default parallel row is published beside it, labelled, rather than
+        // dropped or promoted.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let report = gazette_peer_report();
+        let data = derive_runtime(&manifest, &stored_runtime([report]), &[]);
+        let comparison = data.platforms[0].epochs[0]
+            .comparison
+            .as_ref()
+            .expect("a run carrying peers publishes a comparison");
+        assert_eq!(comparison.rows.len(), 3);
+        assert_eq!(comparison.rows[0].tool, "gazette (gazette)");
+        assert_eq!(
+            comparison.rows[0].ratio, None,
+            "the Rue row is the baseline"
+        );
+        let pinned = &comparison.rows[1];
+        assert_eq!(pinned.threads, "1 (pinned)");
+        assert!(!pinned.secondary);
+        assert_eq!(pinned.version, "0.21.0");
+        let parallel = &comparison.rows[2];
+        assert_eq!(parallel.threads, "tool default (parallel)");
+        assert!(
+            parallel.secondary,
+            "the default-parallel row is published as a labelled secondary, never as the ratio"
+        );
+        // The pinned peer took twice the parallel one's time here, so the two
+        // ratios must differ — a table that published one number for both would
+        // be publishing core count as though it were per-unit work.
+        assert!(pinned.ratio.unwrap() > parallel.ratio.unwrap());
+    }
+
+    #[test]
+    fn a_canary_only_run_keeps_the_three_tool_table_by_joining_the_last_full_leg() {
+        // The regression this join exists to prevent, and the one the first
+        // implementation shipped: the canary rides EVERY run and the full peer
+        // matrix runs only on events, so the newest peers-carrying run is
+        // almost always canary-only. Without the join the published table lost
+        // Hugo and both default-parallel rows on the very next push, one push
+        // after each event — falsifying the page's own caption.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut full = gazette_peer_report();
+        full.identity.commit = "1".repeat(40);
+        full.identity.finished_at = "2026-08-13T00:01:00Z".to_string();
+
+        let mut canary_only = gazette_peer_report();
+        canary_only.identity.commit = "2".repeat(40);
+        canary_only.identity.finished_at = "2026-08-13T00:02:00Z".to_string();
+        canary_only.workloads[0]
+            .peers
+            .retain(|peer| peer.role == rue_perf_schema::PeerRole::Canary);
+        assert_eq!(canary_only.workloads[0].peers.len(), 1);
+
+        let data = derive_runtime(&manifest, &stored_runtime([full, canary_only]), &[]);
+        let comparison = data.platforms[0].epochs[0]
+            .comparison
+            .as_ref()
+            .expect("a comparison");
+        // Rue, the same-run canary, and the joined parallel row.
+        assert_eq!(comparison.rows.len(), 3);
+        // The same-run rows come from the newest run; the joined one names the
+        // run it was actually measured in, so the page can say so.
+        assert_eq!(comparison.commit, "2".repeat(40));
+        assert!(!comparison.rows[0].joined);
+        assert!(!comparison.rows[1].joined, "the canary is a same-run row");
+        assert_eq!(comparison.rows[1].commit, "2".repeat(40));
+        let joined = &comparison.rows[2];
+        assert!(joined.joined, "the parallel row survives by being joined");
+        assert!(joined.secondary);
+        assert_eq!(joined.commit, "1".repeat(40));
+    }
+
+    #[test]
+    fn a_joined_row_is_dropped_when_the_corpus_it_measured_is_not_this_one() {
+        // The join's whole licence is a matching fixture identity: it means the
+        // two runs built literally the same input. A differing identity means
+        // the peer leg is due and has not run, and publishing the older rows
+        // would compare this corpus against a peer's time on another one.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut full = gazette_peer_report();
+        full.identity.commit = "1".repeat(40);
+        full.identity.finished_at = "2026-08-13T00:01:00Z".to_string();
+
+        let mut canary_only = gazette_peer_report();
+        canary_only.identity.commit = "2".repeat(40);
+        canary_only.identity.finished_at = "2026-08-13T00:02:00Z".to_string();
+        canary_only.workloads[0]
+            .peers
+            .retain(|peer| peer.role == rue_perf_schema::PeerRole::Canary);
+        // The corpus moved between the two runs.
+        canary_only.workloads[0].recorded_inputs[0].identity_sha256 = "c".repeat(64);
+
+        let data = derive_runtime(&manifest, &stored_runtime([full, canary_only]), &[]);
+        let comparison = data.platforms[0].epochs[0]
+            .comparison
+            .as_ref()
+            .expect("a comparison");
+        assert_eq!(
+            comparison.rows.len(),
+            2,
+            "only the same-run rows survive a corpus change: {:?}",
+            comparison.rows
+        );
+        assert!(comparison.rows.iter().all(|row| !row.joined));
+    }
+
+    #[test]
+    fn a_store_with_no_peer_measurement_publishes_no_comparison() {
+        // The honest empty state: nothing is estimated, and the page renders
+        // "no peer measurements have been collected yet" rather than a table.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[],
+        );
+        assert!(data.platforms[0].epochs[0].comparison.is_none());
     }
 
     /// A report placed explicitly in the series, with the identities that decide
@@ -2316,6 +2847,7 @@ question = "How fast does compiled Rue count words?"
 program_args = ["{fixture}"]
 
 [suite.workloads.fixture]
+kind = "seeded_generator"
 category = "recorded"
 generator = "zipf_ascii_text"
 generator_revision = 1
