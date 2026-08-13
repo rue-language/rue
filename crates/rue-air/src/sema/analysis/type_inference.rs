@@ -6,6 +6,18 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::LazyInferenceFacts;
+use std::time::Instant;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InferenceBreakdown {
+    pub(crate) precompute_ns: u64,
+    pub(crate) constraint_generation_ns: u64,
+    pub(crate) unification_resolution_ns: u64,
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn inference_function_is_selected(
@@ -256,7 +268,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         body: InstRef,
         type_subst: Option<&HashMap<Spur, Type>>,
         value_subst: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<HashMap<InstRef, Type>> {
+    ) -> CompileResult<(HashMap<InstRef, Type>, InferenceBreakdown)> {
+        let precompute_started = Instant::now();
         // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
         // `F` returns `type`) so inference can see the concrete anonymous
         // struct types behind them. Without this, `P { ... }`, `let p: P`,
@@ -306,6 +319,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // registered while reducing a head are included in it.
         let inline_ctor_head_types =
             self.precompute_inline_ctor_head_types(type_subst, value_subst, &comptime_local_types);
+        let precompute_ns = elapsed_ns(precompute_started);
 
         // Demand-population provider for the inference-context families
         // (RUE-1091 slice r5b). It materializes each consulted function/method
@@ -326,6 +340,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `self` ends before Phase 2 resumes `&mut self` access (RUE-1091 slice
         // r5b): the shared `InferenceContext` cache holds no `Sema` borrow, and
         // the fill source is threaded here per body.
+        let constraint_generation_started = Instant::now();
         let (
             constraints,
             int_literal_vars,
@@ -457,8 +472,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 inference_body_dependencies,
             )
         };
+        let constraint_generation_ns = elapsed_ns(constraint_generation_started);
 
         // Phase 2: Solve constraints via unification
+        let unification_resolution_started = Instant::now();
         // Pre-size the substitution for better performance on large functions
         let mut unifier = Unifier::with_capacity(type_var_count);
         unifier.mark_int_literal_vars(&int_literal_vars);
@@ -577,7 +594,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             resolved_types.insert(*inst_ref, concrete_ty);
         }
 
-        Ok(resolved_types)
+        let unification_resolution_ns = elapsed_ns(unification_resolution_started);
+        Ok((
+            resolved_types,
+            InferenceBreakdown {
+                precompute_ns,
+                constraint_generation_ns,
+                unification_resolution_ns,
+            },
+        ))
     }
     /// Analyze an RIR instruction for projection (field access).
     ///

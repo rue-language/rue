@@ -31,7 +31,9 @@ use super::fact_mode::{
 };
 use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
 use super::info::{FunctionCallInfo, MethodCallInfo};
-use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+use super::ordinary_engine::{
+    ExpressionAnalysisBreakdown, OrdinaryBodyAnalysisHost, OrdinaryBodyEngine,
+};
 use super::semantic_body_export::SemanticBodyExportHost;
 use super::{
     AnalyzedFunction, BodyAnalysisWork, BodyFactProvider, ConstInfo, ConstValue,
@@ -58,6 +60,7 @@ fn publish_provider_body_breakdown(
     specialization_selection_ns: u64,
     body_export_ns: u64,
     result_projection_ns: u64,
+    expression: ExpressionAnalysisBreakdown,
 ) {
     tracing::event!(
         name: "semantic_provider_breakdown",
@@ -68,6 +71,11 @@ fn publish_provider_body_breakdown(
         specialization_selection_ns,
         body_export_ns,
         result_projection_ns,
+        setup_ns = expression.setup_ns,
+        inference_precompute_ns = expression.inference_precompute_ns,
+        constraint_generation_ns = expression.constraint_generation_ns,
+        unification_resolution_ns = expression.unification_resolution_ns,
+        air_emission_validation_ns = expression.air_emission_validation_ns,
     );
 }
 
@@ -608,6 +616,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
         super::anon_structs::IssuedCanonicalArguments,
     )>,
     body_work: BodyAnalysisWork,
+    expression_breakdown: Option<ExpressionAnalysisBreakdown>,
     recovered_errors: Vec<CompileError>,
     inference_failure_incomplete: bool,
     comptime_depth: usize,
@@ -741,6 +750,7 @@ where
             anon_struct_type_subst: HashMap::new(),
             active_anonymous_producer: None,
             body_work: BodyAnalysisWork::default(),
+            expression_breakdown: None,
             recovered_errors: Vec::new(),
             inference_failure_incomplete: false,
             comptime_depth: 0,
@@ -3510,6 +3520,10 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    fn record_expression_analysis_breakdown(&mut self, breakdown: ExpressionAnalysisBreakdown) {
+        self.expression_breakdown = Some(breakdown);
+    }
+
     fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
         self.state.param_data(range)
     }
@@ -4470,6 +4484,9 @@ where
         }
     };
     let expression_engine_ns = elapsed_ns(expression_engine_started);
+    let expression_breakdown = host
+        .expression_breakdown
+        .expect("provider ordinary body analysis records its expression breakdown");
     let specialization_selection_started = Instant::now();
     let (mut function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
     function.ordinary_owner = Some(host.owner);
@@ -4559,6 +4576,7 @@ where
         specialization_selection_ns,
         body_export_ns,
         result_projection_ns,
+        expression_breakdown,
     );
     Ok(ProviderOrdinaryBody {
         owner: host.owner,
@@ -4935,6 +4953,9 @@ where
         )?
     };
     let expression_engine_ns = elapsed_ns(expression_engine_started);
+    let expression_breakdown = host
+        .expression_breakdown
+        .expect("provider anonymous body analysis records its expression breakdown");
     let specialization_selection_started = Instant::now();
     let (function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
     let (function, selected_calls, mut referenced_specializations) =
@@ -5028,6 +5049,7 @@ where
         specialization_selection_ns,
         body_export_ns,
         result_projection_ns,
+        expression_breakdown,
     );
     Ok(ProviderAnonymousBody {
         export,
@@ -5139,6 +5161,9 @@ where
     let specialized =
         crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
     let expression_engine_ns = elapsed_ns(expression_engine_started);
+    let expression_breakdown = host
+        .expression_breakdown
+        .expect("provider specialized body analysis records its expression breakdown");
     let body_span = host
         .rir
         .rir()
@@ -5239,6 +5264,7 @@ where
         specialization_selection_ns,
         body_export_ns,
         result_projection_ns,
+        expression_breakdown,
     );
     Ok(ProviderSpecializedBody {
         export,

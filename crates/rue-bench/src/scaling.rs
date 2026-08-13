@@ -643,6 +643,45 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n### Expression engine detail\n\n");
+    out.push_str("These five adjacent intervals partition the successful analysis core inside the enclosing expression-engine interval. They separate body setup, compile-time precomputation, constraint generation, unification/type projection, and AIR emission with its semantic postchecks; provider lookup and dispatch remain in the enclosing interval.\n\n");
+    out.push_str("| workload / workers | setup total/max ms | inference precompute total/max ms | constraint generation total/max ms | unification/resolution total/max ms | AIR emission/validation total/max ms |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let pair = |select: fn(&CompilerCriticalPathEvidence) -> &DurationDistribution| {
+            (
+                summarize(evidence.clone().map(|value| select(&value).total_ns)),
+                summarize(evidence.clone().map(|value| select(&value).max_ns)),
+            )
+        };
+        let setup = pair(|value| &value.semantic_expression_setup);
+        let precompute = pair(|value| &value.semantic_inference_precompute);
+        let constraints = pair(|value| &value.semantic_constraint_generation);
+        let unification = pair(|value| &value.semantic_unification_resolution);
+        let emission = pair(|value| &value.semantic_air_emission_validation);
+        out.push_str(&format!(
+            "| {} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} |\n",
+            observation_label(observation),
+            setup.0.median as f64 / 1_000_000.0,
+            setup.1.median as f64 / 1_000_000.0,
+            precompute.0.median as f64 / 1_000_000.0,
+            precompute.1.median as f64 / 1_000_000.0,
+            constraints.0.median as f64 / 1_000_000.0,
+            constraints.1.median as f64 / 1_000_000.0,
+            unification.0.median as f64 / 1_000_000.0,
+            unification.1.median as f64 / 1_000_000.0,
+            emission.0.median as f64 / 1_000_000.0,
+            emission.1.median as f64 / 1_000_000.0,
+        ));
+    }
+
     out.push_str("\n## Deterministic query work\n\n");
     out.push_str("Counts are exact for one fresh compiler process and must agree across the measured one-worker samples. Parallel scheduling outcomes remain available in each raw boundary proof but are not collapsed into an allegedly deterministic count. Request outcomes expose all query traffic before validation detail: claims start computations, reuses return compatible retained or task-local terminals, and joins share in-flight work. Declined joins are included in joins and identify wait-graph avoidance.\n\n");
     out.push_str("| workload | claims | reuses | joins declined/total | body completions | publications red/green | cancellations/cycles |\n");
@@ -1126,6 +1165,8 @@ mod tests {
         assert!(rendered.contains("UTF-8 bytes scanned"));
         assert!(rendered.contains("Query display identities"));
         assert!(rendered.contains("bytes/token"));
+        assert!(rendered.contains("Expression engine detail"));
+        assert!(rendered.contains("provider lookup and dispatch remain"));
     }
 
     #[test]

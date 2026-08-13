@@ -409,6 +409,21 @@ pub struct CompilerCriticalPathEvidence {
     /// Canonical expression inference and body analysis engine.
     #[serde(default)]
     pub semantic_provider_expression_engine: DurationDistribution,
+    /// Parameter/layout setup before expression inference.
+    #[serde(default)]
+    pub semantic_expression_setup: DurationDistribution,
+    /// Compile-time alias and inline-constructor preparation before constraints.
+    #[serde(default)]
+    pub semantic_inference_precompute: DurationDistribution,
+    /// Constraint generation over the body RIR.
+    #[serde(default)]
+    pub semantic_constraint_generation: DurationDistribution,
+    /// Constraint solving and concrete resolved-type projection.
+    #[serde(default)]
+    pub semantic_unification_resolution: DurationDistribution,
+    /// AIR construction plus post-analysis semantic validation.
+    #[serde(default)]
+    pub semantic_air_emission_validation: DurationDistribution,
     /// Post-analysis specialization selection and identity installation.
     #[serde(default)]
     pub semantic_provider_specialization_selection: DurationDistribution,
@@ -613,6 +628,11 @@ impl BuildBoundaryEvidence {
             || !critical.semantic_provider_analysis.validate()
             || !critical.semantic_provider_host_setup.validate()
             || !critical.semantic_provider_expression_engine.validate()
+            || !critical.semantic_expression_setup.validate()
+            || !critical.semantic_inference_precompute.validate()
+            || !critical.semantic_constraint_generation.validate()
+            || !critical.semantic_unification_resolution.validate()
+            || !critical.semantic_air_emission_validation.validate()
             || !critical
                 .semantic_provider_specialization_selection
                 .validate()
@@ -678,11 +698,31 @@ impl BuildBoundaryEvidence {
             || critical.semantic_provider_analysis.count == 0
             || critical.semantic_provider_host_setup.count == 0
             || critical.semantic_provider_expression_engine.count == 0
+            || critical.semantic_expression_setup.count == 0
+            || critical.semantic_inference_precompute.count == 0
+            || critical.semantic_constraint_generation.count == 0
+            || critical.semantic_unification_resolution.count == 0
+            || critical.semantic_air_emission_validation.count == 0
             || critical.semantic_provider_specialization_selection.count == 0
             || critical.semantic_provider_body_export.count == 0
             || critical.semantic_provider_result_projection.count == 0
         {
             return Err("compiler omitted semantic critical-path evidence".to_string());
+        }
+        let expression_counts = [
+            critical.semantic_expression_setup.count,
+            critical.semantic_inference_precompute.count,
+            critical.semantic_constraint_generation.count,
+            critical.semantic_unification_resolution.count,
+            critical.semantic_air_emission_validation.count,
+        ];
+        if expression_counts
+            .iter()
+            .any(|count| *count != critical.semantic_provider_expression_engine.count)
+        {
+            return Err(
+                "compiler omitted or split semantic-expression breakdown evidence".to_string(),
+            );
         }
         let breakdown_counts = [
             critical.cfg_input_preparation_bodies.count,
@@ -793,6 +833,11 @@ mod tests {
                 semantic_provider_analysis: distribution(),
                 semantic_provider_host_setup: distribution(),
                 semantic_provider_expression_engine: distribution(),
+                semantic_expression_setup: distribution(),
+                semantic_inference_precompute: distribution(),
+                semantic_constraint_generation: distribution(),
+                semantic_unification_resolution: distribution(),
+                semantic_air_emission_validation: distribution(),
                 semantic_provider_specialization_selection: distribution(),
                 semantic_provider_body_export: distribution(),
                 semantic_provider_result_projection: distribution(),
@@ -847,6 +892,11 @@ mod tests {
             "semantic_provider_analysis",
             "semantic_provider_host_setup",
             "semantic_provider_expression_engine",
+            "semantic_expression_setup",
+            "semantic_inference_precompute",
+            "semantic_constraint_generation",
+            "semantic_unification_resolution",
+            "semantic_air_emission_validation",
             "semantic_provider_specialization_selection",
             "semantic_provider_body_export",
             "semantic_provider_result_projection",
@@ -907,6 +957,26 @@ mod tests {
         );
         assert_eq!(
             decoded.critical_path.semantic_provider_expression_engine,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_expression_setup,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_inference_precompute,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_constraint_generation,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_unification_resolution,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_air_emission_validation,
             DurationDistribution::default()
         );
         assert_eq!(

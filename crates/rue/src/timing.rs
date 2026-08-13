@@ -1166,6 +1166,11 @@ struct SemanticProviderBreakdownVisitor {
     specialization_selection_ns: Option<u64>,
     body_export_ns: Option<u64>,
     result_projection_ns: Option<u64>,
+    setup_ns: Option<u64>,
+    inference_precompute_ns: Option<u64>,
+    constraint_generation_ns: Option<u64>,
+    unification_resolution_ns: Option<u64>,
+    air_emission_validation_ns: Option<u64>,
 }
 
 impl tracing::field::Visit for TimingFlushVisitor {
@@ -1214,6 +1219,11 @@ impl tracing::field::Visit for SemanticProviderBreakdownVisitor {
             "specialization_selection_ns" => self.specialization_selection_ns = Some(value),
             "body_export_ns" => self.body_export_ns = Some(value),
             "result_projection_ns" => self.result_projection_ns = Some(value),
+            "setup_ns" => self.setup_ns = Some(value),
+            "inference_precompute_ns" => self.inference_precompute_ns = Some(value),
+            "constraint_generation_ns" => self.constraint_generation_ns = Some(value),
+            "unification_resolution_ns" => self.unification_resolution_ns = Some(value),
+            "air_emission_validation_ns" => self.air_emission_validation_ns = Some(value),
             _ => {}
         }
     }
@@ -1336,12 +1346,22 @@ where
                 Some(specialization_selection_ns),
                 Some(body_export_ns),
                 Some(result_projection_ns),
+                Some(setup_ns),
+                Some(inference_precompute_ns),
+                Some(constraint_generation_ns),
+                Some(unification_resolution_ns),
+                Some(air_emission_validation_ns),
             ) = (
                 visitor.host_setup_ns,
                 visitor.expression_engine_ns,
                 visitor.specialization_selection_ns,
                 visitor.body_export_ns,
                 visitor.result_projection_ns,
+                visitor.setup_ns,
+                visitor.inference_precompute_ns,
+                visitor.constraint_generation_ns,
+                visitor.unification_resolution_ns,
+                visitor.air_emission_validation_ns,
             )
             else {
                 return;
@@ -1355,6 +1375,14 @@ where
                 ),
                 ("semantic_provider_body_export", body_export_ns),
                 ("semantic_provider_result_projection", result_projection_ns),
+                ("semantic_expression_setup", setup_ns),
+                ("semantic_inference_precompute", inference_precompute_ns),
+                ("semantic_constraint_generation", constraint_generation_ns),
+                ("semantic_unification_resolution", unification_resolution_ns),
+                (
+                    "semantic_air_emission_validation",
+                    air_emission_validation_ns,
+                ),
             ] {
                 self.data
                     .record_span(name, Duration::from_nanos(duration_ns), false, true);
@@ -2641,6 +2669,11 @@ mod phase_accounting_tests {
                 specialization_selection_ns = 8_u64,
                 body_export_ns = 16_u64,
                 result_projection_ns = 32_u64,
+                setup_ns = 64_u64,
+                inference_precompute_ns = 128_u64,
+                constraint_generation_ns = 256_u64,
+                unification_resolution_ns = 512_u64,
+                air_emission_validation_ns = 1024_u64,
             );
         });
 
@@ -2650,6 +2683,11 @@ mod phase_accounting_tests {
             ("semantic_provider_specialization_selection", 8),
             ("semantic_provider_body_export", 16),
             ("semantic_provider_result_projection", 32),
+            ("semantic_expression_setup", 64),
+            ("semantic_inference_precompute", 128),
+            ("semantic_constraint_generation", 256),
+            ("semantic_unification_resolution", 512),
+            ("semantic_air_emission_validation", 1024),
         ] {
             let distribution = data.pass_duration_distribution(name);
             assert_eq!(distribution.count, 1, "{name}");

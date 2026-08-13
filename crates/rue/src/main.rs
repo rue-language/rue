@@ -1077,6 +1077,15 @@ fn compiler_critical_path_evidence(
             .pass_duration_distribution("semantic_provider_host_setup"),
         semantic_provider_expression_engine: timing
             .pass_duration_distribution("semantic_provider_expression_engine"),
+        semantic_expression_setup: timing.pass_duration_distribution("semantic_expression_setup"),
+        semantic_inference_precompute: timing
+            .pass_duration_distribution("semantic_inference_precompute"),
+        semantic_constraint_generation: timing
+            .pass_duration_distribution("semantic_constraint_generation"),
+        semantic_unification_resolution: timing
+            .pass_duration_distribution("semantic_unification_resolution"),
+        semantic_air_emission_validation: timing
+            .pass_duration_distribution("semantic_air_emission_validation"),
         semantic_provider_specialization_selection: timing
             .pass_duration_distribution("semantic_provider_specialization_selection"),
         semantic_provider_body_export: timing

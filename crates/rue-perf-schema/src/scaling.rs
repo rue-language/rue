@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 17;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 18;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
