@@ -618,7 +618,6 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     body_work: BodyAnalysisWork,
     expression_breakdown: Option<ExpressionAnalysisBreakdown>,
     recovered_errors: Vec<CompileError>,
-    inference_failure_incomplete: bool,
     comptime_depth: usize,
     deferred_ownership: Vec<super::DeferredOwnershipGate>,
     ctor_displays: HashMap<Type, String>,
@@ -752,7 +751,6 @@ where
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
             recovered_errors: Vec::new(),
-            inference_failure_incomplete: false,
             comptime_depth: 0,
             deferred_ownership: Vec::new(),
             ctor_displays: HashMap::new(),
@@ -3563,9 +3561,6 @@ where
     }
     fn generated_structs(&self) -> &HashMap<Spur, StructId> {
         &self.generated_structs
-    }
-    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
-        self.inference_failure_incomplete = value;
     }
     fn body_interner(&self) -> &ThreadedRodeo {
         &self.interner

@@ -50,10 +50,10 @@ mod unify;
 
 // Re-export all public types
 pub use constraint::{Constraint, Substitution};
+pub(crate) use generate::LazyInferenceFacts;
 pub use generate::{
     ConstraintContext, ConstraintGenerator, ExprInfo, FunctionSig, LocalVarInfo, MethodSig,
     ParamVarInfo,
 };
-pub(crate) use generate::{InferenceBodyDependency, InferenceCallRoute, LazyInferenceFacts};
 pub use types::{InferType, TypeVarAllocator, TypeVarId};
 pub use unify::{UnificationError, Unifier, UnifyResult};
