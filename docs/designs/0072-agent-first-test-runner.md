@@ -251,8 +251,44 @@ test "parse_port rejects out-of-range values" {
   with Phase 2.
 - **Body typing**: the block has type `()`. A test passes when its process
   exits 0 and fails when it traps (`@assert`, `@panic`, bounds, overflow,
-  division), exits nonzero, or is killed. Result-typed test bodies (so `?`
-  works directly in tests) are an open question (§Open Questions), not v1.
+  division), exits nonzero, or is killed.
+- **`?` in test bodies: unwrap-and-report.** A test body may apply `?` to an
+  operand of a trusted-producer type (spec 4.15:3's standard
+  `Option`/`Result`, unchanged), with test-specific dynamic semantics: the
+  success arm is the ordinary one (`Some(v)`/`Ok(v)` evaluates to `v`), and
+  the failure arm does not propagate — a `()`-typed body has no enclosing
+  producer to construct — but emits a structured failure record and traps at
+  the `?` site. This is an additive spec rule in a position that is a
+  compile error today (E0503/E0505 reject `?` in any `()`-returning body),
+  so no existing program's meaning changes, and it is scoped lexically to
+  the test item's immediate block: helper functions keep ordinary `?`
+  rules, and a `Result`-returning helper composes by being `?`-ed at the
+  test-body boundary. Three properties fall out of trapping instead of
+  propagating. *Attribution*: the trap lowers at the `?` site, so the
+  failure span is that line of the test body — the same call-site
+  attribution `@assert` gets, with no backtrace machinery. *Per-site error
+  types*: no enclosing `Err` is ever constructed, so spec 4.15:4's
+  identical-error-type requirement does not apply — one body can `?`
+  through unrelated error enums on consecutive lines, which a
+  `Result`-typed body could not offer until error conversion exists. *No
+  signature surface*: the block stays `()`; there is nothing to annotate.
+  The failure record (kind `unhandled_error`, §2) carries the `?` site's
+  span and a best-effort rendering of the payload: the compiler
+  synthesizes a structural printer for the operand's error type — variant
+  name and primitive/byte-string payloads, recursion and length bounded by
+  the §2 capture budgets — as a synthesized instance in the
+  drop-glue/dispatcher family (§3), monomorphized per site since each
+  operand's type is statically known. `Err(e)` renders the payload; `None`
+  reports the site alone. A future Display-style trait supersedes the
+  synthesized printer without changing the record's shape. The net effect
+  is deliberate: this is exactly the `match`-plus-`@assert` ceremony a
+  `?`-less body would force at every fallible call — ADR-0038's must-check
+  linearity makes the match compulsory, and without a Display trait the
+  hand-written `Err` arm degrades to a static message — machine-written,
+  with the payload rendered and the span pinned. Expected-failure
+  *testing* is unaffected: asserting that a call returns `Err` is still an
+  ordinary match on the value; `?` is for the errors a test does not
+  expect.
 - **Placement is the visibility model.** A test item sees exactly what its
   module's other items see — and because Rue's visibility boundary is the
   *directory* (spec 10.3: a private item is visible from any file in its
@@ -366,12 +402,14 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   capability summary, failure structure, captured stdout/stderr, exact
   reproduction argv), `run_finished` (counts, wall time, cache statistics). Verdicts: `pass`, `fail`, `timeout`,
   `crash` (killed by signal), `compile_error`, `skipped`, `cached_pass`. A
-  failure record is data: failure kind (`assert` / `trap:<class>` / `exit` /
+  failure record is data: failure kind (`assert` / `unhandled_error` /
+  `trap:<class>` / `exit` /
   `signal` / `timeout` / `output_overflow` / `ice`), the pinned runtime
   message (the abort-only
   runtime's fixed stderr strings are machine-recognizable by construction),
   exit code or signal, and a source location — in the MVP, the test
-  declaration's span. The record's payload and location fields are extension
+  declaration's span, except `unhandled_error`, whose record carries the
+  failing `?` site (§1). The record's payload and location fields are extension
   points, not closed shapes: richer expected/actual payloads and
   failing-call-site locations arrive through the structured failure channel
   (§7.1) as additive schema minors, never by parsing prose. One
@@ -995,7 +1033,9 @@ runtime protocol, not a privilege of blessed intrinsics. `@assert` today, and
 `@assert_eq` when it arrives, are sugar over the same channel any Rue function
 can invoke before aborting; a user assertion library emits the same structured
 failure records the built-ins do, and the event stream carries them without
-knowing who produced them. The recommended mechanism is a **dedicated
+knowing who produced them. The test-body `?` failure arm (§1) is another
+built-in writer of the same channel: its record carries the failing `?` site
+and the synthesized structural rendering of the error payload. The recommended mechanism is a **dedicated
 inherited pipe**: its own file descriptor, pinned in the §3 exec
 contract, written through a runtime helper (an ABI-manifest addition
 under ADR-0055 rules, so the choice remains a maintainer call) and
@@ -1094,7 +1134,10 @@ here per docs/designs/README.md).
       new `Test` kind in the closed stable-definition taxonomy plus its
       namespace decision, semantic analysis as ordinary bodies rooted only by
       test requests, the warnings-scan inclusion decision (§1),
-      duplicate-name diagnostics, `test_declarations` preview feature, spec
+      duplicate-name diagnostics, the test-body `?` legality rule (§1 —
+      the additive spec rule where E0503/E0505 apply today; the
+      failure-arm lowering ships with the Phase 2 runner),
+      `test_declarations` preview feature, spec
       sections + spec-test coverage, UI coverage for the gate and
       diagnostics. No runner yet: `--emit`-level verification that test
       items parse, analyze, and are invisible to executable requests.
@@ -1119,6 +1162,8 @@ here per docs/designs/README.md).
       stream v1.0 with schema doc (docs/process/test-events.md), including
       the byte-safe output encoding, capture budgets, pass/fail payload
       asymmetry, and the `capability_summary` unavailable state (§2),
+      the test-body `?` failure-arm lowering — synthesized structural
+      error printers and `unhandled_error` records (§1),
       the structured failure-record channel contract (§7.1), the reserved
       promotion field, and the reserved identity/sub-result shapes (§7.2),
       with the human renderer as its consumer; repro argv in every failure;
@@ -1411,9 +1456,47 @@ on the trap path — process teardown plus the retained scratch directory
 covers it (§3). The intrinsic is not a monopoly: §7.1 gives userland
 assertion libraries the same failure channel, with `@src()`-style call-site
 capture as the reserved gap-closer. Using `?` in test bodies for *expected*
-fallibility (setup I/O, not assertions) is orthogonal and remains the
-Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
-`?` to the trusted std producers.
+fallibility (setup I/O, not assertions) is orthogonal and is adopted with
+unwrap-and-report semantics in §1; the propagating alternative is rejected
+below.
+
+### Result-typed test bodies
+
+Considered: typing test blocks as `Result((), E)` so `?` propagates out of
+the body, with an `Err` return reported as the failure (the Rust shape); and,
+as the null alternative, keeping bodies `()`-only with no `?` at all, every
+fallible call hand-matched. Both are rejected in favor of §1's
+unwrap-and-report `?`:
+
+- **Propagation surrenders the failing site.** With no backtraces, an `Err`
+  that walks out of the body reaches the dispatcher as a bare value: the
+  report can name the test but not the line, where the trapping form pins
+  the `?` site for free. Recovering the span under propagation would
+  require instrumenting test-body `?` lowering anyway — at which point the
+  early return buys nothing over the trap.
+- **Propagation inherits the identical-`E` restriction.** Spec 4.15:4
+  requires the enclosing producer's error type to be identical to the
+  operand's — Rue has no error conversion until traits — so a
+  `Result`-typed body could only `?` through one error type. The trapping
+  form constructs no enclosing `Err` and carries no such constraint.
+- **A signature surface with no other use.** Spec 4.15:4 keys off a
+  *declared* return type, so `Result`-typed bodies need a return-type
+  annotation on the test block — grammar and inference surface serving
+  only this feature.
+- **`()`-only without `?` taxes every fallible call.** ADR-0038's
+  must-check linearity makes the match compulsory, and without a Display
+  trait the hand-written `Err` arm cannot render the payload generically —
+  in practice it degrades to `@assert(false, "setup failed")` and the
+  error's content is lost. The adopted form is that same ceremony
+  machine-written, with the payload rendered by the synthesized printer.
+
+The cost accepted knowingly: `?` in a test body has different dynamic
+semantics than `?` everywhere else. The mitigations: the position is a
+compile error today, so nothing's meaning changes; the divergence is exactly
+the failure arm, with the success arm untouched; and the trapping semantics
+is the end state rather than a stopgap — even after error conversion lands,
+propagating to the dispatcher would report strictly less than trapping at
+the site, so no future revision wants the rejected shape back.
 
 ## Open Questions
 
@@ -1429,9 +1512,6 @@ Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
   question explicitly deferred to a future ADR. This is the RUE-506 open
   question 1 disposition and the highest-stakes call here — it is cheap now
   and expensive to reverse if trait design later assumes untyped effects.
-- **Result-typed test bodies**: `()`-only (recommended for v1) vs allowing
-  `Result`-typed bodies so `?` works in tests directly. Interacts with trusted
-  producer rules for `?` (spec 4.15:3).
 - **Seedable `@random_*` under test builds** (§6): runtime divergence between
   test and production builds in exchange for determinism and cacheability of
   `random` tests. Not needed for MVP; call needed before Phase 5 flake policy
