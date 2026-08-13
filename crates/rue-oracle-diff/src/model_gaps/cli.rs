@@ -474,7 +474,25 @@ const ENTRIES: &[Entry] = &[
     ),
     Entry::new(
         "cli.std_m3",
+        "std_strings_lines",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_m3",
         "std_strings_m3",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_m3",
+        "std_strings_replace_join",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_m3",
+        "std_strings_split",
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),

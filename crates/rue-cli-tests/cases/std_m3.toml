@@ -119,6 +119,393 @@ fn main() -> i32 {
 }
 """ }]
 
+# Substring search (RUE-1482, ADR-0072 Phase 2b). The needle is a `borrow str`
+# — the universal read interface over literals, Str(N), and StrBuf — and the
+# answer is an Option(u64) byte offset, the same shape as the single-byte
+# `find`/`rfind` next to it. The empty-needle rule ("matches at every byte
+# boundary") and the needle-longer-than-haystack rule are pinned here for both
+# the std.strings free functions and the StrBuf methods underneath them.
+[[case]]
+name = "std_strings_substring_find"
+description = "find_str/rfind_str plus the StrBuf matches_at/find_str_from/contains/starts_with/ends_with primitives, including empty, oversized, overlapping, and non-ASCII needles, and the borrowed haystack (42 checks -> exit 68)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 68
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn at(found: std.option.Option(u64), expected: u64) -> bool {
+    let O = std.option.Option(u64);
+    match found {
+        O.Some(i) => i == expected,
+        O.None => false,
+    }
+}
+
+fn absent(found: std.option.Option(u64)) -> bool {
+    let O = std.option.Option(u64);
+    match found {
+        O.Some(_) => false,
+        O.None => true,
+    }
+}
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    if at(std.strings.find_str(borrow "hello world", borrow "o w"), 4) { score = score + 1; }
+    if at(std.strings.find_str(borrow "banana", borrow "na"), 2) { score = score + 1; }
+    if at(std.strings.rfind_str(borrow "banana", borrow "na"), 4) { score = score + 1; }
+    if at(std.strings.find_str(borrow "banana", borrow "ban"), 0) { score = score + 1; }
+    if absent(std.strings.find_str(borrow "banana", borrow "x")) { score = score + 1; }
+
+    // A needle longer than the haystack never matches.
+    if absent(std.strings.find_str(borrow "abc", borrow "abcd")) { score = score + 1; }
+    if absent(std.strings.rfind_str(borrow "abc", borrow "abcd")) { score = score + 1; }
+    if absent(std.strings.find_str(borrow "", borrow "a")) { score = score + 1; }
+
+    // An empty needle matches at every byte boundary: first at 0, last at len.
+    if at(std.strings.find_str(borrow "abc", borrow ""), 0) { score = score + 1; }
+    if at(std.strings.rfind_str(borrow "abc", borrow ""), 3) { score = score + 1; }
+    if at(std.strings.find_str(borrow "", borrow ""), 0) { score = score + 1; }
+    if at(std.strings.rfind_str(borrow "", borrow ""), 0) { score = score + 1; }
+
+    // Overlapping candidates: find takes the first, rfind the last.
+    if at(std.strings.find_str(borrow "aaa", borrow "aa"), 0) { score = score + 1; }
+    if at(std.strings.rfind_str(borrow "aaa", borrow "aa"), 1) { score = score + 1; }
+
+    // Bytes, not scalars (ADR-0035): 'é' is two bytes at offset 3 of "café".
+    if at(std.strings.find_str(borrow "café", borrow "é"), 3) { score = score + 1; }
+
+    // The StrBuf primitives the free functions delegate to.
+    let h: StrBuf = "banana";
+    if at(h.find_str(borrow "na"), 2) { score = score + 1; }
+    if at(h.rfind_str(borrow "na"), 4) { score = score + 1; }
+    if at(h.find_str_from(borrow "na", 3), 4) { score = score + 1; }
+    if absent(h.find_str_from(borrow "na", 5)) { score = score + 1; }
+    if at(h.find_str_from(borrow "", 6), 6) { score = score + 1; }
+    if absent(h.find_str_from(borrow "na", 7)) { score = score + 1; }
+    if h.matches_at(2, borrow "nan") { score = score + 1; }
+    if !h.matches_at(1, borrow "nan") { score = score + 1; }
+    if !h.matches_at(4, borrow "nana") { score = score + 1; }
+    if h.matches_at(6, borrow "") { score = score + 1; }
+    if !h.matches_at(7, borrow "") { score = score + 1; }
+
+    // contains is now find_str, so the two agree on every needle.
+    if h.contains(borrow "nan") { score = score + 1; }
+    if !h.contains(borrow "xyz") { score = score + 1; }
+    if h.contains(borrow "") { score = score + 1; }
+
+    // ends_with, and starts_with now that it is matches_at(0, prefix). The
+    // over-long prefix/suffix checks pin the guard equivalence: matches_at's
+    // "runs past the end" guard has to reject exactly what the hand-written
+    // length guards used to reject (spec 3.7:29 for starts_with).
+    if h.ends_with(borrow "ana") { score = score + 1; }
+    if !h.ends_with(borrow "nan") { score = score + 1; }
+    if h.ends_with(borrow "") { score = score + 1; }
+    if !h.ends_with(borrow "bananas") { score = score + 1; }
+    if h.starts_with(borrow "ban") { score = score + 1; }
+    if !h.starts_with(borrow "nan") { score = score + 1; }
+    if h.starts_with(borrow "") { score = score + 1; }
+    if !h.starts_with(borrow "bananas") { score = score + 1; }
+    let e: StrBuf = "";
+    if e.ends_with(borrow "") && e.starts_with(borrow "") { score = score + 1; }
+    if !e.ends_with(borrow "a") { score = score + 1; }
+
+    // The free functions BORROW their haystack, so `h` survives both calls and
+    // remains readable afterwards.
+    if at(std.strings.find_str(borrow h, borrow "na"), 2) { score = score + 1; }
+    if at(std.strings.rfind_str(borrow h, borrow "na"), 4) { score = score + 1; }
+    if h.len() == 6 { score = score + 1; }
+
+    if score == 42 { 68 } else { @intCast(score) }
+}
+""" }]
+
+# Splitting (RUE-1482). Separators are dropped and a split always yields one
+# more piece than there were separators, so leading, trailing, and consecutive
+# separators each produce an empty piece and splitting "" yields one empty
+# piece. The empty separator follows the same every-byte-boundary rule as the
+# empty needle above. Each result is rendered by joining it back with '|', which
+# pins piece ORDER as well as piece contents.
+[[case]]
+name = "std_strings_split"
+description = "split by byte and by substring: separator dropping, empty/leading/trailing/consecutive separators, non-overlapping matches, oversized and empty separators, and the borrowed haystack (26 checks -> exit 69)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 69
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn render(parts: std.arraybuf.ArrayBuf(std.strbuf.StrBuf)) -> StrBuf {
+    std.strings.join(parts, borrow "|")
+}
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    let p1 = std.strings.split(borrow "a,b,,c", 44);
+    if p1.len() == 4 { score = score + 1; }
+    let r1 = render(p1);
+    if r1 == "a|b||c" { score = score + 1; }
+
+    // A leading and a trailing separator each produce an empty piece.
+    let p2 = std.strings.split(borrow ",a,", 44);
+    if p2.len() == 3 { score = score + 1; }
+    let r2 = render(p2);
+    if r2 == "|a|" { score = score + 1; }
+
+    // The empty string is one empty piece, not zero pieces.
+    let p3 = std.strings.split(borrow "", 44);
+    if p3.len() == 1 { score = score + 1; }
+    let r3 = render(p3);
+    if r3.len() == 0 { score = score + 1; }
+
+    // No separator at all: the whole string, unsplit.
+    let p4 = std.strings.split(borrow "abc", 44);
+    if p4.len() == 1 { score = score + 1; }
+    let r4 = render(p4);
+    if r4 == "abc" { score = score + 1; }
+
+    let p5 = std.strings.split_str(borrow "a::b::c", borrow "::");
+    if p5.len() == 3 { score = score + 1; }
+    let r5 = render(p5);
+    if r5 == "a|b|c" { score = score + 1; }
+
+    let p6 = std.strings.split_str(borrow "::a::", borrow "::");
+    if p6.len() == 3 { score = score + 1; }
+    let r6 = render(p6);
+    if r6 == "|a|" { score = score + 1; }
+
+    // Non-overlapping, left to right: "aaaa" has two "aa" matches, not three.
+    let p7 = std.strings.split_str(borrow "aaaa", borrow "aa");
+    if p7.len() == 3 { score = score + 1; }
+    let r7 = render(p7);
+    if r7 == "||" { score = score + 1; }
+
+    // An empty separator matches at every byte boundary, so each byte comes
+    // back bracketed by the boundary matches at the two ends.
+    let p8 = std.strings.split_str(borrow "abc", borrow "");
+    if p8.len() == 5 { score = score + 1; }
+    let r8 = render(p8);
+    if r8 == "|a|b|c|" { score = score + 1; }
+
+    let p9 = std.strings.split_str(borrow "", borrow "");
+    if p9.len() == 2 { score = score + 1; }
+    let r9 = render(p9);
+    if r9 == "|" { score = score + 1; }
+
+    // Separator longer than the haystack, and no match at all.
+    let p10 = std.strings.split_str(borrow "ab", borrow "abcd");
+    if p10.len() == 1 { score = score + 1; }
+    let r10 = render(p10);
+    if r10 == "ab" { score = score + 1; }
+
+    let p11 = std.strings.split_str(borrow "", borrow "x");
+    if p11.len() == 1 { score = score + 1; }
+    let r11 = render(p11);
+    if r11.len() == 0 { score = score + 1; }
+
+    // The haystack is borrowed, not consumed: one document can be split, split
+    // again by a different separator, and still read afterwards. The pieces are
+    // independent allocations, so they outlive nothing they should not.
+    let src: StrBuf = "a,b";
+    let s1 = std.strings.split(borrow src, 44);
+    if s1.len() == 2 { score = score + 1; }
+    let s2 = std.strings.split_str(borrow src, borrow ",");
+    if s2.len() == 2 { score = score + 1; }
+    let rs = render(s2);
+    if rs == "a|b" { score = score + 1; }
+    if src == "a,b" { score = score + 1; }
+
+    if score == 26 { 69 } else { @intCast(score) }
+}
+""" }]
+
+# Replacement and joining (RUE-1482). `replace` takes non-overlapping matches
+# left to right and resumes AFTER the replaced needle, never inside the
+# replacement it just wrote, so a replacement containing its own needle
+# terminates. `join` is the inverse of a non-empty-separator split, and its
+# separator appears exactly len-1 times.
+[[case]]
+name = "std_strings_replace_join"
+description = "replace over overlapping, absent, oversized, and empty needles with a borrowed haystack, and join over zero/one/many parts including a round trip through split (22 checks -> exit 70)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 70
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    let a1 = std.strings.replace(borrow "hello", borrow "l", borrow "L");
+    if a1 == "heLLo" { score = score + 1; }
+
+    // Overlapping matches: "aaa" holds one non-overlapping "aa", then a tail.
+    let a2 = std.strings.replace(borrow "aaa", borrow "aa", borrow "b");
+    if a2 == "ba" { score = score + 1; }
+
+    // The replacement is never rescanned, so this terminates instead of looping.
+    let a3 = std.strings.replace(borrow "aa", borrow "a", borrow "aa");
+    if a3 == "aaaa" { score = score + 1; }
+
+    let a4 = std.strings.replace(borrow "abc", borrow "x", borrow "y");
+    if a4 == "abc" { score = score + 1; }
+
+    // A needle longer than the haystack leaves the string unchanged.
+    let a5 = std.strings.replace(borrow "abc", borrow "abcd", borrow "y");
+    if a5 == "abc" { score = score + 1; }
+
+    // An empty replacement deletes; a longer replacement grows.
+    let a6 = std.strings.replace(borrow "aXbXc", borrow "X", borrow "");
+    if a6 == "abc" { score = score + 1; }
+    let a7 = std.strings.replace(borrow "a,b", borrow ",", borrow ", ");
+    if a7 == "a, b" { score = score + 1; }
+
+    // An empty needle matches at every byte boundary.
+    let a8 = std.strings.replace(borrow "ab", borrow "", borrow "-");
+    if a8 == "-a-b-" { score = score + 1; }
+    let a9 = std.strings.replace(borrow "", borrow "", borrow "-");
+    if a9 == "-" { score = score + 1; }
+    let a10 = std.strings.replace(borrow "", borrow "x", borrow "y");
+    if a10.len() == 0 { score = score + 1; }
+
+    let a11 = std.strings.replace(borrow "mississippi", borrow "ss", borrow "S");
+    if a11 == "miSiSippi" { score = score + 1; }
+
+    let Parts = std.arraybuf.ArrayBuf(StrBuf);
+
+    // Zero parts join to the empty string; one part joins to itself.
+    let none = Parts.new();
+    let j0 = std.strings.join(none, borrow ", ");
+    if j0.len() == 0 { score = score + 1; }
+
+    let mut one = Parts.new();
+    let solo: StrBuf = "solo";
+    one.push(solo);
+    let j1 = std.strings.join(one, borrow ", ");
+    if j1 == "solo" { score = score + 1; }
+
+    let j2 = std.strings.join(std.strings.split(borrow "a,b,c", 44), borrow ", ");
+    if j2 == "a, b, c" { score = score + 1; }
+
+    // An empty separator just concatenates.
+    let j3 = std.strings.join(std.strings.split(borrow "a,b,c", 44), borrow "");
+    if j3 == "abc" { score = score + 1; }
+
+    // Empty pieces survive the round trip in both directions.
+    let j4 = std.strings.join(std.strings.split(borrow ",a,", 44), borrow "-");
+    if j4 == "-a-" { score = score + 1; }
+    let j5 = std.strings.join(std.strings.split(borrow "a,,b", 44), borrow ",");
+    if j5 == "a,,b" { score = score + 1; }
+    let j6 = std.strings.join(std.strings.split_str(borrow "x::y::z", borrow "::"), borrow "::");
+    if j6 == "x::y::z" { score = score + 1; }
+    let j7 = std.strings.join(std.strings.split_str(borrow "", borrow "::"), borrow "::");
+    if j7.len() == 0 { score = score + 1; }
+
+    // replace borrows its haystack: the original is unchanged and still usable,
+    // so a caller can run several substitutions over one source text.
+    let text: StrBuf = "a-b";
+    let t1 = std.strings.replace(borrow text, borrow "-", borrow "+");
+    if t1 == "a+b" { score = score + 1; }
+    let t2 = std.strings.replace(borrow text, borrow "-", borrow "");
+    if t2 == "ab" { score = score + 1; }
+    if text == "a-b" { score = score + 1; }
+
+    if score == 22 { 70 } else { @intCast(score) }
+}
+""" }]
+
+# Line iteration (RUE-1482). `lines` is the one place a terminator is not a
+# separator: a trailing newline ends the last line instead of starting an empty
+# one, and a '\\r' is stripped only when it immediately precedes the '\\n'.
+[[case]]
+name = "std_strings_lines"
+description = "lines over trailing newlines, CRLF, blank lines, lone CR, and empty input, with a borrowed document (20 checks -> exit 71)."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 71
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+fn render(parts: std.arraybuf.ArrayBuf(std.strbuf.StrBuf)) -> StrBuf {
+    std.strings.join(parts, borrow "|")
+}
+
+fn main() -> i32 {
+    let mut score: i32 = 0;
+
+    // A trailing newline terminates the last line; it does not add an empty one.
+    let l1 = std.strings.lines(borrow "a\\nb\\n");
+    if l1.len() == 2 { score = score + 1; }
+    let r1 = render(l1);
+    if r1 == "a|b" { score = score + 1; }
+
+    // An unterminated last line is still a line.
+    let l2 = std.strings.lines(borrow "a\\nb");
+    if l2.len() == 2 { score = score + 1; }
+    let r2 = render(l2);
+    if r2 == "a|b" { score = score + 1; }
+
+    // CRLF input: the '\\r' before each '\\n' is stripped.
+    let l3 = std.strings.lines(borrow "a\\r\\nb\\r\\n");
+    if l3.len() == 2 { score = score + 1; }
+    let r3 = render(l3);
+    if r3 == "a|b" { score = score + 1; }
+
+    let l4 = std.strings.lines(borrow "one\\r\\ntwo\\nthree");
+    if l4.len() == 3 { score = score + 1; }
+    let r4 = render(l4);
+    if r4 == "one|two|three" { score = score + 1; }
+
+    // A blank line between two terminators is a real empty line.
+    let l5 = std.strings.lines(borrow "a\\n\\nb");
+    if l5.len() == 3 { score = score + 1; }
+    let r5 = render(l5);
+    if r5 == "a||b" { score = score + 1; }
+
+    let l6 = std.strings.lines(borrow "a\\n\\n");
+    if l6.len() == 2 { score = score + 1; }
+    let r6 = render(l6);
+    if r6 == "a|" { score = score + 1; }
+
+    // Empty input has no lines at all.
+    let l7 = std.strings.lines(borrow "");
+    if l7.len() == 0 { score = score + 1; }
+
+    // A bare terminator is one empty line.
+    let l8 = std.strings.lines(borrow "\\n");
+    if l8.len() == 1 { score = score + 1; }
+    let l9 = std.strings.lines(borrow "\\r\\n");
+    if l9.len() == 1 { score = score + 1; }
+    let r9 = render(l9);
+    if r9.len() == 0 { score = score + 1; }
+
+    // A '\\r' NOT followed by '\\n' stays in its line.
+    let mut l10 = std.strings.lines(borrow "a\\r");
+    if l10.len() == 1 { score = score + 1; }
+    let OS = std.option.Option(StrBuf);
+    match l10.pop() {
+        OS.Some(line) => { if line == "a\\r" { score = score + 1; } },
+        OS.None => {},
+    }
+
+    // lines borrows its document: a parser can take the lines and still hold
+    // the source it read them from, with no defensive clone.
+    let doc: StrBuf = "x\\ny";
+    let dl = std.strings.lines(borrow doc);
+    if dl.len() == 2 { score = score + 1; }
+    if doc == "x\\ny" { score = score + 1; }
+
+    if score == 20 { 71 } else { @intCast(score) }
+}
+""" }]
+
 [[case]]
 name = "std_sort_m3"
 description = "sort insertion/quick/is_sorted/binary_search over ArrayBuf(i64) (6 checks -> exit 63)."
