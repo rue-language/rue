@@ -1631,14 +1631,14 @@ where
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 match nominal.body {
                     crate::DurableNominalBody::Struct { fields, .. } => {
-                        for (_, field) in fields {
-                            self.install_anonymous_dependencies(&field, visited_named)?;
+                        for (_, field) in fields.iter() {
+                            self.install_anonymous_dependencies(field, visited_named)?;
                         }
                     }
                     crate::DurableNominalBody::Enum { variants } => {
-                        for (_, payload) in variants {
-                            for field in payload {
-                                self.install_anonymous_dependencies(&field, visited_named)?;
+                        for (_, payload) in variants.iter() {
+                            for field in payload.iter() {
+                                self.install_anonymous_dependencies(field, visited_named)?;
                             }
                         }
                     }
@@ -1713,13 +1713,13 @@ where
                         .insert(ty, (token, key.clone()));
                     match &nominal.body {
                         crate::DurableNominalBody::Struct { fields, .. } => {
-                            for (_, field) in fields {
+                            for (_, field) in fields.iter() {
                                 self.register_import_nominal_identities_inner(field)?;
                             }
                         }
                         crate::DurableNominalBody::Enum { variants } => {
-                            for (_, payload) in variants {
-                                for field in payload {
+                            for (_, payload) in variants.iter() {
+                                for field in payload.iter() {
                                     self.register_import_nominal_identities_inner(field)?;
                                 }
                             }

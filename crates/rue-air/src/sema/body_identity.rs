@@ -107,14 +107,16 @@ use crate::{
 #[derive(Debug, Clone)]
 pub enum DurableNominalBody<K, M> {
     Struct {
-        /// Fields in declaration order: source name and durable field type.
-        fields: Vec<(Arc<str>, SemanticImportType<K, M>)>,
+        /// Canonically shared fields in declaration order: source name and
+        /// durable field type.
+        fields: Arc<[(Arc<str>, SemanticImportType<K, M>)]>,
         is_copy: bool,
         is_linear: bool,
     },
     Enum {
-        /// Variants in declaration order: source name and durable payload types.
-        variants: Vec<(Arc<str>, Vec<SemanticImportType<K, M>>)>,
+        /// Canonically shared variants in declaration order: source name and
+        /// durable payload types.
+        variants: Arc<[(Arc<str>, Arc<[SemanticImportType<K, M>]>)]>,
     },
 }
 
@@ -1302,7 +1304,7 @@ where
                     self.type_pool.set_struct_repr_c(id);
                 }
                 let mut resolved = Vec::with_capacity(fields.len());
-                for (field_name, field_ty) in &fields {
+                for (field_name, field_ty) in fields.iter() {
                     let ty = match self.resolve_provider_type(field_ty) {
                         Ok(ty) => ty,
                         Err(err) => {
@@ -1351,9 +1353,9 @@ where
                 );
                 self.record_enum_identity(key.clone(), id);
                 let mut variant_payloads = Vec::with_capacity(variants.len());
-                for (_, payload) in &variants {
+                for (_, payload) in variants.iter() {
                     let mut resolved = Vec::with_capacity(payload.len());
-                    for ty in payload {
+                    for ty in payload.iter() {
                         match self.resolve_provider_type(ty) {
                             Ok(ty) => resolved.push(ty),
                             Err(err) => {
@@ -1447,7 +1449,7 @@ where
                 }
 
                 let mut resolved = Vec::with_capacity(fields.len());
-                for (field_name, field_ty) in &fields {
+                for (field_name, field_ty) in fields.iter() {
                     let ty = match self.resolve(field_ty) {
                         Ok(ty) => ty,
                         Err(err) => {
@@ -1497,9 +1499,9 @@ where
                 self.record_enum_identity(key.clone(), id);
 
                 let mut variant_payloads = Vec::with_capacity(variants.len());
-                for (_, payload) in &variants {
+                for (_, payload) in variants.iter() {
                     let mut resolved = Vec::with_capacity(payload.len());
-                    for ty in payload {
+                    for ty in payload.iter() {
                         match self.resolve(ty) {
                             Ok(ty) => resolved.push(ty),
                             Err(err) => {
@@ -3588,7 +3590,7 @@ mod tests {
         DurableNominalBody::Enum {
             variants: variants
                 .into_iter()
-                .map(|(name, payload)| (Arc::from(name), payload))
+                .map(|(name, payload)| (Arc::from(name), payload.into()))
                 .collect(),
         }
     }

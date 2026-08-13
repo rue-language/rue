@@ -798,6 +798,10 @@ impl ProviderObservationCounters {
                 .saturating_add(nominal_materializations)
                 .saturating_add(function_materializations)
                 .saturating_add(method_materializations),
+            shared_payload_materializations: nominal_materializations,
+            owned_payload_materializations: const_materializations
+                .saturating_add(function_materializations)
+                .saturating_add(method_materializations),
             const_materializations,
             nominal_materializations,
             function_materializations,
@@ -22223,16 +22227,11 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 is_linear,
                 ..
             } => rue_air::DurableNominalBody::Struct {
-                fields: fields.to_vec(),
+                fields,
                 is_copy,
                 is_linear,
             },
-            Projection::Enum { variants } => rue_air::DurableNominalBody::Enum {
-                variants: variants
-                    .iter()
-                    .map(|(name, payload)| (name.clone(), payload.to_vec()))
-                    .collect(),
-            },
+            Projection::Enum { variants } => rue_air::DurableNominalBody::Enum { variants },
             _ => return None,
         };
         Some(rue_air::DurableNominal {
@@ -24739,14 +24738,14 @@ pub(crate) mod test_support {
                     is_copy,
                     is_linear,
                 } => rue_air::DurableNominalBody::Struct {
-                    fields: fields.iter().map(|(n, t)| (n.clone(), t.clone())).collect(),
+                    fields: fields.clone().into(),
                     is_copy: *is_copy,
                     is_linear: *is_linear,
                 },
                 Payload::Enum { variants } => rue_air::DurableNominalBody::Enum {
                     variants: variants
                         .iter()
-                        .map(|(n, payload)| (n.clone(), payload.to_vec()))
+                        .map(|(n, payload)| (n.clone(), payload.clone().into()))
                         .collect(),
                 },
                 _ => return None,
@@ -32248,6 +32247,59 @@ fn main() -> i32 {
                 None,
             ),
         ))
+    }
+
+    #[test]
+    fn durable_nominal_materialization_shares_the_canonical_signature_payload() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Point { x: i32, y: i64 }\nfn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let point = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Type,
+            crate::StableDefinitionKind::Struct,
+            Arc::from("Point"),
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "durable-nominal-shared-payload",
+            move |provider| {
+                let source = CompilerBodyDurableSource::with_anonymous(provider, &[], None);
+                let signature = source.signature(&point).expect("Point has a signature");
+                let crate::semantic_query_nucleus::DeclarationSignatureProjection::Struct {
+                    fields: canonical_fields,
+                    ..
+                } = signature.signature
+                else {
+                    panic!("Point has a struct signature")
+                };
+                let nominal = rue_air::DurableNominalSource::nominal(&source, &point)
+                    .expect("Point has a durable nominal body");
+                let rue_air::DurableNominalBody::Struct {
+                    fields: materialized_fields,
+                    ..
+                } = nominal.body
+                else {
+                    panic!("Point materializes as a struct")
+                };
+                Arc::ptr_eq(&canonical_fields, &materialized_fields)
+            },
+        );
+        assert!(
+            outcome.result,
+            "the durable source must not rebuild an equivalent nominal field vector"
+        );
     }
 
     fn request_layout(

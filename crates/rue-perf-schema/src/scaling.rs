@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 13;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 14;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +238,12 @@ pub struct SemanticProviderWork {
     pub const_facts: u64,
     /// Durable facts materialized into body-local representations.
     pub materializations: u64,
+    /// Requests routed through materializers which share canonical payloads.
+    #[serde(default)]
+    pub shared_payload_materializations: u64,
+    /// Requests routed through materializers which rebuild owned payloads.
+    #[serde(default)]
+    pub owned_payload_materializations: u64,
     /// Constant facts materialized into body-local representations.
     #[serde(default)]
     pub const_materializations: u64,
@@ -433,6 +439,8 @@ question = "small maintained compiler frontend"
         .unwrap();
         let object = encoded.as_object_mut().unwrap();
         for field in [
+            "shared_payload_materializations",
+            "owned_payload_materializations",
             "const_materializations",
             "nominal_materializations",
             "function_materializations",
@@ -442,6 +450,8 @@ question = "small maintained compiler frontend"
         }
         let decoded: SemanticProviderWork = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.materializations, 23);
+        assert_eq!(decoded.shared_payload_materializations, 0);
+        assert_eq!(decoded.owned_payload_materializations, 0);
         assert_eq!(decoded.const_materializations, 0);
         assert_eq!(decoded.nominal_materializations, 0);
         assert_eq!(decoded.function_materializations, 0);

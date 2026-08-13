@@ -103,7 +103,9 @@ whether body analysis is asking for the same fact too often or merely paying
 too much to represent each necessary answer. The materialization total is
 exactly partitioned into constant, named-nominal, free-function, and method
 events so representation changes can target the declaration kind which owns
-the measured traffic.
+the measured traffic. It is also exactly partitioned by provider-boundary
+representation: shared payloads reuse canonical immutable storage, while owned
+payloads rebuild an equivalent body-local transport value.
 
 The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build

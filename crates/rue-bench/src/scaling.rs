@@ -505,14 +505,16 @@ fn render(report: &ScalingReport) -> String {
             work.const_facts,
         ));
     }
-    out.push_str("\n| workload | durable materializations total (const/nominal/function/method) | anonymous facts | producer facts | toolchain facts |\n");
+    out.push_str("\n| workload | durable materializations total (shared/owned; const/nominal/function/method) | anonymous facts | producer facts | toolchain facts |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     for observation in reference_observations(report) {
         let work = observation.work.semantic_provider;
         out.push_str(&format!(
-            "| {} | {} ({}/{}/{}/{}) | {} | {} | {} |\n",
+            "| {} | {} ({}/{}; {}/{}/{}/{}) | {} | {} | {} |\n",
             observation.workload,
             work.materializations,
+            work.shared_payload_materializations,
+            work.owned_payload_materializations,
             work.const_materializations,
             work.nominal_materializations,
             work.function_materializations,
@@ -743,6 +745,8 @@ mod tests {
                         type_facts: 17,
                         const_facts: 19,
                         materializations: 23,
+                        shared_payload_materializations: 3,
+                        owned_payload_materializations: 20,
                         const_materializations: 2,
                         nominal_materializations: 3,
                         function_materializations: 11,
@@ -825,7 +829,7 @@ mod tests {
         assert!(rendered.contains("nodes/token"));
         assert!(rendered.contains("Semantic provider observations"));
         assert!(rendered.contains("durable materializations"));
-        assert!(rendered.contains("23 (2/3/11/7)"));
+        assert!(rendered.contains("23 (3/20; 2/3/11/7)"));
         assert!(rendered.contains("Semantic reachability scheduling"));
         assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("CFG materialization preparation"));
