@@ -2303,12 +2303,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Alloc { name, init, .. } => {
                 let (name, init) = (*name, *init);
                 if let Some(name) = name {
-                    let alias = self.try_eval_type_alias_init(
-                        init,
-                        eval_types,
-                        eval_values,
-                        runtime_bindings,
-                    );
+                    let alias = if initializer_may_evaluate_to_type(self.body_rir_ref(), init) {
+                        self.try_eval_type_alias_init(
+                            init,
+                            eval_types,
+                            eval_values,
+                            runtime_bindings,
+                        )
+                    } else {
+                        None
+                    };
                     let old_type = eval_types.remove(&name);
                     let was_runtime = runtime_bindings.remove(&name);
                     frame.push((name, old_type, was_runtime));
@@ -2455,6 +2459,54 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
         reduced
+    }
+}
+
+/// Whether the comptime evaluator can possibly return a type value for an
+/// initializer's outer RIR shape.
+///
+/// This is deliberately a one-sided filter. Calls, names, member paths, and
+/// every composition form remain candidates because their result can depend
+/// on exact semantic facts or on a selected control-flow arm. Shapes rejected
+/// here are evaluator arms whose result is always a runtime value, unit, or
+/// `None`; skipping them avoids entering semantic/provider resolution for an
+/// initializer which cannot populate the inference-time type-alias map. The
+/// speculative caller deliberately discards evaluator errors with
+/// `.ok().flatten()`; ordinary analysis still owns every published diagnostic.
+pub(super) fn initializer_may_evaluate_to_type(rir: &rue_rir::Rir, inst_ref: InstRef) -> bool {
+    match &rir.get(inst_ref).data {
+        InstData::AnonStructType { .. }
+        | InstData::AnonEnumType { .. }
+        | InstData::TypeConst { .. }
+        | InstData::VarRef { .. }
+        | InstData::Call { .. }
+        | InstData::MethodCall { .. }
+        | InstData::FieldGet { .. } => true,
+        InstData::Comptime { expr } => initializer_may_evaluate_to_type(rir, *expr),
+        InstData::ArrayRepeat { value, .. } => initializer_may_evaluate_to_type(rir, *value),
+        InstData::Block { instructions } => {
+            let count = rir.block_inst_count(instructions);
+            count != 0
+                && initializer_may_evaluate_to_type(
+                    rir,
+                    rir.block_inst(instructions, count - 1)
+                        .expect("the tail index came from this block payload"),
+                )
+        }
+        InstData::Branch {
+            then_block,
+            else_block,
+            ..
+        } => {
+            initializer_may_evaluate_to_type(rir, *then_block)
+                || else_block
+                    .is_some_and(|else_block| initializer_may_evaluate_to_type(rir, else_block))
+        }
+        InstData::Match { arms, .. } => rir
+            .match_arms(arms)
+            .iter()
+            .any(|(_, body)| initializer_may_evaluate_to_type(rir, body)),
+        _ => false,
     }
 }
 
