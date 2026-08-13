@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title | default(value=section.title) }} - Standard Library{% endblock %}
+
+{% block content %}
+<div class="spec-layout">
+    {# Sidebar - reuses spec-sidebar styles #}
+    <aside class="spec-sidebar">
+        <div class="spec-sidebar-inner">
+            <div class="spec-sidebar-header">
+                <a href="{{ get_url(path='std') }}" class="spec-title">Standard Library</a>
+            </div>
+            <nav class="spec-nav">
+                {% set std_section = get_section(path="std/_index.md") %}
+                {% set current = page.permalink | default(value=section.permalink) | default(value="") %}
+                {{ self::render_nav(section=std_section, current_path=current) }}
+            </nav>
+        </div>
+    </aside>
+
+    {# Main content #}
+    <div class="spec-main">
+        <article class="spec-content std-content">
+            {% block std_content %}{% endblock %}
+        </article>
+
+        {# Prev/Next navigation #}
+        {% block prev_next %}
+        <nav class="spec-page-nav">
+            {% if page.lower %}
+            <a href="{{ page.lower.permalink }}" class="spec-nav-prev">
+                <span class="spec-nav-label">Previous</span>
+                <span class="spec-nav-title">{{ page.lower.title }}</span>
+            </a>
+            {% else %}
+            <span></span>
+            {% endif %}
+            {% if page.higher %}
+            <a href="{{ page.higher.permalink }}" class="spec-nav-next">
+                <span class="spec-nav-label">Next</span>
+                <span class="spec-nav-title">{{ page.higher.title }}</span>
+            </a>
+            {% endif %}
+        </nav>
+        {% endblock %}
+    </div>
+</div>
+{% endblock %}
+
+{# Recursive macro for navigation #}
+{% macro render_nav(section, current_path) %}
+<ul class="spec-nav-list">
+    {% for pg in section.pages %}
+    <li class="spec-nav-item">
+        <a href="{{ pg.permalink }}" class="spec-nav-link {% if pg.permalink == current_path %}active{% endif %}">
+            {{ pg.title }}
+        </a>
+    </li>
+    {% endfor %}
+</ul>
+{% endmacro %}

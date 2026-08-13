@@ -202,6 +202,39 @@ curve. Duplicated sections also tie on weight, title, and date, so the
 validation rules assert each tool's ordering tie-break is deterministic
 rather than assuming it.
 
+Phase 4 found a third honesty note, which follows from the first and is
+sharper than it. **The specification sidebar collapses on a duplicated
+page**, and it is worth quantifying rather than gesturing at. Both the
+recursion and the `active` class are gated on the current page's permalink
+prefixing a subsection's, and a copy's permalink prefixes nothing in the
+original tree that `get_section` returns, so both arms of the gate go cold.
+Measured over the 10x fixture's specification pages: the 70 originals render
+navigations of 2,540 to 6,205 bytes, mean 4,446, carrying 1.84 `active`
+markers each; all 630 duplicates render one byte-identical 2,534-byte
+navigation with zero `active` markers. That is 57% of the original mean on
+the majority page class, and at 100x it is 99% of all specification pages.
+
+The fixture therefore reproduces, at scale, exactly the page-invariant
+sidebar this Decision forbids an implementation from producing. The rule
+still holds, because the program evaluates the gate per page and the data
+says no match, and the cross-tool comparison is unaffected, because every
+tool builds the identical tree and sees the identical collapse. Two things
+follow for readers. The 10x and 100x points understate per-page templating
+work relative to 1x, so the curve is not "what a 1x page costs, times N".
+And the evidence that gazette's navigation is genuinely page-dependent — four
+live pages, four differently shaped sidebars — is **1x evidence**; at scale
+the input stops asking the question. `redirect_to` behaves the same way, and
+for the same reason: a duplicated section still redirects to the original
+target.
+
+The tie-break the validation asserts against is declared rather than
+discovered: every comparison ends in the content path, which is unique by
+construction, so the order is total. A missing `weight` and a missing `date`
+both sort last, matching Zola's treatment of an absent key rather than
+defaulting to zero and quietly promoting a page to the front. The validation
+recomputes that order independently from the source tree and compares, so
+"the tie-break is deterministic" is checked rather than assumed.
+
 Recording instead of pinning the corpus is a deliberate amendment to
 ADR-0067's identity discipline, not a reuse of it. ADR-0067 pins each
 workload's own sources precisely because they are not the product, and
@@ -278,6 +311,39 @@ all rather than the production templates directly: each port is the
 production template set minus the excluded pages and features, kept as close
 to production as the subset allows.
 
+Phase 4 made those carve-outs concrete, and the shape they took differs from
+the sentence above in ways worth recording:
+
+- **Two pages are excluded, not one**, and the second is this project's own.
+  RUE-1049's `runtime.md` renders the very series this workload produces, so
+  it is the same carve-out as `performance.md` for the same reason. Both are
+  removed at fixture-preparation time, and the excluded set is part of the
+  recorded fixture identity, so a page joining or leaving it moves the
+  identity and starts a new comparable segment rather than shifting an
+  existing one.
+- **`load_data` now bites the home page instead.** The dashboard pages moved
+  their data loading to the browser; the one remaining `load_data` on the site
+  is `index.html`'s Field Report panel, which reads a `status.json` two of
+  whose rows are derived from the performance store. The port drops that panel
+  and says so in the template.
+- **An exclusion is visible in the validation, not only in a comment.** The
+  navigation bar links to both excluded pages from every page of the site, so
+  excluding them necessarily leaves those links pointing at nothing. The
+  link check counts them under the exclusion that caused them rather than
+  either failing or ignoring them.
+
+**`redirect_to` is honoured.** `spec/_index.md` sets it, and RUE-1483 neither
+honoured nor rejected the key. Gazette now emits a redirect stub, from a
+`redirect.html` template in its port, at the section's own route; the
+section's pages and subsections render normally. Honouring it is what keeps
+the emitted file set equal to the peers', which is Decision 4's cross-tool
+criterion — refusing the key would leave gazette one output short at
+`/spec/index.html`, and rendering the section normally would put a page where
+Zola and Hugo serve a redirect. The stub's markup mirrors the pinned Zola's
+own rather than being invented: a redirect stub is not a page anyone reads,
+and the only thing that matters about it is that all three tools put the same
+file at the same route pointing at the same target.
+
 Fairness constrains gazette's implementation, not only the peers'
 configuration. The corpus is extremely skewed — 1,224 of its 1,225 shortcode
 invocations are `rule` — and a gazette that special-cased that shortcode as
@@ -322,6 +388,37 @@ speed:
 - **Spot goldens:** a small set of stable pages carries committed expected
   output per tool, changed only deliberately, covering the rendered
   markup-level form that the normalized oracle deliberately ignores.
+
+Phase 4 built the gazette-only half of this. Two notes on what it can and
+cannot anchor, because the difference matters:
+
+- **The body oracle's anchor is Zola, and it is one comparison rather than
+  six.** The normalized extraction — heading tree, visible text, link and
+  image targets, shortcode expansion results, in document order, with
+  entities decoded, whitespace collapsed, and presentational attributes
+  dropped — is computed for gazette's emitted page and for the pinned Zola's
+  body-only rendering of the same source, and the check is that the latter
+  appears *contiguously* inside the former. Contiguity is what makes it
+  strong: a dropped paragraph, a reordered heading, or one differently
+  resolved link fails it, and the template chrome around the body cannot
+  hide any of them. All three of the documented Zola-vs-gazette markup
+  divergences vanish under the extraction, so the oracle needs no
+  normalizer table of its own.
+- **The facets that depend on the template port are anchored by an
+  independent model instead.** Which metadata a page displays is a property
+  of a port, not of the corpus, so it cannot be checked across tools until
+  Phase 5. Routes, section membership, page ordering, feed ordering, the
+  emitted file set, and internal-link resolution are instead recomputed from
+  the source tree by a second implementation of the rules and compared. The
+  metadata check is deliberately the weaker one — the title as visible text
+  and the ISO date on a dated page — and says so.
+- **The spot goldens sit on a committed miniature site, not on live pages.**
+  Decision 2 keeps the corpus unfrozen, so a golden over a live page would
+  fail on every content change and be re-blessed rather than read, which is
+  the failure mode a golden exists to prevent. The miniature site uses
+  gazette's real template port and real configuration and exercises the
+  recursive navigation's active branch, the feed, and the redirect stub, so
+  the goldens remain sensitive to exactly what they are for.
 
 The file-set criterion carries a documented allowlist for tool-mandated
 differences — sitemap emission, feed filename mapping, static passthrough —
@@ -444,9 +541,19 @@ benchmark must never depend on a private fork of std behavior.
 Gazette joins the maintained scaling curve in `performance/scaling.toml`
 alongside ruelex, mosaic, harbor, and lattice. Compile-time measurement of
 gazette follows ADR-0067/0071 unchanged; this ADR adds the workload, not new
-compile-time policy. Adding it is a suite-revision event on the scaling
-manifest (currently revision 3), and the scaling workflow's time budget is
-re-checked for the added workload — both under ADR-0067's ordinary rules.
+compile-time policy. Adding it was a suite-revision event on the scaling
+manifest, which is now revision 4, and the scaling workflow's time budget
+was re-checked for the added workload — both under ADR-0067's ordinary
+rules. The re-check: the measured phase is `workloads x workers x samples`
+fresh compiler processes, so 4 x 5 x 3 = 60 became 5 x 5 x 3 = 75. Gazette
+is 6,524 lines, between mosaic's 6,108 and harbor's 9,000, and compiles in
+roughly half of lattice's wall time, so the added 15 compiles are the
+smaller half of one existing rung's contribution against a 60-minute budget
+whose bulk is the thin-LTO release build of the compiler itself. The
+arithmetic lives in the manifest, next to the revision it justifies.
+Gazette sits between mosaic and harbor in the manifest, not after them: the
+workload list is the report order and nothing sorts it downstream, so the
+ladder's ascending shape is that list's order.
 One program thereby feeds both series: the compiler suites answer "how fast
 does Rue compile a real text-processing program," and the runtime suite
 answers "how fast does that program run."
@@ -580,14 +687,30 @@ silently.
   manifest, stood up on the declared wordfreq workload** - RUE-1046
 - [x] **Phase 2: Standard-library prerequisites — directory enumeration and
   substring operations** - RUE-1481, RUE-1482
-- [ ] **Phase 3: Gazette libraries — TOML front matter, Markdown subset,
+- [x] **Phase 3: Gazette libraries — TOML front matter, Markdown subset,
   template engine** - RUE-1483
-- [ ] **Phase 4: Gazette, live-corpus fixture preparation, output validation,
+- [x] **Phase 4: Gazette, live-corpus fixture preparation, output validation,
   and the scaling-curve rung** - RUE-1484
-- [ ] **Phase 5: Cross-tool comparison — Hugo pin, parity configs, CI runs** -
-  RUE-1485
+- [ ] **Phase 5: Cross-tool comparison — Hugo pin, parity configs, CI runs;
+  and gazette's entry in `performance/runtime.toml`** - RUE-1485
 - [ ] **Phase 6: Website publication — comparison table, time series,
   side-by-side source** - RUE-1049
+
+Phase 4 delivered gazette, the fixture preparation, the scale variants, the
+recorded identity, and the whole validation stack, but deliberately did NOT
+add gazette to `performance/runtime.toml`. That entry is a runtime
+suite-revision event and needs schema work the wordfreq shape does not
+cover: `FixtureDeclaration` is a single struct describing a seeded generator,
+and gazette's fixture is a corpus tree with a scale factor and an exclusion
+set, so the declaration has to become a tagged form — which
+`rue-perf-schema` already anticipates in a comment — and the workload needs
+an oracle kind that is not `golden_stdout`. Landing the manifest entry ahead
+of that support would declare a workload the harness cannot prepare, so it
+sequences with Phase 5, which is also where the peer legs the same collection
+job runs are defined. Until then the fixture preparation, identity recording,
+and validation are driven by `scripts/gazette-corpus-diff.py site`, which is
+the reference implementation the harness mode should adopt rather than
+reinvent.
 
 The harness comes first, against a precisely declared workload that already
 exists. Phase 1's initial runtime workload is `wordfreq`, run over a large

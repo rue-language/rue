@@ -1,0 +1,36 @@
+{#
+  The stub a section with `redirect_to` emits instead of its own index page,
+  modelled on Zola's built-in `redirect.html`.
+
+  `docs/spec/src/_index.md` sets `redirect_to = "spec/01-introduction"`, which
+  RUE-1483 neither honoured nor rejected — it was the single page
+  `scripts/gazette-corpus-diff.py` had to exclude, because Zola emits this
+  instead of a rendered body and there was nothing to compare. Honouring the
+  key is what keeps gazette's emitted FILE SET equal to its peers', which is
+  ADR-0072 Decision 4's cross-tool criterion: refusing it would leave gazette
+  one output short at `/spec/index.html`, and rendering the section normally
+  would put a page where the peers serve a redirect.
+
+  The markup mirrors the pinned Zola's own redirect output rather than being
+  invented: a redirect stub is not a page anyone reads, and the thing that
+  matters about it is that all three tools put the same file at the same route
+  pointing at the same target. Everywhere else the ports are idiomatic to their
+  tool and cross-tool markup equality is a non-goal; here matching costs
+  nothing and keeps the file-set and semantic checks honest.
+
+  The URL arrives already resolved against the site's base URL, trailing slash
+  included, which is how Zola resolves `redirect_to`. `| safe` is required, not
+  stylistic: gazette auto-escapes every `{{ … }}`, and an escaped `&#x2F;`
+  inside a script string or a `meta refresh` is not decoded by a browser.
+#}<!doctype html>
+<meta charset="utf-8">
+<title>Redirect</title>
+<script>
+  const target = "{{ url | safe }}";
+  const hash = window.location.hash || "";
+  window.location.replace(target + hash);
+</script>
+<noscript>
+  <meta http-equiv="refresh" content="0; url={{ url | safe }}">
+</noscript>
+<p><a href="{{ url | safe }}">Click here</a> to be redirected.</p>

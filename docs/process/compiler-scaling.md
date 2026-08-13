@@ -2,8 +2,16 @@
 
 The weekly compiler-scaling workflow measures the complete ADR-0071
 release-quality boundary as maintained Rue programs grow from Ruelex through
-Mosaic and Harbor to Lattice. Every workload is compiled at one, two, four,
-eight, and automatic workers. It complements the fast compiler-performance
+Mosaic, Gazette, and Harbor to Lattice. Every workload is compiled at one, two,
+four, eight, and automatic workers.
+
+The ladder is ascending by source size, and the manifest's workload order is
+the report order, so a rung belongs where its size puts it: Ruelex 2,222 lines,
+Mosaic 6,108, Gazette 6,524, Harbor 9,000, Lattice 13,030. Gazette joined at
+manifest revision 4 (ADR-0072 Decision 7); it is a static site generator, so it
+is the rung whose shape is parsing and string work rather than a broad domain
+model. Adding a workload is a suite-revision event, and revisions are not
+continuous with each other. It complements the fast compiler-performance
 headline; it does not contribute to that index.
 
 ## Measurement regime

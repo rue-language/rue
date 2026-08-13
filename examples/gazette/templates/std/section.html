@@ -1,0 +1,20 @@
+{% extends "std/base.html" %}
+
+{% block std_content %}
+<h1>{{ section.title }}</h1>
+
+{{ section.content | safe }}
+
+{% if section.pages %}
+<h2>Modules</h2>
+<ul class="spec-section-toc">
+    {% for page in section.pages %}
+    <li><a href="{{ page.path }}">{{ page.title }}</a></li>
+    {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
+
+{% block prev_next %}
+{# Section index doesn't have prev/next #}
+{% endblock %}

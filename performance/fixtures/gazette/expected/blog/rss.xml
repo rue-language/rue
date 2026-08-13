@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+        <title>Rue</title>
+        <link>https://rue-lang.dev/blog/</link>
+        <description>A systems programming language with memory safety and high-level ergonomics</description>
+        <language>en</language>
+        <atom:link href="https://rue-lang.dev/blog/rss.xml" rel="self" type="application/rss+xml"/>
+        <item>
+            <title>Second Note</title>
+            <pubDate>2026-02-03</pubDate>
+            <link>https://rue-lang.dev/blog/second-note/</link>
+            <guid>https://rue-lang.dev/blog/second-note/</guid>
+            <description></description>
+        </item>
+        <item>
+            <title>First Note</title>
+            <pubDate>2026-01-02</pubDate>
+            <link>https://rue-lang.dev/blog/first-note/</link>
+            <guid>https://rue-lang.dev/blog/first-note/</guid>
+            <description>the earlier post</description>
+        </item>
+    </channel>
+</rss>

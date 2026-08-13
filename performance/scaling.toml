@@ -5,8 +5,29 @@
 # startup probe's calibrated sample counts or enter the fast headline index.
 # Every sample launches the canonical compiler binary in a fresh process. The
 # compiled program is never run.
+#
+# REVISION 4 adds gazette (ADR-0072 Decision 7, RUE-1484). Adding a workload
+# changes what the curve measures, so it is a suite-revision event under
+# ADR-0067's ordinary rules and revision 3's observations are not continuous
+# with revision 4's.
+#
+# The 60-minute job budget was re-checked for it. The measured work is
+# `workloads x workers x samples` fresh compiler processes: 4 x 5 x 3 = 60
+# before, 5 x 5 x 3 = 75 after. Gazette is 6,524 lines, between mosaic's 6,108
+# and harbor's 9,000, and compiles in roughly half of lattice's wall time, so
+# the added 15 compiles are the smaller half of one existing rung's
+# contribution. Even at lattice's rate the whole measured phase is a few
+# minutes against a budget whose bulk is the thin-LTO release build of the
+# compiler itself. The margin is large rather than marginal; if that ever
+# stops being true the answer is a longer timeout, not a quieter curve.
+#
+# THESE ARE THE ONLY RECORDED COMPILE-TIME MEASUREMENTS OF GAZETTE. ADR-0072's
+# per-push runtime leg also compiles gazette, because it has to run it, and
+# that compile's timing is deliberately not recorded anywhere: a one-sample
+# compile from the runtime job matches no declared epoch here or in
+# `manifest.toml`, and ADR-0067's validation would rightly refuse to append it.
 schema_version = 3
-revision = 3
+revision = 4
 samples = 3
 args = []
 compiler_build_profile = "release_thin_lto"
@@ -23,6 +44,15 @@ question = "How does the compiler handle a small maintained compiler frontend?"
 id = "mosaic"
 source = "examples/mosaic/main.rue"
 question = "How does compilation scale to a medium multi-module application?"
+
+# Between mosaic and harbor, not after them. `workloads` is in report order and
+# nothing sorts it downstream, so the ladder's ascending shape is this list's
+# order: 2,222 -> 6,108 -> 6,524 -> 9,000 -> 13,030 lines. Placed anywhere else
+# the published curve zigzags and stops reading as a scale curve at all.
+[[workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How does compilation scale to a real text-processing program — parsers, a template engine, and a site model?"
 
 [[workloads]]
 id = "harbor"
