@@ -23,7 +23,10 @@
 //! **Storage is raw only.** A [`RunObject`] holds complete raw samples in
 //! integer nanoseconds plus structured evidence of whatever failed. Medians,
 //! dispersion, indexes, and chart data are derived by consumers and never
-//! stored. [`content_address`] gives a run object its immutable name.
+//! stored. [`content_address`] gives a run object its immutable name, and a
+//! record read back from storage carries that name with it in a [`StoredRun`]:
+//! record fields are additive, so re-deriving a stored record's name from
+//! today's schema would rename every record written before the newest field.
 //!
 //! **Failure is evidence.** A run is stored whatever happened. Appendability
 //! errors ([`ValidationError`]) reject a run outright; per-sample invalidity
@@ -39,6 +42,7 @@ mod run;
 mod scaling;
 mod series;
 mod stats;
+mod stored;
 mod validate;
 
 pub use boundary::{
@@ -79,6 +83,7 @@ pub use stats::{
     Summary, flags_movement, geometric_mean, median, median_absolute_deviation, pooled_uncertainty,
     ratio, sample_value,
 };
+pub use stored::{StoredRun, StoredRunError};
 pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression, ValidationError,
     ValidationOutcome, process_elapsed_regressions, validate_run,
