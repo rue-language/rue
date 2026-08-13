@@ -100,8 +100,54 @@ pub struct RuntimeEpochData {
     pub optimization: String,
     pub thread_policy: String,
     pub hardware_counters: String,
+    /// The bound each workload's movement is judged against, keyed by workload.
+    ///
+    /// Published so the page can state the rule it is reporting against instead
+    /// of asserting a verdict, exactly as the compile-time epochs publish
+    /// theirs.
+    pub flagging: BTreeMap<String, RuntimeFlaggingRule>,
+    /// Notable events within this epoch, oldest first.
+    ///
+    /// Corpus and workload-source changes are the ones that matter most: each is
+    /// a discontinuity across which a raw median means something different, and
+    /// each opens the next segment.
+    pub annotations: Vec<RuntimeAnnotation>,
     /// Points in measurement order.
     pub points: Vec<RuntimePointData>,
+}
+
+/// The rule one workload's movement is judged against, as published.
+#[derive(Debug, Serialize)]
+pub struct RuntimeFlaggingRule {
+    pub k: f64,
+    pub window: u32,
+    /// `calibrated` or `advisory`.
+    pub posture: String,
+    /// The reviewed analysis behind the constants, empty while advisory.
+    pub reference: String,
+}
+
+/// One notable event on a runtime series.
+///
+/// ADR-0072 Decision 2 asks for corpus changes to appear as annotated events
+/// alongside compiler releases and peer toolchain bumps. The first three kinds
+/// are derivable from the records this store already holds; peer bumps arrive
+/// with the peer leg (RUE-1485) and have no kind here yet, because inventing an
+/// empty one would suggest the page had looked and found none.
+#[derive(Debug, Serialize)]
+pub struct RuntimeAnnotation {
+    /// `corpus_change`, `workload_change`, or `compiler_release`.
+    pub kind: String,
+    /// The workload the event belongs to, empty when it belongs to the run.
+    pub workload: String,
+    /// The first commit measured after the change.
+    pub commit: String,
+    pub finished_at: String,
+    /// The segment this event opened, for the two kinds that open one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment: Option<u32>,
+    /// What changed, in the terms a reader needs.
+    pub detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,6 +188,24 @@ pub struct RuntimeWorkloadPoint {
     /// `calibrated` or `advisory`. Movement in an advisory workload is a
     /// triage item, never a gate.
     pub flag_posture: String,
+    /// Which identity-matched stretch of this workload's series the point is in.
+    ///
+    /// The whole of ADR-0072 Decision 9 reduced to one number a chart can draw
+    /// with. Segments start at 0 and advance whenever `fixture_identity` or
+    /// `source_identity` differs from the preceding point's, so two points share
+    /// a segment exactly when their raw medians are on the same scale. A line
+    /// drawn across a boundary would publish a false trend; a comparison taken
+    /// across one would report an input change as a compiler change.
+    pub segment: u32,
+    /// Whether this point moved beyond its epoch's bound, within its segment.
+    ///
+    /// `None` when the trailing window is not full — including immediately
+    /// after a discontinuity, where the window restarts because the prior
+    /// points measure a different input. Too little history is not stability.
+    pub flagged: Option<bool>,
+    /// The trailing in-segment window's median wall time, which `flagged`
+    /// compares against. `None` exactly when `flagged` is.
+    pub window_median_ns: Option<u64>,
     /// Median and dispersion per metric, keyed by metric wire name.
     pub metrics: BTreeMap<String, SummaryData>,
 }
@@ -575,27 +639,17 @@ pub fn derive_runtime(
                 .cmp(&right.record().identity.finished_at)
                 .then_with(|| left.address().cmp(right.address()))
         });
-        let points = stored
-            .iter()
-            .map(|stored| runtime_point(manifest, epoch, stored))
-            .collect();
         by_platform
             .entry(platform)
             .or_default()
-            .push(RuntimeEpochData {
-                epoch: epoch.id,
-                suite_revision: epoch.suite_revision,
-                optimization: format!("{:?}", epoch.optimization).to_lowercase(),
-                thread_policy: format!("{:?}", epoch.thread_policy).to_lowercase(),
-                hardware_counters: format!("{:?}", epoch.hardware_counters).to_lowercase(),
-                points,
-            });
+            .push(derive_runtime_epoch(manifest, epoch, &stored));
     }
 
     let platforms = by_platform
         .into_iter()
         .map(|(platform, mut epochs)| {
             epochs.sort_by_key(|epoch| epoch.epoch);
+            annotate_suite_revisions(&mut epochs);
             RuntimePlatformData { platform, epochs }
         })
         .collect();
@@ -611,67 +665,272 @@ pub fn derive_runtime(
     }
 }
 
-fn runtime_point(
+/// Mark the epoch at which a platform's workload contract changed.
+///
+/// A suite revision pins what is measured, so a change in it is the most
+/// consequential event on the series — and the only one of ADR-0072 Decision 8's
+/// four that cannot be seen from inside a single epoch, since an epoch pins one
+/// revision for its whole life. It is therefore derived here, across the
+/// platform's epochs in order, rather than in the per-epoch walk.
+///
+/// A new epoch on the *same* revision gets no annotation. The chart already
+/// breaks at every epoch boundary, and labelling one "suite revision 1 → 1"
+/// would be noise asserting a change that did not happen.
+fn annotate_suite_revisions(epochs: &mut [RuntimeEpochData]) {
+    let mut previous: Option<(u32, u32)> = None;
+    for epoch in epochs.iter_mut() {
+        if let Some((previous_epoch, previous_revision)) = previous
+            && previous_revision != epoch.suite_revision
+            && let Some(first) = epoch.points.first()
+        {
+            let annotation = RuntimeAnnotation {
+                kind: "suite_revision".to_string(),
+                workload: String::new(),
+                commit: first.commit.clone(),
+                finished_at: first.finished_at.clone(),
+                segment: None,
+                detail: format!(
+                    "suite revision {previous_revision} (epoch {previous_epoch}) → {} (epoch {})",
+                    epoch.suite_revision, epoch.epoch
+                ),
+            };
+            // First, because it is the event that opened this epoch: everything
+            // else annotated here happened during it.
+            epoch.annotations.insert(0, annotation);
+        }
+        previous = Some((epoch.epoch, epoch.suite_revision));
+    }
+}
+
+/// What one workload's series has seen so far within an epoch.
+///
+/// Carried across points rather than recomputed per point, because both things
+/// it holds are history: which identity-matched segment the series is in, and
+/// the medians the trailing window is taken over. The window lives here — not in
+/// a scan over finished points — so that a discontinuity can clear it, which is
+/// the mechanism that stops a comparison from crossing a corpus change.
+#[derive(Default)]
+struct RuntimeWorkloadHistory {
+    /// Identities of the last published point: fixture, then workload source.
+    last_identity: Option<(String, String)>,
+    segment: u32,
+    /// In-segment wall-clock summaries, oldest first. Cleared on a boundary.
+    window: Vec<Summary>,
+}
+
+fn derive_runtime_epoch(
     manifest: &RuntimeManifest,
     epoch: &rue_perf_schema::RuntimeEpoch,
-    stored: &StoredRuntimeReport,
-) -> RuntimePointData {
-    let report = stored.record();
-    let outcome = validate_runtime_report(manifest, report);
-    let mut workloads = BTreeMap::new();
-    for observation in &report.workloads {
-        if !outcome.publishes_workload(&observation.workload) {
-            // A workload that did not complete has no point. Publishing a
-            // median over a truncated sample set would look like a measurement
-            // and be an artifact of the crash that ended it.
-            continue;
+    stored: &[&StoredRuntimeReport],
+) -> RuntimeEpochData {
+    let mut history: BTreeMap<String, RuntimeWorkloadHistory> = BTreeMap::new();
+    let mut annotations: Vec<RuntimeAnnotation> = Vec::new();
+    let mut previous_compiler: Option<String> = None;
+    let mut points: Vec<RuntimePointData> = Vec::new();
+
+    for stored in stored {
+        let report = stored.record();
+        let outcome = validate_runtime_report(manifest, report);
+        let identity = &report.identity;
+
+        // A compiler release is a run-level event: it is the same for every
+        // workload in the report, so it is annotated once rather than per
+        // series. Compiler *commits* are not annotated at all, because every
+        // point already is one.
+        if let Some(previous) = &previous_compiler
+            && previous != &identity.compiler_version
+        {
+            annotations.push(RuntimeAnnotation {
+                kind: "compiler_release".to_string(),
+                workload: String::new(),
+                commit: identity.commit.clone(),
+                finished_at: identity.finished_at.clone(),
+                segment: None,
+                detail: format!(
+                    "compiler version {previous} → {}",
+                    identity.compiler_version
+                ),
+            });
         }
-        let fixture = observation
-            .recorded_inputs
-            .iter()
-            .find(|input| input.name == FIXTURE_INPUT_NAME);
-        let metrics = RuntimeMetric::ALL
-            .into_iter()
-            .filter_map(|metric| {
-                summarize(observation, metric).map(|summary| {
-                    (
-                        metric.wire_name().to_string(),
-                        SummaryData {
-                            median: summary.median,
-                            mad: summary.mad,
-                            count: summary.count,
-                        },
-                    )
+        previous_compiler = Some(identity.compiler_version.clone());
+
+        let mut workloads = BTreeMap::new();
+        for observation in &report.workloads {
+            if !outcome.publishes_workload(&observation.workload) {
+                // A workload that did not complete has no point. Publishing a
+                // median over a truncated sample set would look like a
+                // measurement and be an artifact of the crash that ended it.
+                continue;
+            }
+            let fixture = observation
+                .recorded_inputs
+                .iter()
+                .find(|input| input.name == FIXTURE_INPUT_NAME);
+            let fixture_identity = fixture
+                .map(|input| input.identity_sha256.clone())
+                .unwrap_or_default();
+            let source_identity = identity
+                .workload_source_hashes
+                .get(&observation.workload)
+                .cloned()
+                .unwrap_or_default();
+
+            let state = history.entry(observation.workload.clone()).or_default();
+            // Either identity moving is a discontinuity: the recorded-input
+            // bargain is that a consumer can see when the input moved and
+            // segment on it, and the workload's own source is recorded on the
+            // same terms. One boundary even when both move at once — the
+            // annotations below say which, the segment says only that the
+            // scale changed.
+            if let Some((last_fixture, last_source)) = &state.last_identity
+                && (last_fixture != &fixture_identity || last_source != &source_identity)
+            {
+                if last_fixture != &fixture_identity {
+                    annotations.push(RuntimeAnnotation {
+                        kind: "corpus_change".to_string(),
+                        workload: observation.workload.clone(),
+                        commit: identity.commit.clone(),
+                        finished_at: identity.finished_at.clone(),
+                        segment: Some(state.segment + 1),
+                        detail: format!(
+                            "input identity {} → {}",
+                            short_digest(last_fixture),
+                            short_digest(&fixture_identity)
+                        ),
+                    });
+                }
+                if last_source != &source_identity {
+                    annotations.push(RuntimeAnnotation {
+                        kind: "workload_change".to_string(),
+                        workload: observation.workload.clone(),
+                        commit: identity.commit.clone(),
+                        finished_at: identity.finished_at.clone(),
+                        segment: Some(state.segment + 1),
+                        detail: format!(
+                            "program source {} → {}",
+                            short_digest(last_source),
+                            short_digest(&source_identity)
+                        ),
+                    });
+                }
+                state.segment += 1;
+                // The prior window measured a different program or a different
+                // input, so it is not a window on this one. Clearing it is what
+                // makes `flagged` restart at "not enough history" rather than
+                // report the discontinuity itself as a regression.
+                state.window.clear();
+            }
+            state.last_identity = Some((fixture_identity.clone(), source_identity.clone()));
+
+            let metrics: BTreeMap<String, SummaryData> = RuntimeMetric::ALL
+                .into_iter()
+                .filter_map(|metric| {
+                    summarize(observation, metric).map(|summary| {
+                        (
+                            metric.wire_name().to_string(),
+                            SummaryData {
+                                median: summary.median,
+                                mad: summary.mad,
+                                count: summary.count,
+                            },
+                        )
+                    })
                 })
-            })
-            .collect();
-        workloads.insert(
-            observation.workload.clone(),
-            RuntimeWorkloadPoint {
-                fixture_identity: fixture
-                    .map(|input| input.identity_sha256.clone())
-                    .unwrap_or_default(),
-                fixture_bytes: fixture.map(|input| input.bytes).unwrap_or(0),
-                source_identity: report
-                    .identity
-                    .workload_source_hashes
-                    .get(&observation.workload)
-                    .cloned()
-                    .unwrap_or_default(),
-                flag_posture: format!("{:?}", epoch.flag_posture(&observation.workload))
-                    .to_lowercase(),
-                metrics,
-            },
-        );
+                .collect();
+
+            // Wall time is the metric a flag is about. Peak RSS and binary size
+            // are published as figures, not judged: neither has this suite's
+            // dispersion story, and flagging a binary that grew by a byte would
+            // train a reader to ignore the word.
+            //
+            // No declared bound means no verdict. The history is still kept, so
+            // the day an epoch declares one the series is judged from its own
+            // past rather than starting blind.
+            let rule = epoch.flagging(&observation.workload);
+            let current = summarize(observation, RuntimeMetric::WallClock);
+            let trailing = rule.and_then(|rule| {
+                let window_length = rule.window as usize;
+                if window_length == 0 || state.window.len() < window_length {
+                    return None;
+                }
+                let medians: Vec<u64> = state.window[state.window.len() - window_length..]
+                    .iter()
+                    .map(|summary| summary.median)
+                    .collect();
+                Summary::of(&medians)
+            });
+            let flagged = rule.and_then(|rule| {
+                current
+                    .zip(trailing)
+                    .map(|(current, window)| flags_movement(current, window, rule.k))
+            });
+            let window_median_ns = trailing.filter(|_| current.is_some()).map(|w| w.median);
+            if let Some(current) = current {
+                state.window.push(current);
+            }
+
+            workloads.insert(
+                observation.workload.clone(),
+                RuntimeWorkloadPoint {
+                    fixture_identity,
+                    fixture_bytes: fixture.map(|input| input.bytes).unwrap_or(0),
+                    source_identity,
+                    flag_posture: format!("{:?}", epoch.flag_posture(&observation.workload))
+                        .to_lowercase(),
+                    segment: state.segment,
+                    flagged,
+                    window_median_ns,
+                    metrics,
+                },
+            );
+        }
+
+        points.push(RuntimePointData {
+            report: stored.address().to_string(),
+            commit: identity.commit.clone(),
+            compiler_version: identity.compiler_version.clone(),
+            finished_at: identity.finished_at.clone(),
+            complete: matches!(outcome.completeness, RuntimeCompleteness::Complete),
+            workloads,
+        });
     }
-    RuntimePointData {
-        report: stored.address().to_string(),
-        commit: report.identity.commit.clone(),
-        compiler_version: report.identity.compiler_version.clone(),
-        finished_at: report.identity.finished_at.clone(),
-        complete: matches!(outcome.completeness, RuntimeCompleteness::Complete),
-        workloads,
+
+    // Every workload the epoch samples that has a rule at all, not only the
+    // ones observed, so the page can state the bound for a workload whose first
+    // point has not landed. A workload with no declared bound is absent rather
+    // than present with invented constants, and the page renders the absence.
+    let flagging = epoch
+        .sampling
+        .keys()
+        .filter_map(|workload| {
+            let rule = epoch.flagging(workload)?;
+            Some((
+                workload.clone(),
+                RuntimeFlaggingRule {
+                    k: rule.k,
+                    window: rule.window,
+                    posture: format!("{:?}", rule.posture).to_lowercase(),
+                    reference: rule.reference.unwrap_or_default().to_string(),
+                },
+            ))
+        })
+        .collect();
+
+    RuntimeEpochData {
+        epoch: epoch.id,
+        suite_revision: epoch.suite_revision,
+        optimization: format!("{:?}", epoch.optimization).to_lowercase(),
+        thread_policy: format!("{:?}", epoch.thread_policy).to_lowercase(),
+        hardware_counters: format!("{:?}", epoch.hardware_counters).to_lowercase(),
+        flagging,
+        annotations,
+        points,
     }
+}
+
+/// A digest abbreviated for a human, never for comparison.
+fn short_digest(digest: &str) -> String {
+    digest.chars().take(12).collect()
 }
 
 fn derive_epoch(
@@ -1787,6 +2046,330 @@ samples = 3
         let workload = &data.platforms[0].epochs[0].points[0].workloads["wordfreq"];
         assert_eq!(workload.fixture_identity, "f".repeat(64));
         assert_eq!(workload.source_identity, "3".repeat(64));
+    }
+
+    /// A report placed explicitly in the series, with the identities that decide
+    /// which segment it lands in.
+    ///
+    /// The ordinary helper derives its timestamp from its samples, which is fine
+    /// for one or two points and useless for a series whose whole subject is
+    /// order.
+    fn runtime_report_at(
+        commit: char,
+        minute: u32,
+        elapsed: [u64; 3],
+        fixture_identity: &str,
+        source_identity: &str,
+        compiler_version: &str,
+    ) -> rue_perf_schema::RuntimeReport {
+        let mut report = runtime_report(commit, elapsed);
+        report.identity.finished_at = format!("2026-08-13T00:{minute:02}:00Z");
+        report.identity.started_at = format!("2026-08-13T00:{minute:02}:00Z");
+        report.identity.compiler_version = compiler_version.to_string();
+        report
+            .identity
+            .workload_source_hashes
+            .insert("wordfreq".to_string(), source_identity.repeat(64));
+        report.workloads[0].recorded_inputs[0].identity_sha256 = fixture_identity.repeat(64);
+        report
+    }
+
+    fn wordfreq_points(data: &RuntimeData) -> Vec<&RuntimeWorkloadPoint> {
+        data.platforms[0].epochs[0]
+            .points
+            .iter()
+            .map(|point| &point.workloads["wordfreq"])
+            .collect()
+    }
+
+    #[test]
+    fn a_corpus_change_opens_a_new_segment_rather_than_moving_the_series() {
+        // ADR-0072 Decision 9. The input changed, so the medians either side are
+        // not on the same scale; a consumer that drew one line across this
+        // boundary would publish a false trend.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([
+                runtime_report_at('a', 1, [10, 10, 10], "f", "3", "rue 0.1.0"),
+                runtime_report_at('b', 2, [10, 10, 10], "f", "3", "rue 0.1.0"),
+                // Same program, larger corpus.
+                runtime_report_at('c', 3, [90, 90, 90], "e", "3", "rue 0.1.0"),
+                runtime_report_at('d', 4, [90, 90, 90], "e", "3", "rue 0.1.0"),
+            ]),
+            &[],
+        );
+        let segments: Vec<u32> = wordfreq_points(&data)
+            .iter()
+            .map(|point| point.segment)
+            .collect();
+        assert_eq!(segments, vec![0, 0, 1, 1]);
+
+        let corpus: Vec<&RuntimeAnnotation> = data.platforms[0].epochs[0]
+            .annotations
+            .iter()
+            .filter(|note| note.kind == "corpus_change")
+            .collect();
+        assert_eq!(corpus.len(), 1);
+        assert_eq!(corpus[0].commit, "c".repeat(40));
+        assert_eq!(corpus[0].segment, Some(1));
+        assert_eq!(corpus[0].workload, "wordfreq");
+    }
+
+    #[test]
+    fn a_workload_source_change_segments_the_series_the_same_way() {
+        // The other half of the recorded-not-pinned bargain: this suite records
+        // the program's identity instead of pinning it, which is only defensible
+        // if a movement in it reads as a discontinuity rather than as a result.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([
+                runtime_report_at('a', 1, [10, 10, 10], "f", "3", "rue 0.1.0"),
+                runtime_report_at('b', 2, [10, 10, 10], "f", "4", "rue 0.1.0"),
+            ]),
+            &[],
+        );
+        let segments: Vec<u32> = wordfreq_points(&data)
+            .iter()
+            .map(|point| point.segment)
+            .collect();
+        assert_eq!(segments, vec![0, 1]);
+        assert!(
+            data.platforms[0].epochs[0]
+                .annotations
+                .iter()
+                .any(|note| note.kind == "workload_change"),
+        );
+    }
+
+    #[test]
+    fn the_trailing_window_never_reaches_across_a_discontinuity() {
+        // The reason segmentation is derived rather than left to the page. With
+        // a five-run window the sixth point is the first that can be judged; a
+        // corpus change at the fifth restarts the count, so the sixth reports
+        // "not enough history" instead of reporting the input change as a
+        // hundredfold regression.
+        let manifest = runtime_manifest_with_bound();
+        let mut reports = Vec::new();
+        for (index, commit) in "abcd".chars().enumerate() {
+            reports.push(runtime_report_at(
+                commit,
+                index as u32 + 1,
+                [10, 10, 10],
+                "f",
+                "3",
+                "rue 0.1.0",
+            ));
+        }
+        reports.push(runtime_report_at(
+            'e',
+            5,
+            [1000, 1000, 1000],
+            "e",
+            "3",
+            "rue 0.1.0",
+        ));
+        reports.push(runtime_report_at(
+            '1',
+            6,
+            [1000, 1000, 1000],
+            "e",
+            "3",
+            "rue 0.1.0",
+        ));
+        let data = derive_runtime(&manifest, &stored_runtime(reports), &[]);
+
+        let flagged: Vec<Option<bool>> = wordfreq_points(&data)
+            .iter()
+            .map(|point| point.flagged)
+            .collect();
+        assert_eq!(flagged, vec![None, None, None, None, None, None]);
+        assert!(
+            wordfreq_points(&data)
+                .iter()
+                .all(|point| point.window_median_ns.is_none())
+        );
+    }
+
+    /// The probe manifest with a provisional flagging bound declared, which is
+    /// the only way a runtime workload is judged at all.
+    fn runtime_manifest_with_bound() -> RuntimeManifest {
+        RuntimeManifest::parse(&format!(
+            "{RUNTIME_MANIFEST}\n[epoch.flagging.wordfreq]\nk = 3.0\nwindow = 5\n"
+        ))
+        .expect("runtime manifest with a declared bound")
+    }
+
+    #[test]
+    fn movement_within_one_segment_is_flagged_against_its_own_window() {
+        let manifest = runtime_manifest_with_bound();
+        let mut reports: Vec<rue_perf_schema::RuntimeReport> = "abcde"
+            .chars()
+            .enumerate()
+            .map(|(index, commit)| {
+                runtime_report_at(
+                    commit,
+                    index as u32 + 1,
+                    [10, 10, 10],
+                    "f",
+                    "3",
+                    "rue 0.1.0",
+                )
+            })
+            .collect();
+        // Same corpus, same program, twenty times slower.
+        reports.push(runtime_report_at(
+            '1',
+            6,
+            [200, 200, 200],
+            "f",
+            "3",
+            "rue 0.1.0",
+        ));
+        let data = derive_runtime(&manifest, &stored_runtime(reports), &[]);
+
+        let points = wordfreq_points(&data);
+        assert_eq!(points[4].flagged, None, "the window is not full until six");
+        assert_eq!(points[5].flagged, Some(true));
+        assert_eq!(points[5].window_median_ns, Some(10));
+        // Uncalibrated, so a maintainer reads this as a triage item and the page
+        // is obliged to say so.
+        assert_eq!(points[5].flag_posture, "advisory");
+    }
+
+    #[test]
+    fn a_workload_with_no_declared_bound_publishes_no_rule_and_no_verdict() {
+        // What `k` and `window` should be here is ADR-0072's open question 4.
+        // Deriving a verdict from constants nobody chose would answer it on the
+        // dashboard, which is the last place that decision should be made.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[],
+        );
+        let epoch = &data.platforms[0].epochs[0];
+        assert!(epoch.flagging.is_empty());
+        let workload = &epoch.points[0].workloads["wordfreq"];
+        assert_eq!(workload.flagged, None);
+        assert_eq!(workload.window_median_ns, None);
+        // The posture is still published: it is what says the absence is
+        // pending calibration rather than a permanent policy.
+        assert_eq!(workload.flag_posture, "advisory");
+    }
+
+    #[test]
+    fn a_declared_bound_publishes_the_rule_it_judged_by() {
+        // Asserting "flagged" without publishing the rule behind it would leave
+        // a reader unable to tell a measured bound from a provisional one.
+        let data = derive_runtime(
+            &runtime_manifest_with_bound(),
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[],
+        );
+        let rule = &data.platforms[0].epochs[0].flagging["wordfreq"];
+        assert_eq!(rule.posture, "advisory");
+        assert_eq!(rule.k, 3.0);
+        assert_eq!(rule.window, 5);
+        assert_eq!(rule.reference, "");
+    }
+
+    #[test]
+    fn a_compiler_release_is_annotated_once_for_the_run() {
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([
+                runtime_report_at('a', 1, [10, 10, 10], "f", "3", "rue 0.1.0"),
+                runtime_report_at('b', 2, [10, 10, 10], "f", "3", "rue 0.2.0"),
+                runtime_report_at('c', 3, [10, 10, 10], "f", "3", "rue 0.2.0"),
+            ]),
+            &[],
+        );
+        let releases: Vec<&RuntimeAnnotation> = data.platforms[0].epochs[0]
+            .annotations
+            .iter()
+            .filter(|note| note.kind == "compiler_release")
+            .collect();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].commit, "b".repeat(40));
+        assert!(releases[0].workload.is_empty());
+        assert!(releases[0].detail.contains("rue 0.1.0 → rue 0.2.0"));
+    }
+
+    #[test]
+    fn a_suite_revision_change_is_annotated_on_the_epoch_it_opened() {
+        // The one event of ADR-0072 Decision 8's four that cannot be seen from
+        // inside a single epoch, since an epoch pins one revision for its life.
+        let text = RUNTIME_MANIFEST.replace("collection = true", "collection = false")
+            + r#"
+[[suite]]
+revision = 2
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does compiled Rue count words?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 4096
+vocabulary_size = 256
+file_name = "input.txt"
+description = "deterministic ASCII word text"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+[[epoch]]
+id = 2
+platform = "probe"
+suite_revision = 2
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "probe"
+runner_image = "probe"
+
+[epoch.sampling.wordfreq]
+samples = 3
+"#;
+        let manifest = RuntimeManifest::parse(&text).expect("two-revision manifest");
+        let mut later = runtime_report_at('b', 2, [10, 10, 10], "f", "3", "rue 0.1.0");
+        later.identity.epoch = 2;
+        later.identity.suite_revision = 2;
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([
+                runtime_report_at('a', 1, [10, 10, 10], "f", "3", "rue 0.1.0"),
+                later,
+            ]),
+            &[],
+        );
+        let epochs = &data.platforms[0].epochs;
+        assert_eq!(epochs.len(), 2);
+        assert!(
+            epochs[0].annotations.is_empty(),
+            "the first epoch opened nothing"
+        );
+        let opening = &epochs[1].annotations[0];
+        assert_eq!(opening.kind, "suite_revision");
+        assert_eq!(opening.commit, "b".repeat(40));
+        assert!(opening.detail.contains("revision 1"), "{}", opening.detail);
+        assert!(opening.detail.contains("→ 2"), "{}", opening.detail);
     }
 
     #[test]

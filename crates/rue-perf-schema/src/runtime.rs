@@ -318,6 +318,48 @@ pub struct RuntimeCalibration {
     pub reference: String,
 }
 
+/// A provisional flagging bound a maintainer declared before calibrating one.
+///
+/// The runtime counterpart of `manifest.toml`'s `[epoch.flagging]`, and
+/// deliberately a separate table from [`RuntimeCalibration`]: this one is a
+/// judgement call, that one is a measurement. Declaring it makes a workload's
+/// movement visible for triage while [`RuntimeEpoch::flag_posture`] keeps
+/// reporting [`FlagPosture::Advisory`], which is exactly the state ADR-0072
+/// Decision 9 describes.
+///
+/// There is no default. What `k` and `window` should be on a five-sample
+/// runtime workload is ADR-0072's open question 4, and a constant compiled in
+/// here would answer it — quietly, in the wrong place, and in a way a
+/// maintainer would have to change code to correct. Until an epoch declares
+/// one of these or a calibration, a runtime workload is judged by no rule and
+/// publishes no flag.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeFlaggingPolicy {
+    /// Multiplier applied to pooled uncertainty.
+    pub k: f64,
+    /// How many prior in-segment observations form the trailing window.
+    pub window: u32,
+}
+
+/// The rule one workload's movement is judged against on one platform.
+///
+/// Resolved through [`RuntimeEpoch::flagging`] rather than assembled by each
+/// consumer, so the dashboard and any future calibrator cannot disagree about
+/// which bound was applied — the same reason [`crate::flags_movement`] has one
+/// implementation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RuntimeFlagging<'a> {
+    /// Multiplier applied to the pooled uncertainty of the two summaries.
+    pub k: f64,
+    /// How many prior observations, within one segment, form the window.
+    pub window: u32,
+    /// How the resulting flag must be read.
+    pub posture: FlagPosture,
+    /// The reviewed analysis behind the constants, when they are calibrated.
+    pub reference: Option<&'a str>,
+}
+
 /// Everything that can vary by platform.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -345,6 +387,10 @@ pub struct RuntimeEpoch {
     pub environment: EnvironmentPolicy,
     /// Sampling policy per workload.
     pub sampling: BTreeMap<String, RuntimeSamplingPolicy>,
+    /// Per-workload provisional flagging bounds, where a maintainer declared
+    /// one ahead of calibrating it. Superseded by `calibration` per workload.
+    #[serde(default)]
+    pub flagging: BTreeMap<String, RuntimeFlaggingPolicy>,
     /// Per-workload calibrated flagging rules, where they exist yet.
     #[serde(default)]
     pub calibration: BTreeMap<String, RuntimeCalibration>,
@@ -361,6 +407,32 @@ impl RuntimeEpoch {
         } else {
             FlagPosture::Advisory
         }
+    }
+
+    /// The bound this epoch judges a workload's movement against, if any.
+    ///
+    /// `None` when the epoch declares neither a calibration nor a provisional
+    /// bound, and that is a real state rather than a gap to be papered over: no
+    /// rule means no flag, which is honest, where a bound invented here would
+    /// be a threshold nobody chose applied to a workload nobody measured.
+    ///
+    /// A calibration wins over a declared bound. Both may exist during the run
+    /// that replaces one with the other.
+    pub fn flagging(&self, workload: &str) -> Option<RuntimeFlagging<'_>> {
+        if let Some(calibration) = self.calibration.get(workload) {
+            return Some(RuntimeFlagging {
+                k: calibration.k,
+                window: calibration.window,
+                posture: FlagPosture::Calibrated,
+                reference: Some(calibration.reference.as_str()),
+            });
+        }
+        self.flagging.get(workload).map(|policy| RuntimeFlagging {
+            k: policy.k,
+            window: policy.window,
+            posture: FlagPosture::Advisory,
+            reference: None,
+        })
     }
 }
 
@@ -541,6 +613,26 @@ impl RuntimeManifest {
                 if !declared.contains(workload.as_str()) {
                     return Err(format!(
                         "runtime epoch {} on {} calibrates undeclared workload {workload:?}",
+                        epoch.id, epoch.platform
+                    ));
+                }
+            }
+            for (workload, policy) in &epoch.flagging {
+                if !declared.contains(workload.as_str()) {
+                    return Err(format!(
+                        "runtime epoch {} on {} declares a flagging bound for undeclared \
+                         workload {workload:?}",
+                        epoch.id, epoch.platform
+                    ));
+                }
+                // A rule that cannot flag is worse than no rule: it renders as
+                // a published bound and never speaks. NaN is spelled out rather
+                // than left to `!(k > 0.0)`, which catches it only as a side
+                // effect of partial ordering.
+                if policy.k.is_nan() || policy.k <= 0.0 || policy.window == 0 {
+                    return Err(format!(
+                        "runtime epoch {} on {} declares a flagging bound for {workload:?} that \
+                         can never flag; k must be positive and window at least one",
                         epoch.id, epoch.platform
                     ));
                 }
@@ -2129,6 +2221,67 @@ samples = 5
         let manifest = RuntimeManifest::parse(&text).expect("calibrated manifest");
         let epoch = manifest.epoch("x86_64-linux", 1).unwrap();
         assert_eq!(epoch.flag_posture("wordfreq"), FlagPosture::Calibrated);
+    }
+
+    #[test]
+    fn a_workload_with_no_declared_bound_is_judged_by_no_rule() {
+        // The alternative — a constant compiled into this crate — would answer
+        // ADR-0072's open question 4 in the one place a maintainer cannot edit,
+        // and would apply a threshold nobody chose to a workload nobody has
+        // measured. No rule, no flag, and the dashboard says which.
+        let manifest = manifest();
+        let epoch = manifest.epoch("x86_64-linux", 1).unwrap();
+        assert_eq!(epoch.flagging("wordfreq"), None);
+        assert_eq!(epoch.flag_posture("wordfreq"), FlagPosture::Advisory);
+    }
+
+    #[test]
+    fn a_declared_bound_flags_while_staying_advisory() {
+        // A maintainer may want movement visible before dispersion is measured.
+        // That is a judgement, not a calibration, and the posture keeps saying
+        // so.
+        let text = format!("{MANIFEST}\n[epoch.flagging.wordfreq]\nk = 8.0\nwindow = 5\n");
+        let manifest = RuntimeManifest::parse(&text).expect("manifest with a declared bound");
+        let epoch = manifest.epoch("x86_64-linux", 1).unwrap();
+        let rule = epoch.flagging("wordfreq").expect("a declared bound");
+        assert_eq!(rule.k, 8.0);
+        assert_eq!(rule.window, 5);
+        assert_eq!(rule.posture, FlagPosture::Advisory);
+        assert_eq!(rule.reference, None);
+        assert_eq!(epoch.flag_posture("wordfreq"), FlagPosture::Advisory);
+    }
+
+    #[test]
+    fn a_calibration_supersedes_a_declared_bound() {
+        let text = format!(
+            "{MANIFEST}\n[epoch.flagging.wordfreq]\nk = 8.0\nwindow = 5\n\
+             [epoch.calibration.wordfreq]\nk = 4.5\nwindow = 12\n\
+             reference = \"RUE-9999 runtime sweep\"\n"
+        );
+        let manifest = RuntimeManifest::parse(&text).expect("calibrated manifest");
+        let rule = manifest
+            .epoch("x86_64-linux", 1)
+            .unwrap()
+            .flagging("wordfreq")
+            .expect("a calibrated rule");
+        assert_eq!(rule.k, 4.5);
+        assert_eq!(rule.window, 12);
+        assert_eq!(rule.posture, FlagPosture::Calibrated);
+        assert_eq!(rule.reference, Some("RUE-9999 runtime sweep"));
+    }
+
+    #[test]
+    fn rejects_a_flagging_bound_that_can_never_flag() {
+        let text = format!("{MANIFEST}\n[epoch.flagging.wordfreq]\nk = 3.0\nwindow = 0\n");
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("can never flag"), "{error}");
+    }
+
+    #[test]
+    fn rejects_a_flagging_bound_for_a_workload_the_suite_does_not_declare() {
+        let text = format!("{MANIFEST}\n[epoch.flagging.jsonfmt]\nk = 3.0\nwindow = 5\n");
+        let error = RuntimeManifest::parse(&text).unwrap_err();
+        assert!(error.contains("undeclared workload"), "{error}");
     }
 
     #[test]
