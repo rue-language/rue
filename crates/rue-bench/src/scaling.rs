@@ -692,7 +692,7 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## CFG prerequisite work\n\n");
-    out.push_str("Counts are exact for stable types reached from body-local CFG domains and the unique registered prerequisite requests issued before AIR-to-CFG construction. `requests/type` exposes query traffic independently of elapsed time; type facts and drop glue intentionally share the same drop-relevant type set.\n\n");
+    out.push_str("Counts are exact for stable types reached from body-local CFG domains and the unique registered prerequisite requests issued before AIR-to-CFG construction. `requests/type` exposes query traffic independently of elapsed time. Drop-glue terminals transitively observe their exact type-fact terminals; direct type-fact requests remain separate here so duplicate parent edges stay visible.\n\n");
     out.push_str("| workload | stable types scanned | layout requests | type-fact requests | drop-glue requests | requests/type |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in reference_observations(report) {
