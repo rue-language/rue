@@ -768,9 +768,37 @@ pub(crate) struct ProviderObservationCounters {
     anonymous_facts: std::sync::atomic::AtomicU64,
     producer_facts: std::sync::atomic::AtomicU64,
     toolchain_facts: std::sync::atomic::AtomicU64,
+    import_nominal_registration_requests: std::sync::atomic::AtomicU64,
+    import_nominal_type_visits: std::sync::atomic::AtomicU64,
+    import_named_nominal_probes: std::sync::atomic::AtomicU64,
+    import_named_nominal_complete_hits: std::sync::atomic::AtomicU64,
+    import_named_nominal_cycle_hits: std::sync::atomic::AtomicU64,
+    import_named_nominals_registered: std::sync::atomic::AtomicU64,
+    import_nominal_type_edges_traversed: std::sync::atomic::AtomicU64,
+    import_anonymous_nominals_registered: std::sync::atomic::AtomicU64,
 }
 
 impl ProviderObservationCounters {
+    fn accrue_provider_body_work(&self, work: rue_air::ProviderBodyWork) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.import_nominal_registration_requests
+            .fetch_add(work.import_nominal_registration_requests as u64, Relaxed);
+        self.import_nominal_type_visits
+            .fetch_add(work.import_nominal_type_visits as u64, Relaxed);
+        self.import_named_nominal_probes
+            .fetch_add(work.import_named_nominal_probes as u64, Relaxed);
+        self.import_named_nominal_complete_hits
+            .fetch_add(work.import_named_nominal_complete_hits as u64, Relaxed);
+        self.import_named_nominal_cycle_hits
+            .fetch_add(work.import_named_nominal_cycle_hits as u64, Relaxed);
+        self.import_named_nominals_registered
+            .fetch_add(work.import_named_nominals_registered as u64, Relaxed);
+        self.import_nominal_type_edges_traversed
+            .fetch_add(work.import_nominal_type_edges_traversed as u64, Relaxed);
+        self.import_anonymous_nominals_registered
+            .fetch_add(work.import_anonymous_nominals_registered as u64, Relaxed);
+    }
+
     fn snapshot(&self) -> crate::unstable::ProviderObservationMetrics {
         use std::sync::atomic::Ordering::Relaxed;
         let identity_facts = self.identity_facts.load(Relaxed);
@@ -809,6 +837,22 @@ impl ProviderObservationCounters {
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
             toolchain_facts: self.toolchain_facts.load(Relaxed),
+            import_nominal_registration_requests: self
+                .import_nominal_registration_requests
+                .load(Relaxed),
+            import_nominal_type_visits: self.import_nominal_type_visits.load(Relaxed),
+            import_named_nominal_probes: self.import_named_nominal_probes.load(Relaxed),
+            import_named_nominal_complete_hits: self
+                .import_named_nominal_complete_hits
+                .load(Relaxed),
+            import_named_nominal_cycle_hits: self.import_named_nominal_cycle_hits.load(Relaxed),
+            import_named_nominals_registered: self.import_named_nominals_registered.load(Relaxed),
+            import_nominal_type_edges_traversed: self
+                .import_nominal_type_edges_traversed
+                .load(Relaxed),
+            import_anonymous_nominals_registered: self
+                .import_anonymous_nominals_registered
+                .load(Relaxed),
         }
     }
 }
@@ -17989,6 +18033,8 @@ impl BodyTransactionEvaluator {
                 }
                 match analyzed {
                     Ok(analyzed) => {
+                        self.provider_observation_meter
+                            .accrue_provider_body_work(analyzed.work);
                         let mut references = analyzed
                             .referenced_definitions
                             .iter()
@@ -18287,6 +18333,8 @@ impl BodyTransactionEvaluator {
                 };
                 match analyzed {
                     Ok(analyzed) => {
+                        self.provider_observation_meter
+                            .accrue_provider_body_work(analyzed.work);
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()
@@ -18517,6 +18565,8 @@ impl BodyTransactionEvaluator {
                 }
                 match analyzed {
                     Ok(analyzed) => {
+                        self.provider_observation_meter
+                            .accrue_provider_body_work(analyzed.work);
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()

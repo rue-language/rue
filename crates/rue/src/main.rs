@@ -1140,6 +1140,14 @@ fn benchmark_compiler_work(
             anonymous_facts: provider.anonymous_facts,
             producer_facts: provider.producer_facts,
             toolchain_facts: provider.toolchain_facts,
+            import_nominal_registration_requests: provider.import_nominal_registration_requests,
+            import_nominal_type_visits: provider.import_nominal_type_visits,
+            import_named_nominal_probes: provider.import_named_nominal_probes,
+            import_named_nominal_complete_hits: provider.import_named_nominal_complete_hits,
+            import_named_nominal_cycle_hits: provider.import_named_nominal_cycle_hits,
+            import_named_nominals_registered: provider.import_named_nominals_registered,
+            import_nominal_type_edges_traversed: provider.import_nominal_type_edges_traversed,
+            import_anonymous_nominals_registered: provider.import_anonymous_nominals_registered,
         },
         semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
             frontier_scans: reachability.frontier_scans,
@@ -1813,6 +1821,14 @@ mod tests {
                 producer_facts: 31,
                 toolchain_facts: 37,
                 declaration_facts: 60,
+                import_nominal_registration_requests: 41,
+                import_nominal_type_visits: 43,
+                import_named_nominal_probes: 47,
+                import_named_nominal_complete_hits: 53,
+                import_named_nominal_cycle_hits: 59,
+                import_named_nominals_registered: 61,
+                import_nominal_type_edges_traversed: 67,
+                import_anonymous_nominals_registered: 71,
             },
             semantic: rue_compiler::unstable::SemanticMetrics {
                 cfg: rue_compiler::unstable::SemanticCfgMetrics {
@@ -1905,6 +1921,40 @@ mod tests {
         assert_eq!(projected.semantic_provider.anonymous_facts, 29);
         assert_eq!(projected.semantic_provider.producer_facts, 31);
         assert_eq!(projected.semantic_provider.toolchain_facts, 37);
+        assert_eq!(
+            projected
+                .semantic_provider
+                .import_nominal_registration_requests,
+            41
+        );
+        assert_eq!(projected.semantic_provider.import_nominal_type_visits, 43);
+        assert_eq!(projected.semantic_provider.import_named_nominal_probes, 47);
+        assert_eq!(
+            projected
+                .semantic_provider
+                .import_named_nominal_complete_hits,
+            53
+        );
+        assert_eq!(
+            projected.semantic_provider.import_named_nominal_cycle_hits,
+            59
+        );
+        assert_eq!(
+            projected.semantic_provider.import_named_nominals_registered,
+            61
+        );
+        assert_eq!(
+            projected
+                .semantic_provider
+                .import_nominal_type_edges_traversed,
+            67
+        );
+        assert_eq!(
+            projected
+                .semantic_provider
+                .import_anonymous_nominals_registered,
+            71
+        );
         assert_eq!(projected.cfg_materialization.index_builds, 1);
         assert_eq!(projected.cfg_materialization.declarations_scanned, 31);
         assert_eq!(projected.cfg_materialization.anonymous_nominals_scanned, 7);

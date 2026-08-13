@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 19;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 20;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,6 +268,30 @@ pub struct SemanticProviderWork {
     pub producer_facts: u64,
     /// Trusted-toolchain fact reads.
     pub toolchain_facts: u64,
+    /// Top-level imported-type nominal registration requests.
+    #[serde(default)]
+    pub import_nominal_registration_requests: u64,
+    /// Durable type nodes visited by imported-type nominal registration.
+    #[serde(default)]
+    pub import_nominal_type_visits: u64,
+    /// Named nominal nodes probed against the body-local registration cache.
+    #[serde(default)]
+    pub import_named_nominal_probes: u64,
+    /// Named nominal probes satisfied by complete body-local closures.
+    #[serde(default)]
+    pub import_named_nominal_complete_hits: u64,
+    /// Recursive named nominal probes stopped by an in-progress cycle marker.
+    #[serde(default)]
+    pub import_named_nominal_cycle_hits: u64,
+    /// Named nominal closures installed completely in body-local identity domains.
+    #[serde(default)]
+    pub import_named_nominals_registered: u64,
+    /// Container-element and nominal-field edges traversed while installing closures.
+    #[serde(default)]
+    pub import_nominal_type_edges_traversed: u64,
+    /// Anonymous nominal identities installed through imported durable types.
+    #[serde(default)]
+    pub import_anonymous_nominals_registered: u64,
 }
 
 /// Deterministic preparation and selection work for body-local CFG facts.
@@ -501,7 +525,7 @@ question = "small maintained compiler frontend"
     }
 
     #[test]
-    fn older_semantic_provider_work_defaults_the_materialization_partition() {
+    fn older_semantic_provider_work_defaults_additive_partitions() {
         let mut encoded = serde_json::to_value(SemanticProviderWork {
             materializations: 23,
             ..SemanticProviderWork::default()
@@ -515,6 +539,14 @@ question = "small maintained compiler frontend"
             "nominal_materializations",
             "function_materializations",
             "method_materializations",
+            "import_nominal_registration_requests",
+            "import_nominal_type_visits",
+            "import_named_nominal_probes",
+            "import_named_nominal_complete_hits",
+            "import_named_nominal_cycle_hits",
+            "import_named_nominals_registered",
+            "import_nominal_type_edges_traversed",
+            "import_anonymous_nominals_registered",
         ] {
             object.remove(field);
         }
@@ -526,6 +558,14 @@ question = "small maintained compiler frontend"
         assert_eq!(decoded.nominal_materializations, 0);
         assert_eq!(decoded.function_materializations, 0);
         assert_eq!(decoded.method_materializations, 0);
+        assert_eq!(decoded.import_nominal_registration_requests, 0);
+        assert_eq!(decoded.import_nominal_type_visits, 0);
+        assert_eq!(decoded.import_named_nominal_probes, 0);
+        assert_eq!(decoded.import_named_nominal_complete_hits, 0);
+        assert_eq!(decoded.import_named_nominal_cycle_hits, 0);
+        assert_eq!(decoded.import_named_nominals_registered, 0);
+        assert_eq!(decoded.import_nominal_type_edges_traversed, 0);
+        assert_eq!(decoded.import_anonymous_nominals_registered, 0);
     }
 
     #[test]

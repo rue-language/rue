@@ -266,6 +266,22 @@ pub struct ProviderObservationMetrics {
     pub producer_facts: u64,
     /// Trusted-toolchain fact observations.
     pub toolchain_facts: u64,
+    /// Top-level imported-type nominal registration requests.
+    pub import_nominal_registration_requests: u64,
+    /// Durable type nodes visited by imported-type nominal registration.
+    pub import_nominal_type_visits: u64,
+    /// Named nominal nodes probed against the body-local registration cache.
+    pub import_named_nominal_probes: u64,
+    /// Named nominal probes satisfied by complete body-local closures.
+    pub import_named_nominal_complete_hits: u64,
+    /// Recursive named nominal probes stopped by an in-progress cycle marker.
+    pub import_named_nominal_cycle_hits: u64,
+    /// Named nominal closures installed completely in body-local identity domains.
+    pub import_named_nominals_registered: u64,
+    /// Container-element and nominal-field edges traversed while installing closures.
+    pub import_nominal_type_edges_traversed: u64,
+    /// Anonymous nominal identities installed through imported durable types.
+    pub import_anonymous_nominals_registered: u64,
 }
 
 /// A snapshot of the provider-op observation counters. See

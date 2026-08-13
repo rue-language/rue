@@ -45,6 +45,9 @@ independently verified native output digest. The report records:
 - semantic-provider name/import lookups, method/operator candidates, exact
   declaration fact-family reads, durable materializations, and
   anonymous/producer/toolchain facts;
+- imported-type nominal registration requests, type-node and edge visits,
+  complete/cycle cache hits, fresh named registrations, and anonymous
+  registrations inside body-local identity domains;
 - semantic-reachability scans, scheduled keys, and fixed frontier-width
   buckets;
 - request-local CFG-materialization index builds, declaration/anonymous/type
@@ -135,6 +138,13 @@ events so representation changes can target the declaration kind which owns
 the measured traffic. It is also exactly partitioned by provider-boundary
 representation: shared payloads reuse canonical immutable storage, while owned
 payloads rebuild an equivalent body-local transport value.
+
+The nominal-registration table measures the work after a durable type fact has
+crossed that boundary. A request installs the named and anonymous identities its
+type closure needs into one body-local identity universe. Named probes are
+partitioned into complete-cache hits, in-progress cycle breaks, and fresh
+registrations; type visits and traversed edges expose repeated closure walking
+even when each individual provider fact is already shared.
 
 The CFG-materialization table separates immutable lookup preparation from the
 exact fact-closure selections that remain body-local. Its selections-per-build

@@ -116,11 +116,12 @@ pub use call_resolution::ProviderCallFacts;
 pub use provider_body_host::{
     DurableBodyLookupSource, DurableBodyModuleBinding, DurableBodySourceLocator,
     DurableComptimeCallOutcome, DurableComptimeDiagnostic, DurableReducedComptimeCall,
-    DurableTryProducer, ProviderAnonymousBody, ProviderOrdinaryBody, ProviderSpecializedBody,
-    ProviderWellKnownOptionFacts, SemanticProducedAnonymousMethodSignature,
-    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
-    SemanticProducedAnonymousNominalShape, analyze_provider_anonymous_body,
-    analyze_provider_ordinary_body, analyze_provider_specialized_body,
+    DurableTryProducer, ProviderAnonymousBody, ProviderBodyWork, ProviderOrdinaryBody,
+    ProviderSpecializedBody, ProviderWellKnownOptionFacts,
+    SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
+    SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape,
+    analyze_provider_anonymous_body, analyze_provider_ordinary_body,
+    analyze_provider_specialized_body,
 };
 
 use std::collections::{HashMap, HashSet};

@@ -757,6 +757,24 @@ fn render(report: &ScalingReport) -> String {
             work.const_facts,
         ));
     }
+
+    out.push_str("\n| workload | nominal registration requests | type visits | named probes (complete/cycle/fresh) | type edges | anonymous registrations |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.semantic_provider;
+        out.push_str(&format!(
+            "| {} | {} | {} | {} ({}/{}/{}) | {} | {} |\n",
+            observation.workload,
+            work.import_nominal_registration_requests,
+            work.import_nominal_type_visits,
+            work.import_named_nominal_probes,
+            work.import_named_nominal_complete_hits,
+            work.import_named_nominal_cycle_hits,
+            work.import_named_nominals_registered,
+            work.import_nominal_type_edges_traversed,
+            work.import_anonymous_nominals_registered,
+        ));
+    }
     out.push_str("\n| workload | durable materializations total (shared/owned; const/nominal/function/method) | anonymous facts | producer facts | toolchain facts |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
     for observation in reference_observations(report) {
@@ -1086,6 +1104,14 @@ mod tests {
                         anonymous_facts: 29,
                         producer_facts: 31,
                         toolchain_facts: 37,
+                        import_nominal_registration_requests: 41,
+                        import_nominal_type_visits: 43,
+                        import_named_nominal_probes: 47,
+                        import_named_nominal_complete_hits: 53,
+                        import_named_nominal_cycle_hits: 59,
+                        import_named_nominals_registered: 61,
+                        import_nominal_type_edges_traversed: 67,
+                        import_anonymous_nominals_registered: 71,
                     },
                     semantic_reachability: rue_perf_schema::SemanticReachabilityWork {
                         frontier_scans: 4,
@@ -1191,6 +1217,8 @@ mod tests {
         assert!(rendered.contains("Semantic provider observations"));
         assert!(rendered.contains("durable materializations"));
         assert!(rendered.contains("23 (3/20; 2/3/11/7)"));
+        assert!(rendered.contains("nominal registration requests"));
+        assert!(rendered.contains("41 | 43 | 47 (53/59/61) | 67 | 71"));
         assert!(rendered.contains("Semantic reachability scheduling"));
         assert!(rendered.contains("keys/batch"));
         assert!(rendered.contains("CFG materialization preparation"));

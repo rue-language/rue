@@ -196,6 +196,7 @@ pub enum SemanticProducedAnonymousMethodType {
 /// compiler relocates the issuer-local token vocabulary before publication.
 pub struct ProviderOrdinaryBody<K, M> {
     pub owner: crate::BodyOwnerToken,
+    pub work: ProviderBodyWork,
     pub export: crate::SemanticBodyExport,
     pub function: AnalyzedFunction,
     pub warnings: Vec<rue_error::CompileWarning>,
@@ -215,6 +216,7 @@ pub struct ProviderOrdinaryBody<K, M> {
 
 /// Canonical result of one provider-backed specialization transaction.
 pub struct ProviderSpecializedBody<K, M> {
+    pub work: ProviderBodyWork,
     pub export: crate::SemanticSpecializedBodyExport,
     /// Exact body-local AIR and its issuing domains. The compiler currently
     /// publishes the durable export; the local materializer/CFG cutover can
@@ -235,6 +237,7 @@ pub struct ProviderSpecializedBody<K, M> {
 
 /// Canonical result of one provider-backed anonymous member body.
 pub struct ProviderAnonymousBody<K, M> {
+    pub work: ProviderBodyWork,
     pub export: crate::SemanticAnonymousBodyExport,
     /// Exact body-local AIR and its issuing domains; retained for the canonical
     /// local-materialization boundary rather than discarded after export.
@@ -250,6 +253,91 @@ pub struct ProviderAnonymousBody<K, M> {
         Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
     pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
     pub module_tokens: Vec<(SemanticModuleToken, M)>,
+}
+
+/// Value-only structural work performed inside one provider-backed body
+/// analysis. The compiler aggregates these counters only when the registered
+/// body transaction actually computes; retained query reuse adds no work.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderBodyWork {
+    /// Top-level requests to install the nominal identities needed by an
+    /// imported durable type.
+    pub import_nominal_registration_requests: usize,
+    /// Durable type nodes reached by those requests, including cache hits and
+    /// primitive/container nodes.
+    pub import_nominal_type_visits: usize,
+    /// Named nominal nodes probed against the request-local registration cache.
+    pub import_named_nominal_probes: usize,
+    /// Named nominal probes satisfied by a fully installed closure.
+    pub import_named_nominal_complete_hits: usize,
+    /// Recursive named nominal probes stopped by an in-progress cycle marker.
+    pub import_named_nominal_cycle_hits: usize,
+    /// Named nominal closures installed completely in the body-local identity
+    /// universe.
+    pub import_named_nominals_registered: usize,
+    /// Container-element and nominal-field edges actually traversed while
+    /// installing fresh closures.
+    pub import_nominal_type_edges_traversed: usize,
+    /// Anonymous nominal identities installed through imported durable types.
+    pub import_anonymous_nominals_registered: usize,
+}
+
+#[derive(Default)]
+struct ProviderBodyWorkCounters {
+    import_nominal_registration_requests: Cell<usize>,
+    import_nominal_type_visits: Cell<usize>,
+    import_named_nominal_probes: Cell<usize>,
+    import_named_nominal_complete_hits: Cell<usize>,
+    import_named_nominal_cycle_hits: Cell<usize>,
+    import_named_nominals_registered: Cell<usize>,
+    import_nominal_type_edges_traversed: Cell<usize>,
+    import_anonymous_nominals_registered: Cell<usize>,
+}
+
+#[derive(Clone, Copy)]
+enum ProviderBodyWorkEvent {
+    RegistrationRequest,
+    TypeVisit,
+    NamedProbe,
+    CompleteHit,
+    CycleHit,
+    NamedRegistered,
+    TypeEdgeTraversed,
+    AnonymousRegistered,
+}
+
+impl ProviderBodyWorkCounters {
+    #[inline]
+    fn record(&self, event: ProviderBodyWorkEvent) {
+        let counter = match event {
+            ProviderBodyWorkEvent::RegistrationRequest => {
+                &self.import_nominal_registration_requests
+            }
+            ProviderBodyWorkEvent::TypeVisit => &self.import_nominal_type_visits,
+            ProviderBodyWorkEvent::NamedProbe => &self.import_named_nominal_probes,
+            ProviderBodyWorkEvent::CompleteHit => &self.import_named_nominal_complete_hits,
+            ProviderBodyWorkEvent::CycleHit => &self.import_named_nominal_cycle_hits,
+            ProviderBodyWorkEvent::NamedRegistered => &self.import_named_nominals_registered,
+            ProviderBodyWorkEvent::TypeEdgeTraversed => &self.import_nominal_type_edges_traversed,
+            ProviderBodyWorkEvent::AnonymousRegistered => {
+                &self.import_anonymous_nominals_registered
+            }
+        };
+        counter.set(counter.get() + 1);
+    }
+
+    fn snapshot(&self) -> ProviderBodyWork {
+        ProviderBodyWork {
+            import_nominal_registration_requests: self.import_nominal_registration_requests.get(),
+            import_nominal_type_visits: self.import_nominal_type_visits.get(),
+            import_named_nominal_probes: self.import_named_nominal_probes.get(),
+            import_named_nominal_complete_hits: self.import_named_nominal_complete_hits.get(),
+            import_named_nominal_cycle_hits: self.import_named_nominal_cycle_hits.get(),
+            import_named_nominals_registered: self.import_named_nominals_registered.get(),
+            import_nominal_type_edges_traversed: self.import_nominal_type_edges_traversed.get(),
+            import_anonymous_nominals_registered: self.import_anonymous_nominals_registered.get(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -587,6 +675,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     /// Compact endpoint tokens avoid retaining a second copy of each durable key.
     import_nominal_registrations:
         RefCell<AHashMap<SemanticDefinitionToken, ImportNominalRegistration>>,
+    provider_body_work: ProviderBodyWorkCounters,
     nominal_tokens: RefCell<AHashMap<Type, (SemanticDefinitionToken, K)>>,
     modules_by_file: RefCell<AHashMap<FileId, M>>,
     module_tokens: RefCell<AHashMap<ModuleId, (SemanticModuleToken, M)>>,
@@ -728,6 +817,7 @@ where
             const_infos: RefCell::new(AHashMap::new()),
             observed_named_definitions: RefCell::new(AHashSet::new()),
             import_nominal_registrations: RefCell::new(AHashMap::new()),
+            provider_body_work: ProviderBodyWorkCounters::default(),
             nominal_tokens: RefCell::new(AHashMap::new()),
             modules_by_file: RefCell::new(AHashMap::new()),
             module_tokens: RefCell::new(AHashMap::new()),
@@ -1691,6 +1781,8 @@ where
         &self,
         value: &crate::SemanticImportType<K, M>,
     ) -> Result<(), crate::SemanticBodyExportFailure> {
+        self.provider_body_work
+            .record(ProviderBodyWorkEvent::RegistrationRequest);
         let result = self.register_import_nominal_identities_inner(value);
         if result.is_err() {
             self.import_nominal_registrations.borrow_mut().clear();
@@ -1703,12 +1795,24 @@ where
         value: &crate::SemanticImportType<K, M>,
     ) -> Result<(), crate::SemanticBodyExportFailure> {
         use crate::SemanticImportType as T;
+        self.provider_body_work
+            .record(ProviderBodyWorkEvent::TypeVisit);
         match value {
             T::Nominal(key) => {
+                self.provider_body_work
+                    .record(ProviderBodyWorkEvent::NamedProbe);
                 if let Some(token) = self.endpoint.registered_named_nominal_token(key) {
                     match self.import_nominal_registrations.borrow().get(&token) {
-                        Some(ImportNominalRegistration::Complete) => return Ok(()),
-                        Some(ImportNominalRegistration::InProgress) => return Ok(()),
+                        Some(ImportNominalRegistration::Complete) => {
+                            self.provider_body_work
+                                .record(ProviderBodyWorkEvent::CompleteHit);
+                            return Ok(());
+                        }
+                        Some(ImportNominalRegistration::InProgress) => {
+                            self.provider_body_work
+                                .record(ProviderBodyWorkEvent::CycleHit);
+                            return Ok(());
+                        }
                         None => {}
                     }
                 }
@@ -1746,12 +1850,16 @@ where
                     match &nominal.body {
                         crate::DurableNominalBody::Struct { fields, .. } => {
                             for (_, field) in fields.iter() {
+                                self.provider_body_work
+                                    .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
                                 self.register_import_nominal_identities_inner(field)?;
                             }
                         }
                         crate::DurableNominalBody::Enum { variants } => {
                             for (_, payload) in variants.iter() {
                                 for field in payload.iter() {
+                                    self.provider_body_work
+                                        .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
                                     self.register_import_nominal_identities_inner(field)?;
                                 }
                             }
@@ -1761,6 +1869,8 @@ where
                 })();
                 if let Some(token) = registration_token {
                     if result.is_ok() {
+                        self.provider_body_work
+                            .record(ProviderBodyWorkEvent::NamedRegistered);
                         self.import_nominal_registrations
                             .borrow_mut()
                             .insert(token, ImportNominalRegistration::Complete);
@@ -1776,6 +1886,8 @@ where
             | T::Slice { element, .. }
             | T::PtrConst(element)
             | T::PtrMut(element) => {
+                self.provider_body_work
+                    .record(ProviderBodyWorkEvent::TypeEdgeTraversed);
                 self.register_import_nominal_identities_inner(element)?;
             }
             T::I8
@@ -1810,6 +1922,8 @@ where
                     .insert(ty, issued);
                 self.register_provider_anonymous_method_endpoints(identity, ty)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                self.provider_body_work
+                    .record(ProviderBodyWorkEvent::AnonymousRegistered);
             }
         }
         Ok(())
@@ -4551,6 +4665,7 @@ where
                 "provider ordinary produced-nominal export failed: {failure:?}"
             )))
         })?;
+    let work = host.provider_body_work.snapshot();
     let definition_tokens = host
         .function_tokens
         .into_inner()
@@ -4575,6 +4690,7 @@ where
     );
     Ok(ProviderOrdinaryBody {
         owner: host.owner,
+        work,
         export,
         function,
         warnings,
@@ -5024,6 +5140,7 @@ where
         .iter()
         .cloned()
         .collect();
+    let work = host.provider_body_work.snapshot();
     let definition_tokens = host
         .function_tokens
         .into_inner()
@@ -5047,6 +5164,7 @@ where
         expression_breakdown,
     );
     Ok(ProviderAnonymousBody {
+        work,
         export,
         function,
         warnings,
@@ -5239,6 +5357,7 @@ where
                 "provider specialization produced-nominal export failed: {failure:?}"
             )))
         })?;
+    let work = host.provider_body_work.snapshot();
     let definition_tokens = host
         .function_tokens
         .into_inner()
@@ -5262,6 +5381,7 @@ where
         expression_breakdown,
     );
     Ok(ProviderSpecializedBody {
+        work,
         export,
         function,
         warnings: specialized.warnings,
