@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use crate::RUN_SCHEMA_VERSION;
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
+use crate::stats::median;
 
 /// A reason a run may not enter a series at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +467,57 @@ pub fn validate_run(manifest: &Manifest, run: &RunObject) -> ValidationOutcome {
         invalid_samples,
         completeness,
     }
+}
+
+/// A comparable, publishable run exceeded a reviewed non-regression ratchet.
+///
+/// This is deliberately not a [`ValidationError`]: the raw run belongs in its
+/// series and is the evidence of the regression. Collection publishes it, then
+/// fails its gate so the regression is visible instead of freezing the chart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessElapsedRegression {
+    pub workload: String,
+    pub current_median_ns: u64,
+    pub limit_ns: u64,
+}
+
+/// Evaluate fixed fresh-process ratchets for an otherwise validated run.
+pub fn process_elapsed_regressions(
+    manifest: &Manifest,
+    run: &RunObject,
+    outcome: &ValidationOutcome,
+) -> Vec<ProcessElapsedRegression> {
+    if !outcome.is_appendable() {
+        return Vec::new();
+    }
+    let Some(epoch) = manifest.epoch(&run.identity.platform, run.identity.epoch) else {
+        return Vec::new();
+    };
+    let mut regressions = Vec::new();
+    for (workload, ratchet) in &epoch.process_elapsed_ratchets {
+        if !outcome.publishes_workload(workload) {
+            continue;
+        }
+        let Some(observation) = run.observation(workload) else {
+            continue;
+        };
+        let values: Vec<u64> = observation
+            .samples
+            .iter()
+            .map(|sample| sample.process_elapsed_ns / u64::from(sample.batch_size).max(1))
+            .collect();
+        let Some(current_median_ns) = median(&values) else {
+            continue;
+        };
+        if current_median_ns > ratchet.process_elapsed_limit_ns {
+            regressions.push(ProcessElapsedRegression {
+                workload: workload.clone(),
+                current_median_ns,
+                limit_ns: ratchet.process_elapsed_limit_ns,
+            });
+        }
+    }
+    regressions
 }
 
 fn check_boundary_evidence(
@@ -1000,6 +1052,52 @@ window = 10
         assert!(outcome.is_appendable());
         assert!(outcome.publishes_headline());
         assert!(outcome.publishes_workload("caldera"));
+    }
+
+    fn manifest_with_caldera_ratchet(center: u64, mad: u64) -> Manifest {
+        Manifest::parse(&format!(
+            "{MANIFEST}\n\
+             [epoch.baseline]\n\
+             commit = \"{}\"\n\
+             run = \"baseline-run\"\n\n\
+             [epoch.process_elapsed_ratchets.caldera]\n\
+             baseline_process_elapsed_ns = {center}\n\
+             baseline_mad_ns = {mad}\n\
+             process_elapsed_limit_ns = {}\n\
+             reference_run = \"baseline-run\"\n",
+            "a".repeat(40),
+            center.saturating_add(mad.saturating_mul(6))
+        ))
+        .expect("ratcheted manifest")
+    }
+
+    #[test]
+    fn a_material_fresh_process_regression_is_publishable_but_fails_the_ratchet() {
+        let manifest = manifest_with_caldera_ratchet(800_000_000, 1_000_000);
+        let run = sample_run();
+        let outcome = validate_run(&manifest, &run);
+        assert!(outcome.is_appendable());
+        assert!(matches!(
+            process_elapsed_regressions(&manifest, &run, &outcome).as_slice(),
+            [ProcessElapsedRegression {
+                workload,
+                current_median_ns: 905_001_000,
+                limit_ns: 806_000_000,
+            }] if workload == "caldera"
+        ));
+    }
+
+    #[test]
+    fn observations_below_the_fixed_limit_pass_the_ratchet() {
+        for manifest in [
+            manifest_with_caldera_ratchet(1_000_000_000, 1_000_000),
+            manifest_with_caldera_ratchet(900_000_000, 100_000_000),
+        ] {
+            let run = sample_run();
+            let outcome = validate_run(&manifest, &run);
+            assert!(outcome.is_appendable());
+            assert!(process_elapsed_regressions(&manifest, &run, &outcome).is_empty());
+        }
     }
 
     #[test]

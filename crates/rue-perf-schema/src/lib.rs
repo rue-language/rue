@@ -62,7 +62,7 @@ pub use incremental::{
 };
 pub use manifest::{
     Baseline, EnvironmentPolicy, FlaggingPolicy, Manifest, ManifestError, PlatformEpoch,
-    ProcessElapsedTarget, SamplingPolicy, SuiteRevision, Workload,
+    ProcessElapsedRatchet, ProcessElapsedTarget, SamplingPolicy, SuiteRevision, Workload,
 };
 pub use run::{
     Band, EnvironmentFingerprint, FailureRecord, Invocation, Phase, PhaseAccounting, ResolvedPins,
@@ -80,8 +80,8 @@ pub use stats::{
     ratio, sample_value,
 };
 pub use validate::{
-    Completeness, InvalidSample, InvalidSampleReason, ValidationError, ValidationOutcome,
-    validate_run,
+    Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression, ValidationError,
+    ValidationOutcome, process_elapsed_regressions, validate_run,
 };
 
 /// Deterministic presentation-only query identity materialization.

@@ -639,9 +639,24 @@ batch_size = 1
 process_elapsed_ns = 250000000
 reference = "ADR-0071"
 
+# First protocol-v2 reference observation, collected on hosted ubuntu-24.04
+# from commit 72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4. The fixed gate is the
+# 2,887.26 ms process median plus six times the hosted calibration's 0.78%
+# relative MAD, matching this epoch's k without allowing a later noisy run to
+# widen the gate. The baseline run's own three samples had an 8.28 ms MAD.
+[epoch.process_elapsed_ratchets.lattice]
+baseline_process_elapsed_ns = 2887259763
+baseline_mad_ns = 8281274
+process_elapsed_limit_ns = 3022383520
+reference_run = "9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394"
+
 [epoch.flagging]
 k = 6.0
 window = 5
+
+[epoch.baseline]
+commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
+run = "9b7d4bdb4bf398301fa5bd90b6a57e75f4764a982aacf2723c485b59b5398394"
 
 [[epoch]]
 id = 5
@@ -684,6 +699,10 @@ batch_size = 1
 k = 5.0
 window = 3
 
+[epoch.baseline]
+commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
+run = "08deff0a5bd6beb187063db4ed31d70634067cf9aa9d5c453a78be828fa953e0"
+
 [[epoch]]
 id = 5
 collection = true
@@ -724,3 +743,7 @@ batch_size = 1
 [epoch.flagging]
 k = 4.0
 window = 5
+
+[epoch.baseline]
+commit = "72d2155a57046f6a2ca05b357e8f8d4d5c32b7a4"
+run = "1404128c40051b386dd7b545c9eb555333004f0774ec99689df1fce296042f18"

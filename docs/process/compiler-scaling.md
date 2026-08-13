@@ -146,6 +146,12 @@ Compare rows only within the same target, worker setting, and manifest revision,
 runner fingerprint change as advisory because GitHub-hosted hardware is not a
 controlled machine.
 
+The accepted ADR-0071 Phase 1 reference observation and interpretation live in
+[`docs/notes/adr-0071-phase-1-reference-baseline.md`](../notes/adr-0071-phase-1-reference-baseline.md).
+It records the first protocol-v2 hosted baseline, the fixed non-regression
+ratchet, and the five-worker critical-path result that selects the next
+semantic-to-CFG ownership audit.
+
 Every workload row includes a shape id derived from its root path and the
 compiler-produced file/module/function and source-size counts. A changed shape
 id marks the timing comparison as advisory even if someone forgot to advance
