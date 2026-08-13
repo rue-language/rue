@@ -8115,7 +8115,10 @@ mod tests {
         assert_eq!(metrics.signature_facts, 3, "{metrics:?}");
         assert_eq!(metrics.materializations, 3, "{metrics:?}");
         assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
-        assert_eq!(metrics.function_materialization_reuses, 3, "{metrics:?}");
+        assert_eq!(
+            metrics.function_materialization_reuses, 2,
+            "the provider host must pass its already-read function payload into call-signature minting: {metrics:?}"
+        );
         assert_eq!(
             metrics.materializations,
             metrics.shared_payload_materializations + metrics.owned_payload_materializations,
@@ -8175,7 +8178,10 @@ mod tests {
         assert_eq!(metrics.nominal_materializations, 2, "{metrics:?}");
         assert_eq!(metrics.nominal_materialization_reuses, 2, "{metrics:?}");
         assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
-        assert_eq!(metrics.function_materialization_reuses, 3, "{metrics:?}");
+        assert_eq!(
+            metrics.function_materialization_reuses, 2,
+            "the provider host must not re-fetch an already-read callable payload: {metrics:?}"
+        );
         assert_eq!(
             metrics.materializations,
             metrics.shared_payload_materializations + metrics.owned_payload_materializations,
