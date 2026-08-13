@@ -379,6 +379,21 @@ pub struct CompilerCriticalPathEvidence {
     /// Registered-query prerequisites acquired before each body analysis.
     #[serde(default)]
     pub semantic_prerequisite_bodies: DurationDistribution,
+    /// Inclusive request-wide declaration graph collection.
+    #[serde(default)]
+    pub semantic_declaration_graph: DurationDistribution,
+    /// Module-local declaration occurrence index requests inside that graph.
+    #[serde(default)]
+    pub semantic_declaration_occurrence_indexes: DurationDistribution,
+    /// Exact declaration-nucleus requests inside that graph.
+    #[serde(default)]
+    pub semantic_declaration_nuclei: DurationDistribution,
+    /// Inclusive rooted body-closure query and immediate work reduction.
+    #[serde(default)]
+    pub semantic_body_closure: DurationDistribution,
+    /// Projection of the closure and declaration graph into the rooted body graph.
+    #[serde(default)]
+    pub semantic_body_graph_projection: DurationDistribution,
     /// Stable-input preparation before body-local semantic materialization.
     #[serde(default)]
     pub cfg_input_preparation_bodies: DurationDistribution,
@@ -564,6 +579,11 @@ impl BuildBoundaryEvidence {
         let critical = &self.critical_path;
         if !critical.semantic_bodies.validate()
             || !critical.semantic_prerequisite_bodies.validate()
+            || !critical.semantic_declaration_graph.validate()
+            || !critical.semantic_declaration_occurrence_indexes.validate()
+            || !critical.semantic_declaration_nuclei.validate()
+            || !critical.semantic_body_closure.validate()
+            || !critical.semantic_body_graph_projection.validate()
             || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_domain_prerequisite_bodies.validate()
@@ -613,8 +633,14 @@ impl BuildBoundaryEvidence {
     ) -> Result<(), String> {
         self.validate_against(policy, target)?;
         let critical = &self.critical_path;
-        if critical.semantic_prerequisite_bodies.count == 0 {
-            return Err("compiler omitted semantic-prerequisite evidence".to_string());
+        if critical.semantic_prerequisite_bodies.count == 0
+            || critical.semantic_declaration_graph.count == 0
+            || critical.semantic_declaration_occurrence_indexes.count == 0
+            || critical.semantic_declaration_nuclei.count == 0
+            || critical.semantic_body_closure.count == 0
+            || critical.semantic_body_graph_projection.count == 0
+        {
+            return Err("compiler omitted semantic critical-path evidence".to_string());
         }
         let breakdown_counts = [
             critical.cfg_input_preparation_bodies.count,
@@ -715,6 +741,11 @@ mod tests {
                 toolchain_acquisition_ns: 1,
                 semantic_bodies: distribution(),
                 semantic_prerequisite_bodies: distribution(),
+                semantic_declaration_graph: distribution(),
+                semantic_declaration_occurrence_indexes: distribution(),
+                semantic_declaration_nuclei: distribution(),
+                semantic_body_closure: distribution(),
+                semantic_body_graph_projection: distribution(),
                 cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
                 cfg_domain_prerequisite_bodies: distribution(),
@@ -756,6 +787,11 @@ mod tests {
         let critical = encoded["critical_path"].as_object_mut().unwrap();
         for field in [
             "semantic_prerequisite_bodies",
+            "semantic_declaration_graph",
+            "semantic_declaration_occurrence_indexes",
+            "semantic_declaration_nuclei",
+            "semantic_body_closure",
+            "semantic_body_graph_projection",
             "cfg_input_preparation_bodies",
             "semantic_materialization_bodies",
             "cfg_domain_prerequisite_bodies",
@@ -771,6 +807,28 @@ mod tests {
         let decoded: BuildBoundaryEvidence = serde_json::from_value(encoded).unwrap();
         assert_eq!(
             decoded.critical_path.semantic_prerequisite_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_declaration_graph,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded
+                .critical_path
+                .semantic_declaration_occurrence_indexes,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_declaration_nuclei,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_body_closure,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.semantic_body_graph_projection,
             DurationDistribution::default()
         );
         assert_eq!(

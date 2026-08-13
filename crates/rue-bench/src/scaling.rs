@@ -7,9 +7,10 @@
 use std::path::{Path, PathBuf};
 
 use rue_perf_schema::{
-    Band, BuildBoundaryPolicy, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest,
-    ScalingObservation, ScalingRegime, ScalingReport, Summary, WorkerSetting, WorkloadShape,
-    canonical_json, content_address,
+    Band, BuildBoundaryPolicy, CompilerCriticalPathEvidence, DurationDistribution,
+    SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
+    ScalingRegime, ScalingReport, Summary, WorkerSetting, WorkloadShape, canonical_json,
+    content_address,
 };
 
 use crate::measure::{SampleRequest, measure_fresh_compile};
@@ -522,6 +523,51 @@ fn render(report: &ScalingReport) -> String {
             declined.median,
             joins.median,
             donated.median,
+        ));
+    }
+
+    out.push_str("\n## Semantic critical-path detail\n\n");
+    out.push_str("Declaration graph, body closure, and body graph projection are adjacent, non-overlapping intervals after a semantic request selects its root inputs. Occurrence-index and nucleus columns are nested inside declaration graph; body prerequisite and analysis columns are nested inside body closure. Nested columns explain their owner and must not be added to the enclosing interval.\n\n");
+    out.push_str("| workload / workers | declaration graph total/max ms | occurrence indexes total/max ms | declaration nuclei total/max ms | body closure total/max ms | body graph projection total/max ms | body prerequisites total/max ms | body analysis total/max ms |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let pair = |select: fn(&CompilerCriticalPathEvidence) -> &DurationDistribution| {
+            (
+                summarize(evidence.clone().map(|value| select(&value).total_ns)),
+                summarize(evidence.clone().map(|value| select(&value).max_ns)),
+            )
+        };
+        let declaration_graph = pair(|value| &value.semantic_declaration_graph);
+        let occurrence = pair(|value| &value.semantic_declaration_occurrence_indexes);
+        let nuclei = pair(|value| &value.semantic_declaration_nuclei);
+        let body_closure = pair(|value| &value.semantic_body_closure);
+        let body_projection = pair(|value| &value.semantic_body_graph_projection);
+        let prerequisites = pair(|value| &value.semantic_prerequisite_bodies);
+        let analysis = pair(|value| &value.semantic_bodies);
+        out.push_str(&format!(
+            "| {} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} |\n",
+            observation_label(observation),
+            declaration_graph.0.median as f64 / 1_000_000.0,
+            declaration_graph.1.median as f64 / 1_000_000.0,
+            occurrence.0.median as f64 / 1_000_000.0,
+            occurrence.1.median as f64 / 1_000_000.0,
+            nuclei.0.median as f64 / 1_000_000.0,
+            nuclei.1.median as f64 / 1_000_000.0,
+            body_closure.0.median as f64 / 1_000_000.0,
+            body_closure.1.median as f64 / 1_000_000.0,
+            body_projection.0.median as f64 / 1_000_000.0,
+            body_projection.1.median as f64 / 1_000_000.0,
+            prerequisites.0.median as f64 / 1_000_000.0,
+            prerequisites.1.median as f64 / 1_000_000.0,
+            analysis.0.median as f64 / 1_000_000.0,
+            analysis.1.median as f64 / 1_000_000.0,
         ));
     }
 

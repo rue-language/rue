@@ -1062,6 +1062,13 @@ fn compiler_critical_path_evidence(
         toolchain_acquisition_ns: timing.pass_total_ns("toolchain_acquisition"),
         semantic_bodies: timing.pass_duration_distribution("body_analysis"),
         semantic_prerequisite_bodies: timing.pass_duration_distribution("body_query_prerequisites"),
+        semantic_declaration_graph: timing
+            .pass_duration_distribution("declaration_graph_collection"),
+        semantic_declaration_occurrence_indexes: timing
+            .pass_duration_distribution("declaration_occurrence_index"),
+        semantic_declaration_nuclei: timing.pass_duration_distribution("declaration_nucleus"),
+        semantic_body_closure: timing.pass_duration_distribution("body_closure_collection"),
+        semantic_body_graph_projection: timing.pass_duration_distribution("body_graph_projection"),
         cfg_input_preparation_bodies: timing.pass_duration_distribution("cfg_input_preparation"),
         semantic_materialization_bodies: timing
             .pass_duration_distribution("semantic_materialization"),

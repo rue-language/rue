@@ -1675,10 +1675,20 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "declaration_occurrence_index")
             .unwrap();
+        let declaration_graph = session_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "declaration_graph_collection")
+            .unwrap();
         let body_closure = session_timing
             .passes
             .iter()
             .find(|pass| pass.name == "body_closure_collection")
+            .unwrap();
+        let body_graph_projection = session_timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "body_graph_projection")
             .unwrap();
         let optimized_cfg = session_timing
             .passes
@@ -1706,13 +1716,21 @@ mod tests {
         // Semantic presentation is a projection of the same rooted query
         // graph used by normal compilation. The old whole-program declaration
         // index and `sema` coordinator must therefore remain absent.
+        assert_eq!(declaration_graph.invocations, 1);
+        assert_eq!(declaration_graph.root_invocations, 1);
         assert_eq!(occurrence_index.invocations, 1);
-        assert_eq!(occurrence_index.root_invocations, 1);
+        assert_eq!(occurrence_index.root_invocations, 0);
         assert_eq!(occurrence_index.leaf_invocations, 1);
         assert_eq!(body_closure.invocations, 1);
         assert_eq!(body_closure.root_invocations, 1);
+        assert_eq!(body_graph_projection.invocations, 1);
+        assert_eq!(body_graph_projection.root_invocations, 1);
         assert_eq!(optimized_cfg.invocations, 1);
         assert_eq!(optimized_cfg.root_invocations, 1);
+        assert!(session_edges.contains(&(
+            "declaration_graph_collection".to_owned(),
+            "declaration_occurrence_index".to_owned()
+        )));
         assert!(session_edges.contains(&(
             "body_closure_collection".to_owned(),
             "body_analysis".to_owned()
@@ -1741,9 +1759,14 @@ mod tests {
             "missing compile -> compile_pipeline in batch edges: {compile_edges:?}"
         );
         for edge in [
-            ("compile_pipeline", "declaration_occurrence_index"),
-            ("compile_pipeline", "declaration_nucleus"),
+            ("compile_pipeline", "declaration_graph_collection"),
+            (
+                "declaration_graph_collection",
+                "declaration_occurrence_index",
+            ),
+            ("declaration_graph_collection", "declaration_nucleus"),
             ("compile_pipeline", "body_closure_collection"),
+            ("compile_pipeline", "body_graph_projection"),
             ("compile_pipeline", "optimized_cfg_collection"),
             ("optimized_cfg_collection", "cfg_construction"),
             ("optimized_cfg_collection", "cfg_optimization"),
