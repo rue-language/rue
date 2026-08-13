@@ -1,0 +1,2 @@
+Static passthrough is measured work for every tool in ADR-0072's comparison,
+so the miniature site carries an asset to prove gazette copies one.

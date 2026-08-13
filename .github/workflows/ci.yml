@@ -366,6 +366,26 @@ jobs:
           path: ${{ runner.temp }}/premerge-test-results.txt
           if-no-files-found: ignore
 
+      # ADR-0072 Decision 3's fairness rule is the constraint most able to
+      # silently invalidate the runtime benchmark, and it is the one no output
+      # check can catch: a navigation flattened out of the template and into
+      # host code emits the same link targets and the same visible text on
+      # every page, so determinism, the file set, and the semantic oracle all
+      # stay green. The spot goldens are what notices, because they hold the
+      # markup of a sidebar rendered over a real section tree with an active
+      # branch — and they are hermetic, need no Zola, and take seconds.
+      #
+      # They also pin the port against production drift, which ADR-0072's
+      # Consequences name as a risk and which nothing else checks.
+      #
+      # This lane, specifically: gazette is the only program in the tree that
+      # drives `std.fs`'s directory walk, `create_dir_all`, and file creation
+      # in anger, and RUE-1481's `O_DIRECTORY` defect showed that surface
+      # differs by architecture on Linux. Building a whole site here is the
+      # cheapest Linux exercise of it available.
+      - name: Check the gazette template port and its spot goldens
+        run: scripts/ci-timed "gazette goldens" -- scripts/gazette-corpus-diff.py golden
+
       - name: Run explicit cross-backend compilation and encoding coverage
         # Both the x86-64 and AArch64 encoders are host-independent Rust tests.
         # Keep this named step visible even though the broad suite also reaches

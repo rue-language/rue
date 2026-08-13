@@ -1,15 +1,24 @@
-# RUE-1483: gazette's three text-processing libraries — TOML front matter, a
-# Markdown subset, and a template engine (ADR-0072 Phase 3).
+# gazette — a static site generator written in Rue (ADR-0072 Phases 3 and 4,
+# RUE-1483 and RUE-1484).
 #
 # The libraries' own construct-by-construct coverage lives in the program's
 # self-test, which the no-argument automatic example already runs. What these
 # cases add is the real driver path: files on disk, templates registered by the
-# name content refers to them by, and the exit code and diagnostics a caller
-# sees when content steps outside a documented subset.
+# name content refers to them by, a whole site built from a content tree, and
+# the exit code and diagnostics a caller sees when content steps outside a
+# documented subset.
+#
+# The `build` cases here are deliberately small. The corpus-scale checks —
+# determinism, the semantic oracle against Zola, the scale variants, and the
+# markup-level spot goldens — live in `scripts/gazette-corpus-diff.py`, which
+# needs the pinned Zola and a 500 KiB corpus and so cannot run inside the CLI
+# harness's per-case budget. What belongs here is the behaviour a CLI test can
+# pin exactly: the routes, the file set, section ordering, the feed, and the
+# redirect stub.
 [section]
 id = "cli.examples_gazette"
-name = "gazette front-matter, Markdown, and template libraries written in Rue"
-description = "exercise TOML front matter, the Markdown subset, shortcode expansion through the template engine, and loud rejection of out-of-subset constructs"
+name = "gazette, a static site generator written in Rue"
+description = "exercise TOML front matter, the Markdown subset, shortcode expansion through the template engine, a whole site build, and loud rejection of out-of-subset constructs"
 # Every case compiles the same maintained multi-module program, so the section
 # carries the bounded heavyweight contract, matching the automatic example.
 contract = "heavyweight"
@@ -27,6 +36,10 @@ stdout_contains = [
   "ok   three-level inheritance with nested block override",
   "ok   the eleven filters and the URL helper",
   "ok   shortcodes expand through the template engine",
+  # The genuine recursion check: a macro on a parent template calling itself
+  # through a nested tree, gated on a prefix test, with the exact nested
+  # output asserted. ADR-0072 Decision 3 forbids moving that decision out of
+  # the template, and this is the smallest executable statement of it.
   "ok   recursive macro with starts_with, defined on a parent template",
   "ok   runaway macro recursion is a diagnostic, not a crash",
   "ok   nesting past the depth guard is a diagnostic, not a crash",
@@ -53,10 +66,19 @@ exit_code = 1
 stdout_contains = ["nested deeper than the engine renders"]
 
 [[case]]
-name = "gazette_renders_a_recursive_navigation_macro"
-description = "a macro defined on a parent template, called with named arguments, recursing under a starts_with gate"
+name = "gazette_renders_a_macro_defined_on_a_parent_template"
+description = "a macro with named arguments and a default, invoked from a child template, plus the starts_with filter"
 source_path = "examples/gazette/main.rue"
 env = { RUE_STD_PATH = "${REAL_STD}" }
+# Deliberately NOT the recursion test, though it was once described as one
+# while its macro never called itself. What it pins is argument binding,
+# defaults, and the prefix filter. Genuine recursion needs a nested tree, and
+# the front-matter subset cannot express one — a page carries scalars, arrays
+# of scalars, and one level of table — so it is covered where a nested tree
+# actually exists: the self-test above builds one in Rue and asserts the exact
+# nested output, `gazette_stops_runaway_macro_recursion` below drives the
+# engine's depth guard, and the spot goldens render the production-shaped
+# sidebar over a real section tree with an active branch.
 files = [
   { path = "nav.html", source = """{% macro crumb(node, depth=0) %}<i>{{ node }}{% if depth %} at {{ depth }}{% endif %}</i>{% endmacro %}{{ self::crumb(node=page.title) }}{{ self::crumb(node=page.title, depth=2) }}{% if page.title | starts_with(prefix="Sco") %}<b>match</b>{% endif %}""" },
   { path = "page.md", source = """+++
@@ -69,6 +91,29 @@ body
 program_args = ["render", "-t", "nav.html=nav.html", "--template-out", "nav.html", "page.md"]
 exit_code = 0
 stdout_contains = ["<i>Scope</i><i>Scope at 2</i><b>match</b>"]
+
+[[case]]
+name = "gazette_stops_runaway_macro_recursion"
+description = "a macro with no base case reports and stops instead of overflowing the stack"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+# The depth guard at the top of `render_macro_call` is the only thing between
+# a self-calling macro and a signal-killed process with a half-written output
+# tree, which ADR-0072 Decision 4's determinism check cannot interpret. The
+# Markdown depth guard has its own case; this one is the macro engine's, and
+# they are not the same guard.
+files = [
+  { path = "loop.html", source = """{% macro loopy(n) %}x{{ self::loopy(n=n) }}{% endmacro %}{{ self::loopy(n=1) }}""" },
+  { path = "page.md", source = """+++
+title = "Runaway"
++++
+
+body
+""" },
+]
+program_args = ["render", "-t", "loop.html=loop.html", "--template-out", "loop.html", "page.md"]
+exit_code = 1
+stdout_contains = ["macro calls are nested deeper than the engine renders (self::loopy)"]
 
 [[case]]
 name = "gazette_renders_a_page_with_front_matter_and_shortcodes"
@@ -155,6 +200,121 @@ stdout_contains = [
   "markdown:11: strikethrough is outside the subset",
   "markdown:14: nested lists are outside the subset",
 ]
+
+[[case]]
+name = "gazette_builds_a_site_tree"
+description = "content discovery, routes, section ordering, the feed, the redirect stub, and static passthrough, in one build"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site/config.toml", source = """base_url = "https://example.test"
+title = "Site"
+description = "a site"
+""" },
+  { path = "site/templates/page.html", source = """<h1>{{ page.title }}</h1>{{ page.content | safe }}{% if page.lower %}<a href="{{ page.lower.permalink }}">prev</a>{% endif %}""" },
+  { path = "site/templates/section.html", source = """<h1>{{ section.title }}</h1>{% for pg in section.pages %}<a href="{{ pg.path }}">{{ pg.title }}</a>{% endfor %}{% for sub in section.subsections | sort %}<i>{{ sub }}</i>{% endfor %}""" },
+  { path = "site/templates/redirect.html", source = """<meta http-equiv="refresh" content="0; url={{ url | safe }}">""" },
+  { path = "site/templates/rss.xml", source = """<rss>{% for page in pages %}<item>{{ page.permalink | safe }}</item>{% endfor %}</rss>""" },
+  { path = "site/templates/shortcodes/rule.html", source = """<b id="r-{{ id }}">[{{ id }}]</b>""" },
+  { path = "site/static/asset.txt", source = "copied verbatim\n" },
+  { path = "site/content/_index.md", source = """+++
+title = "Home"
++++
+
+welcome
+""" },
+  # `sort_by = "date"`, so the newer note leads the index and the feed.
+  { path = "site/content/notes/_index.md", source = """+++
+title = "Notes"
+sort_by = "date"
+generate_feeds = true
++++
+
+notes
+""" },
+  { path = "site/content/notes/older.md", source = """+++
+title = "Older"
+date = 2026-01-01
++++
+
+first
+""" },
+  { path = "site/content/notes/newer.md", source = """+++
+title = "Newer"
+date = 2026-02-02
++++
+
+second
+""" },
+  # A redirecting section whose pages still render, and whose subsection is
+  # ordered by weight.
+  { path = "site/content/book/_index.md", source = """+++
+title = "Book"
+sort_by = "weight"
+redirect_to = "book/two"
++++
+
+book
+""" },
+  { path = "site/content/book/one.md", source = """+++
+title = "One"
+weight = 2
++++
+
+{{ rule(id="1:1") }}
+""" },
+  { path = "site/content/book/two.md", source = """+++
+title = "Two"
+weight = 1
++++
+
+two
+""" },
+]
+program_args = ["build", "site", "-o", "public", "--list"]
+exit_code = 0
+# The emitted set, in emission order: every ordinary page in content-tree
+# order, then each section's index — the redirecting one included — with its
+# feed beside it, then the static passthrough.
+stdout = """book/one/index.html
+book/two/index.html
+notes/newer/index.html
+notes/older/index.html
+index.html
+book/index.html
+notes/index.html
+notes/rss.xml
+asset.txt
+gazette: 4 pages, 3 sections, 9 files written
+"""
+
+[[case]]
+name = "gazette_refuses_a_content_directory_without_an_index"
+description = "a directory with no `_index.md` is a diagnostic, never an implicit section"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site/config.toml", source = """base_url = "https://example.test"
+title = "Site"
+""" },
+  { path = "site/templates/page.html", source = """{{ page.content | safe }}""" },
+  { path = "site/templates/section.html", source = """{{ section.content | safe }}""" },
+  { path = "site/content/_index.md", source = """+++
+title = "Home"
++++
+
+home
+""" },
+  { path = "site/content/orphans/lost.md", source = """+++
+title = "Lost"
++++
+
+lost
+""" },
+]
+program_args = ["build", "site", "-o", "public"]
+exit_code = 1
+stdout_contains = ["this content directory has no `_index.md` (orphans/lost.md)"]
 
 [[case]]
 name = "gazette_rejects_an_unknown_shortcode"

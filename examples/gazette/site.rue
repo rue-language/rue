@@ -1,0 +1,1292 @@
+// gazette the static site generator: content discovery, the page and section
+// model, template application, section indexes, the RSS feed, static
+// passthrough, and the output tree (ADR-0072 Phase 4, RUE-1484).
+//
+// RUE-1483 delivered the three text-processing libraries this builds on. What
+// this module adds is everything between "a Markdown file" and "a site": which
+// files exist, what route each one takes, which section it belongs to, what
+// order a section's pages are in, which template renders it, and where the
+// bytes land.
+//
+// THE SHAPE IS ZOLA'S, because the corpus is a Zola site and ADR-0072
+// Decision 3's work-equivalence claim is only honest if the job is the same
+// job:
+//
+//   routes        `_index.md` is its directory's section; `<name>.md` becomes
+//                 `<name>/index.html`; the content root's `_index.md` is `/`
+//   sections      every content directory is a section and MUST carry an
+//                 `_index.md` — a directory without one is a diagnostic, not
+//                 an implicit section, for the same documented-subset reason
+//                 the libraries reject unknown Markdown
+//   ordering      `sort_by = "weight" | "date"`, else content-path order
+//   templates     a page's own `template`, else its section's `page_template`,
+//                 else `page.html`; a section's own `template`, else
+//                 `section.html`
+//   feeds         a section with `generate_feeds = true` emits `rss.xml`
+//                 beside its index
+//   redirects     a section with `redirect_to` emits Zola's redirect stub
+//                 instead of its own index page — see below
+//   static        everything under `static/` is copied to the output root
+//
+// ORDERING TIE-BREAKS ARE TOTAL AND DECLARED. ADR-0072 Decision 2's scale
+// variants duplicate the corpus under path prefixes, so the duplicated
+// sections tie on weight, on title, and on date — every field a comparison
+// would naturally use. Each comparison here therefore ends in the content
+// path, which is unique by construction, so the order is a total order and two
+// runs over the same tree cannot disagree. A missing `weight` sorts last and a
+// missing `date` sorts last, matching Zola's treatment of an absent key rather
+// than defaulting it to zero and quietly promoting the page to the front.
+//
+// NOTHING HERE KNOWS THE CORPUS. No page name, section name, shortcode name,
+// or template name from rue-lang.dev appears in this file; the template set is
+// discovered from the site directory and the shortcodes are resolved by the
+// Markdown library's general `shortcodes/<name>.html` mapping. That is
+// ADR-0072 Decision 3's fairness rule, and it binds the site model exactly as
+// it binds the engine: a build that special-cased the site it was measured on
+// would beat Zola while passing every output check.
+//
+// THE ACTIVE-NAVIGATION DECISION LIVES IN THE TEMPLATES, not here. The
+// production sidebar is a recursive macro gated on a prefix test, and the port
+// in `templates/` keeps it that way: this module hands the engine the section
+// tree and the current page's permalink and nothing else. Flattening the nav
+// host-side would move measured work out of the measured program and would
+// pass every check ADR-0072 Decision 4 defines, which is exactly why the rule
+// is written down rather than left to the validator.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const frontmatter = @import("frontmatter.rue");
+const markdown = @import("markdown.rue");
+const text = @import("text.rue");
+const tmpl_eval = @import("tmpl_eval.rue");
+const tmpl_parse = @import("tmpl_parse.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+const WriteRes = std.result.Result((), std.fs.FileError);
+const DirRes = std.result.Result(std.fs.DirEntries, std.fs.FileError);
+const UnitRes = std.result.Result((), std.fs.FileError);
+
+fn NONE() -> u64 { ast.NONE() }
+
+pub fn SORT_NONE() -> u64 { 0 }
+pub fn SORT_WEIGHT() -> u64 { 1 }
+pub fn SORT_DATE() -> u64 { 2 }
+
+// ---------------------------------------------------------------------------
+// File I/O
+// ---------------------------------------------------------------------------
+
+pub struct FileInput { data: StrBuf, ok: bool }
+
+pub fn read_file(borrow path: StrBuf) -> FileInput {
+    let mut raw = Bytes.new();
+    let mut f = match std.fs.File.open(borrow path) {
+        FileRes.Ok(file) => file,
+        FileRes.Err(_e) => { return FileInput { data: StrBuf.new(), ok: false }; },
+    };
+    let mut ok = true;
+    let chunk: u64 = 65536;
+    loop {
+        raw.reserve(chunk);
+        let n = match f.read(inout raw) {
+            ReadRes.Ok(k) => k,
+            ReadRes.Err(_e) => { ok = false; 0 },
+        };
+        if n == 0 { break; }
+    }
+    let _ = f.close();
+    FileInput { data: StrBuf.from_bytes(borrow raw), ok: ok }
+}
+
+fn write_file(borrow path: StrBuf, borrow body: StrBuf) -> bool {
+    let mut file = match std.fs.File.create(borrow path) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(_e) => { return false; },
+    };
+    let bytes = body.to_bytes();
+    let ok = match file.write_all(borrow bytes) {
+        WriteRes.Ok(_unit) => true,
+        WriteRes.Err(_e) => false,
+    };
+    let _ = file.close();
+    ok
+}
+
+// Everything up to and including the last `/`, or the empty string. Used both
+// for the directory a page belongs to and for the directory an output file
+// needs created before it can be written.
+fn dir_of(borrow path: StrBuf) -> StrBuf {
+    let mut i = path.len();
+    while i > 0 {
+        if text.byte_of(borrow path, i - 1) == 47 { return text.slice(borrow path, 0, i); }
+        i -= 1;
+    }
+    StrBuf.new()
+}
+
+fn join_path(borrow base: StrBuf, borrow rest: StrBuf) -> StrBuf {
+    let mut out = text.slice(borrow base, 0, base.len());
+    if out.len() > 0 && text.byte_of(borrow out, out.len() - 1) != 47 { out.push(47); }
+    out.append_borrowed(borrow rest);
+    out
+}
+
+// Write `body` to `path`, creating the directories above it first. Output
+// directories are created on demand rather than pre-computed because the route
+// set is not known until discovery has run, and `create_dir_all` is idempotent.
+fn write_output(borrow path: StrBuf, borrow body: StrBuf) -> bool {
+    let parent = dir_of(borrow path);
+    if parent.len() > 0 {
+        let trimmed = text.slice(borrow parent, 0, parent.len() - 1);
+        match std.fs.create_dir_all(borrow trimmed) {
+            UnitRes.Ok(_u) => {},
+            UnitRes.Err(_e) => { return false; },
+        }
+    }
+    write_file(borrow path, borrow body)
+}
+
+// ---------------------------------------------------------------------------
+// The model
+// ---------------------------------------------------------------------------
+
+// Every key the site model interns, done once. Interning inside the render
+// loops would hash the same dozen names once per page; at ADR-0072's 100x
+// scale variant that is nine thousand repetitions of a constant.
+pub struct Keys {
+    title: u64,
+    date: u64,
+    weight: u64,
+    description: u64,
+    extra: u64,
+    template: u64,
+    page_template: u64,
+    sort_by: u64,
+    generate_feeds: u64,
+    redirect_to: u64,
+    content: u64,
+    permalink: u64,
+    path: u64,
+    summary: u64,
+    pages: u64,
+    subsections: u64,
+    lower: u64,
+    higher: u64,
+    page: u64,
+    section: u64,
+    config: u64,
+    url: u64,
+    feed_url: u64,
+    sections_global: u64,
+    page_url_global: u64,
+    base_url_global: u64,
+}
+
+fn intern_keys(inout eng: ast.Engine) -> Keys {
+    Keys {
+        title: eng.key("title"),
+        date: eng.key("date"),
+        weight: eng.key("weight"),
+        description: eng.key("description"),
+        extra: eng.key("extra"),
+        template: eng.key("template"),
+        page_template: eng.key("page_template"),
+        sort_by: eng.key("sort_by"),
+        generate_feeds: eng.key("generate_feeds"),
+        redirect_to: eng.key("redirect_to"),
+        content: eng.key("content"),
+        permalink: eng.key("permalink"),
+        path: eng.key("path"),
+        summary: eng.key("summary"),
+        pages: eng.key("pages"),
+        subsections: eng.key("subsections"),
+        lower: eng.key("lower"),
+        higher: eng.key("higher"),
+        page: eng.key("page"),
+        section: eng.key("section"),
+        config: eng.key("config"),
+        url: eng.key("url"),
+        feed_url: eng.key("feed_url"),
+        sections_global: eng.key("__sections"),
+        page_url_global: eng.key("__page_url"),
+        base_url_global: eng.key("__base_url"),
+    }
+}
+
+// One content file. String fields are pool ids, so a duplicated corpus costs
+// one copy of each distinct path component rather than one per page.
+pub struct Page {
+    rel: u64,
+    route: u64,
+    permalink: u64,
+    source: u64,
+    front: u64,
+    body_start: u64,
+    body_line: u64,
+    section: u64,
+    is_index: bool,
+    weight: u64,
+    template: u64,
+    content: u64,
+    summary: u64,
+    entry: u64,
+    object: u64,
+}
+
+pub fn empty_page() -> Page {
+    Page {
+        rel: NONE(), route: NONE(), permalink: NONE(), source: NONE(), front: NONE(),
+        body_start: 0, body_line: 1, section: NONE(), is_index: false, weight: NONE(),
+        template: NONE(), content: NONE(), summary: NONE(), entry: NONE(), object: NONE(),
+    }
+}
+
+// One section: its `_index.md`, its place in the tree, and the ranges of
+// `section_pages` / `section_subs` holding its sorted children.
+pub struct Section {
+    page: u64,
+    key: u64,
+    dir: u64,
+    parent: u64,
+    sort_by: u64,
+    generate_feeds: bool,
+    redirect_to: u64,
+    page_start: u64,
+    page_count: u64,
+    sub_start: u64,
+    sub_count: u64,
+    object: u64,
+}
+
+pub fn empty_section() -> Section {
+    Section {
+        page: NONE(), key: NONE(), dir: NONE(), parent: NONE(), sort_by: SORT_NONE(),
+        generate_feeds: false, redirect_to: NONE(), page_start: 0, page_count: 0,
+        sub_start: 0, sub_count: 0, object: NONE(),
+    }
+}
+
+pub const Pages = std.arraybuf.ArrayBuf(Page);
+pub const Sections = std.arraybuf.ArrayBuf(Section);
+
+pub struct Site {
+    keys: Keys,
+    pages: Pages,
+    sections: Sections,
+    section_pages: value.U64s,
+    section_subs: value.U64s,
+    // Section directory pool ids, ascending, with the parallel section index.
+    // Two identical directory strings intern to the same id, so an EQUALITY
+    // lookup is a binary search over integers — which keeps assigning nine
+    // thousand pages to fourteen hundred sections linearithmic rather than the
+    // product of the two.
+    dir_ids: value.U64s,
+    dir_index: value.U64s,
+    config: u64,
+    root: StrBuf,
+    content_root: StrBuf,
+    output_root: StrBuf,
+    pages_rendered: u64,
+    files_written: u64,
+    // `--list` records every emitted path, in emission order. Off by default:
+    // at ADR-0072's 100x scale that is nine and a half thousand lines of
+    // stdout, which would be measured work in a run that exists to measure the
+    // build. It is what makes the emitted file set assertable from a CLI test.
+    list: bool,
+    listing: StrBuf,
+
+    fn new() -> Self {
+        Self {
+            keys: Keys {
+                title: 0, date: 0, weight: 0, description: 0, extra: 0, template: 0,
+                page_template: 0, sort_by: 0, generate_feeds: 0, redirect_to: 0,
+                content: 0, permalink: 0, path: 0, summary: 0, pages: 0,
+                subsections: 0, lower: 0, higher: 0, page: 0, section: 0, config: 0,
+                url: 0, feed_url: 0, sections_global: 0, page_url_global: 0,
+                base_url_global: 0,
+            },
+            pages: Pages.new(),
+            sections: Sections.new(),
+            section_pages: value.U64s.new(),
+            section_subs: value.U64s.new(),
+            dir_ids: value.U64s.new(),
+            dir_index: value.U64s.new(),
+            config: 0,
+            root: StrBuf.new(),
+            content_root: StrBuf.new(),
+            output_root: StrBuf.new(),
+            pages_rendered: 0,
+            files_written: 0,
+            list: false,
+            listing: StrBuf.new(),
+        }
+    }
+
+    fn page_at(borrow self, i: u64) -> Page { self.pages.get_or(i, empty_page()) }
+    fn section_at(borrow self, i: u64) -> Section { self.sections.get_or(i, empty_section()) }
+}
+
+fn fail(inout eng: ast.Engine, detail: StrBuf, subject: u64) {
+    eng.error(value.E_TEMPLATE(), 0, detail, subject);
+}
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+// Read `config.toml` and bind the globals every later stage reads. The site's
+// base URL is the one input the route model cannot derive, so a config that
+// fails to parse stops the build here rather than producing a site of relative
+// links that happen to work locally.
+fn load_config(inout site: Site, inout eng: ast.Engine) -> bool {
+    let path = join_path(borrow site.root, borrow "config.toml");
+    let input = read_file(borrow path);
+    if !input.ok {
+        let subject = eng.arena.strings.intern(borrow path);
+        fail(inout eng, "cannot read the site configuration", subject);
+        return false;
+    }
+    let parsed = frontmatter.parse_document(inout eng.arena, borrow input.data);
+    site.config = parsed.root;
+    if !parsed.ok { return false; }
+
+    let base_url_key = eng.key("base_url");
+    let base = eng.arena.map_get(site.config, base_url_key);
+    if eng.arena.tag(base) != value.V_STR() {
+        fail(inout eng, "the site configuration has no `base_url` string", NONE());
+        return false;
+    }
+    let base_text = eng.arena.scalar(base);
+    let base_value = eng.arena.string(borrow base_text);
+    eng.set_global(site.keys.base_url_global, base_value);
+    eng.set_global(site.keys.config, site.config);
+    true
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+// Register every template in `templates/` under the name content and other
+// templates refer to it by — its path relative to that directory, which is
+// exactly Zola's rule. The walk is `std.fs`'s deterministic one, so a template
+// set is registered in the same order on every machine.
+fn load_templates(inout site: Site, inout eng: ast.Engine) -> bool {
+    let root = join_path(borrow site.root, borrow "templates");
+    let entries = match std.fs.walk(borrow root) {
+        DirRes.Ok(list) => list,
+        DirRes.Err(_e) => {
+            let subject = eng.arena.strings.intern(borrow root);
+            fail(inout eng, "cannot read the template directory", subject);
+            return false;
+        },
+    };
+    let prefix = root.len() + 1;
+    let mut i: u64 = 0;
+    let mut ok = true;
+    while i < entries.len() {
+        if entries.is_file(i) {
+            let path = entries.path(i);
+            if path.ends_with(borrow ".html") || path.ends_with(borrow ".xml") {
+                let name = text.slice(borrow path, prefix, path.len());
+                let input = read_file(borrow path);
+                if !input.ok {
+                    let subject = eng.arena.strings.intern(borrow path);
+                    fail(inout eng, "cannot read a template", subject);
+                    ok = false;
+                } else {
+                    let _ = tmpl_parse.parse_template(inout eng, name, borrow input.data);
+                }
+            }
+        }
+        i += 1;
+    }
+    ok
+}
+
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
+
+// Read every `.md` file under `content/`, parse its front matter, and record
+// the route it takes. `content_route` is the same function the Markdown link
+// renderer uses to resolve a `@/…` destination, so a link to a page and the
+// page's own route cannot disagree.
+fn discover(inout site: Site, inout eng: ast.Engine) -> bool {
+    let entries = match std.fs.walk(borrow site.content_root) {
+        DirRes.Ok(list) => list,
+        DirRes.Err(_e) => {
+            let subject = eng.arena.strings.intern(borrow site.content_root);
+            fail(inout eng, "cannot read the content directory", subject);
+            return false;
+        },
+    };
+    let prefix = site.content_root.len() + 1;
+    let mut i: u64 = 0;
+    let mut ok = true;
+    while i < entries.len() {
+        if entries.is_file(i) {
+            let path = entries.path(i);
+            if path.ends_with(borrow ".md") {
+                let rel = text.slice(borrow path, prefix, path.len());
+                let input = read_file(borrow path);
+                if !input.ok {
+                    let subject = eng.arena.strings.intern(borrow path);
+                    fail(inout eng, "cannot read a content file", subject);
+                    ok = false;
+                } else {
+                    if !add_page(inout site, inout eng, borrow rel, borrow input.data) { ok = false; }
+                }
+            }
+        }
+        i += 1;
+    }
+    if site.pages.len() == 0 {
+        fail(inout eng, "the content directory holds no Markdown", NONE());
+        return false;
+    }
+    ok
+}
+
+fn add_page(inout site: Site, inout eng: ast.Engine, borrow rel: StrBuf, borrow source: StrBuf) -> bool {
+    let front = frontmatter.parse(inout eng.arena, borrow source);
+    let route = tmpl_eval.content_route(borrow rel, 0);
+    let permalink = tmpl_eval.join_base(inout eng, borrow route);
+
+    let rel_id = eng.arena.strings.intern(borrow rel);
+    let route_id = eng.arena.strings.intern(borrow route);
+    let permalink_id = eng.arena.strings.intern(borrow permalink);
+    let source_id = eng.arena.strings.intern(borrow source);
+
+    let is_index = rel.ends_with(borrow "_index.md");
+    let weight_value = eng.arena.map_get(front.root, site.keys.weight);
+    let weight = if eng.arena.tag(weight_value) == value.V_INT() {
+        eng.arena.at(weight_value).num
+    } else {
+        // Absent, so it sorts last rather than as a zero that would silently
+        // promote the page to the front of a weighted section.
+        NONE()
+    };
+
+    site.pages.push(Page {
+        rel: rel_id,
+        route: route_id,
+        permalink: permalink_id,
+        source: source_id,
+        front: front.root,
+        body_start: front.body_start,
+        body_line: front.body_line,
+        section: NONE(),
+        is_index: is_index,
+        weight: weight,
+        template: NONE(),
+        content: NONE(),
+        summary: NONE(),
+        entry: NONE(),
+        object: NONE(),
+    });
+    front.ok
+}
+
+// ---------------------------------------------------------------------------
+// The section tree
+// ---------------------------------------------------------------------------
+
+fn sort_kind(inout eng: ast.Engine, front: u64, key: u64) -> u64 {
+    let v = eng.arena.map_get(front, key);
+    if eng.arena.tag(v) != value.V_STR() { return SORT_NONE(); }
+    if eng.arena.strings.equals_literal(eng.arena.at(v).num, "weight") { return SORT_WEIGHT(); }
+    if eng.arena.strings.equals_literal(eng.arena.at(v).num, "date") { return SORT_DATE(); }
+    if eng.arena.strings.equals_literal(eng.arena.at(v).num, "none") { return SORT_NONE(); }
+    let subject = eng.arena.at(v).num;
+    fail(inout eng, "sort_by is outside the subset (weight, date, none)", subject);
+    SORT_NONE()
+}
+
+// Build one section per `_index.md`, then link every section and every page to
+// its directory. A content directory with no `_index.md` is REFUSED rather
+// than turned into an implicit section: gazette's whole discipline is that
+// content outside the documented subset breaks the build visibly, and an
+// implicit section would silently change a page's ordering and its template.
+fn build_sections(inout site: Site, inout eng: ast.Engine) -> bool {
+    let mut ok = true;
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        if page.is_index {
+            let key = page.rel;
+            let dir = page.route;
+            let front = page.front;
+            let redirect_value = eng.arena.map_get(front, site.keys.redirect_to);
+            let redirect = if eng.arena.tag(redirect_value) == value.V_STR() {
+                eng.arena.at(redirect_value).num
+            } else {
+                NONE()
+            };
+            let feeds_value = eng.arena.map_get(front, site.keys.generate_feeds);
+            let feeds = eng.arena.truthy(feeds_value);
+            let kind = sort_kind(inout eng, front, site.keys.sort_by);
+            site.sections.push(Section {
+                page: i,
+                key: key,
+                dir: dir,
+                parent: NONE(),
+                sort_by: kind,
+                generate_feeds: feeds,
+                redirect_to: redirect,
+                page_start: 0, page_count: 0, sub_start: 0, sub_count: 0,
+                object: NONE(),
+            });
+        }
+        i += 1;
+    }
+
+    build_dir_index(inout site);
+
+    // Parents, by the directory one level up. The root section's directory is
+    // the empty string and has no parent.
+    let mut s: u64 = 0;
+    while s < site.sections.len() {
+        let mut section = site.section_at(s);
+        let dir = eng.arena.strings.copy(section.dir);
+        if dir.len() > 0 {
+            let above = parent_dir(borrow dir);
+            let above_id = eng.arena.strings.intern(borrow above);
+            let parent = find_section_for_dir(borrow site, above_id);
+            if parent == NONE() {
+                fail(inout eng, "a content directory above this section has no `_index.md`", section.dir);
+                ok = false;
+            }
+            section.parent = parent;
+            site.sections.set(s, section);
+        }
+        s += 1;
+    }
+
+    // Pages, by their own directory.
+    let mut p: u64 = 0;
+    while p < site.pages.len() {
+        let mut page = site.page_at(p);
+        let rel = eng.arena.strings.copy(page.rel);
+        let dir = dir_of(borrow rel);
+        let dir_id = eng.arena.strings.intern(borrow dir);
+        let owner = find_section_for_dir(borrow site, dir_id);
+        if owner == NONE() {
+            fail(inout eng, "this content directory has no `_index.md`", page.rel);
+            ok = false;
+        }
+        page.section = owner;
+        site.pages.set(p, page);
+        p += 1;
+    }
+    ok
+}
+
+// `spec/03-types/` -> `spec/`; `spec/` -> ``.
+fn parent_dir(borrow dir: StrBuf) -> StrBuf {
+    if dir.len() == 0 { return StrBuf.new(); }
+    let inner = text.slice(borrow dir, 0, dir.len() - 1);
+    dir_of(borrow inner)
+}
+
+// Sort the section directory ids so the per-page lookup is a binary search.
+fn build_dir_index(inout site: Site) {
+    let mut ids = value.U64s.new();
+    let mut index = value.U64s.new();
+    let mut i: u64 = 0;
+    while i < site.sections.len() {
+        ids.push(site.section_at(i).dir);
+        index.push(i);
+        i += 1;
+    }
+    let mut k: u64 = 1;
+    while k < ids.len() {
+        let id = ids.get_or(k, 0);
+        let at = index.get_or(k, 0);
+        let mut j = k;
+        while j > 0 && ids.get_or(j - 1, 0) > id {
+            ids.set(j, ids.get_or(j - 1, 0));
+            index.set(j, index.get_or(j - 1, 0));
+            j -= 1;
+        }
+        ids.set(j, id);
+        index.set(j, at);
+        k += 1;
+    }
+    site.dir_ids = ids;
+    site.dir_index = index;
+}
+
+fn find_section_for_dir(borrow site: Site, dir_id: u64) -> u64 {
+    let mut low: u64 = 0;
+    let mut high = site.dir_ids.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let probe = site.dir_ids.get_or(mid, 0);
+        if probe == dir_id { return site.dir_index.get_or(mid, NONE()); }
+        if probe < dir_id { low = mid + 1; } else { high = mid; }
+    }
+    NONE()
+}
+
+// ---------------------------------------------------------------------------
+// Ordering
+// ---------------------------------------------------------------------------
+
+// Whether page `a` sorts before page `b` under `kind`. Every branch ends in
+// the content path, which is unique, so this is a total order and the scale
+// variants' ties on weight, title, and date cannot make the result depend on
+// discovery order.
+fn page_before(borrow site: Site, borrow eng: ast.Engine, a: u64, b: u64, kind: u64) -> bool {
+    let pa = site.page_at(a);
+    let pb = site.page_at(b);
+    if kind == SORT_WEIGHT() {
+        if pa.weight != pb.weight { return pa.weight < pb.weight; }
+    } else if kind == SORT_DATE() {
+        let da = date_id(borrow site, borrow eng, a);
+        let db = date_id(borrow site, borrow eng, b);
+        let order = eng.arena.strings.compare(da, db);
+        // Newest first, and an absent date is the empty string, which compares
+        // below every real date and therefore lands last.
+        if order != 1 { return order == 2; }
+    }
+    eng.arena.strings.compare(pa.rel, pb.rel) == 0
+}
+
+fn date_id(borrow site: Site, borrow eng: ast.Engine, index: u64) -> u64 {
+    let page = site.page_at(index);
+    let v = eng.arena.map_get(page.front, site.keys.date);
+    if eng.arena.tag(v) != value.V_STR() { return eng.arena.empty_string; }
+    eng.arena.at(v).num
+}
+
+fn sort_pages(borrow site: Site, borrow eng: ast.Engine, inout list: value.U64s, kind: u64) {
+    let mut k: u64 = 1;
+    while k < list.len() {
+        let current = list.get_or(k, 0);
+        let mut j = k;
+        while j > 0 {
+            let prior = list.get_or(j - 1, 0);
+            if !page_before(borrow site, borrow eng, current, prior, kind) { break; }
+            list.set(j, prior);
+            j -= 1;
+        }
+        list.set(j, current);
+        k += 1;
+    }
+}
+
+// Bucket a list of owners into contiguous per-owner ranges in ONE pass, by
+// counting sort: `owner_of` is already recorded on every element, so a second
+// pass over every element per owner is avoidable and must be avoided. Scanning
+// all pages once per section is quadratic IN THE CORPUS — fifteen sections over
+// ninety-five pages is nothing, but ADR-0072's 100x variant is fifteen hundred
+// sections over nine and a half thousand pages, and this program is the thing
+// being measured, so a scan that grows with the product of the two would be
+// measuring the harness's accident rather than the language.
+struct Buckets { starts: value.U64s, items: value.U64s }
+
+fn bucket_by_owner(borrow owners: value.U64s, groups: u64) -> Buckets {
+    let mut counts = value.U64s.new();
+    let mut i: u64 = 0;
+    while i < groups { counts.push(0); i += 1; }
+    let mut e: u64 = 0;
+    while e < owners.len() {
+        let owner = owners.get_or(e, NONE());
+        if owner != NONE() { counts.set(owner, counts.get_or(owner, 0) + 1); }
+        e += 1;
+    }
+    let mut starts = value.U64s.new();
+    let mut cursors = value.U64s.new();
+    let mut running: u64 = 0;
+    let mut g: u64 = 0;
+    while g < groups {
+        starts.push(running);
+        cursors.push(running);
+        running += counts.get_or(g, 0);
+        g += 1;
+    }
+    starts.push(running);
+
+    let mut items = value.U64s.new();
+    let mut k: u64 = 0;
+    while k < running { items.push(NONE()); k += 1; }
+    let mut f: u64 = 0;
+    while f < owners.len() {
+        let owner = owners.get_or(f, NONE());
+        if owner != NONE() {
+            let at = cursors.get_or(owner, 0);
+            items.set(at, f);
+            cursors.set(owner, at + 1);
+        }
+        f += 1;
+    }
+    Buckets { starts: starts, items: items }
+}
+
+// Collect and sort each section's direct pages and subsections.
+fn order_sections(inout site: Site, inout eng: ast.Engine) {
+    let count = site.sections.len();
+
+    let mut page_owner = value.U64s.new();
+    let mut p: u64 = 0;
+    while p < site.pages.len() {
+        let page = site.page_at(p);
+        page_owner.push(if page.is_index { NONE() } else { page.section });
+        p += 1;
+    }
+    let by_section = bucket_by_owner(borrow page_owner, count);
+
+    let mut sub_owner = value.U64s.new();
+    let mut c: u64 = 0;
+    while c < count { sub_owner.push(site.section_at(c).parent); c += 1; }
+    let by_parent = bucket_by_owner(borrow sub_owner, count);
+
+    let mut s: u64 = 0;
+    while s < count {
+        let mut section = site.section_at(s);
+
+        let mut own = value.U64s.new();
+        let mut i = by_section.starts.get_or(s, 0);
+        let page_end = by_section.starts.get_or(s + 1, 0);
+        while i < page_end { own.push(by_section.items.get_or(i, NONE())); i += 1; }
+        sort_pages(borrow site, borrow eng, inout own, section.sort_by);
+        section.page_start = site.section_pages.len();
+        section.page_count = own.len();
+        let mut a: u64 = 0;
+        while a < own.len() { site.section_pages.push(own.get_or(a, 0)); a += 1; }
+
+        let mut subs = value.U64s.new();
+        let mut j = by_parent.starts.get_or(s, 0);
+        let sub_end = by_parent.starts.get_or(s + 1, 0);
+        while j < sub_end { subs.push(by_parent.items.get_or(j, NONE())); j += 1; }
+        sort_subsections(borrow site, borrow eng, inout subs);
+        section.sub_start = site.section_subs.len();
+        section.sub_count = subs.len();
+        let mut b: u64 = 0;
+        while b < subs.len() { site.section_subs.push(subs.get_or(b, 0)); b += 1; }
+
+        site.sections.set(s, section);
+        s += 1;
+    }
+}
+
+// Subsections order by their content path, which is what Zola does and what
+// the numbered specification chapters rely on.
+fn sort_subsections(borrow site: Site, borrow eng: ast.Engine, inout list: value.U64s) {
+    let mut k: u64 = 1;
+    while k < list.len() {
+        let current = list.get_or(k, 0);
+        let current_key = site.section_at(current).key;
+        let mut j = k;
+        while j > 0 {
+            let prior = list.get_or(j - 1, 0);
+            let prior_key = site.section_at(prior).key;
+            if eng.arena.strings.compare(prior_key, current_key) != 2 { break; }
+            list.set(j, prior);
+            j -= 1;
+        }
+        list.set(j, current);
+        k += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Markdown
+// ---------------------------------------------------------------------------
+
+// Render every page's body once. Section index templates show their pages'
+// summaries, so every body must be rendered before any template runs.
+fn render_bodies(inout site: Site, inout eng: ast.Engine) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let mut page = site.page_at(i);
+        let permalink = eng.arena.strings.copy(page.permalink);
+        let url_value = eng.arena.string(borrow permalink);
+        eng.set_global(site.keys.page_url_global, url_value);
+
+        let source = eng.arena.strings.copy(page.source);
+        let expanded = markdown.expand_shortcodes(
+            inout eng, borrow source, page.body_start, page.body_line,
+        );
+        let doc = markdown.render(inout eng, borrow expanded, page.body_line);
+        page.content = eng.arena.string(borrow doc.html);
+        // Zola's `page.summary` exists only when the body carries a
+        // `<!-- more -->` marker; the templates gate on its presence, so a
+        // whole-body fallback would print every post in full on the index.
+        if doc.summary_end < doc.html.len() {
+            let cut = text.slice(borrow doc.html, 0, doc.summary_end);
+            page.summary = eng.arena.string(borrow cut);
+        } else {
+            page.summary = eng.arena.null();
+        }
+        site.pages.set(i, page);
+        i += 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Template-visible objects
+// ---------------------------------------------------------------------------
+
+fn copy_front(inout eng: ast.Engine, front: u64, inout fields: value.Entries) {
+    let mut i: u64 = 0;
+    while i < eng.arena.length(front) {
+        fields.push(eng.arena.entry_at(front, i));
+        i += 1;
+    }
+}
+
+fn put(inout fields: value.Entries, key: u64, v: u64) {
+    fields.push(value.Entry { key: key, value: v });
+}
+
+// The lightweight object a page presents to OTHER pages: what a section index,
+// a feed entry, and a prev/next link read. It deliberately carries no `lower`,
+// `higher`, or `content`, which is also what keeps the object graph finite —
+// a page's neighbour holding the page holding the neighbour has no end.
+fn build_entry(inout site: Site, inout eng: ast.Engine, index: u64) -> u64 {
+    let page = site.page_at(index);
+    let mut fields = value.Entries.new();
+    copy_front(inout eng, page.front, inout fields);
+    let permalink = eng.arena.string_id(page.permalink);
+    put(inout fields, site.keys.permalink, permalink);
+    let route = eng.arena.strings.copy(page.route);
+    let mut path = StrBuf.new();
+    path.push(47);
+    path.append_borrowed(borrow route);
+    let path_value = eng.arena.string(borrow path);
+    put(inout fields, site.keys.path, path_value);
+    put(inout fields, site.keys.summary, page.summary);
+    eng.arena.map(borrow fields)
+}
+
+// The object bound as `page` while its own template renders: everything the
+// entry has, plus the rendered body and the ordered neighbours.
+fn build_object(inout site: Site, inout eng: ast.Engine, index: u64, lower: u64, higher: u64) -> u64 {
+    let page = site.page_at(index);
+    let mut fields = value.Entries.new();
+    copy_front(inout eng, page.front, inout fields);
+    let permalink = eng.arena.string_id(page.permalink);
+    put(inout fields, site.keys.permalink, permalink);
+    let route = eng.arena.strings.copy(page.route);
+    let mut path = StrBuf.new();
+    path.push(47);
+    path.append_borrowed(borrow route);
+    let path_value = eng.arena.string(borrow path);
+    put(inout fields, site.keys.path, path_value);
+    put(inout fields, site.keys.summary, page.summary);
+    put(inout fields, site.keys.content, page.content);
+    put(inout fields, site.keys.lower, lower);
+    put(inout fields, site.keys.higher, higher);
+    eng.arena.map(borrow fields)
+}
+
+// Build every page entry, then every page object, then every section object,
+// then the `__sections` map `get_section` reads. The order is forced: an entry
+// is an input to the section that lists it, and a section object is an input
+// to the navigation macro that walks it.
+fn build_objects(inout site: Site, inout eng: ast.Engine) {
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let mut page = site.page_at(i);
+        page.entry = build_entry(inout site, inout eng, i);
+        site.pages.set(i, page);
+        i += 1;
+    }
+
+    let mut s: u64 = 0;
+    while s < site.sections.len() {
+        let section = site.section_at(s);
+        let mut k: u64 = 0;
+        while k < section.page_count {
+            let index = site.section_pages.get_or(section.page_start + k, NONE());
+            let lower = if k == 0 {
+                eng.arena.null()
+            } else {
+                let before = site.section_pages.get_or(section.page_start + k - 1, NONE());
+                site.page_at(before).entry
+            };
+            let higher = if k + 1 == section.page_count {
+                eng.arena.null()
+            } else {
+                let after = site.section_pages.get_or(section.page_start + k + 1, NONE());
+                site.page_at(after).entry
+            };
+            let mut page = site.page_at(index);
+            page.object = build_object(inout site, inout eng, index, lower, higher);
+            site.pages.set(index, page);
+            k += 1;
+        }
+        s += 1;
+    }
+
+    let mut sections_map = value.Entries.new();
+    let mut t: u64 = 0;
+    while t < site.sections.len() {
+        let mut section = site.section_at(t);
+        section.object = build_section_object(borrow site, inout eng, t);
+        let key = section.key;
+        let object = section.object;
+        site.sections.set(t, section);
+        put(inout sections_map, key, object);
+        t += 1;
+    }
+    let sections_value = eng.arena.map(borrow sections_map);
+    eng.set_global(site.keys.sections_global, sections_value);
+}
+
+fn build_section_object(borrow site: Site, inout eng: ast.Engine, index: u64) -> u64 {
+    let section = site.section_at(index);
+    let page = site.page_at(section.page);
+    let mut fields = value.Entries.new();
+    copy_front(inout eng, page.front, inout fields);
+    let permalink = eng.arena.string_id(page.permalink);
+    put(inout fields, site.keys.permalink, permalink);
+    let route = eng.arena.strings.copy(page.route);
+    let mut path = StrBuf.new();
+    path.push(47);
+    path.append_borrowed(borrow route);
+    let path_value = eng.arena.string(borrow path);
+    put(inout fields, site.keys.path, path_value);
+    put(inout fields, site.keys.content, page.content);
+
+    let mut listed = value.U64s.new();
+    let mut k: u64 = 0;
+    while k < section.page_count {
+        let child = site.section_pages.get_or(section.page_start + k, NONE());
+        listed.push(site.page_at(child).entry);
+        k += 1;
+    }
+    let pages_value = eng.arena.array(borrow listed);
+    put(inout fields, site.keys.pages, pages_value);
+
+    // Subsections are content PATHS, not objects, exactly as Zola presents
+    // them: the production sidebar reads `section.subsections | sort` and
+    // resolves each one with `get_section`, and the port keeps that shape so
+    // the same lookup work happens in both tools.
+    let mut subs = value.U64s.new();
+    let mut j: u64 = 0;
+    while j < section.sub_count {
+        let child = site.section_subs.get_or(section.sub_start + j, NONE());
+        let key = site.section_at(child).key;
+        subs.push(eng.arena.string_id(key));
+        j += 1;
+    }
+    let subs_value = eng.arena.array(borrow subs);
+    put(inout fields, site.keys.subsections, subs_value);
+    eng.arena.map(borrow fields)
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+fn output_path(borrow site: Site, borrow eng: ast.Engine, route_id: u64, name: StrBuf) -> StrBuf {
+    let route = eng.arena.strings.copy(route_id);
+    let mut path = join_path(borrow site.output_root, borrow route);
+    if path.len() > 0 && text.byte_of(borrow path, path.len() - 1) != 47 { path.push(47); }
+    path.push_str(name);
+    path
+}
+
+fn render_named(inout site: Site, inout eng: ast.Engine, name: u64, route: u64, file: StrBuf) -> bool {
+    let mut out = StrBuf.new();
+    if !tmpl_eval.render(inout eng, name, inout out) { return false; }
+    // Only when listing: this runs once per emitted file, and an unconditional
+    // copy would be an allocation the measured build pays nine thousand times
+    // for a flag it was not given.
+    let listed = if site.list { file.clone() } else { StrBuf.new() };
+    let path = output_path(borrow site, borrow eng, route, file);
+    if !write_output(borrow path, borrow out) {
+        let subject = eng.arena.strings.intern(borrow path);
+        fail(inout eng, "cannot write an output file", subject);
+        return false;
+    }
+    site.files_written += 1;
+    if site.list {
+        let route_text = eng.arena.strings.copy(route);
+        site.listing.append_borrowed(borrow route_text);
+        site.listing.push_str(listed);
+        site.listing.push_str("\n");
+    }
+    true
+}
+
+// A page's template: its own `template`, else its section's `page_template`,
+// else `page.html`. A section's is its own `template`, else `section.html`.
+fn template_for(inout site: Site, inout eng: ast.Engine, index: u64) -> u64 {
+    let page = site.page_at(index);
+    let own = eng.arena.map_get(page.front, site.keys.template);
+    if eng.arena.tag(own) == value.V_STR() { return eng.arena.at(own).num; }
+    if page.is_index { return eng.key("section.html"); }
+    if page.section != NONE() {
+        let owner = site.section_at(page.section);
+        let owner_page = site.page_at(owner.page);
+        let inherited = eng.arena.map_get(owner_page.front, site.keys.page_template);
+        if eng.arena.tag(inherited) == value.V_STR() { return eng.arena.at(inherited).num; }
+    }
+    eng.key("page.html")
+}
+
+fn bind_page(inout site: Site, inout eng: ast.Engine, page_value: u64, section_value: u64, url: u64) {
+    eng.set_global(site.keys.page, page_value);
+    eng.set_global(site.keys.section, section_value);
+    eng.set_global(site.keys.page_url_global, url);
+}
+
+// Render every page and every section index, then every feed.
+fn emit(inout site: Site, inout eng: ast.Engine) -> bool {
+    let mut ok = true;
+    let null = eng.arena.null();
+
+    let mut i: u64 = 0;
+    while i < site.pages.len() {
+        let page = site.page_at(i);
+        if !page.is_index {
+            let name = template_for(inout site, inout eng, i);
+            if eng.find_template(name) == NONE() {
+                fail(inout eng, "a page names a template the site does not have", name);
+                ok = false;
+            } else {
+                let url = eng.arena.string_id(page.permalink);
+                bind_page(inout site, inout eng, page.object, null, url);
+                if !render_named(inout site, inout eng, name, page.route, "index.html") { ok = false; }
+                site.pages_rendered += 1;
+            }
+        }
+        i += 1;
+    }
+
+    let mut s: u64 = 0;
+    while s < site.sections.len() {
+        let section = site.section_at(s);
+        let page = site.page_at(section.page);
+        let url = eng.arena.string_id(page.permalink);
+        if section.redirect_to != NONE() {
+            if !emit_redirect(inout site, inout eng, s) { ok = false; }
+        } else {
+            let name = template_for(inout site, inout eng, section.page);
+            if eng.find_template(name) == NONE() {
+                fail(inout eng, "a section names a template the site does not have", name);
+                ok = false;
+            } else {
+                bind_page(inout site, inout eng, null, section.object, url);
+                if !render_named(inout site, inout eng, name, page.route, "index.html") { ok = false; }
+            }
+        }
+        if section.generate_feeds {
+            if !emit_feed(inout site, inout eng, s) { ok = false; }
+        }
+        s += 1;
+    }
+    ok
+}
+
+// A `redirect_to` section emits Zola's redirect stub in place of its own index
+// page, and its pages and subsections still render.
+//
+// ADR-0072 left this undecided and RUE-1483 neither honoured nor rejected it,
+// which made `spec/_index.md` the one page the corpus differential had to
+// exclude. Honouring it is the choice that keeps the emitted FILE SET equal to
+// Zola's, which is Decision 4's cross-tool criterion: refusing the key would
+// leave gazette one output file short of every peer, and rendering the section
+// normally would put a page at a route Zola serves a redirect from. The stub's
+// markup is the port's `redirect.html`, so the decision is visible in a
+// template rather than buried in host code, and the URL resolves through the
+// same `@/…`-aware join every other link uses.
+fn emit_redirect(inout site: Site, inout eng: ast.Engine, index: u64) -> bool {
+    let section = site.section_at(index);
+    let page = site.page_at(section.page);
+    let name = eng.key("redirect.html");
+    if eng.find_template(name) == NONE() {
+        fail(inout eng, "a section sets `redirect_to` but the site has no `redirect.html`", section.key);
+        return false;
+    }
+    let target = eng.arena.strings.copy(section.redirect_to);
+    let mut resolved = tmpl_eval.join_base(inout eng, borrow target);
+    if resolved.len() > 0 && text.byte_of(borrow resolved, resolved.len() - 1) != 47 { resolved.push(47); }
+    let url_value = eng.arena.string(borrow resolved);
+    eng.push_scope();
+    eng.bind(site.keys.url, url_value);
+    let rendered = render_named(inout site, inout eng, name, page.route, "index.html");
+    eng.pop_scope();
+    rendered
+}
+
+// A section's feed. The template is the port's `rss.xml`; nothing in it varies
+// with the clock, which is what lets ADR-0072 Decision 4's determinism check
+// hold byte-exactly over repeated samples. Gazette has no clock to read, so
+// this is a property of the port rather than a stripping step.
+fn emit_feed(inout site: Site, inout eng: ast.Engine, index: u64) -> bool {
+    let section = site.section_at(index);
+    let page = site.page_at(section.page);
+    let name = eng.key("rss.xml");
+    if eng.find_template(name) == NONE() {
+        fail(inout eng, "a section sets `generate_feeds` but the site has no `rss.xml`", section.key);
+        return false;
+    }
+    let mut listed = value.U64s.new();
+    let mut k: u64 = 0;
+    while k < section.page_count {
+        let child = site.section_pages.get_or(section.page_start + k, NONE());
+        listed.push(site.page_at(child).entry);
+        k += 1;
+    }
+    let pages_value = eng.arena.array(borrow listed);
+    let feed_path = output_feed_url(borrow site, inout eng, page.route);
+    let null = eng.arena.null();
+    let url = eng.arena.string_id(page.permalink);
+    bind_page(inout site, inout eng, null, section.object, url);
+    eng.push_scope();
+    eng.bind(site.keys.pages, pages_value);
+    eng.bind(site.keys.feed_url, feed_path);
+    let rendered = render_named(inout site, inout eng, name, page.route, "rss.xml");
+    eng.pop_scope();
+    rendered
+}
+
+fn output_feed_url(borrow site: Site, inout eng: ast.Engine, route_id: u64) -> u64 {
+    let route = eng.arena.strings.copy(route_id);
+    let mut rel = text.slice(borrow route, 0, route.len());
+    rel.push_str("rss.xml");
+    let resolved = tmpl_eval.join_base(inout eng, borrow rel);
+    eng.arena.string(borrow resolved)
+}
+
+// ---------------------------------------------------------------------------
+// Static passthrough
+// ---------------------------------------------------------------------------
+
+// Copy `static/` into the output root. This is measured work for every tool in
+// ADR-0072's comparison and its inputs are part of the recorded fixture
+// identity, so it happens inside the build rather than in the harness around
+// it.
+//
+// A site may legitimately have no `static/` directory, so `NotFound` is
+// success — but ONLY `NotFound`. An unreadable one is a failure, and the
+// distinction matters more here than the shrug it replaced suggests: static
+// passthrough is measured work, so a permission or I/O error that returned
+// "nothing to copy" would produce a fast build missing a megabyte of output,
+// which is precisely the wrong-but-fast result Decision 4 exists to refuse.
+fn copy_static(inout site: Site, inout eng: ast.Engine) -> bool {
+    let root = join_path(borrow site.root, borrow "static");
+    let entries = match std.fs.walk(borrow root) {
+        DirRes.Ok(list) => list,
+        DirRes.Err(e) => {
+            match e {
+                std.fs.FileError.NotFound => { return true; },
+                _ => {},
+            }
+            let subject = eng.arena.strings.intern(borrow root);
+            fail(inout eng, "the static directory exists but cannot be read", subject);
+            return false;
+        },
+    };
+    let prefix = root.len() + 1;
+    let mut ok = true;
+    let mut i: u64 = 0;
+    while i < entries.len() {
+        if entries.is_file(i) {
+            let path = entries.path(i);
+            let rel = text.slice(borrow path, prefix, path.len());
+            let target = join_path(borrow site.output_root, borrow rel);
+            if !copy_one(borrow path, borrow target) {
+                let subject = eng.arena.strings.intern(borrow rel);
+                fail(inout eng, "cannot copy a static asset", subject);
+                ok = false;
+            } else {
+                site.files_written += 1;
+                if site.list {
+                    site.listing.append_borrowed(borrow rel);
+                    site.listing.push_str("\n");
+                }
+            }
+        }
+        i += 1;
+    }
+    ok
+}
+
+fn copy_one(borrow from: StrBuf, borrow to: StrBuf) -> bool {
+    let mut raw = Bytes.new();
+    let mut source = match std.fs.File.open(borrow from) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(_e) => { return false; },
+    };
+    let mut ok = true;
+    loop {
+        raw.reserve(65536);
+        let n = match source.read(inout raw) {
+            ReadRes.Ok(k) => k,
+            ReadRes.Err(_e) => { ok = false; 0 },
+        };
+        if n == 0 { break; }
+    }
+    let _ = source.close();
+    if !ok { return false; }
+
+    let parent = dir_of(borrow to);
+    if parent.len() > 0 {
+        let trimmed = text.slice(borrow parent, 0, parent.len() - 1);
+        match std.fs.create_dir_all(borrow trimmed) {
+            UnitRes.Ok(_u) => {},
+            UnitRes.Err(_e) => { return false; },
+        }
+    }
+    let mut target = match std.fs.File.create(borrow to) {
+        FileRes.Ok(f) => f,
+        FileRes.Err(_e) => { return false; },
+    };
+    let wrote = match target.write_all(borrow raw) {
+        WriteRes.Ok(_unit) => true,
+        WriteRes.Err(_e) => false,
+    };
+    let _ = target.close();
+    wrote
+}
+
+// ---------------------------------------------------------------------------
+// Driver
+// ---------------------------------------------------------------------------
+
+// Build the site rooted at `root` into `output`. The stages are ordered by
+// their real dependencies and each one refuses to continue past a failure that
+// would make the next stage's output meaningless, so a broken site produces
+// diagnostics rather than a partial tree that looks like a successful build.
+pub fn build(
+    inout eng: ast.Engine,
+    borrow root: StrBuf,
+    borrow output: StrBuf,
+    list: bool,
+    inout report: StrBuf,
+) -> bool {
+    let mut site = Site.new();
+    site.list = list;
+    site.keys = intern_keys(inout eng);
+    site.root = text.slice(borrow root, 0, root.len());
+    site.content_root = join_path(borrow root, borrow "content");
+    site.output_root = text.slice(borrow output, 0, output.len());
+
+    if !load_config(inout site, inout eng) { return false; }
+    if !load_templates(inout site, inout eng) { return false; }
+    if !discover(inout site, inout eng) { return false; }
+    if !build_sections(inout site, inout eng) { return false; }
+    order_sections(inout site, inout eng);
+    render_bodies(inout site, inout eng);
+    build_objects(inout site, inout eng);
+    let emitted = emit(inout site, inout eng);
+    let copied = copy_static(inout site, inout eng);
+
+    if site.list { report.append_borrowed(borrow site.listing); }
+    report.push_str("gazette: ");
+    report.push_str(text.decimal(site.pages_rendered));
+    report.push_str(" pages, ");
+    report.push_str(text.decimal(site.sections.len()));
+    report.push_str(" sections, ");
+    report.push_str(text.decimal(site.files_written));
+    report.push_str(" files written\n");
+    emitted && copied && eng.arena.error_count() == 0
+}

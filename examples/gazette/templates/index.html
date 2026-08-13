@@ -1,0 +1,102 @@
+{#
+  Port of `website/templates/index.html` (ADR-0072 Decision 3).
+
+  The production page opens with `{% set status = load_data(path=
+  "static/status.json", format="json") %}` and renders a "Field Report" panel
+  from it. Two of that panel's rows are derived from the performance store, so
+  rendering it here would make the benchmark's own output an input to the
+  benchmark's workload — the same reason Decision 3 carves the performance
+  dashboard page out of the corpus entirely. `load_data` is therefore outside
+  the equivalence subset for every tool, and this port drops the panel rather
+  than faking a data file for it. The carve-out is stated here and in
+  `scripts/gazette-corpus-diff.py`'s exclusion table rather than left as a
+  silent difference between the port and the page it derives from.
+#}
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero max-w-5xl mx-auto px-6 pt-14 pb-12 grid grid-cols-1 md:grid-cols-12 gap-12 items-start">
+    <div class="md:col-span-7 reveal d1">
+        <h1 style="font-family: var(--font-display); font-weight: 420; font-size: clamp(2.1rem, 4.6vw, 3.2rem); line-height: 1.12; letter-spacing: -0.01em;" class="mb-6">
+            Rust proved memory safety without garbage collection is possible.<br>
+            <em style="font-weight: 460; color: var(--color-accent);">Can it also be easy?</em>
+        </h1>
+        <p class="text-lg mb-4" style="color: var(--color-muted); max-width: 30rem;">
+            <strong style="color: var(--color-fg);">We don’t know yet.</strong>
+            Rue is an early-stage research language exploring that question — a
+            systems language aiming for the same destination by a gentler path.
+            It is not ready for real projects, but the whole experiment runs in
+            the open, and you can watch.
+        </p>
+        <p class="mb-8" style="font-style: italic; color: var(--color-faint); max-width: 30rem; font-size: 0.95rem;">
+            Designed by <a href="https://steveklabnik.com" style="color: inherit;">Steve Klabnik</a>.
+            Implemented primarily by Claude, an AI. The field report is an
+            illustrative preview while live project reporting is rebuilt.
+        </p>
+        <div class="flex gap-4 flex-wrap">
+            <a href="{{ get_url(path='tutorial') }}" class="btn-primary">Begin the tutorial</a>
+<!-- Hardcoded path: spec pages are copied into Zola content at build time -->
+            <a href="/spec/" class="btn-secondary">Read the spec</a>
+        </div>
+    </div>
+</section>
+
+<section class="max-w-5xl mx-auto px-6 pb-14 grid grid-cols-1 md:grid-cols-12 gap-12 items-start">
+    <figure class="md:col-span-7 reveal d2" style="margin: 0;">
+        <div class="specimen">
+            <div class="specimen-head">
+                <span class="no">Specimen №&thinsp;1</span>
+                <span>fib.rue</span>
+            </div>
+            {{ section.content | safe }}
+        </div>
+        <figcaption class="specimen-caption">
+            <b>Fig. 1.</b> Compiles to a small static binary.
+            No VM, no interpreter, no garbage collector.
+        </figcaption>
+    </figure>
+
+    <div class="md:col-span-5 reveal d3">
+        <h3 style="font-family: var(--font-display); font-weight: 480; font-size: 1.5rem;" class="mb-3">
+            Familiar on the surface, careful underneath.
+        </h3>
+        <p class="mb-4" style="color: var(--color-muted); font-size: 0.98rem;">
+            If you know Rust, Go, or C, the syntax will feel like home. Underneath,
+            Rue is exploring linear types, compile-time evaluation, and drop
+            tracking — the machinery of memory safety — while trying to keep the
+            learning curve shallow enough to walk up, not climb.
+        </p>
+        <p class="mb-5" style="color: var(--color-muted); font-size: 0.98rem;">
+            The compiler is written in Rust and emits x86-64 and ARM64 machine
+            code directly: no LLVM, direct syscalls, static ELF and Mach-O
+            executables.
+        </p>
+        <div class="run-line"><span class="prompt">$</span> rue fib.rue -o fib && ./fib</div>
+    </div>
+</section>
+
+<div class="sprig-divider" role="presentation">
+    <svg viewBox="0 0 32 32"><use href="#rue-sprig"/></svg>
+</div>
+
+<section class="max-w-5xl mx-auto px-6 pt-12 pb-14">
+    <h2 class="section-title">Recent lab notes</h2>
+    {% set blog = get_section(path="blog/_index.md") %}
+    <ul class="note-list">
+        {% for post in blog.pages | slice(end=3) %}
+        <li>
+            <span class="note-date">{{ post.date | date(format="%Y · %m · %d") }}</span>
+            <div>
+                <a class="note-title" href="{{ post.permalink }}">{{ post.title }}</a>
+                {% if post.description %}
+                <p class="note-summary">{{ post.description }}</p>
+                {% elif post.summary %}
+                <p class="note-summary">{{ post.summary | striptags | truncate(length=180) }}</p>
+                {% endif %}
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+    <p class="mt-6" style="font-size: 0.9rem;"><a href="{{ get_url(path='blog') }}">All lab notes →</a></p>
+</section>
+{% endblock %}

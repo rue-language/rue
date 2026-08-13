@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>First Note | Lab Notes | Rue</title>
+    <meta name="description" content="A systems programming language with memory safety and high-level ergonomics">
+    <link rel="stylesheet" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;style.css">
+    <link rel="icon" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;brand&#x2F;apple-touch-icon.png">
+    <link rel="alternate" type="application/rss+xml" title="Rue Blog RSS" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;blog&#x2F;rss.xml">
+    <script>
+        // Check for saved theme preference or default to system preference
+        const isDark = localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        if (isDark) {
+            document.documentElement.classList.add('dark');
+        }
+        // Write syntax theme stylesheets with correct initial disabled state
+        document.write('<link rel="stylesheet" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;syntax-light.css" id="syntax-light"' + (isDark ? ' disabled' : '') + '>');
+        document.write('<link rel="stylesheet" href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;syntax-dark.css" id="syntax-dark"' + (isDark ? '' : ' disabled') + '>');
+
+        function updateSyntaxTheme() {
+            const syntaxLight = document.getElementById('syntax-light');
+            const syntaxDark = document.getElementById('syntax-dark');
+            if (syntaxLight && syntaxDark) {
+                const dark = document.documentElement.classList.contains('dark');
+                syntaxLight.disabled = dark;
+                syntaxDark.disabled = !dark;
+            }
+        }
+    </script>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- engraved rue sprig (Ruta graveolens), referenced site-wide via <use> -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <defs>
+        <g id="rue-sprig" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round">
+          <path d="M16 30 C 16 24, 15.4 18, 16 10"/>
+          <path d="M15.7 22 C 12.5 20.5, 10 19, 8 16.5"/>
+          <path d="M8 16.5 c -2.6 -0.4 -4 -2.4 -3.4 -4.4 c 1.8 -1 4 -0.2 4.6 2 c 0.3 1 0 1.8 -1.2 2.4 z"/>
+          <path d="M11.5 19.2 c -2.4 0.6 -4.3 -0.6 -4.5 -2.6"/>
+          <path d="M16 17.5 C 19.5 16, 22 14.5, 23.8 12"/>
+          <path d="M23.8 12 c 2.6 -0.2 3.9 -2.2 3.2 -4.2 c -1.9 -0.9 -4 0.1 -4.4 2.3 c -0.2 1 0.1 1.7 1.2 1.9 z"/>
+          <path d="M20.4 14.6 c 2.4 0.4 4.2 -0.8 4.3 -2.8"/>
+          <path d="M16 10 c -0.4 -2.8 1 -4.6 3.2 -4.6 c 1.2 1.8 0.5 4 -1.6 4.9 c -0.7 0.3 -1.2 0.2 -1.6 -0.3 z"/>
+          <g stroke="none" fill="var(--color-gold)">
+            <circle cx="12.2" cy="7.4" r="1.15"/>
+            <circle cx="9.9"  cy="9.4" r="1.15"/>
+            <circle cx="12.6" cy="10.6" r="1.15"/>
+            <circle cx="14.4" cy="8.7" r="1.15"/>
+          </g>
+          <circle cx="12.4" cy="9" r="0.8" stroke="none" fill="currentColor"/>
+          <path d="M15.9 13.5 C 14.8 11.8, 13.6 10.6, 12.6 10.4"/>
+        </g>
+      </defs>
+    </svg>
+
+    <div class="colophon-bar">
+        <em>Ruta graveolens</em> &nbsp;·&nbsp; notes from a language experiment &nbsp;·&nbsp; cultivated since 2025
+    </div>
+
+    <nav>
+        <div class="masthead">
+            <a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;" class="wordmark">
+                <svg class="sprig" viewBox="0 0 32 32"><use href="#rue-sprig"/></svg>
+                Rue
+            </a>
+            <!-- Desktop navigation -->
+            <div class="nav-desktop flex items-center gap-6">
+                <ul class="flex gap-6">
+                    <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;tutorial" class="nav-link">Tutorial</a></li>
+<!-- Hardcoded path: spec pages are copied into Zola content at build time -->
+                    <li><a href="/spec/" class="nav-link">Specification</a></li>
+                    <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;performance" class="nav-link">Performance</a></li>
+                    <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;runtime" class="nav-link">Runtime</a></li>
+                    <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;blog" class="nav-link">Lab Notes</a></li>
+                    <li><a href="https:&#x2F;&#x2F;github.com&#x2F;rue-language&#x2F;rue" class="nav-link ext">GitHub</a></li>
+                    <li><a href="https:&#x2F;&#x2F;bsky.app&#x2F;profile&#x2F;rue-lang.dev" class="nav-link ext">Bluesky</a></li>
+                </ul>
+                <button onclick="toggleTheme()" class="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                    <svg class="icon-moon w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                </button>
+            </div>
+            <!-- Mobile navigation controls -->
+            <div class="nav-mobile-controls flex items-center gap-4">
+                <button onclick="toggleTheme()" class="theme-toggle" aria-label="Toggle theme">
+                    <svg class="icon-sun w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                    </svg>
+                    <svg class="icon-moon w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                    </svg>
+                </button>
+                <button onclick="toggleMobileMenu()" class="mobile-menu-toggle" aria-label="Toggle menu" aria-expanded="false">
+                    <svg class="icon-menu w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+                    </svg>
+                    <svg class="icon-close w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile menu overlay -->
+        <div id="mobile-menu" class="mobile-menu">
+            <ul class="mobile-menu-list">
+                <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;" class="mobile-menu-link">Home</a></li>
+                <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;tutorial" class="mobile-menu-link">Tutorial</a></li>
+                <li><a href="/spec/" class="mobile-menu-link">Specification</a></li>
+                <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;performance" class="mobile-menu-link">Performance</a></li>
+                <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;runtime" class="mobile-menu-link">Runtime</a></li>
+                <li><a href="https:&#x2F;&#x2F;rue-lang.dev&#x2F;blog" class="mobile-menu-link">Lab Notes</a></li>
+                <li><a href="https:&#x2F;&#x2F;github.com&#x2F;rue-language&#x2F;rue" class="mobile-menu-link">GitHub</a></li>
+                <li><a href="https:&#x2F;&#x2F;bsky.app&#x2F;profile&#x2F;rue-lang.dev" class="mobile-menu-link">Bluesky</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="flex-1">
+        
+<article class="py-12">
+    <div class="max-w-3xl mx-auto px-6">
+        <header class="mb-8">
+            <h1 style="font-family: var(--font-display); font-weight: 460; font-size: 2.3rem; line-height: 1.15;" class="mb-3">First Note</h1>
+            <div class="text-muted flex flex-wrap gap-1" style="font-style: italic;">
+                <time datetime="2026-01-02" class="note-date" style="font-style: normal;">2026 · 01 · 02</time>
+                
+                <span class="before:content-['·'] before:mr-1">
+                    by <a href="https://steveklabnik.com">Steve</a> and <a href="https://claude.ai">Claude</a>
+                </span>
+                
+            </div>
+            
+            <details class="mt-4 prompt-details">
+                <summary class="text-muted cursor-pointer hover:text-fg select-none">View the prompt</summary>
+                <div class="mt-3 p-4 bg-surface border border-themed rounded-lg">
+                    <pre class="whitespace-pre-wrap text-sm m-0! p-0! bg-transparent! border-none!">write the first note
+</pre>
+                </div>
+            </details>
+            
+        </header>
+        <div class="prose">
+            <p>An opening paragraph with <strong>strong</strong> text and a <code>code span</code>.</p>
+<span id="continue-reading"></span>
+<p>The rest of the note, with an <a href="https://rue-lang.dev/spec/01-introduction/#scope">internal link</a>
+and an <a href="https://example.test/x">external one</a>.</p>
+
+        </div>
+    </div>
+</article>
+
+    </main>
+
+    <footer class="footer-colophon">
+        <div class="inner">
+            <span>© 2025–2026 The Rue Authors · MIT/Apache-2.0</span>
+            <span><em>rue</em>, n. — a hardy evergreen herb; also, what we hope you won’t do after choosing this language.</span>
+        </div>
+    </footer>
+
+    <script>
+        function toggleTheme() {
+            if (document.documentElement.classList.contains('dark')) {
+                document.documentElement.classList.remove('dark');
+                localStorage.theme = 'light';
+            } else {
+                document.documentElement.classList.add('dark');
+                localStorage.theme = 'dark';
+            }
+            updateSyntaxTheme();
+        }
+
+        function toggleMobileMenu() {
+            const menu = document.getElementById('mobile-menu');
+            const toggle = document.querySelector('.mobile-menu-toggle');
+            const isOpen = menu.classList.toggle('open');
+            toggle.classList.toggle('active', isOpen);
+            toggle.setAttribute('aria-expanded', isOpen);
+        }
+
+        // Close mobile menu when clicking a link
+        document.querySelectorAll('.mobile-menu-link').forEach(link => {
+            link.addEventListener('click', () => {
+                const menu = document.getElementById('mobile-menu');
+                const toggle = document.querySelector('.mobile-menu-toggle');
+                menu.classList.remove('open');
+                toggle.classList.remove('active');
+                toggle.setAttribute('aria-expanded', 'false');
+            });
+        });
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/elasticlunr/0.9.5/elasticlunr.min.js"></script>
+    <script src="https:&#x2F;&#x2F;rue-lang.dev&#x2F;search.js"></script>
+</body>
+</html>

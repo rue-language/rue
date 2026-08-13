@@ -1,0 +1,38 @@
+{#
+  The feed a section with `generate_feeds = true` emits, modelled on Zola's
+  built-in `rss.xml`.
+
+  It carries NO build timestamp. Zola's feed writes `<lastBuildDate>` from the
+  clock and Hugo writes both that and a `<generator>` line, which ADR-0072
+  Decision 4 names as the known build-time-varying output the ports strip so
+  the determinism check can hold byte-exactly across repeated samples. Gazette
+  has no clock to read, so here that is a property of the program rather than
+  a stripping step — but the port says so, because a future gazette that grew
+  one would silently break every determinism check with no other warning.
+
+  URLs carry `| safe`, as Zola's own feed template does: Tera auto-escapes by
+  file type and gazette auto-escapes everything, so without it a permalink
+  would reach the feed as `https:&#x2F;&#x2F;…` and no reader would follow it.
+
+  Entry order is the section's own sorted page order, which for a `sort_by =
+  "date"` section is newest first with the content path as the final tie-break
+  (`site.rue`). ADR-0072 Decision 2's scale variants tie every duplicated post
+  on date, so the tie-break is what makes this feed's order reproducible at
+  all, and the validation asserts it rather than assuming it.
+#}<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+    <channel>
+        <title>{{ config.title }}</title>
+        <link>{{ section.permalink | safe }}</link>
+        <description>{{ section.description | default(value=config.description) }}</description>
+        <language>en</language>
+        <atom:link href="{{ feed_url | safe }}" rel="self" type="application/rss+xml"/>
+{% for page in pages %}        <item>
+            <title>{{ page.title }}</title>
+            <pubDate>{{ page.date }}</pubDate>
+            <link>{{ page.permalink | safe }}</link>
+            <guid>{{ page.permalink | safe }}</guid>
+            <description>{{ page.description | default(value="") }}</description>
+        </item>
+{% endfor %}    </channel>
+</rss>

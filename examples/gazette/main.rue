@@ -1,75 +1,56 @@
-// gazette libraries — TOML front matter, a Markdown subset, and a template
-// engine, written in Rue (ADR-0072 Phase 3, RUE-1483).
+// gazette — a static site generator written in Rue (ADR-0072, RUE-1483 and
+// RUE-1484).
 //
-// These are the three text-processing components the gazette static site
-// generator needs to build the live rue-lang.dev corpus, and ADR-0072
-// Decision 1 keeps them as modules inside the example: promoting any of them
-// into `std` is a separate, later decision that nothing here presumes.
-//
-// This root is the libraries' driver, NOT gazette itself — content discovery,
-// the page model, section indexes, the RSS feed, and the output tree are
-// RUE-1484. What lives here is a self-test that exercises every construct in
-// the three documented subsets, and a `render` mode that runs one Markdown
-// file through the real pipeline so the libraries can be checked against the
-// actual corpus.
+// Gazette walks a content tree, parses TOML front matter, renders a documented
+// Markdown subset, expands shortcodes and applies templates through its own
+// engine, generates section index pages and an RSS feed, copies static assets,
+// and writes the output tree. ADR-0072 Decision 1 keeps its supporting
+// libraries as modules inside the example rather than in `std`: promoting any
+// of them is a separate, later decision that nothing here presumes.
 //
 //   gazette                                     run the self-test
+//   gazette build SITE_DIR -o OUTPUT_DIR [--list]
 //   gazette render [-t NAME=PATH]… [-u URL] [--template-out NAME] FILE.md
 //
-// `-t` registers a template under the name content refers to it by, which is
-// how the `render` mode gets `shortcodes/rule.html` without a directory walk;
-// `-u` supplies the page's permalink, which fragment and relative links in the
-// page's own content resolve against; `--template-out` renders the page
-// through a registered template instead of emitting the Markdown body alone.
+// `build` is the whole program: SITE_DIR holds `config.toml`, `content/`,
+// `templates/`, and optionally `static/`, exactly as a Zola site does, and
+// OUTPUT_DIR receives the rendered tree. This is the mode ADR-0072's runtime
+// benchmark measures, spawn to exit. `--list` additionally prints every
+// emitted path, which is how a test asserts the file set; it is off by
+// default because nine thousand lines of stdout would be measured work in a
+// run whose whole purpose is to measure the build.
 //
-// `scripts/gazette-corpus-diff.py` drives the body-only mode over the whole
-// live corpus and diffs it against the pinned Zola, which is how the Markdown
-// library's fidelity claim is checked rather than asserted.
+// `render` runs ONE Markdown file through the same pipeline and prints it. It
+// exists because the Markdown library's fidelity claim is checked against the
+// live corpus page by page rather than asserted:
+// `scripts/gazette-corpus-diff.py body` drives it over all 96 files and diffs
+// the result against the pinned Zola. `-t` registers a template under the name
+// content refers to it by; `-u` supplies the page's permalink, which fragment
+// and relative links resolve against; `--template-out` renders the page
+// through a registered template instead of emitting the body alone.
 //
-// Each module documents its own subset in its header; each rejects constructs
-// outside that subset with a diagnostic rather than wrong output, which is the
-// dogfooding pressure ADR-0072 Decision 3 asks for.
+// The no-argument self-test exercises every construct in the documented
+// subsets. Each module documents its own subset in its header and rejects
+// constructs outside it with a diagnostic rather than wrong output, which is
+// the dogfooding pressure ADR-0072 Decision 3 asks for.
 //
 // The modules: text.rue (byte helpers), pool.rue (string interning),
 // value.rue (the shared value arena and diagnostics), frontmatter.rue,
 // tmpl_ast.rue / tmpl_parse.rue / tmpl_eval.rue (the template engine),
-// markdown.rue (blocks, inlines, and the shortcode pass), this root (I/O and
-// the self-test).
+// markdown.rue (blocks, inlines, and the shortcode pass), site.rue (content
+// discovery, the page and section model, and the output tree), this root
+// (argument handling and the self-test).
 const std = @import("std");
 const ast = @import("tmpl_ast.rue");
 const frontmatter = @import("frontmatter.rue");
 const markdown = @import("markdown.rue");
+const site = @import("site.rue");
 const text = @import("text.rue");
 const tmpl_eval = @import("tmpl_eval.rue");
 const tmpl_parse = @import("tmpl_parse.rue");
 const value = @import("value.rue");
 const StrBuf = std.strbuf.StrBuf;
-const Bytes = std.arraybuf.ArrayBuf(u8);
 const OptStr = std.option.Option(StrBuf);
-const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
-const ReadRes = std.result.Result(u64, std.fs.FileError);
-
-struct FileInput { data: StrBuf, ok: bool }
-
-fn read_file(borrow path: StrBuf) -> FileInput {
-    let mut raw = Bytes.new();
-    let mut f = match std.fs.File.open(borrow path) {
-        FileRes.Ok(file) => file,
-        FileRes.Err(_e) => { return FileInput { data: StrBuf.new(), ok: false }; },
-    };
-    let mut ok = true;
-    let chunk: u64 = 65536;
-    loop {
-        raw.reserve(chunk);
-        let n = match f.read(inout raw) {
-            ReadRes.Ok(k) => k,
-            ReadRes.Err(_e) => { ok = false; 0 },
-        };
-        if n == 0 { break; }
-    }
-    let _ = f.close();
-    FileInput { data: StrBuf.from_bytes(borrow raw), ok: ok }
-}
 
 fn str_eq(borrow a: StrBuf, flag: StrBuf) -> bool {
     StrBuf.equals_borrowed(borrow a, borrow flag)
@@ -116,7 +97,7 @@ fn bind_page_url(inout eng: ast.Engine, borrow url: StrBuf) {
 // template reads. The page model that builds that map from a real content tree
 // is RUE-1484; this is the libraries' driver, not that model.
 fn render_mode(inout eng: ast.Engine, borrow path: StrBuf, template_out: u64) -> bool {
-    let input = read_file(borrow path);
+    let input = site.read_file(borrow path);
     if !input.ok {
         let mut message = StrBuf.new();
         message.push_str("gazette: cannot read ");
@@ -560,15 +541,29 @@ fn main() -> i32 {
     bind_site(inout eng, "https://rue-lang.dev");
 
     let mut mode_render = false;
+    let mut mode_build = false;
     let mut template_out = ast.NONE();
     let mut target = StrBuf.new();
     let mut have_target = false;
+    let mut output = StrBuf.new();
+    let mut have_output = false;
+    let mut list_output = false;
     let mut i: u64 = 1;
     while i < argc {
         match std.env.arg(i) {
             OptStr.Some(a) => {
                 if str_eq(borrow a, "render") {
                     mode_render = true;
+                } else if str_eq(borrow a, "build") {
+                    mode_build = true;
+                } else if str_eq(borrow a, "--list") {
+                    list_output = true;
+                } else if str_eq(borrow a, "-o") {
+                    i += 1;
+                    match std.env.arg(i) {
+                        OptStr.Some(dir) => { output = dir; have_output = true; },
+                        OptStr.None => { return 2; },
+                    }
                 } else if str_eq(borrow a, "-u") {
                     i += 1;
                     match std.env.arg(i) {
@@ -592,7 +587,7 @@ fn main() -> i32 {
                             }
                             let name = text.slice(borrow spec, 0, eq);
                             let path = text.slice(borrow spec, eq + 1, spec.len());
-                            let loaded = read_file(borrow path);
+                            let loaded = site.read_file(borrow path);
                             if !loaded.ok {
                                 let mut message = StrBuf.new();
                                 message.push_str("gazette: cannot read template ");
@@ -615,8 +610,24 @@ fn main() -> i32 {
         i += 1;
     }
 
+    if mode_build {
+        if !have_target || !have_output {
+            print("usage: gazette build SITE_DIR -o OUTPUT_DIR [--list]\n");
+            return 2;
+        }
+        let mut report = StrBuf.new();
+        // A site build binds its own base URL from `config.toml`, so the
+        // placeholder bound above is replaced rather than consulted.
+        let ok = site.build(inout eng, borrow target, borrow output, list_output, inout report);
+        let mut diagnostics = StrBuf.new();
+        eng.arena.append_diagnostics(inout diagnostics);
+        if diagnostics.len() > 0 { print(diagnostics); }
+        print(report);
+        return if ok { 0 } else { 1 };
+    }
+
     if !mode_render || !have_target {
-        print("usage: gazette [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
+        print("usage: gazette [build SITE_DIR -o OUTPUT_DIR [--list]] [render [-t NAME=PATH]... [-u URL] [--template-out NAME] FILE.md]\n");
         return 2;
     }
 

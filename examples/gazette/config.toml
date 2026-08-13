@@ -1,0 +1,22 @@
+# gazette's site configuration for the rue-lang.dev template port (ADR-0072).
+#
+# This is the gazette half of the "template ports and parity configurations"
+# Decision 2 versions in the repository; the Zola and Hugo halves are RUE-1485's.
+# Fixture preparation copies this file and `templates/` next to the assembled
+# content tree, and hashes both into the recorded fixture identity, so a change
+# here moves the identity and therefore starts a new comparable segment in the
+# series rather than silently shifting an existing one.
+#
+# It holds only keys gazette reads. The features the equivalence subset excludes
+# — syntax highlighting, the search index, HTML minification, Sass, Tailwind,
+# image processing, taxonomies, and pagination — have no switches here because
+# gazette implements none of them; the peers' parity configurations are where
+# those are turned OFF, which is the asymmetry Decision 3's published caption
+# exists to disclose.
+base_url = "https://rue-lang.dev"
+title = "Rue"
+description = "A systems programming language with memory safety and high-level ergonomics"
+
+[extra]
+github_url = "https://github.com/rue-language/rue"
+bluesky_url = "https://bsky.app/profile/rue-lang.dev"

@@ -264,24 +264,22 @@ fn is_bare_key(borrow source: StrBuf, start: u64, end: u64) -> bool {
     true
 }
 
-// Parse the front matter at the head of `source`.
-//
-// A document with no `+++` opener is REJECTED rather than treated as an
-// all-body page: every file in the corpus has front matter, and silently
-// accepting a missing header would hide a truncated or mis-copied file.
-pub fn parse(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
+// Where a table scan stopped and what it found. Shared by the two entry points
+// below so the site's `config.toml` and a page's `+++` header go through ONE
+// TOML reader: a second one would be a second subset, and the subset is the
+// thing this module documents.
+struct Scan { root: u64, offset: u64, line: u64, ok: bool, closed: bool }
+
+// Read `key = value` lines and `[table]` headers from `offset` until a closing
+// `+++` fence or the end of input.
+fn scan_table(inout arena: value.Arena, borrow source: StrBuf, from: u64, first_line: u64) -> Scan {
     let mut root = value.Entries.new();
     let mut table = value.Entries.new();
     let mut table_key = value.NONE();
     let mut ok = true;
 
-    if !source.starts_with(borrow "+++") {
-        fail(inout arena, 1, "page does not open with a `+++` front-matter fence", value.NONE());
-        return Parsed { root: arena.null(), body_start: 0, body_line: 1, ok: false };
-    }
-
-    let mut offset = text.next_line(borrow source, 0);
-    let mut line: u64 = 2;
+    let mut offset = from;
+    let mut line = first_line;
     let mut closed = false;
     while offset < source.len() && !closed {
         let end = text.line_end(borrow source, offset);
@@ -381,10 +379,38 @@ pub fn parse(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
     if table_key != value.NONE() {
         root.push(value.Entry { key: table_key, value: arena.map(borrow table) });
     }
-    if !closed {
-        fail(inout arena, line, "front matter is not closed by a `+++` line", value.NONE());
+
+    Scan { root: arena.map(borrow root), offset: offset, line: line, ok: ok, closed: closed }
+}
+
+// Parse the front matter at the head of `source`.
+//
+// A document with no `+++` opener is REJECTED rather than treated as an
+// all-body page: every file in the corpus has front matter, and silently
+// accepting a missing header would hide a truncated or mis-copied file.
+pub fn parse(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
+    if !source.starts_with(borrow "+++") {
+        fail(inout arena, 1, "page does not open with a `+++` front-matter fence", value.NONE());
+        return Parsed { root: arena.null(), body_start: 0, body_line: 1, ok: false };
+    }
+    let scan = scan_table(inout arena, borrow source, text.next_line(borrow source, 0), 2);
+    let mut ok = scan.ok;
+    if !scan.closed {
+        fail(inout arena, scan.line, "front matter is not closed by a `+++` line", value.NONE());
         ok = false;
     }
+    Parsed { root: scan.root, body_start: scan.offset, body_line: scan.line, ok: ok }
+}
 
-    Parsed { root: arena.map(borrow root), body_start: offset, body_line: line, ok: ok }
+// Parse a whole TOML document — the site's `config.toml` — under the same
+// subset. Zola's configuration is bare TOML with no fence, so the reader takes
+// the document from byte zero and there is nothing to close.
+pub fn parse_document(inout arena: value.Arena, borrow source: StrBuf) -> Parsed {
+    let scan = scan_table(inout arena, borrow source, 0, 1);
+    let mut ok = scan.ok;
+    if scan.closed {
+        fail(inout arena, scan.line, "a `+++` fence has no meaning in a configuration file", value.NONE());
+        ok = false;
+    }
+    Parsed { root: scan.root, body_start: scan.offset, body_line: scan.line, ok: ok }
 }
