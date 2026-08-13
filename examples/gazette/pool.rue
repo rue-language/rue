@@ -1,0 +1,173 @@
+// Interned byte strings, so every record in gazette's arenas is a plain
+// integer struct that `ArrayBuf.get_or` can read by copy.
+//
+// This is the load-bearing consequence of RUE-651: `ArrayBuf(T)` gates the
+// by-copy read `get`/`get_or` on `T` having no drop glue, so an arena of
+// `StrBuf`-carrying records could only be read by MOVING elements out. Every
+// parse tree here therefore stores `u64` pool ids, and the bytes live once, in
+// this pool's single `StrBuf`.
+//
+// Interning is amortized O(length) through an open-addressed index over the
+// pool's own arrays, so total intern cost stays linear in input volume rather
+// than quadratic in pool size. Ids are never removed, so a slot holds `id + 1`
+// and `0` means empty — no tombstones. The hash itself is `std.hash`'s
+// FNV-1a/64 (RUE-682), not a private copy of it.
+const std = @import("std");
+const text = @import("text.rue");
+const hash = std.hash;
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Pool {
+    bytes: StrBuf,
+    offsets: U64s,
+    lengths: U64s,
+    slots: U64s,
+    slot_cap: u64,
+
+    fn new() -> Self {
+        let mut p = Self {
+            bytes: StrBuf.new(),
+            offsets: U64s.new(),
+            lengths: U64s.new(),
+            slots: U64s.new(),
+            slot_cap: 0,
+        };
+        p.grow_slots(64);
+        p
+    }
+
+    fn len(borrow self) -> u64 { self.offsets.len() }
+
+    // FNV-1a/64 from `std.hash` (RUE-682) rather than a fourth hand-rolled copy
+    // of the same two constants. `value_hash` and `hash_id` MUST agree — one
+    // hashes a candidate, the other an already-pooled id, and a rebuilt table
+    // and a fresh probe have to land on the same slot — so both go through the
+    // one implementation: the one-shot helper for a borrowed buffer, the
+    // incremental `Hasher` for bytes read out of the pool.
+    fn value_hash(borrow value: StrBuf) -> u64 {
+        hash.fnv1a_strbuf(borrow value)
+    }
+
+    fn hash_id(borrow self, id: u64) -> u64 {
+        let mut hasher = hash.Hasher.fnv1a();
+        let n = self.string_len(id);
+        let mut i: u64 = 0;
+        while i < n {
+            hasher.write_byte(self.byte_at(id, i));
+            i += 1;
+        }
+        hasher.finish()
+    }
+
+    fn grow_slots(inout self, new_cap: u64) {
+        let mut fresh = U64s.new();
+        let mut i: u64 = 0;
+        while i < new_cap { fresh.push(0); i += 1; }
+        let mut id: u64 = 0;
+        while id < self.len() {
+            let mut slot = self.hash_id(id) % new_cap;
+            while fresh.get_or(slot, 0) != 0 { slot = (slot + 1) % new_cap; }
+            fresh.set(slot, id + 1);
+            id += 1;
+        }
+        self.slots = fresh;
+        self.slot_cap = new_cap;
+    }
+
+    // The id for `value`, interning it when this is its first appearance.
+    fn intern(inout self, borrow value: StrBuf) -> u64 {
+        // Grow above 50% load so probe chains stay short.
+        if (self.len() + 1) * 2 > self.slot_cap { self.grow_slots(self.slot_cap * 2); }
+        let mut slot = Self.value_hash(borrow value) % self.slot_cap;
+        while self.slots.get_or(slot, 0) != 0 {
+            let id = self.slots.get_or(slot, 0) - 1;
+            if self.equals(id, borrow value) { return id; }
+            slot = (slot + 1) % self.slot_cap;
+        }
+        let id = self.len();
+        self.slots.set(slot, id + 1);
+        self.offsets.push(self.bytes.len());
+        self.lengths.push(value.len());
+        self.bytes.append_borrowed(borrow value);
+        id
+    }
+
+    // Intern a string literal, which promotes into a non-owning StrBuf.
+    fn intern_literal(inout self, value: StrBuf) -> u64 { self.intern(borrow value) }
+
+    // Intern `[start, end)` of a borrowed document without the caller building
+    // an intermediate copy it would immediately drop.
+    fn intern_range(inout self, borrow value: StrBuf, start: u64, end: u64) -> u64 {
+        let piece = text.slice(borrow value, start, end);
+        self.intern(borrow piece)
+    }
+
+    fn byte_at(borrow self, id: u64, index: u64) -> u8 {
+        if id >= self.len() || index >= self.lengths.get_or(id, 0) { return 0; }
+        text.byte_of(borrow self.bytes, self.offsets.get_or(id, 0) + index)
+    }
+
+    fn string_len(borrow self, id: u64) -> u64 {
+        if id < self.len() { self.lengths.get_or(id, 0) } else { 0 }
+    }
+
+    fn append(borrow self, id: u64, inout out: StrBuf) {
+        let n = self.string_len(id);
+        let mut i: u64 = 0;
+        while i < n { out.push(self.byte_at(id, i)); i += 1; }
+    }
+
+    fn copy(borrow self, id: u64) -> StrBuf {
+        let n = self.string_len(id);
+        if n == 0 { return StrBuf.new(); }
+        self.bytes.byte_range(self.offsets.get_or(id, 0), n)
+    }
+
+    fn equals(borrow self, id: u64, borrow value: StrBuf) -> bool {
+        let n = self.string_len(id);
+        if n != value.len() { return false; }
+        let mut i: u64 = 0;
+        while i < n {
+            if self.byte_at(id, i) != text.byte_of(borrow value, i) { return false; }
+            i += 1;
+        }
+        true
+    }
+
+    fn equals_literal(borrow self, id: u64, value: StrBuf) -> bool {
+        self.equals(id, borrow value)
+    }
+
+    // Whether a pooled string opens with `prefix`, without copying it out.
+    // The template evaluator asks this of every call name to tell a `self::`
+    // macro reference from an ordinary function.
+    fn starts_with_literal(borrow self, id: u64, prefix: StrBuf) -> bool {
+        let n = prefix.len();
+        if n > self.string_len(id) { return false; }
+        let mut i: u64 = 0;
+        while i < n {
+            if self.byte_at(id, i) != text.byte_of(borrow prefix, i) { return false; }
+            i += 1;
+        }
+        true
+    }
+
+    // Byte-lexicographic comparison of two pooled strings: negative-as-0,
+    // equal-as-1, greater-as-2, so callers stay on unsigned arithmetic. Used by
+    // the `sort` filter and by deterministic section ordering.
+    fn compare(borrow self, a: u64, b: u64) -> u64 {
+        let na = self.string_len(a);
+        let nb = self.string_len(b);
+        let n = if na < nb { na } else { nb };
+        let mut i: u64 = 0;
+        while i < n {
+            let x = self.byte_at(a, i);
+            let y = self.byte_at(b, i);
+            if x < y { return 0; }
+            if x > y { return 2; }
+            i += 1;
+        }
+        if na < nb { 0 } else if na > nb { 2 } else { 1 }
+    }
+}

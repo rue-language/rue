@@ -1,0 +1,334 @@
+// Byte-oriented text helpers shared by gazette's three libraries.
+//
+// Gazette treats every input as a stream of UTF-8 bytes with ASCII markup
+// punctuation (ADR-0035 byte-string semantics). Nothing here inspects scalar
+// boundaries, so a multi-byte scalar simply passes through untouched.
+//
+// The substring scanners live in `std.strbuf` (RUE-1482) — `matches_at`,
+// `find_str_from`, `find_str`, `rfind_str`, `starts_with`, `ends_with` — and
+// this module never re-implements one. What it adds is the shapes those
+// scanners do not cover: an index-or-end `find` that avoids an Option match at
+// every call site, single-byte scanning, whitespace trimming that returns
+// offsets rather than copies, and the four escaping routines.
+//
+// OFFSETS, NOT COPIES. `trim_start_at`/`trim_end_at` and `line_end` return byte
+// offsets into a borrowed haystack. Slices are preview-gated in Rue, so a
+// caller that genuinely needs the bytes calls `slice`, which allocates. Keeping
+// the scan/copy split explicit is what lets the parsers walk a 525 KiB document
+// without copying it: they copy a line only when the line becomes output.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
+
+// The byte at `i`, or 0 past the end. A zero byte is not otherwise meaningful
+// in this corpus, so the saturating read keeps every scanner branch-light.
+pub fn byte_of(borrow value: StrBuf, i: u64) -> u8 {
+    match value.byte_at(i) { OptU8.Some(b) => b, OptU8.None => 0 }
+}
+
+pub fn is_space(b: u8) -> bool { b == 32 || b == 9 }
+pub fn is_blank_byte(b: u8) -> bool { b == 32 || b == 9 || b == 13 || b == 10 }
+pub fn is_digit(b: u8) -> bool { b >= 48 && b <= 57 }
+pub fn is_alpha(b: u8) -> bool { (b >= 65 && b <= 90) || (b >= 97 && b <= 122) }
+pub fn is_alnum(b: u8) -> bool { is_alpha(b) || is_digit(b) }
+pub fn is_ident(b: u8) -> bool { is_alnum(b) || b == 95 }
+
+pub fn lower_byte(b: u8) -> u8 { if b >= 65 && b <= 90 { b + 32 } else { b } }
+pub fn upper_byte(b: u8) -> u8 { if b >= 97 && b <= 122 { b - 32 } else { b } }
+
+// First occurrence of `needle` at or after `from`, or `value.len()` when there
+// is none. The end sentinel is what makes the parsers readable: a scan that
+// falls off the end lands exactly on the length it would have stopped at.
+pub fn find_from(borrow value: StrBuf, borrow needle: str, from: u64) -> u64 {
+    match value.find_str_from(borrow needle, from) {
+        OptU64.Some(at) => at,
+        OptU64.None => value.len(),
+    }
+}
+
+// Same end-sentinel contract for a single byte.
+pub fn find_byte(borrow value: StrBuf, needle: u8, from: u64) -> u64 {
+    find_byte_in(borrow value, needle, from, value.len())
+}
+
+// A single-byte scan bounded by `limit` rather than by the whole haystack.
+//
+// The bound is not a convenience. An inline scanner that searches a whole
+// document for the closer of a construct it is only allowed to close within the
+// current line is quadratic in the document, and pathological input — a file of
+// `[x` lines, each opening a bracket that never closes — turns a millisecond
+// render into minutes. Every inline closer scan takes the bounded form.
+pub fn find_byte_in(borrow value: StrBuf, needle: u8, from: u64, limit: u64) -> u64 {
+    let stop = if limit < value.len() { limit } else { value.len() };
+    let mut i = from;
+    while i < stop {
+        if byte_of(borrow value, i) == needle { return i; }
+        i += 1;
+    }
+    stop
+}
+
+pub fn count_byte_in(borrow value: StrBuf, needle: u8, from: u64, to: u64) -> u64 {
+    let mut total: u64 = 0;
+    let mut i = from;
+    while i < to && i < value.len() {
+        if byte_of(borrow value, i) == needle { total += 1; }
+        i += 1;
+    }
+    total
+}
+
+// Copy `[start, end)`, clamped to the haystack. This is the only allocating
+// helper here and every caller of it is producing a value it intends to keep.
+pub fn slice(borrow value: StrBuf, start: u64, end: u64) -> StrBuf {
+    let stop = if end < value.len() { end } else { value.len() };
+    if start >= stop { return StrBuf.new(); }
+    value.byte_range(start, stop - start)
+}
+
+// First non-space offset at or after `start`, bounded by `end`.
+pub fn trim_start_at(borrow value: StrBuf, start: u64, end: u64) -> u64 {
+    let mut i = start;
+    while i < end && is_space(byte_of(borrow value, i)) { i += 1; }
+    i
+}
+
+// Offset one past the last non-space byte before `end`, bounded below by
+// `start`. Carriage returns count as trailing space so CRLF input trims.
+pub fn trim_end_at(borrow value: StrBuf, start: u64, end: u64) -> u64 {
+    let mut i = end;
+    while i > start {
+        let b = byte_of(borrow value, i - 1);
+        if b == 32 || b == 9 || b == 13 { i -= 1; } else { return i; }
+    }
+    i
+}
+
+pub fn trimmed(borrow value: StrBuf, start: u64, end: u64) -> StrBuf {
+    let s = trim_start_at(borrow value, start, end);
+    let e = trim_end_at(borrow value, s, end);
+    slice(borrow value, s, e)
+}
+
+pub fn trim(borrow value: StrBuf) -> StrBuf {
+    trimmed(borrow value, 0, value.len())
+}
+
+// Offset of the newline ending the line that starts at `start`, or the length.
+pub fn line_end(borrow value: StrBuf, start: u64) -> u64 {
+    find_byte(borrow value, 10, start)
+}
+
+// Offset at which the line after the one starting at `start` begins.
+pub fn next_line(borrow value: StrBuf, start: u64) -> u64 {
+    let end = line_end(borrow value, start);
+    if end < value.len() { end + 1 } else { value.len() }
+}
+
+// Whether `[start, end)` holds only spaces and tabs.
+pub fn blank_range(borrow value: StrBuf, start: u64, end: u64) -> bool {
+    trim_start_at(borrow value, start, end) >= trim_end_at(borrow value, start, end)
+}
+
+pub fn equals_str(borrow value: StrBuf, other: StrBuf) -> bool {
+    StrBuf.equals_borrowed(borrow value, borrow other)
+}
+
+pub fn decimal(value: u64) -> StrBuf { @to_string(value) }
+
+// Parse the unsigned decimal digits in `[start, end)`. Returns `count == 0`
+// when the range is not entirely digits, which every caller treats as "not a
+// number here" rather than as zero.
+pub struct Digits { value: u64, count: u64 }
+
+pub fn parse_digits(borrow value: StrBuf, start: u64, end: u64) -> Digits {
+    let mut acc: u64 = 0;
+    let mut i = start;
+    while i < end {
+        let b = byte_of(borrow value, i);
+        if !is_digit(b) { return Digits { value: 0, count: 0 }; }
+        acc = acc * 10 + @intCast(b - 48);
+        i += 1;
+    }
+    if i == start { return Digits { value: 0, count: 0 }; }
+    Digits { value: acc, count: i - start }
+}
+
+// ---------------------------------------------------------------------------
+// Escaping
+// ---------------------------------------------------------------------------
+
+// Template-level HTML escaping, matching Tera's `escape_html` set so gazette's
+// output differs from Zola's only where the two renderers genuinely disagree
+// rather than in the escape table. Zola auto-escapes every `{{ }}` in an
+// `.html` template; `| safe` is the documented opt-out.
+pub fn append_escaped_html(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else if b == 34 { out.push_str("&quot;"); }
+        else if b == 39 { out.push_str("&#x27;"); }
+        else if b == 47 { out.push_str("&#x2F;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// Markdown BODY-TEXT escaping, for prose and code spans alike. Only the three
+// bytes that could be read as markup are escaped — this is pulldown-cmark's
+// `escape_html_body_text`, and matching it exactly is why gazette's `<code>`
+// spans read `@import("std")` rather than `@import(&quot;std&quot;)` as an
+// attribute-style escape would produce.
+pub fn append_escaped_text(borrow value: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let stop = if end < value.len() { end } else { value.len() };
+    let mut i = start;
+    while i < stop {
+        let b = byte_of(borrow value, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// Markdown CODE-SPAN escaping: the body-text set, with every line ending
+// converted to a single space.
+//
+// CommonMark §6.1 says so explicitly, and it matters on real content rather
+// than in theory: the specification hard-wraps its prose, so a code span that
+// straddles a line break — `` `inout\nstr` `` — renders as `inout str` in Zola
+// and would otherwise carry a newline into the middle of a `<code>` element on
+// eight live corpus pages. Fenced code blocks keep their newlines and so keep
+// `append_escaped_text`.
+pub fn append_escaped_code_span(borrow value: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let stop = if end < value.len() { end } else { value.len() };
+    let mut i = start;
+    while i < stop {
+        let b = byte_of(borrow value, i);
+        if b == 13 {
+            out.push(32);
+            if i + 1 < stop && byte_of(borrow value, i + 1) == 10 { i += 1; }
+        }
+        else if b == 10 { out.push(32); }
+        else if b == 38 { out.push_str("&amp;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// Markdown PROSE escaping: the body-text set, except that an HTML entity
+// reference is passed through as authored.
+//
+// CommonMark decodes `&amp;`, `&copy;`, `&#169;`, and `&#xA9;` in prose to the
+// characters they name, and the HTML writer then re-escapes them — so `&amp;`
+// round-trips to `&amp;` rather than growing an escape on every render.
+// Recognizing the reference and copying it achieves the same result without a
+// named-entity table.
+//
+// Entities are deliberately NOT recognized in code spans or code blocks, which
+// keep `append_escaped_text`: CommonMark specifies that entity references are
+// literal text there, so `` `&amp;` `` really does render as `&amp;amp;`.
+pub fn append_escaped_prose(borrow value: StrBuf, start: u64, end: u64, inout out: StrBuf) {
+    let stop = if end < value.len() { end } else { value.len() };
+    let mut i = start;
+    while i < stop {
+        let b = byte_of(borrow value, i);
+        if b == 38 {
+            let close = entity_end(borrow value, i, stop);
+            if close > i {
+                let mut k = i;
+                while k < close { out.push(byte_of(borrow value, k)); k += 1; }
+                i = close;
+                continue;
+            }
+            out.push_str("&amp;");
+        }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// The offset just past a `&name;`, `&#123;`, or `&#xAB;` reference beginning at
+// `at`, or `at` when the ampersand is ordinary text. The bound keeps a stray
+// `&` from scanning the rest of the document for a semicolon.
+fn entity_end(borrow value: StrBuf, at: u64, limit: u64) -> u64 {
+    let mut i = at + 1;
+    if i < limit && byte_of(borrow value, i) == 35 {
+        i += 1;
+        let hex = i < limit && (byte_of(borrow value, i) == 120 || byte_of(borrow value, i) == 88);
+        if hex { i += 1; }
+        let digits = i;
+        while i < limit && (is_digit(byte_of(borrow value, i))
+            || (hex && is_hex_letter(byte_of(borrow value, i)))) { i += 1; }
+        if i == digits { return at; }
+    } else {
+        let letters = i;
+        while i < limit && is_alnum(byte_of(borrow value, i)) { i += 1; }
+        if i == letters { return at; }
+    }
+    if i < limit && byte_of(borrow value, i) == 59 { i + 1 } else { at }
+}
+
+fn is_hex_letter(b: u8) -> bool { (b >= 97 && b <= 102) || (b >= 65 && b <= 70) }
+
+// Markdown ATTRIBUTE escaping, for `href`, `src`, `alt`, `class`, and `id`.
+// The body-text set plus the quote that would otherwise close the attribute.
+// Nothing else is touched: the corpus's `@/…` and `#anchor` destinations are
+// already the exact bytes the site wants in the document.
+pub fn append_escaped_attr(borrow value: StrBuf, inout out: StrBuf) {
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if b == 38 { out.push_str("&amp;"); }
+        else if b == 34 { out.push_str("&quot;"); }
+        else if b == 60 { out.push_str("&lt;"); }
+        else if b == 62 { out.push_str("&gt;"); }
+        else { out.push(b); }
+        i += 1;
+    }
+}
+
+// Remove every `<...>` run. Used by the `striptags` filter, which the site's
+// homepage applies to a rendered summary before truncating it.
+pub fn strip_tags(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut depth: u64 = 0;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if b == 60 { depth += 1; }
+        else if b == 62 { if depth > 0 { depth -= 1; } }
+        else if depth == 0 { out.push(b); }
+        i += 1;
+    }
+    out
+}
+
+// GitHub-compatible heading anchor: lowercase, non-alphanumerics folded to a
+// single `-`, no leading or trailing `-`.
+pub fn slugify(borrow value: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut pending = false;
+    let mut i: u64 = 0;
+    while i < value.len() {
+        let b = byte_of(borrow value, i);
+        if is_alnum(b) || b >= 128 {
+            if pending && out.len() > 0 { out.push(45); }
+            out.push(lower_byte(b));
+            pending = false;
+        } else if out.len() > 0 {
+            pending = true;
+        }
+        i += 1;
+    }
+    out
+}

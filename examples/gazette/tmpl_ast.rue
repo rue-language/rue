@@ -1,0 +1,322 @@
+// POD representation of gazette's template language, plus the `Engine` that
+// owns every arena the parser and the evaluator share.
+//
+// Nodes and expressions are integer records in flat `ArrayBuf`s and refer to
+// each other by index, so `get_or` can read them by copy (RUE-651). Sibling
+// nodes form a linked list through `next` rather than a contiguous range: a
+// recursive parse interleaves the children of nested blocks, so a range would
+// have to be compacted afterwards, while a link costs one field.
+const std = @import("std");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+const OptU64 = std.option.Option(u64);
+const OptEntry = std.option.Option(value.Entry);
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+
+// The one nesting bound both engines share. Template inheritance is three deep
+// in this corpus, the specification's navigation macro recurses once per
+// section level, and block quotes and inline spans nest barely at all — so this
+// is far above any legitimate input and exists only so hostile or malformed
+// input produces a diagnostic instead of a stack overflow.
+pub fn MAX_DEPTH() -> u64 { 64 }
+
+// --- statement keywords recognized in `{% … %}` -----------------------------
+pub fn KW_NONE() -> u64 { 0 }
+pub fn KW_IF() -> u64 { 1 }
+pub fn KW_ELIF() -> u64 { 2 }
+pub fn KW_ELSE() -> u64 { 3 }
+pub fn KW_ENDIF() -> u64 { 4 }
+pub fn KW_FOR() -> u64 { 5 }
+pub fn KW_ENDFOR() -> u64 { 6 }
+pub fn KW_SET() -> u64 { 7 }
+pub fn KW_BLOCK() -> u64 { 8 }
+pub fn KW_ENDBLOCK() -> u64 { 9 }
+pub fn KW_EXTENDS() -> u64 { 10 }
+pub fn KW_MACRO() -> u64 { 11 }
+pub fn KW_ENDMACRO() -> u64 { 12 }
+
+// --- lexer chunks -----------------------------------------------------------
+pub fn CH_TEXT() -> u64 { 1 }
+pub fn CH_OUTPUT() -> u64 { 2 }
+pub fn CH_STMT() -> u64 { 3 }
+
+pub fn TRIM_LEFT() -> u64 { 1 }
+pub fn TRIM_RIGHT() -> u64 { 2 }
+
+// `a`/`b` are a byte range in the template source: the literal text for
+// CH_TEXT, the expression source for CH_OUTPUT, the arguments after the
+// keyword for CH_STMT.
+pub struct Chunk { kind: u64, kw: u64, a: u64, b: u64, flags: u64, line: u64 }
+
+// --- nodes ------------------------------------------------------------------
+pub fn NODE_TEXT() -> u64 { 1 }
+pub fn NODE_OUTPUT() -> u64 { 2 }
+pub fn NODE_IF() -> u64 { 3 }
+pub fn NODE_FOR() -> u64 { 4 }
+pub fn NODE_SET() -> u64 { 5 }
+pub fn NODE_BLOCK() -> u64 { 6 }
+
+// NODE_TEXT    a = pool id of the literal bytes
+// NODE_OUTPUT  a = expression, b = 1 when the filter chain contains `safe`
+// NODE_IF      a = condition, b = then-body, c = else-body
+// NODE_FOR     a = loop variable name id, b = iterable, c = body
+// NODE_SET     a = name id, b = expression
+// NODE_BLOCK   a = name id, b = default body
+pub struct Node { tag: u64, a: u64, b: u64, c: u64, next: u64, line: u64 }
+
+// --- expressions ------------------------------------------------------------
+pub fn EX_STR() -> u64 { 1 }
+pub fn EX_INT() -> u64 { 2 }
+pub fn EX_BOOL() -> u64 { 3 }
+pub fn EX_PATH() -> u64 { 4 }
+pub fn EX_CALL() -> u64 { 5 }
+pub fn EX_FILTER() -> u64 { 6 }
+pub fn EX_BINOP() -> u64 { 7 }
+pub fn EX_NOT() -> u64 { 8 }
+pub fn EX_ARG() -> u64 { 9 }
+
+pub fn OP_EQ() -> u64 { 1 }
+pub fn OP_NE() -> u64 { 2 }
+pub fn OP_LT() -> u64 { 3 }
+pub fn OP_LE() -> u64 { 4 }
+pub fn OP_GT() -> u64 { 5 }
+pub fn OP_GE() -> u64 { 6 }
+pub fn OP_AND() -> u64 { 7 }
+pub fn OP_OR() -> u64 { 8 }
+
+// EX_STR     a = pool id
+// EX_INT     a = magnitude
+// EX_BOOL    a = 0 / 1
+// EX_PATH    a = root name id, b = start in `keys`, c = segment count
+// EX_CALL    a = function name id, b = first EX_ARG
+// EX_FILTER  a = input expression, b = filter name id, c = first EX_ARG
+// EX_BINOP   a = operator, b = left, c = right
+// EX_NOT     a = operand
+// EX_ARG     a = argument name id, b = value expression, next = next argument
+pub struct Expr { tag: u64, a: u64, b: u64, c: u64, next: u64 }
+
+// A parsed template file. `base` is the name id named by `{% extends %}`, or
+// NONE. `node_start`/`node_end` bound this template's slice of the node arena,
+// which is how block definitions are collected without a second parse.
+pub struct Template {
+    name: u64,
+    body: u64,
+    base: u64,
+    node_start: u64,
+    node_end: u64,
+}
+
+pub struct BlockDef { owner: u64, name: u64, body: u64 }
+
+// A `{% macro name(a, b=default) %}` definition. `params` is a chain of EX_ARG
+// expressions whose `a` is the parameter name and whose `b` is its default
+// expression (NONE when the parameter has none), so a macro's parameter list
+// and a call's argument list are the same shape and evaluate through the same
+// code. `owner` scopes the macro to its defining template, which is what makes
+// `self::name` resolution unambiguous when two templates define the same name.
+pub struct MacroDef { owner: u64, name: u64, params: u64, body: u64 }
+
+pub const Chunks = std.arraybuf.ArrayBuf(Chunk);
+pub const Nodes = std.arraybuf.ArrayBuf(Node);
+pub const Exprs = std.arraybuf.ArrayBuf(Expr);
+pub const Templates = std.arraybuf.ArrayBuf(Template);
+pub const BlockDefs = std.arraybuf.ArrayBuf(BlockDef);
+pub const MacroDefs = std.arraybuf.ArrayBuf(MacroDef);
+
+pub fn empty_chunk() -> Chunk { Chunk { kind: 0, kw: 0, a: 0, b: 0, flags: 0, line: 0 } }
+pub fn empty_node() -> Node { Node { tag: 0, a: NONE(), b: NONE(), c: NONE(), next: NONE(), line: 0 } }
+pub fn empty_expr() -> Expr { Expr { tag: 0, a: NONE(), b: NONE(), c: NONE(), next: NONE() } }
+pub fn empty_template() -> Template {
+    Template { name: NONE(), body: NONE(), base: NONE(), node_start: 0, node_end: 0 }
+}
+pub fn empty_blockdef() -> BlockDef { BlockDef { owner: NONE(), name: NONE(), body: NONE() } }
+pub fn empty_macrodef() -> MacroDef {
+    MacroDef { owner: NONE(), name: NONE(), params: NONE(), body: NONE() }
+}
+
+// Everything the two template modules touch. Keeping one owner means the
+// parser and the evaluator agree on string ids and value indices without any
+// cross-module handoff, and it is the same single-god-object shape the other
+// maintained Rue applications in `examples/` use.
+pub struct Engine {
+    arena: value.Arena,
+    nodes: Nodes,
+    exprs: Exprs,
+    keys: value.U64s,
+    templates: Templates,
+    blocks: BlockDefs,
+    macros: MacroDefs,
+    // Macros parsed out of the template currently being read. A macro's owner
+    // is its template's index, which is not assigned until the whole file has
+    // parsed, so definitions land here and `parse_template` stamps and drains
+    // them. Blocks avoid this by being findable from the node arena afterwards;
+    // a macro emits no node, so it has nowhere else to wait.
+    pending_macros: MacroDefs,
+    // Variable scope stack: a flat list of bindings with `scope_marks` holding
+    // the length at each open scope, so leaving a scope is a truncation.
+    bindings: value.Entries,
+    scope_marks: value.U64s,
+    // Render depth guard: template inheritance and `for` bodies recurse, and a
+    // cyclic `{% extends %}` would otherwise recurse without bound.
+    depth: u64,
+
+    fn new() -> Self {
+        Self {
+            arena: value.Arena.new(),
+            nodes: Nodes.new(),
+            exprs: Exprs.new(),
+            keys: value.U64s.new(),
+            templates: Templates.new(),
+            blocks: BlockDefs.new(),
+            macros: MacroDefs.new(),
+            pending_macros: MacroDefs.new(),
+            bindings: value.Entries.new(),
+            scope_marks: value.U64s.new(),
+            depth: 0,
+        }
+    }
+
+    fn node(borrow self, index: u64) -> Node {
+        if index == NONE() { return empty_node(); }
+        self.nodes.get_or(index, empty_node())
+    }
+
+    fn expr(borrow self, index: u64) -> Expr {
+        if index == NONE() { return empty_expr(); }
+        self.exprs.get_or(index, empty_expr())
+    }
+
+    fn template(borrow self, index: u64) -> Template {
+        if index == NONE() { return empty_template(); }
+        self.templates.get_or(index, empty_template())
+    }
+
+    fn add_node(inout self, n: Node) -> u64 {
+        let index = self.nodes.len();
+        self.nodes.push(n);
+        index
+    }
+
+    fn add_expr(inout self, e: Expr) -> u64 {
+        let index = self.exprs.len();
+        self.exprs.push(e);
+        index
+    }
+
+    // Index of the template registered under `name`, or NONE.
+    fn find_template(borrow self, name: u64) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.templates.len() {
+            if self.templates.get_or(i, empty_template()).name == name { return i; }
+            i += 1;
+        }
+        NONE()
+    }
+
+    // A macro is looked up in its own template first, then in that template's
+    // inheritance chain: `spec/base.html` defines `render_nav` and its children
+    // call it, so a child rendering the parent's body must still resolve it.
+    // The caller supplies the chain, so this stays a plain scan.
+    fn find_macro(borrow self, owner: u64, name: u64) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.macros.len() {
+            let m = self.macros.get_or(i, empty_macrodef());
+            if m.owner == owner && m.name == name { return i; }
+            i += 1;
+        }
+        NONE()
+    }
+
+    fn macro_at(borrow self, index: u64) -> MacroDef {
+        if index == NONE() { return empty_macrodef(); }
+        self.macros.get_or(index, empty_macrodef())
+    }
+
+    fn find_block(borrow self, owner: u64, name: u64) -> u64 {
+        let mut i: u64 = 0;
+        while i < self.blocks.len() {
+            let b = self.blocks.get_or(i, empty_blockdef());
+            if b.owner == owner && b.name == name { return b.body; }
+            i += 1;
+        }
+        NONE()
+    }
+
+    // --- variable scopes ---
+
+    fn push_scope(inout self) { self.scope_marks.push(self.bindings.len()); }
+
+    fn pop_scope(inout self) {
+        let mark = match self.scope_marks.pop() {
+            OptU64.Some(m) => m,
+            OptU64.None => 0,
+        };
+        while self.bindings.len() > mark {
+            let _ = self.bindings.pop();
+        }
+    }
+
+    fn bind(inout self, name: u64, v: u64) {
+        self.bindings.push(value.Entry { key: name, value: v });
+    }
+
+    // Innermost binding wins, so a `for` variable shadows a global of the same
+    // name for exactly the body of the loop.
+    fn lookup(borrow self, name: u64) -> u64 {
+        let mut i = self.bindings.len();
+        while i > 0 {
+            i -= 1;
+            let b = self.bindings.get_or(i, value.empty_entry());
+            if b.key == name { return b.value; }
+        }
+        NONE()
+    }
+
+    // Replace a long-lived binding in place, or create it. `bind` PUSHES, which
+    // is right for a loop variable that a matching `pop_scope` retires, and
+    // wrong for a per-page global: re-binding `__page_url` once per page would
+    // grow the stack without bound, and since `lookup` scans innermost-first,
+    // every `__base_url` read would then walk the whole accumulated list. One
+    // site builds a whole site with one Engine (RUE-1484), so that is a real
+    // cost, not a hypothetical one.
+    fn set_global(inout self, name: u64, v: u64) {
+        let mut i: u64 = 0;
+        while i < self.bindings.len() {
+            let b = self.bindings.get_or(i, value.empty_entry());
+            if b.key == name {
+                self.bindings.set(i, value.Entry { key: name, value: v });
+                return;
+            }
+            i += 1;
+        }
+        self.bindings.push(value.Entry { key: name, value: v });
+    }
+
+    // Enter one level of nested rendering, or refuse. Both engines recurse —
+    // template inheritance and `for` bodies here, block quotes and inline spans
+    // in the Markdown renderer — and unbounded recursion on hostile input ends
+    // in a stack overflow, which is a signal-killed process with a partial
+    // output tree. ADR-0072 Decision 3 requires a located diagnostic instead,
+    // and Decision 4's determinism check cannot interpret a segfault.
+    fn enter(inout self) -> bool {
+        if self.depth >= MAX_DEPTH() { return false; }
+        self.depth += 1;
+        true
+    }
+
+    fn leave(inout self) {
+        if self.depth > 0 { self.depth -= 1; }
+    }
+
+    // Intern a name. The one-call spelling matters: `eng.arena.strings.intern`
+    // inside an argument list of another `inout self` call on `eng` would make
+    // two conflicting paths into the same object.
+    fn key(inout self, name: StrBuf) -> u64 { self.arena.strings.intern(borrow name) }
+
+    fn empty(inout self) -> u64 { self.arena.empty_string }
+
+    fn error(inout self, code: u64, line: u64, detail: StrBuf, subject: u64) {
+        self.arena.error(code, line, detail, subject);
+    }
+}

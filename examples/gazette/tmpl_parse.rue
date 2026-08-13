@@ -1,0 +1,897 @@
+// Lexer and parser for gazette's template language.
+//
+// The language is the subset of Tera (Zola's engine) that the benchmark's
+// template ports use, and no more:
+//
+//   {{ expr }}                 interpolation, HTML-escaped unless `| safe`
+//   {% if c %}{% elif c %}{% else %}{% endif %}
+//   {% for x in list %}{% endfor %}      with `loop.index/index0/first/last`
+//   {% set name = expr %}
+//   {% extends "base.html" %}  and  {% block name %}…{% endblock %}
+//   {% macro name(a, b=default) %}…{% endmacro %}  and  {{ self::name(a=x) }}
+//   {# comment #}
+//   {{- -}}  {%- -%}  {#- -#}  whitespace control on either side of a tag
+//
+// Expressions: string literals in either quote style, unsigned integers,
+// `true`/`false`, dotted paths, `and`/`or`/`not`, the six comparisons, named
+// function calls, and `|` filter chains with named arguments.
+//
+// MACROS ARE IN THE SUBSET because the production specification sidebar is
+// built from one: `spec/base.html` defines a `render_nav` macro that recurses
+// per section level and gates both the `active` class and its own recursion on
+// a prefix test. The template port derives from that sidebar, so the engine
+// carries macros with named arguments, defaults, definition on a parent
+// template, and recursion — bounded by the shared depth guard, which reports a
+// located diagnostic instead of overflowing the stack. The prefix test is the
+// `starts_with` filter (see tmpl_eval.rue); Tera spells it `x is
+// starting_with(y)`, and a filter needs no new grammar to say the same thing.
+//
+// REJECTED, loudly: `{% include %}`, `{% filter %}`, `{% raw %}`, `{% import %}`
+// and namespaces other than `self::`, Tera's other `is` tests, array and map
+// literals, arithmetic, positional (unnamed) call arguments, and
+// `{% for k, v in map %}`. Anything outside the subset is a diagnostic naming
+// the template and line, never a silent empty render.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const text = @import("text.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn NONE() -> u64 { ast.NONE() }
+
+// A cursor over the chunk list, carried by every parse function.
+struct Cursor { at: u64 }
+
+fn fail(inout eng: ast.Engine, line: u64, detail: StrBuf, subject: u64) {
+    eng.error(value.E_TEMPLATE(), line, detail, subject);
+}
+
+// ---------------------------------------------------------------------------
+// Lexing: source bytes -> chunks
+// ---------------------------------------------------------------------------
+
+fn keyword_of(borrow src: StrBuf, start: u64, end: u64) -> u64 {
+    let word = text.slice(borrow src, start, end);
+    if StrBuf.equals_borrowed(borrow word, borrow "if") { return ast.KW_IF(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "elif") { return ast.KW_ELIF(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "else") { return ast.KW_ELSE(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "endif") { return ast.KW_ENDIF(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "for") { return ast.KW_FOR(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "endfor") { return ast.KW_ENDFOR(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "set") { return ast.KW_SET(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "block") { return ast.KW_BLOCK(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "endblock") { return ast.KW_ENDBLOCK(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "extends") { return ast.KW_EXTENDS(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "macro") { return ast.KW_MACRO(); }
+    if StrBuf.equals_borrowed(borrow word, borrow "endmacro") { return ast.KW_ENDMACRO(); }
+    ast.KW_NONE()
+}
+
+// Split the template into text, `{{ }}`, and `{% %}` chunks, dropping
+// `{# #}` comments. Delimiter scanning resumes through `find_str_from`, so the
+// whole pass is one walk of the source rather than a restart per tag.
+pub fn lex(inout eng: ast.Engine, borrow src: StrBuf, name: u64) -> ast.Chunks {
+    let mut out = ast.Chunks.new();
+    let mut pos: u64 = 0;
+    let mut line: u64 = 1;
+    let mut pending_trim = false;
+    while pos < src.len() {
+        let open = next_open(borrow src, pos);
+        if open >= src.len() {
+            push_text(inout out, borrow src, pos, src.len(), pending_trim, false, line);
+            pos = src.len();
+            break;
+        }
+        let kind = text.byte_of(borrow src, open + 1);
+        let trim_left = text.byte_of(borrow src, open + 2) == 45;
+        push_text(inout out, borrow src, pos, open, pending_trim, trim_left, line);
+        line += text.count_byte_in(borrow src, 10, pos, open);
+
+        let body_start = if trim_left { open + 3 } else { open + 2 };
+        let close = if kind == 123 {
+            text.find_from(borrow src, borrow "}}", body_start)
+        } else if kind == 37 {
+            text.find_from(borrow src, borrow "%}", body_start)
+        } else {
+            text.find_from(borrow src, borrow "#}", body_start)
+        };
+        if close >= src.len() {
+            fail(inout eng, line, "unterminated template tag", name);
+            pos = src.len();
+            break;
+        }
+        let trim_right = text.byte_of(borrow src, close - 1) == 45;
+        let body_end = if trim_right { close - 1 } else { close };
+        let s = text.trim_start_at(borrow src, body_start, body_end);
+        let e = text.trim_end_at(borrow src, s, body_end);
+
+        if kind == 123 {
+            out.push(ast.Chunk {
+                kind: ast.CH_OUTPUT(), kw: ast.KW_NONE(), a: s, b: e,
+                flags: 0, line: line,
+            });
+        } else if kind == 37 {
+            let word_end = word_boundary(borrow src, s, e);
+            let kw = keyword_of(borrow src, s, word_end);
+            if kw == ast.KW_NONE() {
+                let subject = eng.arena.strings.intern_range(borrow src, s, word_end);
+                fail(inout eng, line, "statement is outside the template subset", subject);
+            }
+            let arg_start = text.trim_start_at(borrow src, word_end, e);
+            out.push(ast.Chunk {
+                kind: ast.CH_STMT(), kw: kw, a: arg_start, b: e,
+                flags: 0, line: line,
+            });
+        }
+        // `{# … #}` contributes nothing but its newlines.
+
+        line += text.count_byte_in(borrow src, 10, open, close + 2);
+        pending_trim = trim_right;
+        pos = close + 2;
+    }
+    if pos < src.len() {
+        push_text(inout out, borrow src, pos, src.len(), pending_trim, false, line);
+    }
+    out
+}
+
+// Offset of the next `{{`, `{%`, or `{#`, or the length.
+fn next_open(borrow src: StrBuf, from: u64) -> u64 {
+    let mut i = from;
+    while i + 1 < src.len() {
+        if text.byte_of(borrow src, i) == 123 {
+            let n = text.byte_of(borrow src, i + 1);
+            if n == 123 || n == 37 || n == 35 { return i; }
+        }
+        i += 1;
+    }
+    src.len()
+}
+
+fn word_boundary(borrow src: StrBuf, start: u64, end: u64) -> u64 {
+    let mut i = start;
+    while i < end && text.is_ident(text.byte_of(borrow src, i)) { i += 1; }
+    i
+}
+
+fn push_text(
+    inout out: ast.Chunks,
+    borrow src: StrBuf,
+    start: u64,
+    end: u64,
+    trim_left: bool,
+    trim_right: bool,
+    line: u64,
+) {
+    let mut s = start;
+    let mut e = end;
+    if trim_left { while s < e && text.is_blank_byte(text.byte_of(borrow src, s)) { s += 1; } }
+    if trim_right { while e > s && text.is_blank_byte(text.byte_of(borrow src, e - 1)) { e -= 1; } }
+    if s >= e { return; }
+    out.push(ast.Chunk { kind: ast.CH_TEXT(), kw: ast.KW_NONE(), a: s, b: e, flags: 0, line: line });
+}
+
+// ---------------------------------------------------------------------------
+// Expression parsing
+// ---------------------------------------------------------------------------
+
+struct Pos { at: u64 }
+
+fn skip_spaces(borrow src: StrBuf, inout p: Pos, end: u64) {
+    while p.at < end && text.is_blank_byte(text.byte_of(borrow src, p.at)) { p.at += 1; }
+}
+
+fn word_at(borrow src: StrBuf, inout p: Pos, end: u64) -> u64 {
+    let start = p.at;
+    while p.at < end && text.is_ident(text.byte_of(borrow src, p.at)) { p.at += 1; }
+    start
+}
+
+fn peek_word_is(borrow src: StrBuf, at: u64, end: u64, borrow w: str) -> bool {
+    let mut i = at;
+    while i < end && text.is_blank_byte(text.byte_of(borrow src, i)) { i += 1; }
+    if !src.matches_at(i, borrow w) { return false; }
+    let after = i + w.len();
+    after >= end || !text.is_ident(text.byte_of(borrow src, after))
+}
+
+fn take_word(borrow src: StrBuf, inout p: Pos, end: u64, borrow w: str) -> bool {
+    if !peek_word_is(borrow src, p.at, end, borrow w) { return false; }
+    skip_spaces(borrow src, inout p, end);
+    p.at += w.len();
+    true
+}
+
+fn parse_expr(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    parse_or(inout eng, borrow src, inout p, end, line)
+}
+
+// Parse a bare `name(arg=…, …)` invocation occupying `[start, end)` and return
+// the call expression. This is the entry point the Markdown shortcode pass uses
+// so a `{{ rule(id="1.1:1") }}` in page content is parsed by the SAME grammar
+// as a `{{ get_url(path='…') }}` in a template — ADR-0072 Decision 3 requires
+// shortcodes to travel the general engine path, and a second argument parser
+// would be the first step away from that.
+pub fn parse_call(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> u64 {
+    let mut p = Pos { at: start };
+    let e = parse_primary(inout eng, borrow src, inout p, end, line);
+    skip_spaces(borrow src, inout p, end);
+    if p.at < end {
+        let subject = eng.arena.strings.intern_range(borrow src, p.at, end);
+        fail(inout eng, line, "trailing text in shortcode invocation", subject);
+    }
+    e
+}
+
+fn parse_or(inout eng: ast.Engine, borrow src: StrBuf, inout p: Pos, end: u64, line: u64) -> u64 {
+    let mut left = parse_and(inout eng, borrow src, inout p, end, line);
+    while take_word(borrow src, inout p, end, borrow "or") {
+        let right = parse_and(inout eng, borrow src, inout p, end, line);
+        left = eng.add_expr(ast.Expr {
+            tag: ast.EX_BINOP(), a: ast.OP_OR(), b: left, c: right, next: NONE(),
+        });
+    }
+    left
+}
+
+fn parse_and(inout eng: ast.Engine, borrow src: StrBuf, inout p: Pos, end: u64, line: u64) -> u64 {
+    let mut left = parse_not(inout eng, borrow src, inout p, end, line);
+    while take_word(borrow src, inout p, end, borrow "and") {
+        let right = parse_not(inout eng, borrow src, inout p, end, line);
+        left = eng.add_expr(ast.Expr {
+            tag: ast.EX_BINOP(), a: ast.OP_AND(), b: left, c: right, next: NONE(),
+        });
+    }
+    left
+}
+
+fn parse_not(inout eng: ast.Engine, borrow src: StrBuf, inout p: Pos, end: u64, line: u64) -> u64 {
+    if take_word(borrow src, inout p, end, borrow "not") {
+        let operand = parse_not(inout eng, borrow src, inout p, end, line);
+        return eng.add_expr(ast.Expr {
+            tag: ast.EX_NOT(), a: operand, b: NONE(), c: NONE(), next: NONE(),
+        });
+    }
+    parse_comparison(inout eng, borrow src, inout p, end, line)
+}
+
+fn parse_comparison(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    let left = parse_filters(inout eng, borrow src, inout p, end, line);
+    skip_spaces(borrow src, inout p, end);
+    if p.at >= end { return left; }
+    let b0 = text.byte_of(borrow src, p.at);
+    let b1 = if p.at + 1 < end { text.byte_of(borrow src, p.at + 1) } else { 0 };
+    let mut op = 0;
+    let mut width: u64 = 0;
+    if b0 == 61 && b1 == 61 { op = ast.OP_EQ(); width = 2; }
+    else if b0 == 33 && b1 == 61 { op = ast.OP_NE(); width = 2; }
+    else if b0 == 62 && b1 == 61 { op = ast.OP_GE(); width = 2; }
+    else if b0 == 60 && b1 == 61 { op = ast.OP_LE(); width = 2; }
+    else if b0 == 62 { op = ast.OP_GT(); width = 1; }
+    else if b0 == 60 { op = ast.OP_LT(); width = 1; }
+    if width == 0 {
+        // `is`-tests are Tera syntax the port does not use; naming them is far
+        // more useful than the "unexpected byte" the fallback would give.
+        if peek_word_is(borrow src, p.at, end, borrow "is") {
+            fail(inout eng, line, "`is` tests are outside the template subset", NONE());
+            p.at = end;
+        }
+        return left;
+    }
+    p.at += width;
+    let right = parse_filters(inout eng, borrow src, inout p, end, line);
+    eng.add_expr(ast.Expr { tag: ast.EX_BINOP(), a: op, b: left, c: right, next: NONE() })
+}
+
+fn parse_filters(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    let mut current = parse_primary(inout eng, borrow src, inout p, end, line);
+    loop {
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end || text.byte_of(borrow src, p.at) != 124 { break; }
+        p.at += 1;
+        skip_spaces(borrow src, inout p, end);
+        let name_start = word_at(borrow src, inout p, end);
+        if p.at == name_start {
+            fail(inout eng, line, "expected a filter name after `|`", NONE());
+            p.at = end;
+            break;
+        }
+        let name = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+        let args = parse_optional_args(inout eng, borrow src, inout p, end, line);
+        current = eng.add_expr(ast.Expr {
+            tag: ast.EX_FILTER(), a: current, b: name, c: args, next: NONE(),
+        });
+    }
+    current
+}
+
+// `( name = expr, … )` when present, else NONE. Arguments must be named:
+// Tera requires it for filters and Zola's own templates always name them, so a
+// positional argument is a typo rather than a form to guess at.
+fn parse_optional_args(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    skip_spaces(borrow src, inout p, end);
+    if p.at >= end || text.byte_of(borrow src, p.at) != 40 { return NONE(); }
+    p.at += 1;
+    let mut head = NONE();
+    let mut tail = NONE();
+    loop {
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end { fail(inout eng, line, "unterminated argument list", NONE()); break; }
+        if text.byte_of(borrow src, p.at) == 41 { p.at += 1; break; }
+        let name_start = word_at(borrow src, inout p, end);
+        if p.at == name_start {
+            fail(inout eng, line, "expected a named argument", NONE());
+            p.at = end;
+            break;
+        }
+        let name = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end || text.byte_of(borrow src, p.at) != 61 {
+            fail(inout eng, line, "call arguments must be named (`name=value`)", name);
+            p.at = end;
+            break;
+        }
+        p.at += 1;
+        let v = parse_expr(inout eng, borrow src, inout p, end, line);
+        let arg = eng.add_expr(ast.Expr { tag: ast.EX_ARG(), a: name, b: v, c: NONE(), next: NONE() });
+        if head == NONE() { head = arg; } else {
+            let mut prev = eng.expr(tail);
+            prev.next = arg;
+            eng.exprs.set(tail, prev);
+        }
+        tail = arg;
+        skip_spaces(borrow src, inout p, end);
+        if p.at < end && text.byte_of(borrow src, p.at) == 44 { p.at += 1; }
+    }
+    head
+}
+
+// A macro's parameter list: `(name, name=default, …)`. Unlike a CALL argument
+// list, a parameter may stand alone — Tera's `{% macro nav(section, depth) %}`
+// — so this cannot reuse `parse_optional_args`, which requires `name=value` on
+// purpose. Both produce the same EX_ARG chain, so evaluation stays shared.
+fn parse_params(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    skip_spaces(borrow src, inout p, end);
+    if p.at >= end || text.byte_of(borrow src, p.at) != 40 { return NONE(); }
+    p.at += 1;
+    let mut head = NONE();
+    let mut tail = NONE();
+    loop {
+        skip_spaces(borrow src, inout p, end);
+        if p.at >= end { fail(inout eng, line, "unterminated macro parameter list", NONE()); break; }
+        if text.byte_of(borrow src, p.at) == 41 { p.at += 1; break; }
+        let name_start = word_at(borrow src, inout p, end);
+        if p.at == name_start {
+            fail(inout eng, line, "expected a macro parameter name", NONE());
+            p.at = end;
+            break;
+        }
+        let name = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+        skip_spaces(borrow src, inout p, end);
+        let mut default_expr = NONE();
+        if p.at < end && text.byte_of(borrow src, p.at) == 61 {
+            p.at += 1;
+            default_expr = parse_expr(inout eng, borrow src, inout p, end, line);
+        }
+        let param = eng.add_expr(ast.Expr {
+            tag: ast.EX_ARG(), a: name, b: default_expr, c: NONE(), next: NONE(),
+        });
+        if head == NONE() { head = param; } else {
+            let mut prev = eng.expr(tail);
+            prev.next = param;
+            eng.exprs.set(tail, prev);
+        }
+        tail = param;
+        skip_spaces(borrow src, inout p, end);
+        if p.at < end && text.byte_of(borrow src, p.at) == 44 { p.at += 1; }
+    }
+    head
+}
+
+fn parse_primary(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    inout p: Pos,
+    end: u64,
+    line: u64,
+) -> u64 {
+    skip_spaces(borrow src, inout p, end);
+    if p.at >= end {
+        fail(inout eng, line, "expected an expression", NONE());
+        let empty = eng.empty();
+        return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });
+    }
+    let b = text.byte_of(borrow src, p.at);
+
+    if b == 40 {
+        p.at += 1;
+        let inner = parse_expr(inout eng, borrow src, inout p, end, line);
+        skip_spaces(borrow src, inout p, end);
+        if p.at < end && text.byte_of(borrow src, p.at) == 41 { p.at += 1; }
+        return inner;
+    }
+
+    if b == 34 || b == 39 {
+        let quote = b;
+        p.at += 1;
+        let start = p.at;
+        let mut escaped = false;
+        while p.at < end {
+            let c = text.byte_of(borrow src, p.at);
+            if c == 92 { escaped = true; p.at += 2; continue; }
+            if c == quote { break; }
+            p.at += 1;
+        }
+        let raw_end = if p.at < end { p.at } else { end };
+        let id = if escaped {
+            let decoded = decode_string(borrow src, start, raw_end);
+            eng.arena.strings.intern(borrow decoded)
+        } else {
+            eng.arena.strings.intern_range(borrow src, start, raw_end)
+        };
+        if p.at < end { p.at += 1; }
+        return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: id, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    if text.is_digit(b) {
+        let start = p.at;
+        while p.at < end && text.is_digit(text.byte_of(borrow src, p.at)) { p.at += 1; }
+        let digits = text.parse_digits(borrow src, start, p.at);
+        if p.at < end && text.byte_of(borrow src, p.at) == 46 {
+            fail(inout eng, line, "fractional numbers are outside the template subset (Rue has no float type)", NONE());
+            p.at = end;
+        }
+        return eng.add_expr(ast.Expr { tag: ast.EX_INT(), a: digits.value, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    if b == 45 || b == 91 || b == 123 {
+        fail(inout eng, line, "negative numbers and array/map literals are outside the template subset", NONE());
+        p.at = end;
+        let empty = eng.empty();
+        return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    if !text.is_ident(b) {
+        let subject = eng.arena.strings.intern_range(borrow src, p.at, if p.at + 8 < end { p.at + 8 } else { end });
+        fail(inout eng, line, "unrecognized expression", subject);
+        p.at = end;
+        let empty = eng.empty();
+        return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    let start = word_at(borrow src, inout p, end);
+    let word = text.slice(borrow src, start, p.at);
+    if StrBuf.equals_borrowed(borrow word, borrow "true") {
+        return eng.add_expr(ast.Expr { tag: ast.EX_BOOL(), a: 1, b: NONE(), c: NONE(), next: NONE() });
+    }
+    if StrBuf.equals_borrowed(borrow word, borrow "false") {
+        return eng.add_expr(ast.Expr { tag: ast.EX_BOOL(), a: 0, b: NONE(), c: NONE(), next: NONE() });
+    }
+
+    // `self::render_nav(...)` — a macro call. The namespace is folded into the
+    // call's name as `self::render_nav`, so a macro invocation and a function
+    // invocation are the same EX_CALL node and travel the same evaluation path;
+    // only name resolution differs. Tera's other namespaces (an imported
+    // `{% import %}` alias) are not in the subset, so `self` is the only one.
+    if p.at + 1 < end && text.byte_of(borrow src, p.at) == 58
+        && text.byte_of(borrow src, p.at + 1) == 58 {
+        if !StrBuf.equals_borrowed(borrow word, borrow "self") {
+            fail(inout eng, line, "only the `self::` macro namespace is in the template subset", NONE());
+            p.at = end;
+            let empty = eng.empty();
+            return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });
+        }
+        p.at += 2;
+        let macro_start = word_at(borrow src, inout p, end);
+        if p.at == macro_start {
+            fail(inout eng, line, "expected a macro name after `self::`", NONE());
+            p.at = end;
+            let empty = eng.empty();
+            return eng.add_expr(ast.Expr { tag: ast.EX_STR(), a: empty, b: NONE(), c: NONE(), next: NONE() });
+        }
+        let qualified = eng.arena.strings.intern_range(borrow src, start, p.at);
+        let args = parse_optional_args(inout eng, borrow src, inout p, end, line);
+        return eng.add_expr(ast.Expr {
+            tag: ast.EX_CALL(), a: qualified, b: args, c: NONE(), next: NONE(),
+        });
+    }
+
+    let root = eng.arena.strings.intern_range(borrow src, start, p.at);
+    if p.at < end && text.byte_of(borrow src, p.at) == 40 {
+        let args = parse_optional_args(inout eng, borrow src, inout p, end, line);
+        return eng.add_expr(ast.Expr { tag: ast.EX_CALL(), a: root, b: args, c: NONE(), next: NONE() });
+    }
+
+    // Dotted path: the segments go into the shared `keys` arena as one range.
+    let keys_start = eng.keys.len();
+    let mut count: u64 = 0;
+    while p.at + 1 < end && text.byte_of(borrow src, p.at) == 46
+        && text.is_ident(text.byte_of(borrow src, p.at + 1)) {
+        p.at += 1;
+        let seg_start = word_at(borrow src, inout p, end);
+        eng.keys.push(eng.arena.strings.intern_range(borrow src, seg_start, p.at));
+        count += 1;
+    }
+    eng.add_expr(ast.Expr {
+        tag: ast.EX_PATH(), a: root, b: keys_start, c: count, next: NONE(),
+    })
+}
+
+fn decode_string(borrow src: StrBuf, start: u64, end: u64) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i = start;
+    while i < end {
+        let b = text.byte_of(borrow src, i);
+        if b == 92 && i + 1 < end {
+            let e = text.byte_of(borrow src, i + 1);
+            if e == 110 { out.push(10); }
+            else if e == 116 { out.push(9); }
+            else { out.push(e); }
+            i += 2;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+// Parse a whole expression from `[start, end)`, reporting trailing garbage.
+fn parse_whole(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    start: u64,
+    end: u64,
+    line: u64,
+) -> u64 {
+    let mut p = Pos { at: start };
+    let e = parse_expr(inout eng, borrow src, inout p, end, line);
+    skip_spaces(borrow src, inout p, end);
+    if p.at < end {
+        let subject = eng.arena.strings.intern_range(borrow src, p.at, end);
+        fail(inout eng, line, "trailing text in expression", subject);
+    }
+    e
+}
+
+// ---------------------------------------------------------------------------
+// Node parsing
+// ---------------------------------------------------------------------------
+
+// Whether the filter chain of `e` contains `safe`, which is how Tera opts an
+// interpolation out of auto-escaping.
+fn chain_is_safe(borrow eng: ast.Engine, index: u64) -> bool {
+    let mut current = index;
+    while current != NONE() {
+        let e = eng.expr(current);
+        if e.tag != ast.EX_FILTER() { return false; }
+        if eng.arena.strings.equals_literal(e.b, "safe") { return true; }
+        current = e.a;
+    }
+    false
+}
+
+fn parse_body(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    name: u64,
+) -> u64 {
+    let mut head = NONE();
+    let mut tail = NONE();
+    while cur.at < chunks.len() {
+        let c = chunks.get_or(cur.at, ast.empty_chunk());
+        if c.kind == ast.CH_STMT() {
+            let kw = c.kw;
+            if kw == ast.KW_ELIF() || kw == ast.KW_ELSE() || kw == ast.KW_ENDIF()
+                || kw == ast.KW_ENDFOR() || kw == ast.KW_ENDBLOCK()
+                || kw == ast.KW_ENDMACRO() {
+                return head;
+            }
+        }
+        cur.at += 1;
+        let node = parse_chunk(inout eng, borrow src, borrow chunks, inout cur, c, name);
+        if node == NONE() { continue; }
+        if head == NONE() { head = node; } else {
+            let mut prev = eng.node(tail);
+            prev.next = node;
+            eng.nodes.set(tail, prev);
+        }
+        tail = node;
+    }
+    head
+}
+
+fn parse_chunk(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    c: ast.Chunk,
+    name: u64,
+) -> u64 {
+    if c.kind == ast.CH_TEXT() {
+        let id = eng.arena.strings.intern_range(borrow src, c.a, c.b);
+        return eng.add_node(ast.Node {
+            tag: ast.NODE_TEXT(), a: id, b: NONE(), c: NONE(), next: NONE(), line: c.line,
+        });
+    }
+    if c.kind == ast.CH_OUTPUT() {
+        let e = parse_whole(inout eng, borrow src, c.a, c.b, c.line);
+        let safe = if chain_is_safe(borrow eng, e) { 1 } else { 0 };
+        return eng.add_node(ast.Node {
+            tag: ast.NODE_OUTPUT(), a: e, b: safe, c: NONE(), next: NONE(), line: c.line,
+        });
+    }
+
+    let kw = c.kw;
+    if kw == ast.KW_IF() {
+        return parse_if(inout eng, borrow src, borrow chunks, inout cur, c, name);
+    }
+    if kw == ast.KW_FOR() {
+        return parse_for(inout eng, borrow src, borrow chunks, inout cur, c, name);
+    }
+    if kw == ast.KW_SET() {
+        return parse_set(inout eng, borrow src, c);
+    }
+    if kw == ast.KW_BLOCK() {
+        return parse_block(inout eng, borrow src, borrow chunks, inout cur, c, name);
+    }
+    if kw == ast.KW_MACRO() {
+        return parse_macro(inout eng, borrow src, borrow chunks, inout cur, c, name);
+    }
+    if kw == ast.KW_EXTENDS() {
+        // Handled by `parse_template`, which needs it before the body.
+        return NONE();
+    }
+    // KW_NONE was already reported by the lexer; a stray terminator lands here.
+    NONE()
+}
+
+fn expect_terminator(
+    inout eng: ast.Engine,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    wanted: u64,
+    line: u64,
+    name: u64,
+) {
+    if cur.at < chunks.len() {
+        let c = chunks.get_or(cur.at, ast.empty_chunk());
+        if c.kind == ast.CH_STMT() && c.kw == wanted {
+            cur.at += 1;
+            return;
+        }
+    }
+    fail(inout eng, line, "unterminated block", name);
+}
+
+fn parse_if(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    c: ast.Chunk,
+    name: u64,
+) -> u64 {
+    let cond = parse_whole(inout eng, borrow src, c.a, c.b, c.line);
+    let then_body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
+    let mut else_body = NONE();
+    if cur.at < chunks.len() {
+        let nxt = chunks.get_or(cur.at, ast.empty_chunk());
+        if nxt.kind == ast.CH_STMT() && nxt.kw == ast.KW_ELIF() {
+            cur.at += 1;
+            // `elif` is exactly a nested `if` in the else branch, so one node
+            // shape covers arbitrarily long chains.
+            else_body = parse_if(inout eng, borrow src, borrow chunks, inout cur, nxt, name);
+            return eng.add_node(ast.Node {
+                tag: ast.NODE_IF(), a: cond, b: then_body, c: else_body, next: NONE(), line: c.line,
+            });
+        }
+        if nxt.kind == ast.CH_STMT() && nxt.kw == ast.KW_ELSE() {
+            cur.at += 1;
+            else_body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
+        }
+    }
+    expect_terminator(inout eng, borrow chunks, inout cur, ast.KW_ENDIF(), c.line, name);
+    eng.add_node(ast.Node {
+        tag: ast.NODE_IF(), a: cond, b: then_body, c: else_body, next: NONE(), line: c.line,
+    })
+}
+
+fn parse_for(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    c: ast.Chunk,
+    name: u64,
+) -> u64 {
+    let mut p = Pos { at: c.a };
+    skip_spaces(borrow src, inout p, c.b);
+    let var_start = word_at(borrow src, inout p, c.b);
+    if p.at == var_start {
+        fail(inout eng, c.line, "expected a loop variable", name);
+    }
+    let var_name = eng.arena.strings.intern_range(borrow src, var_start, p.at);
+    skip_spaces(borrow src, inout p, c.b);
+    if p.at < c.b && text.byte_of(borrow src, p.at) == 44 {
+        fail(inout eng, c.line, "`for key, value in map` is outside the template subset", name);
+        p.at = c.b;
+    }
+    if !take_word(borrow src, inout p, c.b, borrow "in") {
+        fail(inout eng, c.line, "expected `in` in a for statement", name);
+        p.at = c.b;
+    }
+    let iterable = parse_expr(inout eng, borrow src, inout p, c.b, c.line);
+    let body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
+    expect_terminator(inout eng, borrow chunks, inout cur, ast.KW_ENDFOR(), c.line, name);
+    eng.add_node(ast.Node {
+        tag: ast.NODE_FOR(), a: var_name, b: iterable, c: body, next: NONE(), line: c.line,
+    })
+}
+
+fn parse_set(inout eng: ast.Engine, borrow src: StrBuf, c: ast.Chunk) -> u64 {
+    let mut p = Pos { at: c.a };
+    skip_spaces(borrow src, inout p, c.b);
+    let name_start = word_at(borrow src, inout p, c.b);
+    let target = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+    skip_spaces(borrow src, inout p, c.b);
+    if p.at >= c.b || text.byte_of(borrow src, p.at) != 61 {
+        fail(inout eng, c.line, "expected `=` in a set statement", target);
+        return NONE();
+    }
+    p.at += 1;
+    let e = parse_expr(inout eng, borrow src, inout p, c.b, c.line);
+    eng.add_node(ast.Node {
+        tag: ast.NODE_SET(), a: target, b: e, c: NONE(), next: NONE(), line: c.line,
+    })
+}
+
+fn parse_block(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    c: ast.Chunk,
+    name: u64,
+) -> u64 {
+    let mut p = Pos { at: c.a };
+    skip_spaces(borrow src, inout p, c.b);
+    let name_start = word_at(borrow src, inout p, c.b);
+    let block_name = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+    let body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
+    expect_terminator(inout eng, borrow chunks, inout cur, ast.KW_ENDBLOCK(), c.line, name);
+    eng.add_node(ast.Node {
+        tag: ast.NODE_BLOCK(), a: block_name, b: body, c: NONE(), next: NONE(), line: c.line,
+    })
+}
+
+// A macro definition emits no node: its body is reachable only through a
+// `self::name(…)` call, so it is registered and the walk moves on. Returning
+// NONE keeps a macro from rendering where it was written, which is what makes
+// `spec/base.html`'s trailing `{% macro render_nav %}` produce no output of its
+// own while still being callable from the sidebar above it.
+fn parse_macro(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow chunks: ast.Chunks,
+    inout cur: Cursor,
+    c: ast.Chunk,
+    name: u64,
+) -> u64 {
+    let mut p = Pos { at: c.a };
+    skip_spaces(borrow src, inout p, c.b);
+    let name_start = word_at(borrow src, inout p, c.b);
+    if p.at == name_start {
+        fail(inout eng, c.line, "expected a macro name", name);
+    }
+    let macro_name = eng.arena.strings.intern_range(borrow src, name_start, p.at);
+    let params = parse_params(inout eng, borrow src, inout p, c.b, c.line);
+    let body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name);
+    expect_terminator(inout eng, borrow chunks, inout cur, ast.KW_ENDMACRO(), c.line, name);
+    eng.pending_macros.push(ast.MacroDef {
+        owner: NONE(), name: macro_name, params: params, body: body,
+    });
+    NONE()
+}
+
+// Register one template under `name` (its path, e.g. `spec/page.html`).
+// Returns the template index.
+pub fn parse_template(inout eng: ast.Engine, name: StrBuf, borrow src: StrBuf) -> u64 {
+    let name_id = eng.arena.strings.intern(borrow name);
+    let chunks = lex(inout eng, borrow src, name_id);
+
+    // `{% extends %}` must be read before the body so inheritance is known even
+    // when the parse of the body reports errors.
+    let mut base = NONE();
+    let mut i: u64 = 0;
+    while i < chunks.len() {
+        let c = chunks.get_or(i, ast.empty_chunk());
+        if c.kind == ast.CH_STMT() && c.kw == ast.KW_EXTENDS() {
+            let e = parse_whole(inout eng, borrow src, c.a, c.b, c.line);
+            let parsed = eng.expr(e);
+            if parsed.tag != ast.EX_STR() {
+                fail(inout eng, c.line, "`extends` takes a quoted template name", name_id);
+            } else {
+                base = parsed.a;
+            }
+        }
+        i += 1;
+    }
+
+    let node_start = eng.nodes.len();
+    let mut cur = Cursor { at: 0 };
+    let body = parse_body(inout eng, borrow src, borrow chunks, inout cur, name_id);
+    if cur.at < chunks.len() {
+        let c = chunks.get_or(cur.at, ast.empty_chunk());
+        fail(inout eng, c.line, "unexpected block terminator", name_id);
+    }
+    let node_end = eng.nodes.len();
+
+    let index = eng.templates.len();
+    eng.templates.push(ast.Template {
+        name: name_id, body: body, base: base, node_start: node_start, node_end: node_end,
+    });
+
+    // Every `{% block %}` in the template — including ones nested inside other
+    // blocks, which is exactly how `spec/base.html` nests `spec_content` inside
+    // `content` — is registered so a child can override it by name.
+    let mut n = node_start;
+    while n < node_end {
+        let node = eng.node(n);
+        if node.tag == ast.NODE_BLOCK() {
+            eng.blocks.push(ast.BlockDef { owner: index, name: node.a, body: node.b });
+        }
+        n += 1;
+    }
+
+    // Stamp this template's macros with their owner now that it has an index.
+    let mut m: u64 = 0;
+    while m < eng.pending_macros.len() {
+        let pending = eng.pending_macros.get_or(m, ast.empty_macrodef());
+        eng.macros.push(ast.MacroDef {
+            owner: index, name: pending.name, params: pending.params, body: pending.body,
+        });
+        m += 1;
+    }
+    eng.pending_macros = ast.MacroDefs.new();
+    index
+}

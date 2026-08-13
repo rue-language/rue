@@ -1,0 +1,1306 @@
+// The CommonMark subset the rue-lang.dev corpus uses, rendered straight to
+// HTML, plus the shortcode preprocessing pass.
+//
+// THE SUBSET, audited against all 96 corpus files (25 site pages plus the 71
+// specification pages `website/build.sh` copies in) rather than taken from the
+// CommonMark suite:
+//
+//   blocks   ATX headings (h1–h6; the corpus uses h1–h3), paragraphs with soft
+//            and hard line breaks, fenced code with an info string, block
+//            quotes, tight unordered and ordered lists, thematic breaks, GFM
+//            pipe tables, HTML blocks
+//   inline   code spans, `**strong**`, `*emphasis*`, `_emphasis_`, inline
+//            links, reference links with their definitions, images, URI
+//            autolinks, HTML entity references, backslash escapes, raw HTML
+//            tags
+//
+// FIVE OF THOSE are not in ADR-0072 Decision 3's original list — GFM pipe
+// tables, HTML blocks, raw inline HTML, reference links with definitions, and
+// backslash escapes. The audit found all five in live content (17 tables over
+// 232 rows; `<!-- more -->` on 8 blog posts; 2 reference links), and Zola
+// renders every one, so omitting any would have failed the Decision 4 oracle
+// on every page that has it. Decision 3 has been amended to name them: the
+// documented subset is load-bearing, since it is what the rejection rule below
+// is measured against.
+//
+// REJECTED, loudly, each with the source line: setext headings under EITHER
+// marker (`===` and `---`), indented code blocks, nested lists, loose
+// (blank-line-separated) list items, table alignment colons, strikethrough,
+// footnotes, email autolinks, reference links with no definition, block
+// shortcodes (`{% … %}`), unknown shortcode names, and nesting deeper than the
+// engine's depth guard. Per ADR-0072 Decision 3 that is deliberate — the
+// benchmark builds the LIVE site, so content stepping outside the subset must
+// break collection visibly rather than publish silently wrong HTML.
+//
+// What is NOT rejected is anything the subset renders correctly: an unclosed
+// fence at end of input is well-formed CommonMark and is rendered, not refused.
+// And nothing is left to fail SILENTLY: a construct outside the subset either
+// reports or renders, never emits markup a browser will mis-parse. That rule is
+// what forced email autolinks to be recognized at all — `<a@b.test>` used to
+// reach the output as a raw element the browser drops.
+//
+// KNOWN DIVERGENCE FROM ZOLA, disclosed rather than hidden: Zola writes every
+// fenced code block through its own writer even with highlighting disabled,
+// wrapping it as `<pre data-lang="X" class="language-X ">` and escaping `"`,
+// `'`, and `/` inside it. Gazette emits CommonMark's `<pre><code
+// class="language-X">` and pulldown-cmark's body-text escape set. Adopting
+// Zola's escape table would not reach byte identity anyway — its wrapper is
+// not CommonMark — and would cost a renderer that matches the specification it
+// documents. `scripts/gazette-corpus-diff.py` names this divergence class and
+// fails on any difference outside it.
+//
+// SHORTCODES GO THROUGH THE TEMPLATE ENGINE. A `{{ name(args) }}` is parsed by
+// the template expression grammar, its arguments are bound as ordinary
+// variables, and `shortcodes/<name>.html` is rendered by the same `render` that
+// renders a page. The corpus is 1,224 `rule` invocations to one
+// `preview_feature`; ADR-0072 Decision 3 forbids recognizing either name, and
+// nothing in this file does. The expansion happens before block parsing, as it
+// does in Zola, so an expanded `<div>` becomes an ordinary HTML block.
+//
+// SOFT LINE BREAKS ARE NEWLINES, matching CommonMark and pulldown-cmark: the
+// corpus is hard-wrapped prose, and joining its lines with spaces would change
+// the byte content of every paragraph relative to Zola's output.
+const std = @import("std");
+const ast = @import("tmpl_ast.rue");
+const text = @import("text.rue");
+const tmpl_eval = @import("tmpl_eval.rue");
+const tmpl_parse = @import("tmpl_parse.rue");
+const value = @import("value.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn NONE() -> u64 { ast.NONE() }
+
+pub struct Rendered {
+    html: StrBuf,
+    // Byte offset in `html` at which the `<!-- more -->` summary marker was
+    // seen, or the whole length when the page has none. Zola's `page.summary`
+    // is the prefix; the page model reads it from here.
+    summary_end: u64,
+    ok: bool,
+}
+
+// Link reference definitions, collected before the block walk because a
+// definition may follow the reference that uses it.
+struct Refs { labels: value.Entries }
+
+fn fail(inout eng: ast.Engine, line: u64, detail: StrBuf, subject: u64) {
+    eng.error(value.E_MARKDOWN(), line, detail, subject);
+}
+
+// ---------------------------------------------------------------------------
+// Pass 1 — shortcode expansion
+// ---------------------------------------------------------------------------
+
+// Replace every `{{ name(args) }}` with the rendered `shortcodes/<name>.html`.
+// The scan resumes through `find_str_from` and the block-tag position is
+// remembered rather than re-searched, so the whole pass is ONE walk of the body
+// however many invocations it holds. Re-scanning for `{%` at every `{{` would
+// make the pass quadratic on exactly the pages that matter most — the largest
+// specification page carries over a hundred `rule` invocations.
+//
+// Expansion precedes block parsing, as it does in Zola, so a `{{` inside a
+// fenced code block would be expanded rather than shown. No corpus fence
+// contains one; a page that needed to show the delimiters literally would be a
+// real subset extension, not a silent misrender.
+pub fn expand_shortcodes(
+    inout eng: ast.Engine,
+    borrow source: StrBuf,
+    start: u64,
+    first_line: u64,
+) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut pos = start;
+    let mut line = first_line;
+    let mut block_open = text.find_from(borrow source, borrow "{%", start);
+    while pos < source.len() {
+        let open = text.find_from(borrow source, borrow "{{", pos);
+        if block_open < pos { block_open = text.find_from(borrow source, borrow "{%", pos); }
+        if block_open < open {
+            line += text.count_byte_in(borrow source, 10, pos, block_open);
+            fail(inout eng, line, "block shortcodes (`{% … %}`) are outside the subset", NONE());
+            let piece = text.slice(borrow source, pos, source.len());
+            out.append_borrowed(borrow piece);
+            return out;
+        }
+        if open >= source.len() {
+            let piece = text.slice(borrow source, pos, source.len());
+            out.append_borrowed(borrow piece);
+            return out;
+        }
+        let close = text.find_from(borrow source, borrow "}}", open + 2);
+        if close >= source.len() {
+            fail(inout eng, line, "unterminated shortcode invocation", NONE());
+            let piece = text.slice(borrow source, pos, source.len());
+            out.append_borrowed(borrow piece);
+            return out;
+        }
+        let head = text.slice(borrow source, pos, open);
+        out.append_borrowed(borrow head);
+        line += text.count_byte_in(borrow source, 10, pos, open);
+
+        let body_start = text.trim_start_at(borrow source, open + 2, close);
+        let body_end = text.trim_end_at(borrow source, body_start, close);
+        let call = tmpl_parse.parse_call(inout eng, borrow source, body_start, body_end, line);
+        let parsed = eng.expr(call);
+        if parsed.tag != ast.EX_CALL() {
+            fail(inout eng, line, "shortcode must be a `name(arg=…)` invocation", NONE());
+        } else {
+            let template = shortcode_template(inout eng, parsed.a);
+            if eng.find_template(template) == NONE() {
+                eng.error(value.E_SHORTCODE(), line, "unknown shortcode", parsed.a);
+            } else {
+                let _ = tmpl_eval.render_shortcode(inout eng, call, template, line, inout out);
+            }
+        }
+        pos = close + 2;
+    }
+    out
+}
+
+// `name` -> `shortcodes/<name>.html`, Zola's convention. A general mapping over
+// whatever name the content used; nothing here tests for a particular one.
+fn shortcode_template(inout eng: ast.Engine, name: u64) -> u64 {
+    let mut path = StrBuf.new();
+    path.push_str("shortcodes/");
+    eng.arena.strings.append(name, inout path);
+    path.push_str(".html");
+    eng.arena.strings.intern(borrow path)
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2 — block structure
+// ---------------------------------------------------------------------------
+
+pub fn render(inout eng: ast.Engine, borrow body: StrBuf, first_line: u64) -> Rendered {
+    let before = eng.arena.error_count();
+    let mut refs = Refs { labels: value.Entries.new() };
+    collect_definitions(inout eng, borrow body, inout refs);
+
+    let mut out = StrBuf.new();
+    let mut summary_end = NONE();
+    let mut offset: u64 = 0;
+    let mut line = first_line;
+    while offset < body.len() {
+        let end = text.line_end(borrow body, offset);
+        if text.blank_range(borrow body, offset, end) {
+            offset = text.next_line(borrow body, offset);
+            line += 1;
+            continue;
+        }
+        let indent = text.trim_start_at(borrow body, offset, end) - offset;
+        if indent >= 4 {
+            fail(inout eng, line, "indented code blocks are outside the subset (use a fenced block)", NONE());
+            offset = text.next_line(borrow body, offset);
+            line += 1;
+            continue;
+        }
+        let raw_step = render_block(
+            inout eng, borrow body, borrow refs, offset, end, line, inout out, inout summary_end,
+        );
+        // Every block handler is written to consume at least its own first
+        // line, but a handler that ever failed to would hang the build rather
+        // than report anything. The walk therefore guarantees progress itself.
+        let step = if raw_step > offset { raw_step } else { text.next_line(borrow body, offset) };
+        line += text.count_byte_in(borrow body, 10, offset, step);
+        offset = step;
+    }
+    let total = out.len();
+    Rendered {
+        html: out,
+        summary_end: if summary_end == NONE() { total } else { summary_end },
+        ok: eng.arena.error_count() == before,
+    }
+}
+
+// Dispatch one block starting at `offset` (whose first line ends at `end`) and
+// return the offset just past it.
+fn render_block(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    borrow refs: Refs,
+    offset: u64,
+    end: u64,
+    line: u64,
+    inout out: StrBuf,
+    inout summary_end: u64,
+) -> u64 {
+    let s = text.trim_start_at(borrow body, offset, end);
+    let first = text.byte_of(borrow body, s);
+
+    if first == 35 {
+        let level = heading_level(borrow body, s, end);
+        if level > 0 {
+            let content_start = text.trim_start_at(borrow body, s + level, end);
+            let content_end = trim_heading_end(borrow body, content_start, end);
+            let mut inner = StrBuf.new();
+            render_inline(inout eng, borrow body, borrow refs, content_start, content_end, line, inout inner);
+            let plain = text.slice(borrow body, content_start, content_end);
+            let stripped = text.strip_tags(borrow plain);
+            let slug = text.slugify(borrow stripped);
+            out.push_str("<h");
+            out.push_str(text.decimal(level));
+            out.push_str(" id=\"");
+            text.append_escaped_attr(borrow slug, inout out);
+            out.push_str("\">");
+            out.append_borrowed(borrow inner);
+            out.push_str("</h");
+            out.push_str(text.decimal(level));
+            out.push_str(">\n");
+            return text.next_line(borrow body, offset);
+        }
+    }
+
+    if is_fence(borrow body, s, end) {
+        return render_fence(inout eng, borrow body, offset, s, end, line, inout out);
+    }
+
+    if is_thematic_break(borrow body, s, end) {
+        out.push_str("<hr />\n");
+        return text.next_line(borrow body, offset);
+    }
+
+    if first == 62 {
+        return render_quote(inout eng, borrow body, offset, line, inout out);
+    }
+
+    if starts_html_block(borrow body, s, end) {
+        return render_html_block(borrow body, offset, s, inout out, inout summary_end);
+    }
+
+    let marker = list_marker(borrow body, s, end);
+    if marker.width > 0 {
+        // An indented marker is a nested list. This is the single place it is
+        // reported: the list walker below merely stops, so one nested item
+        // yields one diagnostic rather than one per detection site.
+        if s > offset {
+            fail(inout eng, line, "nested lists are outside the subset", NONE());
+            return text.next_line(borrow body, offset);
+        }
+        return render_list(inout eng, borrow body, borrow refs, offset, line, marker, inout out);
+    }
+
+    let next_start = text.next_line(borrow body, offset);
+    if next_start < body.len() {
+        let next_end = text.line_end(borrow body, next_start);
+        if text.count_byte_in(borrow body, 124, s, end) > 0
+            && is_table_delimiter(borrow body, next_start, next_end) {
+            return render_table(inout eng, borrow body, borrow refs, offset, line, inout out);
+        }
+    }
+
+    // A definition-only line contributes no output; it was collected already.
+    if definition_label_end(borrow body, s, end) > 0 {
+        return next_start;
+    }
+
+    render_paragraph(inout eng, borrow body, borrow refs, offset, line, inout out)
+}
+
+fn heading_level(borrow body: StrBuf, s: u64, end: u64) -> u64 {
+    let mut level: u64 = 0;
+    while s + level < end && level < 7 && text.byte_of(borrow body, s + level) == 35 { level += 1; }
+    if level == 0 || level > 6 { return 0; }
+    if s + level >= end { return level; }
+    if text.byte_of(borrow body, s + level) != 32 { return 0; }
+    level
+}
+
+// Drop an optional closing `###` run and the space before it.
+fn trim_heading_end(borrow body: StrBuf, start: u64, end: u64) -> u64 {
+    let mut e = text.trim_end_at(borrow body, start, end);
+    let mut hashes = e;
+    while hashes > start && text.byte_of(borrow body, hashes - 1) == 35 { hashes -= 1; }
+    if hashes < e && hashes > start && text.byte_of(borrow body, hashes - 1) == 32 {
+        e = text.trim_end_at(borrow body, start, hashes - 1);
+    }
+    e
+}
+
+fn is_fence(borrow body: StrBuf, s: u64, end: u64) -> bool {
+    s + 2 < end && text.byte_of(borrow body, s) == 96
+        && text.byte_of(borrow body, s + 1) == 96
+        && text.byte_of(borrow body, s + 2) == 96
+}
+
+fn is_thematic_break(borrow body: StrBuf, s: u64, end: u64) -> bool {
+    let first = text.byte_of(borrow body, s);
+    if first != 45 && first != 42 && first != 95 { return false; }
+    let mut marks: u64 = 0;
+    let mut i = s;
+    while i < end {
+        let b = text.byte_of(borrow body, i);
+        if b == first { marks += 1; }
+        else if !text.is_space(b) && b != 13 { return false; }
+        i += 1;
+    }
+    marks >= 3
+}
+
+// A run of `=` or `-` directly under a paragraph line: CommonMark's setext
+// heading, which this subset rejects.
+//
+// BOTH markers, and the `-` one is the reason this is checked from inside the
+// paragraph walk rather than from the block dispatcher. A `---` line after a
+// blank line is a thematic break and renders as one; the SAME line directly
+// under paragraph text is an `<h2>`. Testing only `=` here — as this did —
+// left `---` caught by `is_thematic_break` first and rendered as a paragraph
+// plus an `<hr />`, exit zero, no diagnostic: a silent mis-render of a
+// documented exclusion, which is the one outcome ADR-0072 Decision 3 forbids.
+fn is_setext_underline(borrow body: StrBuf, start: u64, end: u64) -> bool {
+    let s = text.trim_start_at(borrow body, start, end);
+    let e = text.trim_end_at(borrow body, s, end);
+    if s >= e { return false; }
+    let first = text.byte_of(borrow body, s);
+    if first != 61 && first != 45 { return false; }
+    let mut i = s;
+    while i < e {
+        if text.byte_of(borrow body, i) != first { return false; }
+        i += 1;
+    }
+    true
+}
+
+struct Marker { width: u64, ordered: bool, start_number: u64 }
+
+fn no_marker() -> Marker { Marker { width: 0, ordered: false, start_number: 0 } }
+
+fn list_marker(borrow body: StrBuf, s: u64, end: u64) -> Marker {
+    let b = text.byte_of(borrow body, s);
+    if (b == 45 || b == 42 || b == 43) && s + 1 < end && text.byte_of(borrow body, s + 1) == 32 {
+        return Marker { width: 2, ordered: false, start_number: 0 };
+    }
+    let mut i = s;
+    while i < end && text.is_digit(text.byte_of(borrow body, i)) { i += 1; }
+    if i > s && i + 1 < end && text.byte_of(borrow body, i) == 46
+        && text.byte_of(borrow body, i + 1) == 32 {
+        let digits = text.parse_digits(borrow body, s, i);
+        return Marker { width: i + 2 - s, ordered: true, start_number: digits.value };
+    }
+    no_marker()
+}
+
+fn render_fence(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    offset: u64,
+    s: u64,
+    end: u64,
+    line: u64,
+    inout out: StrBuf,
+) -> u64 {
+    // pulldown-cmark emits the WHOLE info string as the class, not its first
+    // word: the corpus's ```rue check and ```rue compile-fail E0902 fences
+    // become `class="language-rue check"` and `class="language-rue
+    // compile-fail E0902"`, which is what Zola publishes today.
+    let info_start = text.trim_start_at(borrow body, s + 3, end);
+    let info_end = text.trim_end_at(borrow body, info_start, end);
+
+    out.push_str("<pre><code");
+    if info_end > info_start {
+        out.push_str(" class=\"language-");
+        let language = text.slice(borrow body, info_start, info_end);
+        text.append_escaped_attr(borrow language, inout out);
+        out.push_str("\"");
+    }
+    out.push_str(">");
+
+    // End of input closes the block, exactly as CommonMark §4.5 specifies and
+    // as pulldown-cmark implements: "if the end of the containing block (or
+    // document) is reached and no closing code fence has been found, the code
+    // block contains all of the lines after the opening code fence". This is
+    // not a hole in the subset — `docs/spec/src/03-types/09-destructors.md`
+    // ends on an unclosed ```rue block today, and rendering it any other way
+    // would disagree with Zola on a page that is perfectly well-formed
+    // CommonMark.
+    let mut at = text.next_line(borrow body, offset);
+    let mut closed = false;
+    while at < body.len() && !closed {
+        let line_end = text.line_end(borrow body, at);
+        let ls = text.trim_start_at(borrow body, at, line_end);
+        if is_fence(borrow body, ls, line_end) {
+            closed = true;
+        } else {
+            text.append_escaped_text(borrow body, at, line_end, inout out);
+            out.push(10);
+        }
+        at = text.next_line(borrow body, at);
+    }
+    out.push_str("</code></pre>\n");
+    at
+}
+
+fn render_quote(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    offset: u64,
+    line: u64,
+    inout out: StrBuf,
+) -> u64 {
+    // Strip one `>` (and an optional space) from each line of the run, then
+    // render the result as an ordinary block sequence so a quote may hold
+    // paragraphs, lists, and code exactly as CommonMark allows.
+    //
+    // The nested render collects its OWN link reference definitions, so a
+    // reference link inside a quote needs its definition inside the quote too.
+    // A definition outside it is a "reference link has no definition"
+    // diagnostic rather than a dangling href — the corpus's quotes carry no
+    // reference links, and failing loudly is the documented-subset rule.
+    let mut inner = StrBuf.new();
+    let mut at = offset;
+    while at < body.len() {
+        let end = text.line_end(borrow body, at);
+        let s = text.trim_start_at(borrow body, at, end);
+        if s >= end || text.byte_of(borrow body, s) != 62 { break; }
+        let mut content = s + 1;
+        if content < end && text.byte_of(borrow body, content) == 32 { content += 1; }
+        let piece = text.slice(borrow body, content, end);
+        inner.append_borrowed(borrow piece);
+        inner.push(10);
+        at = text.next_line(borrow body, at);
+    }
+    out.push_str("<blockquote>\n");
+    if eng.enter() {
+        let nested = render(inout eng, borrow inner, line);
+        out.append_borrowed(borrow nested.html);
+        eng.leave();
+    } else {
+        fail(inout eng, line, "block quotes are nested deeper than the engine renders", NONE());
+    }
+    out.push_str("</blockquote>\n");
+    at
+}
+
+// Whether a line opens an HTML block: a real tag or a comment, not merely a
+// `<`. Treating every leading `<` as an HTML block sent `<a@b.test>` through
+// the output verbatim as a raw element the browser drops — never reaching the
+// inline scanner that would have reported it.
+fn starts_html_block(borrow body: StrBuf, s: u64, end: u64) -> bool {
+    if s >= end || text.byte_of(borrow body, s) != 60 { return false; }
+    html_tag_end(borrow body, s, end) > s
+}
+
+// A raw HTML block passes through verbatim, which is what CommonMark specifies
+// and what makes an expanded shortcode's `<div>` land in the page unchanged.
+fn render_html_block(
+    borrow body: StrBuf,
+    offset: u64,
+    s: u64,
+    inout out: StrBuf,
+    inout summary_end: u64,
+) -> u64 {
+    // Zola's summary marker: it records where the page summary stops and
+    // leaves an empty anchor span in its place, which the site's own "continue
+    // reading" link targets.
+    if body.matches_at(s, borrow "<!-- more -->") {
+        if summary_end == NONE() { summary_end = out.len(); }
+        // Terminated like every other block this renderer emits. Zola agrees on
+        // the two corpus pages whose marker precedes a paragraph and omits the
+        // newline on the six whose marker precedes a heading — a pulldown-cmark
+        // writer asymmetry, not a rule. One block per line is the regular
+        // choice, and cross-tool whitespace is a non-goal (ADR-0072
+        // Terminology); replicating the asymmetry would be copying an artifact.
+        out.push_str("<span id=\"continue-reading\"></span>\n");
+        return text.next_line(borrow body, offset);
+    }
+    let mut at = offset;
+    while at < body.len() {
+        let line_end = text.line_end(borrow body, at);
+        if text.blank_range(borrow body, at, line_end) { break; }
+        let piece = text.slice(borrow body, at, line_end);
+        out.append_borrowed(borrow piece);
+        out.push(10);
+        at = text.next_line(borrow body, at);
+    }
+    at
+}
+
+fn render_list(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    borrow refs: Refs,
+    offset: u64,
+    first_line: u64,
+    marker: Marker,
+    inout out: StrBuf,
+) -> u64 {
+    if marker.ordered {
+        out.push_str("<ol");
+        if marker.start_number != 1 {
+            out.push_str(" start=\"");
+            out.push_str(text.decimal(marker.start_number));
+            out.push_str("\"");
+        }
+        out.push_str(">\n");
+    } else {
+        out.push_str("<ul>\n");
+    }
+
+    let mut at = offset;
+    let mut line = first_line;
+    let mut running = true;
+    while running && at < body.len() {
+        let end = text.line_end(borrow body, at);
+        let s = text.trim_start_at(borrow body, at, end);
+        let indent = s - at;
+        let current = list_marker(borrow body, s, end);
+        if current.width == 0 || current.ordered != marker.ordered { running = false; break; }
+        // An indented marker ends this list; `render_block` reports it.
+        if indent > 0 { running = false; break; }
+
+        // The item's own first line plus every indented continuation line. A
+        // continuation is joined with a newline, matching CommonMark's soft
+        // break; a continuation that itself starts a bullet is a nested list.
+        let mut item = text.slice(borrow body, s + current.width, end);
+        let mut next = text.next_line(borrow body, at);
+        let mut item_lines: u64 = 1;
+        while next < body.len() {
+            let next_end = text.line_end(borrow body, next);
+            if text.blank_range(borrow body, next, next_end) { break; }
+            let ns = text.trim_start_at(borrow body, next, next_end);
+            if ns == next { break; }
+            let nested = list_marker(borrow body, ns, next_end);
+            // A nested marker ends this item; the walk above then ends the
+            // list and `render_block` reports the indented marker once.
+            if nested.width > 0 && (!nested.ordered || nested.start_number == 1) { break; }
+            item.push(10);
+            let piece = text.slice(borrow body, ns, next_end);
+            item.append_borrowed(borrow piece);
+            next = text.next_line(borrow body, next);
+            item_lines += 1;
+        }
+
+        out.push_str("<li>");
+        render_inline(inout eng, borrow item, borrow refs, 0, item.len(), line, inout out);
+        out.push_str("</li>\n");
+
+        line += item_lines;
+        at = next;
+
+        // A blank line ENDS the list here rather than making it loose: every
+        // list in the corpus is tight, and a loose list renders each item
+        // wrapped in `<p>`, which would silently disagree with Zola.
+        if at < body.len() {
+            let peek_end = text.line_end(borrow body, at);
+            if text.blank_range(borrow body, at, peek_end) {
+                let after = text.next_line(borrow body, at);
+                if after < body.len() {
+                    let after_end = text.line_end(borrow body, after);
+                    let after_s = text.trim_start_at(borrow body, after, after_end);
+                    if list_marker(borrow body, after_s, after_end).width > 0 {
+                        fail(inout eng, line, "loose (blank-line-separated) lists are outside the subset", NONE());
+                    }
+                }
+                running = false;
+            }
+        }
+    }
+
+    if marker.ordered { out.push_str("</ol>\n"); } else { out.push_str("</ul>\n"); }
+    at
+}
+
+fn is_table_delimiter(borrow body: StrBuf, start: u64, end: u64) -> bool {
+    let s = text.trim_start_at(borrow body, start, end);
+    let e = text.trim_end_at(borrow body, s, end);
+    if s >= e { return false; }
+    let mut pipes: u64 = 0;
+    let mut dashes: u64 = 0;
+    let mut i = s;
+    while i < e {
+        let b = text.byte_of(borrow body, i);
+        if b == 124 { pipes += 1; }
+        else if b == 45 { dashes += 1; }
+        else if b != 58 && !text.is_space(b) { return false; }
+        i += 1;
+    }
+    pipes > 0 && dashes > 0
+}
+
+fn render_table(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    borrow refs: Refs,
+    offset: u64,
+    first_line: u64,
+    inout out: StrBuf,
+) -> u64 {
+    let header_end = text.line_end(borrow body, offset);
+    let delimiter = text.next_line(borrow body, offset);
+    let delimiter_end = text.line_end(borrow body, delimiter);
+    if text.count_byte_in(borrow body, 58, delimiter, delimiter_end) > 0 {
+        fail(inout eng, first_line + 1, "table alignment colons are outside the subset", NONE());
+    }
+
+    out.push_str("<table><thead><tr>");
+    let columns = render_row(
+        inout eng, borrow body, borrow refs, offset, header_end, first_line, true, 0, inout out,
+    );
+    out.push_str("</tr></thead><tbody>\n");
+
+    let mut at = text.next_line(borrow body, delimiter);
+    let mut line = first_line + 2;
+    while at < body.len() {
+        let end = text.line_end(borrow body, at);
+        if text.blank_range(borrow body, at, end) { break; }
+        if text.count_byte_in(borrow body, 124, at, end) == 0 { break; }
+        out.push_str("<tr>");
+        let _ = render_row(
+            inout eng, borrow body, borrow refs, at, end, line, false, columns, inout out,
+        );
+        out.push_str("</tr>\n");
+        at = text.next_line(borrow body, at);
+        line += 1;
+    }
+    out.push_str("</tbody></table>\n");
+    at
+}
+
+// Emit one row's cells and return how many it had.
+//
+// `columns` is the header's cell count, or 0 for the header row itself. GFM
+// fixes every body row to the header's width: a short row is padded with empty
+// cells and a long one is truncated. Emitting rows as authored instead produced
+// a ragged `<tbody>` with no diagnostic — the browser renders it, differently
+// from Zola, and nothing says so.
+fn render_row(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    borrow refs: Refs,
+    start: u64,
+    end: u64,
+    line: u64,
+    header: bool,
+    columns: u64,
+    inout out: StrBuf,
+) -> u64 {
+    let mut s = text.trim_start_at(borrow body, start, end);
+    let mut e = text.trim_end_at(borrow body, s, end);
+    // Leading and trailing pipes are decoration, not empty cells.
+    if s < e && text.byte_of(borrow body, s) == 124 { s += 1; }
+    if e > s && text.byte_of(borrow body, e - 1) == 124 { e -= 1; }
+
+    let mut emitted: u64 = 0;
+    let mut cell = s;
+    while cell <= e {
+        if columns > 0 && emitted == columns { break; }
+        let bar = find_cell_end(borrow body, cell, e);
+        let cs = text.trim_start_at(borrow body, cell, bar);
+        let ce = text.trim_end_at(borrow body, cs, bar);
+        // GFM resolves `\|` to a literal pipe across the whole cell BEFORE its
+        // inline content is parsed — including inside code spans, where a
+        // backslash escape would otherwise be literal. The specification's
+        // operator tables spell `|` and `||` that way, so the unescape has to
+        // happen on the cell text rather than in the inline scanner.
+        let raw = text.slice(borrow body, cs, ce);
+        let content = unescape_pipes(borrow raw);
+        out.push_str(if header { "<th>" } else { "<td>" });
+        render_inline(inout eng, borrow content, borrow refs, 0, content.len(), line, inout out);
+        out.push_str(if header { "</th>" } else { "</td>" });
+        emitted += 1;
+        if bar >= e { break; }
+        cell = bar + 1;
+    }
+    while columns > 0 && emitted < columns {
+        out.push_str("<td></td>");
+        emitted += 1;
+    }
+    emitted
+}
+
+fn unescape_pipes(borrow cell: StrBuf) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < cell.len() {
+        let b = text.byte_of(borrow cell, i);
+        if b == 92 && i + 1 < cell.len() && text.byte_of(borrow cell, i + 1) == 124 {
+            out.push(124);
+            i += 2;
+        } else {
+            out.push(b);
+            i += 1;
+        }
+    }
+    out
+}
+
+// The next unescaped `|` at or before `limit`, or `limit`. A `\|` inside a cell
+// is a literal pipe, which the specification's operator tables rely on.
+fn find_cell_end(borrow body: StrBuf, start: u64, limit: u64) -> u64 {
+    let mut i = start;
+    while i < limit {
+        let b = text.byte_of(borrow body, i);
+        if b == 92 { i += 2; continue; }
+        if b == 96 {
+            // A code span may legally contain a pipe.
+            let close = text.find_byte_in(borrow body, 96, i + 1, limit);
+            i = if close < limit { close + 1 } else { limit };
+            continue;
+        }
+        if b == 124 { return i; }
+        i += 1;
+    }
+    limit
+}
+
+fn render_paragraph(
+    inout eng: ast.Engine,
+    borrow body: StrBuf,
+    borrow refs: Refs,
+    offset: u64,
+    line: u64,
+    inout out: StrBuf,
+) -> u64 {
+    let mut at = offset;
+    let mut content = StrBuf.new();
+    let mut lines: u64 = 0;
+    while at < body.len() {
+        let end = text.line_end(borrow body, at);
+        if text.blank_range(borrow body, at, end) { break; }
+        let s = text.trim_start_at(borrow body, at, end);
+        if lines > 0 && is_setext_underline(borrow body, s, end) {
+            fail(inout eng, line + lines, "setext headings are outside the subset (use `#`)", NONE());
+            break;
+        }
+        if lines > 0 && starts_new_block(borrow body, s, end) { break; }
+        if lines > 0 { content.push(10); }
+        // Trailing SPACES are kept: two or more before a soft break are a
+        // CommonMark hard line break, which `render_inline` turns into
+        // `<br />`. Only the carriage return of a CRLF line is dropped, since
+        // it is a line terminator rather than content.
+        let mut e = end;
+        if e > s && text.byte_of(borrow body, e - 1) == 13 { e -= 1; }
+        let piece = text.slice(borrow body, s, e);
+        content.append_borrowed(borrow piece);
+        at = text.next_line(borrow body, at);
+        lines += 1;
+    }
+    // The paragraph's own trailing whitespace is not a break into anything.
+    let body_end = text.trim_end_at(borrow content, 0, content.len());
+    out.push_str("<p>");
+    render_inline(inout eng, borrow content, borrow refs, 0, body_end, line, inout out);
+    out.push_str("</p>\n");
+    at
+}
+
+// Whether a line interrupts an open paragraph. An ordered marker only does so
+// when it numbers 1, which is CommonMark's rule and exactly what keeps the
+// specification's wrapped `  101. When cond is true …` continuation line from
+// being read as a nested list.
+fn starts_new_block(borrow body: StrBuf, s: u64, end: u64) -> bool {
+    if heading_level(borrow body, s, end) > 0 { return true; }
+    if is_fence(borrow body, s, end) { return true; }
+    if is_thematic_break(borrow body, s, end) { return true; }
+    if text.byte_of(borrow body, s) == 62 { return true; }
+    if starts_html_block(borrow body, s, end) { return true; }
+    let marker = list_marker(borrow body, s, end);
+    if marker.width > 0 && (!marker.ordered || marker.start_number == 1) { return true; }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// Link reference definitions
+// ---------------------------------------------------------------------------
+
+// The end of a `[label]:` prefix, or 0 when the line is not a definition.
+fn definition_label_end(borrow body: StrBuf, s: u64, end: u64) -> u64 {
+    if s >= end || text.byte_of(borrow body, s) != 91 { return 0; }
+    // Bounded at the line end, not the document end: an unclosed `[` on every
+    // line otherwise made this scan the whole remaining document per line.
+    let close = text.find_byte_in(borrow body, 93, s, end);
+    if close + 1 >= end || text.byte_of(borrow body, close + 1) != 58 { return 0; }
+    close
+}
+
+fn collect_definitions(inout eng: ast.Engine, borrow body: StrBuf, inout refs: Refs) {
+    let mut at: u64 = 0;
+    let mut in_fence = false;
+    while at < body.len() {
+        let end = text.line_end(borrow body, at);
+        let s = text.trim_start_at(borrow body, at, end);
+        if is_fence(borrow body, s, end) {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            let close = definition_label_end(borrow body, s, end);
+            if close > 0 {
+                let label = eng.arena.strings.intern_range(borrow body, s + 1, close);
+                let dest_start = text.trim_start_at(borrow body, close + 2, end);
+                let dest_end = text.trim_end_at(borrow body, dest_start, end);
+                let dest = eng.arena.strings.intern_range(borrow body, dest_start, dest_end);
+                refs.labels.push(value.Entry { key: label, value: dest });
+            }
+        }
+        at = text.next_line(borrow body, at);
+    }
+}
+
+fn lookup_definition(borrow refs: Refs, label: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < refs.labels.len() {
+        let e = refs.labels.get_or(i, value.empty_entry());
+        if e.key == label { return e.value; }
+        i += 1;
+    }
+    NONE()
+}
+
+// ---------------------------------------------------------------------------
+// Pass 3 — inline structure
+// ---------------------------------------------------------------------------
+
+// Render the inline content of `[start, end)`.
+//
+// Link text and emphasis bodies recurse back through here, so the depth guard
+// is taken once on entry: 20,000 unclosed `[` used to overflow the stack, and a
+// signal-killed process is precisely the failure ADR-0072 Decision 3 exists to
+// prevent.
+fn render_inline(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow refs: Refs,
+    start: u64,
+    end: u64,
+    line: u64,
+    inout out: StrBuf,
+) {
+    if !eng.enter() {
+        fail(inout eng, line, "inline spans are nested deeper than the engine renders", NONE());
+        text.append_escaped_prose(borrow src, start, end, inout out);
+        return;
+    }
+    render_inline_body(inout eng, borrow src, borrow refs, start, end, line, inout out);
+    eng.leave();
+}
+
+fn render_inline_body(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow refs: Refs,
+    start: u64,
+    end: u64,
+    line: u64,
+    inout out: StrBuf,
+) {
+    let mut i = start;
+    let mut literal = start;
+    // One report per run of text, not one per delimiter: `~~struck~~` carries
+    // two markers but is a single unsupported construct.
+    let mut said_strikethrough = false;
+    // Set once the bracket scan proves there is no `]` left in this run; see
+    // `LinkSpan.unclosed`.
+    let mut no_closers = false;
+    while i < end {
+        let b = text.byte_of(borrow src, i);
+
+        // A CommonMark hard line break: two or more trailing spaces before a
+        // soft break. `render_paragraph` deliberately keeps those spaces so the
+        // distinction survives to here.
+        if b == 10 {
+            let mut spaces = i;
+            while spaces > start && text.byte_of(borrow src, spaces - 1) == 32 { spaces -= 1; }
+            if i - spaces >= 2 {
+                text.append_escaped_prose(borrow src, literal, spaces, inout out);
+                out.push_str("<br />\n");
+                i += 1;
+                literal = i;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == 92 && i + 1 < end {
+            text.append_escaped_prose(borrow src, literal, i, inout out);
+            let escaped = text.byte_of(borrow src, i + 1);
+            if text.is_alnum(escaped) {
+                // Only punctuation is escapable in CommonMark; `\n` in prose is
+                // a literal backslash followed by an `n`.
+                out.push(92);
+            }
+            text.append_escaped_text(borrow src, i + 1, i + 2, inout out);
+            i += 2;
+            literal = i;
+            continue;
+        }
+
+        if b == 96 {
+            let mut ticks: u64 = 0;
+            while i + ticks < end && text.byte_of(borrow src, i + ticks) == 96 { ticks += 1; }
+            let close = find_closing_ticks(borrow src, i + ticks, end, ticks);
+            if close < end {
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                out.push_str("<code>");
+                let cs = code_trim_start(borrow src, i + ticks, close);
+                let ce = code_trim_end(borrow src, cs, close);
+                text.append_escaped_code_span(borrow src, cs, ce, inout out);
+                out.push_str("</code>");
+                i = close + ticks;
+                literal = i;
+                continue;
+            }
+            i += ticks;
+            continue;
+        }
+
+        if b == 126 && i + 1 < end && text.byte_of(borrow src, i + 1) == 126 {
+            if !said_strikethrough {
+                fail(inout eng, line, "strikethrough is outside the subset", NONE());
+                said_strikethrough = true;
+            }
+            i += 2;
+            continue;
+        }
+
+        if b == 33 && i + 1 < end && text.byte_of(borrow src, i + 1) == 91 && !no_closers {
+            let span = parse_link(borrow src, i + 1, end);
+            if span.unclosed { no_closers = true; }
+            if span.ok {
+                let text_start = span.text_start;
+                let text_end = span.text_end;
+                let next = span.next;
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                let dest = resolve_destination(inout eng, borrow src, borrow refs, span, line);
+                out.push_str("<img src=\"");
+                text.append_escaped_attr(borrow dest, inout out);
+                out.push_str("\" alt=\"");
+                let alt = text.slice(borrow src, text_start, text_end);
+                let plain = text.strip_tags(borrow alt);
+                text.append_escaped_html(borrow plain, inout out);
+                out.push_str("\" />");
+                i = next;
+                literal = i;
+                continue;
+            }
+        }
+
+        if b == 91 && !no_closers {
+            if i + 1 < end && text.byte_of(borrow src, i + 1) == 94 {
+                fail(inout eng, line, "footnotes are outside the subset", NONE());
+                i += 1;
+                continue;
+            }
+            let span = parse_link(borrow src, i, end);
+            if span.unclosed { no_closers = true; }
+            if span.ok {
+                let text_start = span.text_start;
+                let text_end = span.text_end;
+                let next = span.next;
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                let dest = resolve_destination(inout eng, borrow src, borrow refs, span, line);
+                out.push_str("<a href=\"");
+                text.append_escaped_attr(borrow dest, inout out);
+                out.push_str("\">");
+                render_inline(inout eng, borrow src, borrow refs, text_start, text_end, line, inout out);
+                out.push_str("</a>");
+                i = next;
+                literal = i;
+                continue;
+            }
+        }
+
+        if b == 42 || b == 95 {
+            let run = emphasis_run(borrow src, i, end, b);
+            if run > 0 {
+                let close = find_emphasis_close(borrow src, i + run, end, b, run);
+                if close < end {
+                    text.append_escaped_prose(borrow src, literal, i, inout out);
+                    let open_tag = if run >= 2 { "<strong>" } else { "<em>" };
+                    let close_tag = if run >= 2 { "</strong>" } else { "</em>" };
+                    out.push_str(open_tag);
+                    render_inline(inout eng, borrow src, borrow refs, i + run, close, line, inout out);
+                    out.push_str(close_tag);
+                    i = close + run;
+                    literal = i;
+                    continue;
+                }
+            }
+        }
+
+        if b == 60 {
+            // A URI autolink is a link, not a tag. Passing `<https://x.test>`
+            // through as raw HTML made the browser parse an unknown element and
+            // swallow the text entirely — invalid markup, emitted silently.
+            let uri = autolink_end(borrow src, i, end);
+            if uri > i {
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                let target = text.slice(borrow src, i + 1, uri - 1);
+                out.push_str("<a href=\"");
+                text.append_escaped_attr(borrow target, inout out);
+                out.push_str("\">");
+                text.append_escaped_text(borrow target, 0, target.len(), inout out);
+                out.push_str("</a>");
+                i = uri;
+                literal = i;
+                continue;
+            }
+            if is_email_autolink(borrow src, i, end) {
+                fail(inout eng, line, "email autolinks are outside the subset (write an explicit link)", NONE());
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                i += 1;
+                literal = i;
+                continue;
+            }
+            let close = html_tag_end(borrow src, i, end);
+            if close > i {
+                text.append_escaped_prose(borrow src, literal, i, inout out);
+                let piece = text.slice(borrow src, i, close);
+                out.append_borrowed(borrow piece);
+                i = close;
+                literal = i;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+    text.append_escaped_prose(borrow src, literal, end, inout out);
+}
+
+// The offset just past a CommonMark URI autolink `<scheme:rest>` beginning at
+// `i`, or `i`. The scheme is a letter followed by letters, digits, `+`, `.`, or
+// `-`; the remainder holds no whitespace, `<`, or `>`.
+fn autolink_end(borrow src: StrBuf, i: u64, end: u64) -> u64 {
+    let mut j = i + 1;
+    if j >= end || !text.is_alpha(text.byte_of(borrow src, j)) { return i; }
+    while j < end {
+        let b = text.byte_of(borrow src, j);
+        if b == 58 { break; }
+        if !text.is_alnum(b) && b != 43 && b != 45 && b != 46 { return i; }
+        j += 1;
+    }
+    if j >= end || j == i + 1 { return i; }
+    j += 1;
+    while j < end {
+        let b = text.byte_of(borrow src, j);
+        if b == 62 { return j + 1; }
+        if b == 60 || b == 32 || b == 9 || b == 10 || b == 13 { return i; }
+        j += 1;
+    }
+    i
+}
+
+// `<user@host.tld>`: recognized only so it can be reported. Zero corpus pages
+// use one, and guessing at a `mailto:` rewrite is worse than saying no.
+fn is_email_autolink(borrow src: StrBuf, i: u64, end: u64) -> bool {
+    let close = text.find_byte_in(borrow src, 62, i + 1, end);
+    if close >= end { return false; }
+    let at = text.find_byte_in(borrow src, 64, i + 1, close);
+    if at >= close || at == i + 1 { return false; }
+    let dot = text.find_byte_in(borrow src, 46, at + 1, close);
+    if dot >= close || dot + 1 >= close { return false; }
+    let mut j = i + 1;
+    while j < close {
+        let b = text.byte_of(borrow src, j);
+        if b == 32 || b == 9 || b == 10 || b == 13 || b == 60 { return false; }
+        j += 1;
+    }
+    true
+}
+
+fn find_closing_ticks(borrow src: StrBuf, from: u64, end: u64, ticks: u64) -> u64 {
+    let mut i = from;
+    while i < end {
+        if text.byte_of(borrow src, i) == 96 {
+            let mut run: u64 = 0;
+            while i + run < end && text.byte_of(borrow src, i + run) == 96 { run += 1; }
+            if run == ticks { return i; }
+            i += run;
+        } else {
+            i += 1;
+        }
+    }
+    end
+}
+
+// CommonMark strips one leading and trailing space from a code span when both
+// are present, so `` ` `` renders as a lone backtick.
+fn code_trim_start(borrow src: StrBuf, start: u64, end: u64) -> u64 {
+    if end > start + 1 && text.byte_of(borrow src, start) == 32
+        && text.byte_of(borrow src, end - 1) == 32 { start + 1 } else { start }
+}
+
+fn code_trim_end(borrow src: StrBuf, start: u64, end: u64) -> u64 {
+    if end > start && text.byte_of(borrow src, end - 1) == 32
+        && text.byte_of(borrow src, start) != 32 { end - 1 } else { end }
+}
+
+// The length of a `*`/`_` run that can open emphasis. An `_` between word
+// characters is intraword and never opens, which is what keeps identifiers like
+// `is_bare_key` in prose from turning into emphasis.
+fn emphasis_run(borrow src: StrBuf, i: u64, end: u64, marker: u8) -> u64 {
+    let mut run: u64 = 0;
+    while i + run < end && text.byte_of(borrow src, i + run) == marker { run += 1; }
+    if run == 0 || run > 2 { return 0; }
+    if i + run >= end { return 0; }
+    if text.is_space(text.byte_of(borrow src, i + run)) { return 0; }
+    if marker == 95 && i > 0 && text.is_ident(text.byte_of(borrow src, i - 1)) { return 0; }
+    run
+}
+
+fn find_emphasis_close(borrow src: StrBuf, from: u64, end: u64, marker: u8, run: u64) -> u64 {
+    let mut i = from;
+    while i < end {
+        let b = text.byte_of(borrow src, i);
+        if b == 92 { i += 2; continue; }
+        if b == 96 {
+            let close = text.find_byte_in(borrow src, 96, i + 1, end);
+            i = if close < end { close + 1 } else { end };
+            continue;
+        }
+        if b == marker {
+            let mut here: u64 = 0;
+            while i + here < end && text.byte_of(borrow src, i + here) == marker { here += 1; }
+            if here == run && i > from && !text.is_space(text.byte_of(borrow src, i - 1)) {
+                if marker != 95 || i + here >= end || !text.is_ident(text.byte_of(borrow src, i + here)) {
+                    return i;
+                }
+            }
+            i += here;
+            continue;
+        }
+        i += 1;
+    }
+    end
+}
+
+// A raw HTML tag or comment starting at `i`, returning the offset just past it,
+// or `i` when the `<` is ordinary text (which then escapes to `&lt;`).
+fn html_tag_end(borrow src: StrBuf, i: u64, end: u64) -> u64 {
+    if src.matches_at(i, borrow "<!--") {
+        let close = text.find_from(borrow src, borrow "-->", i + 4);
+        if close >= end { return i; }
+        return close + 3;
+    }
+    let mut j = i + 1;
+    if j < end && text.byte_of(borrow src, j) == 47 { j += 1; }
+    if j >= end || !text.is_alpha(text.byte_of(borrow src, j)) { return i; }
+    // The tag NAME must actually be a tag name. Accepting any `<word…>` run
+    // turned `<user@host.test>` into a raw element the browser drops; a name is
+    // a letter followed by letters, digits, or hyphens, and then whitespace,
+    // `/`, or `>`.
+    while j < end && (text.is_alnum(text.byte_of(borrow src, j))
+        || text.byte_of(borrow src, j) == 45) { j += 1; }
+    if j >= end { return i; }
+    let after = text.byte_of(borrow src, j);
+    if after != 62 && after != 47 && !text.is_space(after) && after != 10 && after != 13 {
+        return i;
+    }
+    let close = text.find_byte_in(borrow src, 62, j, end);
+    if close >= end { return i; }
+    close + 1
+}
+
+struct LinkSpan {
+    ok: bool,
+    text_start: u64,
+    text_end: u64,
+    dest_start: u64,
+    dest_end: u64,
+    label_start: u64,
+    label_end: u64,
+    reference: bool,
+    next: u64,
+    // The bracket scan reached the end without finding ANY closing `]`. That
+    // fact is monotone — if there is no `]` in `[i, end)`, there is none in
+    // `[j, end)` for any later `j` — so the caller records it once and stops
+    // re-scanning the remaining text at every subsequent `[`. Without it, a
+    // paragraph of unclosed brackets is quadratic: 80,000 such lines took
+    // nearly two minutes, because a Markdown paragraph runs until a blank line
+    // and every `[` rescanned the whole of it.
+    //
+    // Only THIS failure is monotone. A link that fails because its `]` is not
+    // followed by `(` or `[` leaves later brackets free to succeed, so that
+    // case must keep re-scanning and does.
+    unclosed: bool,
+}
+
+fn no_link() -> LinkSpan {
+    LinkSpan {
+        ok: false, text_start: 0, text_end: 0, dest_start: 0, dest_end: 0,
+        label_start: 0, label_end: 0, reference: false, next: 0, unclosed: false,
+    }
+}
+
+fn unclosed_link() -> LinkSpan {
+    LinkSpan {
+        ok: false, text_start: 0, text_end: 0, dest_start: 0, dest_end: 0,
+        label_start: 0, label_end: 0, reference: false, next: 0, unclosed: true,
+    }
+}
+
+// `[text](dest)` or `[text][label]` starting at the `[`.
+fn parse_link(borrow src: StrBuf, i: u64, end: u64) -> LinkSpan {
+    let mut depth: u64 = 0;
+    let mut j = i;
+    let mut close = end;
+    while j < end {
+        let b = text.byte_of(borrow src, j);
+        if b == 92 { j += 2; continue; }
+        if b == 91 { depth += 1; }
+        else if b == 93 {
+            depth -= 1;
+            if depth == 0 { close = j; break; }
+        }
+        j += 1;
+    }
+    if close >= end { return unclosed_link(); }
+
+    let after = close + 1;
+    if after < end && text.byte_of(borrow src, after) == 40 {
+        let mut k = after + 1;
+        let mut paren: u64 = 1;
+        while k < end {
+            let b = text.byte_of(borrow src, k);
+            if b == 92 { k += 2; continue; }
+            if b == 40 { paren += 1; }
+            else if b == 41 { paren -= 1; if paren == 0 { break; } }
+            k += 1;
+        }
+        if k >= end { return no_link(); }
+        // A `"title"` after the destination is dropped, as Zola drops it from
+        // the rendered anchor's href.
+        let mut dest_end = k;
+        let quote = text.find_byte_in(borrow src, 34, after + 1, k);
+        if quote < k { dest_end = text.trim_end_at(borrow src, after + 1, quote); }
+        return LinkSpan {
+            ok: true, text_start: i + 1, text_end: close,
+            dest_start: after + 1, dest_end: dest_end,
+            label_start: 0, label_end: 0, reference: false, next: k + 1, unclosed: false,
+        };
+    }
+    if after < end && text.byte_of(borrow src, after) == 91 {
+        let label_close = text.find_byte_in(borrow src, 93, after + 1, end);
+        if label_close >= end { return no_link(); }
+        let mut ls = after + 1;
+        let mut le = label_close;
+        // A collapsed `[label][]` reuses the link text as the label.
+        if ls == le { ls = i + 1; le = close; }
+        return LinkSpan {
+            ok: true, text_start: i + 1, text_end: close,
+            dest_start: 0, dest_end: 0,
+            label_start: ls, label_end: le, reference: true, next: label_close + 1, unclosed: false,
+        };
+    }
+    no_link()
+}
+
+// A link's destination, resolving Zola's `@/…` content paths against the site
+// base URL and looking a reference label up in the collected definitions.
+fn resolve_destination(
+    inout eng: ast.Engine,
+    borrow src: StrBuf,
+    borrow refs: Refs,
+    span: LinkSpan,
+    line: u64,
+) -> StrBuf {
+    if span.reference {
+        let label = eng.arena.strings.intern_range(borrow src, span.label_start, span.label_end);
+        let dest = lookup_definition(borrow refs, label);
+        if dest == NONE() {
+            fail(inout eng, line, "reference link has no definition", label);
+            return StrBuf.new();
+        }
+        return eng.arena.strings.copy(dest);
+    }
+    let raw = text.slice(borrow src, span.dest_start, span.dest_end);
+    tmpl_eval.resolve_content_link(inout eng, borrow raw)
+}

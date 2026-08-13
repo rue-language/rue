@@ -306,6 +306,7 @@ cached_corpus_suite(
     )
     for _name, _root, _srcs in [
         ("first-stats", "first/stats", ["examples/first/stats.rue"]),
+        ("gazette", "gazette/main", glob(["examples/gazette/**/*.rue"])),
         ("harbor", "harbor/main", glob(["examples/harbor/**/*.rue"])),
         ("jsonfmt", "jsonfmt/main", glob(["examples/jsonfmt/**/*.rue"])),
         ("lattice", "lattice/main", glob(["examples/lattice/**/*.rue"])),
@@ -316,13 +317,13 @@ cached_corpus_suite(
     ]
 ]
 
-# The nine artifacts as one directory keyed by root path, so a corpus action
+# The ten artifacts as one directory keyed by root path, so a corpus action
 # declares a single `$(location ...)` and the harness's lookup key is the
 # case's own `source_path` string. Consumed by //:cli-tests, //:cli-tests-slow
 # and the four shards.
 #
-# Every consumer declares all nine even though no single corpus target runs
-# cases against all nine — mosaic's section is slow-tier, so the premerge
+# Every consumer declares all ten even though no single corpus target runs
+# cases against all ten — mosaic's section is slow-tier, so the premerge
 # targets carry it for nothing. That is the simplest correct form ADR-0070
 # chose deliberately: it is a mild over-declaration of each action's key (an
 # edit to any root already re-runs every CLI corpus action today, since the
@@ -333,6 +334,7 @@ rue_program_staging(
     name = "cli-staged-programs",
     programs = [
         ":first-stats",
+        ":gazette",
         ":harbor",
         ":jsonfmt",
         ":lattice",
@@ -371,10 +373,10 @@ _CLI_TEST_BASE_ENV = {
 }
 
 # The staged-program directory, carried by every corpus target whose inventory
-# can contain a case that names one of the nine roots. //:release-smoke is
+# can contain a case that names one of the ten roots. //:release-smoke is
 # deliberately not one of them: it runs the `differential_opt` filter, whose
 # cases compile four times each at runner-driven opt levels and so can never
-# consume a staged artifact. Declaring it there would add nine
+# consume a staged artifact. Declaring it there would add ten
 # release-configured program compiles to a deliberately bounded lane (RUE-1129)
 # in exchange for nothing.
 _CLI_STAGED_PROGRAMS_ENV = {

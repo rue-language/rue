@@ -44,6 +44,10 @@ class = "heavyweight"
 timeout_profile = "stress"
 
 [[automatic_example]]
+path = "gazette/main.rue"
+contract = "heavyweight"
+
+[[automatic_example]]
 path = "harbor/main.rue"
 contract = "heavyweight_long"
 
