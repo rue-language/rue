@@ -34,6 +34,12 @@ use rue_compiler::{
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
 use rue_error::{CompileError, ErrorCode};
+use rue_perf_schema::{
+    ArtifactHitEvidence, BuildBoundary, CompilerBoundaryEvidence, CompilerBuildProfile,
+    CompilerConfigurationEvidence, CompilerCriticalPathEvidence, CompilerInputClass,
+    CompilerInputEvidence, CompilerPipeline, CompilerStage, EmbeddedAssetClass,
+    EmbeddedAssetEvidence, LinkPolicy, OptimizationLevel, OutputKind, WorkerSetting,
+};
 use rue_target::Target;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum LogLevel {
@@ -906,6 +912,8 @@ fn print_timing_output(
     source_metrics: Option<timing::SourceMetrics>,
     compiler_work: Option<rue_perf_schema::CompilerWork>,
     emitted_output: Option<&[u8]>,
+    compiler_boundary: Option<&CompilerBoundaryEvidence>,
+    critical_path: Option<&CompilerCriticalPathEvidence>,
 ) {
     if let Some(timing) = timing_data {
         if benchmark_json {
@@ -927,6 +935,12 @@ fn print_timing_output(
                     "size_bytes": bytes.len(),
                 });
             }
+            if let Some(boundary) = compiler_boundary {
+                payload["compiler_boundary"] = serde_json::to_value(boundary).unwrap();
+            }
+            if let Some(critical_path) = critical_path {
+                payload["critical_path"] = serde_json::to_value(critical_path).unwrap();
+            }
             #[cfg(rue_benchmark_allocations)]
             {
                 let metrics = allocation::snapshot();
@@ -941,6 +955,117 @@ fn print_timing_output(
             // Human-readable output goes to stderr
             eprintln!("{}", timing.report());
         }
+    }
+}
+
+fn compiler_build_profile() -> CompilerBuildProfile {
+    #[cfg(rue_release_build)]
+    {
+        CompilerBuildProfile::ReleaseThinLto
+    }
+    #[cfg(not(rue_release_build))]
+    {
+        CompilerBuildProfile::Debug
+    }
+}
+
+fn compiler_boundary_evidence(
+    options: &Options,
+    resolved_workers: usize,
+    snapshot: &rue_compiler::SourceSnapshot,
+    emitted_output: &[u8],
+) -> Option<CompilerBoundaryEvidence> {
+    let requested_workers = WorkerSetting::from_jobs(options.jobs)?;
+    let mut accepted_inputs = snapshot
+        .files()
+        .map(|source| {
+            use sha2::{Digest, Sha256};
+            let module = snapshot
+                .module_id(source.file_id)
+                .expect("source views originate from this snapshot");
+            CompilerInputEvidence {
+                class: if module.is_trusted_standard_library() {
+                    CompilerInputClass::TrustedStandardLibrarySource
+                } else {
+                    CompilerInputClass::WorkloadSource
+                },
+                logical_identity: module.as_str().to_owned(),
+                sha256: format!("{:x}", Sha256::digest(source.source.as_bytes())),
+            }
+        })
+        .collect::<Vec<_>>();
+    accepted_inputs.sort_by(|left, right| {
+        (&left.class, left.logical_identity.as_str())
+            .cmp(&(&right.class, right.logical_identity.as_str()))
+    });
+
+    Some(CompilerBoundaryEvidence {
+        boundary: BuildBoundary::FreshSourceToNativeV1,
+        pipeline: CompilerPipeline::CanonicalRootedQueryGraphV1,
+        session_count: 1,
+        root_request_count: 1,
+        configuration: CompilerConfigurationEvidence {
+            target: options.target.to_string(),
+            compiler_build_profile: compiler_build_profile(),
+            optimization: match options.opt_level {
+                OptLevel::O0 => OptimizationLevel::O0,
+                OptLevel::O1 => OptimizationLevel::O1,
+                OptLevel::O2 => OptimizationLevel::O2,
+                OptLevel::O3 => OptimizationLevel::O3,
+            },
+            linker: match &options.linker {
+                LinkerMode::Internal => LinkPolicy::Internal,
+                LinkerMode::System(_) => LinkPolicy::System,
+            },
+            output_kind: OutputKind::NativeExecutable,
+            requested_workers,
+            resolved_workers: u32::try_from(resolved_workers).unwrap_or(u32::MAX),
+            preview_features: {
+                let mut features = options
+                    .preview_features
+                    .iter()
+                    .map(|feature| feature.name().to_owned())
+                    .collect::<Vec<_>>();
+                features.sort();
+                features
+            },
+            external_link_archives: u32::try_from(options.link_archives.len()).unwrap_or(u32::MAX),
+        },
+        completed_stages: CompilerStage::FRESH_SOURCE_TO_NATIVE_V1.to_vec(),
+        accepted_inputs,
+        embedded_assets: vec![EmbeddedAssetEvidence {
+            class: EmbeddedAssetClass::BundledRuntimeArchive,
+            logical_identity: "rue-runtime".to_string(),
+            target: options.target.to_string(),
+        }],
+        artifact_hits: ArtifactHitEvidence::default(),
+        emitted_output_sha256: {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(emitted_output))
+        },
+        emitted_output_size_bytes: u64::try_from(emitted_output.len()).unwrap_or(u64::MAX),
+    })
+}
+
+fn compiler_critical_path_evidence(
+    timing: &timing::TimingData,
+    metrics: rue_compiler::unstable::OneShotMetrics,
+) -> CompilerCriticalPathEvidence {
+    let runtime = metrics.query_runtime;
+    CompilerCriticalPathEvidence {
+        query_worker_active_ns: runtime.query_worker_active_ns,
+        ready_items: runtime.ready_items,
+        ready_wait_ns: runtime.ready_wait_ns,
+        max_ready_wait_ns: runtime.max_ready_wait_ns,
+        longest_query_dependency_chain: runtime.longest_query_dependency_chain,
+        peak_query_workers: runtime.peak_query_workers,
+        toolchain_acquisition_ns: timing.pass_total_ns("toolchain_acquisition"),
+        semantic_bodies: timing.pass_duration_distribution("body_analysis"),
+        cfg_construction_bodies: timing.pass_duration_distribution("cfg_construction"),
+        cfg_optimization_bodies: timing.pass_duration_distribution("cfg_optimization"),
+        joins: runtime.joins,
+        declined_joins: runtime.declined_joins,
+        donated_permits: runtime.donated_permits,
     }
 }
 
@@ -1291,7 +1416,7 @@ fn main() {
     // Configure the compiler's shared structured-query budget before
     // dispatching to either the `--emit` path or the normal compile path, so
     // every driver path honors `-j`/`--jobs` (RUE-352).
-    configure_thread_pool(options.jobs);
+    let resolved_workers = configure_thread_pool(options.jobs);
 
     // Discover and load @import-ed modules from disk, transitively. Sema
     // resolves imports only against already-loaded files, so without this
@@ -1411,6 +1536,8 @@ fn main() {
             None,
             None,
             None,
+            None,
+            None,
         );
         return;
     }
@@ -1500,7 +1627,45 @@ fn main() {
                 );
             }
 
+            // Publication may perform target-specific finalization (notably
+            // ad-hoc Mach-O signing) after the linker produced its byte
+            // buffer. Benchmark evidence must describe the artifact users can
+            // actually execute, so both compiler and runner hash the published
+            // file rather than the pre-publication linker buffer.
+            let benchmark_emitted_output = if options.benchmark_json {
+                match std::fs::read(&options.output_path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) => {
+                        eprintln!(
+                            "Error: could not verify published benchmark output '{}': {error}",
+                            options.output_path
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                None
+            };
+
             let benchmark_metrics = options.benchmark_json.then(|| output.unstable_metrics());
+            let compiler_boundary = options
+                .benchmark_json
+                .then(|| {
+                    compiler_boundary_evidence(
+                        &options,
+                        resolved_workers,
+                        &source_snapshot,
+                        benchmark_emitted_output
+                            .as_deref()
+                            .expect("benchmark output was read after publication"),
+                    )
+                })
+                .flatten();
+            let critical_path = benchmark_metrics.and_then(|metrics| {
+                timing_data
+                    .as_ref()
+                    .map(|timing| compiler_critical_path_evidence(timing, metrics))
+            });
             print_timing_output(
                 &timing_data,
                 options.time_passes,
@@ -1521,9 +1686,9 @@ fn main() {
                     }
                 }),
                 benchmark_metrics.map(benchmark_compiler_work),
-                options
-                    .benchmark_json
-                    .then_some(output.linked_bytes.as_slice()),
+                benchmark_emitted_output.as_deref(),
+                compiler_boundary.as_ref(),
+                critical_path.as_ref(),
             );
         }
         Err(errors) => {
@@ -1594,6 +1759,7 @@ mod tests {
                 },
                 retention_enforcements: 13,
                 retention_scan_entries: 17,
+                ..Default::default()
             },
             ..Default::default()
         };

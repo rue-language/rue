@@ -9,10 +9,13 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork};
+use crate::{
+    BuildBoundary, DisplayIdentityWork, EnvironmentFingerprint, Sample, ValidationWork,
+    WorkerSetting,
+};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 11;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 12;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +32,12 @@ pub struct ScalingManifest {
     pub args: Vec<String>,
     /// Required Rust build profile of the compiler binary under measurement.
     pub compiler_build_profile: String,
+    /// Complete product boundary every row must prove.
+    pub boundary: BuildBoundary,
+    /// Independently declared compiler target.
+    pub target: String,
+    /// Ordered worker matrix measured for every workload.
+    pub workers: Vec<WorkerSetting>,
     /// Maintained programs, in report order.
     pub workloads: Vec<ScalingWorkload>,
 }
@@ -38,7 +47,7 @@ impl ScalingManifest {
     pub fn parse(text: &str) -> Result<Self, String> {
         let manifest: ScalingManifest =
             toml::from_str(text).map_err(|error| format!("invalid scaling manifest: {error}"))?;
-        if manifest.schema_version != 2 {
+        if manifest.schema_version != 3 {
             return Err(format!(
                 "unsupported scaling manifest schema version {}",
                 manifest.schema_version
@@ -49,6 +58,23 @@ impl ScalingManifest {
         }
         if manifest.compiler_build_profile.is_empty() {
             return Err("the scaling manifest declares no compiler build profile".to_string());
+        }
+        if manifest.boundary != BuildBoundary::FreshSourceToNativeV1 {
+            return Err("the scaling manifest declares an unsupported build boundary".to_string());
+        }
+        if manifest.target.is_empty() {
+            return Err("the scaling manifest declares no compiler target".to_string());
+        }
+        if manifest.workers != WorkerSetting::REFERENCE_MATRIX {
+            return Err(format!(
+                "the scaling manifest must declare the ADR-0071 worker matrix {:?}",
+                WorkerSetting::REFERENCE_MATRIX
+            ));
+        }
+        if !manifest.args.is_empty() {
+            return Err(
+                "fresh_source_to_native_v1 scaling admits no extra compiler arguments".to_string(),
+            );
         }
         if manifest.workloads.is_empty() {
             return Err("the scaling manifest declares no workloads".to_string());
@@ -132,11 +158,10 @@ pub struct ScalingRegime {
     pub compiler_args: Vec<String>,
     /// Rust build profile reported by the compiler binary.
     pub compiler_build_profile: String,
-    /// Independent structural-work probes per workload.
-    pub compiler_work_samples_per_workload: u32,
-    /// Arguments used by structural-work probes. These include a fixed
-    /// single-worker setting so scheduling cannot perturb exact counters.
-    pub compiler_work_args: Vec<String>,
+    /// Complete boundary jointly proved by manifest, runner, and compiler.
+    pub boundary: BuildBoundary,
+    /// Ordered worker matrix measured for every workload.
+    pub workers: Vec<WorkerSetting>,
 }
 
 /// Raw measurements for one maintained program.
@@ -149,6 +174,11 @@ pub struct ScalingObservation {
     pub source: String,
     /// Why this fixture participates in the scale curve.
     pub question: String,
+    /// Manifest row represented by this observation.
+    pub worker_setting: WorkerSetting,
+    /// Actual worker count selected by the compiler (`automatic` is resolved
+    /// from the host rather than assumed by the runner).
+    pub resolved_workers: u32,
     /// Compiler-produced fixture shape. A change makes cross-report comparison
     /// advisory even when the manifest revision was not yet advanced.
     pub shape: WorkloadShape,
@@ -321,10 +351,13 @@ mod tests {
     use super::*;
 
     const VALID: &str = r#"
-schema_version = 2
-revision = 2
+schema_version = 3
+revision = 3
 samples = 3
 compiler_build_profile = "release_thin_lto"
+boundary = "fresh_source_to_native_v1"
+target = "x86-64-linux"
+workers = ["one", "two", "four", "eight", "automatic"]
 
 [[workloads]]
 id = "ruelex"
@@ -335,9 +368,10 @@ question = "small maintained compiler frontend"
     #[test]
     fn parses_a_versioned_scaling_manifest() {
         let manifest = ScalingManifest::parse(VALID).unwrap();
-        assert_eq!(manifest.revision, 2);
+        assert_eq!(manifest.revision, 3);
         assert_eq!(manifest.samples, 3);
         assert_eq!(manifest.compiler_build_profile, "release_thin_lto");
+        assert_eq!(manifest.workers, WorkerSetting::REFERENCE_MATRIX);
         assert_eq!(manifest.workloads[0].id, "ruelex");
     }
 

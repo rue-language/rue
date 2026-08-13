@@ -34,7 +34,6 @@ pub(crate) struct LinkedExecutable {
 
 pub(crate) struct PublishedExecutable {
     metrics: OneShotMetrics,
-    pub(crate) linked_bytes: Vec<u8>,
 }
 
 pub(crate) struct PublicationAttempt {
@@ -88,7 +87,6 @@ impl LinkedExecutable {
             warnings: self.warnings,
             result: publication.map(|()| PublishedExecutable {
                 metrics: self.metrics,
-                linked_bytes: self.linked_bytes,
             }),
         }
     }

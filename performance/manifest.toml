@@ -49,6 +49,25 @@ id = "lattice"
 source = "performance/workloads/lattice/main.rue"
 question = "How quickly does Rue produce optimized native output for the frozen ADR-0071 reference program?"
 
+# Suite revision 3 makes ADR-0071's complete fresh-process boundary
+# machine-checkable. The workload bytes and questions are unchanged from
+# revision 2; protocol v2 adds one runner/compiler proof per process.
+[[suite]]
+revision = 3
+timing_schema_version = 1
+protocol_version = 2
+boundary = "fresh_source_to_native_v1"
+
+[[suite.workloads]]
+id = "startup"
+source = "performance/workloads/startup/main.rue"
+question = "What does a minimal fresh compilation cost end to end?"
+
+[[suite.workloads]]
+id = "lattice"
+source = "performance/workloads/lattice/main.rue"
+question = "How quickly does Rue produce optimized native output for the frozen ADR-0071 reference program?"
+
 # A development epoch for local runs. Not a collection target: its environment
 # policy admits only `local`, so a hosted runner cannot append to it.
 [[epoch]]
@@ -69,6 +88,48 @@ runner_image = "local"
 [epoch.sampling.startup]
 samples = 3
 batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 10
+
+# Local protocol-v2 smoke regime. This is not a reference clock, but it runs
+# the exact boundary checker used by hosted collection.
+[[epoch]]
+id = 3
+platform = "local"
+suite_revision = 3
+target = "x86-64-linux"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.boundary]
+boundary = "fresh_source_to_native_v1"
+pipeline = "canonical_rooted_query_graph_v1"
+compiler_build_profile = "release_thin_lto"
+optimization = "o3"
+linker = "internal"
+output_kind = "native_executable"
+worker_setting = "one"
+allowed_input_classes = ["workload_source", "trusted_standard_library_source"]
+allowed_embedded_asset_classes = ["bundled_runtime_archive"]
+required_stages = ["source_discovery_and_parsing", "program_construction", "semantic_analysis", "cfg_and_optimization", "backend", "object_generation", "linking", "output_publication"]
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.startup]
+samples = 3
+batch_size = 5
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
 
 [epoch.flagging]
 k = 3.0
@@ -441,7 +502,7 @@ run = "ff0a3ab928b8e2e601604912404b9ed4b8140a27a2204300d5917143f533574b"
 
 [[epoch]]
 id = 4
-collection = true
+collection = false
 platform = "x86_64-linux"
 suite_revision = 2
 target = "x86_64-unknown-linux-gnu"
@@ -474,7 +535,7 @@ window = 5
 
 [[epoch]]
 id = 4
-collection = true
+collection = false
 platform = "aarch64-linux"
 suite_revision = 2
 target = "aarch64-unknown-linux-gnu"
@@ -503,12 +564,146 @@ window = 3
 
 [[epoch]]
 id = 4
-collection = true
+collection = false
 platform = "aarch64-macos"
 suite_revision = 2
 target = "aarch64-apple-darwin"
 args = ["-O3", "-j1"]
 toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.startup]
+samples = 99
+batch_size = 8
+
+[epoch.sampling.lattice]
+samples = 99
+batch_size = 1
+
+[epoch.flagging]
+k = 4.0
+window = 5
+
+# ---------------------------------------------------------------------------
+# Suite revision 3 collection epochs (ADR-0071 Phase 1, RUE-1475).
+#
+# These preserve revision 2's frozen programs and calibrated sample counts but
+# require protocol-v2 proof of the complete release-quality boundary. Epoch 4
+# remains historical; only these epochs may receive new reference samples.
+
+[[epoch]]
+id = 5
+collection = true
+platform = "x86_64-linux"
+suite_revision = 3
+target = "x86-64-linux"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.boundary]
+boundary = "fresh_source_to_native_v1"
+pipeline = "canonical_rooted_query_graph_v1"
+compiler_build_profile = "release_thin_lto"
+optimization = "o3"
+linker = "internal"
+output_kind = "native_executable"
+worker_setting = "one"
+allowed_input_classes = ["workload_source", "trusted_standard_library_source"]
+allowed_embedded_asset_classes = ["bundled_runtime_archive"]
+required_stages = ["source_discovery_and_parsing", "program_construction", "semantic_analysis", "cfg_and_optimization", "backend", "object_generation", "linking", "output_publication"]
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 12
+batch_size = 6
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.process_elapsed_targets.lattice]
+process_elapsed_ns = 250000000
+reference = "ADR-0071"
+
+[epoch.flagging]
+k = 6.0
+window = 5
+
+[[epoch]]
+id = 5
+collection = true
+platform = "aarch64-linux"
+suite_revision = 3
+target = "aarch64-linux"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.boundary]
+boundary = "fresh_source_to_native_v1"
+pipeline = "canonical_rooted_query_graph_v1"
+compiler_build_profile = "release_thin_lto"
+optimization = "o3"
+linker = "internal"
+output_kind = "native_executable"
+worker_setting = "one"
+allowed_input_classes = ["workload_source", "trusted_standard_library_source"]
+allowed_embedded_asset_classes = ["bundled_runtime_archive"]
+required_stages = ["source_discovery_and_parsing", "program_construction", "semantic_analysis", "cfg_and_optimization", "backend", "object_generation", "linking", "output_publication"]
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 5
+batch_size = 6
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 5.0
+window = 3
+
+[[epoch]]
+id = 5
+collection = true
+platform = "aarch64-macos"
+suite_revision = 3
+target = "aarch64-macos"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.boundary]
+boundary = "fresh_source_to_native_v1"
+pipeline = "canonical_rooted_query_graph_v1"
+compiler_build_profile = "release_thin_lto"
+optimization = "o3"
+linker = "internal"
+output_kind = "native_executable"
+worker_setting = "one"
+allowed_input_classes = ["workload_source", "trusted_standard_library_source"]
+allowed_embedded_asset_classes = ["bundled_runtime_archive"]
+required_stages = ["source_discovery_and_parsing", "program_construction", "semantic_analysis", "cfg_and_optimization", "backend", "object_generation", "linking", "output_publication"]
 
 [epoch.workload_source_hashes]
 startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"

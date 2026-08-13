@@ -13,6 +13,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::time::Instant;
 
 use ahash::{AHashMap, AHashSet, RandomState};
 use smallvec::SmallVec;
@@ -23,6 +24,10 @@ const VALIDATION_PROOF_REGISTERED: u8 = 0;
 const VALIDATION_PROOF_RETRYABLE: u8 = 1;
 const VALIDATION_PROOF_UNREGISTERED: u8 = 2;
 const VALIDATION_PUBLISH_SWEEP_QUANTUM: usize = 64;
+
+fn duration_ns(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
 
 type ValidationProofStack = SmallVec<[u8; 8]>;
 
@@ -3383,6 +3388,9 @@ pub struct RuntimeMetrics {
     pub retention_scan_entries: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
+    /// Peak tasks simultaneously owning execution permits. Nested query bodies
+    /// on one task count once, so this is the worker-utilization concurrency.
+    pub peak_query_workers: u64,
     /// Terminals currently protected by rooted-request observation leases.
     pub active_task_leases: u64,
     /// Peak terminals simultaneously protected by rooted-request observation
@@ -3395,6 +3403,15 @@ pub struct RuntimeMetrics {
     pub peak_retained_pins: u64,
     /// Times a parked joiner released its permit.
     pub donated_permits: u64,
+    /// Nanoseconds tasks held an execution permit, summed across tasks.
+    pub query_worker_active_ns: u64,
+    /// Registered batch items observed in the ready queue.
+    pub ready_items: u64,
+    /// Sum and maximum of ready-to-start delay for registered batch items.
+    pub ready_wait_ns: u64,
+    pub max_ready_wait_ns: u64,
+    /// Longest nested query/batch ancestry observed by a task.
+    pub longest_query_dependency_chain: u64,
     /// Immutable revision views currently retained by the runtime.
     pub retained_revisions: u64,
     /// Configured immutable-revision view bound.
@@ -3450,11 +3467,18 @@ struct Metrics {
     retention_scan_entries: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
+    active_query_workers: AtomicU64,
+    peak_query_workers: AtomicU64,
     active_task_leases: AtomicU64,
     peak_task_leases: AtomicU64,
     active_retained_pins: AtomicU64,
     peak_retained_pins: AtomicU64,
     donated_permits: AtomicU64,
+    query_worker_active_ns: AtomicU64,
+    ready_items: AtomicU64,
+    ready_wait_ns: AtomicU64,
+    max_ready_wait_ns: AtomicU64,
+    longest_query_dependency_chain: AtomicU64,
 }
 
 impl Metrics {
@@ -3535,11 +3559,19 @@ impl Metrics {
             retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
             retention_scan_entries: self.retention_scan_entries.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
+            peak_query_workers: self.peak_query_workers.load(Ordering::Relaxed),
             active_task_leases: self.active_task_leases.load(Ordering::Relaxed),
             peak_task_leases: self.peak_task_leases.load(Ordering::Relaxed),
             active_retained_pins: self.active_retained_pins.load(Ordering::Relaxed),
             peak_retained_pins: self.peak_retained_pins.load(Ordering::Relaxed),
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
+            query_worker_active_ns: self.query_worker_active_ns.load(Ordering::Relaxed),
+            ready_items: self.ready_items.load(Ordering::Relaxed),
+            ready_wait_ns: self.ready_wait_ns.load(Ordering::Relaxed),
+            max_ready_wait_ns: self.max_ready_wait_ns.load(Ordering::Relaxed),
+            longest_query_dependency_chain: self
+                .longest_query_dependency_chain
+                .load(Ordering::Relaxed),
             retained_revisions: 0,
             revision_limit: REVISION_RETENTION_LIMIT as u64,
         }
@@ -3573,6 +3605,15 @@ impl Metrics {
 
     fn body_left(&self) {
         self.active_bodies.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn permit_acquired(&self) {
+        let active = self.active_query_workers.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak_query_workers.fetch_max(active, Ordering::AcqRel);
+    }
+
+    fn permit_released(&self) {
+        self.active_query_workers.fetch_sub(1, Ordering::AcqRel);
     }
 
     fn task_lease_acquired(&self) {
@@ -4647,6 +4688,9 @@ impl QueryRuntime {
             revision,
             cancellation,
             owns_permit: AtomicBool::new(false),
+            permit_timing: Mutex::new(PermitTiming::default()),
+            longest_query_dependency_chain: AtomicU64::new(0),
+            publish_critical_path: true,
             stack: Mutex::new(Vec::new()),
             ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
@@ -7347,6 +7391,7 @@ pub struct QueryContext {
 struct RegisteredBatchItem<K> {
     request_id: u64,
     key: K,
+    ready_at: Instant,
 }
 
 struct RegisteredBatchItems<K> {
@@ -7420,6 +7465,11 @@ where
 {
     tracing::dispatcher::with_default(&tracing_dispatch, || {
         let parent_span = tracing_parent.enter();
+        let mut ready_items = 0u64;
+        let mut ready_wait_ns = 0u64;
+        let mut max_ready_wait_ns = 0u64;
+        let mut query_worker_active_ns = 0u64;
+        let mut longest_query_dependency_chain = 0u64;
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut completed = Vec::new();
             loop {
@@ -7427,16 +7477,49 @@ where
                     break;
                 };
                 let item = &items.items[index];
+                let wait_ns = duration_ns(item.ready_at.elapsed());
+                ready_items = ready_items.saturating_add(1);
+                ready_wait_ns = ready_wait_ns.saturating_add(wait_ns);
+                max_ready_wait_ns = max_ready_wait_ns.max(wait_ns);
                 let child = parent.batch_child(item.request_id, authority.clone());
                 let result =
                     family.query_task_registered(child.clone(), item.key.clone(), item.request_id);
                 if matches!(result, TaskQueryResult::Terminal { .. }) {
                     authority.publish_child(&child);
                 }
+                query_worker_active_ns = query_worker_active_ns
+                    .saturating_add(lock(&child.permit_timing).accumulated_ns);
+                longest_query_dependency_chain = longest_query_dependency_chain
+                    .max(child.longest_query_dependency_chain.load(Ordering::Relaxed));
                 completed.push((index, child, result));
             }
             completed
         }));
+        parent
+            .core
+            .metrics
+            .ready_items
+            .fetch_add(ready_items, Ordering::Relaxed);
+        parent
+            .core
+            .metrics
+            .ready_wait_ns
+            .fetch_add(ready_wait_ns, Ordering::Relaxed);
+        parent
+            .core
+            .metrics
+            .max_ready_wait_ns
+            .fetch_max(max_ready_wait_ns, Ordering::Relaxed);
+        parent
+            .core
+            .metrics
+            .query_worker_active_ns
+            .fetch_add(query_worker_active_ns, Ordering::Relaxed);
+        parent
+            .core
+            .metrics
+            .longest_query_dependency_chain
+            .fetch_max(longest_query_dependency_chain, Ordering::Relaxed);
         drop(parent_span);
         // A tracing subscriber may buffer observations locally to avoid
         // perturbing parallel query execution. This generic lifecycle marker
@@ -7689,6 +7772,7 @@ impl QueryContext {
                 .map(|key| RegisteredBatchItem {
                     request_id: self.task.next_nested_request(),
                     key,
+                    ready_at: Instant::now(),
                 })
                 .collect(),
         });
@@ -8121,6 +8205,28 @@ impl fmt::Debug for TaskQueryCache {
     }
 }
 
+#[derive(Debug, Default)]
+struct PermitTiming {
+    active_since: Option<Instant>,
+    accumulated_ns: u64,
+}
+
+impl PermitTiming {
+    fn acquired(&mut self) {
+        assert!(self.active_since.replace(Instant::now()).is_none());
+    }
+
+    fn released(&mut self) {
+        let started = self
+            .active_since
+            .take()
+            .expect("an owned execution permit has an active timing interval");
+        self.accumulated_ns = self
+            .accumulated_ns
+            .saturating_add(duration_ns(started.elapsed()));
+    }
+}
+
 #[derive(Debug)]
 struct Task {
     id: TaskId,
@@ -8128,6 +8234,15 @@ struct Task {
     revision: Revision,
     cancellation: CancellationToken,
     owns_permit: AtomicBool,
+    /// Task-local execution-permit intervals, published once when this task
+    /// completes. Donation pauses the interval while the task is waiting.
+    permit_timing: Mutex<PermitTiming>,
+    /// Task-local maximum, merged into the runtime at task completion.
+    longest_query_dependency_chain: AtomicU64,
+    /// Top-level tasks publish directly. Batch children are reduced once at
+    /// their bounded worker-completion boundary instead of contending on the
+    /// runtime metrics for every ready item.
+    publish_critical_path: bool,
     stack: Mutex<Vec<TaskFrame>>,
     /// Nodes whose evaluation structurally encloses this task but whose frames
     /// live on an ancestor task's stack. A registered batch runs its children on
@@ -9369,6 +9484,9 @@ impl Task {
             revision: self.revision,
             cancellation: self.cancellation.clone(),
             owns_permit: AtomicBool::new(false),
+            permit_timing: Mutex::new(PermitTiming::default()),
+            longest_query_dependency_chain: AtomicU64::new(0),
+            publish_critical_path: false,
             stack: Mutex::new(Vec::new()),
             ancestry: inherited_ancestry,
             nested_attempts: Mutex::new(Vec::new()),
@@ -9822,6 +9940,8 @@ impl Task {
         }
         core.permits.acquire();
         assert!(!self.owns_permit.swap(true, Ordering::AcqRel));
+        lock(&self.permit_timing).acquired();
+        core.metrics.permit_acquired();
         true
     }
 
@@ -9829,6 +9949,8 @@ impl Task {
         if !self.owns_permit.swap(false, Ordering::AcqRel) {
             return false;
         }
+        lock(&self.permit_timing).released();
+        core.metrics.permit_released();
         core.permits.release();
         true
     }
@@ -9992,7 +10114,8 @@ impl Task {
     }
 
     fn push(&self, node: ExactNodeIdentity) {
-        lock(&self.stack).push(TaskFrame {
+        let mut stack = lock(&self.stack);
+        stack.push(TaskFrame {
             node,
             dependencies: TaskDependencies::default(),
             inputs: InlineOrderedMap::default(),
@@ -10000,6 +10123,9 @@ impl Task {
             handoffs: Vec::new(),
             observed_handoffs: Vec::new(),
         });
+        let depth = self.ancestry.len().saturating_add(stack.len()) as u64;
+        self.longest_query_dependency_chain
+            .fetch_max(depth, Ordering::Relaxed);
     }
 
     fn pop(&self, expected: &ExactNodeIdentity) -> TaskFrameOutput {
@@ -10128,6 +10254,21 @@ impl Drop for Task {
         self.core
             .metrics
             .task_leases_released(lock(&self.leases).held.len());
+        let permit_timing = lock(&self.permit_timing);
+        assert!(
+            permit_timing.active_since.is_none(),
+            "a query task must release its execution permit before it is dropped"
+        );
+        if self.publish_critical_path {
+            self.core
+                .metrics
+                .query_worker_active_ns
+                .fetch_add(permit_timing.accumulated_ns, Ordering::Relaxed);
+            self.core.metrics.longest_query_dependency_chain.fetch_max(
+                self.longest_query_dependency_chain.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+        }
     }
 }
 
@@ -10934,6 +11075,7 @@ mod tests {
             items: vec![RegisteredBatchItem {
                 request_id: 2,
                 key: Key("child"),
+                ready_at: Instant::now(),
             }],
         });
         let weak_items = Arc::downgrade(&items);
@@ -13251,6 +13393,9 @@ mod tests {
             revision: revision(1),
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
+            permit_timing: Mutex::new(PermitTiming::default()),
+            longest_query_dependency_chain: AtomicU64::new(0),
+            publish_critical_path: true,
             stack: Mutex::new(Vec::new()),
             ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
@@ -13304,6 +13449,9 @@ mod tests {
             revision: revision(1),
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
+            permit_timing: Mutex::new(PermitTiming::default()),
+            longest_query_dependency_chain: AtomicU64::new(0),
+            publish_critical_path: true,
             stack: Mutex::new(Vec::new()),
             ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
@@ -13579,6 +13727,9 @@ mod tests {
             revision: revision(1),
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
+            permit_timing: Mutex::new(PermitTiming::default()),
+            longest_query_dependency_chain: AtomicU64::new(0),
+            publish_critical_path: true,
             stack: Mutex::new(Vec::new()),
             ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),

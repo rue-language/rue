@@ -422,6 +422,7 @@ mod tests {
                 unattributed_ns: 0,
                 compiler_root_ns: latency_ns * u64::from(batch),
             },
+            boundary_evidence: Vec::new(),
         }
     }
 

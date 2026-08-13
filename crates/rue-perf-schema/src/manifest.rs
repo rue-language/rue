@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use crate::boundary::{BuildBoundary, BuildBoundaryPolicy};
 use crate::run::EnvironmentFingerprint;
 
 /// One workload in the suite.
@@ -48,6 +49,10 @@ pub struct SuiteRevision {
     pub timing_schema_version: u32,
     /// The runner protocol version this revision's run objects conform to.
     pub protocol_version: u32,
+    /// Exhaustive product boundary required by this protocol revision.
+    /// Historical protocol-v1 suites predate machine-checkable evidence.
+    #[serde(default)]
+    pub boundary: Option<BuildBoundary>,
     /// The suite's workloads.
     pub workloads: Vec<Workload>,
 }
@@ -179,6 +184,9 @@ pub struct PlatformEpoch {
     pub target: String,
     /// Every behavior-affecting compiler argument, in order.
     pub args: Vec<String>,
+    /// Complete intended policy for protocol-v2 samples.
+    #[serde(default)]
+    pub boundary: Option<BuildBoundaryPolicy>,
     /// Content hash of the Rust toolchain the compiler is built with.
     ///
     /// Build environment, not product: changing it changes generated code and
@@ -328,6 +336,12 @@ pub enum ManifestError {
         /// The epoch that also claims it.
         second: u32,
     },
+    /// Suite protocol, epoch policy, and canonical invocation disagree.
+    BoundaryContract {
+        platform: String,
+        epoch: u32,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -401,7 +415,15 @@ impl std::fmt::Display for ManifestError {
             } => write!(
                 f,
                 "platform {platform} marks epochs {first} and {second} for collection; \
-                 exactly one epoch per platform may be collected"
+                exactly one epoch per platform may be collected"
+            ),
+            ManifestError::BoundaryContract {
+                platform,
+                epoch,
+                detail,
+            } => write!(
+                f,
+                "epoch {epoch} on {platform} violates its build-boundary contract: {detail}"
             ),
         }
     }
@@ -503,6 +525,39 @@ impl Manifest {
                     revision: epoch.suite_revision,
                 });
             };
+
+            match (suite.protocol_version, suite.boundary, &epoch.boundary) {
+                (1, None, None) => {}
+                (2, Some(boundary), Some(policy)) if boundary == policy.boundary => {
+                    policy
+                        .validate()
+                        .map_err(|detail| ManifestError::BoundaryContract {
+                            platform: epoch.platform.clone(),
+                            epoch: epoch.id,
+                            detail,
+                        })?;
+                    let expected_args = policy.canonical_compiler_args();
+                    if epoch.args != expected_args {
+                        return Err(ManifestError::BoundaryContract {
+                            platform: epoch.platform.clone(),
+                            epoch: epoch.id,
+                            detail: format!(
+                                "arguments {:?} do not match canonical boundary arguments {:?}",
+                                epoch.args, expected_args
+                            ),
+                        });
+                    }
+                }
+                (protocol, suite_boundary, epoch_boundary) => {
+                    return Err(ManifestError::BoundaryContract {
+                        platform: epoch.platform.clone(),
+                        epoch: epoch.id,
+                        detail: format!(
+                            "protocol {protocol} declares suite boundary {suite_boundary:?} and epoch policy {epoch_boundary:?}"
+                        ),
+                    });
+                }
+            }
 
             let declared = suite.workload_ids();
             check_coverage(

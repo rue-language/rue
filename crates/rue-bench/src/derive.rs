@@ -731,6 +731,7 @@ window = 3
                             peak_memory_bytes: 32 * 1024 * 1024,
                             output_binary_bytes: 12_288,
                             phases: accounting(ns * batch),
+                            boundary_evidence: Vec::new(),
                         }
                     })
                     .collect(),

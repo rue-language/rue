@@ -7,13 +7,12 @@
 use std::path::{Path, PathBuf};
 
 use rue_perf_schema::{
-    Band, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
-    ScalingRegime, ScalingReport, Summary, WorkloadShape, canonical_json, content_address,
+    Band, BuildBoundaryPolicy, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest,
+    ScalingObservation, ScalingRegime, ScalingReport, Summary, WorkerSetting, WorkloadShape,
+    canonical_json, content_address,
 };
 
 use crate::measure::{SampleRequest, measure_fresh_compile};
-
-const COMPILER_WORK_SAMPLES_PER_WORKLOAD: u32 = 2;
 
 struct Options {
     manifest: PathBuf,
@@ -46,10 +45,8 @@ pub fn run() -> Result<(), String> {
     };
 
     let started_at = crate::utc_timestamp();
-    let mut compiler_work_args = manifest.args.clone();
-    compiler_work_args.extend(["--jobs".to_string(), "1".to_string()]);
     let mut target: Option<String> = None;
-    let mut observations = Vec::with_capacity(manifest.workloads.len());
+    let mut observations = Vec::with_capacity(manifest.workloads.len() * manifest.workers.len());
     for workload in &manifest.workloads {
         let source = options.repo_root.join(&workload.source);
         if !source.is_file() {
@@ -59,132 +56,132 @@ pub fn run() -> Result<(), String> {
                 source.display()
             ));
         }
-        let output = workdir.join(format!("{}-out", workload.id));
         let mut shape: Option<WorkloadShape> = None;
-        let mut work = None;
-        let mut samples = Vec::with_capacity(manifest.samples as usize);
-        for sample_index in 0..manifest.samples {
-            eprintln!(
-                "rue-bench: scaling {} sample {}/{}",
-                workload.id,
-                sample_index + 1,
-                manifest.samples
-            );
-            let request = SampleRequest {
-                compiler: &options.compiler,
-                source: &source,
-                args: &manifest.args,
-                output: output.clone(),
-                std_root: options.std_root.as_deref(),
-                batch_size: 1,
-                workload: &workload.id,
-                sample_index,
-            };
-            let measured = measure_fresh_compile(&request).map_err(|detail| {
-                format!(
-                    "scaling workload {:?} sample {} failed: {detail}",
-                    workload.id, sample_index
-                )
-            })?;
-            if !measured.sample.phases.holds() {
-                return Err(format!(
-                    "scaling workload {:?} sample {} violated phase accounting: root={} attributed={}",
+        let mut reference_work = None;
+        let mut output_identity: Option<(String, u64)> = None;
+        for worker_setting in &manifest.workers {
+            let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(*worker_setting);
+            let mut args = manifest.args.clone();
+            args.extend(policy.canonical_compiler_args());
+            let output = workdir.join(format!("{}-{:?}-out", workload.id, worker_setting));
+            let mut resolved_workers = None;
+            let mut samples = Vec::with_capacity(manifest.samples as usize);
+            for sample_index in 0..manifest.samples {
+                eprintln!(
+                    "rue-bench: scaling {} {:?} sample {}/{}",
                     workload.id,
+                    worker_setting,
+                    sample_index + 1,
+                    manifest.samples
+                );
+                let request = SampleRequest {
+                    compiler: &options.compiler,
+                    source: &source,
+                    args: &args,
+                    target: Some(&manifest.target),
+                    output: output.clone(),
+                    std_root: options.std_root.as_deref(),
+                    batch_size: 1,
+                    workload: &workload.id,
                     sample_index,
-                    measured.sample.phases.compiler_root_ns,
-                    measured.sample.phases.attributed_ns()
-                ));
-            }
-            match &shape {
-                None => shape = Some(measured.shape.clone()),
-                Some(expected) if expected != &measured.shape => {
+                    boundary_policy: Some(&policy),
+                };
+                let measured = measure_fresh_compile(&request).map_err(|detail| {
+                    format!(
+                        "scaling workload {:?} {:?} sample {} failed: {detail}",
+                        workload.id, worker_setting, sample_index
+                    )
+                })?;
+                if !measured.sample.phases.holds() {
                     return Err(format!(
-                        "scaling workload {:?} changed shape between samples: {expected:?} then {:?}",
-                        workload.id, measured.shape
+                        "scaling workload {:?} {:?} sample {} violated phase accounting: root={} attributed={}",
+                        workload.id,
+                        worker_setting,
+                        sample_index,
+                        measured.sample.phases.compiler_root_ns,
+                        measured.sample.phases.attributed_ns()
                     ));
                 }
-                Some(_) => {}
-            }
-            match &target {
-                None => target = Some(measured.target.clone()),
-                Some(expected) if expected != &measured.target => {
+                match &shape {
+                    None => shape = Some(measured.shape.clone()),
+                    Some(expected) if expected != &measured.shape => {
+                        return Err(format!(
+                            "scaling workload {:?} changed shape between samples: {expected:?} then {:?}",
+                            workload.id, measured.shape
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                match &target {
+                    None => target = Some(measured.target.clone()),
+                    Some(expected) if expected != &measured.target => {
+                        return Err(format!(
+                            "compiler target changed between samples: {expected:?} then {:?}",
+                            measured.target
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                if measured.compiler_build_profile != manifest.compiler_build_profile {
                     return Err(format!(
-                        "compiler target changed between samples: {expected:?} then {:?}",
-                        measured.target
+                        "scaling workload {:?} requires compiler build profile {:?}, but the compiler reported {:?}",
+                        workload.id,
+                        manifest.compiler_build_profile,
+                        measured.compiler_build_profile,
                     ));
                 }
-                Some(_) => {}
+                let evidence = measured
+                    .sample
+                    .boundary_evidence
+                    .first()
+                    .expect("the boundary policy requires exactly one process proof");
+                let current_resolved = evidence.compiler.configuration.resolved_workers;
+                match resolved_workers {
+                    None => resolved_workers = Some(current_resolved),
+                    Some(expected) if expected == current_resolved => {}
+                    Some(expected) => {
+                        return Err(format!(
+                            "worker row {worker_setting:?} resolved inconsistently: {expected} then {current_resolved}"
+                        ));
+                    }
+                }
+                let current_output = (
+                    evidence.runner.output_sha256.clone(),
+                    evidence.compiler.emitted_output_size_bytes,
+                );
+                match &output_identity {
+                    None => output_identity = Some(current_output),
+                    Some(expected) if expected == &current_output => {}
+                    Some(_) => {
+                        return Err(format!(
+                            "scaling workload {:?} produced different output across worker rows",
+                            workload.id
+                        ));
+                    }
+                }
+                if *worker_setting == WorkerSetting::One {
+                    observe_compiler_work(
+                        &mut reference_work,
+                        measured.compiler_work,
+                        &workload.id,
+                    )?;
+                }
+                samples.push(measured.sample);
             }
-            if measured.compiler_build_profile != manifest.compiler_build_profile {
-                return Err(format!(
-                    "scaling workload {:?} requires compiler build profile {:?}, but the compiler reported {:?}",
-                    workload.id, manifest.compiler_build_profile, measured.compiler_build_profile,
-                ));
-            }
-            samples.push(measured.sample);
+            observations.push(ScalingObservation {
+                workload: workload.id.clone(),
+                source: workload.source.clone(),
+                question: workload.question.clone(),
+                worker_setting: *worker_setting,
+                resolved_workers: resolved_workers.expect("the manifest requires samples"),
+                shape: shape
+                    .clone()
+                    .expect("the manifest requires at least two samples"),
+                work: reference_work
+                    .expect("the reference worker matrix starts with the one-worker row"),
+                samples,
+            });
         }
-        // Keep the structural probes after the published timing samples so
-        // adding deterministic counters cannot warm workload files before the
-        // established timing regime observes them.
-        for probe_index in 0..COMPILER_WORK_SAMPLES_PER_WORKLOAD {
-            eprintln!(
-                "rue-bench: scaling {} deterministic-work probe {}/{}",
-                workload.id,
-                probe_index + 1,
-                COMPILER_WORK_SAMPLES_PER_WORKLOAD
-            );
-            let request = SampleRequest {
-                compiler: &options.compiler,
-                source: &source,
-                args: &compiler_work_args,
-                output: output.clone(),
-                std_root: options.std_root.as_deref(),
-                batch_size: 1,
-                workload: &workload.id,
-                sample_index: probe_index,
-            };
-            let measured = measure_fresh_compile(&request).map_err(|detail| {
-                format!(
-                    "scaling workload {:?} deterministic-work probe {} failed: {detail}",
-                    workload.id, probe_index
-                )
-            })?;
-            match &shape {
-                None => shape = Some(measured.shape.clone()),
-                Some(expected) if expected != &measured.shape => {
-                    return Err(format!(
-                        "scaling workload {:?} changed shape between deterministic-work probes: {expected:?} then {:?}",
-                        workload.id, measured.shape
-                    ));
-                }
-                Some(_) => {}
-            }
-            match &target {
-                None => target = Some(measured.target.clone()),
-                Some(expected) if expected != &measured.target => {
-                    return Err(format!(
-                        "compiler target changed between samples: {expected:?} then {:?}",
-                        measured.target
-                    ));
-                }
-                Some(_) => {}
-            }
-            if measured.compiler_build_profile != manifest.compiler_build_profile {
-                return Err(format!(
-                    "scaling workload {:?} requires compiler build profile {:?}, but the compiler reported {:?}",
-                    workload.id, manifest.compiler_build_profile, measured.compiler_build_profile,
-                ));
-            }
-            observe_compiler_work(&mut work, measured.compiler_work, &workload.id)?;
-        }
-        observations.push(ScalingObservation {
-            workload: workload.id.clone(),
-            source: workload.source.clone(),
-            question: workload.question.clone(),
-            shape: shape.expect("the manifest requires at least two samples"),
-            work: work.expect("the manifest requires at least two samples"),
-            samples,
-        });
     }
 
     let report = ScalingReport {
@@ -194,7 +191,7 @@ pub fn run() -> Result<(), String> {
             commit: options.commit,
             started_at,
             finished_at: crate::utc_timestamp(),
-            target: target.unwrap_or_else(|| "unknown".to_string()),
+            target: target.unwrap_or_else(|| manifest.target.clone()),
             environment: crate::environment::fingerprint(),
         },
         regime: ScalingRegime {
@@ -204,8 +201,8 @@ pub fn run() -> Result<(), String> {
             samples_per_workload: manifest.samples,
             compiler_args: manifest.args,
             compiler_build_profile: manifest.compiler_build_profile,
-            compiler_work_samples_per_workload: COMPILER_WORK_SAMPLES_PER_WORKLOAD,
-            compiler_work_args,
+            boundary: manifest.boundary,
+            workers: manifest.workers,
         },
         workloads: observations,
     };
@@ -300,11 +297,13 @@ fn render(report: &ScalingReport) -> String {
     let mut out = String::new();
     out.push_str("# Rue compiler scaling report\n\n");
     out.push_str(&format!(
-        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Compiler build profile: `{}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload; OS page-cache state is uncontrolled.\n- Structural work: {} single-worker compiler-work probes per workload with arguments `{:?}`; probe timings are not published.\n- Runtime separation: compiled programs were not executed.\n\n",
+        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Compiler build profile: `{}`\n- Boundary: `{:?}`\n- Worker matrix: `{:?}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload and worker row; OS page-cache state is uncontrolled.\n- Structural work: one-worker samples must agree exactly; schedule-dependent parallel work remains raw per-process evidence.\n- Runtime separation: compiled programs were not executed.\n\n",
         report.identity.commit,
         report.identity.manifest_revision,
         report.identity.target,
         report.regime.compiler_build_profile,
+        report.regime.boundary,
+        report.regime.workers,
         report.identity.environment.cpu_model,
         report.identity.environment.core_count,
         report.identity.environment.memory_bytes,
@@ -312,11 +311,9 @@ fn render(report: &ScalingReport) -> String {
         report.identity.environment.runner_image,
         report.identity.environment.runner_image_version,
         report.regime.samples_per_workload,
-        report.regime.compiler_work_samples_per_workload,
-        report.regime.compiler_work_args,
     ));
     out.push_str("Times and memory are median ± median absolute deviation (MAD). A changed shape id marks comparisons with earlier artifacts as advisory.\n\n");
-    out.push_str("| workload | shape id | files/modules | functions | bytes/lines/tokens | process ms | compiler ms | peak MiB | output KiB |\n");
+    out.push_str("| workload / workers | shape id | files/modules | functions | bytes/lines/tokens | process ms | compiler ms | peak MiB | output KiB |\n");
     out.push_str("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
         let process = summarize(
@@ -348,7 +345,7 @@ fn render(report: &ScalingReport) -> String {
             .unwrap_or_else(|_| "unknown".to_string());
         out.push_str(&format!(
             "| {} | `{}` | {}/{} | {} | {}/{}/{} | {:.2} ± {:.2} | {:.2} ± {:.2} | {:.1} ± {:.1} | {:.1} ± {:.1} |\n",
-            observation.workload,
+            observation_label(observation),
             shape_id,
             observation.shape.files,
             observation.shape.modules,
@@ -367,11 +364,77 @@ fn render(report: &ScalingReport) -> String {
         ));
     }
 
+    out.push_str("\n## Worker scaling and critical path\n\n");
+    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms.\n\n");
+    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | toolchain ms | semantic total/max ms | CFG build total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let evidence = observation.samples.iter().map(|sample| {
+            sample
+                .boundary_evidence
+                .first()
+                .map(|evidence| evidence.critical_path.clone())
+                .unwrap_or_default()
+        });
+        let utilization = summarize(evidence.clone().zip(&observation.samples).map(
+            |(evidence, sample)| {
+                let capacity = sample
+                    .phases
+                    .compiler_root_ns
+                    .saturating_mul(u64::from(observation.resolved_workers));
+                if capacity == 0 {
+                    0
+                } else {
+                    evidence.query_worker_active_ns.saturating_mul(10_000) / capacity
+                }
+            },
+        ));
+        let active = summarize(evidence.clone().map(|e| e.query_worker_active_ns));
+        let ready_mean = summarize(evidence.clone().map(|e| {
+            if e.ready_items == 0 {
+                0
+            } else {
+                e.ready_wait_ns / e.ready_items
+            }
+        }));
+        let ready_max = summarize(evidence.clone().map(|e| e.max_ready_wait_ns));
+        let chain = summarize(evidence.clone().map(|e| e.longest_query_dependency_chain));
+        let toolchain = summarize(evidence.clone().map(|e| e.toolchain_acquisition_ns));
+        let semantic_total = summarize(evidence.clone().map(|e| e.semantic_bodies.total_ns));
+        let semantic_max = summarize(evidence.clone().map(|e| e.semantic_bodies.max_ns));
+        let cfg_total = summarize(evidence.clone().map(|e| e.cfg_construction_bodies.total_ns));
+        let cfg_max = summarize(evidence.clone().map(|e| e.cfg_construction_bodies.max_ns));
+        let opt_total = summarize(evidence.clone().map(|e| e.cfg_optimization_bodies.total_ns));
+        let opt_max = summarize(evidence.clone().map(|e| e.cfg_optimization_bodies.max_ns));
+        let joins = summarize(evidence.clone().map(|e| e.joins));
+        let declined = summarize(evidence.clone().map(|e| e.declined_joins));
+        let donated = summarize(evidence.map(|e| e.donated_permits));
+        out.push_str(&format!(
+            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
+            observation_label(observation),
+            utilization.median as f64 / 100.0,
+            active.median as f64 / 1_000_000.0,
+            ready_mean.median as f64 / 1_000_000.0,
+            ready_max.median as f64 / 1_000_000.0,
+            chain.median,
+            toolchain.median as f64 / 1_000_000.0,
+            semantic_total.median as f64 / 1_000_000.0,
+            semantic_max.median as f64 / 1_000_000.0,
+            cfg_total.median as f64 / 1_000_000.0,
+            cfg_max.median as f64 / 1_000_000.0,
+            opt_total.median as f64 / 1_000_000.0,
+            opt_max.median as f64 / 1_000_000.0,
+            declined.median,
+            joins.median,
+            donated.median,
+        ));
+    }
+
     out.push_str("\n## Deterministic query work\n\n");
-    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. Request outcomes expose all query traffic before validation detail: claims start computations, reuses return compatible retained or task-local terminals, and joins share in-flight work. Declined joins are included in joins and identify wait-graph avoidance.\n\n");
+    out.push_str("Counts are exact for one fresh compiler process and must agree across the measured one-worker samples. Parallel scheduling outcomes remain available in each raw boundary proof but are not collapsed into an allegedly deterministic count. Request outcomes expose all query traffic before validation detail: claims start computations, reuses return compatible retained or task-local terminals, and joins share in-flight work. Declined joins are included in joins and identify wait-graph avoidance.\n\n");
     out.push_str("| workload | claims | reuses | joins declined/total | body completions | publications red/green | cancellations/cycles |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let runtime = observation.work.query_runtime;
         out.push_str(&format!(
             "| {} | {} | {} | {}/{} | {} | {}/{} | {}/{} |\n",
@@ -391,7 +454,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("\nRegistry logical/index distinguishes requested exact-node resolutions from accesses to the shared incarnation index. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
     out.push_str("| workload | traversals | input/dependency observations | memo hit/miss | registry logical/index | endorsements hit/probe | terminal leases duplicate/total | demands reuse/compute/join/total | retention scan entries | nodes/token |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let runtime = observation.work.query_runtime;
         let validation = runtime.validation;
         let nodes_per_token = if observation.shape.tokens == 0 {
@@ -426,7 +489,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("Counts are exact snapshots of the provider operations already performed by production body analysis; the scaling probe adds no provider lookup or materialization work. Lookup and candidate counts expose demand at the semantic boundary, while exact fact-family reads and durable materializations separate repeated observation from body-local representation work.\n\n");
     out.push_str("| workload | name/import lookups | method/operator candidates | declaration facts total (identity/signature/type/const) |\n");
     out.push_str("| --- | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let work = observation.work.semantic_provider;
         out.push_str(&format!(
             "| {} | {}/{} | {}/{} | {} ({}/{}/{}/{}) |\n",
@@ -444,7 +507,7 @@ fn render(report: &ScalingReport) -> String {
     }
     out.push_str("\n| workload | durable materializations | anonymous facts | producer facts | toolchain facts |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let work = observation.work.semantic_provider;
         out.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
@@ -460,7 +523,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("Counts are exact for database-owned body reachability. Width buckets count non-empty dependency-ready logical frontiers; multi-permit runtimes execute bounded windows as structured batches while a single-permit runtime executes the same windows inline. Transaction counts distinguish ready-frontier prefetch from fallback coordinator demand; `keys/batch` exposes available scheduling breadth independently of clock time.\n\n");
     out.push_str("| workload | scans | scan keys | batches | scheduled keys | keys/batch | transactions prefetched/serial | width 1 | width 2–3 | width 4–7 | width 8+ |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let work = observation.work.semantic_reachability;
         let keys_per_batch = if work.frontier_batches == 0 {
             0.0
@@ -488,7 +551,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("Counts are exact for construction of the request-local lookup index and selection of body-local fact closures. `selections/build` exposes how broadly one immutable index is shared without conflating lookup preparation with the exact per-body selection that must remain.\n\n");
     out.push_str("| workload | index builds | declarations scanned | anonymous nominals scanned | type nodes scanned | fact selections | selections/build |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let work = observation.work.cfg_materialization;
         let selections_per_build = if work.index_builds == 0 {
             0.0
@@ -511,7 +574,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("Counts are exact for logical retained-charge walks over body-local symbol tables at publication. They expose memory-policy bookkeeping independently of semantic construction and clock noise.\n\n");
     out.push_str("| workload | interner scans | entries scanned | UTF-8 bytes scanned |\n");
     out.push_str("| --- | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let work = observation.work.cfg_retained_charge;
         out.push_str(&format!(
             "| {} | {} | {} | {} |\n",
@@ -526,7 +589,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("Counts and UTF-8 key bytes are exact for identities the compiler actually formatted. Structured-wait values count only labels rendered for a detected wait cycle; registering an acyclic edge is free of display formatting. Shared family names are excluded. `bytes/token` exposes presentation-only bookkeeping growth independently of clock noise.\n\n");
     out.push_str("| workload | memo nodes count/bytes | structured waits count/bytes | abort fallbacks count/bytes | bytes/token |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: |\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         let identities = observation.work.query_runtime.display_identities;
         let total_bytes = identities
             .memo_node_bytes
@@ -555,7 +618,7 @@ fn render(report: &ScalingReport) -> String {
     out.push_str("| workload | source/parse | program | semantic | CFG/opt | backend | object | linking | mixed | unattributed |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
-        out.push_str(&format!("| {}", observation.workload));
+        out.push_str(&format!("| {}", observation_label(observation)));
         for band in Band::all() {
             let summary = summarize(
                 observation
@@ -569,13 +632,27 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Fixture intent\n\n");
-    for observation in &report.workloads {
+    for observation in reference_observations(report) {
         out.push_str(&format!(
             "- `{}` (`{}`): {}\n",
             observation.workload, observation.source, observation.question
         ));
     }
     out
+}
+
+fn reference_observations(report: &ScalingReport) -> impl Iterator<Item = &ScalingObservation> {
+    report
+        .workloads
+        .iter()
+        .filter(|observation| observation.worker_setting == WorkerSetting::One)
+}
+
+fn observation_label(observation: &ScalingObservation) -> String {
+    format!(
+        "{} / {:?}→{}",
+        observation.workload, observation.worker_setting, observation.resolved_workers
+    )
 }
 
 fn summarize(values: impl Iterator<Item = u64>) -> Summary {
@@ -604,6 +681,7 @@ mod tests {
                 unattributed_ns: 20,
                 compiler_root_ns: 100,
             },
+            boundary_evidence: Vec::new(),
         };
         ScalingReport {
             schema_version: SCALING_REPORT_SCHEMA_VERSION,
@@ -632,13 +710,15 @@ mod tests {
                 samples_per_workload: 2,
                 compiler_args: Vec::new(),
                 compiler_build_profile: "release_thin_lto".to_string(),
-                compiler_work_samples_per_workload: 2,
-                compiler_work_args: vec!["--jobs".to_string(), "1".to_string()],
+                boundary: rue_perf_schema::BuildBoundary::FreshSourceToNativeV1,
+                workers: WorkerSetting::REFERENCE_MATRIX.to_vec(),
             },
             workloads: vec![ScalingObservation {
                 workload: "probe".to_string(),
                 source: "probe.rue".to_string(),
                 question: "test".to_string(),
+                worker_setting: WorkerSetting::One,
+                resolved_workers: 1,
                 shape: WorkloadShape {
                     files: 1,
                     modules: 1,
@@ -724,11 +804,12 @@ mod tests {
         let rendered = render(&report());
         assert!(rendered.contains("OS page-cache state is uncontrolled"));
         assert!(rendered.contains("Compiler build profile: `release_thin_lto`"));
-        assert!(rendered.contains("2 single-worker compiler-work probes"));
+        assert!(rendered.contains("one-worker samples must agree exactly"));
         assert!(rendered.contains("compiled programs were not executed"));
         assert!(rendered.contains("median absolute deviation"));
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
+        assert!(rendered.contains("Worker scaling and critical path"));
         assert!(rendered.contains("joins declined/total"));
         assert!(rendered.contains("| probe | 41 | 43 | 2/47 | 53 | 59/61 | 67/71 |"));
         assert!(rendered.contains("nodes/token"));

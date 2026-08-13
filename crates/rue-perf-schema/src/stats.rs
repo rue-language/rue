@@ -375,6 +375,7 @@ mod tests {
                 unattributed_ns: 0,
                 compiler_root_ns: 40_000,
             },
+            boundary_evidence: Vec::new(),
         };
         // Latency divides by the batch; the other metrics are per-compilation
         // properties already and must not be.
