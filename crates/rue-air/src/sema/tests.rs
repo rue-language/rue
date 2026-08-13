@@ -199,9 +199,30 @@ mod tests {
     fn inline_constructor_precompute_candidates_are_scoped_to_the_requested_body() {
         let source = r#"
             fn Pair(comptime T: type) -> type { struct { value: T } }
-            fn first() -> i32 {
-                let value = Pair(i32) { value: 1 };
-                value.value
+            fn take(value: i32) -> i32 { value }
+            fn first(flag: bool, selector: i32) -> i32 {
+                let direct = Pair(i32) { value: 1 };
+                let nested = { let value = Pair(i32) { value: 2 }; value.value };
+                let branched = if flag {
+                    let value = Pair(i32) { value: 3 };
+                    value.value
+                } else {
+                    let value = Pair(i32) { value: 4 };
+                    value.value
+                };
+                let matched = match selector {
+                    0 => { let value = Pair(i32) { value: 5 }; value.value },
+                    _ => { let value = Pair(i32) { value: 6 }; value.value },
+                };
+                let called = take(Pair(i32) { value: 7 }.value);
+                let Hidden = struct {
+                    value: i32,
+                    fn hidden() -> i32 {
+                        let value = Pair(i32) { value: 8 };
+                        value.value
+                    }
+                };
+                direct.value + nested + branched + matched + called
             }
             fn second() -> i64 {
                 let value = Pair(i64) { value: 2 };
@@ -224,11 +245,27 @@ mod tests {
 
         let first = crate::sema::comptime_eval::inline_ctor_head_candidates(&rir, body("first"));
         let second = crate::sema::comptime_eval::inline_ctor_head_candidates(&rir, body("second"));
+        let hidden = crate::sema::comptime_eval::inline_ctor_head_candidates(&rir, body("hidden"));
 
-        assert_eq!(first.len(), 1);
+        assert_eq!(
+            first.len(),
+            7,
+            "nested blocks, branches, match arms, and call arguments are scanned"
+        );
         assert_eq!(second.len(), 1);
-        assert_ne!(first, second);
-        assert!(matches!(rir.get(first[0]).data, InstData::Call { .. }));
+        assert_eq!(hidden.len(), 1);
+        assert!(first.is_sorted_by_key(|candidate| candidate.as_u32()));
+        assert!(first.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(
+            first
+                .iter()
+                .all(|candidate| matches!(rir.get(*candidate).data, InstData::Call { .. }))
+        );
+        assert!(
+            first.iter().all(|candidate| !hidden.contains(candidate)),
+            "the enclosing body scan stops at the nested anonymous declaration"
+        );
+        assert!(first.iter().all(|candidate| !second.contains(candidate)));
         assert!(matches!(rir.get(second[0]).data, InstData::Call { .. }));
     }
 

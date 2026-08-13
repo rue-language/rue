@@ -2513,7 +2513,6 @@ pub(super) fn initializer_may_evaluate_to_type(rir: &rue_rir::Rir, inst_ref: Ins
 pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
     let mut pending = vec![body];
     let mut candidates = Vec::new();
-    let mut children = Vec::new();
 
     while let Some(current) = pending.pop() {
         if current != body
@@ -2546,9 +2545,7 @@ pub(super) fn inline_ctor_head_candidates(rir: &rue_rir::Rir, body: InstRef) -> 
             _ => {}
         }
 
-        children.clear();
-        rir.child_instructions(current, &mut children);
-        pending.extend(children.iter().copied());
+        rir.child_instructions(current, &mut pending);
     }
 
     candidates.sort_unstable_by_key(|candidate| candidate.as_u32());
