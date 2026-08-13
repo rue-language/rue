@@ -1073,6 +1073,16 @@ fn compiler_critical_path_evidence(
         semantic_body_graph_projection: timing.pass_duration_distribution("body_graph_projection"),
         semantic_body_input_lowering: timing.pass_duration_distribution("body_input_lowering"),
         semantic_provider_analysis: timing.pass_duration_distribution("semantic_provider_analysis"),
+        semantic_provider_host_setup: timing
+            .pass_duration_distribution("semantic_provider_host_setup"),
+        semantic_provider_expression_engine: timing
+            .pass_duration_distribution("semantic_provider_expression_engine"),
+        semantic_provider_specialization_selection: timing
+            .pass_duration_distribution("semantic_provider_specialization_selection"),
+        semantic_provider_body_export: timing
+            .pass_duration_distribution("semantic_provider_body_export"),
+        semantic_provider_result_projection: timing
+            .pass_duration_distribution("semantic_provider_result_projection"),
         cfg_input_preparation_bodies: timing.pass_duration_distribution("cfg_input_preparation"),
         semantic_materialization_bodies: timing
             .pass_duration_distribution("semantic_materialization"),

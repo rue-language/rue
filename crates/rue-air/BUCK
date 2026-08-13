@@ -35,6 +35,7 @@ rue_crate(
         "//crates/rue-span:rue-span",
         "//crates/rue-target:rue-target",
         "//third-party:lasso",
+        "//third-party:tracing",
     ],
     test_deps = [
         "//crates/rue-lexer:rue-lexer",
@@ -58,6 +59,7 @@ native.rust_library(
         "//crates/rue-target:rue-target",
         "//third-party:lasso",
         "//third-party:rayon",
+        "//third-party:tracing",
     ],
     rustc_flags = ["--cfg", "feature=\"fuzz-support\""],
     visibility = ["//crates/rue-compiler:", "//crates/rue-fuzz:"],
