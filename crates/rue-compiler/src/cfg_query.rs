@@ -939,6 +939,9 @@ struct CfgConstructionBreakdown {
     input_preparation_ns: u64,
     semantic_materialization_ns: u64,
     domain_prerequisites_ns: u64,
+    domain_projection_ns: u64,
+    prerequisite_collection_ns: u64,
+    prerequisite_queries_ns: u64,
 }
 
 fn elapsed_ns(started: std::time::Instant) -> u64 {
@@ -1095,6 +1098,7 @@ fn materialize_and_build_cfg(
         return Ok(composite_type_limit_failure(materialized.body_span));
     }
 
+    let domain_projection_started = std::time::Instant::now();
     let domains = match crate::durable_cfg::CfgDomainProjection::from_local_body(
         &materialized,
         body,
@@ -1122,13 +1126,37 @@ fn materialize_and_build_cfg(
             ));
         }
     };
+    let domain_projection_ns = elapsed_ns(domain_projection_started);
 
+    let prerequisite_collection_started = std::time::Instant::now();
     let mut layout_dependencies = std::collections::BTreeSet::new();
     let mut drop_dependencies = std::collections::BTreeSet::new();
+    let mut stable_types_scanned = 0_u64;
     for ty in domains.stable_types() {
+        stable_types_scanned = stable_types_scanned.saturating_add(1);
         collect_type_dependencies(ty, &mut layout_dependencies);
         collect_drop_type_dependency(ty, &mut drop_dependencies);
     }
+    let layout_prerequisite_requests = layout_dependencies.len() as u64;
+    let drop_prerequisite_requests = drop_dependencies.len() as u64;
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.prerequisite.stable-types-scanned",
+        stable_types_scanned,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.prerequisite.layout-requests",
+        layout_prerequisite_requests,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.prerequisite.type-fact-requests",
+        drop_prerequisite_requests,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.prerequisite.drop-glue-requests",
+        drop_prerequisite_requests,
+    ));
+    let prerequisite_collection_ns = elapsed_ns(prerequisite_collection_started);
+    let prerequisite_queries_started = std::time::Instant::now();
     context.query_registered_batch(
         layouts,
         layout_dependencies
@@ -1147,10 +1175,14 @@ fn materialize_and_build_cfg(
         .collect::<Vec<_>>();
     context.query_registered_batch(type_facts, drop_dependencies.iter().cloned())?;
     context.query_registered_batch(drop_glues, drop_dependencies)?;
+    let prerequisite_queries_ns = elapsed_ns(prerequisite_queries_started);
     let breakdown = CfgConstructionBreakdown {
         input_preparation_ns,
         semantic_materialization_ns,
         domain_prerequisites_ns: elapsed_ns(domain_prerequisites_started),
+        domain_projection_ns,
+        prerequisite_collection_ns,
+        prerequisite_queries_ns,
     };
     build_cfg(context, call_abis, key, materialized, domains, breakdown)
 }
@@ -1344,6 +1376,9 @@ fn build_cfg(
         input_preparation_ns = breakdown.input_preparation_ns,
         semantic_materialization_ns = breakdown.semantic_materialization_ns,
         domain_prerequisites_ns = breakdown.domain_prerequisites_ns,
+        domain_projection_ns = breakdown.domain_projection_ns,
+        prerequisite_collection_ns = breakdown.prerequisite_collection_ns,
+        prerequisite_queries_ns = breakdown.prerequisite_queries_ns,
         cfg_builder_ns,
         cfg_publication_ns,
     );

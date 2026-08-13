@@ -1066,6 +1066,11 @@ fn compiler_critical_path_evidence(
             .pass_duration_distribution("semantic_materialization"),
         cfg_domain_prerequisite_bodies: timing
             .pass_duration_distribution("cfg_domain_prerequisites"),
+        cfg_domain_projection_bodies: timing.pass_duration_distribution("cfg_domain_projection"),
+        cfg_prerequisite_collection_bodies: timing
+            .pass_duration_distribution("cfg_prerequisite_collection"),
+        cfg_prerequisite_query_bodies: timing
+            .pass_duration_distribution("cfg_prerequisite_queries"),
         cfg_builder_bodies: timing.pass_duration_distribution("cfg_builder"),
         cfg_publication_bodies: timing.pass_duration_distribution("cfg_publication"),
         cfg_construction_bodies: timing.pass_duration_distribution("cfg_construction"),
@@ -1148,6 +1153,12 @@ fn benchmark_compiler_work(
                 as u64,
             required_types_selected: metrics.semantic.cfg.materialization_required_types_selected
                 as u64,
+        },
+        cfg_prerequisites: rue_perf_schema::CfgPrerequisiteWork {
+            stable_types_scanned: metrics.semantic.cfg.prerequisite_stable_types_scanned as u64,
+            layout_requests: metrics.semantic.cfg.prerequisite_layout_requests as u64,
+            type_fact_requests: metrics.semantic.cfg.prerequisite_type_fact_requests as u64,
+            drop_glue_requests: metrics.semantic.cfg.prerequisite_drop_glue_requests as u64,
         },
         cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
             interner_scans: metrics.semantic.cfg.retained_interner_charge_scans as u64,
@@ -1774,6 +1785,10 @@ mod tests {
                     materialization_modules_selected: 23,
                     materialization_builtin_nominals_selected: 29,
                     materialization_required_types_selected: 31,
+                    prerequisite_stable_types_scanned: 37,
+                    prerequisite_layout_requests: 41,
+                    prerequisite_type_fact_requests: 43,
+                    prerequisite_drop_glue_requests: 47,
                     ..Default::default()
                 },
                 ..Default::default()
@@ -1862,6 +1877,10 @@ mod tests {
         assert_eq!(projected.cfg_materialization.modules_selected, 23);
         assert_eq!(projected.cfg_materialization.builtin_nominals_selected, 29);
         assert_eq!(projected.cfg_materialization.required_types_selected, 31);
+        assert_eq!(projected.cfg_prerequisites.stable_types_scanned, 37);
+        assert_eq!(projected.cfg_prerequisites.layout_requests, 41);
+        assert_eq!(projected.cfg_prerequisites.type_fact_requests, 43);
+        assert_eq!(projected.cfg_prerequisites.drop_glue_requests, 47);
         let runtime = projected.query_runtime;
         assert_eq!(runtime.claims, 41);
         assert_eq!(runtime.reuses, 43);

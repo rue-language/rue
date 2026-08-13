@@ -365,10 +365,10 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n## Worker scaling and critical path\n\n");
-    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. The five CFG breakdown columns are non-overlapping lexical intervals inside each successful CFG body; CFG total remains the inclusive query duration and can be slightly larger because it also contains timing publication and outer query bookkeeping. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
-    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | CFG input total/max ms | local epoch total/max ms | domain/prereq total/max ms | CFG builder total/max ms | publication total/max ms | CFG total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
+    out.push_str("Utilization divides summed query-worker active time by compiler-root time and the compiler's resolved worker count. Ready wait is summed across dependency-ready items, so the mean and maximum are the directly comparable latency signals. Body columns show total/max milliseconds from bounded compiler histograms. The five top-level CFG breakdown columns are non-overlapping lexical intervals inside each successful CFG body; projection, dependency collection, and prerequisite queries further partition the domain/prerequisite interval. CFG total remains the inclusive query duration and can be slightly larger because it also contains timing publication and outer query bookkeeping. The rooted-acquisition envelope is inclusive: it contains the semantic attempt used to discover a trusted-toolchain park, is not an exclusive phase, and must not be added to semantic time or read as filesystem cost.\n\n");
+    out.push_str("| workload / workers | utilization | active ms | ready mean/max ms | longest chain | rooted acquisition envelope ms | semantic total/max ms | CFG input total/max ms | local epoch total/max ms | domain/prereq total/max ms | domain projection total/max ms | prerequisite collection total/max ms | prerequisite queries total/max ms | CFG builder total/max ms | publication total/max ms | CFG total/max ms | CFG opt total/max ms | joins declined/total | donated permits |\n");
     out.push_str(
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
     );
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {
@@ -434,6 +434,36 @@ fn render(report: &ScalingReport) -> String {
                 .clone()
                 .map(|e| e.cfg_domain_prerequisite_bodies.max_ns),
         );
+        let projection_total = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_domain_projection_bodies.total_ns),
+        );
+        let projection_max = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_domain_projection_bodies.max_ns),
+        );
+        let collection_total = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_prerequisite_collection_bodies.total_ns),
+        );
+        let collection_max = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_prerequisite_collection_bodies.max_ns),
+        );
+        let prerequisite_query_total = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_prerequisite_query_bodies.total_ns),
+        );
+        let prerequisite_query_max = summarize(
+            evidence
+                .clone()
+                .map(|e| e.cfg_prerequisite_query_bodies.max_ns),
+        );
         let builder_total = summarize(evidence.clone().map(|e| e.cfg_builder_bodies.total_ns));
         let builder_max = summarize(evidence.clone().map(|e| e.cfg_builder_bodies.max_ns));
         let publication_total =
@@ -447,7 +477,7 @@ fn render(report: &ScalingReport) -> String {
         let declined = summarize(evidence.clone().map(|e| e.declined_joins));
         let donated = summarize(evidence.map(|e| e.donated_permits));
         out.push_str(&format!(
-            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
+            "| {} | {:.1}% | {:.2} | {:.3}/{:.3} | {} | {:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} | {}/{} | {} |\n",
             observation_label(observation),
             utilization.median as f64 / 100.0,
             active.median as f64 / 1_000_000.0,
@@ -463,6 +493,12 @@ fn render(report: &ScalingReport) -> String {
             materialization_max.median as f64 / 1_000_000.0,
             domain_total.median as f64 / 1_000_000.0,
             domain_max.median as f64 / 1_000_000.0,
+            projection_total.median as f64 / 1_000_000.0,
+            projection_max.median as f64 / 1_000_000.0,
+            collection_total.median as f64 / 1_000_000.0,
+            collection_max.median as f64 / 1_000_000.0,
+            prerequisite_query_total.median as f64 / 1_000_000.0,
+            prerequisite_query_max.median as f64 / 1_000_000.0,
             builder_total.median as f64 / 1_000_000.0,
             builder_max.median as f64 / 1_000_000.0,
             publication_total.median as f64 / 1_000_000.0,
@@ -652,6 +688,32 @@ fn render(report: &ScalingReport) -> String {
             work.builtin_nominals_selected,
             work.required_types_selected,
             inputs_per_selection,
+        ));
+    }
+
+    out.push_str("\n## CFG prerequisite work\n\n");
+    out.push_str("Counts are exact for stable types reached from body-local CFG domains and the unique registered prerequisite requests issued before AIR-to-CFG construction. `requests/type` exposes query traffic independently of elapsed time; type facts and drop glue intentionally share the same drop-relevant type set.\n\n");
+    out.push_str("| workload | stable types scanned | layout requests | type-fact requests | drop-glue requests | requests/type |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in reference_observations(report) {
+        let work = observation.work.cfg_prerequisites;
+        let requests = work
+            .layout_requests
+            .saturating_add(work.type_fact_requests)
+            .saturating_add(work.drop_glue_requests);
+        let requests_per_type = if work.stable_types_scanned == 0 {
+            0.0
+        } else {
+            requests as f64 / work.stable_types_scanned as f64
+        };
+        out.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {:.2} |\n",
+            observation.workload,
+            work.stable_types_scanned,
+            work.layout_requests,
+            work.type_fact_requests,
+            work.drop_glue_requests,
+            requests_per_type,
         ));
     }
 
@@ -859,6 +921,12 @@ mod tests {
                         builtin_nominals_selected: 23,
                         required_types_selected: 29,
                     },
+                    cfg_prerequisites: rue_perf_schema::CfgPrerequisiteWork {
+                        stable_types_scanned: 31,
+                        layout_requests: 37,
+                        type_fact_requests: 41,
+                        drop_glue_requests: 41,
+                    },
                     cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
                         interner_scans: 4,
                         interner_entries_scanned: 31,
@@ -908,6 +976,10 @@ mod tests {
         assert!(rendered.contains("shape id"));
         assert!(rendered.contains("Deterministic query work"));
         assert!(rendered.contains("Worker scaling and critical path"));
+        assert!(rendered.contains("domain projection total/max ms"));
+        assert!(rendered.contains("prerequisite queries total/max ms"));
+        assert!(rendered.contains("CFG prerequisite work"));
+        assert!(rendered.contains("requests/type"));
         assert!(rendered.contains("rooted acquisition envelope ms"));
         assert!(rendered.contains("must not be added to semantic time"));
         assert!(rendered.contains("joins declined/total"));

@@ -385,6 +385,15 @@ pub struct CompilerCriticalPathEvidence {
     /// Stable-domain projection and layout/drop prerequisite queries.
     #[serde(default)]
     pub cfg_domain_prerequisite_bodies: DurationDistribution,
+    /// Projection from the live body epoch into stable CFG identities.
+    #[serde(default)]
+    pub cfg_domain_projection_bodies: DurationDistribution,
+    /// Unique layout/drop prerequisite discovery and request-key preparation.
+    #[serde(default)]
+    pub cfg_prerequisite_collection_bodies: DurationDistribution,
+    /// Registered layout, type-fact, and drop-glue prerequisite queries.
+    #[serde(default)]
+    pub cfg_prerequisite_query_bodies: DurationDistribution,
     /// AIR-to-CFG construction excluding publication and ABI projection.
     #[serde(default)]
     pub cfg_builder_bodies: DurationDistribution,
@@ -554,6 +563,9 @@ impl BuildBoundaryEvidence {
             || !critical.cfg_input_preparation_bodies.validate()
             || !critical.semantic_materialization_bodies.validate()
             || !critical.cfg_domain_prerequisite_bodies.validate()
+            || !critical.cfg_domain_projection_bodies.validate()
+            || !critical.cfg_prerequisite_collection_bodies.validate()
+            || !critical.cfg_prerequisite_query_bodies.validate()
             || !critical.cfg_builder_bodies.validate()
             || !critical.cfg_publication_bodies.validate()
             || !critical.cfg_construction_bodies.validate()
@@ -601,6 +613,9 @@ impl BuildBoundaryEvidence {
             critical.cfg_input_preparation_bodies.count,
             critical.semantic_materialization_bodies.count,
             critical.cfg_domain_prerequisite_bodies.count,
+            critical.cfg_domain_projection_bodies.count,
+            critical.cfg_prerequisite_collection_bodies.count,
+            critical.cfg_prerequisite_query_bodies.count,
             critical.cfg_builder_bodies.count,
             critical.cfg_publication_bodies.count,
         ];
@@ -695,6 +710,9 @@ mod tests {
                 cfg_input_preparation_bodies: distribution(),
                 semantic_materialization_bodies: distribution(),
                 cfg_domain_prerequisite_bodies: distribution(),
+                cfg_domain_projection_bodies: distribution(),
+                cfg_prerequisite_collection_bodies: distribution(),
+                cfg_prerequisite_query_bodies: distribution(),
                 cfg_builder_bodies: distribution(),
                 cfg_publication_bodies: distribution(),
                 cfg_construction_bodies: distribution(),
@@ -732,6 +750,9 @@ mod tests {
             "cfg_input_preparation_bodies",
             "semantic_materialization_bodies",
             "cfg_domain_prerequisite_bodies",
+            "cfg_domain_projection_bodies",
+            "cfg_prerequisite_collection_bodies",
+            "cfg_prerequisite_query_bodies",
             "cfg_builder_bodies",
             "cfg_publication_bodies",
         ] {
@@ -749,6 +770,18 @@ mod tests {
         );
         assert_eq!(
             decoded.critical_path.cfg_domain_prerequisite_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_domain_projection_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_prerequisite_collection_bodies,
+            DurationDistribution::default()
+        );
+        assert_eq!(
+            decoded.critical_path.cfg_prerequisite_query_bodies,
             DurationDistribution::default()
         );
         assert_eq!(
