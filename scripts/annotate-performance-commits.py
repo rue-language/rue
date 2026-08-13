@@ -106,9 +106,19 @@ def remote_url(repo: Path, remote: str = "origin") -> str | None:
 
 
 def measured_commits(data: dict) -> set[str]:
+    """Every compiler revision any series in the derived data plots.
+
+    Both record kinds, because both dashboards want the same tooltip. The
+    ADR-0072 runtime series is a sibling section rather than another platform
+    (its points measure the compiled program, not the compiler), so it has to be
+    walked explicitly — a section this missed would render every hash without a
+    subject and quietly lose the skipped-commit line.
+    """
+    sections = [data, *([data["runtime"]] if isinstance(data.get("runtime"), dict) else [])]
     return {
         point["commit"]
-        for platform in data.get("platforms", [])
+        for section in sections
+        for platform in section.get("platforms", [])
         for epoch in platform.get("epochs", [])
         for point in epoch.get("points", [])
     }

@@ -87,11 +87,11 @@ pub use runtime::{
     HardwareCounterPolicy, InputCategory, OracleDeclaration, OracleKind, OracleOutcome,
     OracleVerdict, ProgramIdentity, RUNTIME_MANIFEST_SCHEMA_VERSION, RUNTIME_RECORD_KIND,
     RUNTIME_REPORT_SCHEMA_VERSION, RecordedInput, RuntimeBoundary, RuntimeCalibration,
-    RuntimeCompleteness, RuntimeEpoch, RuntimeFailure, RuntimeIdentity, RuntimeInvalidSample,
-    RuntimeInvalidSampleReason, RuntimeManifest, RuntimeMetric, RuntimeObservation, RuntimeRegime,
-    RuntimeReport, RuntimeSample, RuntimeSamplingPolicy, RuntimeSuiteRevision,
-    RuntimeValidationError, RuntimeValidationOutcome, RuntimeWorkload, ThreadPolicy,
-    runtime_sample_value, summarize, validate_runtime_report,
+    RuntimeCompleteness, RuntimeEpoch, RuntimeFailure, RuntimeFlagging, RuntimeFlaggingPolicy,
+    RuntimeIdentity, RuntimeInvalidSample, RuntimeInvalidSampleReason, RuntimeManifest,
+    RuntimeMetric, RuntimeObservation, RuntimeRegime, RuntimeReport, RuntimeSample,
+    RuntimeSamplingPolicy, RuntimeSuiteRevision, RuntimeValidationError, RuntimeValidationOutcome,
+    RuntimeWorkload, ThreadPolicy, runtime_sample_value, summarize, validate_runtime_report,
 };
 pub use scaling::{
     CfgLocalEpochWork, CfgMaterializationWork, CfgPrerequisiteWork, CfgRetainedChargeWork,

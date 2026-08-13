@@ -95,6 +95,34 @@ def test_commits_are_collected_across_platforms_and_epochs() -> None:
     assert annotate.measured_commits(subject) == {"aaa", "bbb", "ccc"}
 
 
+def test_commits_are_collected_from_the_runtime_series_too() -> None:
+    # ADR-0072's runtime records are a sibling section rather than another
+    # platform, so a collector that walked only the top level would leave every
+    # runtime tooltip without a subject.
+    subject = {
+        "platforms": [
+            {"platform": "x86_64-linux", "epochs": [{"epoch": 2, "points": [{"commit": "aaa"}]}]}
+        ],
+        "runtime": {
+            "platforms": [
+                {
+                    "platform": "x86_64-linux",
+                    # The same commit in both series is still one commit.
+                    "epochs": [{"epoch": 1, "points": [{"commit": "aaa"}, {"commit": "ddd"}]}],
+                }
+            ]
+        },
+    }
+    assert annotate.measured_commits(subject) == {"aaa", "ddd"}
+
+
+def test_an_underived_runtime_section_is_not_an_error() -> None:
+    # `rue-bench derive` omits the section entirely unless a runtime manifest is
+    # named, which is how the page tells "not asked for" from "nothing yet".
+    assert annotate.measured_commits({"platforms": []}) == set()
+    assert annotate.measured_commits({"platforms": [], "runtime": None}) == set()
+
+
 def test_commit_links_are_built_from_recognized_github_remotes() -> None:
     want = "https://github.com/rue-language/rue/commit/"
     for url in [

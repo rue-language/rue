@@ -110,6 +110,18 @@ samples = 5
 # — dispersion is a property of the workload, never inherited from the compiler
 # suites — so until this workload's own repeated samples on this regime have
 # been analysed, every regression flag on it is advisory.
+#
+# No `[epoch.flagging.wordfreq]` either, so no flag is published at all yet. That
+# table is the provisional bound a maintainer may declare ahead of calibration:
+# it makes movement visible for triage while the posture stays advisory. It is
+# deliberately empty because what `k` and `window` should be here is ADR-0072's
+# open question 4, and the two obvious answers are both wrong. The compile-time
+# k = 3.0 is a pre-calibration placeholder that RUE-1187's sweep roughly doubled
+# to k = 6.0 on this same runner regime, and this suite takes five samples per
+# observation where the startup probe takes twelve — a noisier median, which
+# argues for a wider bound than 6.0 rather than a narrower one. Guessing it here
+# would train a reader to ignore the word "flagged", which manifest.toml already
+# names as the worse failure. Declare it when someone has grounds to.
 
 # The arm64 Linux reference regime, on the pinned `ubuntu-24.04-arm` image.
 #

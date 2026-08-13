@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{#
+  The runtime-performance dashboard (ADR-0072 Decision 8).
+
+  Sibling of `performance.html`, never a section of it. That page answers how
+  fast Rue *compiles*; this one answers how fast the program Rue compiled
+  *runs*. They read the same file — /performance-data.json, rebuilt from raw
+  observations at site build time — but different record kinds, and a chart that
+  plotted one against the other would be comparing two unrelated quantities.
+
+  Three rules the markup enforces, because each is easy to break and expensive
+  to break:
+
+  A raw median is comparable only inside a fixture-identity-matched segment
+  (Decision 9). The chart therefore draws one stretch per segment and never a
+  line across a boundary: the input changed, so the numbers either side are not
+  on the same scale, and one continuous line would publish a false trend.
+
+  Every comparison table ships with the disabled-feature list and the
+  corpus-specialized caption (Decision 3). Both live in the figure below, in the
+  template, so a table cannot be rendered without them — the script fills rows
+  into a table that already carries its captions.
+
+  Flags are advisory until this workload's dispersion is calibrated on this
+  platform. The record carries that posture per point; the page renders the
+  distinction rather than presenting a provisional bound as a verdict.
+#}
+
+{% block title %}Runtime performance — {{ config.title }}{% endblock %}
+
+{% block content %}
+<section class="max-w-5xl mx-auto px-6 py-16">
+  <span class="plate-no">Performance</span>
+  <h1 style="font-family: var(--font-display); font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 430; line-height: 1.05;">
+    Runtime performance
+  </h1>
+  <p style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
+    How fast the programs Rue compiles actually run. Every point is a whole
+    process — spawn to exit — of a release-quality build, measured on the pinned
+    reference regime and judged against a committed correctness oracle before it
+    is allowed to be a measurement at all. The companion series for the compiler
+    itself is on the <a href="{{ get_url(path='performance') }}">compiler
+    performance</a> page.
+  </p>
+
+  <style>
+    /* Focusable so the tooltip is reachable by keyboard, with the ring limited
+       to keyboard focus so a tap on a phone does not leave a box drawn around
+       the chart. Same treatment as the compiler dashboard. */
+    #rt-chart:focus:not(:focus-visible) { outline: none; }
+    #rt-chart:focus-visible { outline: 2px solid #228833; outline-offset: 2px; }
+    #rt-root table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+    #rt-root th, #rt-root td {
+      text-align: left; padding: 0.4rem 0.6rem;
+      border-bottom: 1px solid var(--color-border);
+    }
+    #rt-root td.figure { font-variant-numeric: tabular-nums; }
+    /* Wide tables scroll inside their own box rather than the page. */
+    .rt-scroll { overflow-x: auto; }
+  </style>
+
+  <noscript>
+    <p style="color: var(--color-muted); margin-top: 1rem;">
+      This page draws its charts in the browser. The measurements themselves are
+      available as <a href="/performance-data.json">raw JSON</a>.
+    </p>
+  </noscript>
+
+  <div id="rt-root" hidden>
+    <div style="margin-top: 1.5rem;">
+      <label for="rt-platform" style="color: var(--color-muted); font-size: 0.9rem;">Platform</label>
+      <select id="rt-platform" style="margin-left: 0.5rem; padding: 0.25rem 0.5rem;"></select>
+    </div>
+
+    <p id="rt-status" role="status" aria-live="polite"
+       style="margin-top: 1.25rem; font-size: 1.05rem; line-height: 1.6;"></p>
+    <p id="rt-health" role="alert" style="margin-top: 0.5rem; color: #b45309;" hidden></p>
+
+    <h2 style="margin-top: 2.5rem;">Programs</h2>
+    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      One card per measured program. Select one to plot it. The figure is the
+      median of independent fresh processes at the newest measured commit, with
+      the median absolute deviation of those samples beside it.
+    </p>
+    <div id="rt-workloads" role="list"
+         style="display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; margin-top: 0.75rem;"></div>
+
+    <h2 style="margin-top: 2.5rem;">Wall time — <span id="rt-selected"></span></h2>
+    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      Whole-process wall time across compiler commits, oldest first. The axis
+      starts at zero, so the height of a point is the time it took rather than
+      its distance from a chosen floor.
+    </p>
+    {#
+      Collapsed by default: most readers correctly skim past the segmentation
+      rule, and it matters exactly when someone stops to ask why the line has a
+      gap in it. The chart states it in the caption regardless.
+    #}
+    <details style="margin-top: 0.5rem; color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      <summary style="cursor: pointer;">Why the line breaks</summary>
+      <p>
+        The runtime workloads consume <em>data</em>, and ADR-0072 records that
+        data's identity with every observation instead of pinning it. So a
+        movement in the series has two possible causes — the compiler changed,
+        or the input did — and only the first is a result.
+      </p>
+      <p>
+        Every point carries the digest of the input it consumed and of the
+        program's own source. A <strong>segment</strong> is a run of consecutive
+        points that agree on both. Raw medians are comparable inside one and are
+        <strong>not</strong> comparable across one, so the chart draws each
+        segment as its own stretch, the deltas below are taken within a segment,
+        and the trailing window a flag is measured against restarts at every
+        boundary. A single line drawn across a corpus change would be a picture
+        of a trend that did not happen.
+      </p>
+      <p>
+        The cross-segment signal ADR-0072 defines is the ratio of Rue's time to a
+        pinned peer tool's time on the same corpus. That needs the peer leg,
+        which is not collected yet — see below.
+      </p>
+    </details>
+    <figure style="margin-top: 0.75rem;">
+      {#
+        `touch-action: pan-y` leaves a vertical swipe to the page, so the chart
+        never traps scrolling while a tap or horizontal drag still reaches it.
+        `height: auto` lets the fixed viewBox scale by width alone instead of
+        letterboxing the drawing inside a full-height box on a narrow screen.
+      #}
+      <svg id="rt-chart" role="img" width="100%" height="260" viewBox="0 0 900 260"
+           tabindex="0" style="touch-action: pan-y; height: auto; cursor: crosshair;"
+           aria-label="Runtime wall time. Chart not drawn yet."
+           aria-describedby="rt-chart-caption"></svg>
+      <figcaption id="rt-chart-caption" style="color: var(--color-muted); font-size: 0.85rem;"></figcaption>
+    </figure>
+    <div id="rt-tooltip" role="status" aria-live="polite"
+         style="margin-top: 0.5rem; padding: 0.75rem 1rem; border: 1px solid var(--color-border); font-size: 0.9rem; line-height: 1.5;"></div>
+
+    <h3 style="margin-top: 2rem;">Segments</h3>
+    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      The same series as a table, one row per identity-matched stretch. This is
+      where the figures live for a reader who cannot use the chart, and it is
+      the honest place to compare two medians: within a row, never between them.
+    </p>
+    <div class="rt-scroll" style="margin-top: 0.5rem;">
+      <table>
+        <caption style="text-align: left; padding: 0.4rem 0; color: var(--color-muted); font-size: 0.9rem;">
+          Median wall time by segment. Comparable down a row, never across two.
+        </caption>
+        <thead>
+          <tr>
+            <th scope="col">Segment</th>
+            <th scope="col">Commits</th>
+            <th scope="col">Input</th>
+            <th scope="col">Program</th>
+            <th scope="col">Median wall time</th>
+            <th scope="col">Change within segment</th>
+          </tr>
+        </thead>
+        <tbody id="rt-segments"></tbody>
+      </table>
+    </div>
+
+    <h2 style="margin-top: 2.5rem;">Against other tools</h2>
+    <p style="color: var(--color-muted); max-width: 42rem;">
+      ADR-0072's headline question is order-of-magnitude placement against
+      production software: gazette, a static site generator written in Rue,
+      building the live rue-lang.dev corpus beside pinned Zola and Hugo building
+      the identical corpus under a feature-parity configuration.
+    </p>
+    {#
+      The captions below are the claim, not context for it, so they live in the
+      figure rather than in the script that fills it. The script only writes
+      rows into `#rt-comparison-rows`; there is no code path that can produce a
+      comparison table without the disabled-feature list and the
+      corpus-specialized caption travelling with it.
+    #}
+    <figure id="rt-comparison" hidden style="margin-top: 0.75rem;">
+      <div class="rt-scroll">
+        <table>
+          {#
+            The thread policy is a column, not an assertion in the caption.
+            Decision 5 pins the peers to one worker thread for the primary
+            ratio and requires their default parallel configuration to be
+            published too, as a clearly labelled secondary row — so a caption
+            claiming one thread for the whole table would make that row
+            unaddable without falsifying the table it sits in.
+          #}
+          <caption style="text-align: left; padding: 0.4rem 0; color: var(--color-muted); font-size: 0.9rem;">
+            Whole-process wall time building the same corpus. The primary ratio
+            pins every tool to one worker thread, so the comparison is per unit
+            of work rather than per core; the peers' default parallel
+            configuration is published alongside it rather than hidden.
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Tool</th>
+              <th scope="col">Corpus scale</th>
+              <th scope="col">Threads</th>
+              <th scope="col">Median wall time</th>
+              <th scope="col">Versus gazette</th>
+              <th scope="col">Version</th>
+            </tr>
+          </thead>
+          <tbody id="rt-comparison-rows"></tbody>
+        </table>
+      </div>
+      <figcaption style="color: var(--color-muted); font-size: 0.85rem; max-width: 42rem; margin-top: 0.5rem;">
+        <p>
+          <strong>All three tools have these features disabled:</strong> syntax
+          highlighting, search-index generation, and HTML minification, along
+          with Sass and CSS building, live reload, image processing, taxonomies,
+          and pagination. The parity configurations are versioned in the
+          repository beside the template ports.
+        </p>
+        <p>
+          <strong>This compares a corpus-specialized Rue program against
+          general-purpose tools.</strong> Gazette implements the subset of
+          Markdown, shortcodes, and template features this corpus actually uses;
+          Zola and Hugo implement all of theirs. Gazette renders through its
+          general engine paths — corpus-specific fast paths are out of bounds —
+          but a subset engine is structurally leaner than a general one, and no
+          amount of validation removes that asymmetry.
+        </p>
+      </figcaption>
+    </figure>
+    <p id="rt-comparison-empty" style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
+      No peer measurements have been collected yet. Gazette, the pinned Hugo
+      toolchain, and the parity configurations do not exist in the repository
+      yet; this table fills in when the cross-tool leg of collection first runs.
+      Nothing is estimated here in the meantime.
+    </p>
+
+    <h2 style="margin-top: 2.5rem;">Field notes</h2>
+    <ul id="rt-notes" style="margin-top: 0.5rem; line-height: 1.7;"></ul>
+
+    <h2 style="margin-top: 2.5rem;">Disclosures</h2>
+    <details style="margin-top: 0.5rem;">
+      <summary>What a flag means here</summary>
+      <div style="color: var(--color-muted); max-width: 42rem;">
+        <p>
+          A program is <strong>flagged</strong> when its median differs from the
+          median of the trailing window of prior in-segment measurements by more
+          than <em>k</em> times the two dispersions combined. It is measured
+          against noise rather than against a percentage, it has no direction —
+          a large speedup flags exactly as a regression does — and the window it
+          compares against restarts at every corpus or program discontinuity.
+        </p>
+        <p id="rt-flag-rule"></p>
+        <p>
+          Runtime flags carry no CI gate in v1. ADR-0072 puts the runtime series
+          deliberately outside the required-CI gates: a stalled runtime series
+          has a remedy measured in parser work, so it surfaces as a staleness
+          note and a maintainer triage item, never a repository-wide block.
+        </p>
+      </div>
+    </details>
+    <details style="margin-top: 0.5rem;">
+      <summary>Memory and binary size</summary>
+      <div id="rt-other-metrics" style="margin-top: 0.5rem;"></div>
+    </details>
+    <details style="margin-top: 0.5rem;">
+      <summary>Measurement regime</summary>
+      <div id="rt-regime" style="margin-top: 0.5rem; color: var(--color-muted);"></div>
+    </details>
+    <details style="margin-top: 0.5rem;">
+      <summary>Collection health</summary>
+      <div id="rt-rejected" style="margin-top: 0.5rem;"></div>
+    </details>
+    <p style="margin-top: 1rem;">
+      <a href="/performance-data.json" download>Download the derived data</a> —
+      rebuilt at site build time from the raw runtime records on the
+      <code>performance-data-v1</code> branch, which stores observations and
+      nothing derived. Medians, dispersions, segments, and every comparison on
+      this page are recomputed from those samples; none of them is stored.
+    </p>
+  </div>
+
+  <div id="rt-empty" hidden style="margin-top: 2rem;">
+    <p id="rt-empty-reason" style="color: var(--color-muted); max-width: 42rem;"></p>
+    {#
+      A store whose every report was refused has no points and would otherwise
+      render as "nothing has been measured yet" — the exact failure ADR-0072
+      Decision 3 predicts, where site content steps outside the workload's
+      subset and the dashboard reports the outage as an absence. The reasons
+      are surfaced here rather than only in the disclosure the empty page never
+      shows.
+    #}
+    <div id="rt-empty-rejected" hidden role="alert" style="margin-top: 1rem;">
+      <p id="rt-empty-rejected-summary" style="color: #b45309; max-width: 42rem;"></p>
+      <ul id="rt-empty-rejected-list" style="margin-top: 0.5rem; line-height: 1.7;"></ul>
+    </div>
+  </div>
+</section>
+
+<script src="/runtime.js" defer></script>
+{% endblock %}
