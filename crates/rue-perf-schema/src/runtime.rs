@@ -1892,7 +1892,7 @@ samples = 5
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
         let epoch = manifest
             .collection_epoch("x86_64-linux")
-            .expect("the v1 platform matrix is exactly x86_64-linux");
+            .expect("x86_64-linux is the per-push row of the v1 platform matrix");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
         assert_eq!(
@@ -1919,17 +1919,86 @@ samples = 5
     }
 
     #[test]
-    fn no_platform_outside_the_v1_matrix_collects_yet() {
-        // aarch64-linux joins once ADR-0072's Phase 2 std work is CI-verified
-        // there; macOS stays deferred behind the `@syscall` gap.
+    fn the_checked_in_manifest_measures_arm64_linux_per_push() {
+        // RUE-1488. `aarch64-linux` joined on the condition ADR-0072 set for
+        // it: the Phase 2 standard-library work CI-verified on that hardware,
+        // which RUE-1481 and RUE-1482 satisfied. Same runner class as the
+        // x86-64 row, so same cadence and same sampling policy.
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
-        let collecting: Vec<&str> = manifest
+        let epoch = manifest
+            .collection_epoch("aarch64-linux")
+            .expect("aarch64-linux is a row of the v1 platform matrix");
+        assert_eq!(epoch.suite_revision, 1);
+        assert_eq!(epoch.target, "aarch64-linux");
+        assert_eq!(epoch.optimization, OptimizationLevel::O3);
+        assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
+        assert_eq!(
+            epoch.hardware_counters,
+            HardwareCounterPolicy::UnavailableOnHostedRunner
+        );
+        // The exact policy, not a relation to another row: a policy that only
+        // has to compare equal to its neighbour is satisfied by moving both.
+        // The environment is pinned the same way — a row whose label slipped to
+        // `local` parses fine and fails at collection time instead.
+        assert_eq!(epoch.environment.runner_label, "github-hosted");
+        assert_eq!(epoch.environment.runner_image, "ubuntu-24.04");
+        assert_eq!(epoch.sampling["wordfreq"].samples, 5);
+        assert_eq!(epoch.flag_posture("wordfreq"), FlagPosture::Advisory);
+    }
+
+    #[test]
+    fn the_checked_in_manifest_measures_apple_silicon_without_calibration() {
+        // RUE-1488. macOS is measured rather than deferred: the deferral named
+        // the `@syscall` carry-flag error-detection gap, and RUE-945 closed
+        // that on aarch64-macos. The row rides a daily schedule rather than
+        // per-push collection, for cost (ADR-0072 Decision 9).
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        let epoch = manifest
+            .collection_epoch("aarch64-macos")
+            .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
+        assert_eq!(epoch.suite_revision, 1);
+        assert_eq!(epoch.target, "aarch64-macos");
+        assert_eq!(epoch.optimization, OptimizationLevel::O3);
+        assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
+        assert_eq!(
+            epoch.hardware_counters,
+            HardwareCounterPolicy::UnavailableOnHostedRunner
+        );
+        // Pinned exactly, environment included. A row whose label slipped to
+        // `local` parses, passes a laxer test, and then refuses every hosted
+        // observation at collection time.
+        assert_eq!(epoch.environment.runner_label, "github-hosted");
+        assert_eq!(epoch.environment.runner_image, "macos-15");
+        // Nine is a starting point pending this workload's own calibration
+        // here, not a calibrated value; the assertion exists so changing it is
+        // a deliberate edit rather than a drift.
+        assert_eq!(epoch.sampling["wordfreq"].samples, 9);
+        // Never inherited from a row already collecting, however long it has
+        // been running: dispersion is a property of a workload on a platform,
+        // so this one's flags are advisory until it has calibrated its own
+        // repeated samples.
+        assert_eq!(epoch.flag_posture("wordfreq"), FlagPosture::Advisory);
+    }
+
+    #[test]
+    fn no_platform_outside_the_v1_matrix_collects() {
+        // The matrix is every platform Rue targets and nothing else. A fourth
+        // row could only be a target this compiler does not have, so a new
+        // entry here should be a deliberate change to that list rather than a
+        // manifest edit — `x86-64-macos` in particular is out of scope for the
+        // project as a whole.
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        let mut collecting: Vec<&str> = manifest
             .epochs()
             .iter()
             .filter(|epoch| epoch.collection)
             .map(|epoch| epoch.platform.as_str())
             .collect();
-        assert_eq!(collecting, vec!["x86_64-linux"]);
+        collecting.sort_unstable();
+        assert_eq!(
+            collecting,
+            vec!["aarch64-linux", "aarch64-macos", "x86_64-linux"]
+        );
     }
 
     fn fingerprint() -> EnvironmentFingerprint {

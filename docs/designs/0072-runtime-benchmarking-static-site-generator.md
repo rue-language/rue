@@ -9,7 +9,7 @@ accepted:
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-487", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
+relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
 ---
 
 # ADR-0072: Runtime performance benchmarking anchored by a Rue static site generator
@@ -342,23 +342,68 @@ microbenchmark tier needs it; v1 is whole-process only.
 
 Rue builds of runtime workloads are release-quality (`-O3`), matching
 ADR-0071's definition of the product. The v1 runtime platform matrix is
-exact and deliberately narrow: `x86_64-linux` on the pinned `ubuntu-24.04`
-regime. `aarch64-linux` joins once the Phase 2 std work is CI-verified
-there; macOS stays deferred behind the known `@syscall` error-detection
-gap. Calibration does not transfer from the compiler suites: dispersion is
-a property of the workload, so each runtime workload is calibrated per
+exact, and it is every platform Rue targets:
+
+| Platform | Regime | Cadence |
+| --- | --- | --- |
+| `x86_64-linux` | `ubuntu-24.04` | every trunk push |
+| `aarch64-linux` | `ubuntu-24.04-arm` | every trunk push |
+| `aarch64-macos` | `macos-15` | daily (Decision 9) |
+
+`aarch64-linux` joined on the condition this ADR set for it — the Phase 2
+standard-library work CI-verified there — which RUE-1481 and RUE-1482
+satisfied. The verification was worth waiting for rather than nominal:
+RUE-1481's first arm64 run failed every directory-listing case because
+`O_DIRECTORY` differs between x86-64 and aarch64 on Linux while the code
+dispatched on OS alone. That is precisely the class of defect a per-platform
+leg exists to catch, and it is why a platform joins this matrix on evidence
+from its own hardware rather than on an argument that the code looks
+portable.
+
+macOS is measured rather than deferred, and the correction is worth stating
+because the deferral this ADR first recorded named a defect that no longer
+exists on the macOS Rue supports. `@syscall` used to present Darwin's
+failure convention — a positive errno in `x0` with the carry flag set — as
+though it were a small successful return, so a program could not tell a
+failed `openat` from a file descriptor. RUE-945 closed that on
+`aarch64-macos`: the AArch64 backend normalizes the carry-set result to the
+negative-errno convention `@syscall` exposes everywhere, and an assertion
+test pins the `svc #0x80` → `b.lo` → `neg x0, x0` ordering so no scheduling
+change can separate the syscall from its flag test. Every runtime workload
+does file I/O, and file I/O on `aarch64-macos` now detects errors as it does
+on Linux.
+
+The gap is genuinely still open in the x86-64 backend, whose `@syscall`
+lowering performs neither the carry normalization nor Darwin's
+syscall-class OR. That defers nothing here: `x86-64-macos` is not a Rue
+target and is out of scope for the project as a whole, so the only macOS
+this project can measure is the one where the gap is closed. What keeps the
+macOS row off per-push collection is the price of its runner, not
+capability, and Decision 9 carries that reasoning.
+
+Calibration does not transfer from the compiler suites: dispersion is a
+property of the workload, so each runtime workload is calibrated per
 platform from its own repeated samples, and regression flags on a platform
-are advisory until that calibration exists. The order-of-magnitude
-comparison claim tolerates hosted-runner dispersion either way.
+are advisory until that calibration exists. A platform joining the matrix
+therefore starts with no calibration at all and inherits none from a row
+already collecting, however long that row has been running. That is the
+rule for every arrival, stated once: `aarch64-linux` and `aarch64-macos`
+both begin advisory exactly as `x86_64-linux` did in Phase 1, and the
+manifest carries a note saying so for each rather than leaving the reader
+to infer it from an absent table. The order-of-magnitude comparison claim
+tolerates hosted-runner dispersion either way.
 
 ### 6. Close standard-library gaps on the canonical path
 
 The two prerequisite capabilities are built in `std`, not in the benchmark:
 
 - **Directory enumeration** (RUE-1481): `read_dir` plus a deterministic
-  recursive walk, built on `getdents64` through `@syscall`, pure Rue like the
-  rest of ADR-0057's fs surface. Linux first; the known macOS syscall
-  error-detection gap is tracked separately and does not block this project.
+  recursive walk, pure Rue through `@syscall` like the rest of ADR-0057's fs
+  surface — `getdents64` on Linux, `getdirentries64` on Darwin, with both
+  record layouts decoded in `std`. It landed on every target Rue has, and
+  its CLI cases run on `aarch64-macos` alongside the two Linux targets, so
+  no platform in Decision 5's matrix is short a standard-library
+  prerequisite.
 - **Substring operations** (RUE-1482): index-returning substring find,
   split, replace, join, and a lines helper, with byte-string semantics
   consistent with ADR-0035.
@@ -412,6 +457,52 @@ website-publish pipeline rather than adding a new schedule:
   then run it against the current corpus. Runtime regressions therefore
   surface attached to the compiler change that caused them, and the website
   rebuild that already follows performance collection publishes them.
+- **Per push is the default cadence; the macOS row is the exception, on
+  runner cost.** Per-push collection buys attribution to a single commit,
+  and that attribution is banked whether or not it can be acted on today: a
+  raw observation at every commit becomes readable the moment a platform's
+  calibration lands, and it cannot be collected retroactively. So a runtime
+  leg runs per push wherever a runner is cheap, which is both Linux rows —
+  `ubuntu-24.04-arm` is the same hosted class as `ubuntu-24.04`, and this
+  workflow already pays for an arm64 Linux runner on every push for the
+  compile-time legs.
+
+  Hosted macOS is not that class. It is the most expensive and most
+  concurrency-limited pool GitHub offers and the most environment-churned —
+  ADR-0067 raised exactly that churn as its open question about whether
+  macOS belonged in the compiler suites' initial epochs. At that price the
+  banked-attribution argument stops carrying: the platform has no
+  calibration, so its flags are advisory at any cadence, and daily sampling
+  already resolves a real movement on a series read for order of magnitude.
+  The macOS runtime leg therefore runs daily against trunk's head. This is
+  the scale-variant safety valve below, applied in advance rather than a
+  second policy — the valve exists to move work to a schedule when its cost
+  outgrows per-push collection, and the same lever runs the other way once
+  this platform's cost and dispersion are known.
+
+  Three consequences of the schedule are accepted deliberately, and the
+  third is a cost rather than a trade. A macOS movement is attributable to
+  a day's commit range rather than to one commit, and is narrowed by
+  pointing a branch at the trunk commit in question and dispatching there —
+  which runs the macOS leg alone, because a compile-time record published
+  from a non-trunk commit would trip ADR-0067's no-bypass stall gate for
+  every pull request. A day in which trunk did not move still produces an
+  observation at the same commit as the day before — repeated samples at a
+  fixed compiler revision, which is exactly the evidence this platform's
+  missing calibration is waiting for.
+
+  And the schedule occupies the collection workflow's single writer group
+  for the length of a macOS job. That group queues one run deep: a second
+  pending run displaces the first, so a push landing behind another push
+  while the scheduled run holds the group loses the earlier commit's
+  collection outright, and a pending scheduled run displaced by pushes
+  loses that day's macOS observation. This is the same "cannot be collected
+  retroactively" loss used above to argue for per-push collection, now
+  charged against the schedule that avoids the macOS runner. It is accepted
+  rather than solved because the alternative — a second writer group —
+  trades a lost queue slot for two publish jobs racing for `index.json`,
+  which loses a whole run object. It is the concrete thing to watch when
+  Decision 9's cost review happens.
 - **Peers are re-measured on events, not on a clock.** Pinned Zola and Hugo
   results move only when their inputs move, so the full peer leg runs only
   when the recorded fixture identity changes (content, static assets,
@@ -459,7 +550,7 @@ silently.
 
 - [x] **Phase 1: rue-bench runtime measurement mode and the runtime
   manifest, stood up on the declared wordfreq workload** - RUE-1046
-- [ ] **Phase 2: Standard-library prerequisites — directory enumeration and
+- [x] **Phase 2: Standard-library prerequisites — directory enumeration and
   substring operations** - RUE-1481, RUE-1482
 - [ ] **Phase 3: Gazette libraries — TOML front matter, Markdown subset,
   template engine** - RUE-1483
@@ -541,8 +632,13 @@ by this ADR and stays in the project as future scope.
   different times, since peers re-measure only on events; hosted-runner
   day-to-day variance is absorbed into the order-of-magnitude claim rather
   than controlled by same-run measurement.
-- Per-push collection gains a runtime leg, so its wall-clock cost grows;
-  the scale-variant safety valve bounds this, but the cost must be watched.
+- Per-push collection gains a runtime leg per Linux platform, so its
+  wall-clock cost grows and its runner count grows with the matrix; the
+  scale-variant safety valve bounds this, but the cost must be watched. The
+  macOS row is scheduled rather than per-push for the same reason, and pays
+  for it in attribution: a movement there names a day's commits rather than
+  one commit, and the rows are sampled at different cadences and cannot be
+  read as one series.
 
 ### Neutral
 
@@ -605,7 +701,10 @@ by this ADR and stays in the project as future scope.
 - Incremental-rebuild benchmarking (change one page, rebuild) — the runtime
   counterpart of ADR-0068, and a scenario where Hugo and Zola both invest
   heavily.
-- macOS runtime measurement, once the `@syscall` error-detection gap closes.
+- Per-push `aarch64-macos` runtime collection, once the scheduled leg's
+  measured cost and dispersion justify a macOS runner on every trunk
+  commit. The cadence is a cost decision, not a capability one
+  (Decisions 5 and 9).
 - A regression ratchet for the runtime series, modeled on ADR-0071, once
   dispersion is understood — this is the point at which a frozen corpus for
   the gated series becomes a prerequisite (Decision 2).
@@ -621,6 +720,8 @@ by this ADR and stays in the project as future scope.
 - [ADR-0071: Release-quality compiler performance contract](0071-release-quality-compiler-performance-contract.md)
 - Linear: Runtime performance benchmarking project — RUE-1045 (this ADR),
   RUE-1046, RUE-1047, RUE-1048, RUE-1049, RUE-1481, RUE-1482, RUE-1483,
-  RUE-1484, RUE-1485.
+  RUE-1484, RUE-1485, RUE-1488 (this amendment's platform matrix).
+- Linear: RUE-945 — the `@syscall` carry-flag normalization on
+  `aarch64-macos` that the deferred macOS row was waiting for.
 - Prior art: the Computer Language Benchmarks Game (comparison layout,
   tuned-track ethos); perf.rust-lang.org (longitudinal dashboard).
