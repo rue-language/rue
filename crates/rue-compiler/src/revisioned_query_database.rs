@@ -3933,6 +3933,8 @@ impl OwnedBodyLowering {
 fn lower_owned_body_input(
     input: &crate::body_query::OwnedBodyInput,
 ) -> Result<OwnedBodyLowering, Arc<str>> {
+    let _body_input_lowering_span =
+        tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
     // Constructing this parser input is deliberately just concatenation of the
     // two exact syntax terminals. No module source, declaration slice, RIR, or
     // live interner is consulted here.
@@ -4663,6 +4665,8 @@ fn lower_anonymous_member_body_input(
     source_locator: &rue_air::DurableBodySourceLocator,
     producer_fragment_start: u32,
 ) -> Result<OwnedBodyLowering, Arc<str>> {
+    let _body_input_lowering_span =
+        tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
     // Anonymous members are lowered from the exact fragment published by their
     // producer. The synthetic named owner exists only to give the standalone
     // parser the grammar context the member declaration requires; it carries
@@ -17957,18 +17961,25 @@ impl BodyTransactionEvaluator {
                     .iter()
                     .filter_map(|name| name.parse().ok())
                     .collect();
-                let analyzed = rue_air::analyze_provider_ordinary_body(
-                    &provider,
-                    source,
-                    &lowering.bundle,
-                    definition.clone(),
-                    definition.name(),
-                    definition.kind(),
-                    definition.owner().map(|owner| owner.name()),
-                    key.configuration.target,
-                    preview,
-                    &well_known_facts,
-                );
+                let analyzed = {
+                    let _provider_analysis_span = tracing::info_span!(
+                        "semantic_provider_analysis",
+                        phase = "semantic_analysis"
+                    )
+                    .entered();
+                    rue_air::analyze_provider_ordinary_body(
+                        &provider,
+                        source,
+                        &lowering.bundle,
+                        definition.clone(),
+                        definition.name(),
+                        definition.kind(),
+                        definition.owner().map(|owner| owner.name()),
+                        key.configuration.target,
+                        preview,
+                        &well_known_facts,
+                    )
+                };
                 match provider.finish_status() {
                     Ok(()) => {}
                     Err(CompilerBodyProviderStatus::Fatal(abort)) => return Err(abort),
@@ -18177,17 +18188,24 @@ impl BodyTransactionEvaluator {
                     .iter()
                     .filter_map(|name| name.parse().ok())
                     .collect();
-                let analyzed = rue_air::analyze_provider_specialized_body(
-                    &provider,
-                    source,
-                    &lowering.bundle,
-                    definition.clone(),
-                    definition.name(),
-                    arguments,
-                    key.configuration.target,
-                    preview,
-                    &well_known_facts,
-                );
+                let analyzed = {
+                    let _provider_analysis_span = tracing::info_span!(
+                        "semantic_provider_analysis",
+                        phase = "semantic_analysis"
+                    )
+                    .entered();
+                    rue_air::analyze_provider_specialized_body(
+                        &provider,
+                        source,
+                        &lowering.bundle,
+                        definition.clone(),
+                        definition.name(),
+                        arguments,
+                        key.configuration.target,
+                        preview,
+                        &well_known_facts,
+                    )
+                };
                 match provider.finish_status() {
                     Ok(()) => {}
                     Err(CompilerBodyProviderStatus::Fatal(abort)) => return Err(abort),
@@ -18472,17 +18490,24 @@ impl BodyTransactionEvaluator {
                     .iter()
                     .filter_map(|name| name.parse().ok())
                     .collect();
-                let analyzed = rue_air::analyze_provider_anonymous_body(
-                    &provider,
-                    source,
-                    &lowering.bundle,
-                    definition.clone(),
-                    owner.as_ref(),
-                    member,
-                    key.configuration.target,
-                    preview,
-                    &well_known_facts,
-                );
+                let analyzed = {
+                    let _provider_analysis_span = tracing::info_span!(
+                        "semantic_provider_analysis",
+                        phase = "semantic_analysis"
+                    )
+                    .entered();
+                    rue_air::analyze_provider_anonymous_body(
+                        &provider,
+                        source,
+                        &lowering.bundle,
+                        definition.clone(),
+                        owner.as_ref(),
+                        member,
+                        key.configuration.target,
+                        preview,
+                        &well_known_facts,
+                    )
+                };
                 match provider.finish_status() {
                     Ok(()) => {}
                     Err(CompilerBodyProviderStatus::Fatal(abort)) => return Err(abort),
