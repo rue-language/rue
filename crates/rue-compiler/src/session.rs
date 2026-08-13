@@ -8063,6 +8063,14 @@ mod tests {
         assert_eq!(metrics.signature_facts, 6, "{metrics:?}");
         assert_eq!(metrics.materializations, 6, "{metrics:?}");
         assert_eq!(
+            metrics.materializations,
+            metrics.const_materializations
+                + metrics.nominal_materializations
+                + metrics.function_materializations
+                + metrics.method_materializations,
+            "the durable materialization aggregate must be exactly partitioned by declaration kind"
+        );
+        assert_eq!(
             metrics.declaration_facts,
             metrics.identity_facts
                 + metrics.signature_facts
@@ -8100,6 +8108,14 @@ mod tests {
         assert_eq!(metrics.identity_facts, 10, "{metrics:?}");
         assert_eq!(metrics.signature_facts, 10, "{metrics:?}");
         assert_eq!(metrics.materializations, 10, "{metrics:?}");
+        assert_eq!(
+            metrics.materializations,
+            metrics.const_materializations
+                + metrics.nominal_materializations
+                + metrics.function_materializations
+                + metrics.method_materializations,
+            "the durable materialization aggregate must be exactly partitioned by declaration kind"
+        );
     }
 
     #[test]

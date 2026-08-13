@@ -246,6 +246,14 @@ pub struct ProviderObservationMetrics {
     pub const_facts: u64,
     /// Durable facts materialized into a body-local overlay.
     pub materializations: u64,
+    /// Constant facts materialized into a body-local overlay.
+    pub const_materializations: u64,
+    /// Named nominal facts materialized into a body-local overlay.
+    pub nominal_materializations: u64,
+    /// Free-function facts materialized into a body-local overlay.
+    pub function_materializations: u64,
+    /// Method facts materialized into a body-local overlay.
+    pub method_materializations: u64,
     /// Anonymous-nominal fact observations.
     pub anonymous_facts: u64,
     /// Producer-body fact observations.

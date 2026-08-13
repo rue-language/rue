@@ -761,7 +761,10 @@ pub(crate) struct ProviderObservationCounters {
     signature_facts: std::sync::atomic::AtomicU64,
     type_facts: std::sync::atomic::AtomicU64,
     const_facts: std::sync::atomic::AtomicU64,
-    materializations: std::sync::atomic::AtomicU64,
+    const_materializations: std::sync::atomic::AtomicU64,
+    nominal_materializations: std::sync::atomic::AtomicU64,
+    function_materializations: std::sync::atomic::AtomicU64,
+    method_materializations: std::sync::atomic::AtomicU64,
     anonymous_facts: std::sync::atomic::AtomicU64,
     producer_facts: std::sync::atomic::AtomicU64,
     toolchain_facts: std::sync::atomic::AtomicU64,
@@ -774,6 +777,10 @@ impl ProviderObservationCounters {
         let signature_facts = self.signature_facts.load(Relaxed);
         let type_facts = self.type_facts.load(Relaxed);
         let const_facts = self.const_facts.load(Relaxed);
+        let const_materializations = self.const_materializations.load(Relaxed);
+        let nominal_materializations = self.nominal_materializations.load(Relaxed);
+        let function_materializations = self.function_materializations.load(Relaxed);
+        let method_materializations = self.method_materializations.load(Relaxed);
         crate::unstable::ProviderObservationMetrics {
             name_lookups: self.name_lookups.load(Relaxed),
             import_lookups: self.import_lookups.load(Relaxed),
@@ -787,7 +794,14 @@ impl ProviderObservationCounters {
             signature_facts,
             type_facts,
             const_facts,
-            materializations: self.materializations.load(Relaxed),
+            materializations: const_materializations
+                .saturating_add(nominal_materializations)
+                .saturating_add(function_materializations)
+                .saturating_add(method_materializations),
+            const_materializations,
+            nominal_materializations,
+            function_materializations,
+            method_materializations,
             anonymous_facts: self.anonymous_facts.load(Relaxed),
             producer_facts: self.producer_facts.load(Relaxed),
             toolchain_facts: self.toolchain_facts.load(Relaxed),
@@ -22125,7 +22139,7 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
     ) -> Option<rue_air::DurableConst<crate::StableDefinitionKey, ModuleId>> {
         self.provider
             .meter()
-            .materializations
+            .const_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         use rue_air::BodyFactProvider;
         let candidate = self.candidate(key)?;
@@ -22188,7 +22202,7 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
     ) -> Option<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>> {
         self.provider
             .meter()
-            .materializations
+            .nominal_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         use crate::semantic_query_nucleus::DeclarationSignatureProjection as Projection;
         use rue_air::BodyFactProvider;
@@ -22256,7 +22270,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
     ) -> Option<rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>> {
         self.provider
             .meter()
-            .materializations
+            .function_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let candidate = self.candidate(key)?;
         let signature = self.signature_for_candidate(&candidate.declaration)?;
@@ -22293,7 +22307,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
     ) -> Option<rue_air::DurableMethod<crate::StableDefinitionKey, ModuleId>> {
         self.provider
             .meter()
-            .materializations
+            .method_materializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let owner = key.owner()?;
         let signature = self.signature(key)?;

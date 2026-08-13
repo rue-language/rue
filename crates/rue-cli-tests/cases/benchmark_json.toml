@@ -15,7 +15,7 @@ args = ["--benchmark-json", "main.rue", "-o", "prog"]
 env = { RUST_LOG = "error" }
 exit_code = 42
 compile_stdout_contains = [
-  '"schema_version":12',
+  '"schema_version":13',
   '"compiler_build_profile":',
   '"timing_model":"inclusive_spans"',
   # The additive partition, which is the only model that may be stacked. Its
