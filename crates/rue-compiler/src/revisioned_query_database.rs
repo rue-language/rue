@@ -5279,7 +5279,7 @@ fn evaluate_type_facts(
                     configuration: key.configuration.clone(),
                 })
                 .collect::<Vec<_>>();
-            let child_terminals = context.query_registered_batch(family, child_keys)?;
+            let child_terminals = context.query_registered_adaptive_batch(family, child_keys)?;
             let mut carries_linear = is_linear;
             let mut needs_drop = false;
             for child in &child_terminals {
@@ -5366,7 +5366,7 @@ fn evaluate_type_facts(
                     .collect(),
                 _ => Vec::new(),
             };
-            let child_terminals = context.query_registered_batch(
+            let child_terminals = context.query_registered_adaptive_batch(
                 family,
                 children
                     .iter()
@@ -5549,7 +5549,7 @@ fn evaluate_layout(
             }
         }
         TypeShape::Struct { fields } => {
-            let terminals = context.query_registered_batch(
+            let terminals = context.query_registered_adaptive_batch(
                 family,
                 fields
                     .iter()
@@ -5614,7 +5614,7 @@ fn evaluate_layout(
                     configuration: key.configuration.clone(),
                 })
                 .collect::<Vec<_>>();
-            let terminals = context.query_registered_batch(family, keys)?;
+            let terminals = context.query_registered_adaptive_batch(family, keys)?;
             let tag_size = match variants.len() {
                 0..=256 => 1,
                 257..=65536 => 2,
@@ -6011,7 +6011,7 @@ fn query_callable_signature(
                 ))));
             };
             let candidates = candidates.into_iter().flatten().collect::<Vec<_>>();
-            let terminals = context.query_registered_batch(
+            let terminals = context.query_registered_adaptive_batch(
                 semantic_nucleus,
                 candidates.iter().cloned().map(|declaration| {
                     crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
@@ -6384,7 +6384,7 @@ fn evaluate_drop_glue(
             .collect(),
         TypeShape::Scalar | TypeShape::Pointer | TypeShape::Slice | TypeShape::Opaque => Vec::new(),
     };
-    let terminals = context.query_registered_batch(
+    let terminals = context.query_registered_adaptive_batch(
         type_facts,
         children
             .iter()
@@ -15056,7 +15056,7 @@ impl RevisionedQueryDatabase {
                         "compiler.cfg",
                         "compiler.optimized-cfg",
                     ]);
-                    let terminals = context.query_registered_batch(
+                    let terminals = context.query_registered_adaptive_batch(
                         &optimized_cfgs_for_batch,
                         key.keys.iter().cloned(),
                     )?;
@@ -15162,7 +15162,7 @@ impl RevisionedQueryDatabase {
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
                     let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
-                    let terminals = context.query_registered_batch(
+                    let terminals = context.query_registered_adaptive_batch(
                         &codegen_units_for_batch,
                         key.keys.iter().cloned(),
                     )?;
@@ -15241,7 +15241,7 @@ impl RevisionedQueryDatabase {
                         .expect("backend retention roots belong to this query runtime");
                     let _attempts =
                         context.retain_nested_attempts_for(&["compiler.object-projection"]);
-                    let terminals = context.query_registered_batch(
+                    let terminals = context.query_registered_adaptive_batch(
                         &object_projections_for_batch,
                         key.keys.iter().cloned(),
                     )?;
@@ -15298,7 +15298,7 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
-                    let terminals = context.query_registered_batch(
+                    let terminals = context.query_registered_adaptive_batch(
                         &object_projections_for_backend_publication,
                         key.objects.keys.iter().cloned(),
                     )?;
@@ -16160,7 +16160,7 @@ impl RevisionedQueryDatabase {
                             if frontier.is_empty() {
                                 break;
                             }
-                            let terminals = context.query_registered_batch(
+                            let terminals = context.query_registered_adaptive_batch(
                                 &drop_glues_for_body_reachability,
                                 frontier.iter().cloned().map(|ty| {
                                     crate::type_queries::TypeQueryKey {
