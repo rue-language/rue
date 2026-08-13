@@ -31,35 +31,39 @@ pub(crate) struct LocalFactSelectionIndexWork {
     pub(crate) type_nodes_scanned: usize,
 }
 
-/// Immutable request-local lookup preparation shared by every CFG input.
+/// Immutable lookup substrate derived with one semantic-nucleus projection.
 ///
-/// This is a convenience index over exact query-owned facts, never a semantic
-/// or query authority. Selected facts are still cloned into each CFG memo key.
-pub(crate) struct LocalFactSelectionIndex<'facts> {
-    declarations:
-        std::collections::HashMap<&'facts StableDefinitionKey, &'facts DurableDeclarationSemantic>,
-    destructors: std::collections::HashMap<
-        (&'facts ModuleId, StableDefinitionKind, &'facts str),
-        &'facts DurableDeclarationSemantic,
-    >,
-    anonymous: std::collections::HashMap<
-        &'facts crate::AnonymousNominalKey,
-        &'facts DurableAnonymousNominal,
-    >,
+/// Reachability and every CFG input reuse this index over exact query-owned
+/// facts. It is never semantic or query authority: selected facts are still
+/// cloned into each exact CFG memo key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SharedDeclarationFactIndex {
+    declarations: std::collections::HashMap<StableDefinitionKey, usize>,
+    destructors: Vec<Option<usize>>,
     slice_sources: std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
 }
 
-impl<'facts> LocalFactSelectionIndex<'facts> {
-    pub(crate) fn new(
-        declarations: &'facts [DurableDeclarationSemantic],
-        anonymous_nominals: &'facts [DurableAnonymousNominal],
-    ) -> (Self, LocalFactSelectionIndexWork) {
-        let mut work = LocalFactSelectionIndexWork::default();
+impl SharedDeclarationFactIndex {
+    pub(crate) fn new(declarations: &[DurableDeclarationSemantic]) -> Self {
         let mut declaration_index = std::collections::HashMap::with_capacity(declarations.len());
-        let mut destructors = std::collections::HashMap::new();
+        let mut destructors = vec![None; declarations.len()];
+        let named_types = declarations
+            .iter()
+            .enumerate()
+            .map(|(index, declaration)| {
+                (
+                    (
+                        declaration.key.module(),
+                        declaration.key.kind(),
+                        declaration.key.name(),
+                    ),
+                    index,
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         let mut slice_sources = std::collections::HashMap::new();
-        for declaration in declarations {
-            work.declarations_scanned += 1;
+        let mut work = LocalFactSelectionIndexWork::default();
+        for (index, declaration) in declarations.iter().enumerate() {
             match &declaration.payload {
                 DurableDeclarationPayload::Callable {
                     parameters, result, ..
@@ -88,11 +92,57 @@ impl<'facts> LocalFactSelectionIndex<'facts> {
             }
             if matches!(declaration.payload, DurableDeclarationPayload::Destructor)
                 && let Some(owner) = declaration.key.owner()
+                && let Some(&owner_index) =
+                    named_types.get(&(owner.module(), owner.kind(), owner.name()))
             {
-                destructors.insert((owner.module(), owner.kind(), owner.name()), declaration);
+                destructors[owner_index] = Some(index);
             }
-            declaration_index.insert(&declaration.key, declaration);
+            declaration_index.insert(declaration.key.clone(), index);
         }
+        Self {
+            declarations: declaration_index,
+            destructors,
+            slice_sources,
+        }
+    }
+
+    pub(crate) fn declaration<'facts>(
+        &self,
+        declarations: &'facts [DurableDeclarationSemantic],
+        key: &StableDefinitionKey,
+    ) -> Option<&'facts DurableDeclarationSemantic> {
+        self.declarations
+            .get(key)
+            .and_then(|&index| declarations.get(index))
+    }
+
+    fn destructor<'facts>(
+        &self,
+        declarations: &'facts [DurableDeclarationSemantic],
+        owner: &StableDefinitionKey,
+    ) -> Option<&'facts DurableDeclarationSemantic> {
+        let owner_index = *self.declarations.get(owner)?;
+        let destructor_index = *self.destructors.get(owner_index)?.as_ref()?;
+        declarations.get(destructor_index)
+    }
+}
+
+pub(crate) struct LocalFactSelectionIndex<'facts> {
+    declarations: &'facts [DurableDeclarationSemantic],
+    shared: &'facts SharedDeclarationFactIndex,
+    anonymous: std::collections::HashMap<
+        &'facts crate::AnonymousNominalKey,
+        &'facts DurableAnonymousNominal,
+    >,
+}
+
+impl<'facts> LocalFactSelectionIndex<'facts> {
+    pub(crate) fn new(
+        shared: &'facts SharedDeclarationFactIndex,
+        declarations: &'facts [DurableDeclarationSemantic],
+        anonymous_nominals: &'facts [DurableAnonymousNominal],
+    ) -> (Self, LocalFactSelectionIndexWork) {
+        let mut work = LocalFactSelectionIndexWork::default();
         let mut anonymous = std::collections::HashMap::with_capacity(anonymous_nominals.len());
         for nominal in anonymous_nominals {
             work.anonymous_nominals_scanned += 1;
@@ -100,13 +150,32 @@ impl<'facts> LocalFactSelectionIndex<'facts> {
         }
         (
             Self {
-                declarations: declaration_index,
-                destructors,
+                declarations,
+                shared,
                 anonymous,
-                slice_sources,
             },
             work,
         )
+    }
+
+    fn declaration(&self, key: &StableDefinitionKey) -> Option<&'facts DurableDeclarationSemantic> {
+        self.shared.declaration(self.declarations, key)
+    }
+
+    fn destructor(
+        &self,
+        owner: &StableDefinitionKey,
+    ) -> Option<&'facts DurableDeclarationSemantic> {
+        self.shared.destructor(self.declarations, owner)
+    }
+}
+
+impl RetainedCharge for SharedDeclarationFactIndex {
+    fn retained_charge(&self) -> u64 {
+        self.declarations
+            .retained_charge()
+            .saturating_add(self.destructors.retained_charge())
+            .saturating_add(self.slice_sources.retained_charge())
     }
 }
 
@@ -891,6 +960,7 @@ pub(crate) fn select_materialization_facts(
             }
             let query_ty = self
                 .index
+                .shared
                 .slice_sources
                 .get(name)
                 .cloned()
@@ -1071,13 +1141,8 @@ pub(crate) fn select_materialization_facts(
                 match nominal {
                     crate::NominalInstanceKey::Builtin { .. } => {}
                     crate::NominalInstanceKey::Named(key) => {
-                        let declaration = self
-                            .index
-                            .declarations
-                            .get(&key)
-                            .copied()
-                            .cloned()
-                            .ok_or_else(|| {
+                        let declaration =
+                            self.index.declaration(&key).cloned().ok_or_else(|| {
                                 LocalFactSelectionFailure::MissingNamedNominal(key.clone())
                             })?;
                         self.modules.insert(key.module().clone());
@@ -1088,10 +1153,7 @@ pub(crate) fn select_materialization_facts(
                                 for (_, ty) in fields.iter() {
                                     self.semantic_type(ty);
                                 }
-                                let owner = (key.module(), key.kind(), key.name());
-                                if let Some(destructor) =
-                                    self.index.destructors.get(&owner).copied().cloned()
-                                {
+                                if let Some(destructor) = self.index.destructor(&key).cloned() {
                                     self.selected_declarations
                                         .insert(destructor.key.clone(), destructor.clone());
                                     self.callable(&FunctionInstanceKey::Definition(
@@ -1168,10 +1230,9 @@ pub(crate) fn select_materialization_facts(
                 match nominal {
                     crate::NominalInstanceKey::Builtin { .. } => {}
                     crate::NominalInstanceKey::Named(key) => {
-                        let declaration =
-                            self.index.declarations.get(&key).copied().ok_or_else(|| {
-                                LocalFactSelectionFailure::MissingNamedNominal(key.clone())
-                            })?;
+                        let declaration = self.index.declaration(&key).ok_or_else(|| {
+                            LocalFactSelectionFailure::MissingNamedNominal(key.clone())
+                        })?;
                         let payload = match declaration.payload {
                             DurableDeclarationPayload::Struct { .. } => {
                                 DurableDeclarationPayload::Struct {
@@ -1622,7 +1683,9 @@ mod tests {
         ];
         let mut selection_body = body();
         selection_body.return_type = rue_air::SemanticImportType::Nominal(record);
-        let (index, _) = LocalFactSelectionIndex::new(&declarations, &[]);
+        let shared = SharedDeclarationFactIndex::new(&declarations);
+        let (index, work) = LocalFactSelectionIndex::new(&shared, &declarations, &[]);
+        assert_eq!(work, LocalFactSelectionIndexWork::default());
         let facts = select_materialization_facts(
             &FunctionInstanceKey::Definition(function.clone()),
             &selection_body,
@@ -1687,7 +1750,8 @@ mod tests {
         let expected_name = format!("anonymous-{:?}", identity.with_canonical_producer());
         assert_eq!(expected_name, format!("anonymous-{identity:?}"));
         assert_eq!(nominal.materialization_name().as_ref(), expected_name);
-        let (index, _) = LocalFactSelectionIndex::new(&[], std::slice::from_ref(&nominal));
+        let shared = SharedDeclarationFactIndex::new(&[]);
+        let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal));
         let symbols = std::collections::BTreeMap::from([(
             FunctionInstanceKey::Definition(function.clone()),
             Arc::from("probe"),

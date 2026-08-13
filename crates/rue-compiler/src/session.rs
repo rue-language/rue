@@ -993,6 +993,7 @@ struct RootedBodyGraph {
     revision: rue_query::Revision,
     configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     declarations: Arc<[crate::DurableDeclarationSemantic]>,
+    declaration_index: Arc<crate::local_semantic_materialization::SharedDeclarationFactIndex>,
     anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
     declaration_dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
     c_export_roots: Arc<[crate::StableDefinitionKey]>,
@@ -4682,6 +4683,7 @@ impl CompilerSession {
             revision,
             configuration,
             declarations: projection.declarations,
+            declaration_index: projection.declaration_index,
             anonymous_nominals: anonymous.into_values().collect::<Vec<_>>().into(),
             declaration_dependencies: projection.dependencies,
             c_export_roots: projection.c_export_roots,
@@ -4882,6 +4884,7 @@ impl CompilerSession {
                 .entered();
         let (materialization_index, index_work) =
             crate::local_semantic_materialization::LocalFactSelectionIndex::new(
+                &graph.declaration_index,
                 &graph.declarations,
                 &graph.anonymous_nominals,
             );
@@ -8622,9 +8625,13 @@ mod tests {
             cfg_work.functions_considered + cfg_work.drop_glue_functions_synthesized,
             "{cfg_work:?}"
         );
-        assert!(
-            cfg_work.materialization_declarations_scanned > 0,
-            "{cfg_work:?}"
+        assert_eq!(
+            cfg_work.materialization_declarations_scanned, 0,
+            "CFG selection reuses the semantic projection's declaration index: {cfg_work:?}"
+        );
+        assert_eq!(
+            cfg_work.materialization_type_nodes_scanned, 0,
+            "CFG selection reuses the semantic projection's destructor index: {cfg_work:?}"
         );
         assert_eq!(
             cfg_work.retained_interner_charge_scans, 0,

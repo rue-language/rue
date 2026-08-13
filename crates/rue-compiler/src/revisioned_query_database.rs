@@ -2130,6 +2130,8 @@ pub(crate) enum SemanticNucleusBatchFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SemanticNucleusProjection {
     pub(crate) declarations: Arc<[crate::DurableDeclarationSemantic]>,
+    pub(crate) declaration_index:
+        Arc<crate::local_semantic_materialization::SharedDeclarationFactIndex>,
     pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
     pub(crate) dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
     pub(crate) c_export_roots: Arc<[crate::StableDefinitionKey]>,
@@ -2633,6 +2635,7 @@ impl RetainedCharge for SemanticNucleusProjection {
     fn retained_charge(&self) -> u64 {
         self.declarations
             .retained_charge()
+            .saturating_add(self.declaration_index.retained_charge())
             .saturating_add(self.anonymous_nominals.retained_charge())
             .saturating_add(self.dependencies.retained_charge())
             .saturating_add(self.c_export_roots.retained_charge())
@@ -3822,7 +3825,8 @@ fn body_source_definition_key(
 fn closure_callable_has_body(
     context: &rue_query::QueryContext,
     body_inputs: &QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
-    declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
+    declarations: &[crate::DurableDeclarationSemantic],
+    declaration_index: &crate::local_semantic_materialization::SharedDeclarationFactIndex,
     callable: &crate::FunctionInstanceKey,
     configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
 ) -> Result<Result<bool, Arc<str>>, QueryAbort> {
@@ -3851,7 +3855,7 @@ fn closure_callable_has_body(
     if !matches!(callable, crate::FunctionInstanceKey::Definition(_)) {
         return Ok(Ok(true));
     }
-    let Some(declaration) = declarations.get(&input.owner) else {
+    let Some(declaration) = declaration_index.declaration(declarations, &input.owner) else {
         return Ok(Err(Arc::from(format!(
             "body input owner {:?} has no declaration-semantic projection",
             input.owner
@@ -15471,12 +15475,6 @@ impl RevisionedQueryDatabase {
                             .with_terminal_kind(QueryTerminalKind::Failure));
                         }
                     };
-                    let declaration_payloads = projection
-                        .declarations
-                        .iter()
-                        .cloned()
-                        .map(|declaration| (declaration.key.clone(), declaration))
-                        .collect::<BTreeMap<_, _>>();
                     let present_trusted_modules = key
                         .modules
                         .iter()
@@ -16106,7 +16104,8 @@ impl RevisionedQueryDatabase {
                                     match closure_callable_has_body(
                                         context,
                                         &inputs_for_body_closure,
-                                        &declaration_payloads,
+                                        &projection.declarations,
+                                        &projection.declaration_index,
                                         callable,
                                         &key.configuration,
                                     )? {
@@ -19657,8 +19656,13 @@ impl RevisionedQueryDatabase {
             });
         }
         values.sort_by(|left, right| left.key.cmp(&right.key));
+        let declarations: Arc<[crate::DurableDeclarationSemantic]> = values.into();
+        let declaration_index = Arc::new(
+            crate::local_semantic_materialization::SharedDeclarationFactIndex::new(&declarations),
+        );
         Ok(SemanticNucleusProjection {
-            declarations: values.into(),
+            declarations,
+            declaration_index,
             anonymous_nominals: anonymous_nominals.into_values().collect::<Vec<_>>().into(),
             dependencies: dependencies.into_iter().collect::<Vec<_>>().into(),
             c_export_roots: c_export_roots.into_iter().collect::<Vec<_>>().into(),
