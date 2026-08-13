@@ -206,11 +206,11 @@ build is outside the measured boundary for every tool.
 
 Gazette's libraries reject constructs outside their documented subset with an
 error rather than rendering them wrong, so new site content that steps
-outside the subset fails the next scheduled run loudly instead of corrupting
+outside the subset fails the next collection run loudly instead of corrupting
 output silently. This makes the benchmark a soft consumer of the website: a
-content change can break a weekly run, and the remedy — extending gazette, or
-amending the content — is intended dogfooding pressure rather than an
-accident. Highlighting, search, and
+content change can break the runtime leg of performance collection, and the
+remedy — extending gazette, or amending the content — is intended dogfooding
+pressure rather than an accident. Highlighting, search, and
 minification are the intended first parity expansions (Future Work); each
 widens the equivalence subset for all tools at once under a new suite
 revision.
@@ -301,15 +301,36 @@ does not wait for the cross-tool comparison.
 
 ### 9. Cadence and regression posture
 
-The runtime suite starts scheduled weekly plus manual dispatch, matching the
-scaling suite's pattern; the Rue-only series may move to per-merge once its
-cost is known. Regressions are surfaced visibly on the dashboard (flagged
-deltas against the previous suite-revision median), with maintainer triage
-and no hard CI gate in v1: the project's stated goal is order-of-magnitude
-placement and trustworthy trend lines, and a ratchet like ADR-0071's should
-be introduced only after the runtime series' dispersion is calibrated. Peer
-toolchain versions are bumped deliberately, recorded as annotated events, and
-never silently.
+Runtime measurement rides the existing performance-capture and
+website-publish pipeline rather than adding a new schedule:
+
+- **Gazette is measured on every compiler change.** The per-trunk-push
+  performance-collection workflow gains a runtime leg: compile gazette
+  (release-quality — and since the runtime harness must compile gazette
+  anyway, that compile doubles as a recorded fresh-process compile
+  observation), then run it against the current corpus. Runtime regressions
+  therefore surface attached to the compiler change that caused them, and
+  the website rebuild that already follows performance collection publishes
+  them.
+- **Peers are re-measured on events, not on a clock.** Pinned Zola and Hugo
+  results move only when their inputs move, so the peer leg runs only when
+  corpus identity changes (website content), a peer toolchain is bumped, a
+  template port or parity configuration changes, or the runner regime
+  starts a new epoch. The per-push job detects a corpus-identity change at
+  fixture-preparation time and runs the peer leg in that same run. Between
+  events, the derive step joins gazette observations against the latest
+  peer observation with matching corpus identity.
+- **Scale variants have a safety valve.** The 1x corpus runs per push; if
+  the 10x/100x variants prove too expensive for per-push collection, they
+  move to a scheduled cadence without changing any other policy.
+
+Regressions are surfaced visibly on the dashboard (flagged deltas against
+the previous suite-revision median), with maintainer triage and no hard CI
+gate in v1: the project's stated goal is order-of-magnitude placement and
+trustworthy trend lines, and a ratchet like ADR-0071's should be introduced
+only after the runtime series' dispersion is calibrated. Peer toolchain
+versions are bumped deliberately, recorded as annotated events, and never
+silently.
 
 ## Implementation Phases
 
@@ -340,6 +361,9 @@ project as future scope.
 
 - One workload advances both performance questions: gazette is simultaneously
   the first runtime benchmark and a new compile-time scaling rung.
+- Per-push measurement makes a runtime regression attributable to the
+  specific compiler change that introduced it, at marginal cost on top of
+  the compile the runtime harness performs anyway.
 - The comparison is externally meaningful: results place Rue relative to
   production tools people already use, on a real corpus, not synthetic code.
 - Validation is honest: determinism checks, file-set equality, and spot
@@ -363,15 +387,19 @@ project as future scope.
   changes; readers must lean on the chart annotations and the peer-ratio
   series, and the publication layer must make that easy rather than optional.
 - The live corpus makes the benchmark a soft consumer of website content: a
-  page using constructs outside the equivalence subset breaks the next
-  scheduled run until gazette or the content is extended.
+  page using constructs outside the equivalence subset breaks the runtime
+  leg of performance collection until gazette or the content is extended.
 - Template ports are maintenance surface: three template sets drift as the
   tools evolve.
 - An SSG stresses strings, maps, allocation, and I/O but not numeric or
   bit-manipulation workloads; until the corpus grows more programs, the
   runtime series over-indexes on one workload shape.
-- Weekly cadence means regressions can hide for days; acceptable for v1's
-  goals, revisited once cost data exists.
+- Gazette and peer observations in a given ratio are usually taken at
+  different times, since peers re-measure only on events; hosted-runner
+  day-to-day variance is absorbed into the order-of-magnitude claim rather
+  than controlled by same-run measurement.
+- Per-push collection gains a runtime leg, so its wall-clock cost grows;
+  the scale-variant safety valve bounds this, but the cost must be watched.
 
 ### Neutral
 
@@ -387,8 +415,8 @@ project as future scope.
 1. Once gazette can build the full corpus within the equivalence subset, does
    rue-lang.dev eventually dogfood it as its production generator? That is a
    separate decision with its own reliability bar, deliberately not made here.
-2. Does the Rue-only runtime series move to per-merge once its CI cost is
-   measured, or does weekly remain the steady state?
+2. Do the 10x/100x scale variants stay in per-push collection, or move to a
+   scheduled cadence once their cost is measured?
 3. When the corpus gains more programs, do agent-default/tuned translation
    tracks (RUE-1048) also apply to the SSG scenario, or only to smaller
    benchmarks?
