@@ -417,7 +417,7 @@ the fresh-process result.
 - [x] **Phase 1: Pin the reference regime, publish the frozen Lattice workload
   and target dashboard, establish the baseline ratchet, and produce the
   critical-path scaling report** — RUE-1475 and RUE-1478.
-- [ ] **Phase 2: Publish the semantic-to-CFG ownership and repetition audit** —
+- [x] **Phase 2: Publish the semantic-to-CFG ownership and repetition audit** —
   RUE-1474.
 - [ ] **Phase 3: Reach the 500 ms vertical milestone** — RUE-1473.
 - [ ] **Phase 4: Reprofile and reach the 350 ms vertical milestone** — RUE-1471.

@@ -62,7 +62,8 @@ independently verified native output digest. The report records:
 - longest query/dependency ancestry;
 - bounded semantic, CFG-construction, and CFG-optimization body-duration
   histograms;
-- reached-toolchain acquisition, joins, declined joins, and permit donations;
+- the inclusive reached-toolchain acquisition envelope (which contains the
+  rooted semantic attempt), joins, declined joins, and permit donations;
 - output binary size.
 
 The Markdown work table includes validation nodes per token. That ratio is a
@@ -76,6 +77,11 @@ ready-item mean and maximum wait separately because the total is additive over
 items rather than elapsed wall time. Body timing distributions use 64 bounded
 log2 buckets, exact count/total/maximum, thread-local accumulation, and bounded
 worker-completion merges; they never retain one event per body.
+
+The reached-toolchain value is an inclusive host-operation envelope, not an
+exclusive phase. The operation runs the rooted semantic attempt to discover
+whether a trusted module is absent, so its duration overlaps semantic work and
+must never be added to the phase partition or interpreted as filesystem time.
 
 The semantic-reachability table reports average scheduled keys per non-empty
 dependency-ready logical frontier, fixed width buckets, and body transactions
