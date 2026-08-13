@@ -1,0 +1,132 @@
+# Runtime performance of compiled Rue programs (ADR-0072, RUE-1046).
+#
+# This suite is intentionally separate from `manifest.toml`, `scaling.toml`, and
+# `incremental.toml`, all of which measure the *compiler*. Here the compiler is
+# a tool: each workload is built at release quality and the measurement is of
+# the program it produced, spawn to exit.
+#
+# It follows ADR-0067's two-layer versioning — a suite revision pins the logical
+# workload contract, a platform epoch pins how one platform runs it — with one
+# deliberate amendment, ADR-0072 Decision 2. A runtime workload consumes *data*,
+# and data is the third input category the compile-time suites do not have: a
+# **recorded** input, whose identity is captured with every observation rather
+# than failing validation when it changes. `wordfreq`'s fixture is generated
+# deterministically from the seed and generator revision pinned below, and is
+# recorded all the same, so the digest of the bytes the program actually read
+# rides every observation and no generator drift can move a series invisibly.
+#
+# Two rules are absolute. Fixture preparation and output judgement both happen
+# outside the timed window (ADR-0071's boundary discipline), and a run that
+# produces wrong output fails regardless of how fast it was.
+#
+# The v1 platform matrix is exactly `x86_64-linux` on `ubuntu-24.04`.
+# `aarch64-linux` joins once ADR-0072's Phase 2 standard-library work is
+# CI-verified there; macOS stays deferred behind the known `@syscall`
+# error-detection gap.
+schema_version = 1
+
+[[suite]]
+revision = 1
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+# wordfreq is a permanent member of this suite, not scaffolding for the gazette
+# work that motivated ADR-0072. It stays as the string- and map-bound realistic
+# workload once gazette lands. `jsonfmt` and `ruelex` may join the same way,
+# each with its own declared fixture and oracle.
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does a compiled Rue program tokenize and count words in tens of MiB of text?"
+program_args = ["{fixture}"]
+
+# 32 MiB is chosen so the run measures word counting and map pressure rather
+# than process startup: at roughly eight bytes per token that is about four
+# million word occurrences over a vocabulary of 65,536 distinct words.
+#
+# `bytes`, `seed`, `vocabulary_size`, and `generator_revision` are all pinned,
+# and the committed golden output is a function of all four. Changing any of
+# them changes the expected output and is therefore a suite-revision event, not
+# a tuning knob.
+[suite.workloads.fixture]
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 33554432
+vocabulary_size = 65536
+file_name = "wordfreq-input.txt"
+description = "32 MiB of deterministic ASCII word text with Zipf-distributed word ranks"
+
+# The correctness oracle. Wrong output fails the observation regardless of how
+# fast it was, and the comparison happens outside the timed window.
+#
+# The committed golden was produced by running the compiled program over the
+# fixture these pins describe, and independently cross-checked against a
+# reference word count of the same bytes. Regenerate it — under a new suite
+# revision — only when a pin above deliberately changes the workload:
+#
+#     rue-bench runtime --platform local --epoch 1 \
+#       --compiler "$(scripts/rue-bin)" --commit "$(git rev-parse HEAD)" \
+#       --out /tmp/runtime.json --workdir /tmp/runtime-work
+#     /tmp/runtime-work/wordfreq-program /tmp/runtime-work/wordfreq-input.txt \
+#       > performance/fixtures/wordfreq/expected-stdout.txt
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+# The pinned reference regime. This is the only epoch scheduled collection
+# measures, and the only one whose numbers are comparable over time.
+[[epoch]]
+id = 1
+platform = "x86_64-linux"
+suite_revision = 1
+target = "x86-64-linux"
+# Release quality, matching ADR-0071's definition of the product. A runtime
+# series measuring anything else would not be measuring what Rue ships.
+compiler_args = ["-O3"]
+optimization = "o3"
+# Rue has no concurrency support, so every sample is single-threaded and the
+# record says so rather than leaving a future reader to infer it.
+thread_policy = "single_threaded"
+# GitHub-hosted runners expose no PMU. Counters are gated on a future
+# controlled-hardware epoch (ADR-0072 Decision 5) rather than quietly missing.
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# Five independent fresh processes. There is no batching factor: this workload
+# runs for seconds, so timer resolution is not a threat, and batching would hide
+# the per-run dispersion that the calibration this epoch still lacks must
+# eventually measure.
+[epoch.sampling.wordfreq]
+samples = 5
+
+# No `[epoch.calibration]` yet. Calibration is runtime-specific and per-platform
+# — dispersion is a property of the workload, never inherited from the compiler
+# suites — so until this workload's own repeated samples on this regime have
+# been analysed, every regression flag on it is advisory.
+
+# A development epoch for local runs on an x86-64 Linux host. Not a collection
+# target: its environment policy admits only `local`, so a hosted runner cannot
+# append to it, and a laptop cannot append to the reference series.
+[[epoch]]
+id = 1
+platform = "local"
+suite_revision = 1
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2

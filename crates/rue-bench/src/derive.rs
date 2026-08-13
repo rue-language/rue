@@ -20,8 +20,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use rue_perf_schema::{
-    Band, Completeness, Manifest, Metric, RunObject, StoredRun, Summary, flags_movement,
-    geometric_mean, median_absolute_deviation, ratio, sample_value, validate_run,
+    Band, Completeness, FIXTURE_INPUT_NAME, Manifest, Metric, RunObject, RuntimeCompleteness,
+    RuntimeManifest, RuntimeMetric, StoredRun, StoredRuntimeReport, Summary, flags_movement,
+    geometric_mean, median_absolute_deviation, ratio, sample_value, summarize, validate_run,
+    validate_runtime_report,
 };
 use serde::Serialize;
 
@@ -39,6 +41,116 @@ pub struct SiteData {
     /// Surfaced rather than dropped: a run rejected for a pin mismatch is the
     /// single most useful thing to see when the page stops updating.
     pub rejected: Vec<RejectedRun>,
+    /// The ADR-0072 runtime series, when a runtime manifest was supplied.
+    ///
+    /// `None` rather than an empty object when the caller asked for no runtime
+    /// derivation at all: a page must be able to tell "not requested" from
+    /// "requested and nothing has been collected yet".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeData>,
+}
+
+/// Everything a runtime view renders.
+///
+/// Deliberately a sibling of the compile-time series rather than a member of
+/// it. The two answer different questions — how fast Rue compiles, and how fast
+/// compiled Rue runs — over different record kinds, and merging them would
+/// invite a chart that plots one against the other.
+#[derive(Debug, Serialize)]
+pub struct RuntimeData {
+    /// Measured programs with the question each one answers.
+    pub workloads: Vec<RuntimeWorkloadDescription>,
+    /// Published runtime metrics, in presentation order.
+    pub metrics: Vec<String>,
+    /// One entry per platform that has any observation.
+    pub platforms: Vec<RuntimePlatformData>,
+    /// Reports that exist but could not enter any series, with the reason.
+    pub rejected: Vec<RejectedRuntimeReport>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeWorkloadDescription {
+    pub id: String,
+    pub source: String,
+    pub question: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RejectedRuntimeReport {
+    pub report: String,
+    pub platform: String,
+    pub epoch: u32,
+    pub commit: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimePlatformData {
+    pub platform: String,
+    /// Epoch stretches, oldest first.
+    pub epochs: Vec<RuntimeEpochData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeEpochData {
+    pub epoch: u32,
+    pub suite_revision: u32,
+    /// What the programs were built as, so a reader can see that the series
+    /// measures the release-quality product rather than a debug build.
+    pub optimization: String,
+    pub thread_policy: String,
+    pub hardware_counters: String,
+    /// Points in measurement order.
+    pub points: Vec<RuntimePointData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimePointData {
+    /// The record's immutable name.
+    pub report: String,
+    /// The compiler revision that built the measured programs.
+    pub commit: String,
+    /// The compiler's own version string.
+    pub compiler_version: String,
+    pub finished_at: String,
+    /// Whether every declared workload completed.
+    pub complete: bool,
+    /// Per-workload figures, keyed by workload id.
+    pub workloads: BTreeMap<String, RuntimeWorkloadPoint>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeWorkloadPoint {
+    /// Digest of the input this observation consumed.
+    ///
+    /// The recorded-input category made visible: a raw median may only be
+    /// compared with another point carrying the same identity, and a change
+    /// here is a discontinuity in the series rather than a movement in it.
+    pub fixture_identity: String,
+    /// Size of that input, in bytes.
+    pub fixture_bytes: u64,
+    /// Digest of the workload's own source closure at this point.
+    ///
+    /// The other half of the recorded-not-pinned bargain, and the reason it is
+    /// a bargain rather than a gap. This suite records the program's identity
+    /// instead of pinning it — the same choice `performance/scaling.toml` makes
+    /// for the maintained examples it measures — which is only defensible if a
+    /// consumer can see when it moved. Both identities segment the series the
+    /// same way: raw medians are comparable within a segment and not across
+    /// one.
+    pub source_identity: String,
+    /// `calibrated` or `advisory`. Movement in an advisory workload is a
+    /// triage item, never a gate.
+    pub flag_posture: String,
+    /// Median and dispersion per metric, keyed by metric wire name.
+    pub metrics: BTreeMap<String, SummaryData>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SummaryData {
+    pub median: u64,
+    pub mad: u64,
+    pub count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -256,7 +368,7 @@ pub fn derive(manifest: &Manifest, runs: &[StoredRun]) -> SiteData {
     // counted as evidence but never enters a series.
     let mut grouped: BTreeMap<(String, u32), Vec<&StoredRun>> = BTreeMap::new();
     for stored in runs {
-        let run = stored.run();
+        let run = stored.record();
         let outcome = validate_run(manifest, run);
         if !outcome.is_appendable() {
             rejected.push(RejectedRun {
@@ -278,11 +390,16 @@ pub fn derive(manifest: &Manifest, runs: &[StoredRun]) -> SiteData {
     for ((platform, epoch_id), mut epoch_runs) in grouped {
         // Measurement order, so the trailing window means what it says.
         epoch_runs.sort_by(|left, right| {
-            left.run()
+            left.record()
                 .identity
                 .finished_at
-                .cmp(&right.run().identity.finished_at)
-                .then_with(|| left.run().identity.commit.cmp(&right.run().identity.commit))
+                .cmp(&right.record().identity.finished_at)
+                .then_with(|| {
+                    left.record()
+                        .identity
+                        .commit
+                        .cmp(&right.record().identity.commit)
+                })
         });
         let Some(epoch) = manifest.epoch(&platform, epoch_id) else {
             continue;
@@ -308,6 +425,252 @@ pub fn derive(manifest: &Manifest, runs: &[StoredRun]) -> SiteData {
         workloads,
         platforms,
         rejected,
+        runtime: None,
+    }
+}
+
+/// One record in the store this build could not read.
+///
+/// Kept as data rather than raised as an error, because the store is
+/// append-only: a record written by a future schema can never be removed from
+/// it, so a reader that refused the whole directory on meeting one would break
+/// the site build permanently, with no remedy available in this repository.
+pub struct UnreadableRecord {
+    /// The record's file name.
+    pub name: String,
+    /// Why this build could not read it.
+    pub detail: String,
+}
+
+/// Read the durable store's runtime records.
+///
+/// A separate directory from `runs/`, because they are a separate record kind
+/// whose reader must never have to guess a kind from which fields happen to
+/// parse. An absent directory is the normal first state, not an error.
+///
+/// Records this build cannot parse are skipped and returned alongside the ones
+/// it can, so the day `runtime_v2` lands the site keeps deriving every v1
+/// record and says plainly which ones it passed over. Only a directory that
+/// cannot be listed at all is an error: that is a broken checkout rather than a
+/// record from the future.
+pub fn load_runtime_records(
+    data_root: &Path,
+) -> Result<(Vec<StoredRuntimeReport>, Vec<UnreadableRecord>), String> {
+    let directory = data_root.join("runtime");
+    if !directory.is_dir() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let mut reports = Vec::new();
+    let mut unreadable = Vec::new();
+    let listing = std::fs::read_dir(&directory)
+        .map_err(|error| format!("could not read {}: {error}", directory.display()))?;
+    for entry in listing {
+        let path = entry
+            .map_err(|error| format!("could not read {}: {error}", directory.display()))?
+            .path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                unreadable.push(UnreadableRecord {
+                    name,
+                    detail: error.to_string(),
+                });
+                continue;
+            }
+        };
+        match StoredRuntimeReport::read(&text) {
+            Ok(stored) => reports.push(stored),
+            Err(error) => unreadable.push(UnreadableRecord {
+                name,
+                detail: error.to_string(),
+            }),
+        }
+    }
+    Ok((reports, unreadable))
+}
+
+/// Derive the runtime view of a set of records.
+///
+/// Nothing derived is stored, exactly as on the compile-time side: medians,
+/// dispersion, and every comparison are recomputed here from the raw samples at
+/// site build time.
+pub fn derive_runtime(
+    manifest: &RuntimeManifest,
+    reports: &[StoredRuntimeReport],
+    unreadable: &[UnreadableRecord],
+) -> RuntimeData {
+    let mut workloads: Vec<RuntimeWorkloadDescription> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for suite in manifest.suites() {
+        for workload in &suite.workloads {
+            if seen.insert(workload.id.clone()) {
+                workloads.push(RuntimeWorkloadDescription {
+                    id: workload.id.clone(),
+                    source: workload.source.clone(),
+                    question: workload.question.clone(),
+                });
+            }
+        }
+    }
+
+    // A record this build cannot read is reported in the same place a record it
+    // read and refused is: from the page's point of view both are records that
+    // exist and are not plotted, and the difference is the reason text.
+    let mut rejected: Vec<RejectedRuntimeReport> = unreadable
+        .iter()
+        .map(|record| RejectedRuntimeReport {
+            report: record.name.clone(),
+            platform: String::new(),
+            epoch: 0,
+            commit: String::new(),
+            reasons: vec![format!(
+                "this build of the schema could not read the record: {}",
+                record.detail
+            )],
+        })
+        .collect();
+    let mut grouped: BTreeMap<(String, u32), Vec<&StoredRuntimeReport>> = BTreeMap::new();
+    for stored in reports {
+        let report = stored.record();
+        let outcome = validate_runtime_report(manifest, report);
+        if !outcome.is_appendable() {
+            // Surfaced rather than dropped. A report rejected because its
+            // program printed the wrong answer is the single most useful thing
+            // to see when the runtime page stops advancing.
+            rejected.push(RejectedRuntimeReport {
+                report: stored.address().to_string(),
+                platform: report.identity.platform.clone(),
+                epoch: report.identity.epoch,
+                commit: report.identity.commit.clone(),
+                reasons: outcome
+                    .errors
+                    .iter()
+                    .map(|error| error.to_string())
+                    .collect(),
+            });
+            continue;
+        }
+        grouped
+            .entry((report.identity.platform.clone(), report.identity.epoch))
+            .or_default()
+            .push(stored);
+    }
+
+    let mut by_platform: BTreeMap<String, Vec<RuntimeEpochData>> = BTreeMap::new();
+    for ((platform, epoch_id), mut stored) in grouped {
+        let Some(epoch) = manifest.epoch(&platform, epoch_id) else {
+            continue;
+        };
+        stored.sort_by(|left, right| {
+            left.record()
+                .identity
+                .finished_at
+                .cmp(&right.record().identity.finished_at)
+                .then_with(|| left.address().cmp(right.address()))
+        });
+        let points = stored
+            .iter()
+            .map(|stored| runtime_point(manifest, epoch, stored))
+            .collect();
+        by_platform
+            .entry(platform)
+            .or_default()
+            .push(RuntimeEpochData {
+                epoch: epoch.id,
+                suite_revision: epoch.suite_revision,
+                optimization: format!("{:?}", epoch.optimization).to_lowercase(),
+                thread_policy: format!("{:?}", epoch.thread_policy).to_lowercase(),
+                hardware_counters: format!("{:?}", epoch.hardware_counters).to_lowercase(),
+                points,
+            });
+    }
+
+    let platforms = by_platform
+        .into_iter()
+        .map(|(platform, mut epochs)| {
+            epochs.sort_by_key(|epoch| epoch.epoch);
+            RuntimePlatformData { platform, epochs }
+        })
+        .collect();
+
+    RuntimeData {
+        workloads,
+        metrics: RuntimeMetric::ALL
+            .into_iter()
+            .map(|metric| metric.wire_name().to_string())
+            .collect(),
+        platforms,
+        rejected,
+    }
+}
+
+fn runtime_point(
+    manifest: &RuntimeManifest,
+    epoch: &rue_perf_schema::RuntimeEpoch,
+    stored: &StoredRuntimeReport,
+) -> RuntimePointData {
+    let report = stored.record();
+    let outcome = validate_runtime_report(manifest, report);
+    let mut workloads = BTreeMap::new();
+    for observation in &report.workloads {
+        if !outcome.publishes_workload(&observation.workload) {
+            // A workload that did not complete has no point. Publishing a
+            // median over a truncated sample set would look like a measurement
+            // and be an artifact of the crash that ended it.
+            continue;
+        }
+        let fixture = observation
+            .recorded_inputs
+            .iter()
+            .find(|input| input.name == FIXTURE_INPUT_NAME);
+        let metrics = RuntimeMetric::ALL
+            .into_iter()
+            .filter_map(|metric| {
+                summarize(observation, metric).map(|summary| {
+                    (
+                        metric.wire_name().to_string(),
+                        SummaryData {
+                            median: summary.median,
+                            mad: summary.mad,
+                            count: summary.count,
+                        },
+                    )
+                })
+            })
+            .collect();
+        workloads.insert(
+            observation.workload.clone(),
+            RuntimeWorkloadPoint {
+                fixture_identity: fixture
+                    .map(|input| input.identity_sha256.clone())
+                    .unwrap_or_default(),
+                fixture_bytes: fixture.map(|input| input.bytes).unwrap_or(0),
+                source_identity: report
+                    .identity
+                    .workload_source_hashes
+                    .get(&observation.workload)
+                    .cloned()
+                    .unwrap_or_default(),
+                flag_posture: format!("{:?}", epoch.flag_posture(&observation.workload))
+                    .to_lowercase(),
+                metrics,
+            },
+        );
+    }
+    RuntimePointData {
+        report: stored.address().to_string(),
+        commit: report.identity.commit.clone(),
+        compiler_version: report.identity.compiler_version.clone(),
+        finished_at: report.identity.finished_at.clone(),
+        complete: matches!(outcome.completeness, RuntimeCompleteness::Complete),
+        workloads,
     }
 }
 
@@ -326,7 +689,7 @@ fn derive_epoch(
         .baseline
         .as_ref()
         .and_then(|baseline| runs.iter().find(|stored| stored.address() == baseline.run));
-    let baseline_medians = baseline_run.map(|stored| workload_medians(stored.run(), suite));
+    let baseline_medians = baseline_run.map(|stored| workload_medians(stored.record(), suite));
 
     let mut points: Vec<PointData> = Vec::new();
     let mut environment_annotations = Vec::new();
@@ -339,7 +702,7 @@ fn derive_epoch(
     let mut history: BTreeMap<String, Vec<Summary>> = BTreeMap::new();
 
     for stored in runs {
-        let run = stored.run();
+        let run = stored.record();
         let outcome = validate_run(manifest, run);
         let address = stored.address().to_string();
         let fingerprint = run
@@ -881,7 +1244,7 @@ window = 3
         let stored_base = StoredRun::read(&as_written).expect("readable");
         assert_ne!(
             stored_base.address(),
-            stored_base.run().content_address().unwrap(),
+            stored_base.record().content_address().unwrap(),
             "the fixture must be a record that does not round-trip"
         );
 
@@ -1189,5 +1552,292 @@ window = 3
         // which the broken sample would have inflated.
         assert_eq!(point.compiler_root_ns, 100);
         assert_eq!(point.bands_ns.values().sum::<u64>(), 100);
+    }
+
+    // -----------------------------------------------------------------------
+    // Runtime series (ADR-0072)
+    // -----------------------------------------------------------------------
+
+    const RUNTIME_MANIFEST: &str = r#"
+schema_version = 1
+
+[[suite]]
+revision = 1
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does compiled Rue count words?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 4096
+vocabulary_size = 256
+file_name = "input.txt"
+description = "deterministic ASCII word text"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+[[epoch]]
+id = 1
+platform = "probe"
+suite_revision = 1
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "probe"
+runner_image = "probe"
+
+[epoch.sampling.wordfreq]
+samples = 3
+"#;
+
+    fn runtime_report(commit: char, elapsed: [u64; 3]) -> rue_perf_schema::RuntimeReport {
+        use rue_perf_schema::*;
+        RuntimeReport {
+            record_kind: RUNTIME_RECORD_KIND.to_string(),
+            schema_version: RUNTIME_REPORT_SCHEMA_VERSION,
+            identity: RuntimeIdentity {
+                suite_revision: 1,
+                epoch: 1,
+                platform: "probe".to_string(),
+                commit: std::iter::repeat_n(commit, 40).collect(),
+                compiler_version: "rue 0.1.0".to_string(),
+                started_at: "2026-08-13T00:00:00Z".to_string(),
+                finished_at: format!("2026-08-13T00:0{}:00Z", elapsed[0] % 10),
+                toolchain_hash: "1".repeat(64),
+                stdlib_hash: "2".repeat(64),
+                workload_source_hashes: BTreeMap::from([("wordfreq".to_string(), "3".repeat(64))]),
+                environment: EnvironmentFingerprint {
+                    runner_label: "probe".to_string(),
+                    runner_image: "probe".to_string(),
+                    runner_image_version: "1".to_string(),
+                    cpu_model: "probe".to_string(),
+                    core_count: 4,
+                    memory_bytes: 1,
+                    kernel_version: "probe".to_string(),
+                    os_version: "probe".to_string(),
+                    architecture: "x86_64".to_string(),
+                },
+            },
+            regime: RuntimeRegime {
+                measured_boundary: RuntimeBoundary::SpawnToExitV1,
+                program_state: "fresh_process".to_string(),
+                os_page_cache: "uncontrolled".to_string(),
+                fixture_preparation_measured: false,
+                oracle_comparison_measured: false,
+                optimization: OptimizationLevel::O3,
+                compiler_args: vec!["-O3".to_string()],
+                target: "x86-64-linux".to_string(),
+                thread_policy: ThreadPolicy::SingleThreaded,
+                hardware_counters: HardwareCounterPolicy::UnavailableOnHostedRunner,
+            },
+            workloads: vec![RuntimeObservation {
+                workload: "wordfreq".to_string(),
+                source: "examples/wordfreq/main.rue".to_string(),
+                question: "How fast does compiled Rue count words?".to_string(),
+                program_args: vec![FIXTURE_ARGUMENT.to_string()],
+                recorded_inputs: vec![RecordedInput {
+                    name: FIXTURE_INPUT_NAME.to_string(),
+                    category: InputCategory::Recorded,
+                    description: "deterministic ASCII word text".to_string(),
+                    identity_sha256: "f".repeat(64),
+                    files: 1,
+                    bytes: 4096,
+                    provenance: Some(GeneratedProvenance {
+                        generator: "zipf_ascii_text".to_string(),
+                        generator_revision: 1,
+                        seed: 20260813,
+                        vocabulary_size: 256,
+                    }),
+                }],
+                program: ProgramIdentity {
+                    binary_bytes: 65_536,
+                    sha256: "b".repeat(64),
+                },
+                oracle: OracleOutcome {
+                    kind: OracleKind::GoldenStdout,
+                    reference: "performance/fixtures/wordfreq/expected-stdout.txt".to_string(),
+                    reference_sha256: "c".repeat(64),
+                    observed_sha256: "c".repeat(64),
+                    verdict: OracleVerdict::Match,
+                    deterministic_across_samples: true,
+                    detail: String::new(),
+                },
+                samples: elapsed
+                    .into_iter()
+                    .map(|process_elapsed_ns| RuntimeSample {
+                        process_elapsed_ns,
+                        peak_memory_bytes: 1024,
+                        exit_code: 0,
+                        stdout_bytes: 8,
+                        stdout_sha256: "c".repeat(64),
+                    })
+                    .collect(),
+            }],
+            failures: Vec::new(),
+        }
+    }
+
+    fn stored_runtime(
+        reports: impl IntoIterator<Item = rue_perf_schema::RuntimeReport>,
+    ) -> Vec<StoredRuntimeReport> {
+        reports
+            .into_iter()
+            .map(|report| {
+                StoredRuntimeReport::read(&rue_perf_schema::canonical_json(&report).unwrap())
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn runtime_points_carry_medians_derived_from_raw_samples() {
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[],
+        );
+        let point = &data.platforms[0].epochs[0].points[0];
+        let workload = &point.workloads["wordfreq"];
+        assert!(point.complete);
+        assert_eq!(workload.metrics["wall_clock"].median, 6);
+        assert_eq!(workload.metrics["binary_size"].median, 65_536);
+        // Nothing derived is stored, so the identity that makes two raw
+        // medians comparable has to ride the point.
+        assert_eq!(workload.fixture_identity, "f".repeat(64));
+        assert_eq!(workload.flag_posture, "advisory");
+        assert_eq!(data.platforms[0].epochs[0].optimization, "o3");
+    }
+
+    #[test]
+    fn a_report_whose_program_was_wrong_is_surfaced_rather_than_plotted() {
+        // The runtime counterpart of a rejected run: the single most useful
+        // thing to see when the page stops advancing is why.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let mut report = runtime_report('a', [7, 5, 6]);
+        report.workloads[0].oracle.verdict = rue_perf_schema::OracleVerdict::Mismatch;
+        let data = derive_runtime(&manifest, &stored_runtime([report]), &[]);
+        assert!(data.platforms.is_empty());
+        assert_eq!(data.rejected.len(), 1);
+        assert!(
+            data.rejected[0]
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("oracle")),
+            "{:?}",
+            data.rejected[0].reasons
+        );
+    }
+
+    #[test]
+    fn an_incomplete_workload_publishes_no_median() {
+        // A median over a truncated sample set would look like a measurement
+        // and be an artifact of whatever ended the run.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let mut report = runtime_report('a', [7, 5, 6]);
+        report.workloads[0].samples.truncate(1);
+        let data = derive_runtime(&manifest, &stored_runtime([report]), &[]);
+        let point = &data.platforms[0].epochs[0].points[0];
+        assert!(!point.complete);
+        assert!(point.workloads.is_empty());
+    }
+
+    #[test]
+    fn runtime_points_are_ordered_by_measurement_time() {
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([
+                runtime_report('b', [3, 3, 3]),
+                runtime_report('a', [1, 1, 1]),
+            ]),
+            &[],
+        );
+        let points = &data.platforms[0].epochs[0].points;
+        assert_eq!(points.len(), 2);
+        assert!(points[0].finished_at <= points[1].finished_at);
+    }
+
+    #[test]
+    fn a_runtime_point_carries_both_identities_it_may_be_segmented_on() {
+        // Recording rather than pinning the workload's source is only
+        // defensible if a consumer can see when it moved, so both the fixture
+        // digest and the source digest have to reach the derived data.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[],
+        );
+        let workload = &data.platforms[0].epochs[0].points[0].workloads["wordfreq"];
+        assert_eq!(workload.fixture_identity, "f".repeat(64));
+        assert_eq!(workload.source_identity, "3".repeat(64));
+    }
+
+    #[test]
+    fn a_record_this_build_cannot_read_is_reported_rather_than_fatal() {
+        // The store is append-only, so a record from a future schema can never
+        // be removed from it. A reader that failed the whole derivation on
+        // meeting one would break the site build permanently.
+        let manifest = RuntimeManifest::parse(RUNTIME_MANIFEST).expect("runtime manifest");
+        let data = derive_runtime(
+            &manifest,
+            &stored_runtime([runtime_report('a', [7, 5, 6])]),
+            &[UnreadableRecord {
+                name: "deadbeef.json".to_string(),
+                detail: "unknown field `peer_versions`".to_string(),
+            }],
+        );
+        // The readable record still derives.
+        assert_eq!(data.platforms[0].epochs[0].points.len(), 1);
+        assert_eq!(data.rejected.len(), 1);
+        assert_eq!(data.rejected[0].report, "deadbeef.json");
+        assert!(
+            data.rejected[0].reasons[0].contains("could not read the record"),
+            "{:?}",
+            data.rejected[0].reasons
+        );
+    }
+
+    #[test]
+    fn an_unreadable_record_on_disk_does_not_abort_loading() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let runtime = directory.path().join("runtime");
+        std::fs::create_dir(&runtime).expect("create");
+        let good = rue_perf_schema::canonical_json(&runtime_report('a', [7, 5, 6])).unwrap();
+        std::fs::write(runtime.join("good.json"), &good).expect("write");
+        std::fs::write(
+            runtime.join("future.json"),
+            r#"{"record_kind":"runtime_v2"}"#,
+        )
+        .expect("write");
+
+        let (reports, unreadable) = load_runtime_records(directory.path()).expect("loaded");
+        assert_eq!(reports.len(), 1);
+        assert_eq!(unreadable.len(), 1);
+        assert_eq!(unreadable[0].name, "future.json");
+    }
+
+    #[test]
+    fn a_derivation_without_a_runtime_manifest_has_no_runtime_section() {
+        // A page must be able to tell "not asked for" from "asked for and
+        // nothing collected yet".
+        let manifest = manifest_for_batch(1);
+        assert!(derive(&manifest, &[]).runtime.is_none());
     }
 }

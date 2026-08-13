@@ -24,6 +24,7 @@ use std::collections::BTreeMap;
 use crate::RUN_SCHEMA_VERSION;
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
+use crate::sanity::{is_utc_timestamp, samples_beyond_policy};
 use crate::stats::median;
 
 /// A reason a run may not enter a series at all.
@@ -633,25 +634,6 @@ fn check_identity_shape(run: &RunObject, errors: &mut Vec<ValidationError>) {
     }
 }
 
-/// Accepts exactly `YYYY-MM-DDTHH:MM:SSZ`.
-///
-/// One spelling, so two identical measurements cannot produce two content
-/// addresses by formatting the same instant differently.
-fn is_utc_timestamp(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() != 20 {
-        return false;
-    }
-    let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18];
-    let dashes = [4, 7];
-    let colons = [13, 16];
-    digits.iter().all(|&i| bytes[i].is_ascii_digit())
-        && dashes.iter().all(|&i| bytes[i] == b'-')
-        && colons.iter().all(|&i| bytes[i] == b':')
-        && bytes[10] == b'T'
-        && bytes[19] == b'Z'
-}
-
 fn check_pins(
     run: &RunObject,
     epoch: &crate::manifest::PlatformEpoch,
@@ -767,12 +749,12 @@ fn collect_invalid_samples(
     for observation in &run.workloads {
         let policy = epoch.sampling.get(&observation.workload);
         if let Some(policy) = policy
-            && observation.samples.len() as u64 > u64::from(policy.samples)
+            && let Some(actual) = samples_beyond_policy(observation.samples.len(), policy.samples)
         {
             errors.push(ValidationError::TooManySamples {
                 workload: observation.workload.clone(),
                 allowed: policy.samples,
-                actual: observation.samples.len() as u32,
+                actual,
             });
         }
 

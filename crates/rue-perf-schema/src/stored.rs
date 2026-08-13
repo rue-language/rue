@@ -1,9 +1,9 @@
-//! Stored run objects: the name a record already carries.
+//! Stored records: the name a record already carries.
 //!
-//! A run object's name is the content address of the bytes it was published as,
+//! A record's name is the content address of the bytes it was published as,
 //! which is what makes a stored record verifiable against its own name without
 //! trusting whoever wrote it. Recomputing that name by re-serializing a parsed
-//! [`RunObject`] is a different function: it names the record as *this* build of
+//! record is a different function: it names the record as *this* build of
 //! the schema would have written it, not as it was written.
 //!
 //! The two agree only while the schema struct is byte-identical to the one the
@@ -21,15 +21,17 @@
 //!
 //! So a reader takes the address from the record and never from the struct.
 
-use serde::Deserialize;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::CanonicalError;
 use crate::run::RunObject;
+use crate::runtime::RuntimeReport;
 
-/// Why a stored run object could not be read.
+/// Why a stored record could not be read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StoredRunError {
-    /// The stored bytes are not JSON, or not a run object.
+pub enum StoredRecordError {
+    /// The stored bytes are not JSON, or not a record of the expected kind.
     Malformed {
         /// The underlying parse error, rendered.
         detail: String,
@@ -42,73 +44,90 @@ pub enum StoredRunError {
     Unaddressable(CanonicalError),
 }
 
-impl std::fmt::Display for StoredRunError {
+impl std::fmt::Display for StoredRecordError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            StoredRunError::Malformed { detail } => {
-                write!(f, "not a well-formed run object: {detail}")
+            StoredRecordError::Malformed { detail } => {
+                write!(f, "not a well-formed record: {detail}")
             }
-            StoredRunError::Unaddressable(error) => {
-                write!(f, "stored run object cannot be addressed: {error}")
+            StoredRecordError::Unaddressable(error) => {
+                write!(f, "stored record cannot be addressed: {error}")
             }
         }
     }
 }
 
-impl std::error::Error for StoredRunError {}
+impl std::error::Error for StoredRecordError {}
 
-/// A run object together with the immutable name it carries.
+/// A record together with the immutable name it carries.
 ///
 /// Consumers that resolve a record by name — the dashboard's derivation
 /// matching a manifest baseline, anything linking a plotted point back to its
-/// raw record — must use [`StoredRun::address`] rather than
-/// [`RunObject::content_address`], which names a value about to be written.
+/// raw record — must use [`Stored::address`] rather than re-addressing
+/// [`Stored::record`], which names a value about to be written.
+///
+/// Generic over the record kind because the rule is a property of the *store*,
+/// not of any one schema. ADR-0067's run objects and ADR-0072's runtime reports
+/// are both append-only, both content-addressed, and both grow fields over
+/// time; two copies of this would be two chances to get the naming rule wrong,
+/// and the wrong one would be the one silently unnaming records.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StoredRun {
+pub struct Stored<T> {
     address: String,
-    run: RunObject,
+    record: T,
 }
 
-impl StoredRun {
+impl<T: DeserializeOwned> Stored<T> {
     /// Read a published record, taking its name from the record itself.
     ///
     /// The name is the address of the stored value's canonical form, which is
     /// the digest the publisher stored it under: it never depends on the fields
     /// this build of the schema happens to know about.
-    pub fn read(text: &str) -> Result<StoredRun, StoredRunError> {
+    pub fn read(text: &str) -> Result<Stored<T>, StoredRecordError> {
         let value: serde_json::Value =
-            serde_json::from_str(text).map_err(|error| StoredRunError::Malformed {
+            serde_json::from_str(text).map_err(|error| StoredRecordError::Malformed {
                 detail: error.to_string(),
             })?;
-        let address = crate::content_address(&value).map_err(StoredRunError::Unaddressable)?;
+        let address = crate::content_address(&value).map_err(StoredRecordError::Unaddressable)?;
         // Deserialized from the value that was addressed, so the typed view and
         // the name describe the same bytes.
-        let run = RunObject::deserialize(&value).map_err(|error| StoredRunError::Malformed {
-            detail: error.to_string(),
-        })?;
-        Ok(StoredRun { address, run })
+        let record =
+            serde_json::from_value(value).map_err(|error| StoredRecordError::Malformed {
+                detail: error.to_string(),
+            })?;
+        Ok(Stored { address, record })
     }
+}
 
+impl<T: Serialize> Stored<T> {
     /// Name a record this process just built.
     ///
     /// Correct only because nothing has been stored yet: the canonical form
     /// being addressed is the one that will be written. A record read back from
-    /// storage takes its name from [`StoredRun::read`] instead.
-    pub fn minted(run: RunObject) -> Result<StoredRun, CanonicalError> {
-        let address = run.content_address()?;
-        Ok(StoredRun { address, run })
+    /// storage takes its name from [`Stored::read`] instead.
+    pub fn minted(record: T) -> Result<Stored<T>, CanonicalError> {
+        let address = crate::content_address(&record)?;
+        Ok(Stored { address, record })
     }
+}
 
+impl<T> Stored<T> {
     /// The record's immutable name.
     pub fn address(&self) -> &str {
         &self.address
     }
 
     /// The record.
-    pub fn run(&self) -> &RunObject {
-        &self.run
+    pub fn record(&self) -> &T {
+        &self.record
     }
 }
+
+/// One stored ADR-0067 compiler-performance run object.
+pub type StoredRun = Stored<RunObject>;
+
+/// One stored ADR-0072 runtime report.
+pub type StoredRuntimeReport = Stored<RuntimeReport>;
 
 #[cfg(test)]
 mod tests {
@@ -183,7 +202,7 @@ mod tests {
         let text = crate::canonical_json(&run).expect("addressable");
         let stored = StoredRun::read(&text).expect("readable");
         assert_eq!(stored.address(), run.content_address().unwrap());
-        assert_eq!(stored.run(), &run);
+        assert_eq!(stored.record(), &run);
     }
 
     #[test]
@@ -215,7 +234,7 @@ mod tests {
         );
         assert_ne!(
             stored.address(),
-            stored.run().content_address().unwrap(),
+            stored.record().content_address().unwrap(),
             "re-serializing the parsed record is what renames it"
         );
     }
@@ -252,7 +271,7 @@ mod tests {
         assert_ne!(one.address(), two.address());
         // The band the sample moved is the one the reader sees move.
         assert_eq!(
-            two.run().workloads[0].samples[0]
+            two.record().workloads[0].samples[0]
                 .phases
                 .band_ns(Band::Phase(Phase::SourceDiscoveryAndParsing)),
             900_001
@@ -274,11 +293,11 @@ mod tests {
     fn a_malformed_record_is_reported_rather_than_guessed_at() {
         assert!(matches!(
             StoredRun::read("{"),
-            Err(StoredRunError::Malformed { .. })
+            Err(StoredRecordError::Malformed { .. })
         ));
         assert!(matches!(
             StoredRun::read(r#"{"schema_version":1}"#),
-            Err(StoredRunError::Malformed { .. })
+            Err(StoredRecordError::Malformed { .. })
         ));
     }
 }

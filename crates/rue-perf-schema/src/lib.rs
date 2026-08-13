@@ -33,12 +33,22 @@
 //! ([`InvalidSample`]) excludes a sample from publication while keeping it on
 //! disk. [`ValidationOutcome`] reports both, plus the run's
 //! [`Completeness`].
+//!
+//! ADR-0072 adds a second record kind on the same three ideas. A
+//! [`RuntimeReport`] measures how fast a *compiled Rue program* runs rather
+//! than how fast the compiler produced it, and introduces one category the
+//! compile-time suites do not have: a recorded input
+//! ([`InputCategory::Recorded`]), whose identity is captured with every
+//! observation instead of failing validation when it moves. Nothing about
+//! ADR-0067's rules for the compile-time suites changes.
 
 mod boundary;
 mod canonical;
 mod incremental;
 mod manifest;
 mod run;
+mod runtime;
+mod sanity;
 mod scaling;
 mod series;
 mod stats;
@@ -72,6 +82,17 @@ pub use run::{
     Band, EnvironmentFingerprint, FailureRecord, Invocation, Phase, PhaseAccounting, ResolvedPins,
     RunIdentity, RunObject, Sample, WorkloadObservation,
 };
+pub use runtime::{
+    FIXTURE_ARGUMENT, FIXTURE_INPUT_NAME, FixtureDeclaration, FlagPosture, GeneratedProvenance,
+    HardwareCounterPolicy, InputCategory, OracleDeclaration, OracleKind, OracleOutcome,
+    OracleVerdict, ProgramIdentity, RUNTIME_MANIFEST_SCHEMA_VERSION, RUNTIME_RECORD_KIND,
+    RUNTIME_REPORT_SCHEMA_VERSION, RecordedInput, RuntimeBoundary, RuntimeCalibration,
+    RuntimeCompleteness, RuntimeEpoch, RuntimeFailure, RuntimeIdentity, RuntimeInvalidSample,
+    RuntimeInvalidSampleReason, RuntimeManifest, RuntimeMetric, RuntimeObservation, RuntimeRegime,
+    RuntimeReport, RuntimeSample, RuntimeSamplingPolicy, RuntimeSuiteRevision,
+    RuntimeValidationError, RuntimeValidationOutcome, RuntimeWorkload, ThreadPolicy,
+    runtime_sample_value, summarize, validate_runtime_report,
+};
 pub use scaling::{
     CfgLocalEpochWork, CfgMaterializationWork, CfgPrerequisiteWork, CfgRetainedChargeWork,
     CompilerWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity,
@@ -83,7 +104,7 @@ pub use stats::{
     Summary, flags_movement, geometric_mean, median, median_absolute_deviation, pooled_uncertainty,
     ratio, sample_value,
 };
-pub use stored::{StoredRun, StoredRunError};
+pub use stored::{Stored, StoredRecordError, StoredRun, StoredRuntimeReport};
 pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ProcessElapsedRegression, ValidationError,
     ValidationOutcome, process_elapsed_regressions, validate_run,

@@ -1,0 +1,3 @@
+words=3836062
+distinct=63912
+top=nyjrymtlgsz count=225395
