@@ -1,0 +1,734 @@
+# std.fs directory enumeration (RUE-1481, ADR-0072 Phase 2a / Decision 6):
+# `fs.read_dir` over getdents64 and the deterministic `fs.walk` tree scan, driven
+# end-to-end as a user would — the real std.fs (via RUE_STD_PATH) compiled to a
+# real binary that creates real directories and files in the harness's per-case
+# temp directory and then enumerates them.
+#
+# WHY THESE CASES. Directory enumeration has three things that are easy to get
+# wrong and hard to notice:
+#
+#   1. THE REFILL LOOP. getdents64 fills a fixed buffer and is called again until
+#      it returns 0; a short non-zero return is normal, not an end marker. An
+#      implementation that stops at the first partial buffer looks perfect on
+#      every small directory. `read_dir_refill_loop_600_entries` makes the
+#      directory bigger than one buffer (600 entries against std.fs's 8 KiB
+#      request, so at least three syscalls) and asserts every entry is present
+#      AND in the right place.
+#   2. THE VARIABLE STRIDE. Records are variable-length and must be walked by
+#      their own `d_reclen`. A fixed stride desynchronizes after the first record
+#      whose name length differs, which the mixed-name cases below would catch.
+#   3. THE ORDER. ADR-0072 needs reproducible downstream output, so ordering is
+#      part of the contract, not a nicety. `read_dir_order_is_creation_order_
+#      independent` builds the SAME names in two directories in two different
+#      creation orders and requires identical listings — a bug that returned raw
+#      filesystem order would pass a single-directory ordering check on many
+#      filesystems and fail this one.
+#
+# PLATFORMS. These run on the two Linux targets AND on aarch64-macos. Linux uses
+# getdents64 with `struct linux_dirent64`; macOS uses the `getdirentries64` BSD
+# trap with Darwin's `struct dirent`, and std.fs carries both layouts. Every line
+# above the syscall — record walking, name extraction, `.`/`..` filtering, path
+# joining, sorting, and the walk's pre-order traversal — is shared, so the macOS
+# leg exercises the same logic through the other syscall. x86-64 macOS is
+# excluded because Rue has no x86-64 macOS compiler target.
+#
+# SYMLINKS come from the harness's `symlinks` fixture list, not from the program:
+# `std.fs` has no `symlinkat`, and a `files` entry can only produce a regular
+# file, so staging them is the only way to reach this behavior at all.
+#
+# NOT COVERED HERE. The DT_UNKNOWN stat fallback has no coverage: it cannot be
+# provoked on the filesystems CI runs on, all of which report `d_type`. It is
+# documented in std/fs.rue rather than silently assumed.
+
+[section]
+id = "cli.fs_read_dir"
+name = "std.fs directory enumeration"
+description = "read_dir over getdents64 and the deterministic recursive walk, against real directory trees (RUE-1481, ADR-0072)."
+
+# An empty directory lists as empty, and adding two files makes it list exactly
+# two — which is also the assertion that `.` and `..` are filtered out. A naive
+# implementation reports 2 and 4 here.
+[[case]]
+name = "read_dir_empty_then_dot_entries_skipped"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn touch(s: str) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow mk(s)) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    match std.fs.create_dir(borrow mk("hollow")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    let first = match std.fs.read_dir(borrow mk("hollow")) { DR.Ok(d) => d, DR.Err(_e) => { return 62; } };
+    if first.len() != 0 { return 63; }
+    if !first.is_empty() { return 64; }
+
+    if !touch("hollow/one.txt") { return 65; }
+    if !touch("hollow/two.txt") { return 66; }
+
+    let second = match std.fs.read_dir(borrow mk("hollow")) { DR.Ok(d) => d, DR.Err(_e) => { return 67; } };
+    // 2, not 4: `.` and `..` are directory-format artifacts, not entries.
+    if second.len() != 2 { return 68; }
+    if second.is_empty() { return 69; }
+    @dbg(second.len());
+    0
+}
+""" }]
+stdout = "2\n"
+exit_code = 0
+
+# Files and subdirectories mixed, created in an order that is neither sorted nor
+# reverse-sorted, with names of THREE different lengths so a fixed record stride
+# could not survive. Asserts the exact listing: ascending base-name byte order,
+# each entry's kind, and that `path(i)` is the parent joined with the name.
+[[case]]
+name = "read_dir_mixed_files_and_dirs_sorted"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn touch(s: str) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow mk(s)) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn mkdir(s: str) -> bool {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    match std.fs.create_dir(borrow mk(s)) { CR.Ok(_u) => true, CR.Err(_e) => false }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+    let K = std.fs.FileKind;
+
+    if !mkdir("mix") { return 61; }
+    // Deliberately not in name order, and deliberately alternating kinds.
+    if !touch("mix/zebra.md") { return 62; }
+    if !mkdir("mix/b_dir") { return 63; }
+    if !touch("mix/m") { return 64; }
+    if !mkdir("mix/n_directory") { return 65; }
+    if !touch("mix/a.md") { return 66; }
+
+    let listing = match std.fs.read_dir(borrow mk("mix")) { DR.Ok(d) => d, DR.Err(_e) => { return 67; } };
+    if listing.len() != 5 { return 68; }
+
+    let mut i: u64 = 0;
+    while i < listing.len() {
+        print(listing.path(i));
+        print(" ");
+        print(listing.name(i));
+        print(" ");
+        match listing.kind(i) {
+            K.File => print("file"),
+            K.Dir => print("dir"),
+            K.Symlink => print("symlink"),
+            K.Other => print("other"),
+        };
+        // The boolean helpers must agree with `kind`.
+        if listing.is_dir(i) { print(" d"); }
+        if listing.is_file(i) { print(" f"); }
+        print("\\n");
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = """mix/a.md a.md file f
+mix/b_dir b_dir dir d
+mix/m m file f
+mix/n_directory n_directory dir d
+mix/zebra.md zebra.md file f
+"""
+exit_code = 0
+
+# An entry's `path(i)` must be directly usable, not merely printable: open the
+# listed path and read back the bytes written through it. This is the
+# read_dir counterpart of the RUE-995 "a created directory must be USABLE"
+# case — a joined path that stats but cannot be opened would pass every
+# string-shaped assertion above.
+[[case]]
+name = "read_dir_entry_path_is_openable"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    match std.fs.create_dir(borrow mk("openable")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    let msg = "listed-and-opened";
+    let mut out = Buf.new();
+    let mut i: u64 = 0;
+    while i < msg.len() { out.push(msg[i]); i = i + 1; }
+
+    let mut w = match F.create(borrow mk("openable/payload.bin")) { OR.Ok(f) => f, OR.Err(_e) => { return 62; } };
+    match w.write_all(borrow out) { CR.Ok(_u) => {}, CR.Err(_e) => { return 63; } };
+    match w.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 64; } };
+
+    let listing = match std.fs.read_dir(borrow mk("openable")) { DR.Ok(d) => d, DR.Err(_e) => { return 65; } };
+    if listing.len() != 1 { return 66; }
+
+    let found = listing.path(0);
+    let mut r = match F.open(borrow found) { OR.Ok(f) => f, OR.Err(_e) => { return 67; } };
+    let mut inb = Buf.with_capacity(64);
+    let n = match r.read(inout inb) { WR.Ok(v) => v, WR.Err(_e) => { return 68; } };
+    match r.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 69; } };
+
+    if n != msg.len() { return 70; }
+    let mut j: u64 = 0;
+    while j < n {
+        if inb.get_or(j, 0) != msg[j] { return 71; }
+        j = j + 1;
+    }
+    @dbg(n);
+    @intCast(n)
+}
+""" }]
+stdout = "17\n"
+exit_code = 17
+
+# A trailing separator on the listed path must not produce `dir//entry`. Rue has
+# no path type (ADR-0057 §2), so the join is a byte-level decision std.fs makes,
+# and `dir//entry` would still open — it would just make every downstream
+# comparison and output filename subtly wrong.
+[[case]]
+name = "read_dir_trailing_separator_joins_once"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    match std.fs.create_dir(borrow mk("slashy")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+    match F.create(borrow mk("slashy/only.txt")) {
+        OR.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } }; },
+        OR.Err(_e) => { return 63; },
+    };
+
+    let listing = match std.fs.read_dir(borrow mk("slashy/")) { DR.Ok(d) => d, DR.Err(_e) => { return 64; } };
+    if listing.len() != 1 { return 65; }
+    print(listing.path(0));
+    print("\\n");
+    print(listing.name(0));
+    print("\\n");
+    0
+}
+""" }]
+stdout = """slashy/only.txt
+only.txt
+"""
+exit_code = 0
+
+# The recursive walk: a three-level tree, asserted as an exact depth-first
+# PRE-ORDER sequence. Pre-order matters — a directory must appear before its
+# contents — and siblings must be in the same ascending name order `read_dir`
+# gives, so a whole subtree lands contiguously after its directory. The `sub`
+# subtree is deliberately placed between two root-level files, so a breadth-first
+# or append-at-the-end traversal produces a different sequence and fails.
+[[case]]
+name = "walk_nested_tree_is_depth_first_preorder"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn touch(s: str) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow mk(s)) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn mkdir(s: str) -> bool {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    match std.fs.create_dir(borrow mk(s)) { CR.Ok(_u) => true, CR.Err(_e) => false }
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    if !mkdir("content") { return 61; }
+    if !touch("content/zulu.md") { return 62; }
+    if !mkdir("content/sub") { return 63; }
+    if !mkdir("content/sub/inner") { return 64; }
+    if !touch("content/sub/inner/deep.md") { return 65; }
+    if !touch("content/sub/second.md") { return 66; }
+    if !touch("content/alpha.md") { return 67; }
+    // An empty directory in the middle of the tree: it must be emitted, and its
+    // (absent) contents must not disturb what follows.
+    if !mkdir("content/empty") { return 68; }
+
+    let tree = match std.fs.walk(borrow mk("content")) { DR.Ok(d) => d, DR.Err(_e) => { return 69; } };
+    let mut i: u64 = 0;
+    while i < tree.len() {
+        print(tree.path(i));
+        if tree.is_dir(i) { print("/"); }
+        print("\\n");
+        i = i + 1;
+    }
+    @dbg(tree.len());
+    0
+}
+""" }]
+stdout = """content/alpha.md
+content/empty/
+content/sub/
+content/sub/inner/
+content/sub/inner/deep.md
+content/sub/second.md
+content/zulu.md
+7
+"""
+exit_code = 0
+
+# Ordering is independent of CREATION order, which is the property downstream
+# reproducibility actually needs. Two directories get the same five names built
+# in two different orders; the listings must be identical byte for byte. A
+# `read_dir` that returned raw filesystem order would pass a single-directory
+# sorted-look check on some filesystems and fail here on all of them.
+[[case]]
+name = "read_dir_order_is_creation_order_independent"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn touch(borrow p: SB) -> bool {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    match F.create(borrow p) {
+        OR.Ok(f) => match f.close() { CR.Ok(_u) => true, CR.Err(_e) => false },
+        OR.Err(_e) => false,
+    }
+}
+
+fn join(dir: str, name: str) -> SB {
+    let mut p = mk(dir);
+    p.push(47); // '/'
+    p.append_str(borrow name);
+    p
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    match std.fs.create_dir(borrow mk("one")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 51; } };
+    match std.fs.create_dir(borrow mk("two")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 52; } };
+
+    // The same five names, built in two deliberately different orders.
+    if !touch(borrow join("one", "delta.md")) { return 61; }
+    if !touch(borrow join("one", "alpha.md")) { return 61; }
+    if !touch(borrow join("one", "echo.md")) { return 61; }
+    if !touch(borrow join("one", "bravo.md")) { return 61; }
+    if !touch(borrow join("one", "charlie.md")) { return 61; }
+
+    if !touch(borrow join("two", "charlie.md")) { return 62; }
+    if !touch(borrow join("two", "echo.md")) { return 62; }
+    if !touch(borrow join("two", "bravo.md")) { return 62; }
+    if !touch(borrow join("two", "delta.md")) { return 62; }
+    if !touch(borrow join("two", "alpha.md")) { return 62; }
+
+    let a = match std.fs.read_dir(borrow mk("one")) { DR.Ok(d) => d, DR.Err(_e) => { return 63; } };
+    let b = match std.fs.read_dir(borrow mk("two")) { DR.Ok(d) => d, DR.Err(_e) => { return 64; } };
+    if a.len() != 5 { return 65; }
+    if b.len() != 5 { return 66; }
+
+    let mut i: u64 = 0;
+    while i < 5 {
+        let na = a.name(i);
+        let nb = b.name(i);
+        if !SB.equals_borrowed(borrow na, borrow nb) { return 67; }
+        print(na);
+        print("\\n");
+        i = i + 1;
+    }
+
+    // Repeating the same call must also be stable.
+    let again = match std.fs.read_dir(borrow mk("one")) { DR.Ok(d) => d, DR.Err(_e) => { return 68; } };
+    i = 0;
+    while i < 5 {
+        let x = a.name(i);
+        let y = again.name(i);
+        if !SB.equals_borrowed(borrow x, borrow y) { return 69; }
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = """alpha.md
+bravo.md
+charlie.md
+delta.md
+echo.md
+"""
+exit_code = 0
+
+# THE REFILL LOOP. 600 entries against std.fs's 8 KiB getdents64 request needs at
+# least three syscalls, so an implementation that reads one buffer and stops
+# reports a truncated listing. Names are zero-padded so byte order equals numeric
+# order, and every index is checked against its expected name — a listing that is
+# complete but misordered, or ordered but short, both fail. Exit code is not used
+# for the count (600 does not fit an exit status); stdout carries it.
+[[case]]
+name = "read_dir_refill_loop_600_entries"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+// `n` as exactly `width` decimal digits, zero padded, so byte order and numeric
+// order agree.
+fn padded(n: u64, width: u64) -> SB {
+    let mut reversed = SB.new();
+    let mut v = n;
+    let mut c: u64 = 0;
+    while c < width {
+        let d: u8 = @intCast(48 + (v % 10));
+        reversed.push(d);
+        v = v / 10;
+        c = c + 1;
+    }
+    let mut out = SB.new();
+    let mut i = reversed.len();
+    while i > 0 {
+        i = i - 1;
+        out.push(SB.byte_at_borrowed(borrow reversed, i));
+    }
+    out
+}
+
+fn entry_name(i: u64) -> SB {
+    let mut out = mk("entry_");
+    let digits = padded(i, 4);
+    out.append_borrowed(borrow digits);
+    out.append_str(borrow ".txt");
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    let total: u64 = 600;
+    match std.fs.create_dir(borrow mk("many")) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    let mut i: u64 = 0;
+    while i < total {
+        let mut p = mk("many/");
+        let name = entry_name(i);
+        p.append_borrowed(borrow name);
+        match F.create(borrow p) {
+            OR.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } }; },
+            OR.Err(_e) => { return 63; },
+        };
+        i = i + 1;
+    }
+
+    let listing = match std.fs.read_dir(borrow mk("many")) { DR.Ok(d) => d, DR.Err(_e) => { return 64; } };
+    if listing.len() != total { return 65; }
+
+    let mut k: u64 = 0;
+    while k < total {
+        if !listing.is_file(k) { return 66; }
+        let want = entry_name(k);
+        let got = listing.name(k);
+        if !SB.equals_borrowed(borrow got, borrow want) { return 67; }
+        k = k + 1;
+    }
+
+    // A walk of the same directory must see exactly the same flat listing.
+    let tree = match std.fs.walk(borrow mk("many")) { DR.Ok(d) => d, DR.Err(_e) => { return 68; } };
+    if tree.len() != total { return 69; }
+
+    @dbg(listing.len());
+    0
+}
+""" }]
+stdout = "600\n"
+exit_code = 0
+
+# Error paths. A missing directory is the normalized `NotFound`, and a path that
+# exists but is a regular file is an error rather than a garbage listing. `walk`
+# propagates the same error from its root rather than returning an empty tree.
+#
+# This pins the BEHAVIOR, not std.fs's O_DIRECTORY open flag: the dirent syscall
+# rejects a non-directory fd with ENOTDIR by itself, so dropping the flag would
+# produce the same `FileError` here. The constant is pinned by
+# `read_dir_through_a_directory_symlink` instead — see `_o_directory` in
+# std/fs.rue.
+[[case]]
+name = "read_dir_missing_and_not_a_directory_err"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let OR = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    match std.fs.read_dir(borrow mk("no_such_directory")) {
+        DR.Ok(_d) => { return 61; },
+        DR.Err(e) => match e { FE.NotFound => {}, _ => { return 62; } },
+    };
+
+    match std.fs.walk(borrow mk("no_such_directory")) {
+        DR.Ok(_d) => { return 63; },
+        DR.Err(e) => match e { FE.NotFound => {}, _ => { return 64; } },
+    };
+
+    match F.create(borrow mk("plain.txt")) {
+        OR.Ok(f) => { match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 65; } }; },
+        OR.Err(_e) => { return 66; },
+    };
+
+    // ENOTDIR is outside the named FileError set, so it arrives as `Other`; what
+    // matters is that it is an error at all and not an empty or bogus listing.
+    match std.fs.read_dir(borrow mk("plain.txt")) {
+        DR.Ok(_d) => { return 67; },
+        DR.Err(_e) => {},
+    };
+
+    @dbg(0);
+    0
+}
+""" }]
+stdout = "0\n"
+exit_code = 0
+
+# `read_dir` on a SYMLINK to a directory follows it and lists the target, the
+# same way `File.open` follows a symlink to a file. Only entries WITHIN a listing
+# are left unresolved.
+#
+# This is also what pins std.fs's `_o_directory` constant. The plausible way to
+# get that constant wrong is to transcribe the neighbouring "do not follow
+# symlinks" flag — Linux O_NOFOLLOW 0o400000 sits next to O_DIRECTORY 0o200000,
+# and Darwin O_SYMLINK 0x200000 next to O_DIRECTORY 0x100000 — which would turn
+# this open into ELOOP. A ZEROED constant still passes, deliberately: with no
+# flag the dirent syscall rejects a non-directory fd on its own, so a zeroed
+# O_DIRECTORY changes nothing observable and there is nothing honest to assert
+# about it.
+[[case]]
+name = "read_dir_through_a_directory_symlink"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+symlinks = [{ link = "dir_link", target = "real_dir" }]
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+
+    // Listing THROUGH the symlink must succeed and show the target's contents.
+    let listing = match std.fs.read_dir(borrow mk("dir_link")) { DR.Ok(d) => d, DR.Err(_e) => { return 61; } };
+    let mut i: u64 = 0;
+    while i < listing.len() {
+        print(listing.path(i));
+        if listing.is_dir(i) { print("/"); }
+        print("\\n");
+        i = i + 1;
+    }
+
+    // And so must a walk rooted at it, including into the real subdirectory.
+    let tree = match std.fs.walk(borrow mk("dir_link")) { DR.Ok(d) => d, DR.Err(_e) => { return 62; } };
+    @dbg(tree.len());
+    0
+}
+""" },
+    { path = "real_dir/inside.md", source = "" },
+    { path = "real_dir/nested/deep.md", source = "" },
+]
+stdout = """dir_link/inside.md
+dir_link/nested/
+3
+"""
+exit_code = 0
+
+# A symlink ENTRY is reported as `FileKind.Symlink` and is never descended into.
+# The three staged links are the three shapes that break a naive walk:
+#
+#   dir_link  -> sub    a symlink to a real directory INSIDE the tree; descending
+#                       it emits the subtree twice
+#   up_link   -> ..     descending it leaves the tree entirely and re-enters it,
+#                       so the walk never terminates
+#   self_link -> self_link   a self-referential dangling link
+#
+# A regression that followed symlinks makes `walk` non-terminating on a cyclic
+# content tree, which is why this is pinned as an exact listing rather than a
+# count: the case would hang or fail the sequence, not merely disagree.
+[[case]]
+name = "walk_does_not_descend_into_symlinks"
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+symlinks = [
+    { link = "tree/dir_link", target = "sub" },
+    { link = "tree/up_link", target = ".." },
+    { link = "tree/self_link", target = "self_link" },
+]
+files = [
+    { path = "main.rue", source = """
+const std = @import("std");
+const SB = std.strbuf.StrBuf;
+
+fn mk(s: str) -> SB {
+    let mut out = SB.new();
+    out.append_str(borrow s);
+    out
+}
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let DR = std.result.Result(std.fs.DirEntries, FE);
+    let K = std.fs.FileKind;
+
+    let tree = match std.fs.walk(borrow mk("tree")) { DR.Ok(d) => d, DR.Err(_e) => { return 61; } };
+    let mut i: u64 = 0;
+    while i < tree.len() {
+        print(tree.path(i));
+        print(" ");
+        match tree.kind(i) {
+            K.File => print("file"),
+            K.Dir => print("dir"),
+            K.Symlink => print("symlink"),
+            K.Other => print("other"),
+        };
+        // A symlink is neither a file nor a directory, whichever it points at.
+        if tree.is_dir(i) { print(" is_dir"); }
+        if tree.is_file(i) { print(" is_file"); }
+        print("\\n");
+        i = i + 1;
+    }
+    @dbg(tree.len());
+    0
+}
+""" },
+    { path = "tree/a.md", source = "" },
+    { path = "tree/sub/inner.md", source = "" },
+]
+stdout = """tree/a.md file is_file
+tree/dir_link symlink
+tree/self_link symlink
+tree/sub dir is_dir
+tree/sub/inner.md file is_file
+tree/up_link symlink
+6
+"""
+exit_code = 0

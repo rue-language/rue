@@ -244,6 +244,65 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
+    // RUE-1481: directory enumeration (`read_dir`/`walk`) reaches the same
+    // `@byte_copy` gap as the rest of the std.fs group — every entry's path is
+    // pooled through StrBuf, which copies bytes in bulk. These cases also run on
+    // aarch64-macos, unlike the v1 group above, because the Darwin dirent path
+    // is exercised rather than merely documented; their scope matches.
+    //
+    // The two symlink cases are absent on purpose, not overlooked: they stage
+    // their directory trees as extra `files` entries, so the harness classifies
+    // them ineligible ("multiple source files") and never reaches a model gap to
+    // register. Adding them would fail this registry, which rejects an entry
+    // that does not correspond to an observed gap.
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_empty_then_dot_entries_skipped",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_entry_path_is_openable",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_missing_and_not_a_directory_err",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_mixed_files_and_dirs_sorted",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_order_is_creation_order_independent",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_refill_loop_600_entries",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "read_dir_trailing_separator_joins_once",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_read_dir",
+        "walk_nested_tree_is_depth_first_preorder",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "aarch64-macos", "x86-64-linux"],
+    ),
     // RUE-682: only the std.hash cases that route bytes through StrBuf or
     // ArrayBuf(u8) hit the `@byte_copy` gap. The three that hash `str` views
     // directly — including `hash_known_answer_vectors`, which carries the

@@ -18,9 +18,11 @@
 // `fs.create_dir_all`, `fs.remove_dir` via mkdirat/unlinkat+AT_REMOVEDIR).
 // `create_dir_all` (RUE-995) is pure composition over `create_dir`: it scans the
 // path for `/` bytes and creates each prefix, because Rue has no path type yet.
-// Reading directory
-// entries (getdents64) remains DEFERRED — the largest remaining chunk — as
-// does buffering and stdin/stdout unification (still out of ADR-0057 scope).
+//
+// DIRECTORY ENUMERATION (RUE-1481, ADR-0072 Phase 2a): `fs.read_dir` lists one
+// directory over getdents64 and `fs.walk` scans a whole tree in deterministic
+// order. See the "Directory enumeration" section at the end of this file.
+// Buffering and stdin/stdout unification remain deferred (out of ADR-0057 scope).
 //
 // PER-TARGET STAT LAYOUT: `stat` is the fiddliest v1 piece because the kernel's
 // `struct stat` byte layout differs per OS AND per arch. This module decodes
@@ -30,6 +32,7 @@
 // the DOCUMENTED, NOT-YET-CI-VERIFIED follow-up (this host is Linux). New v1
 // CLI cases are therefore `only_on` the two Linux targets, mirroring how v0's
 // error-detection cases were Linux-scoped until a macOS device could confirm.
+// Darwin stat decoding is in fact broken today — the open issue is RUE-1487.
 //
 // PATHS are byte-string `StrBuf`s; the syscall boundary copies the bytes into a
 // NUL-terminated buffer and never exposes that terminator to the caller.
@@ -108,6 +111,14 @@ pub struct Metadata {
     // S_IFMT=0o170000=61440, S_IFDIR=0o040000=16384.
     fn is_dir(borrow self) -> bool {
         (self.mode & 61440) == 16384
+    }
+
+    // True if this is a symbolic link: (st_mode & S_IFMT) == S_IFLNK.
+    // S_IFMT=0o170000=61440, S_IFLNK=0o120000=40960. Only ever true for a stat
+    // taken with AT_SYMLINK_NOFOLLOW — the path-following `fs.metadata` reports
+    // the target's type, never the link's.
+    fn is_symlink(borrow self) -> bool {
+        (self.mode & 61440) == 40960
     }
 }
 
@@ -306,6 +317,32 @@ fn _sys_mkdirat() -> u64 {
     }
 }
 
+// getdents64(2) on Linux — read a packed buffer of `linux_dirent64` records
+// from a directory fd. Linux: 217 (x86-64), 61 (aarch64, asm-generic).
+//
+// macOS has NO getdents64. The Darwin equivalent is the raw BSD trap
+// `getdirentries64` (344), whose record layout also differs (see the dirent
+// layout table below) and which takes a fourth `off_t *position` argument.
+// Unlike the other Darwin rows in this file, this one is EXERCISED: the CLI
+// cases for `read_dir`/`walk` run on aarch64-macos as well as the two Linux
+// targets.
+fn _sys_getdents() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 217,
+                Os.Macos => 344,
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 61,
+                Os.Macos => 344,
+            }
+        },
+    }
+}
+
 // AT_FDCWD as a u64 bit pattern. Linux uses -100, macOS uses -2, so this is
 // per-OS data, not a shared constant.
 fn _at_fdcwd() -> u64 {
@@ -345,6 +382,58 @@ fn _o_append() -> u64 {
     }
 }
 
+// O_DIRECTORY: fail the open with ENOTDIR unless the path names a directory.
+//
+// PER-ARCH, unlike every other flag in this module. The `O_*` block is the one
+// place Linux lets an architecture override the asm-generic values, and arm64
+// (inheriting arm's ABI) does exactly that in `arch/arm64/include/uapi/asm/
+// fcntl.h`, which defines O_DIRECTORY/O_NOFOLLOW/O_DIRECT/O_LARGEFILE before
+// including the generic header. The result is that x86-64 and aarch64 SWAP two
+// of them:
+//
+//   flag         x86-64 Linux        aarch64 Linux
+//   O_DIRECTORY  0o200000 = 65536    0o40000  = 16384
+//   O_DIRECT     0o40000  = 16384    0o200000 = 65536
+//   O_NOFOLLOW   0o400000 = 262144   0o100000 = 32768
+//
+// So an OS-only dispatch does not merely pass a useless flag on aarch64 — it
+// passes O_DIRECT, and opening a directory with O_DIRECT fails EINVAL on the
+// filesystems CI runs on. That is the shape of the bug this table replaced.
+// macOS uses the BSD 0x00100000 on both arches.
+//
+// The other flag constants here were audited against the same failure mode and
+// are genuinely arch-independent: O_RDONLY/O_WRONLY/O_CREAT/O_TRUNC/O_APPEND
+// come from asm-generic and arm64 does not override them, and the `AT_*` values
+// live in `include/uapi/linux/fcntl.h`, which has no per-arch variant at all.
+//
+// This flag does NOT create the "read_dir on a regular file is an error"
+// behavior — the dirent syscall rejects a non-directory fd with ENOTDIR on its
+// own, so the caller sees the same `FileError` either way. What it buys is WHERE
+// the failure happens: at the open, before a descriptor for the wrong kind of
+// object is ever held. Since neither the errno nor the observable result
+// changes, dropping the flag entirely would be invisible to a test, so `read_dir`
+// on a regular file pins the behavior and not this constant.
+//
+// The constant itself is pinned by `read_dir_through_a_directory_symlink`, which
+// is what caught the swap above: a wrong value here fails a listing THROUGH a
+// symlinked directory while leaving every error path looking correct.
+fn _o_directory() -> u64 {
+    match @target_arch() {
+        Arch.X86_64 => {
+            match @target_os() {
+                Os.Linux => 65536,   // 0o200000
+                Os.Macos => 1048576, // 0x00100000
+            }
+        },
+        Arch.Aarch64 => {
+            match @target_os() {
+                Os.Linux => 16384,   // 0o40000 (arm64 override)
+                Os.Macos => 1048576, // 0x00100000
+            }
+        },
+    }
+}
+
 // Default mode for newly created files: 0o644.
 fn _create_mode() -> u64 { 420 }
 
@@ -358,6 +447,20 @@ fn _at_removedir() -> u64 {
     match @target_os() {
         Os.Linux => 512,
         Os.Macos => 128,
+    }
+}
+
+// AT_SYMLINK_NOFOLLOW: the *at flag that stats the LINK rather than its target.
+// Linux 0x100=256; macOS 0x0020=32 (DOCUMENTED, not CI-verified). Genuinely
+// arch-independent on Linux, unlike the `O_*` flags: the `AT_*` values live in
+// `include/uapi/linux/fcntl.h`, which has no per-arch variant to override them
+// (see `_o_directory` for the flags that do). Used only by the
+// directory-enumeration DT_UNKNOWN fallback, which must reproduce `d_type`'s own
+// no-follow semantics.
+fn _at_symlink_nofollow() -> u64 {
+    match @target_os() {
+        Os.Linux => 256,
+        Os.Macos => 32,
     }
 }
 
@@ -804,9 +907,11 @@ drop fn File(self) {
 // tables are unchanged.
 // ---------------------------------------------------------------------------
 
-// Size + type metadata for a path, via newfstatat(AT_FDCWD, path, .., 0). This
-// follows symlinks (flags 0). See `Metadata` for the exposed fields.
-pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError) {
+// newfstatat(AT_FDCWD, path, .., flags) with the caller choosing the *at flags.
+// `metadata` passes 0 (follow symlinks); the directory-enumeration DT_UNKNOWN
+// fallback passes AT_SYMLINK_NOFOLLOW so the kind it derives matches what
+// `d_type` would have reported.
+fn _metadata_at(borrow path: strbuf.StrBuf, flags: u64) -> result.Result(Metadata, FileError) {
     let R = result.Result(Metadata, FileError);
     let cbuf = _path_to_cbuf(borrow path);
     let paddr: u64 = checked { @ptr_to_int(cbuf) };
@@ -818,8 +923,7 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
         @panic("out of memory");
     }
     let saddr: u64 = checked { @ptr_to_int(sbuf) };
-    let no_flags: u64 = 0; // follow symlinks (AT_SYMLINK_NOFOLLOW unset)
-    let ret: i64 = checked { @syscall(_sys_newfstatat(), _at_fdcwd(), paddr, saddr, no_flags) };
+    let ret: i64 = checked { @syscall(_sys_newfstatat(), _at_fdcwd(), paddr, saddr, flags) };
     checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         checked { @free(sbuf, sz, 8); };
@@ -828,6 +932,13 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
     let md = _decode_stat(sbuf);
     checked { @free(sbuf, sz, 8); };
     R.Ok(md)
+}
+
+// Size + type metadata for a path, via newfstatat(AT_FDCWD, path, .., 0). This
+// follows symlinks (flags 0). See `Metadata` for the exposed fields.
+pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError) {
+    let no_flags: u64 = 0; // follow symlinks (AT_SYMLINK_NOFOLLOW unset)
+    _metadata_at(borrow path, no_flags)
 }
 
 // Rename (move) `from` to `to`: renameat(AT_FDCWD, from, AT_FDCWD, to). An
@@ -1015,5 +1126,732 @@ pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
         R.Err(_normalize_errno(0 - ret))
     } else {
         R.Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Directory enumeration (RUE-1481, ADR-0072 Phase 2a / Decision 6).
+//
+// `read_dir(path)` lists one directory; `walk(root)` lists a whole tree. Both
+// are pure Rue over `@syscall`, like the rest of this module — no runtime
+// helper, no benchmark-private shim.
+//
+// THE KERNEL BUFFER. getdents64 fills a caller-supplied buffer with a PACKED
+// run of VARIABLE-LENGTH records and returns the number of bytes written; a
+// return of 0 means the directory is exhausted. Any positive return short of
+// the buffer size is normal, not an end marker, so the read is a refill loop
+// that stops only at 0. Records never straddle a returned buffer, so each
+// buffer is scanned to completion before the next syscall. The stride is the
+// record's own `d_reclen` field — records are padded for alignment and the name
+// length varies, so a fixed stride would desynchronize the scan immediately.
+//
+//   Linux `struct linux_dirent64` (uapi/linux/dirent.h), both arches:
+//     d_ino    u64  @ 0     d_off     s64 @ 8
+//     d_reclen u16  @ 16    d_type    u8  @ 18   d_name NUL-terminated @ 19
+//   macOS `struct dirent` (_DARWIN_FEATURE_64_BIT_INODE, sys/dirent.h):
+//     d_ino    u64  @ 0     d_seekoff u64 @ 8
+//     d_reclen u16  @ 16    d_namlen  u16 @ 18   d_type u8 @ 20
+//     d_name   NUL-terminated @ 21
+//
+// `d_reclen` sits at offset 16 on both, so only the type and name offsets are
+// per-OS. The name is read as NUL-terminated but is also bounded by the record
+// end, so a malformed record cannot walk off the buffer.
+//
+// `.` and `..` are skipped: they are an artifact of the directory format, not
+// content, and a walk that followed `..` would not terminate.
+//
+// DT_UNKNOWN. `d_type` is an optimization the filesystem MAY decline: XFS
+// without `ftype`, some network and overlay filesystems, and older kernels all
+// report DT_UNKNOWN (0). Believing it would silently mis-type entries and make
+// `walk` skip real subtrees, so this module pays for the honest answer instead:
+// an entry whose `d_type` is DT_UNKNOWN is resolved with a
+// newfstatat(AT_SYMLINK_NOFOLLOW) on its path. AT_SYMLINK_NOFOLLOW is what makes
+// the fallback agree with `d_type`, which describes the entry itself and never a
+// symlink's target. If that stat also fails — the entry was removed between the
+// getdents and the stat, most plausibly — the entry is reported as
+// `FileKind.Other` rather than failing the whole listing; `Other` is the "not a
+// file, not a directory, do not descend" answer, which is the safe reading of an
+// entry that no longer exists.
+//
+// KNOWN LIMIT OF THAT FALLBACK ON macOS. Darwin `stat` decoding is broken here —
+// the open issue is RUE-1487, and the stat-layout note at the top of this file
+// has the details — so a DT_UNKNOWN entry on macOS degrades to `FileKind.Other`
+// rather than resolving. APFS and HFS+ both populate `d_type`, so the fallback
+// is unreachable there in practice; the Linux path is unaffected.
+//
+// ORDERING IS PART OF THE CONTRACT, not a nicety (ADR-0072 Decision 6): the
+// kernel returns entries in filesystem order, which varies with creation history
+// and filesystem, so downstream output would not be reproducible without a sort
+// here. Entries are ordered by their base name's BYTES, ascending — a
+// byte-string order, consistent with ADR-0035's byte-string paths, with no
+// locale or Unicode collation involved.
+//
+// `std.sort` cannot be used for it. Its routines order by the natural `<` on the
+// element type and read elements by copy, which the container gates to
+// trivially-droppable types (E0711/RUE-651); a directory entry's name is a
+// variable-length byte string that answers to neither. The order is therefore
+// computed here as an explicit bottom-up merge sort over an index permutation
+// with a byte-lexicographic comparator — merge sort rather than the insertion
+// sort a small listing would tolerate, because a content directory can hold
+// thousands of entries and quadratic behaviour there is a real cost.
+// ---------------------------------------------------------------------------
+
+// Per-OS `struct dirent` field offsets. `d_reclen` is at 16 on both, so only
+// these two rows differ. See the layout table above.
+fn _dirent_type_offset() -> u64 {
+    match @target_os() {
+        Os.Linux => 18,
+        Os.Macos => 20,
+    }
+}
+
+fn _dirent_name_offset() -> u64 {
+    match @target_os() {
+        Os.Linux => 19,
+        Os.Macos => 21,
+    }
+}
+
+// Bytes requested per getdents64 call. Large enough that an ordinary directory
+// is read in one or two syscalls, small enough to stay a modest transient
+// allocation. The refill loop is correct at any size; this is only a cost knob.
+fn _dirent_buf_size() -> u64 { 8192 }
+
+// Bytes of scratch the dirent syscall needs for its own position state: 8 on
+// Darwin, whose `getdirentries64` writes the resumed offset through an
+// `off_t *position` fourth argument, and 0 on Linux, whose `getdents64` takes
+// three arguments and ignores the extra register.
+//
+// A zero size is a guard, not a hint: both helpers below return before touching
+// the allocator, so a Linux `read_dir` costs one comparison rather than an
+// allocate, an 8-byte zeroing loop, and a free for an argument its kernel never
+// reads. `read_dir` is the inner call of a whole-tree content scan, which is the
+// hot path this module exists to serve, so the Darwin-only cost stays on Darwin
+// whether or not the target match folds.
+fn _dirent_position_size() -> u64 {
+    match @target_os() {
+        Os.Linux => 0,
+        Os.Macos => 8,
+    }
+}
+
+// The position slot described above: a zeroed 8-byte block on Darwin, the null
+// pointer on Linux. `getdirentries64` only writes through this pointer, but the
+// block is zeroed anyway so the syscall never sees uninitialized scratch.
+fn _alloc_dirent_position() -> ptr mut u8 {
+    let size = _dirent_position_size();
+    if size == 0 {
+        let zero: u64 = 0;
+        return checked { @int_to_ptr(zero) };
+    }
+    let slot: ptr mut u8 = checked { @alloc(size, 8) };
+    if checked { @ptr_to_int(slot) } == 0 {
+        @panic("out of memory");
+    }
+    let mut i: u64 = 0;
+    while i < size {
+        checked { @ptr_write(@ptr_offset(slot, i), 0); };
+        i += 1;
+    }
+    slot
+}
+
+// Release the position slot. Returns before reaching `@free` where the slot was
+// never allocated, so Linux makes no allocator call at all rather than relying
+// on `@free(null, 0, ..)` being a runtime no-op.
+fn _free_dirent_position(position: ptr mut u8) {
+    let size = _dirent_position_size();
+    if size == 0 {
+        return;
+    }
+    checked { @free(position, size, 8); };
+}
+
+// `d_type` values (identical on Linux and macOS).
+fn _dt_unknown() -> u8 { 0 }
+fn _dt_dir() -> u8 { 4 }
+fn _dt_reg() -> u8 { 8 }
+fn _dt_lnk() -> u8 { 10 }
+
+// What a directory entry is. `Symlink` is the link itself (entries are never
+// resolved through their targets), and `Other` covers sockets, FIFOs, devices,
+// and an entry whose type could not be determined at all.
+pub enum FileKind {
+    File,
+    Dir,
+    Symlink,
+    Other,
+}
+
+// `FileKind` as a `u8`, so the per-entry kind can live in an `ArrayBuf(u8)`
+// alongside the pooled names (see `DirEntries`). These codes are an internal
+// storage detail and are never exposed; `DirEntries.kind` decodes them.
+fn _KIND_FILE() -> u8 { 0 }
+fn _KIND_DIR() -> u8 { 1 }
+fn _KIND_SYMLINK() -> u8 { 2 }
+fn _KIND_OTHER() -> u8 { 3 }
+
+fn _kind_of_code(code: u8) -> FileKind {
+    if code == _KIND_DIR() {
+        FileKind.Dir
+    } else if code == _KIND_SYMLINK() {
+        FileKind.Symlink
+    } else if code == _KIND_OTHER() {
+        FileKind.Other
+    } else {
+        FileKind.File
+    }
+}
+
+// Resolve an entry's kind from its `d_type`, falling back to a no-follow stat of
+// `path` when the filesystem reported DT_UNKNOWN. See the DT_UNKNOWN note above
+// for why the fallback exists and why a failed fallback is `Other`.
+fn _kind_for(dtype: u8, borrow path: strbuf.StrBuf) -> u8 {
+    if dtype == _dt_dir() {
+        return _KIND_DIR();
+    }
+    if dtype == _dt_reg() {
+        return _KIND_FILE();
+    }
+    if dtype == _dt_lnk() {
+        return _KIND_SYMLINK();
+    }
+    if dtype != _dt_unknown() {
+        return _KIND_OTHER();
+    }
+    let MR = result.Result(Metadata, FileError);
+    match _metadata_at(borrow path, _at_symlink_nofollow()) {
+        MR.Ok(md) => {
+            if md.is_dir() {
+                _KIND_DIR()
+            } else if md.is_file() {
+                _KIND_FILE()
+            } else if md.is_symlink() {
+                _KIND_SYMLINK()
+            } else {
+                _KIND_OTHER()
+            }
+        },
+        MR.Err(_e) => _KIND_OTHER(),
+    }
+}
+
+// A directory listing: the result of `read_dir` (one directory) or `walk` (a
+// whole tree). Entries are in a deterministic order — see the ordering note
+// above — and never include `.` or `..`.
+//
+//     let DR = std.result.Result(std.fs.DirEntries, std.fs.FileError);
+//     let listing = match std.fs.read_dir(borrow dir) { DR.Ok(d) => d, ... };
+//     let mut i: u64 = 0;
+//     while i < listing.len() {
+//         let p = listing.path(i);   // "content/post.md" — ready for File.open
+//         let n = listing.name(i);   // "post.md"
+//         if listing.is_dir(i) { ... }
+//         i += 1;
+//     }
+//
+// STORAGE. A listing needs INDEXED access to its entries — `path(i)` and
+// `name(i)` at an arbitrary `i`, repeatedly, without consuming the listing — and
+// that is exactly what an `ArrayBuf(StrBuf)` cannot give: its by-copy reads
+// (`get`/`get_or`) are gated for drop-glue element types, because the copy would
+// alias the element's owned buffer (E0711, RUE-651). Storing and moving such
+// elements is fine, which is why `walk` can keep its pending stack in an
+// `ArrayBuf(StrBuf)` it only ever pushes to and pops from.
+//
+// So this uses the pooled layout `std.strmap` and `examples/ruelex/interner.rue`
+// already use for the same reason: every entry's PATH is concatenated into one
+// `paths: StrBuf`, with parallel u64 arrays recording where each one starts and
+// how long it is. `name_offs` holds the offset of the base name WITHIN its path,
+// so `path(i)` and `name(i)` are both slices of the same pooled bytes and
+// neither costs a second copy of the parent prefix.
+pub struct DirEntries {
+    // Every entry's full path, concatenated.
+    paths: strbuf.StrBuf,
+    // Per entry: start byte in `paths`, byte length, offset of the base name
+    // within the path, and the `_KIND_*` code.
+    offs: arraybuf.ArrayBuf(u64),
+    lens: arraybuf.ArrayBuf(u64),
+    name_offs: arraybuf.ArrayBuf(u64),
+    kinds: arraybuf.ArrayBuf(u8),
+
+    fn new() -> Self {
+        let U64s = arraybuf.ArrayBuf(u64);
+        let U8s = arraybuf.ArrayBuf(u8);
+        Self {
+            paths: strbuf.StrBuf.new(),
+            offs: U64s.new(),
+            lens: U64s.new(),
+            name_offs: U64s.new(),
+            kinds: U8s.new(),
+        }
+    }
+
+    // Number of entries.
+    fn len(borrow self) -> u64 {
+        self.offs.len()
+    }
+
+    fn is_empty(borrow self) -> bool {
+        self.offs.len() == 0
+    }
+
+    // Entry `i`'s path, as an owned byte string that can be handed straight to
+    // `File.open` / `fs.metadata`. For `read_dir` this is the listed directory
+    // joined with the entry's name; for `walk` it is the walk root joined with
+    // every component down to the entry. Traps on an out-of-range index.
+    fn path(borrow self, i: u64) -> strbuf.StrBuf {
+        if i >= self.offs.len() {
+            @panic("index out of bounds");
+        }
+        self.paths.byte_range(self.offs.get_or(i, 0), self.lens.get_or(i, 0))
+    }
+
+    // Entry `i`'s base name — the final path component, with no parent prefix.
+    // Traps on an out-of-range index.
+    fn name(borrow self, i: u64) -> strbuf.StrBuf {
+        if i >= self.offs.len() {
+            @panic("index out of bounds");
+        }
+        let name_off = self.name_offs.get_or(i, 0);
+        self.paths.byte_range(
+            self.offs.get_or(i, 0) + name_off,
+            self.lens.get_or(i, 0) - name_off,
+        )
+    }
+
+    // Entry `i`'s kind. Traps on an out-of-range index.
+    fn kind(borrow self, i: u64) -> FileKind {
+        if i >= self.offs.len() {
+            @panic("index out of bounds");
+        }
+        _kind_of_code(self.kinds.get_or(i, 0))
+    }
+
+    // Whether entry `i` is a directory. False for a symlink TO a directory:
+    // entries describe themselves, never their targets.
+    fn is_dir(borrow self, i: u64) -> bool {
+        if i >= self.offs.len() {
+            @panic("index out of bounds");
+        }
+        self.kinds.get_or(i, 0) == _KIND_DIR()
+    }
+
+    // Whether entry `i` is a regular file.
+    fn is_file(borrow self, i: u64) -> bool {
+        if i >= self.offs.len() {
+            @panic("index out of bounds");
+        }
+        self.kinds.get_or(i, 0) == _KIND_FILE()
+    }
+
+    // Append one entry. `full` is its complete path and `name_begin` the offset
+    // of the base name within it. Internal: listings are built here, not by
+    // callers.
+    fn _push(inout self, borrow full: strbuf.StrBuf, name_begin: u64, kind: u8) {
+        let start = self.paths.len();
+        self.paths.append_borrowed(borrow full);
+        self.offs.push(start);
+        self.lens.push(full.len());
+        self.name_offs.push(name_begin);
+        self.kinds.push(kind);
+    }
+}
+
+// Byte `k` of entry `i`'s base name, or 0 past its end (callers stay in range).
+fn _entry_name_byte(borrow entries: DirEntries, i: u64, k: u64) -> u8 {
+    let O = option.Option(u8);
+    let start = entries.offs.get_or(i, 0) + entries.name_offs.get_or(i, 0);
+    match entries.paths.byte_at(start + k) {
+        O.Some(b) => b,
+        O.None => 0,
+    }
+}
+
+fn _entry_name_len(borrow entries: DirEntries, i: u64) -> u64 {
+    entries.lens.get_or(i, 0) - entries.name_offs.get_or(i, 0)
+}
+
+// Byte-lexicographic "entry `a`'s name sorts before entry `b`'s". A prefix sorts
+// before the name that extends it, which is ordinary byte order.
+fn _name_before(borrow entries: DirEntries, a: u64, b: u64) -> bool {
+    let la = _entry_name_len(borrow entries, a);
+    let lb = _entry_name_len(borrow entries, b);
+    let shared = if la < lb { la } else { lb };
+    let mut k: u64 = 0;
+    while k < shared {
+        let x = _entry_name_byte(borrow entries, a, k);
+        let y = _entry_name_byte(borrow entries, b, k);
+        if x != y {
+            return x < y;
+        }
+        k += 1;
+    }
+    la < lb
+}
+
+// The permutation that puts `entries` in ascending base-name order, as a
+// bottom-up merge sort over indices. Bottom-up because it needs no recursion,
+// and O(n log n) because content directories are not always small. Stable,
+// though names within one directory are unique so stability is not load-bearing.
+fn _sorted_order(borrow entries: DirEntries) -> arraybuf.ArrayBuf(u64) {
+    let U64s = arraybuf.ArrayBuf(u64);
+    let n = entries.offs.len();
+    let mut order = U64s.with_capacity(n);
+    let mut i: u64 = 0;
+    while i < n {
+        order.push(i);
+        i += 1;
+    }
+    if n < 2 {
+        return order;
+    }
+    let mut scratch = U64s.with_capacity(n);
+    i = 0;
+    while i < n {
+        scratch.push(0);
+        i += 1;
+    }
+
+    let mut width: u64 = 1;
+    while width < n {
+        let mut lo: u64 = 0;
+        while lo < n {
+            let mid = if lo + width < n { lo + width } else { n };
+            let hi = if mid + width < n { mid + width } else { n };
+            let mut a = lo;
+            let mut b = mid;
+            let mut out = lo;
+            while out < hi {
+                let take_a = if a >= mid {
+                    false
+                } else if b >= hi {
+                    true
+                } else {
+                    // `!(b before a)` rather than `a before b`, so equal keys
+                    // keep their relative order (stability).
+                    !_name_before(borrow entries, order.get_or(b, 0), order.get_or(a, 0))
+                };
+                if take_a {
+                    scratch.set(out, order.get_or(a, 0));
+                    a += 1;
+                } else {
+                    scratch.set(out, order.get_or(b, 0));
+                    b += 1;
+                }
+                out += 1;
+            }
+            lo = hi;
+        }
+        let mut k: u64 = 0;
+        while k < n {
+            order.set(k, scratch.get_or(k, 0));
+            k += 1;
+        }
+        width *= 2;
+    }
+    order
+}
+
+// Rebuild a listing in `order`. Copying into a fresh value rather than permuting
+// in place keeps the pooled bytes contiguous in listing order and avoids an
+// in-place permutation of five parallel structures.
+fn _reorder(borrow entries: DirEntries, borrow order: arraybuf.ArrayBuf(u64)) -> DirEntries {
+    let mut out = DirEntries.new();
+    let n = order.len();
+    let mut k: u64 = 0;
+    while k < n {
+        let i = order.get_or(k, 0);
+        let piece = entries.paths.byte_range(entries.offs.get_or(i, 0), entries.lens.get_or(i, 0));
+        out._push(borrow piece, entries.name_offs.get_or(i, 0), entries.kinds.get_or(i, 0));
+        k += 1;
+    }
+    out
+}
+
+// `parent` joined with the `name_len` bytes at `buf[name_start..]`. One
+// separator is inserted unless `parent` is empty or already ends with one, so
+// `read_dir("a")` and `read_dir("a/")` both produce `a/x`.
+fn _join_entry_path(
+    borrow parent: strbuf.StrBuf,
+    buf: ptr mut u8,
+    name_start: u64,
+    name_len: u64,
+) -> strbuf.StrBuf {
+    let O = option.Option(u8);
+    let mut out = strbuf.StrBuf.with_capacity(parent.len() + 1 + name_len);
+    out.append_borrowed(borrow parent);
+    if parent.len() > 0 {
+        let last = match parent.byte_at(parent.len() - 1) {
+            O.Some(b) => b,
+            O.None => 0,
+        };
+        if last != _path_separator() {
+            out.push(_path_separator());
+        }
+    }
+    let mut i: u64 = 0;
+    while i < name_len {
+        let b = checked { @ptr_read(@ptr_offset(buf, name_start + i)) };
+        out.push(b);
+        i += 1;
+    }
+    out
+}
+
+// Whether the `len` bytes at `buf[start..]` are `.` or `..`.
+fn _is_dot_entry(buf: ptr mut u8, start: u64, len: u64) -> bool {
+    let dot: u8 = 46; // '.'
+    if len == 1 {
+        let b0 = checked { @ptr_read(@ptr_offset(buf, start)) };
+        return b0 == dot;
+    }
+    if len == 2 {
+        let b0 = checked { @ptr_read(@ptr_offset(buf, start)) };
+        let b1 = checked { @ptr_read(@ptr_offset(buf, start + 1)) };
+        return b0 == dot && b1 == dot;
+    }
+    false
+}
+
+// Scan one filled getdents64 buffer — `n` bytes of packed records — appending
+// every entry but `.`/`..` to `out`. Walks by `d_reclen`; a zero or
+// out-of-range `d_reclen` stops the scan rather than spinning or reading past
+// the returned bytes.
+//
+// EVERY read is bounded by `n`, including the fixed header. A record's own
+// `d_reclen` cannot be trusted to bound the header that contains it, so the
+// header is bounded first: `name_off` (19 or 21) exceeds every fixed field
+// offset — d_reclen's two bytes at 16..18 and d_type at 18 or 20 — so one
+// `n - off >= name_off` check covers them all and also proves the name start is
+// in range. Without it a run of one-byte `d_reclen`s would advance `off` to
+// `n - 1` and read up to `name_off - 1` bytes past the allocation.
+fn _scan_dirents(
+    buf: ptr mut u8,
+    n: u64,
+    borrow parent: strbuf.StrBuf,
+    inout out: DirEntries,
+) {
+    let type_off = _dirent_type_offset();
+    let name_off = _dirent_name_offset();
+    let mut off: u64 = 0;
+    while off < n {
+        // The fixed header plus at least an empty name must be inside `n`.
+        if n - off < name_off {
+            return;
+        }
+        // d_reclen is a little-endian u16 at offset 16 on every target.
+        let r0 = checked { @ptr_read(@ptr_offset(buf, off + 16)) };
+        let r1 = checked { @ptr_read(@ptr_offset(buf, off + 17)) };
+        let reclen: u64 = @intCast(binary.u16_from_le_bytes([r0, r1]));
+        if reclen == 0 {
+            return;
+        }
+        if reclen > n - off {
+            return;
+        }
+        let record_end = off + reclen;
+        let dtype = checked { @ptr_read(@ptr_offset(buf, off + type_off)) };
+
+        // The name is NUL-terminated, but the record end bounds it too, so a
+        // record with no terminator cannot read past the returned bytes.
+        let name_start = off + name_off;
+        let mut name_len: u64 = 0;
+        while name_start + name_len < record_end {
+            let b: u8 = checked { @ptr_read(@ptr_offset(buf, name_start + name_len)) };
+            if b == 0 {
+                break;
+            }
+            name_len += 1;
+        }
+
+        if name_len > 0 && !_is_dot_entry(buf, name_start, name_len) {
+            let full = _join_entry_path(borrow parent, buf, name_start, name_len);
+            let kind = _kind_for(dtype, borrow full);
+            let name_begin = full.len() - name_len;
+            out._push(borrow full, name_begin, kind);
+        }
+        off = record_end;
+    }
+}
+
+// List the entries of directory `path`, excluding `.` and `..`, in ascending
+// base-name byte order.
+//
+// Each entry's `path(i)` is `path` joined with its name, so it can be opened or
+// stat'd directly. `Err` cases are the ordinary normalized ones: a missing path
+// is `NotFound`, an unreadable one `PermissionDenied`, and a path that is not a
+// directory arrives as ENOTDIR through `Other`. A SYMLINK to a directory is
+// followed and listed, as it is for `File.open`; only entries WITHIN a listing
+// are left unresolved (`FileKind.Symlink`).
+//
+// The listing is a SNAPSHOT assembled over one or more getdents64 calls, not an
+// atomic view: a directory being modified concurrently may list an entry that is
+// gone by the time the caller opens it. That is inherent to the syscall, not to
+// this wrapper.
+pub fn read_dir(borrow path: strbuf.StrBuf) -> result.Result(DirEntries, FileError) {
+    let R = result.Result(DirEntries, FileError);
+    let FR = result.Result(File, FileError);
+
+    // O_DIRECTORY moves the "not a directory" rejection to the open, so no
+    // descriptor for a non-directory is ever held (see `_o_directory`). The
+    // `File` is owned, so the fd closes on every exit from here.
+    let dir = match File._open_with(borrow path, _o_rdonly() | _o_directory(), 0) {
+        FR.Ok(f) => f,
+        FR.Err(e) => {
+            return R.Err(e);
+        },
+    };
+    let fd_u: u64 = @intCast(dir.fd);
+
+    let cap = _dirent_buf_size();
+    let buf: ptr mut u8 = checked { @alloc(cap, 8) };
+    if checked { @ptr_to_int(buf) } == 0 {
+        @panic("out of memory");
+    }
+    let base: u64 = checked { @ptr_to_int(buf) };
+
+    // Darwin's `off_t *position` argument; null on Linux, which ignores it.
+    // Passing it unconditionally keeps one call site for both kernels, while
+    // `_alloc_dirent_position` keeps the allocation itself Darwin-only.
+    let position = _alloc_dirent_position();
+    let posaddr: u64 = checked { @ptr_to_int(position) };
+
+    let mut entries = DirEntries.new();
+    let mut failure = FileError.Other(0);
+    let mut failed = false;
+    let mut reading = true;
+    while reading {
+        let ret: i64 = checked { @syscall(_sys_getdents(), fd_u, base, cap, posaddr) };
+        if ret < 0 {
+            let e = _normalize_errno(0 - ret);
+            // EINTR is retried here, unlike in `File.read`/`File.write`, which
+            // surface it (ADR-0057 §3). The module's rule is that single-syscall
+            // primitives surface `Interrupted` so the caller can decide, while
+            // LOOPING operations retry it themselves — `write_all` already does
+            // exactly this next to `write`. `read_dir` is a loop with state the
+            // caller cannot see: a partially built listing and a kernel-side
+            // directory offset. Returning `Interrupted` from the middle of it
+            // would hand back a half-built listing or force a restart from the
+            // beginning, neither of which the caller can do anything useful with.
+            let retry = match e {
+                FileError.Interrupted => true,
+                _ => false,
+            };
+            if !retry {
+                failure = e;
+                failed = true;
+                reading = false;
+            }
+        } else if ret == 0 {
+            // Exhausted. A SHORT non-zero return is normal and must not stop the
+            // loop — only 0 ends it.
+            reading = false;
+        } else {
+            let filled: u64 = @intCast(ret);
+            _scan_dirents(buf, filled, borrow path, inout entries);
+        }
+    }
+
+    checked { @free(buf, cap, 8); };
+    _free_dirent_position(position);
+
+    if failed {
+        return R.Err(failure);
+    }
+    let order = _sorted_order(borrow entries);
+    R.Ok(_reorder(borrow entries, borrow order))
+}
+
+// Every entry in the tree rooted at `root`, excluding `root` itself and every
+// `.`/`..`, in deterministic depth-first PRE-ORDER: each directory is listed
+// before its contents, and siblings are in the same ascending base-name byte
+// order `read_dir` produces. This is the content-tree scan an SSG needs, and the
+// order is reproducible across runs, filesystems, and machines.
+//
+// Symlinks are NOT followed. A symlink to a directory is reported as
+// `FileKind.Symlink` and is not descended into, so the walk cannot loop and
+// cannot leave the tree.
+//
+// Any directory that fails to open or read fails the whole walk with that error,
+// rather than silently returning a partial tree — a half-scanned content
+// directory would produce a quietly wrong site, which is the failure mode this
+// module exists to avoid.
+//
+// The traversal is iterative over an explicit pending stack, so tree depth costs
+// heap rather than call frames.
+pub fn walk(borrow root: strbuf.StrBuf) -> result.Result(DirEntries, FileError) {
+    let R = result.Result(DirEntries, FileError);
+    let DR = result.Result(DirEntries, FileError);
+    let Paths = arraybuf.ArrayBuf(strbuf.StrBuf);
+    let U64s = arraybuf.ArrayBuf(u64);
+    let U8s = arraybuf.ArrayBuf(u8);
+    let OP = option.Option(strbuf.StrBuf);
+
+    let mut out = DirEntries.new();
+
+    // Entries still to emit, most-recently-pushed first. A level is pushed in
+    // REVERSE, so popping yields ascending order and a directory's subtree is
+    // emitted immediately after the directory itself.
+    let mut pending_paths = Paths.new();
+    let mut pending_name_offs = U64s.new();
+    let mut pending_kinds = U8s.new();
+
+    let first = match read_dir(borrow root) {
+        DR.Ok(listing) => listing,
+        DR.Err(e) => {
+            return R.Err(e);
+        },
+    };
+    _push_level_reversed(
+        borrow first,
+        inout pending_paths,
+        inout pending_name_offs,
+        inout pending_kinds,
+    );
+
+    while pending_paths.len() > 0 {
+        let entry_path = match pending_paths.pop() {
+            OP.Some(p) => p,
+            OP.None => {
+                return R.Ok(out);
+            },
+        };
+        let name_off = pending_name_offs.pop_or(0);
+        let kind = pending_kinds.pop_or(0);
+        out._push(borrow entry_path, name_off, kind);
+
+        if kind == _KIND_DIR() {
+            let listing = match read_dir(borrow entry_path) {
+                DR.Ok(l) => l,
+                DR.Err(e) => {
+                    return R.Err(e);
+                },
+            };
+            _push_level_reversed(
+                borrow listing,
+                inout pending_paths,
+                inout pending_name_offs,
+                inout pending_kinds,
+            );
+        }
+    }
+
+    R.Ok(out)
+}
+
+// Push a listing onto the walk's pending stack in reverse index order, so the
+// stack pops it back in ascending order.
+fn _push_level_reversed(
+    borrow listing: DirEntries,
+    inout paths: arraybuf.ArrayBuf(strbuf.StrBuf),
+    inout name_offs: arraybuf.ArrayBuf(u64),
+    inout kinds: arraybuf.ArrayBuf(u8),
+) {
+    let mut i = listing.offs.len();
+    while i > 0 {
+        i -= 1;
+        paths.push(listing.path(i));
+        name_offs.push(listing.name_offs.get_or(i, 0));
+        kinds.push(listing.kinds.get_or(i, 0));
     }
 }
