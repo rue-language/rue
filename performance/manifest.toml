@@ -17,11 +17,9 @@
 # the *Rust* toolchain the compiler is built with — build environment, not
 # product. See ADR-0067, "The product boundary".
 #
-# STATUS: the `local` epoch below exists so the runner can be exercised during
-# development. Its sampling counts are placeholders, not calibrated values, and
-# it declares no baseline. The published epochs — with counts, batching factors,
-# and the flagging multiplier established by the Phase 4 noise calibration —
-# arrive with suite revision 1's declaration in RUE-1188.
+# The `local` epochs below let the runner exercise each suite during development;
+# their counts are diagnostic rather than publication policy. Hosted collection
+# uses the explicitly marked per-platform epochs near the end of this file.
 
 [[suite]]
 revision = 1
@@ -32,6 +30,24 @@ protocol_version = 1
 id = "startup"
 source = "performance/workloads/startup/main.rue"
 question = "What does a minimal fresh compilation cost end to end?"
+
+# Suite revision 2 freezes ADR-0071's release-quality reference workload. The
+# startup probe stays byte-identical so its history continues across the epoch
+# boundary; Lattice joins as a separate, independently visible series.
+[[suite]]
+revision = 2
+timing_schema_version = 1
+protocol_version = 1
+
+[[suite.workloads]]
+id = "startup"
+source = "performance/workloads/startup/main.rue"
+question = "What does a minimal fresh compilation cost end to end?"
+
+[[suite.workloads]]
+id = "lattice"
+source = "performance/workloads/lattice/main.rue"
+question = "How quickly does Rue produce optimized native output for the frozen ADR-0071 reference program?"
 
 # A development epoch for local runs. Not a collection target: its environment
 # policy admits only `local`, so a hosted runner cannot append to it.
@@ -53,6 +69,36 @@ runner_image = "local"
 [epoch.sampling.startup]
 samples = 3
 batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 10
+
+# Local development implementation of suite revision 2. This is diagnostic,
+# not a collection target and not the ADR-0071 reference regime.
+[[epoch]]
+id = 2
+platform = "local"
+suite_revision = 2
+target = "x86_64-unknown-linux-gnu"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.startup]
+samples = 3
+batch_size = 5
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
 
 [epoch.flagging]
 k = 3.0
@@ -146,7 +192,7 @@ k = 3.0
 window = 5
 
 # ---------------------------------------------------------------------------
-# Collection epochs (ADR-0067 Phase 5, RUE-1188).
+# Suite revision 1 collection calibration (ADR-0067 Phase 5, RUE-1188).
 #
 # These are the real ones. Their pins resolve, so a run that does not match the
 # tree it claims to have measured cannot enter a series, and their sampling and
@@ -188,9 +234,101 @@ window = 5
 # is the calibrated recommendation rather than the uncapped figure; the gap is
 # 1.15% achieved uncertainty against the 1.00% target.
 
+# Suite revision 2 calibration epochs (ADR-0071 Phase 1, RUE-1478).
+#
+# These use deliberately unresolved pins and are not collection targets. The
+# calibration workflow accepts the resulting non-appendable records as raw
+# evidence and has no permission to publish them. Three independent Lattice
+# samples per repetition are enough to estimate dispersion without assuming the
+# result that calibration exists to derive.
+
+[[epoch]]
+id = 3
+platform = "x86_64-linux"
+suite_revision = 2
+target = "x86_64-unknown-linux-gnu"
+args = ["-O3", "-j1"]
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+lattice = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 3.0
+window = 5
+
+[[epoch]]
+id = 3
+platform = "aarch64-linux"
+suite_revision = 2
+target = "aarch64-unknown-linux-gnu"
+args = ["-O3", "-j1"]
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+lattice = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 3.0
+window = 5
+
+[[epoch]]
+id = 3
+platform = "aarch64-macos"
+suite_revision = 2
+target = "aarch64-apple-darwin"
+args = ["-O3", "-j1"]
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+lattice = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 3.0
+window = 5
+
 [[epoch]]
 id = 2
-collection = true
+collection = false
 platform = "x86_64-linux"
 suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
@@ -221,7 +359,7 @@ run = "4ae3eb4cf1e47277c30ae6c3002b6c84c651e35634424e874e2cca8219b25973"
 
 [[epoch]]
 id = 2
-collection = true
+collection = false
 platform = "aarch64-linux"
 suite_revision = 1
 target = "aarch64-unknown-linux-gnu"
@@ -250,7 +388,7 @@ run = "b0bbb8dd1bbf4b617da6c9c642218ce8435e1f250fea060e5baf307555e8b9ad"
 
 [[epoch]]
 id = 2
-collection = true
+collection = false
 platform = "aarch64-macos"
 suite_revision = 1
 target = "aarch64-apple-darwin"
@@ -279,3 +417,115 @@ window = 10
 [epoch.baseline]
 commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
 run = "ff0a3ab928b8e2e601604912404b9ed4b8140a27a2204300d5917143f533574b"
+
+# ---------------------------------------------------------------------------
+# Suite revision 2 collection epochs (ADR-0071 Phase 1, RUE-1478).
+#
+# Sampling and flagging come from hosted calibration run 31654232615 at commit
+# 5fadcc720880432c280df6eaf0845c94655cb372 (12 repetitions per platform).
+# Lattice's observed median and relative MAD were:
+#
+# | platform      | median     | rel. MAD | samples | collection work |
+# | ------------- | ---------- | -------- | ------- | --------------- |
+# | x86_64-linux  | 2647.03 ms |    0.78% |       3 |          ~8.6 s |
+# | aarch64-linux | 2920.82 ms |    0.85% |       3 |          ~9.0 s |
+# | aarch64-macos | 2666.23 ms |    6.41% |      99 |          ~4.5 m |
+#
+# `collection work` includes the calibrated startup sampling. macOS reaches the
+# calibrator's 99-sample ceiling for both workloads; the cost is accepted so a
+# noisy hosted clock cannot turn compiler movement into dashboard fiction.
+#
+# The absolute 250 ms outcome belongs only to the x86_64-linux reference epoch.
+# Linux ARM64 and macOS remain directional series: copying the same number onto
+# unlike hosted clocks would make the dashboard claim a gate they do not own.
+
+[[epoch]]
+id = 4
+collection = true
+platform = "x86_64-linux"
+suite_revision = 2
+target = "x86_64-unknown-linux-gnu"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 12
+batch_size = 6
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.process_elapsed_targets.lattice]
+process_elapsed_ns = 250000000
+reference = "ADR-0071"
+
+[epoch.flagging]
+k = 6.0
+window = 5
+
+[[epoch]]
+id = 4
+collection = true
+platform = "aarch64-linux"
+suite_revision = 2
+target = "aarch64-unknown-linux-gnu"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 5
+batch_size = 6
+
+[epoch.sampling.lattice]
+samples = 3
+batch_size = 1
+
+[epoch.flagging]
+k = 5.0
+window = 3
+
+[[epoch]]
+id = 4
+collection = true
+platform = "aarch64-macos"
+suite_revision = 2
+target = "aarch64-apple-darwin"
+args = ["-O3", "-j1"]
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+lattice = "1c5b2fffc71a9edfd0c5212262bc7bb9c5694c74c78ab15f7b540e04a62a7651"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.startup]
+samples = 99
+batch_size = 8
+
+[epoch.sampling.lattice]
+samples = 99
+batch_size = 1
+
+[epoch.flagging]
+k = 4.0
+window = 5

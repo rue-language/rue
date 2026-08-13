@@ -1,0 +1,152 @@
+// Canonical workflow model. Strings are pooled and cross-record references
+// resolve to compact indices during validation.
+const std = @import("std");
+const poolmod = @import("pool.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn NONE() -> u64 { 18446744073709551615 }
+
+pub struct WorkerPool {
+    id: u64,
+    slots: u64,
+    cpu: u64,
+    memory: u64,
+}
+
+pub struct Task {
+    id: u64,
+    pool_id: u64,
+    pool: u64,
+    duration: u64,
+    cpu: u64,
+    memory: u64,
+    priority: u64,
+    retries: u64,
+    cacheable: bool,
+    fail_attempt: u64,
+}
+
+// `before -> after` is the execution direction.
+pub struct Edge {
+    before_id: u64,
+    after_id: u64,
+    before: u64,
+    after: u64,
+}
+
+pub struct Diagnostic {
+    code: u64,
+    subject: u64,
+    detail: u64,
+}
+
+pub const WorkerPools = std.arraybuf.ArrayBuf(WorkerPool);
+pub const Tasks = std.arraybuf.ArrayBuf(Task);
+pub const Edges = std.arraybuf.ArrayBuf(Edge);
+pub const Diagnostics = std.arraybuf.ArrayBuf(Diagnostic);
+pub const U64s = std.arraybuf.ArrayBuf(u64);
+pub const Bools = std.arraybuf.ArrayBuf(bool);
+
+pub struct Workflow {
+    strings: poolmod.Pool,
+    name: u64,
+    pools: WorkerPools,
+    tasks: Tasks,
+    edges: Edges,
+    diagnostics: Diagnostics,
+}
+
+pub fn new_workflow(strings: poolmod.Pool) -> Workflow {
+    Workflow {
+        strings: strings,
+        name: NONE(),
+        pools: WorkerPools.new(),
+        tasks: Tasks.new(),
+        edges: Edges.new(),
+        diagnostics: Diagnostics.new(),
+    }
+}
+
+pub fn empty_pool() -> WorkerPool {
+    WorkerPool { id: NONE(), slots: 0, cpu: 0, memory: 0 }
+}
+
+pub fn empty_task() -> Task {
+    Task {
+        id: NONE(), pool_id: NONE(), pool: NONE(), duration: 0,
+        cpu: 0, memory: 0, priority: 0, retries: 0,
+        cacheable: false, fail_attempt: 0,
+    }
+}
+
+pub fn empty_edge() -> Edge {
+    Edge { before_id: NONE(), after_id: NONE(), before: NONE(), after: NONE() }
+}
+
+pub fn add_error(inout workflow: Workflow, code: u64, subject: u64, detail: StrBuf) {
+    let detail_id = workflow.strings.intern(borrow detail);
+    workflow.diagnostics.push(Diagnostic { code: code, subject: subject, detail: detail_id });
+}
+
+pub fn code_name(code: u64) -> StrBuf {
+    if code == 100 { "lex" }
+    else if code == 101 { "parse" }
+    else if code == 200 { "duplicate" }
+    else if code == 201 { "reference" }
+    else if code == 202 { "range" }
+    else if code == 203 { "cycle" }
+    else if code == 204 { "resource" }
+    else if code == 300 { "schedule" }
+    else if code == 301 { "replay" }
+    else { "unknown" }
+}
+
+pub fn find_pool(borrow workflow: Workflow, id: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let item = workflow.pools.get_or(i, empty_pool());
+        if workflow.strings.ids_equal(item.id, id) { return i; }
+        i += 1;
+    }
+    NONE()
+}
+
+pub fn find_task(borrow workflow: Workflow, id: u64) -> u64 {
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let item = workflow.tasks.get_or(i, empty_task());
+        if workflow.strings.ids_equal(item.id, id) { return i; }
+        i += 1;
+    }
+    NONE()
+}
+
+pub fn dependency_count(borrow workflow: Workflow, task: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        if workflow.edges.get_or(i, empty_edge()).after == task { count += 1; }
+        i += 1;
+    }
+    count
+}
+
+pub fn dependent_count(borrow workflow: Workflow, task: u64) -> u64 {
+    let mut count: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        if workflow.edges.get_or(i, empty_edge()).before == task { count += 1; }
+        i += 1;
+    }
+    count
+}
+
+pub fn has_edge(borrow workflow: Workflow, before: u64, after: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, empty_edge());
+        if edge.before == before && edge.after == after { return true; }
+        i += 1;
+    }
+    false
+}

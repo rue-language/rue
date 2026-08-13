@@ -1,0 +1,62 @@
+// Compare two executions of the same workflow under different cache seeds.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Difference {
+    status_changes: u64,
+    start_changes: u64,
+    end_changes: u64,
+    attempt_changes: u64,
+    first_only_events: u64,
+    second_only_events: u64,
+    common_event_prefix: u64,
+    makespan_delta: u64,
+    cache_delta: u64,
+    retry_delta: u64,
+    digest: u64,
+}
+
+fn delta(a: u64, b: u64) -> u64 { if a >= b { a - b } else { b - a } }
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn same_event(first: state.Event, second: state.Event) -> bool {
+    first.kind == second.kind && first.time == second.time &&
+        first.task == second.task && first.pool == second.pool &&
+        first.attempt == second.attempt && first.cpu == second.cpu &&
+        first.memory == second.memory
+}
+
+pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow second: state.Run) -> Difference {
+    let mut status_changes: u64 = 0;
+    let mut start_changes: u64 = 0;
+    let mut end_changes: u64 = 0;
+    let mut attempt_changes: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if first.status.get_or(i, 0) != second.status.get_or(i, 0) { status_changes += 1; }
+        if first.starts.get_or(i, 0) != second.starts.get_or(i, 0) { start_changes += 1; }
+        if first.ends.get_or(i, 0) != second.ends.get_or(i, 0) { end_changes += 1; }
+        if first.attempts.get_or(i, 0) != second.attempts.get_or(i, 0) { attempt_changes += 1; }
+        digest = mix(digest, first.status.get_or(i, 0)); digest = mix(digest, second.status.get_or(i, 0));
+        digest = mix(digest, first.starts.get_or(i, 0)); digest = mix(digest, second.starts.get_or(i, 0));
+        i += 1;
+    }
+    let limit = if first.events.len() < second.events.len() { first.events.len() } else { second.events.len() };
+    let mut common_event_prefix: u64 = 0;
+    while common_event_prefix < limit && same_event(
+        first.events.get_or(common_event_prefix, state.empty_event()),
+        second.events.get_or(common_event_prefix, state.empty_event()),
+    ) { common_event_prefix += 1; }
+    Difference {
+        status_changes: status_changes, start_changes: start_changes,
+        end_changes: end_changes, attempt_changes: attempt_changes,
+        first_only_events: if first.events.len() > second.events.len() { first.events.len() - second.events.len() } else { 0 },
+        second_only_events: if second.events.len() > first.events.len() { second.events.len() - first.events.len() } else { 0 },
+        common_event_prefix: common_event_prefix,
+        makespan_delta: delta(first.makespan, second.makespan),
+        cache_delta: delta(first.cached, second.cached),
+        retry_delta: delta(first.retries, second.retries),
+        digest: digest,
+    }
+}

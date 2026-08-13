@@ -1,0 +1,87 @@
+// Recommend pool headroom from observed peaks and declared pending demand.
+const model = @import("model.rue");
+const resource_audit = @import("resource_audit.rue");
+const state = @import("state.rue");
+
+pub struct Plan {
+    recommended_slots: model.U64s,
+    recommended_cpu: model.U64s,
+    recommended_memory: model.U64s,
+    slot_headroom: model.U64s,
+    cpu_headroom: model.U64s,
+    memory_headroom: model.U64s,
+    constrained_pools: model.U64s,
+    total_slot_increase: u64,
+    total_cpu_increase: u64,
+    total_memory_increase: u64,
+    saturated_pools: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn recommend(capacity: u64, peak: u64) -> u64 {
+    let buffered = peak + if peak < 4 { 1 } else { (peak + 3) / 4 };
+    if buffered > capacity { buffered } else { capacity }
+}
+
+fn difference(larger: u64, smaller: u64) -> u64 {
+    if larger > smaller { larger - smaller } else { 0 }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Plan {
+    let audit = resource_audit.audit(borrow workflow, borrow run);
+    let count = workflow.pools.len();
+    let mut recommended_slots = zeroes(count);
+    let mut recommended_cpu = zeroes(count);
+    let mut recommended_memory = zeroes(count);
+    let mut slot_headroom = zeroes(count);
+    let mut cpu_headroom = zeroes(count);
+    let mut memory_headroom = zeroes(count);
+    let mut constrained_pools = model.U64s.new();
+    let mut total_slot_increase: u64 = 0;
+    let mut total_cpu_increase: u64 = 0;
+    let mut total_memory_increase: u64 = 0;
+    let mut saturated_pools: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < count {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        let peak_slots = audit.maximum_slots.get_or(i, 0);
+        let peak_cpu = audit.maximum_cpu.get_or(i, 0);
+        let peak_memory = audit.maximum_memory.get_or(i, 0);
+        let slots = recommend(pool.slots, peak_slots);
+        let cpu = recommend(pool.cpu, peak_cpu);
+        let memory = recommend(pool.memory, peak_memory);
+        recommended_slots.set(i, slots); recommended_cpu.set(i, cpu); recommended_memory.set(i, memory);
+        slot_headroom.set(i, difference(pool.slots, peak_slots));
+        cpu_headroom.set(i, difference(pool.cpu, peak_cpu));
+        memory_headroom.set(i, difference(pool.memory, peak_memory));
+        total_slot_increase += difference(slots, pool.slots);
+        total_cpu_increase += difference(cpu, pool.cpu);
+        total_memory_increase += difference(memory, pool.memory);
+        if peak_slots == pool.slots || peak_cpu == pool.cpu || peak_memory == pool.memory {
+            saturated_pools += 1;
+            constrained_pools.push(i);
+        }
+        digest = mix(digest, slots); digest = mix(digest, cpu); digest = mix(digest, memory);
+        i += 1;
+    }
+    let valid = audit.ok && constrained_pools.len() == saturated_pools;
+    Plan {
+        recommended_slots: recommended_slots, recommended_cpu: recommended_cpu,
+        recommended_memory: recommended_memory, slot_headroom: slot_headroom,
+        cpu_headroom: cpu_headroom, memory_headroom: memory_headroom,
+        constrained_pools: constrained_pools, total_slot_increase: total_slot_increase,
+        total_cpu_increase: total_cpu_increase, total_memory_increase: total_memory_increase,
+        saturated_pools: saturated_pools, digest: digest, valid: valid,
+    }
+}

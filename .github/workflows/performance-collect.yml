@@ -67,7 +67,9 @@ jobs:
         uses: facebook/install-dotslash@v2
 
       - name: Build the compiler and the runner
-        run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+        run: |
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release
 
       - name: Measure
         env:
@@ -78,8 +80,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p collected
-          RUE="$(scripts/rue-bin)"
-          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
 
           # Exit 3 is "written but not appendable". The evidence is worth
           # keeping either way, so the status is recorded here and judged after

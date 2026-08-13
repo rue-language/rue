@@ -1,0 +1,78 @@
+// Run a fixed seed ensemble to expose cache-sensitive makespan variance.
+const model = @import("model.rue");
+const schedule = @import("schedule.rue");
+
+pub struct Forecast {
+    seeds: model.U64s,
+    makespans: model.U64s,
+    cache_hits: model.U64s,
+    retries: model.U64s,
+    fingerprints: model.U64s,
+    samples: u64,
+    minimum_makespan: u64,
+    maximum_makespan: u64,
+    mean_makespan: u64,
+    spread: u64,
+    total_cache_hits: u64,
+    total_retries: u64,
+    failed_samples: u64,
+    duplicate_fingerprints: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn seen(borrow fingerprints: model.U64s, value: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < fingerprints.len() {
+        if fingerprints.get_or(i, 0) == value { return true; }
+        i += 1;
+    }
+    false
+}
+
+pub fn compute(borrow workflow: model.Workflow, base_seed: u64, samples: u64) -> Forecast {
+    let count = if samples == 0 { 1 } else { samples };
+    let mut seeds = model.U64s.with_capacity(count);
+    let mut makespans = model.U64s.with_capacity(count);
+    let mut cache_hits = model.U64s.with_capacity(count);
+    let mut retries = model.U64s.with_capacity(count);
+    let mut fingerprints = model.U64s.with_capacity(count);
+    let mut minimum_makespan: u64 = 0;
+    let mut maximum_makespan: u64 = 0;
+    let mut total_makespan: u64 = 0;
+    let mut total_cache_hits: u64 = 0;
+    let mut total_retries: u64 = 0;
+    let mut failed_samples: u64 = 0;
+    let mut duplicate_fingerprints: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < count {
+        let seed = base_seed + i * 104729;
+        let run = schedule.run(borrow workflow, seed);
+        seeds.push(seed); makespans.push(run.makespan);
+        cache_hits.push(run.cached); retries.push(run.retries);
+        if seen(borrow fingerprints, run.fingerprint) { duplicate_fingerprints += 1; }
+        fingerprints.push(run.fingerprint);
+        if i == 0 || run.makespan < minimum_makespan { minimum_makespan = run.makespan; }
+        if i == 0 || run.makespan > maximum_makespan { maximum_makespan = run.makespan; }
+        total_makespan += run.makespan;
+        total_cache_hits += run.cached;
+        total_retries += run.retries;
+        if run.failed > 0 { failed_samples += 1; }
+        digest = mix(digest, seed); digest = mix(digest, run.makespan);
+        digest = mix(digest, run.cached); digest = mix(digest, run.fingerprint);
+        i += 1;
+    }
+    Forecast {
+        seeds: seeds, makespans: makespans, cache_hits: cache_hits,
+        retries: retries, fingerprints: fingerprints, samples: count,
+        minimum_makespan: minimum_makespan, maximum_makespan: maximum_makespan,
+        mean_makespan: total_makespan / count,
+        spread: maximum_makespan - minimum_makespan,
+        total_cache_hits: total_cache_hits, total_retries: total_retries,
+        failed_samples: failed_samples, duplicate_fingerprints: duplicate_fingerprints,
+        digest: digest, valid: failed_samples == 0,
+    }
+}

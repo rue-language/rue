@@ -1,0 +1,144 @@
+// Generated invariant suite crossing topological, closure, scheduling, replay,
+// and fingerprint implementations across multiple workflow shapes.
+const cycle_oracle = @import("cycle_oracle.rue");
+const critical_path = @import("critical_path.rue");
+const dominators = @import("dominators.rue");
+const event_analysis = @import("event_analysis.rue");
+const fingerprint = @import("fingerprint.rue");
+const generate = @import("generate.rue");
+const levels = @import("levels.rue");
+const model = @import("model.rue");
+const portfolio = @import("portfolio.rue");
+const replay = @import("replay.rue");
+const resource_audit = @import("resource_audit.rue");
+const schedule = @import("schedule.rue");
+const schedule_diff = @import("schedule_diff.rue");
+const serial_oracle = @import("serial_oracle.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const topology = @import("topology.rue");
+const transitive_reduction = @import("transitive_reduction.rue");
+const validate = @import("validate.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    checks: u64,
+    failures: u64,
+    workflows: u64,
+    tasks: u64,
+    edges: u64,
+    events: u64,
+    digest: u64,
+    last_failed_check: u64,
+    incomplete: u64,
+    maximum_makespan: u64,
+    analysis_passes: u64,
+    analysis_observations: u64,
+    analysis_warnings: u64,
+}
+
+fn record(inout result: Result, condition: bool) {
+    result.checks += 1;
+    if !condition {
+        result.failures += 1;
+        result.last_failed_check = result.checks;
+    }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn one(inout result: Result, tasks: u64, pools: u64, width: u64, seed: u64) {
+    let mut workflow = generate.workflow(tasks, pools, width, seed);
+    validate.workflow(inout workflow);
+    result.workflows += 1;
+    result.tasks += workflow.tasks.len();
+    result.edges += workflow.edges.len();
+    record(inout result, workflow.diagnostics.len() == 0);
+    let order = topology.sort(borrow workflow);
+    let closure = cycle_oracle.compute(borrow workflow);
+    let analyses = portfolio.analyze(borrow workflow);
+    let layer_info = levels.compute(borrow workflow);
+    let critical = critical_path.compute(borrow workflow);
+    let reduction = transitive_reduction.compute(borrow workflow);
+    let dominator_info = dominators.compute(borrow workflow);
+    record(inout result, !order.has_cycle);
+    record(inout result, !cycle_oracle.has_cycle(borrow closure));
+    record(inout result, topology.valid(borrow workflow, borrow order));
+    record(inout result, order.tasks.len() == workflow.tasks.len());
+    record(inout result, portfolio.valid(borrow analyses));
+    record(inout result, levels.verify(borrow workflow, borrow layer_info));
+    record(inout result, critical_path.verify(borrow workflow, borrow critical));
+    record(inout result, transitive_reduction.verify(borrow workflow, borrow reduction));
+    record(inout result, dominators.verify(borrow workflow, borrow dominator_info));
+    let first = schedule.run(borrow workflow, seed);
+    let second = schedule.run(borrow workflow, seed);
+    let audit = replay.audit(borrow workflow, borrow first);
+    let resources = resource_audit.audit(borrow workflow, borrow first);
+    let events = event_analysis.summarize(borrow workflow, borrow first);
+    let serial = serial_oracle.compute(borrow workflow, borrow first);
+    let difference = schedule_diff.compare(borrow workflow, borrow first, borrow second);
+    result.events += first.events.len();
+    record(inout result, audit.ok);
+    record(inout result, first.failed == 0);
+    record(inout result, first.succeeded + first.cached == workflow.tasks.len());
+    record(inout result, first.fingerprint == second.fingerprint);
+    record(inout result, fingerprint.run(borrow first) == fingerprint.run(borrow second));
+    record(inout result, first.events.len() == second.events.len());
+    record(inout result, resource_audit.verify(borrow workflow, borrow resources));
+    record(inout result, event_analysis.verify(borrow first, borrow events));
+    record(inout result, serial.valid);
+    record(inout result, difference.status_changes == 0);
+    record(inout result, difference.start_changes == 0);
+    record(inout result, difference.end_changes == 0);
+    record(inout result, difference.attempt_changes == 0);
+    result.incomplete = result.incomplete + workflow.tasks.len() - first.succeeded - first.cached - first.failed;
+    if first.makespan > result.maximum_makespan { result.maximum_makespan = first.makespan; }
+    result.digest = mix(result.digest, fingerprint.workflow(borrow workflow));
+    result.digest = mix(result.digest, fingerprint.run(borrow first));
+    result.digest = mix(result.digest, analyses.digest);
+    result.digest = mix(result.digest, layer_info.digest);
+    result.digest = mix(result.digest, critical.digest);
+    result.digest = mix(result.digest, reduction.digest);
+    result.digest = mix(result.digest, dominator_info.digest);
+    result.digest = mix(result.digest, resources.digest);
+    result.digest = mix(result.digest, events.digest);
+    result.digest = mix(result.digest, serial.digest);
+    result.digest = mix(result.digest, difference.digest);
+    result.analysis_passes += analyses.passes;
+    result.analysis_observations += analyses.observations;
+    result.analysis_warnings += analyses.warnings;
+}
+
+pub fn run() -> Result {
+    let mut result = Result {
+        checks: 0, failures: 0, workflows: 0, tasks: 0,
+        edges: 0, events: 0, digest: 14695981039346656037,
+        last_failed_check: 0,
+        incomplete: 0, maximum_makespan: 0,
+        analysis_passes: 0, analysis_observations: 0, analysis_warnings: 0,
+    };
+    one(inout result, 8, 2, 3, 11);
+    one(inout result, 17, 3, 4, 29);
+    one(inout result, 31, 4, 5, 47);
+    one(inout result, 48, 5, 7, 71);
+    result
+}
+
+pub fn render(borrow result: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "selftest checks="); text.append_u64(inout out, result.checks);
+    text.append_literal(inout out, " failures="); text.append_u64(inout out, result.failures); out.push(10);
+    text.append_literal(inout out, "workflows="); text.append_u64(inout out, result.workflows);
+    text.append_literal(inout out, " tasks="); text.append_u64(inout out, result.tasks);
+    text.append_literal(inout out, " edges="); text.append_u64(inout out, result.edges);
+    text.append_literal(inout out, " events="); text.append_u64(inout out, result.events); out.push(10);
+    text.append_literal(inout out, "digest="); text.append_u64(inout out, result.digest); out.push(10);
+    text.append_literal(inout out, "last_failed_check="); text.append_u64(inout out, result.last_failed_check); out.push(10);
+    text.append_literal(inout out, "incomplete="); text.append_u64(inout out, result.incomplete);
+    text.append_literal(inout out, " maximum_makespan="); text.append_u64(inout out, result.maximum_makespan); out.push(10);
+    text.append_literal(inout out, "analysis_passes="); text.append_u64(inout out, result.analysis_passes);
+    text.append_literal(inout out, " observations="); text.append_u64(inout out, result.analysis_observations);
+    text.append_literal(inout out, " warnings="); text.append_u64(inout out, result.analysis_warnings); out.push(10);
+    text.append_literal(inout out, "valid="); text.append_bool(inout out, result.failures == 0); out.push(10);
+    out
+}

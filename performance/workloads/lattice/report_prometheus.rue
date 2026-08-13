@@ -1,0 +1,26 @@
+// Prometheus text exposition for scheduler and workflow gauges.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn metric(inout out: StrBuf, name: str, help: str, value: u64) {
+    text.append_literal(inout out, "# HELP "); text.append_literal(inout out, name); out.push(32); text.append_literal(inout out, help); out.push(10);
+    text.append_literal(inout out, "# TYPE "); text.append_literal(inout out, name); text.append_literal(inout out, " gauge\n");
+    text.append_literal(inout out, name); out.push(32); text.append_u64(inout out, value); out.push(10);
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    metric(inout out, "lattice_workflow_tasks", "Declared workflow tasks.", workflow.tasks.len());
+    metric(inout out, "lattice_workflow_edges", "Declared dependency edges.", workflow.edges.len());
+    metric(inout out, "lattice_schedule_makespan_ticks", "Schedule completion time.", run.makespan);
+    metric(inout out, "lattice_schedule_succeeded_tasks", "Successfully executed tasks.", run.succeeded);
+    metric(inout out, "lattice_schedule_failed_tasks", "Failed tasks.", run.failed);
+    metric(inout out, "lattice_schedule_cached_tasks", "Cache hits.", run.cached);
+    metric(inout out, "lattice_schedule_retries", "Consumed retry attempts.", run.retries);
+    metric(inout out, "lattice_schedule_resource_waits", "Resource wait observations.", run.resource_waits);
+    metric(inout out, "lattice_schedule_dependency_waits", "Dependency wait observations.", run.dependency_waits);
+    out
+}

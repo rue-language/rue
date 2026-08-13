@@ -1,0 +1,133 @@
+// Lattice analysis pass: root task work.
+//
+// This pass deliberately walks tasks, pools, dependencies, and bounded task
+// pairs. The four projections expose different compiler and application
+// behavior: field-heavy records, cross-module calls, graph indirection, nested
+// control flow, checked aggregation, and deterministic report generation.
+const std = @import("std");
+const metric = @import("metric.rue");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn TAG() -> u64 { 1012 }
+
+fn pool_for(borrow workflow: model.Workflow, index: u64) -> model.WorkerPool {
+    workflow.pools.get_or(index, model.empty_pool())
+}
+
+fn task_projection(borrow workflow: model.Workflow, index: u64) -> u64 {
+    let task = workflow.tasks.get_or(index, model.empty_task());
+    let _task_id = task.id;
+    let _assigned_pool = pool_for(borrow workflow, task.pool);
+    if model.dependency_count(borrow workflow, index) == 0 { task.duration } else { 0 }
+}
+
+fn edge_projection(borrow workflow: model.Workflow, index: u64) -> u64 {
+    let edge = workflow.edges.get_or(index, model.empty_edge());
+    let before = workflow.tasks.get_or(edge.before, model.empty_task());
+    let after = workflow.tasks.get_or(edge.after, model.empty_task());
+    let _before_id = before.id;
+    let _after_id = after.id;
+    edge.before
+}
+
+fn pool_projection(borrow workflow: model.Workflow, index: u64) -> u64 {
+    let pool = workflow.pools.get_or(index, model.empty_pool());
+    pool.cpu
+}
+
+fn related_pair(borrow workflow: model.Workflow, first: u64, second: u64) -> bool {
+    if first == second { return false; }
+    model.has_edge(borrow workflow, first, second) ||
+        model.has_edge(borrow workflow, second, first) ||
+        workflow.tasks.get_or(first, model.empty_task()).pool ==
+            workflow.tasks.get_or(second, model.empty_task()).pool
+}
+
+fn pair_projection(borrow workflow: model.Workflow, first: u64, second: u64) -> u64 {
+    let left = workflow.tasks.get_or(first, model.empty_task());
+    let right = workflow.tasks.get_or(second, model.empty_task());
+    let distance = if second >= first { second - first } else { first - second };
+    let resource = left.cpu + left.memory + right.cpu + right.memory;
+    let duration = left.duration + right.duration;
+    (distance + 1) * (resource + 1) + duration + 1012
+}
+
+fn observe_tasks(inout result: metric.Metric, borrow workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let value = task_projection(borrow workflow, i);
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        metric.observe(inout result, value, task.priority + 1);
+        metric.warn(inout result, task.duration == 0 || task.cpu == 0 || task.memory == 0);
+        i += 1;
+    }
+}
+
+fn observe_edges(inout result: metric.Metric, borrow workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        let value = edge_projection(borrow workflow, i);
+        metric.observe(inout result, value, i + 1);
+        metric.warn(inout result, edge.before >= workflow.tasks.len() || edge.after >= workflow.tasks.len());
+        i += 1;
+    }
+}
+
+fn observe_pools(inout result: metric.Metric, borrow workflow: model.Workflow) {
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let value = pool_projection(borrow workflow, i);
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        metric.observe(inout result, value, pool.slots + 1);
+        metric.warn(inout result, pool.slots == 0 || pool.cpu == 0 || pool.memory == 0);
+        i += 1;
+    }
+}
+
+fn observe_pairs(inout result: metric.Metric, borrow workflow: model.Workflow) -> u64 {
+    let mut pairs: u64 = 0;
+    let mut first: u64 = 0;
+    while first < workflow.tasks.len() {
+        let mut second: u64 = first + 1;
+        while second < workflow.tasks.len() {
+            if related_pair(borrow workflow, first, second) {
+                metric.observe(inout result, pair_projection(borrow workflow, first, second), first + second + 1);
+                pairs += 1;
+            }
+            second += 1;
+        }
+        first += 1;
+    }
+    pairs
+}
+
+pub fn analyze(borrow workflow: model.Workflow) -> metric.Metric {
+    let mut result = metric.new(TAG());
+    observe_tasks(inout result, borrow workflow);
+    observe_edges(inout result, borrow workflow);
+    observe_pools(inout result, borrow workflow);
+    let pairs = observe_pairs(inout result, borrow workflow);
+    metric.warn(inout result, workflow.tasks.len() > 1 && pairs == 0);
+    metric.finish(inout result);
+    result
+}
+
+pub fn verify(borrow workflow: model.Workflow, borrow result: metric.Metric) -> bool {
+    let floor = workflow.tasks.len() + workflow.edges.len() + workflow.pools.len();
+    result.tag == TAG() && result.observations >= floor &&
+        result.even + result.odd == result.observations &&
+        result.zeroes <= result.observations &&
+        (result.observations == 0 || result.minimum <= result.maximum)
+}
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let result = analyze(borrow workflow);
+    let mut out = metric.render("root_cost", borrow result);
+    text.append_literal(inout out, "verified=");
+    text.append_bool(inout out, verify(borrow workflow, borrow result));
+    out.push(10);
+    out
+}

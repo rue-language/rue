@@ -1,0 +1,141 @@
+// Predictive parser for Lattice declarations. The field order is deliberate:
+// workflow files are easy to diff and parser recovery can synchronize on ';'.
+const std = @import("std");
+const model = @import("model.rue");
+const poolmod = @import("pool.rue");
+const token = @import("token.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct ParseResult {
+    workflow: model.Workflow,
+    errors: StrBuf,
+}
+
+struct Parser {
+    tokens: token.Tokens,
+    at: u64,
+    workflow: model.Workflow,
+    errors: StrBuf,
+
+    fn new(tokens: token.Tokens, strings: poolmod.Pool) -> Self {
+        Self { tokens: tokens, at: 0, workflow: model.new_workflow(strings), errors: StrBuf.new() }
+    }
+
+    fn peek(borrow self) -> token.Token { self.tokens.get_or(self.at, token.empty()) }
+    fn check(borrow self, kind: u64) -> bool { self.peek().kind == kind }
+
+    fn advance(inout self) -> token.Token {
+        let value = self.peek();
+        if value.kind != token.EOF { self.at += 1; }
+        value
+    }
+
+    fn error(inout self, message: StrBuf) {
+        self.errors.push_str("parse error at byte ");
+        self.errors.push_str(@to_string(self.peek().start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push(10);
+    }
+
+    fn expect(inout self, kind: u64, message: StrBuf) -> token.Token {
+        if self.check(kind) { return self.advance(); }
+        self.error(message);
+        if !self.check(token.EOF) { self.advance() } else { self.peek() }
+    }
+
+    fn integer(inout self, label: StrBuf) -> u64 {
+        let value = self.expect(token.INT, label);
+        value.value
+    }
+
+    fn boolean(inout self, label: StrBuf) -> bool {
+        if self.check(token.TRUE) { let _ = self.advance(); return true; }
+        if self.check(token.FALSE) { let _ = self.advance(); return false; }
+        self.error(label);
+        if !self.check(token.EOF) { let _ = self.advance(); }
+        false
+    }
+
+    fn semicolon(inout self) {
+        let _ = self.expect(token.SEMI, "expected ';' after declaration");
+    }
+
+    fn workflow_decl(inout self) {
+        let name = self.expect(token.IDENT, "expected workflow name");
+        self.workflow.name = name.value;
+        self.semicolon();
+    }
+
+    fn pool_decl(inout self) {
+        let name = self.expect(token.IDENT, "expected pool name");
+        let _ = self.expect(token.SLOTS, "expected 'slots'");
+        let slots = self.integer("expected slot count");
+        let _ = self.expect(token.CPU, "expected 'cpu'");
+        let cpu = self.integer("expected cpu capacity");
+        let _ = self.expect(token.MEMORY, "expected 'memory'");
+        let memory = self.integer("expected memory capacity");
+        self.semicolon();
+        self.workflow.pools.push(model.WorkerPool {
+            id: name.value, slots: slots, cpu: cpu, memory: memory,
+        });
+    }
+
+    fn task_decl(inout self) {
+        let name = self.expect(token.IDENT, "expected task name");
+        let _ = self.expect(token.POOL, "expected 'pool'");
+        let pool_name = self.expect(token.IDENT, "expected task pool name");
+        let _ = self.expect(token.DURATION, "expected 'duration'");
+        let duration = self.integer("expected task duration");
+        let _ = self.expect(token.CPU, "expected 'cpu'");
+        let cpu = self.integer("expected task cpu");
+        let _ = self.expect(token.MEMORY, "expected 'memory'");
+        let memory = self.integer("expected task memory");
+        let _ = self.expect(token.PRIORITY, "expected 'priority'");
+        let priority = self.integer("expected task priority");
+        let _ = self.expect(token.RETRIES, "expected 'retries'");
+        let retries = self.integer("expected retry count");
+        let _ = self.expect(token.CACHE, "expected 'cache'");
+        let cacheable = self.boolean("expected cache boolean");
+        let _ = self.expect(token.FAIL, "expected 'fail'");
+        let fail_attempt = self.integer("expected failure attempt");
+        self.semicolon();
+        self.workflow.tasks.push(model.Task {
+            id: name.value, pool_id: pool_name.value, pool: model.NONE(),
+            duration: duration, cpu: cpu, memory: memory, priority: priority,
+            retries: retries, cacheable: cacheable, fail_attempt: fail_attempt,
+        });
+    }
+
+    fn after_decl(inout self) {
+        let after = self.expect(token.IDENT, "expected dependent task");
+        let before = self.expect(token.IDENT, "expected prerequisite task");
+        self.semicolon();
+        self.workflow.edges.push(model.Edge {
+            before_id: before.value,
+            after_id: after.value,
+            before: model.NONE(),
+            after: model.NONE(),
+        });
+    }
+
+    fn declaration(inout self) {
+        let kind = self.peek().kind;
+        let _ = self.advance();
+        if kind == token.WORKFLOW { self.workflow_decl(); }
+        else if kind == token.POOL { self.pool_decl(); }
+        else if kind == token.TASK { self.task_decl(); }
+        else if kind == token.AFTER { self.after_decl(); }
+        else {
+            self.error("expected workflow, pool, task, or after declaration");
+            while !self.check(token.SEMI) && !self.check(token.EOF) { let _ = self.advance(); }
+            if self.check(token.SEMI) { let _ = self.advance(); }
+        }
+    }
+}
+
+pub fn parse(tokens: token.Tokens, strings: poolmod.Pool) -> ParseResult {
+    let mut parser = Parser.new(tokens, strings);
+    while !parser.check(token.EOF) { parser.declaration(); }
+    ParseResult { workflow: parser.workflow, errors: parser.errors }
+}

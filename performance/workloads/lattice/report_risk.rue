@@ -1,0 +1,41 @@
+// Ranked operational risk register derived from graph and task declarations.
+const cut_analysis = @import("cut_analysis.rue");
+const model = @import("model.rue");
+const path_catalog = @import("path_catalog.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn score(borrow workflow: model.Workflow, borrow paths: path_catalog.Catalog, task_index: u64) -> u64 {
+    let task = workflow.tasks.get_or(task_index, model.empty_task());
+    let incoming = model.dependency_count(borrow workflow, task_index);
+    let outgoing = model.dependent_count(borrow workflow, task_index);
+    let path_weight = paths.paths_through_task.get_or(task_index, 0);
+    let retry_risk = if task.fail_attempt > 0 { 40 } else { 0 };
+    let cache_relief = if task.cacheable { 10 } else { 0 };
+    let gross = task.duration * 5 + task.cpu * 3 + task.memory + incoming * 4 + outgoing * 8 +
+        if path_weight > 20 { 20 } else { path_weight } + retry_risk;
+    if gross > cache_relief { gross - cache_relief } else { 0 }
+}
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let paths = path_catalog.compute(borrow workflow);
+    let cuts = cut_analysis.compute(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "RISK REGISTER workflow="); text.append_id(inout out, borrow workflow, workflow.name); out.push(10);
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let value = score(borrow workflow, borrow paths, i);
+        text.append_literal(inout out, "task="); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, " score="); text.append_u64(inout out, value);
+        text.append_literal(inout out, " paths="); text.append_u64(inout out, paths.paths_through_task.get_or(i, 0));
+        text.append_literal(inout out, " fallible="); text.append_bool(inout out, task.fail_attempt > 0);
+        text.append_literal(inout out, " cacheable="); text.append_bool(inout out, task.cacheable); out.push(10);
+        i += 1;
+    }
+    text.append_literal(inout out, "mandatory_tasks="); text.append_u64(inout out, cuts.mandatory_count);
+    text.append_literal(inout out, " bridge_edges="); text.append_u64(inout out, cuts.bridge_count);
+    text.append_literal(inout out, " fanouts="); text.append_u64(inout out, cuts.fanout_count); out.push(10);
+    out
+}

@@ -1,0 +1,49 @@
+// Transactional SQL snapshot for relational ingestion.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+fn quoted_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
+    out.push(39);
+    let mut i: u64 = 0;
+    while i < workflow.strings.string_len(id) {
+        let byte = workflow.strings.byte_at(id, i);
+        if byte == 39 { out.push(39); out.push(39); } else { out.push(byte); }
+        i += 1;
+    }
+    out.push(39);
+}
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "BEGIN;\nCREATE TABLE lattice_task(task_id TEXT PRIMARY KEY,pool_id TEXT,duration INTEGER,priority INTEGER,status INTEGER,attempts INTEGER,start_tick INTEGER,end_tick INTEGER);\n");
+    text.append_literal(inout out, "CREATE TABLE lattice_edge(before_id TEXT,after_id TEXT,PRIMARY KEY(before_id,after_id));\n");
+    text.append_literal(inout out, "CREATE TABLE lattice_event(sequence INTEGER PRIMARY KEY,time_tick INTEGER,kind INTEGER,task_index INTEGER,pool_index INTEGER,attempt INTEGER);\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "INSERT INTO lattice_task VALUES("); quoted_id(inout out, borrow workflow, task.id); out.push(44);
+        quoted_id(inout out, borrow workflow, task.pool_id); out.push(44); text.append_u64(inout out, task.duration); out.push(44);
+        text.append_u64(inout out, task.priority); out.push(44); text.append_u64(inout out, run.status.get_or(i, state.FAILED())); out.push(44);
+        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(44); text.append_u64(inout out, run.starts.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, run.ends.get_or(i, 0)); text.append_literal(inout out, ");\n"); i += 1;
+    }
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        text.append_literal(inout out, "INSERT INTO lattice_edge VALUES("); quoted_id(inout out, borrow workflow, edge.before_id);
+        out.push(44); quoted_id(inout out, borrow workflow, edge.after_id); text.append_literal(inout out, ");\n"); i += 1;
+    }
+    i = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        text.append_literal(inout out, "INSERT INTO lattice_event VALUES("); text.append_u64(inout out, i); out.push(44);
+        text.append_u64(inout out, event.time); out.push(44); text.append_u64(inout out, event.kind); out.push(44);
+        text.append_u64(inout out, event.task); out.push(44); text.append_u64(inout out, event.pool); out.push(44);
+        text.append_u64(inout out, event.attempt); text.append_literal(inout out, ");\n"); i += 1;
+    }
+    text.append_literal(inout out, "COMMIT;\n");
+    out
+}

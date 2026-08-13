@@ -1,0 +1,82 @@
+// Declared cache policy versus observed cache behavior.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    cacheable_by_pool: model.U64s,
+    hits_by_pool: model.U64s,
+    misses_by_pool: model.U64s,
+    declared_cacheable: u64,
+    observed_hits: u64,
+    observed_misses: u64,
+    invalid_hits: u64,
+    saved_duration: u64,
+    saved_cpu_ticks: u64,
+    saved_memory_ticks: u64,
+    hit_rate_millis: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut out = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { out.push(0); i += 1; }
+    out
+}
+
+fn add(inout values: model.U64s, index: u64) {
+    if index < values.len() { values.set(index, values.get_or(index, 0) + 1); }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let mut cacheable_by_pool = zeroes(workflow.pools.len());
+    let mut hits_by_pool = zeroes(workflow.pools.len());
+    let mut misses_by_pool = zeroes(workflow.pools.len());
+    let mut declared_cacheable: u64 = 0;
+    let mut observed_hits: u64 = 0;
+    let mut observed_misses: u64 = 0;
+    let mut invalid_hits: u64 = 0;
+    let mut saved_duration: u64 = 0;
+    let mut saved_cpu_ticks: u64 = 0;
+    let mut saved_memory_ticks: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let status = run.status.get_or(i, state.FAILED());
+        if task.cacheable {
+            declared_cacheable += 1;
+            add(inout cacheable_by_pool, task.pool);
+            if status == state.CACHED() {
+                observed_hits += 1;
+                add(inout hits_by_pool, task.pool);
+                saved_duration += task.duration;
+                saved_cpu_ticks += task.duration * task.cpu;
+                saved_memory_ticks += task.duration * task.memory;
+            } else {
+                observed_misses += 1;
+                add(inout misses_by_pool, task.pool);
+            }
+        } else if status == state.CACHED() {
+            invalid_hits += 1;
+        }
+        digest = mix(digest, i); digest = mix(digest, status);
+        digest = mix(digest, if task.cacheable { 1 } else { 0 });
+        i += 1;
+    }
+    let hit_rate_millis = if declared_cacheable == 0 { 0 }
+        else { (observed_hits * 1000) / declared_cacheable };
+    Analysis {
+        cacheable_by_pool: cacheable_by_pool, hits_by_pool: hits_by_pool,
+        misses_by_pool: misses_by_pool, declared_cacheable: declared_cacheable,
+        observed_hits: observed_hits, observed_misses: observed_misses,
+        invalid_hits: invalid_hits, saved_duration: saved_duration,
+        saved_cpu_ticks: saved_cpu_ticks, saved_memory_ticks: saved_memory_ticks,
+        hit_rate_millis: hit_rate_millis, digest: digest,
+        valid: invalid_hits == 0 && observed_hits == run.cached &&
+            observed_hits + observed_misses == declared_cacheable,
+    }
+}

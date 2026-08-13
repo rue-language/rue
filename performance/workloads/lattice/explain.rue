@@ -1,0 +1,161 @@
+// Per-task causal explanations derived from dependencies, timing, and events.
+const model = @import("model.rue");
+const queue_analysis = @import("queue_analysis.rue");
+const state = @import("state.rue");
+const std = @import("std");
+
+pub fn COMPLETED() -> u64 { 1 }
+pub fn CACHE_HIT() -> u64 { 2 }
+pub fn RETRIED() -> u64 { 3 }
+pub fn EXHAUSTED() -> u64 { 4 }
+pub fn BLOCKED() -> u64 { 5 }
+pub fn PENDING() -> u64 { 6 }
+
+pub struct Explanation {
+    task: u64,
+    classification: u64,
+    dependencies: u64,
+    successful_dependencies: u64,
+    failed_dependencies: u64,
+    ready_time: u64,
+    queue_delay: u64,
+    start: u64,
+    end: u64,
+    attempts: u64,
+    start_events: u64,
+    failure_events: u64,
+    retry_events: u64,
+    cache_events: u64,
+    blocked_events: u64,
+    digest: u64,
+    consistent: bool,
+}
+
+pub const Explanations = std.arraybuf.ArrayBuf(Explanation);
+
+pub struct Analysis {
+    tasks: Explanations,
+    completed: u64,
+    cached: u64,
+    retried: u64,
+    exhausted: u64,
+    blocked: u64,
+    pending: u64,
+    inconsistencies: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn classify(status: u64, attempts: u64, failed_dependencies: u64) -> u64 {
+    if status == state.CACHED() { CACHE_HIT() }
+    else if status == state.SUCCEEDED() && attempts > 1 { RETRIED() }
+    else if status == state.SUCCEEDED() { COMPLETED() }
+    else if status == state.FAILED() && failed_dependencies > 0 { BLOCKED() }
+    else if status == state.FAILED() { EXHAUSTED() }
+    else { PENDING() }
+}
+
+fn event_counts(borrow run: state.Run, task: u64) -> model.U64s {
+    let mut counts = model.U64s.with_capacity(7);
+    let mut i: u64 = 0;
+    while i < 7 { counts.push(0); i += 1; }
+    i = 0;
+    while i < run.events.len() {
+        let event = run.events.get_or(i, state.empty_event());
+        if event.task == task && event.kind < counts.len() {
+            counts.set(event.kind, counts.get_or(event.kind, 0) + 1);
+        }
+        i += 1;
+    }
+    counts
+}
+
+fn one(
+    borrow workflow: model.Workflow,
+    borrow run: state.Run,
+    borrow queue: queue_analysis.Analysis,
+    task: u64,
+) -> Explanation {
+    let mut dependencies: u64 = 0;
+    let mut successful_dependencies: u64 = 0;
+    let mut failed_dependencies: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task {
+            dependencies += 1;
+            let dependency_status = run.status.get_or(edge.before, state.FAILED());
+            if state.successful(dependency_status) { successful_dependencies += 1; }
+            else if dependency_status == state.FAILED() { failed_dependencies += 1; }
+        }
+        i += 1;
+    }
+    let counts = event_counts(borrow run, task);
+    let status = run.status.get_or(task, state.FAILED());
+    let attempts = run.attempts.get_or(task, 0);
+    let classification = classify(status, attempts, failed_dependencies);
+    let start_events = counts.get_or(state.EVENT_START(), 0);
+    let failure_events = counts.get_or(state.EVENT_FAILURE(), 0);
+    let retry_events = counts.get_or(state.EVENT_RETRY(), 0);
+    let cache_events = counts.get_or(state.EVENT_CACHE(), 0);
+    let blocked_events = counts.get_or(state.EVENT_BLOCKED(), 0);
+    let consistent = start_events == attempts && retry_events <= failure_events &&
+        cache_events <= 1 && blocked_events <= 1 &&
+        successful_dependencies + failed_dependencies <= dependencies;
+    let mut digest = mix(14695981039346656037, task);
+    digest = mix(digest, classification); digest = mix(digest, dependencies);
+    digest = mix(digest, attempts); digest = mix(digest, start_events);
+    Explanation {
+        task: task, classification: classification, dependencies: dependencies,
+        successful_dependencies: successful_dependencies, failed_dependencies: failed_dependencies,
+        ready_time: queue.dependency_ready.get_or(task, 0),
+        queue_delay: queue.queue_delay.get_or(task, 0),
+        start: run.starts.get_or(task, model.NONE()), end: run.ends.get_or(task, model.NONE()),
+        attempts: attempts, start_events: start_events, failure_events: failure_events,
+        retry_events: retry_events, cache_events: cache_events, blocked_events: blocked_events,
+        digest: digest, consistent: consistent,
+    }
+}
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let queue = queue_analysis.compute(borrow workflow, borrow run);
+    let mut tasks = Explanations.with_capacity(workflow.tasks.len());
+    let mut completed: u64 = 0;
+    let mut cached: u64 = 0;
+    let mut retried: u64 = 0;
+    let mut exhausted: u64 = 0;
+    let mut blocked: u64 = 0;
+    let mut pending: u64 = 0;
+    let mut inconsistencies: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let value = one(borrow workflow, borrow run, borrow queue, i);
+        if value.classification == COMPLETED() { completed += 1; }
+        else if value.classification == CACHE_HIT() { cached += 1; }
+        else if value.classification == RETRIED() { retried += 1; }
+        else if value.classification == EXHAUSTED() { exhausted += 1; }
+        else if value.classification == BLOCKED() { blocked += 1; }
+        else { pending += 1; }
+        if !value.consistent { inconsistencies += 1; }
+        digest = mix(digest, value.digest);
+        tasks.push(value); i += 1;
+    }
+    Analysis {
+        tasks: tasks, completed: completed, cached: cached, retried: retried,
+        exhausted: exhausted, blocked: blocked, pending: pending,
+        inconsistencies: inconsistencies, digest: digest,
+        valid: inconsistencies == 0 && completed + cached + retried + exhausted + blocked + pending == workflow.tasks.len(),
+    }
+}
+
+pub fn classification_name(value: u64) -> str {
+    if value == COMPLETED() { "completed" }
+    else if value == CACHE_HIT() { "cache-hit" }
+    else if value == RETRIED() { "recovered-after-retry" }
+    else if value == EXHAUSTED() { "retry-budget-exhausted" }
+    else if value == BLOCKED() { "blocked-by-dependency" }
+    else { "pending" }
+}

@@ -1,0 +1,67 @@
+// Compare the realized schedule with graph, serial-work, and capacity bounds.
+const critical_path = @import("critical_path.rue");
+const model = @import("model.rue");
+const queue_analysis = @import("queue_analysis.rue");
+const resource_audit = @import("resource_audit.rue");
+const serial_oracle = @import("serial_oracle.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    graph_lower_bound: u64,
+    task_lower_bound: u64,
+    effective_lower_bound: u64,
+    serial_upper_bound: u64,
+    makespan: u64,
+    overhead: u64,
+    parallel_ticks_saved: u64,
+    efficiency_millis: u64,
+    throughput_millis: u64,
+    queue_delay: u64,
+    peak_slots: u64,
+    peak_cpu: u64,
+    peak_memory: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn maximum(borrow values: model.U64s) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < values.len() {
+        if values.get_or(i, 0) > result { result = values.get_or(i, 0); }
+        i += 1;
+    }
+    result
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let critical = critical_path.compute(borrow workflow);
+    let serial = serial_oracle.compute(borrow workflow, borrow run);
+    let resources = resource_audit.audit(borrow workflow, borrow run);
+    let queue = queue_analysis.compute(borrow workflow, borrow run);
+    let effective_lower_bound = if critical.makespan > serial.lower_bound {
+        critical.makespan
+    } else { serial.lower_bound };
+    let overhead = if run.makespan > effective_lower_bound { run.makespan - effective_lower_bound } else { 0 };
+    let efficiency_millis = if run.makespan == 0 { 0 } else { (effective_lower_bound * 1000) / run.makespan };
+    let throughput_millis = if run.makespan == 0 { 0 }
+        else { ((run.succeeded + run.cached) * 1000) / run.makespan };
+    let peak_slots = maximum(borrow resources.maximum_slots);
+    let peak_cpu = maximum(borrow resources.maximum_cpu);
+    let peak_memory = maximum(borrow resources.maximum_memory);
+    let mut digest = critical.digest;
+    digest = mix(digest, serial.digest); digest = mix(digest, resources.digest);
+    digest = mix(digest, queue.digest); digest = mix(digest, overhead);
+    Analysis {
+        graph_lower_bound: critical.makespan, task_lower_bound: serial.lower_bound,
+        effective_lower_bound: effective_lower_bound, serial_upper_bound: serial.upper_bound,
+        makespan: run.makespan, overhead: overhead,
+        parallel_ticks_saved: serial.saved_ticks, efficiency_millis: efficiency_millis,
+        throughput_millis: throughput_millis, queue_delay: queue.total_queue_delay,
+        peak_slots: peak_slots, peak_cpu: peak_cpu, peak_memory: peak_memory,
+        digest: digest, valid: critical.valid && serial.valid && resources.ok && queue.valid &&
+            run.makespan >= effective_lower_bound && run.makespan <= serial.upper_bound,
+    }
+}

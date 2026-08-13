@@ -1,0 +1,122 @@
+// ASCII lexer for the Lattice workflow DSL.
+const std = @import("std");
+const poolmod = @import("pool.rue");
+const token = @import("token.rue");
+const StrBuf = std.strbuf.StrBuf;
+const Bytes = std.arraybuf.ArrayBuf(u8);
+
+pub struct ScanResult {
+    tokens: token.Tokens,
+    strings: poolmod.Pool,
+    errors: StrBuf,
+}
+
+fn is_alpha(value: u8) -> bool {
+    (value >= 65 && value <= 90) || (value >= 97 && value <= 122) || value == 95
+}
+
+fn is_digit(value: u8) -> bool { value >= 48 && value <= 57 }
+fn is_alnum(value: u8) -> bool { is_alpha(value) || is_digit(value) || value == 45 }
+
+struct Lexer {
+    source: Bytes,
+    at: u64,
+    tokens: token.Tokens,
+    strings: poolmod.Pool,
+    errors: StrBuf,
+
+    fn new(source: Bytes) -> Self {
+        Self {
+            source: source,
+            at: 0,
+            tokens: token.Tokens.new(),
+            strings: poolmod.Pool.new(),
+            errors: StrBuf.new(),
+        }
+    }
+
+    fn byte(borrow self, index: u64) -> u8 { self.source.get_or(index, 0) }
+    fn done(borrow self) -> bool { self.at >= self.source.len() }
+
+    fn advance(inout self) -> u8 {
+        let value = self.byte(self.at);
+        self.at += 1;
+        value
+    }
+
+    fn push(inout self, kind: u64, start: u64, value: u64) {
+        self.tokens.push(token.Token { kind: kind, start: start, end: self.at, value: value });
+    }
+
+    fn error(inout self, start: u64, message: StrBuf) {
+        self.errors.push_str("lex error at byte ");
+        self.errors.push_str(@to_string(start));
+        self.errors.push_str(": ");
+        self.errors.push_str(message);
+        self.errors.push(10);
+    }
+
+    fn word_is(borrow word: StrBuf, value: StrBuf) -> bool {
+        StrBuf.equals_borrowed(borrow word, borrow value)
+    }
+
+    fn keyword(borrow word: StrBuf) -> u64 {
+        if Self.word_is(borrow word, "workflow") { token.WORKFLOW }
+        else if Self.word_is(borrow word, "pool") { token.POOL }
+        else if Self.word_is(borrow word, "task") { token.TASK }
+        else if Self.word_is(borrow word, "after") { token.AFTER }
+        else if Self.word_is(borrow word, "slots") { token.SLOTS }
+        else if Self.word_is(borrow word, "duration") { token.DURATION }
+        else if Self.word_is(borrow word, "cpu") { token.CPU }
+        else if Self.word_is(borrow word, "memory") { token.MEMORY }
+        else if Self.word_is(borrow word, "priority") { token.PRIORITY }
+        else if Self.word_is(borrow word, "retries") { token.RETRIES }
+        else if Self.word_is(borrow word, "cache") { token.CACHE }
+        else if Self.word_is(borrow word, "fail") { token.FAIL }
+        else if Self.word_is(borrow word, "true") { token.TRUE }
+        else if Self.word_is(borrow word, "false") { token.FALSE }
+        else { token.IDENT }
+    }
+
+    fn identifier(inout self, start: u64) {
+        while !self.done() && is_alnum(self.byte(self.at)) { let _ = self.advance(); }
+        let spelling = StrBuf.from_byte_range(borrow self.source, start, self.at - start);
+        let kind = Self.keyword(borrow spelling);
+        let value = if kind == token.IDENT { self.strings.intern(borrow spelling) } else { 0 };
+        self.push(kind, start, value);
+    }
+
+    fn number(inout self, start: u64, first: u8) {
+        let mut value: u64 = @intCast(first - 48);
+        while !self.done() && is_digit(self.byte(self.at)) {
+            let digit: u64 = @intCast(self.advance() - 48);
+            if value > 1844674407370955161 || (value == 1844674407370955161 && digit > 5) {
+                self.error(start, "integer literal is too large");
+                value = 0;
+            } else { value = value * 10 + digit; }
+        }
+        self.push(token.INT, start, value);
+    }
+
+    fn scan_one(inout self) {
+        let start = self.at;
+        let value = self.advance();
+        if value == 32 || value == 9 || value == 10 || value == 13 { return; }
+        if is_alpha(value) { self.identifier(start); return; }
+        if is_digit(value) { self.number(start, value); return; }
+        if value == 35 {
+            while !self.done() && self.byte(self.at) != 10 { let _ = self.advance(); }
+            return;
+        }
+        if value == 59 { self.push(token.SEMI, start, 0); return; }
+        self.error(start, "unexpected character");
+        self.push(token.ERROR, start, 0);
+    }
+}
+
+pub fn scan(source: Bytes) -> ScanResult {
+    let mut lexer = Lexer.new(source);
+    while !lexer.done() { lexer.scan_one(); }
+    lexer.tokens.push(token.Token { kind: token.EOF, start: lexer.at, end: lexer.at, value: 0 });
+    ScanResult { tokens: lexer.tokens, strings: lexer.strings, errors: lexer.errors }
+}

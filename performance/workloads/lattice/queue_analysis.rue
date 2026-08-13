@@ -1,0 +1,89 @@
+// Derive dependency-ready time and scheduler delay for each executed task.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    dependency_ready: model.U64s,
+    queue_delay: model.U64s,
+    runtime: model.U64s,
+    total_queue_delay: u64,
+    maximum_queue_delay: u64,
+    maximum_queue_task: u64,
+    zero_delay_tasks: u64,
+    delayed_tasks: u64,
+    unstarted_tasks: u64,
+    timing_mismatches: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn ready_time(borrow workflow: model.Workflow, borrow run: state.Run, task: u64) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task {
+            let finish = run.ends.get_or(edge.before, 0);
+            if finish != model.NONE() && finish > result { result = finish; }
+        }
+        i += 1;
+    }
+    result
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let mut dependency_ready = zeroes(workflow.tasks.len());
+    let mut queue_delay = zeroes(workflow.tasks.len());
+    let mut runtime = zeroes(workflow.tasks.len());
+    let mut total_queue_delay: u64 = 0;
+    let mut maximum_queue_delay: u64 = 0;
+    let mut maximum_queue_task = model.NONE();
+    let mut zero_delay_tasks: u64 = 0;
+    let mut delayed_tasks: u64 = 0;
+    let mut unstarted_tasks: u64 = 0;
+    let mut timing_mismatches: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let ready = ready_time(borrow workflow, borrow run, i);
+        let start = run.starts.get_or(i, model.NONE());
+        let end = run.ends.get_or(i, model.NONE());
+        dependency_ready.set(i, ready);
+        if start == model.NONE() {
+            unstarted_tasks += 1;
+        } else {
+            let delay = if start >= ready { start - ready } else { timing_mismatches += 1; 0 };
+            queue_delay.set(i, delay);
+            total_queue_delay += delay;
+            if delay == 0 { zero_delay_tasks += 1; }
+            else { delayed_tasks += 1; }
+            if maximum_queue_task == model.NONE() || delay > maximum_queue_delay {
+                maximum_queue_delay = delay; maximum_queue_task = i;
+            }
+            if end != model.NONE() {
+                if end >= start { runtime.set(i, end - start); }
+                else { timing_mismatches += 1; }
+            }
+        }
+        digest = mix(digest, ready); digest = mix(digest, start);
+        digest = mix(digest, end); digest = mix(digest, queue_delay.get_or(i, 0));
+        i += 1;
+    }
+    Analysis {
+        dependency_ready: dependency_ready, queue_delay: queue_delay, runtime: runtime,
+        total_queue_delay: total_queue_delay, maximum_queue_delay: maximum_queue_delay,
+        maximum_queue_task: maximum_queue_task, zero_delay_tasks: zero_delay_tasks,
+        delayed_tasks: delayed_tasks, unstarted_tasks: unstarted_tasks,
+        timing_mismatches: timing_mismatches, digest: digest,
+        valid: timing_mismatches == 0 && zero_delay_tasks + delayed_tasks + unstarted_tasks == workflow.tasks.len(),
+    }
+}

@@ -1,0 +1,113 @@
+// Exact topological layering and width analysis.
+const std = @import("std");
+const model = @import("model.rue");
+const topology = @import("topology.rue");
+const U64s = std.arraybuf.ArrayBuf(u64);
+
+pub struct Layers {
+    level_by_task: U64s,
+    tasks_by_level: U64s,
+    depth: u64,
+    maximum_width: u64,
+    widest_level: u64,
+    roots: u64,
+    leaves: u64,
+    valid: bool,
+    digest: u64,
+}
+
+fn zeroes(count: u64) -> U64s {
+    let mut values = U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+fn predecessor_level(borrow workflow: model.Workflow, borrow levels: U64s, task: u64) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task {
+            let candidate = levels.get_or(edge.before, 0) + 1;
+            if candidate > result { result = candidate; }
+        }
+        i += 1;
+    }
+    result
+}
+
+pub fn compute(borrow workflow: model.Workflow) -> Layers {
+    let order = topology.sort(borrow workflow);
+    let mut level_by_task = zeroes(workflow.tasks.len());
+    let mut depth: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < order.tasks.len() {
+        let task = order.tasks.get_or(i, model.NONE());
+        let level = predecessor_level(borrow workflow, borrow level_by_task, task);
+        level_by_task.set(task, level);
+        if level + 1 > depth { depth = level + 1; }
+        digest = mix(digest, task);
+        digest = mix(digest, level);
+        i += 1;
+    }
+    let mut tasks_by_level = zeroes(depth);
+    i = 0;
+    while i < workflow.tasks.len() {
+        let level = level_by_task.get_or(i, 0);
+        if level < tasks_by_level.len() {
+            tasks_by_level.set(level, tasks_by_level.get_or(level, 0) + 1);
+        }
+        i += 1;
+    }
+    let mut maximum_width: u64 = 0;
+    let mut widest_level: u64 = 0;
+    i = 0;
+    while i < tasks_by_level.len() {
+        let width = tasks_by_level.get_or(i, 0);
+        if width > maximum_width { maximum_width = width; widest_level = i; }
+        digest = mix(digest, width);
+        i += 1;
+    }
+    Layers {
+        level_by_task: level_by_task,
+        tasks_by_level: tasks_by_level,
+        depth: depth,
+        maximum_width: maximum_width,
+        widest_level: widest_level,
+        roots: order.roots,
+        leaves: order.leaves,
+        valid: !order.has_cycle && order.tasks.len() == workflow.tasks.len(),
+        digest: digest,
+    }
+}
+
+pub fn level(borrow layers: Layers, task: u64) -> u64 {
+    layers.level_by_task.get_or(task, 0)
+}
+
+pub fn width(borrow layers: Layers, level_index: u64) -> u64 {
+    layers.tasks_by_level.get_or(level_index, 0)
+}
+
+pub fn verify(borrow workflow: model.Workflow, borrow layers: Layers) -> bool {
+    if !layers.valid || layers.level_by_task.len() != workflow.tasks.len() { return false; }
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if level(borrow layers, edge.before) >= level(borrow layers, edge.after) { return false; }
+        i += 1;
+    }
+    let mut total: u64 = 0;
+    i = 0;
+    while i < layers.tasks_by_level.len() {
+        total += width(borrow layers, i);
+        i += 1;
+    }
+    total == workflow.tasks.len()
+}

@@ -1,0 +1,33 @@
+// Task-by-task causal explanation report.
+const explain = @import("explain.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let analysis = explain.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "TASK EXPLANATIONS valid="); text.append_bool(inout out, analysis.valid); out.push(10);
+    let mut i: u64 = 0;
+    while i < analysis.tasks.len() {
+        let value = analysis.tasks.get_or(i, explain.Explanation {
+            task: model.NONE(), classification: explain.PENDING(), dependencies: 0,
+            successful_dependencies: 0, failed_dependencies: 0, ready_time: 0,
+            queue_delay: 0, start: model.NONE(), end: model.NONE(), attempts: 0,
+            start_events: 0, failure_events: 0, retry_events: 0, cache_events: 0,
+            blocked_events: 0, digest: 0, consistent: false,
+        });
+        let task = workflow.tasks.get_or(value.task, model.empty_task());
+        text.append_literal(inout out, "task="); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, " outcome="); text.append_literal(inout out, explain.classification_name(value.classification));
+        text.append_literal(inout out, " dependencies="); text.append_u64(inout out, value.dependencies);
+        text.append_literal(inout out, " ready="); text.append_u64(inout out, value.ready_time);
+        text.append_literal(inout out, " queue_delay="); text.append_u64(inout out, value.queue_delay);
+        text.append_literal(inout out, " attempts="); text.append_u64(inout out, value.attempts);
+        text.append_literal(inout out, " consistent="); text.append_bool(inout out, value.consistent); out.push(10);
+        i += 1;
+    }
+    out
+}

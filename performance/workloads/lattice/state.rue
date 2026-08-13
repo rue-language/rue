@@ -1,0 +1,87 @@
+// Scheduler state and event-log representation.
+const std = @import("std");
+const model = @import("model.rue");
+
+pub fn PENDING() -> u64 { 0 }
+pub fn RUNNING() -> u64 { 1 }
+pub fn SUCCEEDED() -> u64 { 2 }
+pub fn FAILED() -> u64 { 3 }
+pub fn CACHED() -> u64 { 4 }
+
+pub fn EVENT_START() -> u64 { 1 }
+pub fn EVENT_SUCCESS() -> u64 { 2 }
+pub fn EVENT_FAILURE() -> u64 { 3 }
+pub fn EVENT_RETRY() -> u64 { 4 }
+pub fn EVENT_CACHE() -> u64 { 5 }
+pub fn EVENT_BLOCKED() -> u64 { 6 }
+
+pub struct Event {
+    kind: u64,
+    time: u64,
+    task: u64,
+    pool: u64,
+    attempt: u64,
+    cpu: u64,
+    memory: u64,
+}
+
+pub const Events = std.arraybuf.ArrayBuf(Event);
+
+pub struct Run {
+    status: model.U64s,
+    attempts: model.U64s,
+    starts: model.U64s,
+    ends: model.U64s,
+    next_ready: model.U64s,
+    events: Events,
+    makespan: u64,
+    succeeded: u64,
+    failed: u64,
+    cached: u64,
+    retries: u64,
+    starts_count: u64,
+    idle_ticks: u64,
+    resource_waits: u64,
+    dependency_waits: u64,
+    fingerprint: u64,
+}
+
+fn filled(count: u64, value: u64) -> model.U64s {
+    let mut out = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { out.push(value); i += 1; }
+    out
+}
+
+pub fn new_run(tasks: u64) -> Run {
+    Run {
+        status: filled(tasks, PENDING()),
+        attempts: filled(tasks, 0),
+        starts: filled(tasks, model.NONE()),
+        ends: filled(tasks, model.NONE()),
+        next_ready: filled(tasks, 0),
+        events: Events.new(),
+        makespan: 0,
+        succeeded: 0,
+        failed: 0,
+        cached: 0,
+        retries: 0,
+        starts_count: 0,
+        idle_ticks: 0,
+        resource_waits: 0,
+        dependency_waits: 0,
+        fingerprint: 14695981039346656037,
+    }
+}
+
+pub fn empty_event() -> Event {
+    Event { kind: 0, time: 0, task: model.NONE(), pool: model.NONE(), attempt: 0, cpu: 0, memory: 0 }
+}
+
+pub fn terminal(status: u64) -> bool {
+    status == SUCCEEDED() || status == FAILED() || status == CACHED()
+}
+
+pub fn successful(status: u64) -> bool {
+    status == SUCCEEDED() || status == CACHED()
+}

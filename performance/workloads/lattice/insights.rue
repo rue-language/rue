@@ -1,0 +1,90 @@
+// Canonical aggregator for operational analyses not required by scheduling.
+const cache_analysis = @import("cache_analysis.rue");
+const capacity_plan = @import("capacity_plan.rue");
+const cut_analysis = @import("cut_analysis.rue");
+const event_windows = @import("event_windows.rue");
+const forecast = @import("forecast.rue");
+const lint = @import("lint.rue");
+const model = @import("model.rue");
+const path_catalog = @import("path_catalog.rue");
+const pool_analysis = @import("pool_analysis.rue");
+const priority_analysis = @import("priority_analysis.rue");
+const queue_analysis = @import("queue_analysis.rue");
+const retry_analysis = @import("retry_analysis.rue");
+const schedule_quality = @import("schedule_quality.rue");
+const state = @import("state.rue");
+const statistics = @import("statistics.rue");
+
+pub struct Insights {
+    tasks: u64,
+    pools: u64,
+    edges: u64,
+    paths: u64,
+    bridge_edges: u64,
+    cache_hits: u64,
+    retries: u64,
+    queue_delay: u64,
+    efficiency_millis: u64,
+    saturated_pools: u64,
+    forecast_spread: u64,
+    event_windows: u64,
+    checks: u64,
+    failures: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn check(inout checks: u64, inout failures: u64, condition: bool) {
+    checks += 1;
+    if !condition { failures += 1; }
+}
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run, seed: u64) -> Insights {
+    let stats = statistics.compute(borrow workflow);
+    let pools = pool_analysis.compute(borrow workflow, borrow run);
+    let priorities = priority_analysis.compute(borrow workflow, borrow run);
+    let caches = cache_analysis.compute(borrow workflow, borrow run);
+    let retries = retry_analysis.compute(borrow workflow, borrow run);
+    let paths = path_catalog.compute(borrow workflow);
+    let cuts = cut_analysis.compute(borrow workflow);
+    let queue = queue_analysis.compute(borrow workflow, borrow run);
+    let quality = schedule_quality.compute(borrow workflow, borrow run);
+    let windows = event_windows.compute(borrow run, 8);
+    let capacity = capacity_plan.compute(borrow workflow, borrow run);
+    let projected = forecast.compute(borrow workflow, seed, 5);
+    let lints = lint.compute(borrow workflow, borrow run);
+    let mut checks: u64 = 0;
+    let mut failures: u64 = 0;
+    check(inout checks, inout failures, stats.valid);
+    check(inout checks, inout failures, pools.valid);
+    check(inout checks, inout failures, priorities.valid);
+    check(inout checks, inout failures, caches.valid);
+    check(inout checks, inout failures, retries.valid);
+    check(inout checks, inout failures, paths.valid);
+    check(inout checks, inout failures, cuts.valid);
+    check(inout checks, inout failures, queue.valid);
+    check(inout checks, inout failures, quality.valid);
+    check(inout checks, inout failures, windows.valid);
+    check(inout checks, inout failures, capacity.valid);
+    check(inout checks, inout failures, projected.valid);
+    check(inout checks, inout failures, lints.valid);
+    let mut digest = stats.digest;
+    digest = mix(digest, pools.digest); digest = mix(digest, priorities.digest);
+    digest = mix(digest, caches.digest); digest = mix(digest, retries.digest);
+    digest = mix(digest, paths.digest); digest = mix(digest, cuts.digest);
+    digest = mix(digest, queue.digest); digest = mix(digest, quality.digest);
+    digest = mix(digest, windows.digest); digest = mix(digest, capacity.digest);
+    digest = mix(digest, projected.digest);
+    digest = mix(digest, lints.digest);
+    Insights {
+        tasks: workflow.tasks.len(), pools: workflow.pools.len(), edges: workflow.edges.len(),
+        paths: paths.total_paths, bridge_edges: cuts.bridge_count,
+        cache_hits: caches.observed_hits, retries: retries.observed_retries,
+        queue_delay: queue.total_queue_delay, efficiency_millis: quality.efficiency_millis,
+        saturated_pools: capacity.saturated_pools, forecast_spread: projected.spread,
+        event_windows: windows.events_by_window.len(), checks: checks, failures: failures,
+        digest: digest, valid: failures == 0,
+    }
+}

@@ -1,0 +1,87 @@
+// Shared POD aggregate for Lattice analysis passes.
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Metric {
+    tag: u64,
+    observations: u64,
+    sum: u64,
+    minimum: u64,
+    maximum: u64,
+    weighted: u64,
+    even: u64,
+    odd: u64,
+    zeroes: u64,
+    warnings: u64,
+    digest: u64,
+}
+
+pub fn new(tag: u64) -> Metric {
+    Metric {
+        tag: tag, observations: 0, sum: 0,
+        minimum: 18446744073709551615, maximum: 0,
+        weighted: 0, even: 0, odd: 0, zeroes: 0,
+        warnings: 0, digest: 14695981039346656037,
+    }
+}
+
+pub fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+pub fn add(a: u64, b: u64) -> u64 {
+    if b > 18446744073709551615 - a { 18446744073709551615 } else { a + b }
+}
+
+pub fn multiply(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 { return 0; }
+    if a > 18446744073709551615 / b { 18446744073709551615 } else { a * b }
+}
+
+pub fn observe(inout metric: Metric, value: u64, weight: u64) {
+    metric.observations += 1;
+    metric.sum = add(metric.sum, value);
+    metric.weighted = add(metric.weighted, multiply(value, weight));
+    if value < metric.minimum { metric.minimum = value; }
+    if value > metric.maximum { metric.maximum = value; }
+    if value == 0 { metric.zeroes += 1; }
+    if value % 2 == 0 { metric.even += 1; }
+    else { metric.odd += 1; }
+    metric.digest = mix(metric.digest, value);
+    metric.digest = mix(metric.digest, weight);
+}
+
+pub fn warn(inout metric: Metric, condition: bool) {
+    if condition { metric.warnings += 1; }
+}
+
+pub fn finish(inout metric: Metric) {
+    if metric.observations == 0 { metric.minimum = 0; }
+    metric.digest = mix(metric.digest, metric.tag);
+    metric.digest = mix(metric.digest, metric.observations);
+    metric.digest = mix(metric.digest, metric.sum);
+    metric.digest = mix(metric.digest, metric.weighted);
+    metric.digest = mix(metric.digest, metric.warnings);
+}
+
+pub fn mean(borrow metric: Metric) -> u64 {
+    if metric.observations == 0 { 0 } else { metric.sum / metric.observations }
+}
+
+pub fn render(label: str, borrow metric: Metric) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, label); out.push(10);
+    text.line(inout out, "observations=", metric.observations);
+    text.line(inout out, "sum=", metric.sum);
+    text.line(inout out, "minimum=", metric.minimum);
+    text.line(inout out, "maximum=", metric.maximum);
+    text.line(inout out, "mean=", mean(borrow metric));
+    text.line(inout out, "weighted=", metric.weighted);
+    text.line(inout out, "even=", metric.even);
+    text.line(inout out, "odd=", metric.odd);
+    text.line(inout out, "zeroes=", metric.zeroes);
+    text.line(inout out, "warnings=", metric.warnings);
+    text.line(inout out, "digest=", metric.digest);
+    out
+}

@@ -1,0 +1,195 @@
+// Scaling harness that runs every independent graph and schedule oracle against
+// a generated workflow, then repeats execution to prove determinism.
+const critical_path = @import("critical_path.rue");
+const dominators = @import("dominators.rue");
+const event_analysis = @import("event_analysis.rue");
+const fingerprint = @import("fingerprint.rue");
+const generate = @import("generate.rue");
+const insights = @import("insights.rue");
+const levels = @import("levels.rue");
+const portfolio = @import("portfolio.rue");
+const replay = @import("replay.rue");
+const report_suite = @import("report_suite.rue");
+const resource_audit = @import("resource_audit.rue");
+const schedule = @import("schedule.rue");
+const schedule_diff = @import("schedule_diff.rue");
+const serial_oracle = @import("serial_oracle.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const topology = @import("topology.rue");
+const transitive_reduction = @import("transitive_reduction.rue");
+const validate = @import("validate.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Config {
+    scale: u64,
+    tasks: u64,
+    pools: u64,
+    width: u64,
+    seed: u64,
+}
+
+pub struct Result {
+    scale: u64,
+    tasks: u64,
+    pools: u64,
+    edges: u64,
+    events: u64,
+    makespan: u64,
+    diagnostics: u64,
+    analysis_passes: u64,
+    observations: u64,
+    warnings: u64,
+    insight_checks: u64,
+    insight_failures: u64,
+    report_documents: u64,
+    report_bytes: u64,
+    report_failures: u64,
+    depth: u64,
+    maximum_width: u64,
+    critical_tasks: u64,
+    critical_makespan: u64,
+    essential_edges: u64,
+    redundant_edges: u64,
+    strict_dominators: u64,
+    replay_mismatches: u64,
+    resource_violations: u64,
+    event_count_mismatches: u64,
+    schedule_changes: u64,
+    succeeded: u64,
+    cached: u64,
+    retries: u64,
+    idle_ticks: u64,
+    resource_waits: u64,
+    dependency_waits: u64,
+    fingerprint: u64,
+    digest: u64,
+    deterministic: bool,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 {
+    @wrapping_mul(hash ^ value, 1099511628211)
+}
+
+pub fn tier(scale: u64) -> Config {
+    let normalized = if scale == 0 { 1 } else { scale };
+    Config {
+        scale: normalized,
+        tasks: 24 * normalized,
+        pools: 2 + normalized,
+        width: 3 + normalized,
+        seed: 41 + normalized * 17,
+    }
+}
+
+pub fn run(config: Config) -> Result {
+    let mut workflow = generate.workflow(config.tasks, config.pools, config.width, config.seed);
+    validate.workflow(inout workflow);
+    let order = topology.sort(borrow workflow);
+    let layer_info = levels.compute(borrow workflow);
+    let critical = critical_path.compute(borrow workflow);
+    let reduction = transitive_reduction.compute(borrow workflow);
+    let dominator_info = dominators.compute(borrow workflow);
+    let analyses = portfolio.analyze(borrow workflow);
+    let first = schedule.run(borrow workflow, config.seed);
+    let second = schedule.run(borrow workflow, config.seed);
+    let replay_info = replay.audit(borrow workflow, borrow first);
+    let resources = resource_audit.audit(borrow workflow, borrow first);
+    let events = event_analysis.summarize(borrow workflow, borrow first);
+    let serial = serial_oracle.compute(borrow workflow, borrow first);
+    let difference = schedule_diff.compare(borrow workflow, borrow first, borrow second);
+    let insight = insights.compute(borrow workflow, borrow first, config.seed);
+    let reports = report_suite.audit(borrow workflow, borrow first, config.seed);
+
+    let replay_mismatches = replay_info.ordering_errors + replay_info.transition_errors +
+        replay_info.attempt_errors + replay_info.terminal_mismatches;
+    let resource_violations = resources.underflows + resources.slot_violations +
+        resources.cpu_violations + resources.memory_violations + resources.terminal_active;
+    let event_count_mismatches = if event_analysis.verify(borrow first, borrow events) { 0 } else { 1 };
+    let schedule_changes = difference.status_changes + difference.start_changes +
+        difference.end_changes + difference.attempt_changes + difference.first_only_events +
+        difference.second_only_events;
+    let deterministic = first.fingerprint == second.fingerprint &&
+        fingerprint.run(borrow first) == fingerprint.run(borrow second) && schedule_changes == 0;
+    let mut digest = fingerprint.workflow(borrow workflow);
+    digest = mix(digest, fingerprint.run(borrow first));
+    digest = mix(digest, layer_info.digest);
+    digest = mix(digest, critical.digest);
+    digest = mix(digest, reduction.digest);
+    digest = mix(digest, dominator_info.digest);
+    digest = mix(digest, analyses.digest);
+    digest = mix(digest, replay_info.events);
+    digest = mix(digest, replay_mismatches);
+    digest = mix(digest, resources.digest);
+    digest = mix(digest, events.digest);
+    digest = mix(digest, serial.digest);
+    digest = mix(digest, difference.digest);
+    digest = mix(digest, insight.digest);
+    digest = mix(digest, reports.digest);
+
+    let valid = workflow.diagnostics.len() == 0 && !order.has_cycle &&
+        topology.valid(borrow workflow, borrow order) &&
+        levels.verify(borrow workflow, borrow layer_info) &&
+        critical_path.verify(borrow workflow, borrow critical) &&
+        transitive_reduction.verify(borrow workflow, borrow reduction) &&
+        dominators.verify(borrow workflow, borrow dominator_info) &&
+        portfolio.valid(borrow analyses) && replay_info.ok &&
+        resource_audit.verify(borrow workflow, borrow resources) && events.valid &&
+        serial.valid && insight.valid && reports.valid && first.failed == 0 &&
+        first.succeeded + first.cached == workflow.tasks.len() && deterministic;
+    Result {
+        scale: config.scale, tasks: workflow.tasks.len(), pools: workflow.pools.len(),
+        edges: workflow.edges.len(), events: first.events.len(), makespan: first.makespan,
+        diagnostics: workflow.diagnostics.len(), analysis_passes: analyses.passes,
+        observations: analyses.observations, warnings: analyses.warnings,
+        insight_checks: insight.checks, insight_failures: insight.failures,
+        report_documents: reports.documents, report_bytes: reports.bytes,
+        report_failures: reports.empty_documents + reports.prefix_mismatches +
+            reports.deterministic_mismatches + reports.policy_failures,
+        depth: layer_info.depth, maximum_width: layer_info.maximum_width,
+        critical_tasks: critical.critical_tasks.len(), critical_makespan: critical.makespan,
+        essential_edges: reduction.essential_count, redundant_edges: reduction.redundant_count,
+        strict_dominators: dominator_info.strict_pairs,
+        replay_mismatches: replay_mismatches, resource_violations: resource_violations,
+        event_count_mismatches: event_count_mismatches, schedule_changes: schedule_changes,
+        succeeded: first.succeeded, cached: first.cached, retries: first.retries,
+        idle_ticks: first.idle_ticks, resource_waits: first.resource_waits,
+        dependency_waits: first.dependency_waits, fingerprint: first.fingerprint,
+        digest: digest, deterministic: deterministic, valid: valid,
+    }
+}
+
+pub fn render(borrow result: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "stress scale="); text.append_u64(inout out, result.scale);
+    text.append_literal(inout out, " tasks="); text.append_u64(inout out, result.tasks);
+    text.append_literal(inout out, " pools="); text.append_u64(inout out, result.pools);
+    text.append_literal(inout out, " edges="); text.append_u64(inout out, result.edges); out.push(10);
+    text.append_literal(inout out, "events="); text.append_u64(inout out, result.events);
+    text.append_literal(inout out, " makespan="); text.append_u64(inout out, result.makespan);
+    text.append_literal(inout out, " diagnostics="); text.append_u64(inout out, result.diagnostics); out.push(10);
+    text.append_literal(inout out, "depth="); text.append_u64(inout out, result.depth);
+    text.append_literal(inout out, " width="); text.append_u64(inout out, result.maximum_width);
+    text.append_literal(inout out, " critical_tasks="); text.append_u64(inout out, result.critical_tasks);
+    text.append_literal(inout out, " critical_makespan="); text.append_u64(inout out, result.critical_makespan); out.push(10);
+    text.append_literal(inout out, "essential_edges="); text.append_u64(inout out, result.essential_edges);
+    text.append_literal(inout out, " redundant_edges="); text.append_u64(inout out, result.redundant_edges);
+    text.append_literal(inout out, " strict_dominators="); text.append_u64(inout out, result.strict_dominators); out.push(10);
+    text.append_literal(inout out, "analysis_passes="); text.append_u64(inout out, result.analysis_passes);
+    text.append_literal(inout out, " observations="); text.append_u64(inout out, result.observations);
+    text.append_literal(inout out, " warnings="); text.append_u64(inout out, result.warnings); out.push(10);
+    text.append_literal(inout out, "insight_checks="); text.append_u64(inout out, result.insight_checks);
+    text.append_literal(inout out, " insight_failures="); text.append_u64(inout out, result.insight_failures); out.push(10);
+    text.append_literal(inout out, "report_documents="); text.append_u64(inout out, result.report_documents);
+    text.append_literal(inout out, " report_bytes="); text.append_u64(inout out, result.report_bytes);
+    text.append_literal(inout out, " report_failures="); text.append_u64(inout out, result.report_failures); out.push(10);
+    text.append_literal(inout out, "replay_mismatches="); text.append_u64(inout out, result.replay_mismatches);
+    text.append_literal(inout out, " resource_violations="); text.append_u64(inout out, result.resource_violations);
+    text.append_literal(inout out, " event_count_mismatches="); text.append_u64(inout out, result.event_count_mismatches);
+    text.append_literal(inout out, " schedule_changes="); text.append_u64(inout out, result.schedule_changes); out.push(10);
+    text.append_literal(inout out, "deterministic="); text.append_bool(inout out, result.deterministic);
+    text.append_literal(inout out, " valid="); text.append_bool(inout out, result.valid); out.push(10);
+    text.append_literal(inout out, "digest="); text.append_u64(inout out, result.digest); out.push(10);
+    out
+}

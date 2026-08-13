@@ -84,6 +84,10 @@ pub struct EpochData {
     /// The flagging rule this epoch pins, so the page can state the bound it
     /// is reporting against rather than describing it vaguely.
     pub flagging: FlaggingRule,
+    /// Absolute process-time targets whose gate this epoch adjudicates.
+    ///
+    /// Kept per epoch because hosted platform clocks are not interchangeable.
+    pub process_elapsed_targets: BTreeMap<String, ProcessElapsedTargetData>,
     /// Standard-library changes within this epoch.
     ///
     /// Deliberately *not* advisory, unlike an environment annotation. `std` is
@@ -100,6 +104,13 @@ pub struct FlaggingRule {
     pub k: f64,
     /// How many prior runs form the trailing window.
     pub window: u32,
+}
+
+/// One reviewed external latency target rendered by the dashboard.
+#[derive(Debug, Serialize)]
+pub struct ProcessElapsedTargetData {
+    pub process_elapsed_ns: u64,
+    pub reference: String,
 }
 
 /// A point at which the standard library changed underneath a series.
@@ -482,6 +493,19 @@ fn derive_epoch(
             k: epoch.flagging.k,
             window: epoch.flagging.window,
         },
+        process_elapsed_targets: epoch
+            .process_elapsed_targets
+            .iter()
+            .map(|(workload, target)| {
+                (
+                    workload.clone(),
+                    ProcessElapsedTargetData {
+                        process_elapsed_ns: target.process_elapsed_ns,
+                        reference: target.reference.clone(),
+                    },
+                )
+            })
+            .collect(),
         stdlib_annotations,
     }
 }
@@ -858,6 +882,26 @@ window = 3
         let flagging = &data.platforms[0].epochs[0].flagging;
         assert_eq!(flagging.window, 3);
         assert!((flagging.k - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn the_epoch_publishes_only_its_own_external_latency_targets() {
+        let text = MANIFEST.replace(
+            "[epoch.flagging]",
+            "[epoch.process_elapsed_targets.startup]\n\
+             process_elapsed_ns = 250000000\n\
+             reference = \"ADR-0071\"\n\n\
+             [epoch.flagging]",
+        );
+        let manifest = Manifest::parse(&text).expect("target manifest");
+        let data = derive(
+            &manifest,
+            &[run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100])],
+        );
+        let targets = &data.platforms[0].epochs[0].process_elapsed_targets;
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets["startup"].process_elapsed_ns, 250_000_000);
+        assert_eq!(targets["startup"].reference, "ADR-0071");
     }
 
     #[test]

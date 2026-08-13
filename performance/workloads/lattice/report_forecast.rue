@@ -1,0 +1,26 @@
+// Cache-seed ensemble table for repeatability analysis.
+const forecast = @import("forecast.rue");
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, seed: u64) -> StrBuf {
+    let value = forecast.compute(borrow workflow, seed, 8);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "FORECAST samples="); text.append_u64(inout out, value.samples);
+    text.append_literal(inout out, " min="); text.append_u64(inout out, value.minimum_makespan);
+    text.append_literal(inout out, " mean="); text.append_u64(inout out, value.mean_makespan);
+    text.append_literal(inout out, " max="); text.append_u64(inout out, value.maximum_makespan);
+    text.append_literal(inout out, " spread="); text.append_u64(inout out, value.spread); out.push(10);
+    text.append_literal(inout out, "sample,seed,makespan,cache_hits,retries,fingerprint\n");
+    let mut i: u64 = 0;
+    while i < value.samples {
+        text.append_u64(inout out, i); out.push(44); text.append_u64(inout out, value.seeds.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, value.makespans.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, value.cache_hits.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, value.retries.get_or(i, 0)); out.push(44);
+        text.append_u64(inout out, value.fingerprints.get_or(i, 0)); out.push(10); i += 1;
+    }
+    out
+}

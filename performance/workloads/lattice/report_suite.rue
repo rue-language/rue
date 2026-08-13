@@ -1,0 +1,126 @@
+// Exercise every reporting adapter and validate deterministic non-empty output.
+const model = @import("model.rue");
+const policy_suite = @import("policy_suite.rue");
+const report_cache = @import("report_cache.rue");
+const report_capacity = @import("report_capacity.rue");
+const report_chrome_trace = @import("report_chrome_trace.rue");
+const report_comparison = @import("report_comparison.rue");
+const report_critical = @import("report_critical.rue");
+const report_dot = @import("report_dot.rue");
+const report_events_csv = @import("report_events_csv.rue");
+const report_explain = @import("report_explain.rue");
+const report_forecast = @import("report_forecast.rue");
+const report_html = @import("report_html.rue");
+const report_json = @import("report_json.rue");
+const report_junit = @import("report_junit.rue");
+const report_lint = @import("report_lint.rue");
+const report_manifest = @import("report_manifest.rue");
+const report_markdown = @import("report_markdown.rue");
+const report_matrix = @import("report_matrix.rue");
+const report_mermaid = @import("report_mermaid.rue");
+const report_ndjson = @import("report_ndjson.rue");
+const report_otel = @import("report_otel.rue");
+const report_paths = @import("report_paths.rue");
+const report_policy = @import("report_policy.rue");
+const report_prometheus = @import("report_prometheus.rue");
+const report_query = @import("report_query.rue");
+const report_resources = @import("report_resources.rue");
+const report_retries = @import("report_retries.rue");
+const report_risk = @import("report_risk.rue");
+const report_sarif = @import("report_sarif.rue");
+const report_sql = @import("report_sql.rue");
+const report_tasks_csv = @import("report_tasks_csv.rue");
+const report_timeline = @import("report_timeline.rue");
+const report_trace = @import("report_trace.rue");
+const report_yaml = @import("report_yaml.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    documents: u64,
+    bytes: u64,
+    empty_documents: u64,
+    prefix_mismatches: u64,
+    deterministic_mismatches: u64,
+    policy_profiles: u64,
+    policy_checks: u64,
+    policy_failures: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn include(inout result: Result, document: StrBuf, expected_prefix: u8) {
+    result.documents += 1;
+    result.bytes += document.len();
+    if document.len() == 0 { result.empty_documents += 1; }
+    else if StrBuf.byte_at_borrowed(borrow document, 0) != expected_prefix {
+        result.prefix_mismatches += 1;
+    }
+    result.digest = mix(result.digest, text.fnv1a(borrow document));
+    result.digest = mix(result.digest, document.len());
+}
+
+fn once(borrow workflow: model.Workflow, borrow run: state.Run, seed: u64) -> Result {
+    let policies = policy_suite.run(borrow workflow, borrow run);
+    let mut result = Result {
+        documents: 0, bytes: 0, empty_documents: 0, prefix_mismatches: 0,
+        deterministic_mismatches: 0, policy_profiles: policies.profiles,
+        policy_checks: policies.checks, policy_failures: policies.unexpected_failures,
+        digest: policies.digest, valid: false,
+    };
+    include(inout result, report_json.render(borrow workflow, borrow run), 123);
+    include(inout result, report_dot.render(borrow workflow, borrow run), 100);
+    include(inout result, report_tasks_csv.render(borrow workflow, borrow run), 116);
+    include(inout result, report_events_csv.render(borrow workflow, borrow run), 115);
+    include(inout result, report_timeline.render(borrow workflow, borrow run), 76);
+    include(inout result, report_resources.render(borrow workflow, borrow run), 82);
+    include(inout result, report_critical.render(borrow workflow), 67);
+    include(inout result, report_manifest.render(borrow workflow, borrow run), 108);
+    include(inout result, report_markdown.render(borrow workflow, borrow run), 35);
+    include(inout result, report_matrix.render(borrow workflow), 65);
+    include(inout result, report_risk.render(borrow workflow), 82);
+    include(inout result, report_cache.render(borrow workflow, borrow run), 67);
+    include(inout result, report_retries.render(borrow workflow, borrow run), 82);
+    include(inout result, report_paths.render(borrow workflow), 80);
+    include(inout result, report_capacity.render(borrow workflow, borrow run), 112);
+    include(inout result, report_forecast.render(borrow workflow, seed), 70);
+    include(inout result, report_trace.render(borrow workflow, borrow run), 69);
+    include(inout result, report_explain.render(borrow workflow, borrow run), 84);
+    include(inout result, report_policy.render(borrow workflow, borrow run), 80);
+    include(inout result, report_query.render(borrow workflow, borrow run), 83);
+    include(inout result, report_comparison.render(borrow workflow, borrow run, seed + 1), 82);
+    include(inout result, report_html.render(borrow workflow, borrow run), 60);
+    include(inout result, report_junit.render(borrow workflow, borrow run), 60);
+    include(inout result, report_lint.render(borrow workflow, borrow run), 76);
+    include(inout result, report_sarif.render(borrow workflow, borrow run), 123);
+    include(inout result, report_prometheus.render(borrow workflow, borrow run), 35);
+    include(inout result, report_sql.render(borrow workflow, borrow run), 66);
+    include(inout result, report_mermaid.render(borrow workflow), 102);
+    include(inout result, report_ndjson.render(borrow workflow, borrow run), 123);
+    include(inout result, report_otel.render(borrow workflow, borrow run), 123);
+    include(inout result, report_chrome_trace.render(borrow workflow, borrow run), 123);
+    include(inout result, report_yaml.render(borrow workflow, borrow run), 119);
+    result.valid = result.empty_documents == 0 && result.prefix_mismatches == 0 &&
+        result.policy_failures == 0;
+    result
+}
+
+pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run, seed: u64) -> Result {
+    let first = once(borrow workflow, borrow run, seed);
+    let second = once(borrow workflow, borrow run, seed);
+    let mismatches = if first.documents == second.documents && first.bytes == second.bytes &&
+        first.digest == second.digest { 0 } else { 1 };
+    Result {
+        documents: first.documents, bytes: first.bytes,
+        empty_documents: first.empty_documents,
+        prefix_mismatches: first.prefix_mismatches,
+        deterministic_mismatches: mismatches,
+        policy_profiles: first.policy_profiles, policy_checks: first.policy_checks,
+        policy_failures: first.policy_failures, digest: first.digest,
+        valid: first.valid && second.valid && mismatches == 0,
+    }
+}

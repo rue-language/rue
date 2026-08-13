@@ -1,0 +1,131 @@
+// Iterative dominator sets for a multi-root DAG.
+const std = @import("std");
+const model = @import("model.rue");
+const topology = @import("topology.rue");
+const Bools = std.arraybuf.ArrayBuf(bool);
+
+pub struct Dominators {
+    matrix: Bools,
+    size: u64,
+    iterations: u64,
+    roots: u64,
+    strict_pairs: u64,
+    maximum_chain: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn filled(count: u64, value: bool) -> Bools {
+    let mut result = Bools.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { result.push(value); i += 1; }
+    result
+}
+
+fn at(size: u64, task: u64, candidate: u64) -> u64 { task * size + candidate }
+
+fn is_root(borrow workflow: model.Workflow, task: u64) -> bool {
+    model.dependency_count(borrow workflow, task) == 0
+}
+
+fn predecessor_allows(
+    borrow workflow: model.Workflow,
+    borrow matrix: Bools,
+    task: u64,
+    candidate: u64,
+) -> bool {
+    let size = workflow.tasks.len();
+    let mut found = false;
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task {
+            found = true;
+            if !matrix.get_or(at(size, edge.before, candidate), false) { return false; }
+        }
+        i += 1;
+    }
+    found
+}
+
+pub fn compute(borrow workflow: model.Workflow) -> Dominators {
+    let order = topology.sort(borrow workflow);
+    let size = workflow.tasks.len();
+    let mut matrix = filled(size * size, true);
+    let mut roots: u64 = 0;
+    let mut task: u64 = 0;
+    while task < size {
+        if is_root(borrow workflow, task) {
+            roots += 1;
+            let mut candidate: u64 = 0;
+            while candidate < size {
+                matrix.set(at(size, task, candidate), candidate == task);
+                candidate += 1;
+            }
+        }
+        task += 1;
+    }
+
+    let mut changed = true;
+    let mut iterations: u64 = 0;
+    while changed && iterations <= size + 1 {
+        changed = false;
+        iterations += 1;
+        let mut position: u64 = 0;
+        while position < order.tasks.len() {
+            task = order.tasks.get_or(position, model.NONE());
+            if !is_root(borrow workflow, task) {
+                let mut candidate: u64 = 0;
+                while candidate < size {
+                    let next = candidate == task || predecessor_allows(borrow workflow, borrow matrix, task, candidate);
+                    let index = at(size, task, candidate);
+                    if matrix.get_or(index, false) != next {
+                        matrix.set(index, next);
+                        changed = true;
+                    }
+                    candidate += 1;
+                }
+            }
+            position += 1;
+        }
+    }
+
+    let mut strict_pairs: u64 = 0;
+    let mut maximum_chain: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    task = 0;
+    while task < size {
+        let mut chain: u64 = 0;
+        let mut candidate: u64 = 0;
+        while candidate < size {
+            if matrix.get_or(at(size, task, candidate), false) {
+                chain += 1;
+                if candidate != task { strict_pairs += 1; }
+                digest = @wrapping_mul(digest ^ (task * size + candidate), 1099511628211);
+            }
+            candidate += 1;
+        }
+        if chain > maximum_chain { maximum_chain = chain; }
+        task += 1;
+    }
+    Dominators {
+        matrix: matrix, size: size, iterations: iterations, roots: roots,
+        strict_pairs: strict_pairs, maximum_chain: maximum_chain,
+        digest: digest, valid: !order.has_cycle && iterations <= size + 1,
+    }
+}
+
+pub fn dominates(borrow value: Dominators, candidate: u64, task: u64) -> bool {
+    if task >= value.size || candidate >= value.size { false }
+    else { value.matrix.get_or(at(value.size, task, candidate), false) }
+}
+
+pub fn verify(borrow workflow: model.Workflow, borrow value: Dominators) -> bool {
+    if !value.valid || value.size != workflow.tasks.len() { return false; }
+    let mut task: u64 = 0;
+    while task < value.size {
+        if !dominates(borrow value, task, task) { return false; }
+        task += 1;
+    }
+    true
+}

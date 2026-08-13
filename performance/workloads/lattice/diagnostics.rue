@@ -1,0 +1,28 @@
+// Stable diagnostic rendering for source and semantic failures.
+const std = @import("std");
+const model = @import("model.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let mut out = StrBuf.new();
+    let mut i: u64 = 0;
+    while i < workflow.diagnostics.len() {
+        let item = workflow.diagnostics.get_or(i, model.Diagnostic {
+            code: 0, subject: model.NONE(), detail: model.NONE(),
+        });
+        text.append_literal(inout out, "lattice[");
+        let code = model.code_name(item.code);
+        text.append_string(inout out, borrow code);
+        text.append_literal(inout out, "]");
+        if item.subject != model.NONE() {
+            text.append_literal(inout out, " ");
+            text.append_id(inout out, borrow workflow, item.subject);
+        }
+        text.append_literal(inout out, ": ");
+        text.append_id(inout out, borrow workflow, item.detail);
+        out.push(10);
+        i += 1;
+    }
+    out
+}

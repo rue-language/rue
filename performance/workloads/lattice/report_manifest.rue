@@ -1,0 +1,41 @@
+// Stable line-oriented manifest for build provenance and cache keys.
+const fingerprint = @import("fingerprint.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "lattice-manifest-v1\nworkflow "); text.append_id(inout out, borrow workflow, workflow.name); out.push(10);
+    text.append_literal(inout out, "workflow-fingerprint "); text.append_u64(inout out, fingerprint.workflow(borrow workflow)); out.push(10);
+    text.append_literal(inout out, "run-fingerprint "); text.append_u64(inout out, fingerprint.run(borrow run)); out.push(10);
+    text.append_literal(inout out, "counts "); text.append_u64(inout out, workflow.pools.len()); out.push(32);
+    text.append_u64(inout out, workflow.tasks.len()); out.push(32); text.append_u64(inout out, workflow.edges.len()); out.push(10);
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        text.append_literal(inout out, "pool "); text.append_u64(inout out, i); out.push(32);
+        text.append_id(inout out, borrow workflow, pool.id); out.push(32);
+        text.append_u64(inout out, pool.slots); out.push(32); text.append_u64(inout out, pool.cpu); out.push(32);
+        text.append_u64(inout out, pool.memory); out.push(10); i += 1;
+    }
+    i = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "task "); text.append_u64(inout out, i); out.push(32);
+        text.append_id(inout out, borrow workflow, task.id); out.push(32); text.append_u64(inout out, task.pool); out.push(32);
+        text.append_u64(inout out, task.duration); out.push(32); text.append_u64(inout out, task.cpu); out.push(32);
+        text.append_u64(inout out, task.memory); out.push(32); text.append_u64(inout out, task.priority); out.push(32);
+        text.append_u64(inout out, run.status.get_or(i, state.FAILED())); out.push(32);
+        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(10); i += 1;
+    }
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        text.append_literal(inout out, "edge "); text.append_u64(inout out, edge.before);
+        out.push(32); text.append_u64(inout out, edge.after); out.push(10); i += 1;
+    }
+    out
+}

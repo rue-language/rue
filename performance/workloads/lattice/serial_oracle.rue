@@ -1,0 +1,58 @@
+// Work-conservation oracle: calculate the exact executed work from attempts
+// and prove the parallel schedule cannot exceed its serialized equivalent.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Oracle {
+    executed_work: u64,
+    successful_work: u64,
+    failed_work: u64,
+    cached_tasks: u64,
+    started_tasks: u64,
+    maximum_single_task: u64,
+    lower_bound: u64,
+    upper_bound: u64,
+    makespan: u64,
+    saved_ticks: u64,
+    valid: bool,
+    digest: u64,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Oracle {
+    let mut executed_work: u64 = 0;
+    let mut successful_work: u64 = 0;
+    let mut failed_work: u64 = 0;
+    let mut cached_tasks: u64 = 0;
+    let mut started_tasks: u64 = 0;
+    let mut maximum_single_task: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let attempts = run.attempts.get_or(i, 0);
+        let work = task.duration * attempts;
+        executed_work += work;
+        if attempts > 0 { started_tasks += 1; }
+        if run.status.get_or(i, state.FAILED()) == state.CACHED() { cached_tasks += 1; }
+        else if run.status.get_or(i, state.FAILED()) == state.SUCCEEDED() { successful_work += task.duration; }
+        else if run.status.get_or(i, state.FAILED()) == state.FAILED() { failed_work += work; }
+        if work > maximum_single_task { maximum_single_task = work; }
+        digest = mix(digest, i); digest = mix(digest, attempts); digest = mix(digest, work);
+        i += 1;
+    }
+    let lower_bound = maximum_single_task;
+    let upper_bound = executed_work + run.idle_ticks + run.retries;
+    let saved_ticks = if executed_work > run.makespan { executed_work - run.makespan } else { 0 };
+    let valid = run.makespan >= lower_bound && run.makespan <= upper_bound &&
+        cached_tasks == run.cached && started_tasks <= workflow.tasks.len();
+    Oracle {
+        executed_work: executed_work, successful_work: successful_work,
+        failed_work: failed_work, cached_tasks: cached_tasks,
+        started_tasks: started_tasks, maximum_single_task: maximum_single_task,
+        lower_bound: lower_bound, upper_bound: upper_bound,
+        makespan: run.makespan, saved_ticks: saved_ticks,
+        valid: valid, digest: digest,
+    }
+}

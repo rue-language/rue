@@ -1,0 +1,111 @@
+// Bottlenecks and graph cuts inferred from degree, dominance, and reduction.
+const dominators = @import("dominators.rue");
+const model = @import("model.rue");
+const path_catalog = @import("path_catalog.rue");
+const transitive_reduction = @import("transitive_reduction.rue");
+
+pub struct Analysis {
+    gateways: model.U64s,
+    funnels: model.U64s,
+    fanouts: model.U64s,
+    isolated: model.U64s,
+    mandatory_tasks: model.U64s,
+    bridge_edges: model.U64s,
+    gateway_count: u64,
+    funnel_count: u64,
+    fanout_count: u64,
+    isolated_count: u64,
+    mandatory_count: u64,
+    bridge_count: u64,
+    maximum_in_degree: u64,
+    maximum_out_degree: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn leaf_count(borrow workflow: model.Workflow) -> u64 {
+    let mut result: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if model.dependent_count(borrow workflow, i) == 0 { result += 1; }
+        i += 1;
+    }
+    result
+}
+
+fn dominates_all_leaves(
+    borrow workflow: model.Workflow,
+    borrow dominance: dominators.Dominators,
+    task: u64,
+    leaves: u64,
+) -> bool {
+    if leaves == 0 { return false; }
+    let mut dominated: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if model.dependent_count(borrow workflow, i) == 0 && dominators.dominates(borrow dominance, task, i) {
+            dominated += 1;
+        }
+        i += 1;
+    }
+    dominated == leaves
+}
+
+pub fn compute(borrow workflow: model.Workflow) -> Analysis {
+    let dominance = dominators.compute(borrow workflow);
+    let paths = path_catalog.compute(borrow workflow);
+    let reduction = transitive_reduction.compute(borrow workflow);
+    let leaves = leaf_count(borrow workflow);
+    let mut gateways = model.U64s.new();
+    let mut funnels = model.U64s.new();
+    let mut fanouts = model.U64s.new();
+    let mut isolated = model.U64s.new();
+    let mut mandatory_tasks = model.U64s.new();
+    let mut maximum_in_degree: u64 = 0;
+    let mut maximum_out_degree: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let incoming = model.dependency_count(borrow workflow, i);
+        let outgoing = model.dependent_count(borrow workflow, i);
+        if incoming == 1 && outgoing == 1 { gateways.push(i); }
+        if incoming > 1 { funnels.push(i); }
+        if outgoing > 1 { fanouts.push(i); }
+        if incoming == 0 && outgoing == 0 { isolated.push(i); }
+        if dominates_all_leaves(borrow workflow, borrow dominance, i, leaves) { mandatory_tasks.push(i); }
+        if incoming > maximum_in_degree { maximum_in_degree = incoming; }
+        if outgoing > maximum_out_degree { maximum_out_degree = outgoing; }
+        digest = mix(digest, incoming); digest = mix(digest, outgoing);
+        digest = mix(digest, paths.paths_through_task.get_or(i, 0));
+        i += 1;
+    }
+    let mut bridge_edges = model.U64s.new();
+    i = 0;
+    while i < reduction.essential.len() {
+        let edge_index = reduction.essential.get_or(i, model.NONE());
+        let edge = workflow.edges.get_or(edge_index, model.empty_edge());
+        if model.dependent_count(borrow workflow, edge.before) == 1 ||
+            model.dependency_count(borrow workflow, edge.after) == 1 {
+            bridge_edges.push(edge_index);
+        }
+        i += 1;
+    }
+    let gateway_count = gateways.len();
+    let funnel_count = funnels.len();
+    let fanout_count = fanouts.len();
+    let isolated_count = isolated.len();
+    let mandatory_count = mandatory_tasks.len();
+    let bridge_count = bridge_edges.len();
+    Analysis {
+        gateways: gateways, funnels: funnels, fanouts: fanouts, isolated: isolated,
+        mandatory_tasks: mandatory_tasks, bridge_edges: bridge_edges,
+        gateway_count: gateway_count, funnel_count: funnel_count,
+        fanout_count: fanout_count, isolated_count: isolated_count,
+        mandatory_count: mandatory_count, bridge_count: bridge_count,
+        maximum_in_degree: maximum_in_degree, maximum_out_degree: maximum_out_degree,
+        digest: digest, valid: dominance.valid && paths.valid && reduction.valid &&
+            bridge_count <= reduction.essential_count,
+    }
+}

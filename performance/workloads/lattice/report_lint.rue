@@ -1,0 +1,37 @@
+// Human-readable workflow lint report.
+const lint = @import("lint.rue");
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let report = lint.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "LINT findings="); text.append_u64(inout out, report.findings.len());
+    text.append_literal(inout out, " info="); text.append_u64(inout out, report.infos);
+    text.append_literal(inout out, " warnings="); text.append_u64(inout out, report.warnings);
+    text.append_literal(inout out, " errors="); text.append_u64(inout out, report.errors); out.push(10);
+    let mut i: u64 = 0;
+    while i < report.findings.len() {
+        let finding = report.findings.get_or(i, lint.empty_finding());
+        text.append_literal(inout out, lint.severity_name(finding.severity));
+        text.append_literal(inout out, "["); text.append_literal(inout out, lint.rule_name(finding.rule));
+        text.append_literal(inout out, "] actual="); text.append_u64(inout out, finding.actual);
+        text.append_literal(inout out, " threshold="); text.append_u64(inout out, finding.threshold);
+        if finding.task < workflow.tasks.len() {
+            text.append_literal(inout out, " task=");
+            text.append_id(inout out, borrow workflow, workflow.tasks.get_or(finding.task, model.empty_task()).id);
+        }
+        if finding.pool < workflow.pools.len() {
+            text.append_literal(inout out, " pool=");
+            text.append_id(inout out, borrow workflow, workflow.pools.get_or(finding.pool, model.empty_pool()).id);
+        }
+        if finding.edge < workflow.edges.len() {
+            text.append_literal(inout out, " edge="); text.append_u64(inout out, finding.edge);
+        }
+        out.push(10); i += 1;
+    }
+    out
+}

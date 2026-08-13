@@ -1,0 +1,47 @@
+// Portable Markdown runbook for human review and incident records.
+const cache_analysis = @import("cache_analysis.rue");
+const format = @import("format.rue");
+const model = @import("model.rue");
+const retry_analysis = @import("retry_analysis.rue");
+const schedule_quality = @import("schedule_quality.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let quality = schedule_quality.compute(borrow workflow, borrow run);
+    let caches = cache_analysis.compute(borrow workflow, borrow run);
+    let retries = retry_analysis.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "# Lattice run: "); format.markdown_id(inout out, borrow workflow, workflow.name); out.push(10); out.push(10);
+    text.append_literal(inout out, "## Summary\n\n");
+    text.append_literal(inout out, "- Tasks: "); text.append_u64(inout out, workflow.tasks.len()); out.push(10);
+    text.append_literal(inout out, "- Edges: "); text.append_u64(inout out, workflow.edges.len()); out.push(10);
+    text.append_literal(inout out, "- Makespan: "); text.append_u64(inout out, run.makespan); out.push(10);
+    text.append_literal(inout out, "- Efficiency: "); format.append_millis(inout out, quality.efficiency_millis); out.push(10);
+    text.append_literal(inout out, "- Cache hit rate: "); text.append_percent(inout out, caches.observed_hits, caches.declared_cacheable); out.push(10);
+    text.append_literal(inout out, "- Recovered tasks: "); text.append_u64(inout out, retries.recovered_tasks); out.push(10); out.push(10);
+    text.append_literal(inout out, "## Tasks\n\n| Task | Pool | Duration | Priority | Status | Attempts | Start | End |\n");
+    text.append_literal(inout out, "|---|---|---:|---:|---|---:|---:|---:|\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        out.push(124); format.markdown_id(inout out, borrow workflow, task.id); out.push(124);
+        format.markdown_id(inout out, borrow workflow, task.pool_id); out.push(124);
+        text.append_u64(inout out, task.duration); out.push(124); text.append_u64(inout out, task.priority); out.push(124);
+        format.append_status(inout out, run.status.get_or(i, state.FAILED())); out.push(124);
+        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(124);
+        format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); out.push(124);
+        format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); text.append_literal(inout out, "|\n");
+        i += 1;
+    }
+    text.append_literal(inout out, "\n## Scheduler counters\n\n| Counter | Value |\n|---|---:|\n");
+    text.append_literal(inout out, "| Succeeded |"); text.append_u64(inout out, run.succeeded); text.append_literal(inout out, "|\n");
+    text.append_literal(inout out, "| Cached |"); text.append_u64(inout out, run.cached); text.append_literal(inout out, "|\n");
+    text.append_literal(inout out, "| Failed |"); text.append_u64(inout out, run.failed); text.append_literal(inout out, "|\n");
+    text.append_literal(inout out, "| Retries |"); text.append_u64(inout out, run.retries); text.append_literal(inout out, "|\n");
+    text.append_literal(inout out, "| Resource waits |"); text.append_u64(inout out, run.resource_waits); text.append_literal(inout out, "|\n");
+    text.append_literal(inout out, "| Dependency waits |"); text.append_u64(inout out, run.dependency_waits); text.append_literal(inout out, "|\n");
+    out
+}

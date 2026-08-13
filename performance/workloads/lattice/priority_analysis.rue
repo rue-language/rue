@@ -1,0 +1,81 @@
+// Priority distribution and dependency inversions.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub struct Analysis {
+    buckets: model.U64s,
+    edge_inversions: u64,
+    edge_ties: u64,
+    edge_descents: u64,
+    start_inversions: u64,
+    highest_priority: u64,
+    lowest_priority: u64,
+    highest_priority_task: u64,
+    lowest_priority_task: u64,
+    weighted_wait: u64,
+    digest: u64,
+    valid: bool,
+}
+
+fn zeroes(count: u64) -> model.U64s {
+    let mut values = model.U64s.with_capacity(count);
+    let mut i: u64 = 0;
+    while i < count { values.push(0); i += 1; }
+    values
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analysis {
+    let mut buckets = zeroes(5);
+    let mut highest_priority: u64 = 0;
+    let mut lowest_priority: u64 = 0;
+    let mut highest_priority_task = model.NONE();
+    let mut lowest_priority_task = model.NONE();
+    let mut weighted_wait: u64 = 0;
+    let mut digest: u64 = 14695981039346656037;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let bucket = if task.priority == 0 { 0 } else if task.priority <= 5 { 1 }
+            else if task.priority <= 10 { 2 } else if task.priority <= 15 { 3 } else { 4 };
+        buckets.set(bucket, buckets.get_or(bucket, 0) + 1);
+        if highest_priority_task == model.NONE() || task.priority > highest_priority {
+            highest_priority = task.priority; highest_priority_task = i;
+        }
+        if lowest_priority_task == model.NONE() || task.priority < lowest_priority {
+            lowest_priority = task.priority; lowest_priority_task = i;
+        }
+        let start = run.starts.get_or(i, 0);
+        if start != model.NONE() { weighted_wait += start * (task.priority + 1); }
+        digest = mix(digest, task.priority); digest = mix(digest, start);
+        i += 1;
+    }
+    let mut edge_inversions: u64 = 0;
+    let mut edge_ties: u64 = 0;
+    let mut edge_descents: u64 = 0;
+    let mut start_inversions: u64 = 0;
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        let before = workflow.tasks.get_or(edge.before, model.empty_task());
+        let after = workflow.tasks.get_or(edge.after, model.empty_task());
+        if before.priority < after.priority { edge_inversions += 1; }
+        else if before.priority == after.priority { edge_ties += 1; }
+        else { edge_descents += 1; }
+        let before_start = run.starts.get_or(edge.before, model.NONE());
+        let after_start = run.starts.get_or(edge.after, model.NONE());
+        if before.priority < after.priority && before_start != model.NONE() && after_start != model.NONE() &&
+            before_start < after_start { start_inversions += 1; }
+        digest = mix(digest, edge.before); digest = mix(digest, edge.after);
+        i += 1;
+    }
+    Analysis {
+        buckets: buckets, edge_inversions: edge_inversions, edge_ties: edge_ties,
+        edge_descents: edge_descents, start_inversions: start_inversions,
+        highest_priority: highest_priority, lowest_priority: lowest_priority,
+        highest_priority_task: highest_priority_task, lowest_priority_task: lowest_priority_task,
+        weighted_wait: weighted_wait, digest: digest,
+        valid: edge_inversions + edge_ties + edge_descents == workflow.edges.len(),
+    }
+}

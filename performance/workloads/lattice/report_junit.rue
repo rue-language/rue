@@ -1,0 +1,28 @@
+// JUnit XML projection for CI artifact consumers.
+const model = @import("model.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"");
+    text.append_id(inout out, borrow workflow, workflow.name); text.append_literal(inout out, "\" tests=\"");
+    text.append_u64(inout out, workflow.tasks.len()); text.append_literal(inout out, "\" failures=\"");
+    text.append_u64(inout out, run.failed); text.append_literal(inout out, "\" time=\"");
+    text.append_u64(inout out, run.makespan); text.append_literal(inout out, "\">\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        let status = run.status.get_or(i, state.FAILED());
+        text.append_literal(inout out, "  <testcase classname=\""); text.append_id(inout out, borrow workflow, task.pool_id);
+        text.append_literal(inout out, "\" name=\""); text.append_id(inout out, borrow workflow, task.id);
+        text.append_literal(inout out, "\" time=\""); text.append_u64(inout out, task.duration); text.append_literal(inout out, "\">");
+        if status == state.FAILED() { text.append_literal(inout out, "<failure message=\"task failed\"/>"); }
+        else if status == state.CACHED() { text.append_literal(inout out, "<system-out>cache hit</system-out>"); }
+        text.append_literal(inout out, "</testcase>\n"); i += 1;
+    }
+    text.append_literal(inout out, "</testsuite>\n");
+    out
+}

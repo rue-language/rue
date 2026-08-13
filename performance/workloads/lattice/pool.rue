@@ -1,0 +1,113 @@
+// Stable pooled strings for Lattice. Workflow records carry integer ids so
+// graph, scheduler, replay, and reporting passes can revisit POD arenas.
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+const U64s = std.arraybuf.ArrayBuf(u64);
+const U64Map = std.strmap.StrMap(u64);
+const OptU8 = std.option.Option(u8);
+const OptU64 = std.option.Option(u64);
+
+pub struct Pool {
+    bytes: StrBuf,
+    offsets: U64s,
+    lengths: U64s,
+    index: U64Map,
+
+    fn new() -> Self {
+        Self {
+            bytes: StrBuf.new(),
+            offsets: U64s.new(),
+            lengths: U64s.new(),
+            index: U64Map.new(0),
+        }
+    }
+
+    fn byte_of(borrow value: StrBuf, index: u64) -> u8 {
+        match value.byte_at(index) {
+            OptU8.Some(byte) => byte,
+            OptU8.None => 0,
+        }
+    }
+
+    fn len(borrow self) -> u64 { self.offsets.len() }
+
+    fn string_len(borrow self, id: u64) -> u64 {
+        self.lengths.get_or(id, 0)
+    }
+
+    fn byte_at(borrow self, id: u64, index: u64) -> u8 {
+        if id >= self.len() || index >= self.string_len(id) { return 0; }
+        Self.byte_of(borrow self.bytes, self.offsets.get_or(id, 0) + index)
+    }
+
+    fn equals(borrow self, id: u64, borrow value: StrBuf) -> bool {
+        if self.string_len(id) != value.len() { return false; }
+        let mut i: u64 = 0;
+        while i < value.len() {
+            if self.byte_at(id, i) != Self.byte_of(borrow value, i) { return false; }
+            i += 1;
+        }
+        true
+    }
+
+    fn ids_equal(borrow self, first: u64, second: u64) -> bool {
+        if self.string_len(first) != self.string_len(second) { return false; }
+        let mut i: u64 = 0;
+        while i < self.string_len(first) {
+            if self.byte_at(first, i) != self.byte_at(second, i) { return false; }
+            i += 1;
+        }
+        true
+    }
+
+    fn find(borrow self, borrow value: StrBuf) -> u64 {
+        match self.index.get(borrow value) {
+            OptU64.Some(id) => id,
+            OptU64.None => 18446744073709551615,
+        }
+    }
+
+    fn intern(inout self, borrow value: StrBuf) -> u64 {
+        let found = self.find(borrow value);
+        if found != 18446744073709551615 { return found; }
+        let id = self.len();
+        self.index.insert(borrow value, id);
+        self.offsets.push(self.bytes.len());
+        self.lengths.push(value.len());
+        let mut i: u64 = 0;
+        while i < value.len() {
+            self.bytes.push(Self.byte_of(borrow value, i));
+            i += 1;
+        }
+        id
+    }
+
+    fn intern_literal(inout self, value: StrBuf) -> u64 {
+        self.intern(borrow value)
+    }
+
+    fn append(borrow self, id: u64, inout out: StrBuf) {
+        let mut i: u64 = 0;
+        while i < self.string_len(id) {
+            out.push(self.byte_at(id, i));
+            i += 1;
+        }
+    }
+
+    fn copy(borrow self, id: u64) -> StrBuf {
+        let mut out = StrBuf.with_capacity(self.string_len(id));
+        self.append(id, inout out);
+        out
+    }
+
+    fn hash(borrow self, id: u64) -> u64 {
+        let mut value: u64 = 14695981039346656037;
+        let mut i: u64 = 0;
+        while i < self.string_len(id) {
+            value ^= @intCast(self.byte_at(id, i));
+            value = @wrapping_mul(value, 1099511628211);
+            i += 1;
+        }
+        value
+    }
+}

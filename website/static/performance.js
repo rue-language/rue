@@ -221,10 +221,17 @@
       select.appendChild(option);
     });
 
+    var referencePlatform = platforms.findIndex(function (platform) {
+      return platform.epochs.some(function (epoch) {
+        return Object.keys(epoch.process_elapsed_targets || {}).length > 0;
+      });
+    });
     var state = {
-      platform: 0, workload: null, cursor: null, band: null, indexCursor: null,
-      pinned: { index: false, phases: false }
+      platform: referencePlatform >= 0 ? referencePlatform : 0,
+      workload: null, cursor: null, band: null, indexCursor: null, targetCursor: null,
+      pinned: { index: false, target: false, phases: false }
     };
+    select.value = String(state.platform);
 
     select.addEventListener("change", function () {
       state.platform = Number(select.value);
@@ -232,7 +239,9 @@
       state.cursor = null;
       state.band = null;
       state.indexCursor = null;
+      state.targetCursor = null;
       state.pinned.index = false;
+      state.pinned.target = false;
       state.pinned.phases = false;
       draw();
     });
@@ -253,7 +262,7 @@
     // Pointer events rather than mouse events, so one handler serves a hover on
     // a desktop and a tap or drag on a touchscreen. Mouse events alone are why
     // these charts had no working cursor at all on a phone or tablet.
-    var interaction = { index: null, phases: null };
+    var interaction = { index: null, target: null, phases: null };
 
     function bindChart(svg, key) {
       // Whether a button or finger is currently down. A pinned chart ignores
@@ -283,6 +292,7 @@
     }
 
     bindChart(document.getElementById("perf-index"), "index");
+    bindChart(document.getElementById("perf-target"), "target");
     bindChart(document.getElementById("perf-phases"), "phases");
 
     function current() { return platforms[state.platform]; }
@@ -302,11 +312,16 @@
       if (!points.length) { return; }
       if (state.workload === null) {
         var names = Object.keys(points[points.length - 1].point.workloads);
-        state.workload = names.length ? names[0] : null;
+        state.workload = names.find(function (name) {
+          return points.some(function (entry) {
+            return (entry.epoch.process_elapsed_targets || {})[name];
+          });
+        }) || (names.length ? names[0] : null);
       }
       drawStatus(points);
       drawIndex(data, points);
       drawMultiples(data, points);
+      drawTarget(data, points);
       drawPhases(data, points);
       drawNotes();
       drawDisclosures(data, points);
@@ -616,6 +631,155 @@
           " versus the previous measured commit</div>";
         container.appendChild(card);
       });
+    }
+
+    // ADR-0071's absolute outcome chart. This is intentionally separate from
+    // the phase stack below: the target covers process spawn through exit,
+    // while the stack partitions compiler-root time only. Drawing one over the
+    // other would make startup and teardown disappear from the product goal.
+    function drawTarget(data, points) {
+      var section = document.getElementById("perf-target-section");
+      var svg = document.getElementById("perf-target");
+      var caption = document.getElementById("perf-target-caption");
+      var tooltip = document.getElementById("perf-target-tooltip");
+      svg.textContent = "";
+
+      var series = points.filter(function (entry) {
+        return entry.point.workloads[state.workload];
+      });
+      var targeted = series.filter(function (entry) {
+        return (entry.epoch.process_elapsed_targets || {})[state.workload];
+      });
+      if (!series.length || !targeted.length) {
+        section.hidden = true;
+        interaction.target = null;
+        return;
+      }
+      section.hidden = false;
+
+      var values = series.map(function (entry) {
+        return entry.point.workloads[state.workload].process_elapsed_ns;
+      });
+      targeted.forEach(function (entry) {
+        values.push(entry.epoch.process_elapsed_targets[state.workload].process_elapsed_ns);
+      });
+      var hi = Math.max.apply(null, values) * 1.12;
+      var x = function (i) { return 40 + (i / Math.max(series.length - 1, 1)) * 840; };
+      var y = function (v) { return 210 - (v / hi) * 180; };
+
+      var scale = element("text", { x: 4, y: 18, fill: "#666", "font-size": 11 });
+      scale.textContent = ms(hi).toFixed(1) + " ms";
+      svg.appendChild(scale);
+
+      var byEpoch = {};
+      series.forEach(function (entry, i) {
+        var key = entry.epoch.epoch;
+        var elapsed = entry.point.workloads[state.workload].process_elapsed_ns;
+        (byEpoch[key] = byEpoch[key] || []).push(x(i) + "," + y(elapsed));
+      });
+      Object.keys(byEpoch).forEach(function (key) {
+        svg.appendChild(element("polyline", {
+          points: byEpoch[key].join(" "), fill: "none", stroke: "#228833", "stroke-width": 2
+        }));
+      });
+
+      // A target belongs to one epoch. Its rule spans only that epoch's points,
+      // never an adjacent regime whose clock does not adjudicate it.
+      var drawnTargets = {};
+      series.forEach(function (entry, i) {
+        var target = (entry.epoch.process_elapsed_targets || {})[state.workload];
+        if (!target || drawnTargets[entry.epoch.epoch]) { return; }
+        drawnTargets[entry.epoch.epoch] = true;
+        var last = i;
+        while (last + 1 < series.length &&
+               series[last + 1].epoch.epoch === entry.epoch.epoch) { last++; }
+        var left = i === 0 ? 40 : (x(i - 1) + x(i)) / 2;
+        var right = last === series.length - 1 ? 880 : (x(last) + x(last + 1)) / 2;
+        svg.appendChild(element("line", {
+          x1: left, y1: y(target.process_elapsed_ns),
+          x2: right, y2: y(target.process_elapsed_ns),
+          stroke: "#7c3aed", "stroke-width": 2, "stroke-dasharray": "6 4"
+        }));
+        var label = element("text", {
+          x: left + 4, y: y(target.process_elapsed_ns) - 6,
+          fill: "#7c3aed", "font-size": 11
+        });
+        label.textContent = target.reference + " target: " + fmtMs(target.process_elapsed_ns);
+        svg.appendChild(label);
+      });
+
+      series.forEach(function (entry, i) {
+        svg.appendChild(element("circle", {
+          cx: x(i), cy: y(entry.point.workloads[state.workload].process_elapsed_ns), r: 2.5,
+          fill: "#228833", "pointer-events": "none"
+        }));
+      });
+      drawDateAxis(svg, x, 210, series.map(function (entry, i) {
+        return { at: i, finished_at: entry.point.finished_at };
+      }));
+
+      var highlight = element("circle", {
+        r: 5, fill: "none", stroke: "#111", "stroke-width": 2, "pointer-events": "none"
+      });
+      svg.appendChild(highlight);
+
+      function selectMark(position) {
+        state.targetCursor = Math.max(0, Math.min(series.length - 1, position));
+        var entry = series[state.targetCursor];
+        var elapsed = entry.point.workloads[state.workload].process_elapsed_ns;
+        highlight.setAttribute("cx", x(state.targetCursor));
+        highlight.setAttribute("cy", y(elapsed));
+        highlight.setAttribute("fill", state.pinned.target ? "#111" : "none");
+        var lines = [
+          commitHeading(data, entry.point.commit),
+          "Measured " + fmtWhen(entry.point.finished_at) + ".",
+          "Fresh process: " + fmtMs(elapsed) + " from spawn through successful exit."
+        ];
+        var target = (entry.epoch.process_elapsed_targets || {})[state.workload];
+        if (target) {
+          var difference = elapsed - target.process_elapsed_ns;
+          lines.push(target.reference + " target: " + fmtMs(target.process_elapsed_ns) +
+            ". This point is " + fmtMs(Math.abs(difference)) +
+            (difference <= 0 ? " under the ceiling." : " over the ceiling."));
+        }
+        lines.push(pinnedNote(state.pinned.target));
+        setTooltip(tooltip, lines);
+      }
+
+      interaction.target = function (event, dragging) {
+        if (event.type === "keydown") {
+          if (event.key === "Escape" && state.pinned.target) {
+            state.pinned.target = false;
+            selectMark(state.targetCursor);
+            event.preventDefault();
+          }
+          if (event.key === "ArrowRight") {
+            selectMark(state.targetCursor + 1); event.preventDefault();
+          }
+          if (event.key === "ArrowLeft") {
+            selectMark(state.targetCursor - 1); event.preventDefault();
+          }
+          return;
+        }
+        if (event.type === "pointermove" && state.pinned.target && !dragging) { return; }
+        var at = svgLocation(svg, event);
+        if (!at) { return; }
+        var nearest = Math.round(((at.x - 40) / 840) * (series.length - 1));
+        nearest = Math.max(0, Math.min(series.length - 1, nearest));
+        if (event.type === "pointerdown") {
+          pin("target", nearest === state.targetCursor);
+        }
+        selectMark(nearest);
+      };
+
+      svg.setAttribute("aria-label", "Fresh-process latency for " + state.workload +
+        " against its declared release target. Use left and right arrow keys to move " +
+        "between measured commits.");
+      caption.textContent = series.length + " measured commit(s). Green is external process " +
+        "time; the dashed violet rule is the absolute target for this reference epoch only.";
+      selectMark(state.targetCursor === null
+        ? series.length - 1
+        : Math.min(state.targetCursor, series.length - 1));
     }
 
     // 3. Stacked area of absolute milliseconds for the selected workload.

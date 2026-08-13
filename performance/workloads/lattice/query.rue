@@ -1,0 +1,168 @@
+// In-memory task query engine used by reports and policy checks.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+pub fn ANY() -> u64 { 0 }
+pub fn REQUIRE() -> u64 { 1 }
+pub fn EXCLUDE() -> u64 { 2 }
+
+pub struct Query {
+    pool: u64,
+    minimum_duration: u64,
+    maximum_duration: u64,
+    minimum_priority: u64,
+    maximum_priority: u64,
+    minimum_cpu: u64,
+    maximum_cpu: u64,
+    minimum_memory: u64,
+    maximum_memory: u64,
+    status: u64,
+    cacheable: u64,
+    fallible: u64,
+    roots: u64,
+    leaves: u64,
+}
+
+pub struct Result {
+    tasks: model.U64s,
+    matches: u64,
+    total_duration: u64,
+    total_cpu_ticks: u64,
+    total_memory_ticks: u64,
+    total_priority: u64,
+    maximum_duration: u64,
+    maximum_duration_task: u64,
+    maximum_priority: u64,
+    maximum_priority_task: u64,
+    digest: u64,
+    valid: bool,
+}
+
+pub fn all() -> Query {
+    Query {
+        pool: model.NONE(), minimum_duration: 0, maximum_duration: model.NONE(),
+        minimum_priority: 0, maximum_priority: model.NONE(),
+        minimum_cpu: 0, maximum_cpu: model.NONE(),
+        minimum_memory: 0, maximum_memory: model.NONE(),
+        status: model.NONE(), cacheable: ANY(), fallible: ANY(),
+        roots: ANY(), leaves: ANY(),
+    }
+}
+
+fn flag(value: bool, requirement: u64) -> bool {
+    requirement == ANY() || (requirement == REQUIRE() && value) ||
+        (requirement == EXCLUDE() && !value)
+}
+
+fn between(value: u64, minimum: u64, maximum: u64) -> bool {
+    value >= minimum && (maximum == model.NONE() || value <= maximum)
+}
+
+fn matches(
+    borrow workflow: model.Workflow,
+    borrow run: state.Run,
+    borrow query: Query,
+    index: u64,
+) -> bool {
+    let task = workflow.tasks.get_or(index, model.empty_task());
+    if query.pool != model.NONE() && task.pool != query.pool { return false; }
+    if !between(task.duration, query.minimum_duration, query.maximum_duration) { return false; }
+    if !between(task.priority, query.minimum_priority, query.maximum_priority) { return false; }
+    if !between(task.cpu, query.minimum_cpu, query.maximum_cpu) { return false; }
+    if !between(task.memory, query.minimum_memory, query.maximum_memory) { return false; }
+    if query.status != model.NONE() && run.status.get_or(index, state.FAILED()) != query.status { return false; }
+    if !flag(task.cacheable, query.cacheable) { return false; }
+    if !flag(task.fail_attempt > 0, query.fallible) { return false; }
+    if !flag(model.dependency_count(borrow workflow, index) == 0, query.roots) { return false; }
+    if !flag(model.dependent_count(borrow workflow, index) == 0, query.leaves) { return false; }
+    true
+}
+
+fn higher_priority(borrow workflow: model.Workflow, left: u64, right: u64) -> bool {
+    let first = workflow.tasks.get_or(left, model.empty_task());
+    let second = workflow.tasks.get_or(right, model.empty_task());
+    first.priority > second.priority || (first.priority == second.priority &&
+        (first.duration > second.duration || (first.duration == second.duration && left < right)))
+}
+
+fn sort(inout tasks: model.U64s, borrow workflow: model.Workflow) {
+    let mut position: u64 = 0;
+    while position < tasks.len() {
+        let mut best = position;
+        let mut candidate = position + 1;
+        while candidate < tasks.len() {
+            if higher_priority(
+                borrow workflow,
+                tasks.get_or(candidate, model.NONE()),
+                tasks.get_or(best, model.NONE()),
+            ) { best = candidate; }
+            candidate += 1;
+        }
+        if best != position {
+            let old = tasks.get_or(position, model.NONE());
+            tasks.set(position, tasks.get_or(best, model.NONE()));
+            tasks.set(best, old);
+        }
+        position += 1;
+    }
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+pub fn execute(borrow workflow: model.Workflow, borrow run: state.Run, borrow query: Query) -> Result {
+    let mut tasks = model.U64s.new();
+    let mut total_duration: u64 = 0;
+    let mut total_cpu_ticks: u64 = 0;
+    let mut total_memory_ticks: u64 = 0;
+    let mut total_priority: u64 = 0;
+    let mut maximum_duration: u64 = 0;
+    let mut maximum_duration_task = model.NONE();
+    let mut maximum_priority: u64 = 0;
+    let mut maximum_priority_task = model.NONE();
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if matches(borrow workflow, borrow run, borrow query, i) {
+            let task = workflow.tasks.get_or(i, model.empty_task());
+            tasks.push(i);
+            total_duration += task.duration;
+            total_cpu_ticks += task.duration * task.cpu;
+            total_memory_ticks += task.duration * task.memory;
+            total_priority += task.priority;
+            if maximum_duration_task == model.NONE() || task.duration > maximum_duration {
+                maximum_duration = task.duration; maximum_duration_task = i;
+            }
+            if maximum_priority_task == model.NONE() || task.priority > maximum_priority {
+                maximum_priority = task.priority; maximum_priority_task = i;
+            }
+        }
+        i += 1;
+    }
+    sort(inout tasks, borrow workflow);
+    let mut digest: u64 = 14695981039346656037;
+    i = 0;
+    while i < tasks.len() { digest = mix(digest, tasks.get_or(i, model.NONE())); i += 1; }
+    let count = tasks.len();
+    Result {
+        tasks: tasks, matches: count, total_duration: total_duration,
+        total_cpu_ticks: total_cpu_ticks, total_memory_ticks: total_memory_ticks,
+        total_priority: total_priority, maximum_duration: maximum_duration,
+        maximum_duration_task: maximum_duration_task, maximum_priority: maximum_priority,
+        maximum_priority_task: maximum_priority_task, digest: digest,
+        valid: count <= workflow.tasks.len(),
+    }
+}
+
+pub fn high_risk() -> Query {
+    let mut query = all();
+    query.minimum_duration = 5;
+    query.minimum_priority = 10;
+    query.fallible = REQUIRE();
+    query
+}
+
+pub fn cache_candidates() -> Query {
+    let mut query = all();
+    query.minimum_duration = 4;
+    query.cacheable = EXCLUDE();
+    query
+}

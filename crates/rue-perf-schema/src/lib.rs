@@ -54,7 +54,7 @@ pub use incremental::{
 };
 pub use manifest::{
     Baseline, EnvironmentPolicy, FlaggingPolicy, Manifest, ManifestError, PlatformEpoch,
-    SamplingPolicy, SuiteRevision, Workload,
+    ProcessElapsedTarget, SamplingPolicy, SuiteRevision, Workload,
 };
 pub use run::{
     Band, EnvironmentFingerprint, FailureRecord, Invocation, Phase, PhaseAccounting, ResolvedPins,

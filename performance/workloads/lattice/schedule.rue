@@ -1,0 +1,202 @@
+// Deterministic discrete-time resource scheduler with cache and retry models.
+const model = @import("model.rue");
+const state = @import("state.rue");
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn dependencies_done(borrow workflow: model.Workflow, borrow run: state.Run, task: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task && !state.successful(run.status.get_or(edge.before, state.FAILED())) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn dependency_failed(borrow workflow: model.Workflow, borrow run: state.Run, task: u64) -> bool {
+    let mut i: u64 = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        if edge.after == task && run.status.get_or(edge.before, state.FAILED()) == state.FAILED() { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn pool_usage(borrow workflow: model.Workflow, borrow run: state.Run, pool: u64, field: u64) -> u64 {
+    let mut value: u64 = 0;
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if run.status.get_or(i, state.FAILED()) == state.RUNNING() {
+            let task = workflow.tasks.get_or(i, model.empty_task());
+            if task.pool == pool {
+                if field == 0 { value += 1; }
+                else if field == 1 { value += task.cpu; }
+                else { value += task.memory; }
+            }
+        }
+        i += 1;
+    }
+    value
+}
+
+fn fits(borrow workflow: model.Workflow, borrow run: state.Run, task_index: u64) -> bool {
+    let task = workflow.tasks.get_or(task_index, model.empty_task());
+    let pool = workflow.pools.get_or(task.pool, model.empty_pool());
+    pool_usage(borrow workflow, borrow run, task.pool, 0) < pool.slots &&
+        pool_usage(borrow workflow, borrow run, task.pool, 1) + task.cpu <= pool.cpu &&
+        pool_usage(borrow workflow, borrow run, task.pool, 2) + task.memory <= pool.memory
+}
+
+fn cache_hit(borrow workflow: model.Workflow, task_index: u64, seed: u64) -> bool {
+    let task = workflow.tasks.get_or(task_index, model.empty_task());
+    task.cacheable && ((workflow.strings.hash(task.id) ^ seed) % 5 == 0)
+}
+
+fn emit(inout run: state.Run, kind: u64, time: u64, task: u64, pool: u64, attempt: u64, cpu: u64, memory: u64) {
+    run.events.push(state.Event {
+        kind: kind, time: time, task: task, pool: pool,
+        attempt: attempt, cpu: cpu, memory: memory,
+    });
+    run.fingerprint = mix(run.fingerprint, kind);
+    run.fingerprint = mix(run.fingerprint, time);
+    run.fingerprint = mix(run.fingerprint, task);
+    run.fingerprint = mix(run.fingerprint, pool);
+    run.fingerprint = mix(run.fingerprint, attempt);
+}
+
+fn complete(inout run: state.Run, borrow workflow: model.Workflow, time: u64) {
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if run.status.get_or(i, state.FAILED()) == state.RUNNING() && run.ends.get_or(i, model.NONE()) == time {
+            let task = workflow.tasks.get_or(i, model.empty_task());
+            let attempt = run.attempts.get_or(i, 0);
+            if task.fail_attempt != 0 && attempt == task.fail_attempt {
+                emit(inout run, state.EVENT_FAILURE(), time, i, task.pool, attempt, task.cpu, task.memory);
+                if attempt <= task.retries {
+                    run.status.set(i, state.PENDING());
+                    run.next_ready.set(i, time + attempt);
+                    run.retries += 1;
+                    emit(inout run, state.EVENT_RETRY(), time, i, task.pool, attempt, task.cpu, task.memory);
+                } else {
+                    run.status.set(i, state.FAILED());
+                    run.failed += 1;
+                }
+            } else {
+                run.status.set(i, state.SUCCEEDED());
+                run.succeeded += 1;
+                emit(inout run, state.EVENT_SUCCESS(), time, i, task.pool, attempt, task.cpu, task.memory);
+            }
+        }
+        i += 1;
+    }
+}
+
+fn block_failed_dependents(inout run: state.Run, borrow workflow: model.Workflow, time: u64) {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut i: u64 = 0;
+        while i < workflow.tasks.len() {
+            if run.status.get_or(i, state.FAILED()) == state.PENDING() && dependency_failed(borrow workflow, borrow run, i) {
+                let task = workflow.tasks.get_or(i, model.empty_task());
+                run.status.set(i, state.FAILED());
+                run.failed += 1;
+                emit(inout run, state.EVENT_BLOCKED(), time, i, task.pool, 0, task.cpu, task.memory);
+                changed = true;
+            }
+            i += 1;
+        }
+    }
+}
+
+fn better(borrow workflow: model.Workflow, candidate: u64, current: u64) -> bool {
+    if current == model.NONE() { return true; }
+    let left = workflow.tasks.get_or(candidate, model.empty_task());
+    let right = workflow.tasks.get_or(current, model.empty_task());
+    left.priority > right.priority ||
+        (left.priority == right.priority && left.duration < right.duration) ||
+        (left.priority == right.priority && left.duration == right.duration && left.id < right.id)
+}
+
+fn pick_ready(borrow workflow: model.Workflow, borrow run: state.Run, time: u64) -> u64 {
+    let mut best = model.NONE();
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if run.status.get_or(i, state.FAILED()) == state.PENDING() &&
+            run.next_ready.get_or(i, 0) <= time &&
+            dependencies_done(borrow workflow, borrow run, i) &&
+            fits(borrow workflow, borrow run, i) &&
+            better(borrow workflow, i, best) {
+            best = i;
+        }
+        i += 1;
+    }
+    best
+}
+
+fn has_running(borrow run: state.Run) -> bool {
+    let mut i: u64 = 0;
+    while i < run.status.len() {
+        if run.status.get_or(i, state.FAILED()) == state.RUNNING() { return true; }
+        i += 1;
+    }
+    false
+}
+
+fn all_terminal(borrow run: state.Run) -> bool {
+    let mut i: u64 = 0;
+    while i < run.status.len() {
+        if !state.terminal(run.status.get_or(i, state.FAILED())) { return false; }
+        i += 1;
+    }
+    true
+}
+
+fn count_waits(inout run: state.Run, borrow workflow: model.Workflow, time: u64) {
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        if run.status.get_or(i, state.FAILED()) == state.PENDING() && run.next_ready.get_or(i, 0) <= time {
+            if !dependencies_done(borrow workflow, borrow run, i) { run.dependency_waits += 1; }
+            else if !fits(borrow workflow, borrow run, i) { run.resource_waits += 1; }
+        }
+        i += 1;
+    }
+}
+
+pub fn run(borrow workflow: model.Workflow, cache_seed: u64) -> state.Run {
+    let mut result = state.new_run(workflow.tasks.len());
+    let mut time: u64 = 0;
+    while !all_terminal(borrow result) && time < 100000 {
+        complete(inout result, borrow workflow, time);
+        block_failed_dependents(inout result, borrow workflow, time);
+        let mut started = false;
+        loop {
+            let task_index = pick_ready(borrow workflow, borrow result, time);
+            if task_index == model.NONE() { break; }
+            let task = workflow.tasks.get_or(task_index, model.empty_task());
+            if result.attempts.get_or(task_index, 0) == 0 && cache_hit(borrow workflow, task_index, cache_seed) {
+                result.status.set(task_index, state.CACHED());
+                result.starts.set(task_index, time);
+                result.ends.set(task_index, time);
+                result.cached += 1;
+                emit(inout result, state.EVENT_CACHE(), time, task_index, task.pool, 0, task.cpu, task.memory);
+            } else {
+                let attempt = result.attempts.get_or(task_index, 0) + 1;
+                result.attempts.set(task_index, attempt);
+                result.status.set(task_index, state.RUNNING());
+                if result.starts.get_or(task_index, model.NONE()) == model.NONE() { result.starts.set(task_index, time); }
+                result.ends.set(task_index, time + task.duration);
+                result.starts_count += 1;
+                emit(inout result, state.EVENT_START(), time, task_index, task.pool, attempt, task.cpu, task.memory);
+                started = true;
+            }
+        }
+        count_waits(inout result, borrow workflow, time);
+        if !started && !has_running(borrow result) && !all_terminal(borrow result) { result.idle_ticks += 1; }
+        if !all_terminal(borrow result) { time += 1; }
+    }
+    result.makespan = time;
+    result
+}

@@ -1,0 +1,31 @@
+// Mermaid flowchart for Markdown-native diagram rendering.
+const critical_path = @import("critical_path.rue");
+const model = @import("model.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow) -> StrBuf {
+    let critical = critical_path.compute(borrow workflow);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "flowchart LR\n");
+    let mut i: u64 = 0;
+    while i < workflow.tasks.len() {
+        let task = workflow.tasks.get_or(i, model.empty_task());
+        text.append_literal(inout out, "  T"); text.append_u64(inout out, i); text.append_literal(inout out, "[\"");
+        text.append_id(inout out, borrow workflow, task.id); text.append_literal(inout out, "<br/>pool: ");
+        text.append_id(inout out, borrow workflow, task.pool_id); text.append_literal(inout out, "\"]\n");
+        if critical.slack.get_or(i, 1) == 0 {
+            text.append_literal(inout out, "  style T"); text.append_u64(inout out, i);
+            text.append_literal(inout out, " stroke:#d92d20,stroke-width:3px\n");
+        }
+        i += 1;
+    }
+    i = 0;
+    while i < workflow.edges.len() {
+        let edge = workflow.edges.get_or(i, model.empty_edge());
+        text.append_literal(inout out, "  T"); text.append_u64(inout out, edge.before);
+        text.append_literal(inout out, " --> T"); text.append_u64(inout out, edge.after); out.push(10); i += 1;
+    }
+    out
+}

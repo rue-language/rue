@@ -1,0 +1,78 @@
+// Multi-tier benchmark summary. Each tier runs twice and must return the same
+// cross-oracle digest, which catches nondeterminism outside the scheduler too.
+const std = @import("std");
+const stress = @import("stress.rue");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub struct Result {
+    tiers: u64,
+    runs: u64,
+    tasks: u64,
+    edges: u64,
+    events: u64,
+    observations: u64,
+    makespan_sum: u64,
+    maximum_makespan: u64,
+    digest: u64,
+    invalid_runs: u64,
+    nondeterministic_runs: u64,
+    valid: bool,
+}
+
+fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
+
+fn include(inout result: Result, borrow value: stress.Result) {
+    result.runs += 1;
+    result.tasks += value.tasks;
+    result.edges += value.edges;
+    result.events += value.events;
+    result.observations += value.observations;
+    result.makespan_sum += value.makespan;
+    if value.makespan > result.maximum_makespan { result.maximum_makespan = value.makespan; }
+    result.digest = mix(result.digest, value.digest);
+    if !value.valid { result.invalid_runs += 1; }
+    if !value.deterministic { result.nondeterministic_runs += 1; }
+}
+
+fn pair(inout result: Result, scale: u64) {
+    let first = stress.run(stress.tier(scale));
+    let second = stress.run(stress.tier(scale));
+    include(inout result, borrow first);
+    include(inout result, borrow second);
+    result.tiers += 1;
+    if first.digest != second.digest || first.fingerprint != second.fingerprint {
+        result.nondeterministic_runs += 1;
+    }
+}
+
+pub fn run() -> Result {
+    let mut result = Result {
+        tiers: 0, runs: 0, tasks: 0, edges: 0, events: 0,
+        observations: 0, makespan_sum: 0, maximum_makespan: 0,
+        digest: 14695981039346656037, invalid_runs: 0,
+        nondeterministic_runs: 0, valid: false,
+    };
+    pair(inout result, 1);
+    pair(inout result, 2);
+    pair(inout result, 4);
+    result.valid = result.invalid_runs == 0 && result.nondeterministic_runs == 0;
+    result
+}
+
+pub fn render(borrow result: Result) -> StrBuf {
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "workload tiers="); text.append_u64(inout out, result.tiers);
+    text.append_literal(inout out, " runs="); text.append_u64(inout out, result.runs); out.push(10);
+    text.append_literal(inout out, "tasks="); text.append_u64(inout out, result.tasks);
+    text.append_literal(inout out, " edges="); text.append_u64(inout out, result.edges);
+    text.append_literal(inout out, " events="); text.append_u64(inout out, result.events); out.push(10);
+    text.append_literal(inout out, "observations="); text.append_u64(inout out, result.observations);
+    text.append_literal(inout out, " makespan_sum="); text.append_u64(inout out, result.makespan_sum);
+    text.append_literal(inout out, " maximum_makespan="); text.append_u64(inout out, result.maximum_makespan); out.push(10);
+    text.append_literal(inout out, "invalid_runs="); text.append_u64(inout out, result.invalid_runs);
+    text.append_literal(inout out, " nondeterministic_runs="); text.append_u64(inout out, result.nondeterministic_runs); out.push(10);
+    text.append_literal(inout out, "digest="); text.append_u64(inout out, result.digest); out.push(10);
+    text.append_literal(inout out, "valid="); text.append_bool(inout out, result.valid); out.push(10);
+    out
+}

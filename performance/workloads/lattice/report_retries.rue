@@ -1,0 +1,28 @@
+// Retry-budget consumption and recovery report.
+const model = @import("model.rue");
+const retry_analysis = @import("retry_analysis.rue");
+const state = @import("state.rue");
+const std = @import("std");
+const text = @import("text.rue");
+const StrBuf = std.strbuf.StrBuf;
+
+pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf {
+    let retries = retry_analysis.compute(borrow workflow, borrow run);
+    let mut out = StrBuf.new();
+    text.append_literal(inout out, "RETRY REPORT\nbudget="); text.append_u64(inout out, retries.configured_budget);
+    text.append_literal(inout out, " attempts="); text.append_u64(inout out, retries.total_attempts);
+    text.append_literal(inout out, " retries="); text.append_u64(inout out, retries.observed_retries); out.push(10);
+    text.append_literal(inout out, "recovered="); text.append_u64(inout out, retries.recovered_tasks);
+    text.append_literal(inout out, " exhausted="); text.append_u64(inout out, retries.exhausted_tasks);
+    text.append_literal(inout out, " violations="); text.append_u64(inout out, retries.budget_violations); out.push(10);
+    let mut i: u64 = 0;
+    while i < workflow.pools.len() {
+        let pool = workflow.pools.get_or(i, model.empty_pool());
+        text.append_literal(inout out, "pool="); text.append_id(inout out, borrow workflow, pool.id);
+        text.append_literal(inout out, " budget="); text.append_u64(inout out, retries.budget_by_pool.get_or(i, 0));
+        text.append_literal(inout out, " attempts="); text.append_u64(inout out, retries.attempts_by_pool.get_or(i, 0));
+        text.append_literal(inout out, " retries="); text.append_u64(inout out, retries.retries_by_pool.get_or(i, 0)); out.push(10);
+        i += 1;
+    }
+    out
+}
