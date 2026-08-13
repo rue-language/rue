@@ -7723,6 +7723,39 @@ impl QueryContext {
         result.into_result()
     }
 
+    /// Requests stable-ordered registered dependencies with concurrency-aware
+    /// scheduling.
+    ///
+    /// A one-permit runtime cannot execute batch siblings concurrently. In
+    /// that regime this keeps every request in the current task, preserving
+    /// the same dependency observations and result order without allocating
+    /// structured children or donating the sole permit. Wider runtimes use the
+    /// ordinary structured batch so independent evaluators can run in parallel.
+    pub fn query_registered_adaptive_batch<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        keys: impl IntoIterator<Item = K>,
+    ) -> Result<Vec<Arc<QueryTerminal<V>>>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "closure-free dependency requests require a registered evaluator"
+        );
+        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            return Err(QueryAbort::ForeignRuntime);
+        }
+        if self.max_concurrency() == 1 {
+            keys.into_iter()
+                .map(|key| self.query_registered(family, key))
+                .collect()
+        } else {
+            self.query_registered_batch(family, keys)
+        }
+    }
+
     /// Requests a stable-ordered batch of dependencies through one registered
     /// family.
     ///
@@ -14611,6 +14644,90 @@ mod tests {
         assert_eq!(serial.work(), parallel.work());
         assert_eq!(serial.dependencies(), parallel.dependencies());
         assert_eq!(serial.stamp(), parallel.stamp());
+    }
+
+    #[test]
+    fn adaptive_registered_batch_stays_inline_only_when_parallelism_is_impossible() {
+        fn run(workers: usize) -> (Arc<QueryTerminal<u64>>, RuntimeMetrics) {
+            let runtime = QueryRuntime::new(workers);
+            publish_empty(&runtime, [revision(1)]);
+            let leaf = runtime
+                .family_with_evaluator::<Key, u64, _>("adaptive-batch-leaf", 8, |_, _, key| {
+                    Ok(QueryOutput::success(key.0.len() as u64))
+                })
+                .unwrap();
+            let leaf_for_root = leaf.clone();
+            let root = runtime
+                .family_with_evaluator::<Key, u64, _>(
+                    "adaptive-batch-root",
+                    8,
+                    move |context, _, _| {
+                        let terminals = context.query_registered_adaptive_batch(
+                            &leaf_for_root,
+                            [Key("aa"), Key("bbb")],
+                        )?;
+                        let sum = terminals
+                            .iter()
+                            .map(|terminal| match terminal.outcome() {
+                                QueryOutcome::Success(value) => *value,
+                                QueryOutcome::Failure(_) => unreachable!("leaf cannot fail"),
+                            })
+                            .sum();
+                        Ok(QueryOutput::success(sum))
+                    },
+                )
+                .unwrap();
+            let terminal = runtime
+                .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+                .into_result()
+                .unwrap();
+            let metrics = runtime.metrics();
+            (terminal, metrics)
+        }
+
+        let (serial, serial_metrics) = run(1);
+        let (parallel, parallel_metrics) = run(2);
+        assert_eq!(serial.outcome(), &QueryOutcome::Success(5));
+        assert_eq!(serial.outcome(), parallel.outcome());
+        let dependency_keys = |terminal: &QueryTerminal<u64>| {
+            terminal
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.key().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(dependency_keys(&serial), dependency_keys(&parallel));
+        assert_eq!(serial_metrics.donated_permits, 0);
+        assert_eq!(serial_metrics.ready_items, 0);
+        assert_eq!(parallel_metrics.donated_permits, 1);
+        assert_eq!(parallel_metrics.ready_items, 2);
+    }
+
+    #[test]
+    fn adaptive_registered_batch_rejects_an_empty_foreign_family() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let foreign_runtime = QueryRuntime::new(1);
+        publish_empty(&foreign_runtime, [revision(1)]);
+        let foreign = foreign_runtime
+            .family_with_evaluator::<Key, u64, _>("adaptive-foreign", 2, |_, _, _| {
+                Ok(QueryOutput::success(0))
+            })
+            .unwrap();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "adaptive-foreign-root",
+                2,
+                move |context, _, _| {
+                    context.query_registered_adaptive_batch(&foreign, std::iter::empty::<Key>())?;
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+
+        let attempt =
+            runtime.request_registered(&root, revision(1), Key("root"), CancellationToken::new());
+        assert_eq!(attempt.abort(), Some(&QueryAbort::ForeignRuntime));
     }
 
     #[test]

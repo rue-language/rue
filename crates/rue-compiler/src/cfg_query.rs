@@ -983,7 +983,7 @@ fn materialize_and_build_cfg(
             let plan_types = collect_plan_types(owner, facts)
                 .into_iter()
                 .collect::<Vec<_>>();
-            let terminals = context.query_registered_batch(
+            let terminals = context.query_registered_adaptive_batch(
                 layouts,
                 plan_types
                     .iter()
@@ -1014,7 +1014,7 @@ fn materialize_and_build_cfg(
         }
     };
     let mut builtin_facts = Vec::with_capacity(facts.builtin_nominals.len());
-    let builtin_terminals = context.query_registered_batch(
+    let builtin_terminals = context.query_registered_adaptive_batch(
         type_facts,
         facts
             .builtin_nominals
@@ -1153,7 +1153,7 @@ fn materialize_and_build_cfg(
     ));
     let prerequisite_collection_ns = elapsed_ns(prerequisite_collection_started);
     let prerequisite_queries_started = std::time::Instant::now();
-    context.query_registered_batch(
+    context.query_registered_adaptive_batch(
         layouts,
         layout_dependencies
             .into_iter()
@@ -1172,7 +1172,7 @@ fn materialize_and_build_cfg(
     // Every DropGlue terminal observes the exact TypeFacts terminal for the
     // same key. Keep one direct CFG edge to that transitive cone instead of
     // issuing and validating a duplicate top-level TypeFacts request.
-    context.query_registered_batch(drop_glues, drop_dependencies)?;
+    context.query_registered_adaptive_batch(drop_glues, drop_dependencies)?;
     let prerequisite_queries_ns = elapsed_ns(prerequisite_queries_started);
     let breakdown = CfgConstructionBreakdown {
         input_preparation_ns,
@@ -1258,7 +1258,7 @@ fn build_cfg(
             ));
         }
     };
-    let call_abi_terminals = context.query_registered_batch(
+    let call_abi_terminals = context.query_registered_adaptive_batch(
         call_abis,
         callables
             .iter()
@@ -1428,7 +1428,7 @@ pub(crate) fn evaluate_optimized_cfg(
     let mut implicit_destructor_dependencies_complete =
         record.implicit_destructor_dependencies_complete;
     let accessor_terminals =
-        context.query_registered_batch(cfgs, key.accessor_dependencies.iter().cloned())?;
+        context.query_registered_adaptive_batch(cfgs, key.accessor_dependencies.iter().cloned())?;
     let mut accessor_cfgs = std::collections::BTreeMap::new();
     for (dependency, terminal) in key.accessor_dependencies.iter().zip(accessor_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
