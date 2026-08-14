@@ -229,12 +229,13 @@ jobs:
     needs: affected-targets
     steps:
       - uses: actions/checkout@v6
-        with:
-          # The performance-staleness gate counts trunk commits merged since the
-          # newest plotted measurement, so it needs the measured commit in local
-          # history. The default depth-1 checkout has none of them, and a gate
-          # that cannot see the history fails rather than passing. (RUE-1258)
-          fetch-depth: 0
+        # A depth-1 checkout is enough for this lane: nothing it runs reads git
+        # history. Two of its steps do shell out to git — `provision-build-cache`
+        # lists worktrees, and `affected-targets build-scope` prunes them in its
+        # exit trap — but both ask only about the checkout in front of them, and
+        # the pin gate below is decided from file contents. The gate that does
+        # count commits is the `performance-staleness` job, which takes its own
+        # `fetch-depth: 0` checkout for the purpose (RUE-1258, RUE-1504).
 
       - name: Install dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
@@ -429,9 +430,12 @@ jobs:
         # the target, so platform responsibility cannot become implicit.
         run: scripts/ci-timed "cross-backend codegen" -- ./buck2 test //crates/rue-codegen:rue-codegen-test
 
-      # RUE-1258. Both performance gates live here because this job already has
-      # a built compiler and runner; a dedicated job would pay for a second
-      # compiler build to answer two cheap questions.
+      # RUE-1258's two performance gates deliberately live in different jobs,
+      # because they cost two orders of magnitude apart. This one is decidable
+      # from the tree alone and is about a second of hashing next to a compiler
+      # this lane has already built, so it belongs where the build is. Its
+      # sibling reads the published series, costs minutes, and shares nothing
+      # with this lane but `rue-bench`; it is the `performance-staleness` job.
       #
       # Neither gate has a bypass. The remedy for either is declaring the next
       # epoch, which is a small manifest change, and a genuine emergency is
@@ -450,6 +454,95 @@ jobs:
             --repo-root . \
             --compiler "$RUE"
 
+      # The Actions job-log API serves a truncated tail, so a failing target
+      # whose output scrolled past the cap is undiagnosable after the fact
+      # (RUE-1268). ci-timed preserves each failed command's complete output;
+      # keep it as an artifact.
+      - name: Upload failing-suite output
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: premerge-linux-x64-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
+
+  # RUE-1504. The staleness gate asks a question about the repository, not about
+  # the diff: is the published series *already* stalled? It reads nothing the
+  # premerge lane builds and nothing this diff touches, so the only thing it
+  # shared with that lane was a compiled `rue-bench`. It sits in its own job
+  # because `premerge (linux-x64)` is required CI's critical path — the longest
+  # job in 89 of 94 sampled runs — and this step added a flat ~156s median to it
+  # whatever the diff contained, 46% of the job on a pull request touching no
+  # compiler crate.
+  #
+  # This job is NOT cheaper than the step it replaced, and it is not smaller
+  # than the lane it left. It pays the gate's own ~156s plus a deep checkout
+  # (~11s), dotslash (~4s), job setup, and a `rue-bench` build that inside
+  # premerge was free because `Build all targets` had already done it:
+  # ~185-195s with the shared cache, ~250-270s cold on a fork pull request,
+  # against ~152s for premerge once the step is gone. So on a cheap pull request
+  # this job becomes the run's longest; on a compiler pull request, where
+  # premerge runs 9-10 minutes, it finishes far inside it. The change still pays
+  # in both regimes, because the two now overlap rather than serialize — the run
+  # goes from ~308s to ~190s at the median — but it is a p90 win first, and the
+  # floor under the whole run is `compiler reproducibility` at ~181.5s either
+  # way. Do not re-derive a saving here by assuming this job is free.
+  #
+  # Coverage moved slightly up, not sideways. As a premerge step the gate was
+  # skipped whenever an earlier step in that job failed, which happened in 1 of
+  # 14 sampled runs; standing alone it runs unconditionally. It still has no
+  # bypass and still blocks the merge: `ci-success` requires it by name, and
+  # `scripts/ci-required-results.py` is the inventory both the aggregate and the
+  # CI contract evaluate against.
+  #
+  # Deliberately ungated by `affected-targets`. A stalled series is a
+  # repository-wide condition that no diff causes and no diff can be shown not
+  # to be affected by, so there is no impacted-target closure that could
+  # correctly deselect this job.
+  performance-staleness:
+    runs-on: ubuntu-latest
+    name: performance staleness (linux-x64)
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The gate counts trunk commits merged since the newest plotted
+          # measurement, so it needs the measured commit in local history. The
+          # default depth-1 checkout has none of them, and a gate that cannot
+          # see the history fails rather than passing. (RUE-1258)
+          fetch-depth: 0
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      # Same dotslash cache as the other Linux lanes; see linux-premerge for
+      # why these are the only paths worth caching (RUE-144).
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
+      # clippy job for the secret-availability contract. This lane builds the
+      # same `rue-bench` other Linux lanes do, so where the key is present the
+      # build is mostly cache hits rather than a second cold compile. Where it
+      # is not — a fork pull request — this job compiles the whole thing from
+      # scratch, which is the ~250-270s case noted above.
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
       - name: Check the performance series is still advancing
         # Is the series *already* stalled? A repository-wide condition, so this
         # fails every pull request rather than only the one that caused it: a
@@ -462,6 +555,14 @@ jobs:
         # flag and a triage item, never a repository-wide block.
         run: |
           set -euo pipefail
+          # Build in the open, then read the path. `--show-simple-output` with
+          # stderr discarded prints NOTHING when the build fails, so under
+          # `set -e` the step would abort having said only its own name — and
+          # this is the one build in this job, cold whenever the cache key is
+          # absent. Building through ci-timed first puts the compiler error in
+          # the log and in the preserved artifact below; the second invocation
+          # is then a warm no-op whose only job is to name the binary.
+          scripts/ci-timed "rue-bench build" -- ./buck2 build //crates/rue-bench:rue-bench
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
           git fetch --no-tags origin trunk
           git fetch --no-tags origin performance-data-v1
@@ -478,15 +579,15 @@ jobs:
             --repo . \
             --ref origin/trunk
 
-      # The Actions job-log API serves a truncated tail, so a failing target
-      # whose output scrolled past the cap is undiagnosable after the fact
-      # (RUE-1268). ci-timed preserves each failed command's complete output;
-      # keep it as an artifact.
+      # RUE-1268: the job-log API serves a truncated tail, so a build whose
+      # output scrolled past the cap is undiagnosable after the fact. This lane
+      # builds the compiler cold whenever the cache key is absent, which is
+      # exactly when that output matters most.
       - name: Upload failing-suite output
         if: failure()
         uses: actions/upload-artifact@v6
         with:
-          name: premerge-linux-x64-failure-logs
+          name: performance-staleness-failure-logs
           path: ${{ runner.temp }}/rue-ci-failed-logs
           if-no-files-found: ignore
 
@@ -1178,6 +1279,7 @@ jobs:
       - remote-execution
       - rust-project
       - linux-premerge
+      - performance-staleness
       - native-platforms
       - compiler-reproducibility
       - rue-program-digests
