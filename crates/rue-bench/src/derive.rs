@@ -21,9 +21,10 @@ use std::path::Path;
 
 use rue_perf_schema::{
     Band, Completeness, FIXTURE_INPUT_NAME, Manifest, Metric, PeerRole, PeerThreadPolicy,
-    RunObject, RuntimeCompleteness, RuntimeManifest, RuntimeMetric, StoredRun, StoredRuntimeReport,
-    Summary, flags_movement, geometric_mean, median_absolute_deviation, ratio, sample_value,
-    summarize, validate_run, validate_runtime_report,
+    RunObject, RuntimeCompleteness, RuntimeManifest, RuntimeMetric, RuntimeValidationOutcome,
+    StoredRun, StoredRuntimeReport, Summary, flags_movement, geometric_mean,
+    median_absolute_deviation, ratio, sample_value, summarize, validate_run,
+    validate_runtime_report,
 };
 use serde::Serialize;
 
@@ -214,6 +215,57 @@ pub struct RuntimePointData {
     pub complete: bool,
     /// Per-workload figures, keyed by workload id.
     pub workloads: BTreeMap<String, RuntimeWorkloadPoint>,
+    /// What went wrong during the run, whether or not it stopped the report
+    /// entering the series.
+    ///
+    /// The record has carried these since Phase 1 and nothing read them. That
+    /// was survivable while every failure either sank the report — where the
+    /// reason surfaces under `rejected` — or lost the canary, which shows as an
+    /// unpublished point. RUE-1493 added a third kind: a peer row refused for
+    /// work equivalence is dropped from a report that stays complete and
+    /// publishable, so without this the row would simply be absent from the
+    /// table with nothing anywhere saying why.
+    pub failures: Vec<RuntimeFailureNote>,
+}
+
+/// One thing that went wrong during a run, as the page renders it.
+#[derive(Debug, Serialize)]
+pub struct RuntimeFailureNote {
+    /// Which kind of failure, in the record's own vocabulary.
+    pub kind: String,
+    /// The workload it belongs to.
+    pub workload: String,
+    /// The evidence the runner recorded.
+    pub detail: String,
+}
+
+impl RuntimeFailureNote {
+    fn of(failure: &rue_perf_schema::RuntimeFailure) -> RuntimeFailureNote {
+        use rue_perf_schema::RuntimeFailure;
+        let (kind, detail) = match failure {
+            RuntimeFailure::CompileFailed { detail, .. } => ("compile_failed", detail.clone()),
+            RuntimeFailure::FixturePreparationFailed { detail, .. } => {
+                ("fixture_preparation_failed", detail.clone())
+            }
+            RuntimeFailure::ProgramCrashed {
+                sample_index,
+                detail,
+                ..
+            } => (
+                "program_crashed",
+                format!("sample {sample_index}: {detail}"),
+            ),
+            RuntimeFailure::WrongOutput { detail, .. } => ("wrong_output", detail.clone()),
+            RuntimeFailure::ValidationRejected { detail, .. } => {
+                ("validation_rejected", detail.clone())
+            }
+        };
+        RuntimeFailureNote {
+            kind: kind.to_string(),
+            workload: failure.workload().to_string(),
+            detail,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -943,6 +995,7 @@ fn derive_runtime_epoch(
             finished_at: identity.finished_at.clone(),
             complete: matches!(outcome.completeness, RuntimeCompleteness::Complete),
             workloads,
+            failures: report.failures.iter().map(RuntimeFailureNote::of).collect(),
         });
     }
 
@@ -1002,50 +1055,66 @@ fn derive_runtime_epoch(
 ///     same job on the same machine. This is the same-run denominator Decision
 ///     9 exists to provide.
 ///   * Every other peer configuration is JOINED from the latest run that
-///     carried a full peer leg, and only when its fixture identity matches the
-///     newest run's for that workload. A matching identity means the two runs
-///     built literally the same input, which is what makes the join meaningful;
-///     a differing one means the peer leg is due and has not run, and stale
-///     rows are dropped rather than published against a corpus they never saw.
+///     carried a full peer leg, and only when both recorded identities match
+///     the newest run's for that workload. Matching WORKLOAD identities mean
+///     the two runs built literally the same input; matching COMPARISON
+///     identities mean they configured the peers the same way, down to the peer
+///     ports and the versions they were pinned at. A differing one of either
+///     means the peer leg is due and has not run, and stale rows are dropped
+///     rather than published against a corpus or a pin they never saw.
+///
+/// TWO RULES ABOUT THE NEWEST RUN, both of which this got wrong before RUE-1493
+/// and both of which decide whether a published ratio is evidence:
+///
+///   * The table is built from the newest run's PUBLISHABLE observations, not
+///     from its appendable ones. A report missing its required canary is
+///     deliberately appendable-but-partial — the evidence is kept and no point
+///     publishes — and a report with a truncated Rue observation is suppressed
+///     by `derive_runtime_epoch` for the same reason. Publishing a ratio from
+///     either would route around both decisions.
+///   * If the newest run has no publishable peer observation, the answer is the
+///     empty state, not an older table. Reaching back would show a comparison
+///     that reads as current, dated by an older commit that a reader has no
+///     reason to notice, while the thing it actually says — this run has no
+///     valid denominator — goes unsaid.
 fn latest_comparison(
     manifest: &RuntimeManifest,
     stored: &[&StoredRuntimeReport],
 ) -> Option<RuntimeComparison> {
-    let mut appendable: Vec<&&StoredRuntimeReport> = stored
+    let mut appendable: Vec<(&&StoredRuntimeReport, RuntimeValidationOutcome)> = stored
         .iter()
-        .filter(|report| validate_runtime_report(manifest, report.record()).is_appendable())
+        .map(|report| (report, validate_runtime_report(manifest, report.record())))
+        .filter(|(_, outcome)| outcome.is_appendable())
         .collect();
-    appendable.sort_by(|left, right| {
+    appendable.sort_by(|(left, _), (right, _)| {
         left.record()
             .identity
             .finished_at
             .cmp(&right.record().identity.finished_at)
+            .then_with(|| left.address().cmp(right.address()))
     });
 
-    let base = appendable
-        .iter()
-        .rev()
-        .find(|report| {
-            report
-                .record()
-                .workloads
-                .iter()
-                .any(|observation| !observation.peers.is_empty())
-        })
-        .copied();
-    let full = appendable
-        .iter()
-        .rev()
-        .find(|report| {
-            report.record().workloads.iter().any(|observation| {
-                observation
+    // Publishable, per workload: an observation that publishes no median has no
+    // ratio either, and the numerator of every row here is that median.
+    fn carries_publishable_full_leg(
+        report: &StoredRuntimeReport,
+        outcome: &RuntimeValidationOutcome,
+    ) -> bool {
+        report.record().workloads.iter().any(|observation| {
+            outcome.publishes_workload(&observation.workload)
+                && observation
                     .peers
                     .iter()
                     .any(|peer| peer.role == PeerRole::Full)
-            })
         })
-        .copied();
-    let base = base.or(full)?;
+    }
+
+    let (base, base_outcome) = appendable.last()?;
+    let base = *base;
+    let full = appendable
+        .iter()
+        .rev()
+        .find(|(report, outcome)| carries_publishable_full_leg(report, outcome));
 
     let mut rows: Vec<RuntimeComparisonRow> = Vec::new();
     let mut fixture = String::new();
@@ -1053,6 +1122,7 @@ fn latest_comparison(
         .record()
         .workloads
         .iter()
+        .filter(|observation| base_outcome.publishes_workload(&observation.workload))
         .filter(|observation| !observation.peers.is_empty())
         .collect();
     // Ascending by the scale the peers built, so the table reads as a
@@ -1075,6 +1145,7 @@ fn latest_comparison(
             .map(|peer| peer.scale)
             .unwrap_or_default();
         let identity = fixture_identity(observation);
+        let comparison = comparison_identity(observation);
         if fixture.is_empty() {
             fixture = short_digest(&identity);
         }
@@ -1146,10 +1217,21 @@ fn latest_comparison(
             &mut seen,
         );
 
-        if let Some(full) = full
-            && !std::ptr::eq(*full, *base)
+        // BOTH identities, and the second is the one RUE-1493 added. Matching
+        // workload identities say the two runs built the same input; they say
+        // nothing about the peers, because the workload identity deliberately
+        // no longer moves when a peer port does. The comparison identity is
+        // what covers the peer ports and the peer versions, so without it a
+        // bumped peer whose full leg failed would go on being joined in — the
+        // row self-labelled with the version it was measured under, which
+        // misattributes no number and hides the fact that the pinned version
+        // has never successfully run.
+        if let Some((full, full_outcome)) = full
+            && !std::ptr::eq(**full, *base)
+            && full_outcome.publishes_workload(&observation.workload)
             && let Some(earlier) = full.record().observation(&observation.workload)
             && fixture_identity(earlier) == identity
+            && comparison_identity(earlier) == comparison
         {
             push_peers(
                 &mut rows,
@@ -1179,6 +1261,21 @@ fn fixture_identity(observation: &rue_perf_schema::RuntimeObservation) -> String
         .find(|input| input.name == FIXTURE_INPUT_NAME)
         .map(|input| input.identity_sha256.clone())
         .unwrap_or_default()
+}
+
+/// The comparison configuration one observation was taken under.
+///
+/// `None` for an observation from an epoch that recorded none, and comparing
+/// two `None`s equal is deliberate: those records were collected under a join
+/// condition of the workload identity alone, and re-judging them by a rule
+/// their epoch never declared would rewrite history rather than correct it.
+/// Within an epoch that pins the identity, validation guarantees both sides
+/// carry one, so the comparison is between two real digests.
+fn comparison_identity(observation: &rue_perf_schema::RuntimeObservation) -> Option<String> {
+    observation
+        .comparison
+        .as_ref()
+        .map(|comparison| comparison.identity_sha256.clone())
 }
 
 /// A digest abbreviated for a human, never for comparison.
@@ -2203,6 +2300,7 @@ samples = 3
                     })
                     .collect(),
                 peers: Vec::new(),
+                comparison: None,
             }],
             failures: Vec::new(),
         }
@@ -2362,16 +2460,34 @@ primary_thread_policy = "pinned_single_thread"
 secondary_thread_policy = "tool_default_parallel"
 canary_tool = "zola"
 canary_scale = 1
+records_comparison_identity = true
 "#;
 
-    fn peer_sample(elapsed: u64) -> rue_perf_schema::RuntimeSample {
-        rue_perf_schema::RuntimeSample {
-            process_elapsed_ns: elapsed,
-            peak_memory_bytes: 1024,
-            exit_code: 0,
-            stdout_bytes: 0,
-            stdout_sha256: "a".repeat(64),
-            artifact_sha256: Some("8".repeat(64)),
+    /// The epoch's own sample count, because a peer taken under another
+    /// sampling policy is not a comparable denominator (RUE-1493).
+    fn peer_samples(elapsed: u64) -> Vec<rue_perf_schema::RuntimeSample> {
+        (0..3)
+            .map(|index| rue_perf_schema::RuntimeSample {
+                process_elapsed_ns: elapsed + index,
+                peak_memory_bytes: 1024,
+                exit_code: 0,
+                stdout_bytes: 0,
+                stdout_sha256: "a".repeat(64),
+                artifact_sha256: Some("8".repeat(64)),
+            })
+            .collect()
+    }
+
+    /// The comparison configuration the peer legs were taken under.
+    ///
+    /// Distinct from the workload identity on purpose: the join now requires
+    /// both to match, and a test that reused one digest for both could not tell
+    /// which rule it was exercising.
+    fn comparison_identity(digest: char) -> rue_perf_schema::ComparisonIdentity {
+        rue_perf_schema::ComparisonIdentity {
+            identity_sha256: std::iter::repeat_n(digest, 64).collect(),
+            peer_port_revision: 3,
+            peer_versions: BTreeMap::from([("zola".to_string(), "0.21.0".to_string())]),
         }
     }
 
@@ -2439,7 +2555,7 @@ canary_scale = 1
                     scale: 1,
                     output_sha256: "8".repeat(64),
                     emitted_files: 131,
-                    samples: vec![peer_sample(2_000_000_000)],
+                    samples: peer_samples(2_000_000_000),
                 },
                 PeerObservation {
                     tool: "zola".to_string(),
@@ -2447,11 +2563,15 @@ canary_scale = 1
                     role: PeerRole::Full,
                     thread_policy: PeerThreadPolicy::ToolDefaultParallel,
                     scale: 1,
+                    // The same tree as the pinned row above: the same tool on
+                    // the same corpus does the same work, and RUE-1493 refuses
+                    // a secondary row that does not.
                     output_sha256: "8".repeat(64),
                     emitted_files: 131,
-                    samples: vec![peer_sample(1_000_000_000)],
+                    samples: peer_samples(1_000_000_000),
                 },
             ],
+            comparison: Some(comparison_identity('a')),
         }];
         report
     }
@@ -2564,6 +2684,165 @@ canary_scale = 1
             comparison.rows
         );
         assert!(comparison.rows.iter().all(|row| !row.joined));
+    }
+
+    #[test]
+    fn a_joined_row_is_dropped_when_the_peers_it_measured_are_not_these_peers() {
+        // The other half of the join condition, and the one RUE-1493 added.
+        // The corpus is identical here — the workload identity matches exactly,
+        // as it now does across a peer-port or peer-version change, since
+        // neither is an input to gazette. What differs is the comparison
+        // configuration, which is the only thing that can say so.
+        //
+        // The failure this prevents: bump the Hugo shim, watch the full leg
+        // fail, and every subsequent canary-only run splices in a peer row
+        // measured under a version the project no longer pins. The row names
+        // its own version, so no number is misattributed — and the table goes
+        // on publishing against a pin that has never successfully run.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut full = gazette_peer_report();
+        full.identity.commit = "1".repeat(40);
+        full.identity.finished_at = "2026-08-13T00:01:00Z".to_string();
+
+        let mut canary_only = gazette_peer_report();
+        canary_only.identity.commit = "2".repeat(40);
+        canary_only.identity.finished_at = "2026-08-13T00:02:00Z".to_string();
+        canary_only.workloads[0]
+            .peers
+            .retain(|peer| peer.role == rue_perf_schema::PeerRole::Canary);
+        // Same corpus, different peer configuration.
+        canary_only.workloads[0].comparison = Some(comparison_identity('b'));
+        assert_eq!(
+            canary_only.workloads[0].recorded_inputs[0].identity_sha256,
+            full.workloads[0].recorded_inputs[0].identity_sha256,
+            "the workload identity is deliberately unmoved by a peer change"
+        );
+
+        let data = derive_runtime(&manifest, &stored_runtime([full, canary_only]), &[]);
+        let comparison = data.platforms[0].epochs[0]
+            .comparison
+            .as_ref()
+            .expect("a comparison");
+        assert_eq!(
+            comparison.rows.len(),
+            2,
+            "only the same-run rows survive a peer-configuration change: {:?}",
+            comparison.rows
+        );
+        assert!(comparison.rows.iter().all(|row| !row.joined));
+    }
+
+    #[test]
+    fn a_run_that_lost_its_canary_publishes_no_comparison() {
+        // ADR-0072 Decision 9 makes a canary-less observation appendable and
+        // NOT publishable: the evidence is kept and the ratio it was meant to
+        // anchor is exactly what cannot be computed. Before RUE-1493 this
+        // function filtered on appendability alone, so a report deliberately
+        // held back from the series still published a full cross-tool table
+        // from whatever peers it happened to carry.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut report = gazette_peer_report();
+        // The full leg ran and the canary did not, which is the state a
+        // canary failure leaves behind: both rows are legitimate measurements
+        // and neither is the same-run denominator Decision 9 requires.
+        for peer in &mut report.workloads[0].peers {
+            peer.role = rue_perf_schema::PeerRole::Full;
+        }
+        let stored = stored_runtime([report]);
+        let outcome = validate_runtime_report(&manifest, stored[0].record());
+        assert!(outcome.is_appendable(), "{:?}", outcome.errors);
+        assert!(
+            !outcome.publishes_workload("gazette"),
+            "deliberately partial"
+        );
+
+        let data = derive_runtime(&manifest, &stored, &[]);
+        assert!(
+            data.platforms[0].epochs[0].comparison.is_none(),
+            "a partial observation publishes no median, so it has no ratio either"
+        );
+    }
+
+    #[test]
+    fn a_truncated_observation_publishes_no_comparison_either() {
+        // The same rule reached the other way. `derive_runtime_epoch` already
+        // suppresses a median over a truncated sample set; a ratio computed
+        // from the same samples would be that suppressed median with a
+        // denominator attached.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut report = gazette_peer_report();
+        report.workloads[0].samples.truncate(1);
+        let data = derive_runtime(&manifest, &stored_runtime([report]), &[]);
+        let epoch = &data.platforms[0].epochs[0];
+        assert!(epoch.points[0].workloads.is_empty());
+        assert!(epoch.comparison.is_none());
+    }
+
+    #[test]
+    fn a_newest_run_without_peers_shows_no_table_rather_than_an_older_one() {
+        // The fallback this replaces reached back to the newest run that
+        // carried any peer at all, so a run whose peer leg produced nothing
+        // rendered an older comparison that reads as current. What the reader
+        // needs to know in that state is precisely that this run has no valid
+        // denominator, and an older table is the one thing that cannot say it.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut full = gazette_peer_report();
+        full.identity.commit = "1".repeat(40);
+        full.identity.finished_at = "2026-08-13T00:01:00Z".to_string();
+
+        let mut peerless = gazette_peer_report();
+        peerless.identity.commit = "2".repeat(40);
+        peerless.identity.finished_at = "2026-08-13T00:02:00Z".to_string();
+        // Every peer build failed. The comparison configuration is still
+        // recorded — the preparer laid the peers' sites out and read their
+        // versions before anything was measured — so the record says which
+        // peers this run WOULD have compared against and carries not one of
+        // their measurements.
+        peerless.workloads[0].peers.clear();
+
+        let data = derive_runtime(&manifest, &stored_runtime([full, peerless]), &[]);
+        assert!(
+            data.platforms[0].epochs[0].comparison.is_none(),
+            "the newest run has no denominator, and an older table would hide that"
+        );
+    }
+
+    #[test]
+    fn a_failure_inside_an_appendable_report_reaches_the_page() {
+        // RUE-1493. A peer row refused for work equivalence is dropped from a
+        // report that stays complete and publishable, so the table loses a row
+        // and nothing else changes. The record carried the runner's reason all
+        // along and no consumer read it; without this the only trace of a
+        // default-parallel row that built a different site would be a job log
+        // nobody keeps.
+        let manifest = RuntimeManifest::parse(RUNTIME_PEER_MANIFEST).expect("peer manifest");
+        let mut report = gazette_peer_report();
+        report.workloads[0]
+            .peers
+            .retain(|peer| peer.thread_policy == PeerThreadPolicy::PinnedSingleThread);
+        report
+            .failures
+            .push(rue_perf_schema::RuntimeFailure::ValidationRejected {
+                workload: "gazette".to_string(),
+                detail: "peer zola at 1x under ToolDefaultParallel emitted a different tree"
+                    .to_string(),
+            });
+
+        let data = derive_runtime(&manifest, &stored_runtime([report]), &[]);
+        let point = &data.platforms[0].epochs[0].points[0];
+        assert!(point.complete, "the Rue measurement is untouched");
+        assert!(
+            data.platforms[0].epochs[0].comparison.is_some(),
+            "the ratio still publishes; only the labelled secondary row is gone"
+        );
+        assert_eq!(point.failures.len(), 1);
+        assert_eq!(point.failures[0].kind, "validation_rejected");
+        assert_eq!(point.failures[0].workload, "gazette");
+        assert!(
+            point.failures[0].detail.contains("different tree"),
+            "{:?}",
+            point.failures[0].detail
+        );
     }
 
     #[test]

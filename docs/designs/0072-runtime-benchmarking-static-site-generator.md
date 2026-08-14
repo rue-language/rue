@@ -9,7 +9,7 @@ accepted: 2026-08-13
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "RUE-1495", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
+relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "RUE-1493", "RUE-1495", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
 ---
 
 # ADR-0072: Runtime performance benchmarking anchored by a Rue static site generator
@@ -169,7 +169,7 @@ benchmark a progressively staler site.
 
 Corpus drift is handled by measurement discipline instead of pinning:
 
-- **Recorded identity.** Every observation records the complete
+- **Recorded identity, in two parts.** Every observation records the complete
   fixture-input identity: a tree hash over everything the tools consume —
   the Markdown content tree, the static passthrough assets (currently 33
   files, ~1.2 MiB: more bytes than the Markdown itself), and the versioned
@@ -177,6 +177,58 @@ Corpus drift is handled by measurement discipline instead of pinning:
   bytes. Any movement in a series is thereby attributable to compiler,
   workload, or input from the data alone, and no input class can change
   work without changing the recorded identity.
+
+  Phase 5's review found that one identity cannot carry that sentence for
+  both of the questions it is asked, and RUE-1493 split it in two. The
+  reason is that "everything the tools consume" is not one set: gazette
+  consumes its own template port, and the peers consume theirs, and a
+  change to one of those is not a change to the other's work.
+
+  - **The workload identity** — corpus content, static assets, the
+    preparer's own revision and digest, and **gazette's own template port
+    and configuration** — is what segments Rue's longitudinal series. It
+    must not move when a peer port moves, because a Hugo layout edit cannot
+    change what gazette does, and opening a new comparable segment for one
+    would discard Rue's own history for a change outside the program. Peer
+    parity work is ongoing rather than finished — Phase 5 fixed three Hugo
+    port defects, and highlighting, search-index, and minification parity
+    are Future Work — so this is a recurring event, not a hypothetical one.
+
+    **The preparer is therefore two files, not one**, and that is a
+    consequence of the identity rather than a tidying of the code. The
+    workload identity contains a digest of the whole preparer, deliberately
+    over-sensitive so that no assembly rule can change what gazette consumes
+    without moving it — which means any peer knob sharing that file moves
+    it too. All three Hugo port defects Phase 5 found were fixed inside the
+    corpus respelling, and the port-review procedure asks a maintainer to
+    bump a peer port revision by hand; under one file, each of those would
+    still have discarded Rue's history. The peer half — the pinned tools and
+    versions, the peer ports, the respelling, the invocations and thread
+    parity, and the cross-tool oracle — lives in its own module whose digest
+    rides the comparison identity alone, and the corpus rules it borrows are
+    passed to it rather than copied, so the two files cannot disagree about
+    a route.
+  - **The comparison-configuration identity** — the workload identity plus
+    **every peer template port, the peer preparer's own digest, every peer
+    version, and the epoch** — is recorded on every observation and is the
+    join condition for the event-driven full peer leg (Decision 9). Peer versions are *inside* it
+    rather than beside it, which is the half the single identity was
+    missing: a peer toolchain bump moved no recorded identity at all, so if
+    the full leg it triggered then failed, every subsequent canary-only run
+    joined in a peer row measured under a version the project no longer
+    pins. The row labels its own version, so no number was misattributed —
+    and the table went on publishing against a pin that had never
+    successfully run, with nothing in the data saying so. Because the peer
+    leg is event-driven and the canary is not, joined rows are the normal
+    state of the published table rather than an edge case.
+
+  A canary-only observation records **every** declared peer's version, not
+  only the canary's. It measures one tool and must still say what the others
+  were pinned at, or the bump above leaves no trace in the store at all.
+
+  Both identities are recorded raw, per observation, exactly as before; what
+  changed is that a consumer can now tell a change in the measured program's
+  input from a change in what it is being compared against.
 - **Annotated events.** Corpus changes appear as annotated events on the
   published charts, alongside compiler releases and peer tool bumps.
 - **Peers as the corpus control.** The peer tools are version-pinned, so a
@@ -421,6 +473,22 @@ cannot anchor, because the difference matters:
   recursive navigation's active branch, the feed, and the redirect stub, so
   the goldens remain sensitive to exactly what they are for.
 
+The semantic oracle reads one emitted tree per tool: the primary,
+single-threaded one. The **default-parallel secondary row** is therefore held
+to that tool's judged digest rather than to a second oracle pass — it is the
+same tool on the same corpus, so its output tree must be the one the oracle
+already examined. Without that equality a secondary row was proved only to be
+deterministic with itself, and a parallel build that reproducibly emitted a
+different site would publish as the number a user would actually experience
+(RUE-1493).
+
+Peer samples answer to the same sanity rules as Rue's, and to the epoch's
+sample count, for the same reason: a peer is the denominator of a published
+ratio, and a zero-duration, non-zero-exit, or single-sample denominator is not
+a measurement of anything. A peer observation carrying one cannot have come
+from the harness — it abandons a leg rather than recording a partial one — so
+it is refused outright rather than tiered as an invalid sample.
+
 The file-set criterion carries a documented allowlist for tool-mandated
 differences — sitemap emission, feed filename mapping, static passthrough —
 rather than an unstated assumption of exact equality. Static passthrough is
@@ -640,13 +708,17 @@ website-publish pipeline rather than adding a new schedule:
   which loses a whole run object. It is the concrete thing to watch when
   Decision 9's cost review happens.
 - **Peers are re-measured on events, not on a clock.** Pinned Zola and Hugo
-  results move only when their inputs move, so the full peer leg runs only
-  when the recorded fixture identity changes (content, static assets,
-  template ports, parity configs), a peer toolchain is bumped, or the
-  runner regime starts a new epoch. The per-push job detects an identity
-  change at fixture-preparation time and runs the peer leg in that same
+  results move only when their inputs move, so the full peer leg runs
+  exactly when the recorded **comparison-configuration identity** changes:
+  the workload identity (content, static assets, assembly rules, gazette's
+  port), a peer template port or parity config, the peer preparer itself,
+  a peer toolchain version, or the runner epoch. That identity is composed
+  of precisely those components (Decision 2), so the event question is one
+  digest comparison and cannot fall out of step with the join condition
+  below. The per-push job
+  asks it at fixture-preparation time and runs the peer leg in that same
   run. Between events, the derive step joins gazette observations against
-  the latest full peer observation with matching fixture identity.
+  the latest full peer observation whose **both** identities match.
 - **A peer canary rides every run.** One single-threaded Zola build of the
   1x corpus runs alongside every gazette observation — cheap on this
   corpus, and enough to give every observation a same-run ratio
@@ -663,11 +735,21 @@ website-publish pipeline rather than adding a new schedule:
   expensive leaves per-push collection with its canary.
 
   Between events, the derived comparison table JOINS each observation to the
-  latest full peer leg with a matching fixture identity, and marks which rows
-  came from which run. Without that join the table is whatever the newest run
-  happened to carry, which is the canary alone — one peer, one thread policy —
-  so the three-tool comparison this ADR promises would appear for one push
-  after each event and then disappear.
+  latest full peer leg whose workload identity AND comparison-configuration
+  identity both match, and marks which rows came from which run. Without that
+  join the table is whatever the newest run happened to carry, which is the
+  canary alone — one peer, one thread policy — so the three-tool comparison
+  this ADR promises would appear for one push after each event and then
+  disappear.
+
+  The table is built from the newest run's **publishable** observations, and
+  from no older run. Two rules follow, and RUE-1493 added both after the
+  first implementation published around them. A report deliberately held back
+  from the series — one that lost its canary, or whose Rue observation was
+  truncated — publishes no median, so it has no ratio either. And a newest run
+  with no valid denominator renders the empty state rather than an older
+  table: reaching back would show a comparison that reads as current while
+  the one thing the reader needs to know goes unsaid.
 - **Scale variants have a safety valve.** The 1x corpus runs per push; if
   the 10x/100x variants prove too expensive for per-push collection, they
   move to a scheduled cadence without changing any other policy.
@@ -781,6 +863,17 @@ because each changes what a later reader should expect.
   one copy of every page as well as every original, and fixture preparation
   gives each page its type explicitly, which is the same translation the corpus
   already performs for Zola through `template`.
+
+  Required CI could not see that class either, because it ran the cross-tool
+  check at 1x, where nothing is duplicated and the question is never asked.
+  RUE-1493 moved it to a **2x** fixture: the smallest DUPLICATED corpus, which
+  covers every original page plus one copy of each, so it strictly includes
+  what the 1x lane checked and adds the duplicated layout, type, and feed
+  selection for roughly twice the build work rather than ten times. 2x is not a
+  rung of the published curve and is deliberately absent from
+  `performance/runtime.toml`; it exists to be checked, not plotted. Verified by
+  reverting the page-type translation above: the 1x lane still passed and the
+  2x lane failed on 260 duplicated pages.
 - **Hugo is pinned at v0.152.2 rather than at the newest release**, because
   from v0.153.0 Hugo publishes macOS only as a `.pkg` installer, which DotSlash
   cannot extract, and `aarch64-macos` is a row of this matrix.
@@ -944,7 +1037,8 @@ by this ADR and stays in the project as future scope.
 - [ADR-0071: Release-quality compiler performance contract](0071-release-quality-compiler-performance-contract.md)
 - Linear: Runtime performance benchmarking project — RUE-1045 (this ADR),
   RUE-1046, RUE-1047, RUE-1048, RUE-1049, RUE-1481, RUE-1482, RUE-1483,
-  RUE-1484, RUE-1485, RUE-1488 (this amendment's platform matrix).
+  RUE-1484, RUE-1485, RUE-1488 (the platform matrix), RUE-1493 (Decision 2's
+  identity split, and the peer-evidence rules that gate publication).
 - Linear: RUE-945 — the `@syscall` carry-flag normalization on
   `aarch64-macos` that the deferred macOS row was waiting for.
 - Prior art: the Computer Language Benchmarks Game (comparison layout,

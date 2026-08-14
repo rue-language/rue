@@ -814,21 +814,28 @@
     // inside the figure, so this function can only ever add rows to a table
     // that already carries them (ADR-0072 Decision 3).
     //
-    // The rows come from ONE run of the selected platform — the newest one that
-    // measured peers, which is not always the newest run, because peers are
-    // re-measured on events rather than on a clock. That is the honest table to
-    // publish: both sides of every ratio were measured on the same machine in
-    // the same job. An absent comparison renders as the empty state below,
-    // never as an estimate.
+    // The rows come from ONE run of the selected platform: the newest run of
+    // its NEWEST EPOCH, joined to that epoch's latest full peer leg. Both sides
+    // of every ratio were therefore measured on the same machine in the same
+    // job, and every joined row was measured on the same corpus under the same
+    // peer configuration.
+    //
+    // THE NEWEST EPOCH, AND NO OLDER ONE. This walked backwards through the
+    // epochs and drew the first table it found, which was harmless only while
+    // one epoch had peer data. The derive step now returns no comparison
+    // whenever the newest run has no publishable denominator — a lost canary, a
+    // truncated observation, a refused peer row — so a fallback would answer
+    // that state by rendering a RETIRED epoch's table: a different suite
+    // revision, a different workload identity, an older commit, presented as
+    // current, with the empty note that explains the real state hidden behind
+    // it. An absent comparison is the answer, not a prompt to look for another.
     function drawComparison() {
       var figure = document.getElementById("rt-comparison");
       var body = document.getElementById("rt-comparison-rows");
       var emptyNote = document.getElementById("rt-comparison-empty");
       var epochs = current().epochs || [];
-      var comparison = null;
-      for (var i = epochs.length - 1; i >= 0 && !comparison; i--) {
-        comparison = epochs[i].comparison;
-      }
+      var newest = epochs.length ? epochs[epochs.length - 1] : null;
+      var comparison = newest && newest.comparison;
       var rows = (comparison && comparison.rows) || [];
       body.textContent = "";
       if (!rows.length) {
@@ -867,12 +874,14 @@
       if (provenance) {
         var joined = rows.filter(function (entry) { return entry.joined; }).length;
         var text = "Rue and the marked same-run peer were measured together at commit " +
-          shortHash(comparison.commit) + ", against fixture " + comparison.fixture + ".";
+          shortHash(comparison.commit) + ", against workload identity " +
+          comparison.fixture + ".";
         if (joined) {
           text += " " + joined + " row" + (joined === 1 ? " was" : "s were") +
-            " joined from the most recent full peer run on the same fixture, which is " +
-            "why the peers are not re-measured on every commit; those rows control for " +
-            "the input but not for the machine.";
+            " joined from the most recent full peer run on the same corpus AND the same " +
+            "peer configuration — same peer ports, same pinned versions — which is why " +
+            "the peers are not re-measured on every commit; those rows control for the " +
+            "input but not for the machine.";
         }
         provenance.textContent = text;
       }
@@ -894,6 +903,25 @@
           item.textContent = shortHash(note.commit) + " — " + subject +
             note.kind.replace(/_/g, " ") + ", " + note.detail + ". " + meaning;
           list.appendChild(item);
+        });
+      });
+      // What the runner recorded as having gone wrong, on runs that were stored
+      // anyway. A report refused outright is reported under `rejected` with its
+      // reasons; these are the failures inside reports that DID enter the
+      // series — a crashed sample, a fixture that would not prepare, or a peer
+      // row dropped for work equivalence, which leaves a complete and
+      // publishable report with one fewer row in its table and belongs in a
+      // maintainer's view rather than only in a job log.
+      current().epochs.forEach(function (epoch) {
+        (epoch.points || []).forEach(function (point) {
+          (point.failures || []).forEach(function (failure) {
+            any = true;
+            var item = document.createElement("li");
+            item.textContent = shortHash(point.commit) + " — " +
+              (failure.workload ? failure.workload + ": " : "") +
+              failure.kind.replace(/_/g, " ") + ", " + failure.detail;
+            list.appendChild(item);
+          });
         });
       });
       // Absent rather than empty: the peer leg has never run, so "no peer

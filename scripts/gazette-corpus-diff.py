@@ -104,67 +104,137 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_URL = "https://rue-lang.dev"
 
-# The gazette half of ADR-0072 Decision 2's "template ports and parity
-# configurations". The DIGEST below is the authoritative identity — it is
-# computed from the bytes and cannot drift — and this integer is the
-# human-legible label a maintainer bumps when changing the port deliberately,
-# so a reader of two observations can say "the port moved" without diffing two
-# hashes. Both ride every recorded identity.
-# REVISION 2 (RUE-1485) adds the two peer ports. All three ride one revision
-# and one digest deliberately: the peer leg is event-driven on the recorded
-# fixture identity (ADR-0072 Decision 9), so a change to the Zola or Hugo port
-# has to move that identity or the next collection would join fresh gazette
-# observations to peer numbers taken under a port that no longer exists.
-PORT_REVISION = 2
+# The peer half of the comparison, in its own file so that its digest rides the
+# COMPARISON identity and not the workload one (RUE-1493). `sys.path` already
+# has this directory when the script is run directly; naming it explicitly
+# keeps a `-P`-style invocation from turning a design decision into an
+# ImportError.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gazette_peer_ports as peer_ports  # noqa: E402
+
+# ADR-0072 Decision 2's "template ports and parity configurations", split in
+# two because they answer two different questions (RUE-1493).
+#
+# THE PARTITION IS THE POINT. Gazette's own port is an input to the program
+# under measurement: change a gazette template and gazette does different work,
+# so the change must open a new segment in Rue's longitudinal series. The Zola
+# and Hugo ports are not inputs to gazette at all — no gazette build reads them
+# — so a Hugo layout edit that cannot change what gazette does must NOT segment
+# gazette's series. Revision 2 rode all three on one digest, which was wrong in
+# both directions at once: too aggressive for Rue's series, and (since peer
+# VERSIONS were outside the identity entirely) too weak for the peer join.
+#
+# The split is a FILE split and not only a digest one, because this file's own
+# digest is inside the workload identity: peer pins that lived here would move
+# that identity every time a maintainer bumped one. The peer half is
+# `gazette_peer_ports.py`, whose digest rides the comparison identity alone.
+#
+# The DIGESTS are authoritative, computed from the bytes and unable to drift;
+# the revisions are the human-legible labels a maintainer bumps when changing a
+# port deliberately, so a reader of two observations can say "the port moved"
+# without diffing two hashes.
+#
+# The revision stays at 2 through RUE-1493: no gazette template changed here,
+# and a label that advanced anyway would tell a reader diffing two observations
+# that the port moved when it did not. What changed is the COMPOSITION of the
+# identities, which `PREPARER_REVISION` records.
+GAZETTE_PORT_REVISION = 2
 
 # The revision of the FIXTURE ASSEMBLY this script implements, which
-# `performance/runtime.toml` pins for the gazette workloads. It is not the port
-# revision: the port is what the tools render, and this is how the tree they
-# render is built — the corpus assembly, the exclusions, the normalizations, and
-# the scale duplication. Bump it whenever any of those changes what a tool
-# consumes, so a manifest pinning an assembly this script no longer implements
-# is refused rather than silently measuring a different job. The seeded
-# generator's `generator_revision` is checked the same way and for the same
-# reason.
-PREPARER_REVISION = 1
+# `performance/runtime.toml` pins for the gazette workloads. It is not a port
+# revision: a port is what a tool renders, and this is how the tree they render
+# is built — the corpus assembly, the exclusions, the normalizations, the scale
+# duplication, and the composition of the identities recorded with every
+# observation. Bump it whenever any of those changes what a tool consumes or
+# what an observation records, so a manifest pinning an assembly this script no
+# longer implements is refused rather than silently measuring a different job.
+# The seeded generator's `generator_revision` is checked the same way and for
+# the same reason.
+#
+# REVISION 2 (RUE-1493) splits the recorded identity in two: `fixture_digest`
+# now covers only what gazette consumes, and `comparison_digest` covers the
+# peer ports and peer versions beside it. A harness pinning revision 1 would
+# get no comparison identity at all, so it is refused here rather than left to
+# produce records that cannot join.
+PREPARER_REVISION = 2
 
-PORT_ROOTS = [
+# What gazette itself renders. Inside the workload identity. The peers' roots
+# are `peer_ports.PEER_PORT_ROOTS`, deliberately in the other file.
+GAZETTE_PORT_ROOTS = [
     "examples/gazette/config.toml",
     "examples/gazette/templates",
-    "performance/ports/zola/config.toml",
-    "performance/ports/zola/templates",
-    "performance/ports/hugo/hugo.toml",
-    "performance/ports/hugo/layouts",
 ]
 
-# The production template set the port derives from, as it stood when
-# PORT_REVISION was last set. ADR-0072's Consequences name the risk this
-# discharges: "Production drift away from the ports quietly erodes the live
-# framing, so website-template changes should include a port review." A comment
-# asking for a review is not a review, so the digest is pinned and the `golden`
-# mode fails when it moves.
+# The corpus rules the peer half borrows: the base URL it strips from a link
+# target, the front-matter fence it re-fences a respelled page with, the
+# scale-prefix rule, the file walk, and the route rule. Passed rather than
+# duplicated — two spellings of `route_of` is exactly the silent divergence
+# Decision 2 exists to prevent — and passed rather than imported back, so the
+# dependency runs one way and the peer file can be hashed on its own.
+def corpus_rules() -> peer_ports.CorpusRules:
+    return peer_ports.CorpusRules(
+        base_url=BASE_URL,
+        front_matter=FRONT_MATTER,
+        unprefixed=unprefixed,
+        walk_files=walk_files,
+        route_of=route_of,
+    )
+
+# The production template set the ports derive from, as it stood at the last
+# review. ADR-0072's Consequences name the risk this discharges: "Production
+# drift away from the ports quietly erodes the live framing, so website-template
+# changes should include a port review." A comment asking for a review is not a
+# review, so the digest is pinned and the `golden` mode fails when it moves.
+#
+# IT STAYS ON THE WORKLOAD SIDE of the RUE-1493 split, in this file, even though
+# the review it forces covers all three ports. Two reasons. It is not an input
+# to either recorded identity — no observation carries it, and it changes no
+# measurement — so it is a review gate rather than an identity, and putting a
+# gate in the comparison file would make a production-template edit move the
+# comparison digest and re-run the peer leg for a change no tool consumed. And
+# `website/templates` is GAZETTE's production source: the peer ports are ports
+# OF gazette's port, so the review starts here and reaches them through it.
 #
 # When it fires, the fix is to look at what changed in `website/templates/`,
-# decide whether the port should follow, change the port if it should, then
-# advance PORT_REVISION and paste the new digest here. Advancing the revision
-# is not busywork: it is what moves the recorded fixture identity, which is
-# what starts a new comparable segment in the series rather than shifting an
-# existing one under a reader.
+# decide whether each port should follow, change the ports that should, then
+# advance the revision of each port that moved and paste the new digest here.
+# Advancing a revision is not busywork, and it is now two separate decisions:
+# GAZETTE_PORT_REVISION is what moves the WORKLOAD identity, PEER_PORT_REVISION
+# (in `gazette_peer_ports.py`) is what moves the COMPARISON identity, and a
+# moved identity starts a new comparable segment in that series rather than
+# shifting an existing one under a reader. A re-pin on its own advances
+# neither: the digest tracks the tree it was measured in, and the revisions
+# track the ports.
 #
-# The digest below was re-pinned for RUE-1495, and the review it records went
-# this way: the change was again to `runtime.html`, the template of a page
-# EXCLUDED from the benchmark corpus, so no port template derives from it and
-# none should follow. It moved because that page gained the side-by-side source
-# panel ADR-0072 Decision 8 asks for. `PORT_REVISION` did NOT advance, which is
-# the difference from the entry this one replaces: RUE-1485 advanced it because
-# the peer ports joined the fixture identity in that same change, not because a
-# re-pin requires it. Advancing it here would move the recorded fixture identity
-# — opening a new comparable segment in the published series — to record a
-# presentation change no port followed, which is the cost the paragraph above
-# says the revision exists to buy deliberately.
+# THE LEDGER OF REVIEWS, newest last. Each entry records what moved and what
+# followed, because the conclusion "no port follows" is the part a later reader
+# needs and the part a bare digest cannot carry.
+#
+#   RUE-1485. `runtime.html` moved: the cross-tool table it renders gained data
+#   and the captions for the scale axis. It is the template of a page EXCLUDED
+#   from the benchmark corpus, so no port template derives from it and none
+#   followed. The port revision advanced anyway, for an unrelated reason in the
+#   same change — the peer ports joined the fixture identity.
+#
+#   RUE-1495. `runtime.html` again, for the side-by-side source panel ADR-0072
+#   Decision 8 asks for. Same conclusion, no port followed, and the revision
+#   deliberately did NOT advance: advancing it would have opened a new
+#   comparable segment to record a presentation change no port followed, which
+#   is exactly the cost the paragraph above says a revision exists to buy
+#   deliberately.
+#
+#   RUE-1493. `runtime.html` again, and the same conclusion for the third time:
+#   an excluded page's template, no port follows. It moved because the empty
+#   state now says what a newest run that publishes no denominator means, and
+#   because a joined row is now published against the peer configuration as well
+#   as the corpus. Neither port revision advanced FOR this: no port's bytes
+#   moved in this change, and a revision that advanced anyway would tell a
+#   reader diffing two observations that a port moved when it did not. What did
+#   change is the COMPOSITION of the identities, which PREPARER_REVISION
+#   records.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "42fba7bb7afa44ac63e3846e244fde959cea2fc21a80194b07fa238d8f7dd4e5"
+    "9fca5d6f31b479ca98b3db44e010bf1893556ac6b2030dc4661db0eb7d4acf8d"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -820,6 +890,34 @@ def tree_digest(root: str, files: list[str] | None = None) -> tuple[str, int, in
     return digest.hexdigest(), len(listed), total
 
 
+# The scale variants this script can assemble.
+#
+# 1, 10, and 100 are ADR-0072 Decision 2's page-count rungs; 1 and 10 are the
+# collected suite and 100 is the safety valve held in reserve. 2 IS NOT A RUNG
+# OF THE PUBLISHED CURVE and never enters `performance/runtime.toml` — it is
+# the smallest fixture that is DUPLICATED, and duplication is the property
+# required CI needs to exercise (RUE-1493).
+#
+# The failure class it exists for is real and was found the expensive way:
+# Hugo picks a page's layout from its PATH, so every copy under an `xN-KK/`
+# prefix fell out of the specification layout and rendered with no sidebar,
+# while the emitted file set and the page count stayed exactly right at every
+# scale. Nothing at 1x can see that, because at 1x nothing is duplicated. A 2x
+# fixture asks the same question as a 10x one — is a copy translated into each
+# tool's dialect the way its original is — for a fifth of the corpus work,
+# which is what keeps it inside a required lane's budget (Decision 9's cost
+# valve).
+#
+# ITS RESIDUAL, stated rather than left to be discovered: one copy answers "is a
+# copy treated like its original", and nothing else. A defect that needs SEVERAL
+# copies — a collision between two copies' routes, a cache keyed on something
+# only many copies collide on, a threshold an aggregation crosses at some page
+# count — is invisible here exactly as it was at 1x. The 10x rung still runs on
+# the collection regime and the 100x variant is still available from this
+# script, which is where a defect of that shape would surface.
+SCALES = (1, 2, 10, 100)
+
+
 def duplicate_corpus(content: str, scale: int) -> None:
     """The deterministic path-prefixed duplication of ADR-0072 Decision 2.
 
@@ -908,20 +1006,7 @@ def prepare_fixture(root: str, scale: int) -> dict:
     shutil.copytree(static_source, os.path.join(root, "static"),
                     ignore=shutil.ignore_patterns("performance-data.json"))
 
-    port_digest = hashlib.sha256()
-    port_files = 0
-    port_bytes = 0
-    for entry in PORT_ROOTS:
-        path = os.path.join(REPO, entry)
-        if os.path.isdir(path):
-            digest, count, size = tree_digest(path)
-        else:
-            digest, count, size = tree_digest(os.path.dirname(path),
-                                              [os.path.basename(path)])
-        port_digest.update(entry.encode("utf-8"))
-        port_digest.update(digest.encode("ascii"))
-        port_files += count
-        port_bytes += size
+    port_digest, port_files, port_bytes = port_identity(GAZETTE_PORT_ROOTS)
 
     identity = {
         "scale": scale,
@@ -954,21 +1039,56 @@ def prepare_fixture(root: str, scale: int) -> dict:
         "static_digest": static_digest,
         "static_files": static_count,
         "static_bytes": static_bytes,
-        "port_revision": PORT_REVISION,
-        "port_digest": port_digest.hexdigest(),
-        "port_files": port_files,
-        "port_bytes": port_bytes,
+        # GAZETTE's port alone. The peer ports are not inputs to gazette — no
+        # gazette build reads them — so including them here would open a new
+        # segment in Rue's own wall-clock series for a Hugo template edit that
+        # cannot change what gazette does. They ride the comparison identity
+        # instead (ADR-0072 Decision 2, RUE-1493).
+        "gazette_port_revision": GAZETTE_PORT_REVISION,
+        "gazette_port_digest": port_digest,
+        "gazette_port_files": port_files,
+        "gazette_port_bytes": port_bytes,
         "excluded": sorted(CORPUS_EXCLUSIONS),
     }
     # One digest over all of it, so an observation can be matched to a segment
-    # with a single comparison. Every input class is inside it: no static asset,
-    # template, or configuration change can alter the measured job without
-    # changing this value.
-    fingerprint = hashlib.sha256()
-    for key in sorted(identity):
-        fingerprint.update(("%s=%s;" % (key, identity[key])).encode("utf-8"))
-    identity["fixture_digest"] = fingerprint.hexdigest()
+    # with a single comparison. Every input class GAZETTE consumes is inside it:
+    # no content, static asset, gazette template, configuration, or assembly-rule
+    # change can alter the measured job without changing this value.
+    identity["fixture_digest"] = compose_digest(identity)
     return identity
+
+
+def port_identity(roots: list[str]) -> tuple[str, int, int]:
+    """One digest, file count, and byte count over a set of port roots."""
+    digest = hashlib.sha256()
+    files = 0
+    total = 0
+    for entry in roots:
+        path = os.path.join(REPO, entry)
+        if os.path.isdir(path):
+            entry_digest, count, size = tree_digest(path)
+        else:
+            entry_digest, count, size = tree_digest(os.path.dirname(path),
+                                                    [os.path.basename(path)])
+        digest.update(entry.encode("utf-8"))
+        digest.update(entry_digest.encode("ascii"))
+        files += count
+        total += size
+    return digest.hexdigest(), files, total
+
+
+def compose_digest(fields: dict) -> str:
+    """One digest over a set of identity fields, in sorted key order.
+
+    Deliberately over-sensitive — editing a comment in this file moves
+    `preparer_digest` and so moves the workload identity — because the failure
+    it prevents is silent and the failure it causes is a visible discontinuity
+    in a series read for order of magnitude.
+    """
+    fingerprint = hashlib.sha256()
+    for key in sorted(fields):
+        fingerprint.update(("%s=%s;" % (key, fields[key])).encode("utf-8"))
+    return fingerprint.hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -1405,8 +1525,8 @@ def check_port_sync() -> list[str]:
         return []
     return ["%s changed (now %d files, %d bytes, digest %s) without a port "
             "review: check whether examples/gazette/templates/ should follow, "
-            "then advance PORT_REVISION and PRODUCTION_TEMPLATE_DIGEST in "
-            "scripts/gazette-corpus-diff.py"
+            "then advance GAZETTE_PORT_REVISION and PRODUCTION_TEMPLATE_DIGEST "
+            "in scripts/gazette-corpus-diff.py"
             % (PRODUCTION_TEMPLATE_ROOT, count, size, digest)]
 
 
@@ -1478,237 +1598,23 @@ def golden_mode(options) -> int:
         else:
             shutil.rmtree(work, ignore_errors=True)
 
-
 # ===========================================================================
-# The cross-tool leg — ADR-0072 Phase 5 (RUE-1485)
+# The cross-tool leg — ADR-0072 Phase 5 (RUE-1485), Phase 5's identity split
+# (RUE-1493)
 # ===========================================================================
 #
-# Three tools build the identical corpus and are judged against each other.
-# Everything in this section serves one of the three rules the comparison rests
-# on, and each is a rule an unfair benchmark would break quietly:
+# The peers' half of it lives in `gazette_peer_ports.py` and not here, because
+# this file's digest is inside the WORKLOAD identity. Everything about what the
+# peers do — the pinned tools, their ports, Hugo's dialect of the corpus, the
+# invocations, the thread parity, and the cross-tool oracle — belongs to the
+# COMPARISON identity instead, and sharing a file would have meant sharing a
+# digest: bumping a peer port revision, or fixing a Hugo respelling defect,
+# would open a new segment in Rue's own wall-clock series for a change no
+# gazette build can observe (ADR-0072 Decision 2).
 #
-#   WORK EQUIVALENCE (Decision 4). Identical emitted file sets, per-tool
-#   determinism, page counts, non-empty pages, and a normalized semantic
-#   comparison of every page across all three tools. A peer that skipped work
-#   would beat gazette and fail here.
-#
-#   THREAD PARITY (Decision 5). Rue has no concurrency and hosted runners have
-#   four vCPUs, so the primary published ratio pins the peers to one worker
-#   thread. Their default parallel configuration is measured too and published
-#   as a clearly labelled secondary row — never hidden, never primary.
-#
-#   FAIRNESS OF CONFIGURATION (Decision 3). The peers are configured to skip
-#   the same work gazette skips, not less and not more. The parity configs are
-#   versioned beside the ports and hashed into the recorded fixture identity.
-
-# The pinned peers, as repository-root dotslash shims.
-PEERS = ("zola", "hugo")
-
-# Thread policies a peer is measured under. The FIRST is the primary published
-# ratio's denominator; the second is the secondary row.
-#
-# `RAYON_NUM_THREADS` is Zola's rendering pool; `GOMAXPROCS` is Hugo's
-# scheduler. Neither is a fairness fudge in gazette's favour — pinning the
-# peers to one thread makes the comparison per unit of work rather than per
-# core, and the four-way-parallel numbers are published beside it so the figure
-# a user would actually experience is never hidden.
-THREAD_POLICIES = ("pinned_single_thread", "tool_default_parallel")
-
-PEER_THREAD_ENV = {
-    "zola": {"pinned_single_thread": {"RAYON_NUM_THREADS": "1"},
-             "tool_default_parallel": {}},
-    "hugo": {"pinned_single_thread": {"GOMAXPROCS": "1"},
-             "tool_default_parallel": {}},
-}
-
-# The documented allowlist ADR-0072 Decision 4 requires for tool-mandated
-# differences in the emitted file set. It is deliberately as small as the tools
-# allow, because every entry is a place a tool could skip a page and hide
-# behind an excuse — so a difference that CAN be configured away is configured
-# away in the parity configs rather than allowed here. Three candidates were
-# removed that way and are named so the absence is legible rather than
-# accidental: Hugo's sitemap and robots.txt (`disableKinds`), Hugo's per-section
-# and site-wide feeds (`[outputs]`), and the feed FILENAME mapping the ADR
-# anticipated — `[outputFormats.rss] baseName` puts Hugo's feed at the same
-# route Zola's and gazette's occupy, so the routes themselves are compared.
-#
-# Static passthrough is the third difference the ADR names and needs no entry
-# either: all three tools copy the same `website/static` tree, and its bytes
-# are part of the recorded fixture identity.
-FILE_SET_ALLOWLIST = {
-    "zola": {
-        "404.html": (
-            "Zola always writes a 404 page, from a built-in template when the "
-            "site has none, and offers no switch to suppress it. Hugo emits "
-            "one only when a layout exists, and the Hugo port deliberately has "
-            "none, so this is the one difference no configuration can remove"
-        ),
-    },
-    "hugo": {},
-}
-
-
-def peer_binary(tool: str) -> str:
-    return os.path.join(REPO, tool)
-
-
-def peer_version(tool: str) -> str:
-    """The pinned peer's own version string, recorded with every observation."""
-    argv = [peer_binary(tool), "--version" if tool == "zola" else "version"]
-    result = subprocess.run(argv, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise SystemExit("could not read %s's version:\n%s" % (tool, result.stderr))
-    text = result.stdout.strip().splitlines()[0]
-    if tool == "zola":
-        return text.split()[-1]
-    # `hugo v0.152.2-6abdac… darwin/arm64 BuildDate=…`
-    return text.split()[1].split("-")[0].lstrip("v")
-
-
-# ---------------------------------------------------------------------------
-# Hugo's dialect of the same corpus
-# ---------------------------------------------------------------------------
-#
-# The corpus is written in Zola's dialect, so the Hugo leg needs it respelled:
-# Hugo cannot read `{{ rule(id="…") }}` or `@/path.md` any more than Zola could
-# read `{{< rule id="…" >}}`. The translation is mechanical, deterministic, and
-# happens at fixture-preparation time, outside every measured window.
-#
-# WHAT IT MAY NOT DO is the part worth stating. It respells calls; it never
-# performs them. `@/spec/03-types.md` becomes `{{< relref "/spec/03-types.md" >}}`
-# rather than a resolved URL, so Hugo still resolves the link itself; shortcode
-# invocations keep their arguments and are still expanded by Hugo's shortcode
-# machinery. Resolving either host-side would move measured work out of the
-# measured program, and no output check would notice, because the resolved page
-# looks the same either way.
-
-SHORTCODE_CALL = re.compile(r"\{\{\s*([a-z_]+)\((.*?)\)\s*\}\}", re.S)
-SHORTCODE_ARG = re.compile(r'([a-z_]+)\s*=\s*("[^"]*")')
-INTERNAL_LINK = re.compile(r"\]\(@/([^)\s]+)\)")
-
-
-def hugoize(corpus: str) -> None:
-    """Respell the corpus in Hugo's dialect, in place."""
-    for dirpath, _dirs, files in os.walk(corpus):
-        for name in sorted(files):
-            if not name.endswith(".md"):
-                continue
-            path = os.path.join(dirpath, name)
-            with open(path, encoding="utf-8") as handle:
-                text = handle.read()
-            found = FRONT_MATTER.match(text)
-            if not found:
-                raise SystemExit("%s does not open with a `+++` fence" % path)
-            front, body = found.group(1), text[found.end():]
-
-            added = []
-            # WHICH TEMPLATE RENDERS THIS PAGE, in Hugo's spelling. The corpus
-            # already tells Zola, in `template` and `page_template`; Hugo's
-            # equivalent is the page's type, and translating one into the other
-            # is the same kind of respelling as the shortcode syntax below.
-            #
-            # It is also load-bearing, which is why it is not left to Hugo's
-            # default. Hugo derives an untyped page's layout from its PATH, and
-            # ADR-0072 Decision 2's scale variants live under `xN-KK/` prefixes
-            # — so at 10x every copy of a specification page fell out of
-            # `layouts/spec/` and rendered through the plain page layout, with
-            # no sidebar at all: 17,940 bytes where gazette and Zola emit
-            # 22,443 and 22,630. Nine tenths of the corpus, with the most
-            # expensive template in the port skipped, while the file set and
-            # the page count stayed exactly right. Setting the type from the
-            # UNPREFIXED path makes a copy render as its original does.
-            section = unprefixed(
-                os.path.relpath(path, corpus).replace(os.sep, "/"))
-            if "/" in section:
-                added.append('type = "%s"' % section.split("/", 1)[0])
-            # Zola asks for a section feed with `generate_feeds`; Hugo asks for
-            # one by naming the section's output formats. Same feed, same
-            # route, each tool's own spelling.
-            if re.search(r"^generate_feeds = true", front, re.M):
-                added.append('outputs = ["html", "rss"]')
-            # Zola acts on `redirect_to` natively; Hugo selects a layout by
-            # name. The TARGET is still resolved by Hugo's template.
-            if re.search(r"^redirect_to = ", front, re.M):
-                added.append('layout = "redirect"')
-            # The corpus's root `_index.md` names the landing-page template
-            # explicitly, and Zola and gazette honour that key wherever the page
-            # sits. Hugo reserves its home layout for the site root, so a
-            # DUPLICATED root — `x10-00/_index.md`, one per copy at scale — is
-            # an ordinary section to it and rendered as one, dropping the hero,
-            # the specimen, and the recent-notes list the other two tools build.
-            # Naming the layout is the same translation as `redirect_to` above.
-            elif re.search(r'^template = "index\.html"', front, re.M):
-                added.append('layout = "landing"')
-
-            body = SHORTCODE_CALL.sub(
-                lambda match: "{{< %s %s >}}" % (
-                    match.group(1),
-                    " ".join("%s=%s" % pair
-                             for pair in SHORTCODE_ARG.findall(match.group(2)))),
-                body)
-            body = INTERNAL_LINK.sub(
-                lambda match: '](%s)' % ('{{< relref "/%s" >}}' % match.group(1)),
-                body)
-            # Zola's summary marker spelled Hugo's way.
-            body = body.replace("<!-- more -->", "<!--more-->")
-
-            # PREPENDED, not appended, and the difference is not cosmetic: TOML
-            # binds a bare key to the last table header above it, and the blog
-            # posts' front matter ends with an `[extra]` table. Appending put
-            # `type` inside it, where Hugo never looks, so every duplicated blog
-            # post silently rendered through the generic page layout — no
-            # byline, no title block. Top-level keys go above the first table.
-            trailer = "\n".join(added) + "\n" if added else ""
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write("+++\n" + trailer + front + "+++\n" + body)
-
-
-# ---------------------------------------------------------------------------
-# Preparing all three sites from one corpus
-# ---------------------------------------------------------------------------
-
-
-def prepare_peer_site(tool: str, root: str, corpus: str, static: str) -> str:
-    """Lay out one peer's site root beside gazette's, from the same corpus."""
-    site = os.path.join(root, tool)
-    os.makedirs(site)
-    shutil.copytree(corpus, os.path.join(site, "content"))
-    if tool == "zola":
-        shutil.copytree(os.path.join(REPO, "performance/ports/zola/templates"),
-                        os.path.join(site, "templates"))
-        shutil.copy(os.path.join(REPO, "performance/ports/zola/config.toml"),
-                    os.path.join(site, "config.toml"))
-    else:
-        shutil.copytree(os.path.join(REPO, "performance/ports/hugo/layouts"),
-                        os.path.join(site, "layouts"))
-        shutil.copy(os.path.join(REPO, "performance/ports/hugo/hugo.toml"),
-                    os.path.join(site, "hugo.toml"))
-        hugoize(os.path.join(site, "content"))
-    shutil.copytree(static, os.path.join(site, "static"))
-    return site
-
-
-def peer_command(tool: str, site: str, out: str, work: str) -> list[str]:
-    """The measured invocation, identical in shape for both peers.
-
-    Hugo's cache is pointed at a path inside this run's own work directory, so
-    nothing survives from a previous run or from a developer's home directory —
-    which is what would otherwise make the first sample of a run do work the
-    rest do not. It is shared BETWEEN this run's samples, and that is fine here
-    because it stays empty: nothing in the equivalence subset populates it, and
-    the emitted trees are byte-identical across samples, which is the property
-    the determinism check asserts. `--noBuildLock` keeps a lock left by a killed
-    sample from stalling the next one.
-    """
-    if tool == "zola":
-        # `--root` is Zola's global flag and has to precede the subcommand.
-        return [peer_binary("zola"), "--root", site, "build", "--output-dir", out]
-    return [peer_binary("hugo"),
-            "--source", site,
-            "--destination", out,
-            "--cacheDir", os.path.join(work, "hugo-cache"),
-            "--noBuildLock"]
-
+# What stays here is what measures ALL THREE tools with one clock and one
+# reaping, because a comparison whose tools were timed differently measures the
+# harness.
 
 def run_process(argv: list[str], environment: dict) -> dict:
     """One measured process, spawn to exit, with THIS child's peak RSS.
@@ -1737,283 +1643,36 @@ def run_process(argv: list[str], environment: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# The cross-tool semantic oracle
-# ---------------------------------------------------------------------------
-
-SKIP_TEXT_IN = {"script", "style"}
-
-
-class Facets(html.parser.HTMLParser):
-    """The normalized extraction ADR-0072 Decision 4 compares across tools.
-
-    Exactly the facets the Decision names — the heading tree, visible text, and
-    link and image targets, in document order — and nothing else. What it
-    deliberately drops is what three different renderers and three different
-    template languages are entitled to disagree about: element structure, class
-    and id attributes, whitespace, and entity spelling.
-
-    That is a weaker comparison than the gazette-vs-Zola body oracle, which
-    compares the full event stream contiguously, and it is weaker for a stated
-    reason rather than a convenient one: Goldmark and pulldown-cmark do not
-    emit the same markup for the same Markdown, and requiring them to would
-    make the check fail on every page for a difference ADR-0072's Terminology
-    already calls a non-goal. What it still catches is every way a tool can do
-    LESS WORK: a dropped paragraph, a missing heading, an unexpanded shortcode,
-    an unresolved link, a page whose sidebar was not rendered for that page.
-    """
-
-    def __init__(self, route: str = "") -> None:
-        super().__init__(convert_charrefs=True)
-        self.route = route
-        self.headings: list = []
-        self.text: list = []
-        self.links: list = []
-        self._skip = 0
-        self._heading = None
-
-    def handle_starttag(self, tag, attrs):
-        fields = dict(attrs)
-        if tag in SKIP_TEXT_IN:
-            self._skip += 1
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
-            self._heading = [tag, ""]
-        if tag == "a" and fields.get("href"):
-            self.links.append(normalize_target(fields["href"], self.route))
-        if tag == "img" and fields.get("src"):
-            self.links.append(normalize_target(fields["src"], self.route))
-
-    def handle_endtag(self, tag):
-        if tag in SKIP_TEXT_IN and self._skip:
-            self._skip -= 1
-        if tag in ("h1", "h2", "h3", "h4", "h5", "h6") and self._heading:
-            self.headings.append((self._heading[0], self._heading[1].strip()))
-            self._heading = None
-
-    def handle_data(self, data):
-        if self._skip:
-            return
-        squashed = " ".join(data.split())
-        if not squashed:
-            return
-        self.text.append(squashed)
-        if self._heading is not None:
-            self._heading[1] += " " + squashed
-
-
-def normalize_target(href: str, route: str = "") -> str:
-    """A link target in the one spelling every tool can be held to.
-
-    THE SAME DESTINATION, WRITTEN THREE WAYS, is not three destinations, and
-    the three tools genuinely write it three ways:
-
-      * Absolute or root-relative. Hugo's `absURL` and Zola's `get_url` do not
-        always agree about which to emit, and a browser cannot tell them apart.
-
-      * A bare fragment. The corpus writes `[Directives](#directives)`; Zola
-        resolves it against the page's own permalink and Hugo leaves it as
-        CommonMark wrote it. Both land on the same place.
-
-      * Relative. `[math](01-math/)` on the standard-library index resolves
-        against the page in every browser, and Zola resolves it at build time
-        while Hugo does not. It is the corpus's ONLY page-relative destination
-        — the `../…` ones are parent-relative and every tool leaves those as
-        authored — so it is the single case that makes this bullet load-
-        bearing rather than hypothetical. Until RUE-1492 it read `math/` and
-        named a route no tool emits, and what the comparison showed then was
-        that all three agreed on the dead route; what it shows now is that all
-        three agree on the live one. Either way the agreement only exists once
-        both spellings are resolved, which is this function's job.
-
-    Resolving here rather than allowing three spellings is what lets the
-    comparison stay a strict equality: a link that genuinely moved still fails.
-    """
-    target = href.strip()
-    if target.startswith(BASE_URL):
-        target = target[len(BASE_URL):] or "/"
-    if "://" in target.split("?", 1)[0].split("#", 1)[0] or target.startswith("mailto:"):
-        return target
-    if target.startswith("//"):
-        return target
-    if target.startswith("#"):
-        target = "/" + route + target
-    elif not target.startswith("/"):
-        target = "/" + route + target
-    fragment = ""
-    if "#" in target:
-        target, fragment = target.split("#", 1)
-        fragment = "#" + fragment
-    return target.rstrip("/") + "/" + fragment if target != "/" else "/" + fragment
-
-
-def facets(page: str, route: str = "") -> dict:
-    parser = Facets(route)
-    parser.feed(page)
-    return {
-        "headings": parser.headings,
-        "text": parser.text,
-        "links": parser.links,
-    }
-
-
-def compare_facets(reference: dict, other: dict, name: str, peer: str) -> list[str]:
-    faults = []
-    for facet in ("headings", "text", "links"):
-        want, have = reference[facet], other[facet]
-        if want == have:
-            continue
-        missing = [item for item in want if item not in have]
-        extra = [item for item in have if item not in want]
-        faults.append(
-            "%s: %s differs from gazette's (%d vs %d; %d missing, %d extra%s)"
-            % (name, facet, len(want), len(have), len(missing), len(extra),
-               "; first missing %r" % (missing[0],) if missing else ""))
-    return ["%s %s" % (peer, fault) for fault in faults]
-
-
-def cross_tool_check(gazette_out: str, peer_outs: dict, model: Model,
-                     scale: int) -> tuple[dict, list[str]]:
-    """Work equivalence across the three tools (ADR-0072 Decision 4)."""
-    faults: list[str] = []
-    report: dict = {}
-
-    emitted = {"gazette": set(walk_files(gazette_out))}
-    for tool, out in sorted(peer_outs.items()):
-        emitted[tool] = set(walk_files(out))
-
-    # 1. The emitted file sets, with the documented allowlist.
-    for tool, files in sorted(emitted.items()):
-        if tool == "gazette":
-            continue
-        allowed = FILE_SET_ALLOWLIST.get(tool, {})
-        extra = sorted(files - emitted["gazette"] - set(allowed))
-        absent = sorted(emitted["gazette"] - files)
-        unused = sorted(set(allowed) - files)
-        if extra:
-            faults.append("%s emits %d file(s) gazette does not, none of them "
-                          "allowlisted: %s" % (tool, len(extra), extra[:6]))
-        if absent:
-            faults.append("%s emits %d fewer file(s) than gazette: %s"
-                          % (tool, len(absent), absent[:6]))
-        for rel in unused:
-            faults.append(
-                "the file-set allowlist entry %s/%s no longer applies: the tool "
-                "stopped emitting it, so the entry is stale and must go" % (tool, rel))
-
-    # 2. Page counts and non-emptiness. A tool cannot win by writing stubs.
-    #
-    # The redirect stub is the one page that IS a stub in all three tools, by
-    # design and byte for byte, so it is named here rather than raising the
-    # threshold until nothing trips it.
-    stubs = {route_of(key) + "index.html" for key in model.redirects()}
-    pages = {}
-    for tool, files in sorted(emitted.items()):
-        out = gazette_out if tool == "gazette" else peer_outs[tool]
-        html_files = sorted(rel for rel in files if rel.endswith("index.html"))
-        pages[tool] = len(html_files)
-        empty = [rel for rel in html_files
-                 if rel not in stubs
-                 and os.path.getsize(os.path.join(out, rel)) < 512]
-        if empty:
-            faults.append("%s emitted %d page(s) under 512 bytes: %s"
-                          % (tool, len(empty), empty[:6]))
-    wanted_pages = len(model.pages) * 1
-    for tool, count in sorted(pages.items()):
-        if count != wanted_pages:
-            faults.append("%s emitted %d page(s); the corpus has %d"
-                          % (tool, count, wanted_pages))
-    report["pages"] = pages
-
-    # 3. The semantic oracle, across all three tools: every original page, plus
-    #    ONE COPY OF EACH at scale.
-    #
-    #    Comparing all 9,600 copies at 100x would buy nothing — they are the
-    #    same documents at other permalinks — but comparing NONE of them was a
-    #    blind spot with a defect already sitting in it. Hugo picks a page's
-    #    layout from its path unless told otherwise, so every duplicate fell
-    #    out of the specification layout and rendered without a sidebar: nine
-    #    tenths of the corpus, with the port's most expensive template skipped,
-    #    while the emitted file set and the page count stayed exactly right.
-    #    One copy of each page costs a second and closes the hole, and the
-    #    copies are byte-identical to each other so one is as good as all.
-    prefix = "" if scale == 1 else "x%d-00/" % scale
-    compared = 0
-    redirects = set(model.redirects())
-    for pass_prefix in ("",) if scale == 1 else ("", prefix):
-        for rel in sorted(model.pages):
-            if not rel.startswith(pass_prefix) or (
-                pass_prefix == "" and SCALE_PREFIX.match(rel)
-            ):
-                continue
-            if rel in redirects:
-                # A stub carries no page semantics; `check_redirects` asserts
-                # the thing that matters about it, which is its target.
-                continue
-            route = route_of(rel)
-            reference_path = os.path.join(gazette_out, route, "index.html")
-            if not os.path.exists(reference_path):
-                continue
-            reference = facets(open(reference_path, encoding="utf-8").read(), route)
-            for tool, out in sorted(peer_outs.items()):
-                path = os.path.join(out, route, "index.html")
-                if not os.path.exists(path):
-                    faults.append("%s emitted no page for %s" % (tool, rel))
-                    continue
-                faults += compare_facets(
-                    reference, facets(open(path, encoding="utf-8").read(), route), rel, tool)
-            compared += 1
-    report["oracle_pages"] = compared
-
-    # 4. The feed, across tools: same entries, same order, and the same fields
-    #    carried per entry.
-    #
-    #    The last of those is not fussiness. Zola's BUILT-IN feed — which it
-    #    falls back to when a site ships no `rss.xml` template, as this port
-    #    once did — renders every post's full rendered body into its
-    #    `<description>`, which is Markdown rendering and escaping that the
-    #    other two tools do not perform. Comparing `<link>` order alone said
-    #    the feeds agreed while one tool was doing twice the work, growing with
-    #    every post. So the emptiness PATTERN of the descriptions is compared
-    #    too: which entries carry one is a property of the corpus, and any tool
-    #    disagreeing about it is doing a different job.
-    for key in model.feeds():
-        route = route_of(key)
-        wanted = ["%s/%s" % (BASE_URL, route_of(rel)) for rel in model.members[key]]
-        shapes = {}
-        for tool, out in sorted({**peer_outs, "gazette": gazette_out}.items()):
-            path = os.path.join(out, route, "rss.xml")
-            if not os.path.exists(path):
-                faults.append("%s emitted no feed at %srss.xml" % (tool, route))
-                continue
-            feed = open(path, encoding="utf-8").read()
-            entries = [normalize_target(link)
-                       for link in re.findall(r"<link>([^<]*)</link>", feed)[1:]]
-            if entries != [normalize_target(link) for link in wanted]:
-                faults.append("%s feed order %s, expected %s"
-                              % (tool, entries[:3], wanted[:3]))
-            shapes[tool] = [bool(body.strip()) for body in
-                            re.findall(r"<description>(.*?)</description>", feed, re.S)[1:]]
-        if "gazette" in shapes:
-            for tool, shape in sorted(shapes.items()):
-                if tool != "gazette" and shape != shapes["gazette"]:
-                    faults.append(
-                        "%s's feed carries descriptions on %d of %d entries where "
-                        "gazette carries them on %d: one tool is rendering post "
-                        "bodies into the feed that the others are not"
-                        % (tool, sum(shape), len(shape), sum(shapes["gazette"])))
-    return report, faults
-
 
 # ---------------------------------------------------------------------------
 # Fixture preparation for the whole comparison
 # ---------------------------------------------------------------------------
 
 
-def prepare_comparison(root: str, scale: int, peers: bool) -> dict:
-    """Assemble every tool's site from one corpus and record the identity.
+def prepare_comparison(root: str, scale: int, peers: bool, epoch: str = "") -> dict:
+    """Assemble every tool's site from one corpus and record both identities.
 
     All of it is outside the measured window: assembly, duplication, the
     peers' respelling, and the hashing. Only the builds that follow are timed.
+
+    TWO IDENTITIES, not one (ADR-0072 Decision 2, as amended by RUE-1493):
+
+      * The WORKLOAD identity — `identity["fixture_digest"]` — is everything
+        gazette consumes: the corpus, the static passthrough, the assembly
+        rules, and gazette's own port. It segments Rue's longitudinal series,
+        and it must not move when a peer port does.
+      * The COMPARISON identity — `identity["comparison_digest"]` — is the
+        workload identity plus every peer port, the peer preparer's own digest
+        and revision, every peer version, and the runner epoch. It is what the
+        derive step joins a canary-only run to an earlier full peer leg on, and
+        it is what the peer-leg event question below is asked against.
+
+    The peer VERSIONS are inside the comparison identity rather than beside
+    it, which is the half revision 2 was missing: a Hugo shim bump moved no
+    recorded identity at all, so a failed full leg left the next canary-only
+    run joining a Hugo row measured under a version the project no longer
+    pins — self-labelled, and therefore not a misattributed number, but a row
+    published against a pin that had never successfully run.
     """
     identity = prepare_fixture(root, scale)
     description = {
@@ -2021,16 +1680,57 @@ def prepare_comparison(root: str, scale: int, peers: bool) -> dict:
         "scale": scale,
         "roots": {"gazette": root},
         "peer_versions": {},
-        "thread_policies": list(THREAD_POLICIES),
+        "epoch": epoch,
+        "thread_policies": list(peer_ports.THREAD_POLICIES),
     }
     if not peers:
         return description
 
     corpus = os.path.join(root, "content")
     static = os.path.join(root, "static")
-    for tool in PEERS:
-        description["roots"][tool] = prepare_peer_site(tool, root, corpus, static)
-        description["peer_versions"][tool] = peer_version(tool)
+    for tool in peer_ports.PEERS:
+        description["roots"][tool] = peer_ports.prepare_peer_site(
+            tool, root, corpus, static, corpus_rules())
+        description["peer_versions"][tool] = peer_ports.peer_version(tool)
+
+    peer_digest, peer_files, peer_bytes = port_identity(
+        peer_ports.PEER_PORT_ROOTS)
+    identity["peer_port_revision"] = peer_ports.PEER_PORT_REVISION
+    identity["peer_port_digest"] = peer_digest
+    identity["peer_port_files"] = peer_files
+    identity["peer_port_bytes"] = peer_bytes
+    # The peer PREPARER's own digest, the mirror of `preparer_digest` in the
+    # workload identity and the reason the two files exist. What decides what
+    # the peers DO — the respelling, the invocations, the thread parity, the
+    # cross-tool oracle, and the port pins above — is in that file, so this
+    # digest moves when any of them does and the workload identity does not.
+    # Over-sensitive for the same reason its counterpart is: editing a comment
+    # there opens a new comparable segment for the COMPARISON, and the failure
+    # it prevents is a joined row published against rules that changed under it.
+    #
+    # ONE PIECE STAYED BEHIND, and the claim above is bounded by it. `peer_event`
+    # decides whether the peers run at all, and it reads the identity composed
+    # here, so moving it would invert the one-way dependency the split bought.
+    # Editing it therefore still moves `preparer_digest` and still segments
+    # Rue's series for a peer-side change — the residual of finding 3 rather
+    # than an oversight, named here so a later reader weighs it rather than
+    # rediscovers it.
+    identity["peer_preparer"] = os.path.relpath(peer_ports.__file__, REPO)
+    identity["peer_preparer_digest"] = tree_digest(
+        os.path.dirname(os.path.abspath(peer_ports.__file__)),
+        [os.path.basename(peer_ports.__file__)],
+    )[0]
+    identity["peer_versions"] = json.dumps(description["peer_versions"],
+                                           sort_keys=True)
+    identity["comparison_epoch"] = epoch
+    identity["comparison_digest"] = compose_digest({
+        "fixture_digest": identity["fixture_digest"],
+        "peer_port_revision": peer_ports.PEER_PORT_REVISION,
+        "peer_port_digest": peer_digest,
+        "peer_preparer_digest": identity["peer_preparer_digest"],
+        "peer_versions": identity["peer_versions"],
+        "epoch": epoch,
+    })
     return description
 
 
@@ -2053,9 +1753,33 @@ CANARY_SCALE = 1
 
 
 def peer_event(description: dict, epoch: str, state_path: str | None) -> dict:
-    """Whether the full peer leg is due, and why."""
+    """Whether the full peer leg is due, and why.
+
+    ONE QUESTION, asked of the comparison identity: did anything the joined
+    rows depend on move? That identity is composed of exactly what a joined row
+    depends on — the workload identity, the peer ports and their revision, the
+    peer preparer's own digest, the peer versions, and the epoch — so the
+    verdict is a single digest comparison and cannot fall out of step with what
+    the derive step joins on. The components are still compared individually,
+    but only to say WHICH one moved; the digest decides, and a move it sees
+    that no component explains still runs the leg.
+
+    THIS FUNCTION STAYS ON THE WORKLOAD SIDE, and it is the one thing about the
+    peers that does. It reads the composed comparison identity, so moving it
+    into `gazette_peer_ports.py` would invert the one-way dependency the file
+    split bought. The residual is real and worth naming: editing the Decision 9
+    event logic here moves `preparer_digest`, and so opens a new segment in
+    Rue's own series for a change that only decides whether the peers run. It
+    is bounded by being one function that changes rarely, where the peer
+    respelling and the ports it was separated from change with every parity
+    expansion.
+    """
+    identity = description["identity"]
     current = {
-        "fixture_digest": description["identity"]["fixture_digest"],
+        "comparison_digest": identity.get("comparison_digest", ""),
+        "fixture_digest": identity["fixture_digest"],
+        "peer_port_digest": identity.get("peer_port_digest", ""),
+        "peer_preparer_digest": identity.get("peer_preparer_digest", ""),
         "peer_versions": description["peer_versions"],
         "epoch": epoch,
     }
@@ -2078,16 +1802,32 @@ def peer_event(description: dict, epoch: str, state_path: str | None) -> dict:
                 "state": current}
     reasons = []
     if previous.get("fixture_digest") != current["fixture_digest"]:
-        reasons.append("the recorded fixture identity moved")
+        reasons.append("the recorded workload identity moved")
+    if previous.get("peer_port_digest") != current["peer_port_digest"]:
+        reasons.append("a peer template port moved")
+    if previous.get("peer_preparer_digest") != current["peer_preparer_digest"]:
+        reasons.append("the peer preparer moved")
     if previous.get("peer_versions") != current["peer_versions"]:
         reasons.append("a peer toolchain version moved (%s -> %s)"
                        % (previous.get("peer_versions"), current["peer_versions"]))
     if previous.get("epoch") != current["epoch"]:
         reasons.append("the runner epoch changed (%s -> %s)"
                        % (previous.get("epoch"), current["epoch"]))
-    return {"due": bool(reasons),
+    moved = previous.get("comparison_digest") != current["comparison_digest"]
+    if moved and not reasons:
+        # The digest is authoritative; a move it sees and the components above
+        # do not means the identity's own composition changed, which is a
+        # preparer change and just as much an event.
+        reasons.append("the comparison identity moved (%s -> %s)"
+                       % (str(previous.get("comparison_digest"))[:12],
+                          current["comparison_digest"][:12]))
+    # `or reasons` runs the leg when a component moved and the digest did not,
+    # which can only be a composition defect. The conservative direction costs
+    # a redundant peer run; the other costs a segment of joined ratios.
+    return {"due": moved or bool(reasons),
             "reason": "; ".join(reasons) or
-                      "fixture identity, peer versions, and epoch are unchanged",
+                      "workload identity, peer ports, peer preparer, peer "
+                      "versions, and epoch are unchanged",
             "state": current}
 
 
@@ -2101,15 +1841,22 @@ def peers_mode(options) -> int:
     try:
         root = os.path.join(work, "site")
         os.makedirs(root)
-        description = prepare_comparison(root, options.scale, peers=True)
+        # This mode runs wherever it was invoked rather than on a pinned
+        # regime, so it has no runner epoch to name. The comparison identity it
+        # prints is therefore the epoch-less one and will not equal a
+        # collection run's; the workload identity above it is the same value
+        # collection records, since the epoch is not one of its inputs.
+        description = prepare_comparison(root, options.scale, peers=True,
+                                         epoch=options.epoch)
         identity = description["identity"]
         model = Model(os.path.join(root, "content"))
 
-        print("fixture identity (recorded with every observation, ADR-0072 Decision 2)")
+        print("recorded identities (both ride every observation, ADR-0072 "
+              "Decision 2)")
         for key in sorted(identity):
-            print("  %-16s %s" % (key, identity[key]))
+            print("  %-22s %s" % (key, identity[key]))
         print("peers (pinned; every observation records both versions)")
-        for tool in PEERS:
+        for tool in peer_ports.PEERS:
             print("  %-16s %s" % (tool, description["peer_versions"][tool]))
 
         measurements: dict = {}
@@ -2147,18 +1894,18 @@ def peers_mode(options) -> int:
             "gazette-out")
 
         peer_outs = {}
-        for tool in PEERS:
-            for policy in THREAD_POLICIES:
-                if policy != THREAD_POLICIES[0] and not options.secondary:
+        for tool in peer_ports.PEERS:
+            for policy in peer_ports.THREAD_POLICIES:
+                if policy != peer_ports.THREAD_POLICIES[0] and not options.secondary:
                     continue
                 label = "%s/%s" % (tool, policy)
                 out, _ = measure(
                     label,
-                    lambda out, tool=tool: peer_command(
+                    lambda out, tool=tool: peer_ports.peer_command(
                         tool, description["roots"][tool], out, work),
-                    PEER_THREAD_ENV[tool][policy],
+                    peer_ports.PEER_THREAD_ENV[tool][policy],
                     label.replace("/", "-") + "-out")
-                if policy == THREAD_POLICIES[0] and out is not None:
+                if policy == peer_ports.THREAD_POLICIES[0] and out is not None:
                     peer_outs[tool] = out
 
         # DIAGNOSTIC TIMINGS, never published. The published series is taken by
@@ -2177,9 +1924,9 @@ def peers_mode(options) -> int:
                   % (label, median(times), rss / (1024 * 1024),
                      " ".join("%.3f" % value for value in times)))
 
-        if gazette_out is not None and len(peer_outs) == len(PEERS):
-            report, cross_faults = cross_tool_check(
-                gazette_out, peer_outs, model, options.scale)
+        if gazette_out is not None and len(peer_outs) == len(peer_ports.PEERS):
+            report, cross_faults = peer_ports.cross_tool_check(
+                gazette_out, peer_outs, model, options.scale, corpus_rules())
             faults += cross_faults
             print("\nwork equivalence (ADR-0072 Decision 4)")
             print("  page count:         %s" % report["pages"])
@@ -2187,7 +1934,7 @@ def peers_mode(options) -> int:
                   % report["oracle_pages"])
             print("  file-set allowlist: %s"
                   % ({tool: sorted(entries) for tool, entries in
-                      FILE_SET_ALLOWLIST.items() if entries}))
+                      peer_ports.FILE_SET_ALLOWLIST.items() if entries}))
         else:
             faults.append("not every tool produced a build, so work equivalence "
                           "could not be judged")
@@ -2203,7 +1950,7 @@ def peers_mode(options) -> int:
                 if label == "gazette":
                     continue
                 other = median([sample["wall_seconds"] for sample in measurements[label]])
-                marker = "" if label.endswith(THREAD_POLICIES[0]) else "   [secondary]"
+                marker = "" if label.endswith(peer_ports.THREAD_POLICIES[0]) else "   [secondary]"
                 print("  %-32s %.2fx%s" % (label, other / base, marker))
 
         for fault in faults[:20]:
@@ -2273,17 +2020,18 @@ def median(values: list[float]) -> float:
 
 def prepare_mode(options) -> int:
     os.makedirs(options.root, exist_ok=True)
-    description = prepare_comparison(options.root, options.scale, options.peers)
+    description = prepare_comparison(options.root, options.scale, options.peers,
+                                     options.epoch)
     description["commands"] = {
         "gazette": {"argv": ["{program}", "build", options.root, "-o", "{out}"],
                     "env": {}},
     }
-    for tool in PEERS if options.peers else ():
-        for policy in THREAD_POLICIES:
+    for tool in peer_ports.PEERS if options.peers else ():
+        for policy in peer_ports.THREAD_POLICIES:
             description["commands"]["%s/%s" % (tool, policy)] = {
-                "argv": peer_command(tool, description["roots"][tool],
+                "argv": peer_ports.peer_command(tool, description["roots"][tool],
                                      "{out}", options.root),
-                "env": PEER_THREAD_ENV[tool][policy],
+                "env": peer_ports.PEER_THREAD_ENV[tool][policy],
             }
     description["canary"] = {"tool": CANARY_TOOL, "scale": CANARY_SCALE}
     description["preparer_revision"] = PREPARER_REVISION
@@ -2324,13 +2072,14 @@ def judge_mode(options) -> int:
     failures += link_faults
 
     peer_outs = {}
-    for tool in PEERS:
+    for tool in peer_ports.PEERS:
         directory = getattr(options, "%s_out" % tool)
         if directory:
             peer_outs[tool] = directory
     report = {}
     if peer_outs:
-        report, cross_faults = cross_tool_check(out, peer_outs, model, options.scale)
+        report, cross_faults = peer_ports.cross_tool_check(
+            out, peer_outs, model, options.scale, corpus_rules())
         failures += cross_faults
 
     verdict = {
@@ -2363,11 +2112,12 @@ def site_mode(options) -> int:
         identity = prepare_fixture(root, options.scale)
         model = Model(os.path.join(root, "content"))
 
-        print("fixture identity (recorded with every observation, ADR-0072 Decision 2)")
+        print("workload identity (recorded with every observation, ADR-0072 "
+              "Decision 2)")
         for key in sorted(identity):
-            print("  %-16s %s" % (key, identity[key]))
-        print("  %-16s %d" % ("pages", len(model.pages)))
-        print("  %-16s %d" % ("sections", len(model.sections)))
+            print("  %-22s %s" % (key, identity[key]))
+        print("  %-22s %d" % ("pages", len(model.pages)))
+        print("  %-22s %d" % ("sections", len(model.sections)))
         print("excluded from the corpus:")
         for rel, why in sorted(CORPUS_EXCLUSIONS.items()):
             print("  %s — %s" % (rel, why))
@@ -2472,7 +2222,7 @@ def main() -> int:
     modes.add_parser("body", help="RUE-1483's Markdown differential against Zola")
 
     site = modes.add_parser("site", help="RUE-1484's whole-site validation")
-    site.add_argument("--scale", type=int, default=1, choices=(1, 10, 100),
+    site.add_argument("--scale", type=int, default=1, choices=SCALES,
                       help="corpus scale variant (ADR-0072 Decision 2)")
     site.add_argument("--samples", type=int, default=3,
                       help="builds per run; determinism needs at least two")
@@ -2486,18 +2236,22 @@ def main() -> int:
 
     peers = modes.add_parser(
         "peers", help="RUE-1485's cross-tool comparison against Zola and Hugo")
-    peers.add_argument("--scale", type=int, default=1, choices=(1, 10, 100),
+    peers.add_argument("--scale", type=int, default=1, choices=SCALES,
                        help="corpus scale variant (ADR-0072 Decision 2)")
     peers.add_argument("--samples", type=int, default=3,
                        help="builds per tool; determinism needs at least two")
     peers.add_argument("--no-secondary", dest="secondary", action="store_false",
                        help="skip the peers' default-parallel secondary row")
+    peers.add_argument("--epoch", default="",
+                       help="the runner epoch the comparison identity is scoped "
+                            "to; this mode measures nothing publishable, so it "
+                            "defaults to none")
     peers.add_argument("--out", help="write the comparison as JSON")
 
     prepare = modes.add_parser(
         "prepare", help="assemble every tool's fixture and print its identity")
     prepare.add_argument("--root", required=True, help="directory to build the fixture in")
-    prepare.add_argument("--scale", type=int, default=1, choices=(1, 10, 100))
+    prepare.add_argument("--scale", type=int, default=1, choices=SCALES)
     prepare.add_argument("--out", required=True, help="where to write the description")
     prepare.add_argument("--peers", action="store_true",
                          help="also lay out the Zola and Hugo sites")
@@ -2514,7 +2268,7 @@ def main() -> int:
     judge.add_argument("--gazette-out", required=True, help="gazette's emitted tree")
     judge.add_argument("--zola-out", help="Zola's emitted tree, when the peer leg ran")
     judge.add_argument("--hugo-out", help="Hugo's emitted tree, when the peer leg ran")
-    judge.add_argument("--scale", type=int, default=1, choices=(1, 10, 100))
+    judge.add_argument("--scale", type=int, default=1, choices=SCALES)
     judge.add_argument("--out", help="write the verdict as JSON")
 
     options = parser.parse_args()
