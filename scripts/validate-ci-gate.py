@@ -248,18 +248,65 @@ def validate(
         "./test.sh",
         "Run explicit cross-backend compilation and encoding coverage",
         "//crates/rue-codegen:rue-codegen-test",
-        # RUE-1258: both performance gates. Losing either restores the silence
-        # that let the published series freeze for ten days while every job
-        # stayed green, so their presence is part of the CI contract rather
-        # than a step someone may quietly drop.
+        # RUE-1258: the pin gate. Losing it restores the silence that let the
+        # published series freeze for ten days while every job stayed green,
+        # so its presence is part of the CI contract rather than a step someone
+        # may quietly drop. Its sibling staleness gate is pinned below, in the
+        # job RUE-1504 moved it to.
         "check-pins",
-        "scripts/validate-performance-stall.py",
-        # The staleness gate counts trunk commits back to the newest measured
-        # one, which a depth-1 checkout cannot reach.
-        "fetch-depth: 0",
     ):
         if required not in linux:
             errors.append(f"linux-premerge responsibility missing {required!r}")
+    if "scripts/validate-performance-stall.py" in linux:
+        errors.append(
+            "the staleness gate belongs to performance-staleness (RUE-1504); "
+            "running it inside linux-premerge puts ~1m50s back on the critical path"
+        )
+
+    # RUE-1504. The staleness gate is required work that merely stopped being
+    # premerge's work, so the contract follows it rather than relaxing. Both
+    # halves matter: the step itself, and the deep checkout without which it
+    # fails instead of passing.
+    staleness = jobs.get("performance-staleness", "")
+    for required in (
+        "runs-on: ubuntu-latest",
+        "scripts/validate-performance-stall.py",
+        "//crates/rue-bench:rue-bench",
+        # The gate counts trunk commits back to the newest measured one, which
+        # a depth-1 checkout cannot reach (RUE-1258).
+        "fetch-depth: 0",
+    ):
+        if required not in staleness:
+            errors.append(f"performance-staleness responsibility missing {required!r}")
+    # ADR-0072 Decision 9 keeps the runtime series outside this gate on purpose:
+    # its remedy is parser work rather than a manifest edit, so a stalled
+    # runtime series is a triage item, never a repository-wide block. The step
+    # says so in a comment, so only an executable line counts as a violation.
+    if any(
+        "--runtime-manifest" in line and not line.lstrip().startswith("#")
+        for line in staleness.splitlines()
+    ):
+        errors.append(
+            "performance-staleness must stay compile-time only; ADR-0072 "
+            "Decision 9 keeps the runtime series out of this gate"
+        )
+    if "    needs:" in staleness:
+        errors.append(
+            "performance-staleness must not depend on another CI job; it asks a "
+            "repository-wide question and gains nothing by waiting"
+        )
+    # A required check that cannot fail is not a gate. `continue-on-error` is
+    # the one-line version of that, on the job or on the step: the run stays
+    # green and `ci-required-results.py` still sees `success`, so nothing
+    # downstream notices. The gate used to be one step among many in a busy
+    # lane; it is now alone in a small job where such a line would be easy to
+    # add and hard to see.
+    if "continue-on-error" in staleness:
+        errors.append(
+            "performance-staleness must not use continue-on-error; the gate has "
+            "no bypass, and a required check that reports success regardless of "
+            "the gate's result is one"
+        )
 
     # RUE-1163: the corpora that own a platform-corpus job are marked in BUCK
     # with `rue_ci_dedicated_lane`, and test.sh subtracts that label on CI. The

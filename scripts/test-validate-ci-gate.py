@@ -157,6 +157,91 @@ class GateValidatorTests(unittest.TestCase):
         )
 
 
+    # RUE-1504: the staleness gate moved out of the premerge lane into its own
+    # job. Moving required work is only safe while the contract moves with it.
+    def test_staleness_gate_without_a_deep_checkout_fails(self):
+        changed = SOURCE.read_text().replace(
+            "          # measurement, so it needs the measured commit in local history. The\n"
+            "          # default depth-1 checkout has none of them, and a gate that cannot\n"
+            "          # see the history fails rather than passing. (RUE-1258)\n"
+            "          fetch-depth: 0\n",
+            "",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("performance-staleness responsibility missing 'fetch-depth: 0'", errors)
+
+    def test_dropping_the_staleness_step_fails(self):
+        changed = SOURCE.read_text().replace(
+            "          scripts/validate-performance-stall.py \\\n", "", 1
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn(
+            "performance-staleness responsibility missing "
+            "'scripts/validate-performance-stall.py'",
+            errors,
+        )
+
+    def test_returning_the_staleness_gate_to_the_premerge_lane_fails(self):
+        changed = SOURCE.read_text().replace(
+            "        run: scripts/ci-timed \"gazette goldens\" -- scripts/gazette-corpus-diff.py golden\n",
+            "        run: scripts/ci-timed \"gazette goldens\" -- scripts/gazette-corpus-diff.py golden\n"
+            "      - name: Check the performance series is still advancing\n"
+            "        run: scripts/validate-performance-stall.py --data d --repo . --ref origin/trunk\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("the staleness gate belongs to performance-staleness", errors)
+
+    def test_runtime_series_cannot_be_folded_into_the_staleness_gate(self):
+        # ADR-0072 Decision 9. A stalled runtime series is a triage item, not a
+        # repository-wide block, and the difference is one flag.
+        changed = SOURCE.read_text().replace(
+            "            --manifest performance/manifest.toml \\\n"
+            "            --data-root \"$DATA\" \\\n",
+            "            --manifest performance/manifest.toml \\\n"
+            "            --runtime-manifest performance/runtime.toml \\\n"
+            "            --data-root \"$DATA\" \\\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must stay compile-time only", errors)
+
+    def test_continue_on_error_voids_the_staleness_gate(self):
+        # The gate has no bypass, and `continue-on-error` is a one-line bypass
+        # that leaves the required check reporting success.
+        for splice in (
+            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
+            "    continue-on-error: true\n",
+            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
+            "    steps:\n      - continue-on-error: true\n",
+        ):
+            changed = SOURCE.read_text().replace(
+                "  performance-staleness:\n    runs-on: ubuntu-latest\n", splice, 1
+            )
+            self.assertNotEqual(
+                changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml"
+            )
+            errors = "\n".join(self.validate_text(changed))
+            self.assertIn(
+                "performance-staleness must not use continue-on-error", errors
+            )
+
+    def test_gating_the_staleness_job_on_another_fails(self):
+        changed = SOURCE.read_text().replace(
+            "  performance-staleness:\n    runs-on: ubuntu-latest\n",
+            "  performance-staleness:\n    runs-on: ubuntu-latest\n"
+            "    needs:\n      - affected-targets\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("performance-staleness must not depend on another CI job", errors)
+
     def test_undeclared_need_output_fails_closed(self):
         # RUE-1130 regression. GitHub resolves an undeclared job output to the
         # empty string instead of failing, so a lane gate reading it would see

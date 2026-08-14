@@ -82,6 +82,40 @@ real slow targets nightly with a release compiler, compiling each application
 once and reusing the executable across runtime scenarios. Manual dispatch can
 select either full program and may select the separate 4x stress tier.
 
+ADR-0067's two performance gates are required but no longer share a job
+(RUE-1504). `premerge (linux-x64)` keeps `check-pins`, which asks whether this
+tree would stop runs entering their series — decidable from the tree alone, and
+about a second of hashing next to a build the lane already paid for.
+`performance staleness (linux-x64)` owns the other gate: whether the published
+series is *already* stalled. That question is repository-wide rather than
+diff-shaped, so the job is ungated by the determinator and takes a
+`fetch-depth: 0` checkout, without which it counts no trunk commits and fails
+instead of passing (RUE-1258). It stays compile-time only; ADR-0072 Decision 9
+deliberately leaves the runtime series out of it, and the CI contract now fails
+on a `--runtime-manifest` appearing there, on a `continue-on-error` bypass, and
+on the gate reappearing as a premerge step.
+
+The split is a scheduling change, and the gate is listed in
+`scripts/ci-required-results.py`, so `CI success` blocks the merge on it exactly
+as it did when it was a step. One thing did change, in the safe direction: as a
+step it was skipped whenever an earlier step in the premerge job failed (1 of 14
+sampled runs), and standing alone it always runs.
+
+It moved because it cost a flat ~156s median on the job that was the run's
+longest in 89 of 94 sampled runs — 46% of that job on a pull request touching no
+compiler crate. **The new job is not cheap, and is not smaller than the lane it
+left.** It pays the gate's own ~156s plus job setup, an ~11s `fetch-depth: 0`
+checkout, ~4s of dotslash, and a `rue-bench` build that inside premerge was free
+because `Build all targets` had already produced it: **~185–195s** with the
+shared action cache, **~250–270s** cold on a fork pull request where no key is
+available, against **~152s** for premerge with the step removed. On a cheap pull
+request the gate job is therefore the run's longest; on a compiler pull request,
+where premerge runs 9–10 minutes, it finishes far inside it. The win comes from
+overlap rather than from the work getting cheaper — median run wall time ~308s →
+~190s, newly floored by `compiler reproducibility (linux-x64)` at ~181.5s — so
+it is a p90 win first and a smaller p50 win. Do not re-derive a saving from an
+assumption that this job is free.
+
 Production `debug_assert*` use is governed by
 `scripts/validate-debug-assert-policy.py`, run by required formatting CI and
 `scripts/rue quick`. Every surviving call has an exact per-file allowance and

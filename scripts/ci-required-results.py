@@ -14,6 +14,10 @@ EXPECTED_REQUIRED_JOBS = (
     "remote-execution",
     "rust-project",
     "linux-premerge",
+    # RUE-1504: the performance-staleness gate runs beside the premerge lane
+    # rather than inside it. It is required exactly as it was when it was a
+    # step, so moving it cost no coverage.
+    "performance-staleness",
     "native-platforms",
     "compiler-reproducibility",
     "rue-program-digests",
