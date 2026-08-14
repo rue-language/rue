@@ -133,6 +133,19 @@ class GateValidatorTests(unittest.TestCase):
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("RUE_CI_DEFER_HEAVY_SUITES is retired", errors)
 
+    # RUE-1265: the duplication gate is the only check that reads test contents
+    # rather than target lists, so dropping its step restores a blind spot no
+    # other gate can cover.
+    def test_dropping_the_duplication_gate_step_fails(self):
+        changed = SOURCE.read_text().replace(
+            "scripts/validate-test-duplication.py", "true", 1
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn(
+            "linux-premerge responsibility missing 'scripts/validate-test-duplication.py'",
+            errors,
+        )
+
     def test_dedicated_lane_corpus_without_a_job_fails(self):
         # spec-tests is skipped by the premerge suite because it carries the
         # label, so dropping its platform-corpus entry would drop it entirely.

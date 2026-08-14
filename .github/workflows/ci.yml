@@ -337,6 +337,22 @@ jobs:
             echo "no impacted //crates/... targets; this step has nothing to build"
           fi
 
+      # ADR-0069 §2 / RUE-1265. Every other gate compares target lists; this one
+      # compares test *contents*, so a target that is a strict superset of
+      # another fails here instead of quietly costing a lane 223s (RUE-1262).
+      #
+      # It runs only when the lane is not narrowed, and that is the whole cost
+      # argument: on a full or merge-group run every test binary is already
+      # built by the step above, so the gate pays only its `--list` invocations
+      # — 0.29s wall for 73 of them. On a narrowed peripheral run it would have
+      # to build the unimpacted binaries itself, which is exactly the cost
+      # RUE-1130's narrowing exists to avoid, and the property is a fact about
+      # the graph rather than about the diff — so the authoritative merge_group
+      # run is the right place to prove it.
+      - name: Check nothing executes twice
+        if: steps.narrow.outputs.count == '0'
+        run: scripts/ci-timed "duplication gate" -- scripts/validate-test-duplication.py
+
       - name: Run complete target-independent premerge suite
         # RUE-1163: the corpora with their own platform-corpus job carry the
         # `rue_ci_dedicated_lane` label in BUCK, and test.sh subtracts that label

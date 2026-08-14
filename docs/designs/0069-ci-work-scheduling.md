@@ -9,7 +9,7 @@ accepted: 2026-08-09
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-1250", "RUE-1262", "RUE-1164", "RUE-1130", "RUE-1131", "RUE-1222", "RUE-1116", "RUE-1118", "RUE-1119", "RUE-1157", "RUE-1163"]
+relates: ["RUE-1250", "RUE-1262", "RUE-1265", "RUE-1164", "RUE-1130", "RUE-1131", "RUE-1222", "RUE-1116", "RUE-1118", "RUE-1119", "RUE-1157", "RUE-1163"]
 ---
 
 # ADR-0069: CI work scheduling for a compiler monorepo
@@ -17,7 +17,8 @@ relates: ["RUE-1250", "RUE-1262", "RUE-1164", "RUE-1130", "RUE-1131", "RUE-1222"
 ## Status
 
 Accepted. Phase 2 (determination on every lane, RUE-1130) is implemented in
-the same change that accepted this ADR; the remaining phases are unstarted.
+the same change that accepted this ADR. Phase 1 (RUE-1262) and Phase 3
+(the duplication gate, RUE-1265) have since landed; Phases 4-6 are unstarted.
 
 ## Summary
 
@@ -69,7 +70,10 @@ The finding that motivates this ADR is concentration, not imbalance:
 - Both native lanes are one step, and that step is **99.1%**
   `rue-compiler-test`, contradicting `docs/process/ci.md:46` ("Linux ARM64 and
   macOS ARM64 deliberately do not repeat the broad unit suite") while
-  `scripts/validate-ci-gate.py:204` pins the repetition in place.
+  `scripts/validate-ci-gate.py:204` pins the repetition in place. RUE-1265
+  resolved the contradiction in the only direction available without a coverage
+  ruling: the contract now describes what runs, and names Phase 4 as the work
+  that makes the original claim true again.
 - Inside that target, **one test function is 181.7s** against a 5.7s runner-up.
   It is compiled into two targets and runs on three platforms: **four executions
   per CI run**, together 56–59% of the critical path (RUE-1262).
@@ -228,6 +232,28 @@ binaries — cheap, exact, and how the superset above was found) and fails on an
 test scheduled twice without an explicit allowance. That gate is what converts
 "we fixed this instance" into "this class cannot recur."
 
+**Landed as `scripts/validate-test-duplication.py` (RUE-1265).** Against the
+graph on 2026-08-14 the three violations stand as: the scaling-matrix superset
+is **gone** — RUE-1262 rebuilt that target as an `sh_test` selecting three
+`#[ignore]`d rows out of the one binary, and the gate confirms the two targets
+are now disjoint; the other two are **declared allowances with written
+reasons**, marked provisional because both need a ruling this gate is not
+positioned to make. Measured cost with the binaries already built: 0.29s wall
+for 73 `--list` invocations.
+
+Two things the implementation established that this section did not anticipate.
+**`--list` is not a universal protocol**, and probing for it is not free: two
+corpus harnesses are shell scripts that ignore their arguments and run their
+whole suite, so a gate that asks them to list executes two premerge suites a
+second time — the failure this very section names, caused by its own enforcement.
+Whether a target can be listed is therefore settled from the graph before
+anything runs. And **the largest overlap in the repository is one this gate
+cannot score**: the oracle differentials re-execute the entire CLI and
+specification corpora against the reference interpreter, several thousand cases,
+in the same run on the same platform. That is defensible as a differential and
+is far larger than the `release-smoke` case §2 does name; it is recorded as
+provisional in `NOT_LISTABLE` rather than quietly omitted.
+
 ### 3. Determinate every lane, and say which regime the run is in
 
 Extend `affected-targets` from gating one job to planning every lane, and have it
@@ -369,6 +395,7 @@ from the graph later, or gated so that drift fails closed rather than silently:
 | `RUE_AFFECTED_NARROW_LIMIT` (600) | a threshold nobody revisits | unmeasured; should follow measurement |
 | the platform responsibility matrix | a responsibility silently moves | gated (`validate-ci-gate.py`) |
 | `shard-weights.json` refresh | weights go stale, shards skew | manual (RUE-1222); guard is vacuous (§6) |
+| the duplication gate's `ALLOWANCES` ledger | a duplication outlives its reason | **self-gating** (RUE-1265): an entry matching nothing fails |
 
 The pattern the ledger is meant to enforce: a list that must exist is paired
 with a gate that fails closed, and a list that need not exist is deleted in
@@ -384,7 +411,7 @@ Ordered by measured value, with the packer deliberately last: until the earlier
 phases land it would be optimizing a distribution that is about to change
 completely.
 
-- [ ] **Phase 1: Eliminate the duplicated critical path** — RUE-1262.
+- [x] **Phase 1: Eliminate the duplicated critical path** — RUE-1262.
       56–59% of the critical path, no new machinery, needs one coverage ruling.
 - [x] **Phase 2: Determination on every lane, by gating or by narrowing** —
       RUE-1130, whose "make it discriminate or remove it" question this ADR
@@ -395,8 +422,16 @@ completely.
       impacted closure instead, so an unimpacted test binary is neither built
       nor run. Reporting the saved share per run is still to do, and is what
       turns the change-mix question from an argument into a measurement.
-- [ ] **Phase 3: Duplication gate** — new. Cheap, and it is what stops the class
-      from recurring; lands while the evidence is fresh.
+- [x] **Phase 3: Duplication gate** — RUE-1265.
+      `scripts/validate-test-duplication.py` enumerates each lane from the live
+      graph, collects identities with `--list`, and fails on any test scheduled
+      more than once per platform per run without a declared allowance. It runs
+      as a step in the premerge lane, where the binaries it lists are already
+      built, and costs 0.29s wall. `docs/process/ci.md` now states the invariant
+      — with the scope it actually checks, and a section naming where it cannot
+      see — and no longer claims the native lanes skip the broad unit suite;
+      that repetition is a declared, provisional allowance until Phase 4
+      removes it.
 - [ ] **Phase 4: Platform scope as a target attribute** — new (RUE-1262 scope C).
       Removes the `validate-ci-gate.py:204` pin and the per-test/per-target
       granularity error. Phase 2 already stops peripheral changes from reaching
@@ -458,7 +493,9 @@ same fixed-cost problem this ADR names in the compiler-cold regime.
   lane pays it. Build-once-and-fan-out serializes it ahead of the lanes and
   measures worse; is there a third option (RUE-1131 is adjacent)?
 - Should `release-smoke`'s debug/release double execution be kept? It is
-  defensible coverage that nobody appears to have decided.
+  defensible coverage that nobody appears to have decided. RUE-1265's gate now
+  measures it — 25 differential-opt cases the CLI shards also run — and carries
+  it as a provisional allowance rather than settling it.
 
 ## Future Work
 

@@ -38,6 +38,8 @@
 #                      deliberately added here.
 #   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
 #   lane-targets       Print the Buck targets a gated lane executes.
+#   corpus-targets     Print the corpus targets the platform-corpus matrix runs.
+#   lanes              Print the gated workflow lane names.
 #   intersect          Print a lane's targets that appear in an impacted list.
 #   build-scope        Print the impacted targets a `//crates/...` lane may
 #                      build. Narrowing must stay inside the lane's own scope.
@@ -205,6 +207,20 @@ is_selectable() {
         [[ "$target" == "$wanted" ]] && return 0
     done
     return 1
+}
+
+# RUE-1265: the duplication gate needs the same two inventories the gating logic
+# above consults — which corpora own a `platform-corpus` job, and which lanes
+# exist at all — and reading them from here rather than transcribing them keeps
+# ADR-0069's ledger from gaining a row. `lanes` deliberately omits
+# `linux-premerge`, which is narrowed rather than gated and so is not in
+# SELECTABLE_LANES; consumers that care about it add it explicitly.
+corpus_targets() {
+    printf '%s\n' "${SELECTABLE_CORPUS[@]}"
+}
+
+lanes() {
+    printf '%s\n' "${SELECTABLE_LANES[@]}"
 }
 
 # Emit `key=value` to $GITHUB_OUTPUT when running under Actions; harmless
@@ -502,8 +518,12 @@ main() {
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;
+        corpus-targets)
+            corpus_targets ;;
+        lanes)
+            lanes ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|intersect|build-scope]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|corpus-targets|lanes|intersect|build-scope]" >&2
             exit 2 ;;
     esac
 }

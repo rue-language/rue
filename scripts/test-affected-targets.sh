@@ -191,6 +191,30 @@ else
   fail "lane: corpus gating regressed"
 fi
 
+# RUE-1265: the duplication gate reads this script's corpus and lane
+# inventories instead of keeping a second copy of either. `lanes` must stay
+# complete — a lane missing from it is a lane the duplication gate never learns
+# to classify — and `corpus-targets` must stay non-empty, since an empty
+# platform-corpus inventory would silently remove that lane from the gate's
+# view of what runs.
+TESTS=$((TESTS + 1))
+if [ "$("${AFFECTED[@]}" lanes | sort | tr '\n' ' ')" \
+    = "asan compiler-reproducibility native-linux-arm64 native-macos-arm64 release rue-program-digests valgrind " ]; then
+  pass "lanes: the gated lane inventory is exposed in full"
+else
+  fail "lanes: printed $("${AFFECTED[@]}" lanes | tr '\n' ' ')"
+fi
+
+TESTS=$((TESTS + 1))
+# Capture first: `grep -q` behind a pipe under `set -o pipefail` kills the
+# producer with EPIPE on its first match (RUE-1011/RUE-1155).
+corpus_inventory="$("${AFFECTED[@]}" corpus-targets)"
+if grep -q '^//:spec-tests$' <<<"$corpus_inventory"; then
+  pass "corpus-targets: the platform-corpus inventory is exposed"
+else
+  fail "corpus-targets: //:spec-tests is missing from the exposed inventory"
+fi
+
 # The asan harness is outside the Buck graph, so BTD cannot see it; its sources
 # must force a full run rather than relying on a representative target.
 expect_full "crates/rue-runtime-asan/src/main.rs"
