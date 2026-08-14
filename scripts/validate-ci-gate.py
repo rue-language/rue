@@ -7,6 +7,7 @@ import argparse
 import importlib.util
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 RESULTS_SCRIPT = Path(__file__).with_name("ci-required-results.py")
@@ -78,6 +79,21 @@ SPEC = importlib.util.spec_from_file_location("ci_required_results", RESULTS_SCR
 RESULTS = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(RESULTS)
+
+# RUE-1265: the duplication gate models these three steps as scheduled work, so
+# the filters have to be one fact. Importing them here means a filter added to
+# the workflow without teaching the gate about it fails this validator, rather
+# than quietly running a corpus slice the duplication comparison cannot see.
+DUPLICATION_SCRIPT = Path(__file__).with_name("validate-test-duplication.py")
+_DUP_SPEC = importlib.util.spec_from_file_location(
+    "validate_test_duplication", DUPLICATION_SCRIPT
+)
+DUPLICATION = importlib.util.module_from_spec(_DUP_SPEC)
+assert _DUP_SPEC.loader is not None
+# Registered before execution: the module defines dataclasses, and @dataclass
+# resolves annotations through sys.modules[cls.__module__].
+sys.modules["validate_test_duplication"] = DUPLICATION
+_DUP_SPEC.loader.exec_module(DUPLICATION)
 
 ACTION_ID = r"[A-Za-z_][A-Za-z0-9_-]*"
 JOB_RE = re.compile(rf"^  ({ACTION_ID}):\s*$", re.MULTILINE)
@@ -254,6 +270,11 @@ def validate(
         # may quietly drop. Its sibling staleness gate is pinned below, in the
         # job RUE-1504 moved it to.
         "check-pins",
+        # RUE-1265: the ADR-0069 §2 duplication gate. It is the only check that
+        # compares test contents rather than target lists, so nothing else in
+        # CI can see a target becoming a superset of another; losing the step
+        # restores the blind spot that hid 223s of re-executed work for weeks.
+        "scripts/validate-test-duplication.py",
     ):
         if required not in linux:
             errors.append(f"linux-premerge responsibility missing {required!r}")
@@ -330,9 +351,8 @@ def validate(
         "//crates/rue-runtime:rue-runtime-test",
         "//crates/rue-runtime-abi:rue-runtime-abi-test",
         "scripts/run-native-platform-corpus.sh",
-        "scripts/rue cli abi",
-        "scripts/rue cli cli.linker",
-        "scripts/rue cli cli.fs_file_io",
+    ) + tuple(
+        f"scripts/rue cli {filter_}" for filter_ in DUPLICATION.NATIVE_CLI_FILTERS
     ):
         if required not in native:
             errors.append(f"native-platforms responsibility missing {required!r}")

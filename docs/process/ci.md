@@ -43,11 +43,34 @@ instead of silently shrinking coverage.
 | macOS ARM64 | The same native responsibilities on Mach-O/macOS, including host-conditional compiler/archive tests, every applicable `only_on` case, native linker/runtime execution, and output publication |
 | Linux cross-backend step | Explicit host-independent x86-64 and AArch64 compilation/encoding unit coverage |
 
-Linux ARM64 and macOS ARM64 deliberately do not repeat the broad unit suite or
-the specification corpus. Backend encoding logic is still tested explicitly
-for both architectures on Linux, while native ARM64 lanes prove the host ABI,
+Linux ARM64 and macOS ARM64 do not repeat the specification corpus. Through
+`scripts/run-native-platform-corpus.sh` they register only the `only_on` cases
+of the manifest-driven corpora — but that is not the whole of what they run
+from those corpora: the three explicit `scripts/rue cli` filters below use the
+developer entry point, which sets neither `RUE_CLI_CASE_TIER` nor
+`RUE_PLATFORM_CASE_SELECTION`, so every case matching `abi`, `cli.linker`, or
+`cli.fs_file_io` runs whatever its tier and whether or not it declares
+`only_on`. `cases/abi.toml` declares none, so those cases do run on all three
+platforms. That is the responsibility matrix working as written, and the
+duplication gate scores it as a declared allowance rather than leaving it to
+this paragraph. Backend encoding logic is still tested explicitly for both
+architectures on Linux, while native ARM64 lanes prove the host ABI,
 object/linker path, runtime archive, syscalls, and platform behavior that
 cross-compilation cannot.
+
+They **do** repeat the broad compiler unit suite, and that is a defect rather
+than the design. This paragraph used to claim otherwise while
+`scripts/validate-ci-gate.py` pinned `//crates/rue-compiler:rue-compiler-test`
+into both native lanes; the two statements contradicted each other for weeks
+because nothing compared them (ADR-0069 "What was measured"). What the native
+lanes want is that binary's ~27 host-conditional sites; what they pay for is
+all 850 of its tests, because platform scope is declared per target while it is
+a property of individual tests. ADR-0069 Phase 4 (RUE-1262 scope C) moves the
+host-conditional tests into their own target — the precedent
+`rue-compiler-public-api-test` already sets in the same crate — and the
+repetition ends there rather than by dropping coverage now. Until then it is a
+declared allowance in the duplication gate below, so the cost stays visible
+and priced.
 
 The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
 `scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then
@@ -326,6 +349,105 @@ multiple independent times. It uploads per-run logs and a summary, continues
 after a failure only to gather flake evidence, and exits failed if *any*
 repetition failed; a later pass never masks an earlier failure. Required
 correctness jobs do not automatically retry failed cases.
+
+## Nothing executes twice (ADR-0069 §2)
+
+**No test the gate can enumerate executes more than once per platform per run
+without a declared reason.** `scripts/validate-test-duplication.py`
+(`//:test-duplication-tool-tests` pins its logic) is the gate, and it runs as
+the `Check nothing executes twice` step of the `premerge (linux-x64)` job.
+
+The qualifier is load-bearing, and "Where it cannot see" below says exactly
+where it applies. A gate that claimed more than it checks would be the same
+kind of defect it exists to catch.
+
+It exists because every other gate here compares *target lists*.
+`//:cli-shard-coverage-validation` compares BUCK's shards with the matrix,
+`scripts/validate-ci-gate.py` compares jobs with the responsibility matrix, and
+`//test_tiers.bxl:validate` compares tier labels with the test graph — so a
+target that becomes a strict superset of another is invisible to all of them.
+That is how `//crates/rue-compiler:scaling-matrix-test` came to re-run 813 of
+`rue-compiler-test`'s tests, in the same lane, to gain three, for weeks, with
+every check green (RUE-1262).
+
+How it decides:
+
+- **Lane membership is queried, not transcribed.** The premerge lane is
+  `attrfilter(labels, 'rue_test_tier_premerge', set(//... toolchains//...))`
+  minus the `rue_cli_shard` and `rue_ci_dedicated_lane` sets; the corpus and
+  gated-lane inventories come from `scripts/affected-targets corpus-targets`
+  and `lane-targets`, which are the lists CI's determinator already consults.
+  A lane added to `SELECTABLE_LANES` and not classified by the gate fails it,
+  so this adds no unwatched row to ADR-0069's ledger.
+- **Identities come from `--list`.** Each target is listed with the exact args
+  and env its own Buck target carries, so the scaling matrix's
+  `--ignored scaling_matrix` selection lists three tests and the CLI shards
+  list their own slices. `#[ignore]`d tests are subtracted from `rust_test`
+  binaries, because an ignored test is not scheduled work.
+- **Whether a target can be listed is decided before anything runs.** The
+  `--list` protocol is not universal and probing for it is not free:
+  `scripts/test-reproducible-output.sh` and
+  `scripts/oracle-diff-generated-smoke.sh` do no argument handling at all, so
+  handed `--list` they run their entire premerge suite and exit 0. The graph
+  answers instead — only a Rust binary can carry libtest — and a Rust harness
+  that *does* refuse `--list` must be declared in `NOT_LISTABLE` with a reason
+  stating what its opacity hides. An undeclared refusal fails the gate, because
+  the alternative is 850 tests silently collapsing into one opaque unit under a
+  green check.
+- **Allowances are declared with a reason** in the script's `ALLOWANCES`
+  ledger. An entry is either `per-target` — a roster of targets that each
+  repeat across the named platforms on their own — or `between-targets`, an
+  exact set that overlaps. Nothing matches by subset in either direction, so a
+  roster cannot vouch for a *new* overlap between two of its own members, and a
+  two-target entry cannot absorb a duplication between two CLI shards.
+  Rosters go stale per target, not per entry. Absence never implies permission.
+
+Five duplications are declared today. The native lanes' repetition of the eight
+platform unit targets, and their `scripts/rue cli abi|cli.linker|cli.fs_file_io`
+steps re-running cases the CLI shards run, are both the platform responsibility
+matrix doing its job. Three are provisional and await a maintainer ruling:
+`rue-compiler-test`'s whole suite on three platforms (above); `//:release-smoke`
+running its 25 differential-opt cases three times on linux-x64 — once in the
+shards under `//platforms:debug`, once in the `release` job under
+`//platforms:release`, and once more inside `linux-premerge`, which carries no
+release configuration and looks like an oversight; and the single case that
+falls in the intersection of those two.
+
+Cost, measured on a 4-core-class host with the binaries already built: **0.29s
+wall for 73 `--list` invocations**, 1.6s of process time run concurrently. The
+gate materializes only what a listing consults, which deliberately excludes
+`RUE_CLI_STAGED_PROGRAMS`: `//:cli-staged-programs` stages ten `rue_program`
+compiles that discovery never reads, the premerge lane does not otherwise build
+it, and the shards that do consume it run on other runners. The step is skipped
+on a narrowed pull-request run, where it would have to build unimpacted test
+binaries and spend the wall time RUE-1130's narrowing exists to save;
+duplication is a property of the graph rather than of the diff, and the
+authoritative merge-group run always evaluates it.
+
+### Where it cannot see
+
+Every run prints an `opaque:` line counting the units whose contents the
+comparison cannot reach, so a passing log says how much of the graph the
+verdict covers. Three groups:
+
+- **The manifest-driven corpora on the native lanes.** Those lanes register the
+  `only_on` cases for their own host, which a linux-x64 gate cannot enumerate.
+  The RUE-1161 platform responsibility gate covers that surface instead.
+- **Harnesses that are not libtest.** `//:reproducible-programs`,
+  `//:oracle-diff-generated-smoke`, `//:frontend-diff-test`, and
+  `//:spec-traceability` each count as one unit.
+- **The oracle differentials**, and this is the largest known gap:
+  `//crates/rue-oracle-diff:oracle-diff-test` and `:oracle-diff-spec-test` drive
+  every runnable CLI and specification case through the reference interpreter
+  and compare it against the compiler, so they re-execute the same ~1,858- and
+  ~2,100-case corpora that the CLI shards and `//:spec-tests` run in the same
+  run on the same platform. That is far larger than the 25-case release-smoke
+  overlap the ledger does score. It is a differential rather than a repetition
+  — the assertion is agreement between two implementations, which no single
+  execution can make — but nobody has priced it, and the gate cannot, because
+  the harness owns its own argument grammar. Making it listable would move it
+  from this list into `ALLOWANCES`, where a written reason would have to stand
+  up. Recorded in `NOT_LISTABLE` as provisional in the meantime.
 
 ## Affected-corpus selection on pull requests (RUE-1119)
 

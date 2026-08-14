@@ -892,6 +892,28 @@ rue_sh_test(
     },
 )
 
+# RUE-1265 / ADR-0069 §2. The duplication gate itself needs the live Buck graph
+# and every test binary, so it runs as a step in the premerge lane rather than
+# as a target inside the graph it interrogates. What belongs here is its
+# decision logic, pinned the way //:cli-shard-coverage-tool-tests pins the
+# shard gate: the RUE-1262 superset shape is checked in as a fixture, and the
+# gate must fail on it and name both owning targets.
+#
+# `scripts/affected-targets` is a declared resource because the gate reads its
+# corpus and lane inventories rather than keeping a second copy — a lane added
+# there must be classified here or the gate refuses to run.
+rue_sh_test(
+    name = "test-duplication-tool-tests",
+    test = "scripts/test-validate-test-duplication.py",
+    resources = [
+        "scripts/affected-targets",
+        "scripts/validate-test-duplication.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # RUE-1117: the declared inputs of the tier CI-selector gate. The tier
 # vocabulary and every workflow that is registered as deliberately selecting a
 # tier are inputs, so an edit to any of them re-runs the gate.
@@ -964,6 +986,10 @@ rue_sh_test(
     resources = [
         "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
+        # RUE-1265: NATIVE_CLI_FILTERS is imported from here, so the two gates
+        # cannot disagree about which `scripts/rue cli` steps the native lanes
+        # run.
+        "scripts/validate-test-duplication.py",
     ],
 )
 
@@ -1038,6 +1064,7 @@ rue_sh_test(
         "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
+        "scripts/validate-test-duplication.py",
     ],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
