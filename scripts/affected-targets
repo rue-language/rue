@@ -41,8 +41,10 @@
 #   corpus-targets     Print the corpus targets the platform-corpus matrix runs.
 #   lanes              Print the gated workflow lane names.
 #   intersect          Print a lane's targets that appear in an impacted list.
-#   build-scope        Print the impacted targets a `//crates/...` lane may
-#                      build. Narrowing must stay inside the lane's own scope.
+#   build-scope        Print the targets a `//crates/...` lane may build, with
+#                      or without an impacted list. Narrowing must stay inside
+#                      the lane's own scope, and neither spelling of that scope
+#                      may name a corpus action (RUE-1511).
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -260,30 +262,190 @@ intersect_impacted() {
     return 0
 }
 
-# The impacted subset a *pattern* lane may build, for lanes whose pre-narrowing
-# scope was `//crates/...` rather than a fixed list.
+buck2_bin() {
+    printf '%s\n' "${RUE_AFFECTED_BUCK2:-$repo_root/buck2}"
+}
+
+# `buck2` prints the cell (`root//:foo`); parse-btd-impacted.py has already
+# stripped it from the impacted list. One spelling, so set membership below is
+# exact rather than a match across two forms.
+normalize_cell() {
+    sed 's|^root//|//|'
+}
+
+# The crate-scoped corpus actions a build-verification step must not name.
+#
+# `cached_corpus_suite` splits a corpus in two (see corpus.bzl): a
+# `_corpus_action` genrule that RUNS the harness, and a thin `sh_test` that
+# asserts its stamp. Building the action therefore *executes* the corpus, which
+# is why `buck2 build` must never reach one — and why `--exclude
+# rue_ci_dedicated_lane` cannot help, since that is a `buck2 test` label filter
+# and the action deliberately carries no labels at all.
+#
+# RUE-1130 wrote that exclusion as `grep '^//crates/'`. That is a PATH PREFIX
+# standing in for a property of the target, and it held only for the root-level
+# corpora it was written against. Every corpus declared inside a crate passed
+# it: `//crates/rue-oracle-diff:oracle-diff-{test,spec-test}-action` ran in full
+# inside `Build all targets`, at a 140.9s and 87.1s median — 78.9% of a step
+# whose own median is 304s — concurrently with the two dedicated
+# `test (linux-x64-oracle-diff*)` lanes that exist to own them, on a second
+# runner, at the same execution configuration (RUE-1511).
+#
+# The property is the rule kind, so the rule kind is what this asks the live
+# graph. Any corpus added anywhere is covered, including one added after this
+# was written.
+#
+# WHAT THIS GIVES UP, stated plainly. The lanes deferred to are themselves
+# gated by this determinator, while the unnarrowed premerge build was not: it
+# ran `//crates/...` on every PR, which is exactly how it came to be executing
+# these corpora. So on a run where BTD deselects
+# `//crates/rue-oracle-diff:oracle-diff-test`, the corpus previously still ran
+# — accidentally, inside premerge's build — and now runs nowhere. That is a
+# deliberate reduction, not an oversight: `buck2 build //crates/...` never
+# reached the root-level `//:cli-tests-*`/`//:spec-tests` actions either, so
+# those corpora have had no premerge backstop since RUE-1119, and this makes
+# oracle-diff consistent with them rather than uniquely privileged. The narrowed
+# spelling keeps a stronger guarantee, because `buck.deps` puts the action in
+# its own `sh_test`'s closure: an impacted action drags its test in with it.
+#
+# `SELECTABLE_CORPUS` now has a second consumer with the opposite failure
+# direction from its first. For selection, an unknown entry fails safe toward
+# over-running; here, an entry naming a corpus no matrix job runs would defer
+# its action with nothing executing it. `validate-ci-gate.py` pins the two
+# oracle `check_name`s into existence, which contains it — but it pins the
+# check name, not the `target:` beneath it.
+#
+# FAIL-CLOSED ON COVERAGE, like every other decision in this file. Today the
+# premerge build step is accidentally the thing that *executes* these corpora,
+# so dropping them is only safe where some required lane demonstrably runs the
+# corpus instead. An action is deferred only when its test target is one
+# `test.sh` runs in this same lane (premerge tier, and not held back by the
+# dedicated-lane or CLI-shard filters that invocation applies), or one the
+# platform-corpus inventory above gives a lane of its own. Anything else stays
+# in the build, loudly: over-building costs wall time, and a corpus nothing runs
+# is the RUE-924 false green. `cached_corpus_suite` names the action
+# `NAME-action` for the test `NAME`, so that mapping is the rule's own
+# construction rather than an inference about the graph.
+#
+# Fails non-zero when Buck cannot answer, and the caller then builds the corpus
+# actions exactly as it did before.
+deferred_corpus_actions() {
+    local buck2 actions covered action test_target query
+    buck2="$(buck2_bin)"
+
+    # Buck's own error reaches stderr rather than being discarded. The whole
+    # design is "fail open loudly", and swallowing the one line that explains
+    # why leaves a CI log saying only that something did not work — a nested
+    # `buck2` invocation, a cold daemon, and a syntax error read identically.
+    if ! actions="$("$buck2" uquery "kind('_corpus_action', //crates/...)")"; then
+        echo "affected-targets: could not query crate-scoped corpus actions" >&2
+        return 1
+    fi
+    # The query lives in its own variable rather than inline. Bash 3.2 — what
+    # macOS ships as /bin/bash, and this script runs on developer machines —
+    # cannot parse a `$(...)` whose body spans a line continuation and contains
+    # a quoted argument with parentheses; it dies with "unexpected EOF while
+    # looking for matching `\"'" several lines later, naming an innocent line.
+    # RUE-1506 and RUE-1509 are the same class caught in other files.
+    query="attrfilter(labels, rue_test_tier_premerge, //crates/...)"
+    query="$query except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...)"
+    query="$query + attrfilter(labels, rue_cli_shard, //crates/...))"
+    if ! covered="$("$buck2" uquery "$query")"; then
+        echo "affected-targets: could not query the premerge-tier test selection" >&2
+        return 1
+    fi
+
+    actions="$(normalize_cell <<<"$actions" | grep . || true)"
+    covered="$(printf '%s\n%s\n' "$(normalize_cell <<<"$covered")" \
+        "$(printf '%s\n' "${SELECTABLE_CORPUS[@]}")" | grep . || true)"
+    [[ -n "$actions" ]] || return 0
+
+    while IFS= read -r action; do
+        [[ -n "$action" ]] || continue
+        test_target="${action%-action}"
+        if grep -Fxq "$test_target" <<<"$covered"; then
+            printf '%s\n' "$action"
+        else
+            echo "affected-targets: ${action} runs a corpus no required lane owns;" \
+                 "keeping it in the build scope" >&2
+        fi
+    done <<<"$actions"
+    return 0
+}
+
+# The targets a *pattern* lane may build, for lanes whose scope is
+# `//crates/...` rather than a fixed list. With an impacted list it is the
+# narrowed subset; without one it is the whole pattern. Both are the same scope
+# minus the same corpus actions, because both lose independently: fixing only
+# the narrowed spelling leaves the common case — a compiler change, which
+# impacts more than NARROW_LIMIT targets and so is never narrowed — building
+# the corpora exactly as before.
 #
 # RUE-1130 handed the raw impacted closure to `buck2 build` in linux-premerge.
-# That closure spans the whole graph, and the root-level targets in it are
-# `cached_corpus_suite` actions — building one RUNS the corpus (see corpus.bzl).
-# `--exclude rue_ci_dedicated_lane` cannot hold that back, because the label is
-# on the sh_test while `buck2 build` reaches the `-action` genrule, which
-# corpus.bzl documents as carrying no labels at all. So narrowing WIDENED the
-# step: it re-ran the CLI, spec, and oracle corpora inside the single job whose
-# dedicated lanes exist to keep them out, taking premerge from ~12m to 32-42m.
-#
-# Restoring the crate scope is what keeps narrowing a subset of what the lane
-# built before. A lane that builds a pattern must narrow within that pattern,
-# never to whatever the determinator happens to name.
+# That closure spans the whole graph, so narrowing WIDENED the step: it re-ran
+# the CLI, spec, and oracle corpora inside the single job whose dedicated lanes
+# exist to keep them out, taking premerge from ~12m to 32-42m. Restoring the
+# crate scope is what keeps narrowing a subset of what the lane built before. A
+# lane that builds a pattern must narrow within that pattern, never to whatever
+# the determinator happens to name.
 build_scope() {
-    local file="$1"
+    local file="${1:-}"
+    local deferred kept buck2 expr scope
+    deferred="$(deferred_corpus_actions)" || deferred=""
+
+    if [[ -z "$file" ]]; then
+        # The unnarrowed scope. `buck2 build` accepts patterns and target
+        # lists but has no kind or label exclusion, so the subtraction has to
+        # happen before the pattern reaches it — which means expanding it.
+        # There are 167 targets under `//crates/...` and nothing in that tree
+        # is `compatible_with`-restricted, so the explicit list configures
+        # exactly as the pattern does — verified by `uquery` and `cquery`
+        # returning the same 167.
+        #
+        # The two spellings differ on FAILURE, not on today's result: `buck2
+        # build //crates/...` SKIPS an incompatible target, while naming one
+        # explicitly is an error. The first `target_compatible_with` added
+        # under `//crates/` therefore breaks this step outright rather than
+        # degrading, and the fix then is to subtract via a query the pattern
+        # keeps rather than to expand it.
+        # Build the `set(...)` argument in its own step. Bash 3.2 — what macOS
+        # ships as /bin/bash — cannot parse a command substitution containing a
+        # here-string inside a double-quoted assignment, and this script runs on
+        # developer machines as well as CI (RUE-1506, RUE-1509).
+        expr="//crates/..."
+        if [[ -n "$deferred" ]]; then
+            local joined
+            # Quoted: unquoted expansion would word-split and glob-expand a
+            # target label, which happens to be safe today only because labels
+            # carry no IFS or pattern characters.
+            joined="${deferred//$'\n'/ }"
+            expr="//crates/... except set($joined)"
+        fi
+        buck2="$(buck2_bin)"
+        if ! scope="$("$buck2" uquery "$expr")"; then
+            echo "affected-targets: could not expand the crate build scope" >&2
+            return 1
+        fi
+        scope="$(normalize_cell <<<"$scope" | grep . || true)"
+        if [[ -z "$scope" ]]; then
+            echo "affected-targets: the crate build scope came back empty" >&2
+            return 1
+        fi
+        printf '%s\n' "$scope"
+        return 0
+    fi
+
     if [[ ! -r "$file" ]]; then
         echo "affected-targets: impacted list '$file' is unreadable" >&2
         return 1
     fi
     # Labels arrive normalized by parse-btd-impacted.py ("root//" stripped), so
     # this prefix is exact rather than a heuristic over spellings.
-    grep '^//crates/' "$file" || true
+    kept="$(grep '^//crates/' "$file" || true)"
+    if [[ -n "$kept" && -n "$deferred" ]]; then
+        kept="$(grep -Fxv -f <(printf '%s\n' "$deferred") <<<"$kept" || true)"
+    fi
+    [[ -n "$kept" ]] && printf '%s\n' "$kept"
     return 0
 }
 
@@ -513,8 +675,11 @@ main() {
             [[ $# -ge 2 ]] || { echo "usage: scripts/affected-targets intersect FILE //:TARGET..." >&2; exit 2; }
             shift; intersect_impacted "$@" ;;
         build-scope)
-            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets build-scope FILE" >&2; exit 2; }
-            build_scope "$2" ;;
+            # FILE is optional: with it, the narrowed subset; without it, the
+            # whole `//crates/...` pattern. Both spellings must drop the corpus
+            # actions, so both reach the same function (RUE-1511).
+            [[ $# -le 2 ]] || { echo "usage: scripts/affected-targets build-scope [FILE]" >&2; exit 2; }
+            build_scope "${2:-}" ;;
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;

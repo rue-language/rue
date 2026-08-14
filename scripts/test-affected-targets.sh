@@ -5,8 +5,11 @@
 #
 # These cover the parts that decide COVERAGE and must never regress: a path that
 # must force a full run, a path that legitimately may be selected out, strict
-# BTD decoding, the gate's fail-open behavior, and one selective end-to-end
-# decision with local BTD/Buck stubs. The suite needs neither network nor Buck.
+# BTD decoding, the gate's fail-open behavior, the build scope's corpus-action
+# deferral, and one selective end-to-end decision with local BTD/Buck stubs. The
+# suite needs neither network nor Buck: everything that would consult the graph
+# goes through `RUE_AFFECTED_BUCK2`. That is not only hygiene — this suite runs
+# as an sh_test under buck2, and a real nested query is refused with rc=3.
 set -uo pipefail
 
 if [ -n "${RUE_AFFECTED_SCRIPTS_ROOT:-}" ]; then
@@ -256,6 +259,33 @@ else
   fail "narrow: missing impacted file did not exit cleanly"
 fi
 
+scope_root="$(mktemp -d)"
+mkdir -p "$scope_root/bin"
+cat >"$scope_root/bin/fake-buck" <<'FAKEBUCK'
+#!/usr/bin/env bash
+# Answers the three queries build_scope() makes, and nothing else.
+case "$2" in
+  "kind('_corpus_action', //crates/...)")
+    printf '%s\n' \
+      root//crates/rue-oracle-diff:oracle-diff-test-action \
+      root//crates/rue-oracle-diff:oracle-diff-spec-test-action \
+      root//crates/rue-newthing:newthing-test-action ;;
+  attrfilter*)
+    # The premerge-tier selection. Deliberately omits `newthing-test`, so that
+    # action is owned by no lane.
+    printf '%s\n' \
+      root//crates/rue-oracle-diff:oracle-diff-test \
+      root//crates/rue-oracle-diff:oracle-diff-spec-test ;;
+  //crates/...*)
+    printf '%s\n' \
+      root//crates/rue-compiler:rue-compiler \
+      root//crates/rue-span:rue-span-test ;;
+  *) echo "fake-buck: unexpected query: $2" >&2; exit 1 ;;
+esac
+FAKEBUCK
+chmod +x "$scope_root/bin/fake-buck"
+SCOPED=("${AFFECTED[@]}")
+
 # `build-scope` is what keeps a pattern lane's narrowing a SUBSET of what the
 # lane built before: exactly `//crates/...`, the scope linux-premerge built
 # before RUE-1130 narrowed it. The root-level entries here are
@@ -264,11 +294,16 @@ fi
 # the action, and `rue_ci_dedicated_lane` is a `buck2 test` label filter that
 # cannot reach it.
 #
-# `//crates/rue-oracle-diff:oracle-diff-test-action` is deliberately KEPT: it is
-# a corpus action, but a crate-scoped one that `//crates/...` always matched, so
-# dropping it here would make this a behavior change rather than a restoration.
-# Taking corpus actions out of this lane wholesale needs the labels to live on
-# the action (RUE-1163's contract), which is tracked separately.
+# `//crates/rue-oracle-diff:oracle-diff-test-action` is now DROPPED too. It was
+# kept when this test was written, on the reasoning that `//crates/...` had
+# always matched it so removing it would be a behavior change rather than a
+# restoration. It is the behavior change RUE-1511 asks for: that action and its
+# spec sibling ran 140.9s and 87.1s inside `Build all targets` — 78.9% of a step
+# whose median is 304s — concurrently with the dedicated
+# `test (linux-x64-oracle-diff*)` lanes that exist to own them. The exclusion no
+# longer needs labels on the action, which is what "tracked separately" was
+# waiting for: it asks the live graph for `kind('_corpus_action', ...)` and
+# defers only actions whose test target a required lane demonstrably runs.
 printf '%s\n' \
   //crates/rue-compiler:rue-compiler \
   //:cli-tests \
@@ -279,11 +314,56 @@ printf '%s\n' \
   //crates/rue-oracle-diff:oracle-diff-test-action \
   >"$narrow_root/mixed"
 TESTS=$((TESTS + 1))
-if [ "$("${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
-     = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test //crates/rue-oracle-diff:oracle-diff-test-action " ]; then
-  pass "narrow: build-scope keeps the crate scope and drops root-level corpus actions"
+if [ "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
+     = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test " ]; then
+  pass "narrow: build-scope keeps the crate scope and drops every corpus action"
 else
   fail "narrow: build-scope did not restore the //crates/... scope"
+fi
+
+# RUE-1511: `build-scope` asks the live graph which targets are corpus actions,
+# so these cases stub Buck exactly as the end-to-end decision case below does.
+# A real `./buck2` here would be a RECURSIVE Buck invocation — this suite runs
+# as an sh_test under buck2, which refuses the nested query with rc=3 — and the
+# suite's contract is that it needs neither network nor Buck.
+
+# The unnarrowed spelling loses independently of the narrowed one, and it is the
+# common case — a compiler change impacts more than NARROW_LIMIT targets, so it
+# is never narrowed. Both must drop the same actions, or fixing one leaves
+# premerge building the corpora exactly as before.
+TESTS=$((TESTS + 1))
+unnarrowed="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope 2>/dev/null)"
+if [ -n "$unnarrowed" ] && ! grep -q -- '-action$' <<<"$unnarrowed"; then
+  pass "narrow: build-scope with no list expands the pattern without any corpus action"
+else
+  fail "narrow: build-scope with no list kept a corpus action or produced nothing"
+fi
+
+# FAIL CLOSED is the property the whole change rests on: an action whose test
+# target no required lane runs must stay in the build, because a corpus nothing
+# executes is the RUE-924 false green. `newthing-test-action` is owned by no
+# lane in the stub, so it must survive both spellings.
+printf '%s\n' \
+  //crates/rue-oracle-diff:oracle-diff-test-action \
+  //crates/rue-newthing:newthing-test-action \
+  //crates/rue-span:rue-span-test >"$narrow_root/unowned"
+TESTS=$((TESTS + 1))
+kept_unowned="$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
+if [ "$kept_unowned" = "//crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: build-scope keeps a corpus action no required lane owns"
+else
+  fail "narrow: build-scope deferred an action nothing runs (got '$kept_unowned')"
+fi
+
+# When Buck cannot answer, the caller must build exactly what it built before:
+# the narrowed list unfiltered, so a query outage costs wall time and never
+# coverage.
+TESTS=$((TESTS + 1))
+degraded="$(RUE_AFFECTED_BUCK2="$scope_root/bin/absent" "${AFFECTED[@]}" build-scope "$narrow_root/unowned" 2>/dev/null | tr '\n' ' ')"
+if [ "$degraded" = "//crates/rue-oracle-diff:oracle-diff-test-action //crates/rue-newthing:newthing-test-action //crates/rue-span:rue-span-test " ]; then
+  pass "narrow: an unanswerable Buck query falls open to the unfiltered scope"
+else
+  fail "narrow: a failed query did not fall open (got '$degraded')"
 fi
 
 # An impacted closure naming only corpora is legitimate — corpus data can change
@@ -291,7 +371,7 @@ fi
 # whole pattern. The workflow prints that case rather than silently skipping.
 printf '%s\n' //:cli-tests-action //:spec-tests-action >"$narrow_root/corpora-only"
 TESTS=$((TESTS + 1))
-if [ -z "$("${AFFECTED[@]}" build-scope "$narrow_root/corpora-only")" ]; then
+if [ -z "$(RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/corpora-only")" ]; then
   pass "narrow: build-scope on a corpus-only closure yields nothing to build"
 else
   fail "narrow: build-scope invented crate targets from a corpus-only closure"
@@ -300,7 +380,7 @@ fi
 # An unreadable list must fail loudly so the caller can fall open to the full
 # pattern; silently yielding nothing would turn it into "build nothing".
 TESTS=$((TESTS + 1))
-if "${AFFECTED[@]}" build-scope "$narrow_root/absent" >/dev/null 2>&1; then
+if RUE_AFFECTED_BUCK2="$scope_root/bin/fake-buck" "${AFFECTED[@]}" build-scope "$narrow_root/absent" >/dev/null 2>&1; then
   fail "narrow: build-scope accepted a missing impacted file"
 else
   pass "narrow: build-scope rejects a missing impacted file"

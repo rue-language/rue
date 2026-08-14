@@ -339,7 +339,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$NARROW_COUNT" -le 0 ]; then
-            scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+            # RUE-1511: the unnarrowed branch is the common case — a compiler
+            # change impacts more than NARROW_LIMIT targets and so is never
+            # narrowed — so it needs the corpus-action subtraction just as much
+            # as the narrowed one. `buck2 build` has no kind or label
+            # exclusion, so build-scope expands the pattern and subtracts.
+            if scope="$(scripts/affected-targets build-scope)"; then
+              mapfile -t targets <<<"$scope"
+              scripts/ci-timed "linux-x64 build" -- ./buck2 build "${targets[@]}"
+            else
+              # Fail open, as below: over-building costs wall time, never coverage.
+              echo "crate build scope unavailable; building the full crate pattern" >&2
+              scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+            fi
           elif ! scope="$(scripts/affected-targets build-scope "$NARROW_FILE")"; then
             # Fail open: an unreadable list costs wall time, never coverage.
             echo "narrowed build scope unavailable; building the full crate pattern" >&2
