@@ -66,7 +66,9 @@ description = "32 MiB of deterministic ASCII word text with Zipf-distributed wor
 # The committed golden was produced by running the compiled program over the
 # fixture these pins describe, and independently cross-checked against a
 # reference word count of the same bytes. Regenerate it — under a new suite
-# revision — only when a pin above deliberately changes the workload:
+# revision — only when a pin above deliberately changes the workload. Epoch 1
+# targets x86-64 Linux, so on another host pass that host's own local epoch in
+# its place; the expected bytes are a function of the fixture pins alone:
 #
 #     rue-bench runtime --platform local --epoch 1 \
 #       --compiler "$(scripts/rue-bin)" --commit "$(git rev-parse HEAD)" \
@@ -479,11 +481,11 @@ samples = 9
 # target: its environment policy admits only `local`, so a hosted runner cannot
 # append to it, and a laptop cannot append to the reference series.
 #
-# It is the one x86-64-Linux-only thing left in a matrix that otherwise covers
-# every platform Rue targets, so `--platform local` does not work on an Apple
-# Silicon or arm64 Linux machine. Left as it is deliberately: a second `local`
-# epoch is a maintainer convenience rather than part of this matrix, and it
-# would need its own id and a `--epoch` to select it.
+# The first of the `local` rows. A local run builds for its epoch's `target`
+# and then executes what it built, so the epoch a maintainer selects with
+# `--epoch` is the one whose target their own host can run; the block at the
+# end of this file declares one per target for the revision that collects, and
+# lists every local epoch (RUE-1498).
 [[epoch]]
 id = 1
 platform = "local"
@@ -924,6 +926,143 @@ canary_scale = 1
 # versions its peer legs were configured by — including a canary-only one,
 # which measures a single tool and must still say what the others were pinned
 # at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# ===========================================================================
+# THE OTHER TWO LOCAL TARGETS (RUE-1498).
+#
+# `local` is not a platform Rue targets. It is the pseudo-platform a
+# maintainer's own machine runs under, and a local run builds for its epoch's
+# `target` and then EXECUTES what it built, so one local epoch can only ever
+# be reproducible on one architecture. Every local row above targets x86-64
+# Linux, which left the local reproduction path for gazette, the peer legs,
+# and the oracle unavailable on Apple Silicon — the machine this project's
+# maintainers develop on, and the platform whose CI row is the expensive one
+# to iterate against.
+#
+# So the revision that collects gets one local epoch per target, each with its
+# own id and selected with `--epoch`:
+#
+#     epoch 1   x86-64-linux    suite revision 1
+#     epoch 2   x86-64-linux    suite revision 2
+#     epoch 3   x86-64-linux    suite revision 3
+#     epoch 4   aarch64-macos   suite revision 3
+#     epoch 5   aarch64-linux   suite revision 3
+#
+#     rue-bench runtime --platform local --epoch 4 \
+#       --compiler "$(scripts/rue-bin)" --commit "$(git rev-parse HEAD)" \
+#       --out /tmp/runtime.json --workdir /tmp/runtime-work
+#
+# Suite revision 3 and nothing else. Revisions 1 and 2 stay declared because
+# records in the store name them, but nothing collects them, and a local path
+# for a contract nothing collects would be prose to keep true for no reader.
+# That is the rule rather than these two ids: per target, for the revision
+# that collects.
+#
+# Everything below except `id` and `target` is copied from epoch 3 rather than
+# chosen again — sampling, both peer rungs, and `records_comparison_identity`
+# on each. A local epoch exists to reproduce what CI measures, so the local
+# rows should differ from one another in the target alone; a policy that
+# drifted per host would make two maintainers' runs incomparable for a reason
+# that has nothing to do with their machines.
+#
+# `collection = false` and the `local`-only environment policy on both, as on
+# every local row: a record from these names platform `local` and is grouped
+# into a series of its own. The fingerprint that policy matches comes from
+# `RUE_BENCH_RUNNER_LABEL` and `RUE_BENCH_RUNNER_IMAGE`, which only CI sets,
+# so no accidental local run can satisfy a reference epoch's hosted policy.
+# ===========================================================================
+
+# Apple Silicon. The motivating row: `aarch64-macos` is a platform the matrix
+# collects, and before this epoch the only way to run its workloads at all was
+# to push and wait for the daily macOS job.
+[[epoch]]
+id = 4
+platform = "local"
+suite_revision = 3
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# arm64 Linux, and it costs nothing beyond this entry to declare. The compiler
+# already targets it, the reference row already collects it per push, and the
+# pinned peer shims at the repository root already carry `linux-aarch64`
+# artifacts for both Zola and Hugo — so a maintainer on an arm64 Linux box
+# gets both peer rungs, against the same pinned peer versions the hosted row
+# uses. Trunk called a second local epoch a maintainer convenience needing its
+# own id and an `--epoch` to select it, which was true; what it undercounted
+# is that the convenience is the reproduction path for the platforms the
+# matrix collects, so the ids are declared here.
+[[epoch]]
+id = 5
+platform = "local"
+suite_revision = 3
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
 records_comparison_identity = true
 
 [epoch.peers.gazette_10x]

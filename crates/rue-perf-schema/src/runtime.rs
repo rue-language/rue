@@ -3127,6 +3127,67 @@ samples = 5
         );
     }
 
+    #[test]
+    fn every_collected_platform_has_a_local_reproduction_epoch() {
+        // RUE-1498. A `local` epoch builds for its own `target` and then
+        // EXECUTES what it built, so a matrix row whose target no local epoch
+        // names can only be reproduced by pushing and waiting for CI. That was
+        // the state this test closes: both `local` epochs targeted x86-64
+        // Linux, which is not what this project's maintainers develop on.
+        //
+        // Stated as an invariant over whatever is collecting rather than as a
+        // list of ids, because the failure it guards against is drift. Suite
+        // revisions supersede one another while every earlier revision stays
+        // declared forever, so a local epoch pinned to a retired revision goes
+        // on parsing, goes on running, and quietly reproduces a contract the
+        // matrix no longer measures. Matching the revision as well as the
+        // target makes that a build break at the moment the new revision
+        // arrives, which is when someone can still act on it.
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        let collecting: Vec<&RuntimeEpoch> = manifest
+            .epochs()
+            .iter()
+            .filter(|epoch| epoch.collection)
+            .collect();
+        assert!(
+            !collecting.is_empty(),
+            "the matrix collects nothing; this invariant would hold vacuously"
+        );
+        for reference in collecting {
+            let local = manifest
+                .epochs()
+                .iter()
+                .find(|epoch| {
+                    epoch.platform == "local"
+                        && epoch.target == reference.target
+                        && epoch.suite_revision == reference.suite_revision
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "platform {} collects epoch {} at suite revision {} for target {}, but no \
+                         `local` epoch reproduces that target at that revision; declare one with \
+                         its own id, `collection = false`, and the `local` environment policy",
+                        reference.platform,
+                        reference.id,
+                        reference.suite_revision,
+                        reference.target
+                    )
+                });
+            // The two fields that keep a laptop's numbers out of a reference
+            // series. Asserted here rather than left to the manifest's prose:
+            // a `local` epoch that collected, or one whose environment policy
+            // admitted a hosted runner, would be a reproduction path that had
+            // quietly become a collection row.
+            assert!(
+                !local.collection,
+                "local epoch {} collects; a development epoch must not",
+                local.id
+            );
+            assert_eq!(local.environment.runner_label, "local");
+            assert_eq!(local.environment.runner_image, "local");
+        }
+    }
+
     fn fingerprint() -> EnvironmentFingerprint {
         EnvironmentFingerprint {
             runner_label: "github-hosted".to_string(),
