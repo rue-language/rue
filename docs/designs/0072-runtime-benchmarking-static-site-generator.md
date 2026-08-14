@@ -9,7 +9,7 @@ accepted: 2026-08-13
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "RUE-1493", "RUE-1495", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
+relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "RUE-1493", "RUE-1495", "RUE-1496", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
 ---
 
 # ADR-0072: Runtime performance benchmarking anchored by a Rue static site generator
@@ -396,6 +396,52 @@ Zola and Hugo serve a redirect. The stub's markup mirrors the pinned Zola's
 own rather than being invented: a redirect stub is not a page anyone reads,
 and the only thing that matters about it is that all three tools put the same
 file at the same route pointing at the same target.
+
+**Content paths are slugified into routes**, and the subset of that is
+documented here for the same reason the Markdown constructs above are: gazette
+rejects a path outside it rather than routing it by guess, so a reader must be
+able to tell from this list which content paths build. The rule constrains the
+**whole route**, not only the part that folds:
+
+- every **directory component** must already be ASCII lower-case letters,
+  digits, or `-`, and is emitted verbatim;
+- a page's **file stem** may also carry upper-case ASCII, which folds to lower
+  case; a section's route is its directories, so nothing folds there;
+- anything else, anywhere in the route, fails the build.
+
+So `spec/appendices/A-grammar.md` is served at `/spec/appendices/a-grammar/`,
+which is what the live site serves, while `Docs/page.md` and `notes/my_page.md`
+are refused rather than routed.
+
+The subset is drawn there because **it is exactly where the two pinned peers
+agree**, measured against both binaries:
+
+| content path | Zola 0.21.0 | Hugo 0.152.2 | |
+| --- | --- | --- | --- |
+| `plain/A-Grammar.md` | `/plain/a-grammar/` | `/plain/a-grammar/` | agree |
+| `plain/Under_Score.md` | `/plain/under-score/` | `/plain/under_score/` | differ |
+| `plain/Dots.v2.md` | `/plain/dots-v2/` | `/plain/dots.v2/` | differ |
+| `UPPER/lower.md` | `/UPPER/lower/` | `/upper/lower/` | differ |
+| `Mixed/Sub/_index.md` | `/Mixed/Sub/` | `/mixed/sub/` | differ |
+| `Dir_Under/p.md` | `/Dir_Under/p/` | `/dir_under/p/` | differ |
+
+Zola slugifies the file stem with the `slug` crate — folding case, but also
+transliterating non-ASCII, turning every other byte into `-`, collapsing runs
+and trimming — and copies directories exactly as authored. Hugo lower-cases the
+whole path, directories included, and touches nothing else. The two agree on one
+thing: an ASCII letter's case in a file stem. On every other input no rule
+gazette could implement would match both, so Decision 4's file-set equality
+could not hold whichever side gazette picked — which makes refusing the only
+answer that does not pick one silently, rather than caution about unimplemented
+work. Widening this subset means a peer changed, or the parity configurations
+gained a setting that makes them agree somewhere new.
+
+The corpus is comfortably inside it: its 96 file stems are lower-case but for
+three specification appendices (`A-grammar.md`, `B-undefined-behavior.md`,
+`C-implementation-limits.md`), which need case folding and nothing more.
+RUE-1485 handled those three by lower-casing the corpus for all three tools
+instead; RUE-1496 replaced that with the rule above, which is why the emitted
+file sets agree without the input being rewritten.
 
 Fairness constrains gazette's implementation, not only the peers'
 configuration. The corpus is extremely skewed — 1,224 of its 1,225 shortcode
@@ -813,27 +859,38 @@ Phase 5 landed the comparison, and four things it found are worth recording
 because each changes what a later reader should expect.
 
 - **The corpus, not the configurations, is where equivalence is won — and one
-  of those normalizations hides a Rue gap.** Two differences were fixed by
-  normalizing the corpus for all three tools at fixture-preparation time rather
-  than by configuring one of them. `paginate_by` is the one excluded feature the
-  content turns on, and Zola honours it by emitting a paginated view no other
-  tool builds. Three upper-case file names route differently, and here **gazette
-  is the odd tool out**: Zola slugifies a content path into its route and Hugo
-  lower-cases it into its page identity, so both agree with the production site,
-  while gazette does not slugify at all. Lower-casing the three names buys an
-  exact file-set check instead of an allowlist entry that a tool dropping a page
-  could later hide behind, at the cost of suppressing a genuine two-against-one
-  difference in which Rue is the outlier. The work either way is one pass over
-  96 paths and cannot move a measurement; teaching gazette to slugify would
-  close it properly. Both normalizations, and the two excluded pages, are
-  disclosed on the published page rather than only here.
+  of those normalizations hid a Rue gap until RUE-1496 closed it.** Two
+  differences were fixed by normalizing the corpus for all three tools at
+  fixture-preparation time rather than by configuring one of them. `paginate_by`
+  is the one excluded feature the content turns on, and Zola honours it by
+  emitting a paginated view no other tool builds; it is still stripped, and for
+  that reason.
 
-  Neither normalization is visible in the content digest, since that digest is
-  taken over the tree the rules have already rewritten. The preparer's own
-  revision and digest are therefore inside the recorded fixture identity, so a
-  change to an assembly rule opens a new comparable segment exactly as a content
-  change does — without that, Decision 2's segmentation mechanism would not fire
-  for the rules that decide what every tool consumes.
+  The second was three upper-case file names, and there **gazette was the odd
+  tool out**: Zola slugifies a content path's file stem into its route and Hugo
+  lower-cases it into its page identity, so both agreed with the production
+  site, while gazette did not slugify at all. Lower-casing the three names
+  bought an exact file-set check instead of an allowlist entry that a tool
+  dropping a page could later hide behind — but it bought it by rewriting the
+  input until the check was exact, which suppressed a genuine two-against-one
+  difference in which Rue was the outlier, and which no amount of validation
+  over the rewritten tree could then see. It also applied to *any* upper-case
+  name, so future content would have inherited the same suppression silently.
+
+  Gazette slugifies now (Decision 3), the rule is gone, and the three tools
+  agree on those three routes with the corpus as it stands. That moved the
+  preparer to revision 3 and the suite to revision 4, which is the right
+  outcome rather than a cost: a change to what every tool consumes should open a
+  new comparable segment. The remaining normalization and the two excluded pages
+  are disclosed on the published page rather than only here.
+
+  Neither normalization was ever visible in the content digest, since that
+  digest is taken over the tree the rules have already rewritten. The preparer's
+  own revision and digest are therefore inside the recorded fixture identity, so
+  a change to an assembly rule opens a new comparable segment exactly as a
+  content change does — without that, Decision 2's segmentation mechanism would
+  not have fired for the rules that decide what every tool consumes, and would
+  not have fired for their removal either.
 - **The allowlist has one entry, and the rest were configured away.** Zola
   always writes a `404.html` and offers no switch; Hugo emits one only with a
   layout, and the port has none. Everything else the ADR anticipated — Hugo's
@@ -1038,7 +1095,8 @@ by this ADR and stays in the project as future scope.
 - Linear: Runtime performance benchmarking project — RUE-1045 (this ADR),
   RUE-1046, RUE-1047, RUE-1048, RUE-1049, RUE-1481, RUE-1482, RUE-1483,
   RUE-1484, RUE-1485, RUE-1488 (the platform matrix), RUE-1493 (Decision 2's
-  identity split, and the peer-evidence rules that gate publication).
+  identity split, and the peer-evidence rules that gate publication), RUE-1496
+  (content-path slugification, and the corpus normalization it retired).
 - Linear: RUE-945 — the `@syscall` carry-flag normalization on
   `aarch64-macos` that the deferred macOS row was waiting for.
 - Prior art: the Computer Language Benchmarks Game (comparison layout,

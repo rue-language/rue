@@ -197,7 +197,7 @@ pub fn join_base(inout eng: ast.Engine, borrow path: StrBuf) -> StrBuf {
     let mut out = text.slice(borrow base, 0, base_end);
 
     let rest = if path.starts_with(borrow "@/") {
-        content_route(borrow path, 2)
+        content_route(inout eng, borrow path, 2)
     } else {
         text.slice(borrow path, 0, path.len())
     };
@@ -251,8 +251,11 @@ fn has_scheme(borrow raw: StrBuf) -> bool {
 
 // `@/spec/03-types/_index.md#anchor` -> `spec/03-types/#anchor`, matching
 // Zola's route for a content file: `_index.md` is the section itself, any other
-// `.md` becomes a directory-style route.
-pub fn content_route(borrow raw: StrBuf, from: u64) -> StrBuf {
+// `.md` becomes a directory-style route whose file stem is SLUGIFIED.
+//
+// One function for a page's own route and for a `@/…` link to it, so a link and
+// its target cannot disagree about a name's spelling.
+pub fn content_route(inout eng: ast.Engine, borrow raw: StrBuf, from: u64) -> StrBuf {
     let hash = text.find_byte(borrow raw, 35, from);
     let body = text.slice(borrow raw, from, hash);
     let mut end = hash;
@@ -264,11 +267,101 @@ pub fn content_route(borrow raw: StrBuf, from: u64) -> StrBuf {
     } else if body.ends_with(borrow ".md") {
         end = hash - 3;
         add_slash = true;
+    } else {
+        // A destination naming no content file at all. Left exactly as
+        // authored and deliberately NOT put through the slug rule: that rule
+        // governs how a CONTENT PATH becomes a route, and refusing
+        // `@/assets/paper.pdf` for its `.` would be a wider refusal than the
+        // rule it implements. The corpus has no such destination today, so
+        // this is about not quietly widening the subset rather than about
+        // anything the benchmark builds.
+        return text.slice(borrow raw, from, raw.len());
     }
-    let mut out = text.slice(borrow raw, from, end);
+    let path = text.slice(borrow raw, from, end);
+    // `add_slash` is set exactly for an ordinary page, which is exactly where
+    // the peers agree that a stem folds; a section's route is its directories,
+    // and those are copied as authored.
+    let mut out = slug_route(inout eng, borrow path, add_slash);
     if add_slash { out.push(47); }
     let fragment = text.slice(borrow raw, hash, raw.len());
     out.append_borrowed(borrow fragment);
+    out
+}
+
+// A content path in the spelling it is SERVED at, over the slug subset ADR-0072
+// Decision 3 documents for this corpus. THE WHOLE ROUTE IS CONSTRAINED, not
+// only the part that folds:
+//
+//   * every DIRECTORY component must already be ASCII lower-case letters,
+//     digits, or `-`, and is copied verbatim;
+//   * a page's FILE STEM may also carry upper-case ASCII, which folds to lower
+//     case — and a section's route is its directories, so nothing folds there;
+//   * anything else, anywhere in the route, is a diagnostic.
+//
+// So `spec/appendices/A-grammar.md` routes to `spec/appendices/a-grammar/`,
+// which is what the live site serves, and `Docs/page.md` FAILS THE BUILD rather
+// than routing to `/Docs/page/` or `/docs/page/`.
+//
+// THE SUBSET IS EXACTLY WHERE THE TWO PEERS AGREE, which is why it is this
+// narrow and why it is drawn here rather than at Zola's own rule. Measured
+// against both pinned binaries:
+//
+//     content path           zola 0.21.0          hugo 0.152.2
+//     plain/A-Grammar.md     /plain/a-grammar/    /plain/a-grammar/    agree
+//     plain/Under_Score.md   /plain/under-score/  /plain/under_score/  differ
+//     plain/Dots.v2.md       /plain/dots-v2/      /plain/dots.v2/      differ
+//     UPPER/lower.md         /UPPER/lower/        /upper/lower/        differ
+//     Mixed/Sub/_index.md    /Mixed/Sub/          /mixed/sub/          differ
+//     Dir_Under/p.md         /Dir_Under/p/        /dir_under/p/        differ
+//
+// Zola slugifies the file stem with the `slug` crate — folding case, but also
+// transliterating non-ASCII, turning every other byte into `-`, collapsing runs
+// and trimming — and copies the directories exactly as authored. Hugo
+// lower-cases the whole path, directories included, and touches nothing else.
+// The two therefore agree on one thing only: an ASCII letter's case in a file
+// stem. On every other input NO RULE GAZETTE COULD IMPLEMENT would match both,
+// so ADR-0072 Decision 4's file-set equality could not hold whichever side
+// gazette picked — and picking one silently is precisely what this corpus's
+// three appendices were being lower-cased to hide.
+//
+// Refusing is therefore not caution about unimplemented work; it is the only
+// answer that does not pick a side. Widening the subset means a peer changed,
+// or the parity configurations gained a `[slugify]` setting that makes them
+// agree somewhere new, and it is a deliberate change here, in `route_of`, and
+// in Decision 3 — the same discipline the Markdown and front-matter libraries
+// apply to a construct they do not document.
+fn slug_route(inout eng: ast.Engine, borrow path: StrBuf, slug_stem: bool) -> StrBuf {
+    // Where the file stem starts. Zero when the path has no directory at all.
+    let mut stem: u64 = 0;
+    let mut i: u64 = 0;
+    while i < path.len() {
+        if text.byte_of(borrow path, i) == 47 { stem = i + 1; }
+        i += 1;
+    }
+    let mut out = StrBuf.new();
+    let mut outside = false;
+    i = 0;
+    while i < path.len() {
+        let b = text.byte_of(borrow path, i);
+        if slug_stem && i >= stem && b >= 65 && b <= 90 {
+            out.push(text.lower_byte(b));
+        } else {
+            // Reported once for the whole path rather than once per byte: the
+            // name is the thing to fix, and a diagnostic per character would
+            // bury it.
+            if !(b == 47 || b == 45 || text.is_digit(b) || (b >= 97 && b <= 122)) {
+                outside = true;
+            }
+            out.push(b);
+        }
+        i += 1;
+    }
+    if outside {
+        let subject = eng.arena.strings.intern(borrow path);
+        eng.error(value.E_ROUTE(), 0,
+            "content path is outside the slug subset (lower-case ASCII letters, digits, and `-`, with case folded in a page's file stem)",
+            subject);
+    }
     out
 }
 

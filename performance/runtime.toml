@@ -336,11 +336,116 @@ description = "the same corpus at ten copies, by deterministic path-prefixed dup
 kind = "semantic_site_pages"
 path = "scripts/gazette-corpus-diff.py"
 
+# ===========================================================================
+# SUITE REVISION 4 (RUE-1496) pins preparer revision 3: the corpus is no longer
+# lower-cased.
+#
+# The workloads are revision 3's and the job they measure is the same job. What
+# changed is one ASSEMBLY RULE, which belongs to this suite because the preparer
+# revision is pinned here: `assemble_corpus` used to lower-case every content
+# file name before any tool saw the tree.
+#
+# It did that for three files — `spec/appendices/A-grammar.md` and its two
+# siblings — and for one tool. Zola slugifies a content path's file stem into
+# its route and Hugo lower-cases it into its page identity, so both served what
+# the production site serves, while gazette did not slugify at all. The rule
+# bought ADR-0072 Decision 4's exact file-set check by rewriting the input until
+# the check was exact, and what it cost was a genuine two-against-one difference
+# in which Rue was the outlier.
+#
+# Gazette slugifies now, so the three tools agree on those routes with the
+# corpus as it stands. The tree every tool consumes therefore differs from
+# revision 3's, and the WORKLOAD identity moves with it — which is the right
+# outcome rather than a cost, since a new comparable segment is exactly what a
+# change to what every tool consumes should open. Revision 3's observations are
+# not continuous with revision 4's, for the same reason revision 2's were not
+# continuous with revision 3's.
+#
+# REVISIONS 1, 2, AND 3 STAY DECLARED, and so do the epochs that implement
+# them. Records already in the store name their suite revision and their epoch,
+# and a manifest that forgot either could not validate them.
+# ===========================================================================
+[[suite]]
+revision = 4
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+# Unchanged from revision 3, and untouched by the assembly-rule change: this
+# workload's fixture is a seeded generator, not the corpus tree.
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does a compiled Rue program tokenize and count words in tens of MiB of text?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+kind = "seeded_generator"
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 33554432
+vocabulary_size = 65536
+file_name = "wordfreq-input.txt"
+description = "32 MiB of deterministic ASCII word text with Zipf-distributed word ranks"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does a compiled Rue program build the real rue-lang.dev site, against the production tools that build sites for a living?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 3
+scale = 1
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site"
+description = "the live rue-lang.dev content plus the copied specification, as website/build.sh assembles it, minus the two pages whose templates read derived benchmark data"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+# The 10x rung, unchanged from revision 3 but for the preparer pin. The two
+# honesty notes revision 2 records about this axis — it is a page-count curve,
+# and the specification sidebar collapses on a duplicated page — apply here
+# exactly as they did there.
+[[suite.workloads]]
+id = "gazette_10x"
+source = "examples/gazette/main.rue"
+question = "How does a compiled Rue site build scale with page count, at ten copies of the corpus?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 3
+scale = 10
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site-10x"
+description = "the same corpus at ten copies, by deterministic path-prefixed duplication"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
 # The pinned reference regime. Epoch 1 implements suite revision 1, epoch 2
-# revision 2, and epoch 3 revision 3; only the last collects. Declaring a new
-# epoch rather than moving an old one to the new revision is what keeps every
-# record already in the store valid: a stored report names the epoch it ran
-# under, and that epoch must go on describing the run it describes.
+# revision 2, epoch 3 revision 3, and epoch 4 revision 4; only the last
+# collects. Declaring a new epoch rather than moving an old one to the new
+# revision is what keeps every record already in the store valid: a stored
+# report names the epoch it ran under, and that epoch must go on describing the
+# run it describes.
+#
+# The `local` rows are numbered in one sequence with these but declared at the
+# end of the file, one per target for the revision that collects (RUE-1498).
 [[epoch]]
 id = 1
 platform = "x86_64-linux"
@@ -761,7 +866,8 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 4, which implements suite revision 4.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -811,7 +917,8 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 4, which implements suite revision 4.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -858,7 +965,8 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 4, which implements suite revision 4.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -946,7 +1054,162 @@ canary_scale = 10
 records_comparison_identity = true
 
 # ===========================================================================
-# THE OTHER TWO LOCAL TARGETS (RUE-1498).
+# EPOCH 4: suite revision 4, the epoch that collects (RUE-1496).
+#
+# Everything about how these platforms run the workload is epoch 3's — same
+# runners, same sampling policies, same thread parity, same canary, same
+# `records_comparison_identity`. The epoch is new only because the suite
+# revision it implements is new: revision 4 pins preparer revision 3, and an
+# epoch names exactly one revision.
+#
+# THE STORE IS APPEND-ONLY, so epoch 3's records stay valid, keep publishing,
+# and keep joining under the conditions they were collected: preparer revision
+# 2, a lower-cased corpus, and the routes that came with it. What they must not
+# do is share a segment with revision 4's, and the workload identity's move is
+# what keeps them apart. This is the mechanism that retired epoch 2 in
+# RUE-1493, used again for the same reason.
+#
+# The local rows that reproduce these three are epochs 6, 7, and 8, at the end
+# of the file with the rest of them.
+# ===========================================================================
+
+[[epoch]]
+id = 4
+platform = "x86_64-linux"
+suite_revision = 4
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# Unchanged from epoch 3: five samples of each per-push workload, three at 10x.
+# No `[epoch.calibration]` and no `[epoch.flagging]` either — calibration is a
+# property of a workload on a platform and is never inherited, not from the
+# compiler suites and not from this platform's own earlier epoch, so gazette
+# arrives advisory here exactly as it did there.
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+# The declaration that makes the comparison identity mandatory here. Every
+# observation of this workload must record which peer ports and which peer
+# versions its peer legs were configured by — including a canary-only one,
+# which measures a single tool and must still say what the others were pinned
+# at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 4
+platform = "aarch64-linux"
+suite_revision = 4
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# The runner is `ubuntu-24.04-arm`; the image it reports is `ubuntu-24.04`,
+# which is how ADR-0067's aarch64-linux epochs already record this regime.
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 4
+platform = "aarch64-macos"
+suite_revision = 4
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+# Nine, as in epoch 3, and for the same reason: this row is off the per-push
+# path, has no calibration of its own, and a larger n per observation makes the
+# dispersion estimate that calibration will be built from converge sooner.
+[epoch.sampling.wordfreq]
+samples = 9
+
+[epoch.sampling.gazette]
+samples = 9
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# ===========================================================================
+# THE LOCAL ROWS, ONE PER TARGET (RUE-1498, extended by RUE-1496).
 #
 # `local` is not a platform Rue targets. It is the pseudo-platform a
 # maintainer's own machine runs under, and a local run builds for its epoch's
@@ -965,23 +1228,38 @@ records_comparison_identity = true
 #     epoch 3   x86-64-linux    suite revision 3
 #     epoch 4   aarch64-macos   suite revision 3
 #     epoch 5   aarch64-linux   suite revision 3
+#     epoch 6   x86-64-linux    suite revision 4
+#     epoch 7   aarch64-macos   suite revision 4
+#     epoch 8   aarch64-linux   suite revision 4
 #
-#     rue-bench runtime --platform local --epoch 4 \
+#     rue-bench runtime --platform local --epoch 7 \
 #       --compiler "$(scripts/rue-bin)" --commit "$(git rev-parse HEAD)" \
 #       --out /tmp/runtime.json --workdir /tmp/runtime-work
 #
-# Suite revision 3 and nothing else. Revisions 1 and 2 stay declared because
-# records in the store name them, but nothing collects them, and a local path
-# for a contract nothing collects would be prose to keep true for no reader.
-# That is the rule rather than these two ids: per target, for the revision
-# that collects.
+# THE RULE IS "PER TARGET, FOR THE REVISION THAT COLLECTS", not a list of ids,
+# and RUE-1496 is the first change to exercise it. That change advanced the
+# preparer to revision 3 and the suite to revision 4, and
+# `crates/rue-bench/src/runtime.rs` refuses fixture preparation when the
+# checked-in preparer's revision differs from the pin its epoch's suite carries
+# — so epochs 4 and 5 above, which pin revision 3, can no longer prepare the
+# gazette workloads at all. They stay declared, because records in the store
+# name them and revision 3 is still readable, and epochs 6 through 8 are what a
+# maintainer runs today. `every_collected_platform_has_a_local_reproduction_epoch`
+# is what turned that from a thing to remember into a build break: it fired on
+# all three collecting rows the moment revision 4 arrived.
+#
+# Suite revisions 1 through 3 keep only the local epochs they already had.
+# Nothing collects them, and a local path for a contract nothing collects would
+# be prose to keep true for no reader.
 #
 # Everything below except `id` and `target` is copied from epoch 3 rather than
 # chosen again — sampling, both peer rungs, and `records_comparison_identity`
 # on each. A local epoch exists to reproduce what CI measures, so the local
 # rows should differ from one another in the target alone; a policy that
 # drifted per host would make two maintainers' runs incomparable for a reason
-# that has nothing to do with their machines.
+# that has nothing to do with their machines. The revision-4 rows are copied
+# from their revision-3 counterparts for the same reason, and differ from them
+# in `suite_revision` alone.
 #
 # `collection = false` and the `local`-only environment policy on both, as on
 # every local row: a record from these names platform `local` and is grouped
@@ -1046,6 +1324,135 @@ records_comparison_identity = true
 id = 5
 platform = "local"
 suite_revision = 3
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# The revision-4 rows (RUE-1496), one per collecting target. Same three
+# targets, same policies, one suite revision later — and they are what a
+# maintainer selects today, because the preparer revision suite 4 pins is the
+# one the checked-in script implements.
+
+# x86-64 Linux at revision 4, the counterpart of epoch 3.
+[[epoch]]
+id = 6
+platform = "local"
+suite_revision = 4
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# Apple Silicon at revision 4, the counterpart of epoch 4 and the row this
+# project's maintainers actually run.
+[[epoch]]
+id = 7
+platform = "local"
+suite_revision = 4
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+# arm64 Linux at revision 4, the counterpart of epoch 5.
+[[epoch]]
+id = 8
+platform = "local"
+suite_revision = 4
 target = "aarch64-linux"
 compiler_args = ["-O3"]
 optimization = "o3"

@@ -51,15 +51,15 @@ generate_robots_txt = false
 # Zola's `[slugify]` defaults are deliberately left alone, so this port routes
 # exactly as the production site does.
 #
-# The corpus's three upper-case file names are lower-cased during fixture
-# preparation instead, and the reason is worth stating plainly rather than
-# leaving to a digest: Zola slugifies a content path into its route and Hugo
-# lower-cases it into its page identity, so BOTH PEERS agree with production,
-# and gazette — which does not slugify at all — is the one tool that would emit
-# a different route. The normalization spares the file-set check an allowlist
-# entry, and it suppresses a real difference in which Rue is the outlier. The
-# work is one pass over 96 paths and cannot move a measurement; closing the gap
-# in gazette is a later change.
+# THAT IS NOW THE WHOLE STORY, and it was not until RUE-1496. The corpus's three
+# upper-case file names used to be lower-cased during fixture preparation,
+# because Zola slugifies a content path's file stem into its route and Hugo
+# lower-cases it into its page identity — so both peers agreed with production,
+# and gazette, which did not slugify at all, was the one tool that would emit a
+# different route. Rewriting the input bought the file-set check its exactness
+# and suppressed a real difference in which Rue was the outlier. Gazette
+# slugifies now, so the three tools agree on those routes from the names the
+# repository carries, and this port needs no help to be one of them.
 
 [markdown]
 # The single most important line in this file. Zola renders fenced code through

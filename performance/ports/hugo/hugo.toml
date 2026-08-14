@@ -58,12 +58,14 @@ description = "A systems programming language with memory safety and high-level 
 github_url = "https://github.com/rue-language/rue"
 bluesky_url = "https://bsky.app/profile/rue-lang.dev"
 
-# Nothing here changes Hugo's routing: the corpus's three upper-case file names
-# are lower-cased during fixture preparation, for every tool at once, because
-# `disablePathToLower` does not survive into the route in this Hugo — the page
-# identity it builds is lower-case regardless. Aligning the corpus rather than
-# one tool is what keeps Decision 4's file-set check exact, and it lands all
-# three tools on the route the production site already serves.
+# Nothing here changes Hugo's routing, and nothing needs to. Hugo lower-cases a
+# content path into its page identity — `disablePathToLower` does not survive
+# into the route in this Hugo — so the corpus's three upper-case file names land
+# on the route the production site already serves without a knob. Zola slugifies
+# the file stem to the same place, and gazette does too as of RUE-1496; until
+# then the corpus was lower-cased during fixture preparation for every tool at
+# once, to spare Decision 4's file-set check an allowlist entry that gazette
+# alone would have needed.
 
 [markup]
   [markup.goldmark.renderer]

@@ -260,8 +260,13 @@
         {#
           The corpus modifications, disclosed here rather than only in the ADR
           and the preparer's source. A reader told only about configuration
-          switches would reasonably assume the input was the site as it stands,
-          and one of these three is a place where Rue is the tool out of step.
+          switches would reasonably assume the input was the site as it stands.
+
+          There were three until RUE-1496, and the third was the one worth
+          reading closely: file names were lower-cased to hide the fact that
+          gazette did not slugify. Removing a disclosure is only honest when the
+          thing disclosed is gone, so the sentence that replaces it says what
+          the tools now agree on unaided.
         #}
         <p>
           <strong>The corpus is modified before any tool sees it, identically
@@ -270,10 +275,12 @@
           would make this benchmark an input to itself. The blog's
           <code>paginate_by</code> key is stripped, because pagination is
           outside the subset and only one tool would otherwise build a paginated
-          view. And three specification appendix filenames are lower-cased:
-          Zola and Hugo both route them the way the live site does, and gazette,
-          which does not slugify paths, is the tool out of step — so this one
-          hides a Rue gap rather than a peer quirk.
+          view. The specification's internal links are rewritten as it is copied
+          in, which is what the real site build does too. What is no longer done
+          is renaming: the three specification appendices with upper-case file
+          names were lower-cased here until gazette learned to slugify a content
+          path, and all three tools now route them where the live site does,
+          from the names the repository actually carries.
         </p>
         <p>
           <strong>This compares a corpus-specialized Rue program against

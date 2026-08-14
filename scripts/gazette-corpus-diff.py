@@ -156,7 +156,15 @@ GAZETTE_PORT_REVISION = 2
 # peer ports and peer versions beside it. A harness pinning revision 1 would
 # get no comparison identity at all, so it is refused here rather than left to
 # produce records that cannot join.
-PREPARER_REVISION = 2
+#
+# REVISION 3 (RUE-1496) drops the lower-casing pass from `assemble_corpus`.
+# Gazette slugifies a content path now, so the three tools agree on the three
+# upper-case file names without the input being rewritten — which means the
+# tools consume a different tree than they did under revision 2, however
+# slightly, and the WORKLOAD identity has to move for it. That is the correct
+# outcome rather than a cost: a new comparable segment is exactly what a change
+# to what every tool consumes should open.
+PREPARER_REVISION = 3
 
 # What gazette itself renders. Inside the workload identity. The peers' roots
 # are `peer_ports.PEER_PORT_ROOTS`, deliberately in the other file.
@@ -232,9 +240,19 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   reader diffing two observations that a port moved when it did not. What did
 #   change is the COMPOSITION of the identities, which PREPARER_REVISION
 #   records.
+#
+#   RUE-1496. `runtime.html` a fourth time, and the fourth identical conclusion:
+#   an excluded page's template, no port follows. It moved because the
+#   disclosure it renders said three file names are lower-cased before any tool
+#   sees the corpus, which stopped being true when gazette learned to slugify a
+#   content path. GAZETTE_PORT_REVISION did not advance — no gazette template's
+#   bytes moved — and PEER_PORT_REVISION did not either, for a reason argued
+#   beside it in `gazette_peer_ports.py`: both peer configurations lost the same
+#   stale comment, and neither peer's rendering changed. What did change is an
+#   assembly rule, which PREPARER_REVISION records.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "9fca5d6f31b479ca98b3db44e010bf1893556ac6b2030dc4661db0eb7d4acf8d"
+    "be481eb70d83cbd0a5443027f22005ddf476dd375f1b658c9e2635db68350d9c"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -306,32 +324,10 @@ PAGINATE_BY = re.compile(r"^paginate_by = .*\n", re.M)
 def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
     """Copy site content plus the specification, rewriting spec-internal links.
 
-    Two normalizations are applied to the assembled tree, both outside any
-    measured window and both applied to EVERY tool's copy of it, because
-    ADR-0072 Decision 4's cross-tool criterion is that the tools consume the
-    identical corpus and emit the identical file set.
-
-    Content paths are lower-cased, and the honest way to say why is that
-    GAZETTE IS THE ODD TOOL OUT. Three files in the corpus have an upper-case
-    name (`spec/appendices/A-grammar.md` and its two siblings). Zola slugifies a
-    content path into its route by default and Hugo lower-cases it into its page
-    identity, so both serve `/spec/appendices/a-grammar/` — which is what the
-    production site serves today. Gazette does not slugify at all, so it alone
-    would emit `/spec/appendices/A-grammar/`. That is a Rue capability gap, not
-    a peer quirk, and an earlier version of this note framed it as Hugo's.
-
-    Normalizing here keeps all three tools on production's own route and keeps
-    Decision 4's file-set check exact rather than needing an allowlist entry
-    that excuses three files — which is the entry a tool silently dropping a
-    page would later hide behind. What it costs is honesty about a real
-    two-against-one difference, so the difference is stated here, in the peers'
-    parity configurations, in the ADR, and on the published page rather than
-    only in a digest. The work involved either way is one pass over 96 paths
-    and cannot move a measurement; teaching gazette to slugify would close the
-    gap properly and is left to a later change.
-
-    Nothing links to the three by name, so no link rewrite is needed; the walk
-    below asserts that rather than trusting it.
+    ONE normalization is applied to the assembled tree, outside any measured
+    window and applied to EVERY tool's copy of it, because ADR-0072 Decision 4's
+    cross-tool criterion is that the tools consume the identical corpus and emit
+    the identical file set.
 
     One key is stripped from the assembled front matter: `paginate_by`.
     Pagination is outside the equivalence subset for every tool (ADR-0072
@@ -342,11 +338,26 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
     keeps the sentence "every tool builds the identical corpus within a run"
     true.
 
-    NEITHER NORMALIZATION IS VISIBLE IN THE CONTENT DIGEST, and an earlier
+    THERE WERE TWO UNTIL RUE-1496, and what the second one was is worth
+    recording because it is now a closed gap rather than a live one. Every
+    content file name was lower-cased here, for the three files in the corpus
+    that have an upper-case one (`spec/appendices/A-grammar.md` and its two
+    siblings). Zola slugifies a content path's file stem into its route and Hugo
+    lower-cases it into its page identity, so both served
+    `/spec/appendices/a-grammar/` — what the production site serves — while
+    gazette, which did not slugify at all, would have emitted
+    `/spec/appendices/A-grammar/`. That was a Rue capability gap suppressed by
+    rewriting the input for all three tools, and the exact file-set check it
+    bought was exact only because the input had been changed to make it so.
+    Gazette slugifies now (`content_route` in `examples/gazette/tmpl_eval.rue`),
+    so the three tools agree on those routes with the corpus as it stands, and
+    `route_of` below is the independent model of the same rule.
+
+    THE NORMALIZATION IS NOT VISIBLE IN THE CONTENT DIGEST, and an earlier
     version of this docstring wrongly claimed otherwise. The digest is taken
-    over the tree these rules have already rewritten, so a new section adopting
+    over the tree this rule has already rewritten, so a new section adopting
     `paginate_by` produces byte-identical assembled content and an unchanged
-    digest. What records them is `prepare_fixture`'s `preparer_revision` and
+    digest. What records it is `prepare_fixture`'s `preparer_revision` and
     `preparer_digest`, which are inside the fixture identity for exactly this
     reason: the rules are as much an input to the measured job as the bytes are.
     """
@@ -372,28 +383,6 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
         if os.path.exists(victim):
             os.remove(victim)
 
-    lowercased = []
-    for dirpath, _dirs, files in os.walk(dest, topdown=False):
-        for name in files:
-            if name == name.lower():
-                continue
-            source = os.path.join(dirpath, name)
-            os.rename(source, os.path.join(dirpath, name.lower()))
-            lowercased.append(os.path.relpath(source, dest).replace(os.sep, "/"))
-    for rel in lowercased:
-        stem = rel[: -len(".md")] if rel.endswith(".md") else rel
-        for dirpath, _dirs, files in os.walk(dest):
-            for name in files:
-                if not name.endswith(".md"):
-                    continue
-                path = os.path.join(dirpath, name)
-                if "@/" + stem in open(path, encoding="utf-8").read():
-                    raise SystemExit(
-                        "%s links to %s by its upper-case name, which corpus "
-                        "assembly has lower-cased; teach assemble_corpus to "
-                        "rewrite the link before renaming the file"
-                        % (os.path.relpath(path, dest), stem))
-
     for dirpath, _dirs, files in os.walk(dest):
         for name in files:
             if not name.endswith(".md"):
@@ -415,14 +404,66 @@ def assemble_corpus(dest: str, exclude: dict | None = None) -> list[str]:
     return sorted(pages)
 
 
+# The route subset, as the independent model of it. THE WHOLE ROUTE is checked,
+# directories included, and not only the file stem that folds: every component
+# must be ASCII lower-case letters, digits, and `-` once a page's stem has been
+# case-folded. `Docs/page.md` is refused rather than routed.
+#
+# THIS IS THE SECOND IMPLEMENTATION OF ONE RULE, deliberately (ADR-0072
+# Decision 4): gazette computes a route in `content_route`, and the validation
+# recomputes it here from the source tree and compares. So the subset has to be
+# the same subset — a model that quietly slugified more than gazette does would
+# turn a real gap into a passing check, which is the failure RUE-1496 closed.
+ROUTE_SUBSET = re.compile(r"^[a-z0-9/-]*$")
+
+
 def route_of(rel: str) -> str:
-    """Zola's route for a content path, which is also the page's permalink."""
+    """Zola's route for a content path, which is also the page's permalink.
+
+    A page's FILE STEM folds case; DIRECTORY COMPONENTS are copied as authored
+    and must already be lower-case, and a section's route is its directories, so
+    nothing folds there. `spec/appendices/A-grammar.md` routes to
+    `spec/appendices/a-grammar/`; `Docs/page.md` is refused.
+
+    THE SUBSET IS EXACTLY WHERE THE TWO PEERS AGREE, measured against both
+    pinned binaries rather than read off Zola's documentation:
+
+        content path           zola 0.21.0          hugo 0.152.2
+        plain/A-Grammar.md     /plain/a-grammar/    /plain/a-grammar/    agree
+        plain/Under_Score.md   /plain/under-score/  /plain/under_score/  differ
+        plain/Dots.v2.md       /plain/dots-v2/      /plain/dots.v2/      differ
+        UPPER/lower.md         /UPPER/lower/        /upper/lower/        differ
+        Mixed/Sub/_index.md    /Mixed/Sub/          /mixed/sub/          differ
+        Dir_Under/p.md         /Dir_Under/p/        /dir_under/p/        differ
+
+    Zola slugifies the stem with the `slug` crate and copies directories
+    verbatim; Hugo lower-cases the whole path and touches nothing else. They
+    agree on one thing: an ASCII letter's case in a file stem. Everywhere else
+    no single rule can satisfy both, so Decision 4's file-set equality could not
+    hold whichever side gazette picked, and refusing is the only answer that
+    does not pick one silently.
+    """
     stem = rel[: -len(".md")]
     if stem == "_index":
         return ""
     if stem.endswith("/_index"):
-        return stem[: -len("_index")]
-    return stem + "/"
+        return checked_route(stem[: -len("_index")], rel)
+    head, sep, name = stem.rpartition("/")
+    return checked_route(head + sep + name.lower(), rel) + "/"
+
+
+def checked_route(route: str, rel: str) -> str:
+    if not ROUTE_SUBSET.match(route):
+        raise SystemExit(
+            "%s routes to /%s, which is outside the slug subset gazette "
+            "implements: every component must be lower-case ASCII letters, "
+            "digits, and `-`, and only a page's file stem folds case. That is "
+            "where the pinned Zola and Hugo agree, and they route everything "
+            "else differently — so widen it only when they stop disagreeing, "
+            "in `content_route`, here, and in ADR-0072 Decision 3, or rename "
+            "the file. A preparer that modelled more than gazette implements "
+            "would hide the difference rather than surface it" % (rel, route))
+    return route
 
 
 # ---------------------------------------------------------------------------
@@ -1011,11 +1052,13 @@ def prepare_fixture(root: str, scale: int) -> dict:
     identity = {
         "scale": scale,
         # The ASSEMBLY RULES, not just the assembled bytes. `assemble_corpus`
-        # excludes two pages, strips `paginate_by`, lower-cases three file
-        # names, and rewrites the specification's internal links — decisions
-        # that change what all three tools consume and that no other field
-        # here can see, because the digests below are taken over the tree AFTER
-        # they have been applied. Without these two entries, editing an
+        # excludes two pages, strips `paginate_by`, and rewrites the
+        # specification's internal links — decisions that change what all three
+        # tools consume and that no other field here can see, because the
+        # digests below are taken over the tree AFTER they have been applied.
+        # (It lower-cased three file names too, until gazette learned to
+        # slugify and the rule stopped being needed; that removal is the reason
+        # the revision is 3.) Without these two entries, editing an
         # assembly rule would change the measured job while leaving the
         # recorded identity untouched, and Decision 2's whole mechanism —
         # a moved identity opens a new comparable segment — would not fire.
