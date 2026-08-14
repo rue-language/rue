@@ -644,8 +644,8 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n### Body structural-plan attribution\n\n");
-    out.push_str("The five lowering intervals are adjacent and partition the attributed lowering total for successfully produced body bundles; the enclosing body-input span counts all attempts, including failures recovered by ordinary semantic analysis. The two precompute intervals partition inference precompute. The existing inclusive body-lowering/provider spans remain separate explanatory parents.\n\n");
-    out.push_str("| workload / workers | assembly/snapshot ms | lex/parse ms | RIR lower ms | span remap/validation ms | BodyRirIndex ms | precompute structural ms | precompute eval/provider ms |\n");
+    out.push_str("The five adapter intervals partition the attributed total for successfully materialized named-body plans; assembly/snapshot, lex/parse, and body-local RIR lowering are zero after the canonical-plan cutover. The historical remap/validation field currently includes current-span projection, temporary base-symbol reconstruction, and validation; counters expose the symbol subset until the immutable-base AIR view removes it. The enclosing body-input span counts all attempts. The two precompute intervals partition inference precompute.\n\n");
+    out.push_str("| workload / workers | assembly/snapshot ms | lex/parse ms | body-local RIR lower ms | plan projection/symbols/validation ms | BodyRirIndex ms | precompute structural ms | precompute eval/provider ms |\n");
     out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {

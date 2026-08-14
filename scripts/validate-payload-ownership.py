@@ -10,7 +10,15 @@ from pathlib import Path
 
 
 OWNER_PATHS = {
-    "rue-rir": {Path("inst.rs"), Path("inst/payload_support.rs")},
+    # `inst/packed.rs` is a private submodule of the RIR owner. Its decoder
+    # provides one atomic append/rollback transaction over both physical
+    # stores; treating it as an arbitrary consumer would force that invariant
+    # through a broader mutable-store API.
+    "rue-rir": {
+        Path("inst.rs"),
+        Path("inst/payload_support.rs"),
+        Path("inst/packed.rs"),
+    },
     "rue-air": {Path("inst.rs"), Path("inst/payload_support.rs")},
     "rue-cfg": {Path("inst.rs"), Path("inst/payload_metrics.rs"), Path("payload.rs")},
     "rue-codegen": set(),

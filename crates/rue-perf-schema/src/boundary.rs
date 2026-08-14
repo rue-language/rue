@@ -402,9 +402,12 @@ pub struct CompilerCriticalPathEvidence {
     /// error for ordinary semantic recovery.
     #[serde(default)]
     pub semantic_body_input_lowering: DurationDistribution,
-    /// Successful body-fragment lowerings only, partitioned by the five
-    /// same-clock intervals below. Failed or recovered attempts have no
-    /// completed structural result and are excluded.
+    /// Successful named-body plan materializations only, partitioned by the
+    /// five same-clock adapter intervals below. The first three are retained
+    /// as zero-valued schema evidence after deletion of body-local assembly,
+    /// parsing, and RIR lowering. The historical remap/validation interval now
+    /// covers current-span projection, temporary base-symbol reconstruction,
+    /// and validation until rue-air consumes the immutable plan directly.
     #[serde(default)]
     pub semantic_body_input_attributed_total: DurationDistribution,
     #[serde(default)]

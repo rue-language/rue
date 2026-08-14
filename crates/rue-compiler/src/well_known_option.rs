@@ -1,14 +1,16 @@
 //! Exact per-body well-known `Option(payload)` query keys.
 //!
 //! Every fallible intrinsic (`@read_line`, `@parse_i32/i64/u32/u64`) yields the
-//! exact trusted standard-library `Option(payload)`. A registered body derives
-//! its own canonical payload set from [`scan_body_payload_kinds`], then maps each
-//! payload directly to the exact trusted `Option` comptime-call key with
-//! [`exact_option_query`]. No whole-program RIR scan, presence catalogue, or
-//! structural fallback participates in that identity.
+//! exact trusted standard-library `Option(payload)`. Canonical RIR packing
+//! derives the body's typed intrinsic set while visiting `InstData::Intrinsic`;
+//! this module maps each kind directly to the exact trusted `Option` comptime-call
+//! key with [`exact_option_query`]. No source rescan, whole-program RIR scan,
+//! presence catalogue, or structural fallback participates in that identity.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
+
+#[cfg(test)]
+use std::collections::BTreeSet;
 
 use crate::declaration_candidate::{DeclarationCandidateCategory, DeclarationCandidateKey};
 use crate::durable_semantics::DurableType;
@@ -35,8 +37,19 @@ pub(crate) enum FalliblePayload {
 }
 
 impl FalliblePayload {
-    /// Map a fallible-intrinsic name (as spelled after `@`) to the payload of
-    /// the `Option` it returns. Non-fallible intrinsics return `None`.
+    /// Map the canonical RIR artifact's typed intrinsic kind to its `Option`
+    /// payload.
+    pub(crate) fn from_rir(intrinsic: rue_rir::RirFallibleIntrinsic) -> Self {
+        match intrinsic {
+            rue_rir::RirFallibleIntrinsic::ParseI32 => Self::I32,
+            rue_rir::RirFallibleIntrinsic::ParseI64 => Self::I64,
+            rue_rir::RirFallibleIntrinsic::ParseU32 => Self::U32,
+            rue_rir::RirFallibleIntrinsic::ParseU64 => Self::U64,
+            rue_rir::RirFallibleIntrinsic::ReadLine => Self::StrBuf,
+        }
+    }
+
+    #[cfg(test)]
     fn from_intrinsic_name(name: &str) -> Option<Self> {
         Some(match name {
             "read_line" => Self::StrBuf,
@@ -49,14 +62,12 @@ impl FalliblePayload {
     }
 }
 
-/// The fallible-intrinsic payload kinds one body's raw source text demands.
+/// Test-only lexical oracle for the typed artifact projection.
 ///
-/// Each reached body derives its own exact payload set from its canonical raw
-/// body BEFORE its per-body query roots any well-known `Option` specialization,
-/// so a body roots only the payloads it actually uses and gains no query edge to
-/// payloads owned by unrelated bodies. The scan is lexical (an `At` token
-/// followed by the intrinsic identifier), so an intrinsic named only in a
-/// comment or string literal demands nothing.
+/// Production derives this set from typed RIR instructions during canonical
+/// packing. The lexical helper remains only as independent test evidence that
+/// comments and strings cannot manufacture an intrinsic node.
+#[cfg(test)]
 pub(crate) fn scan_body_payload_kinds(body: &str) -> BTreeSet<FalliblePayload> {
     let mut payloads = BTreeSet::new();
     let Ok((tokens, interner)) = rue_lexer::Lexer::new(body).tokenize() else {

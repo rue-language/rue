@@ -282,12 +282,7 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
         "fn warning_static_call_heads(",
         "\nstruct WarningStaticCallCollector",
     );
-    for forbidden in [
-        "lower_owned_body_input(",
-        "lower_module_rir",
-        "OwnedBodyInput",
-        "ModuleRir",
-    ] {
+    for forbidden in ["lower_module_rir", "OwnedBodyInput", "ModuleRir"] {
         assert!(
             !projector.contains(forbidden),
             "warning AST projector crossed into RIR/body lowering: {forbidden}"
@@ -315,7 +310,6 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
         "body_inputs",
         "body_transactions",
         "module_rirs",
-        "lower_owned_body_input",
         "lower_module_rir",
     ] {
         assert!(
@@ -2173,7 +2167,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let raw_body_evaluator = runtime
         .split("let occurrences_for_raw_body")
         .nth(1)
-        .and_then(|tail| tail.split("let index_for_lookup").next())
+        .and_then(|tail| {
+            tail.split("let parse_for_declaration_body_plan_artifacts")
+                .next()
+        })
         .unwrap();
     for forbidden in [
         "module_rirs",
@@ -2184,6 +2181,24 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !raw_body_evaluator.contains(forbidden),
             "raw-body syntax evaluator gained a broad compiler dependency: {forbidden}"
+        );
+    }
+
+    let toolchain_demand_evaluator = runtime
+        .split("let artifacts_for_toolchain_demands")
+        .nth(1)
+        .and_then(|tail| tail.split("let transactions_for_produced_anonymous").next())
+        .unwrap();
+    assert!(toolchain_demand_evaluator.contains("DeclarationBodyPlanQueryKey"));
+    assert!(toolchain_demand_evaluator.contains(".fallible_intrinsics()"));
+    for forbidden in [
+        "RawDeclarationBodyQueryKey",
+        "scan_body_payload_kinds",
+        "rue_lexer::Lexer",
+    ] {
+        assert!(
+            !toolchain_demand_evaluator.contains(forbidden),
+            "toolchain-demand evaluator regained a source-text scan: {forbidden}"
         );
     }
 
@@ -2268,10 +2283,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let raw_body_terminal = runtime
         .split("enum RawDeclarationBodyQueryValue")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) enum DeclarationShellBatchFailure")
-                .next()
-        })
+        .and_then(|tail| tail.split("struct DeclarationBodyPlanQueryKey").next())
         .unwrap();
     for forbidden in [
         "CompileErrors",
@@ -2326,7 +2338,10 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let lookup_value = runtime
         .split("struct LookupNameValue")
         .nth(1)
-        .and_then(|tail| tail.split("struct ImportHostOperationKey").next())
+        .and_then(|tail| {
+            tail.split("/// The canonical §4 name-resolution outcome")
+                .next()
+        })
         .unwrap();
     for forbidden in ["CompileErrors", "ModuleRevision", "Span", "FileId", "Spur"] {
         assert!(

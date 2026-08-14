@@ -1,9 +1,10 @@
 //! Canonical AST-to-RIR generation.
 //!
-//! [`AstGen`] converts canonical parsed module items into one program-wide RIR
-//! instruction space. It is analogous to Zig's AstGen phase, but intentionally
-//! has no per-AST construction path: callers normalize symbols, append module
-//! items in order, and finish one lowering session.
+//! [`AstGen`] converts one parser-indexed declaration candidate into a compact
+//! RIR artifact. It is analogous to Zig's AstGen phase: callers normalize the
+//! candidate's symbols, append its exact producer, and finish one lowering
+//! session. Whole-program presentation composes these same artifacts rather
+//! than invoking a second module-wide lowering authority.
 
 use std::collections::{HashMap, HashSet};
 
@@ -76,6 +77,67 @@ pub struct AstGen<'a> {
     /// anchors from the shared frontend walk when their root is entered.
     producer_root_depth: usize,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
+    cancellation_check: Option<Box<dyn FnMut() -> bool + 'a>>,
+    canceled: bool,
+}
+
+#[derive(Debug)]
+pub enum AstGenFinishError {
+    Canceled,
+    Payload(crate::RirPayloadBuildError),
+}
+
+/// Exact declaration roots emitted while lowering one parser item.
+///
+/// This is construction metadata for canonical module lowering, not a second
+/// syntax representation. The outer sequence is aligned one-for-one with the
+/// input item sequence and method/foreign-function roots retain their parser
+/// member order. A compiler can therefore join its already-indexed exact
+/// declaration candidates to RIR roots once, at module publication, without a
+/// later arena scan or another AstGen pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AstGenItemRoots {
+    Function(AstGenDeclarationRoot),
+    Struct {
+        declaration: AstGenDeclarationRoot,
+        methods: Box<[AstGenDeclarationRoot]>,
+    },
+    Enum(AstGenDeclarationRoot),
+    DropFn(AstGenDeclarationRoot),
+    Extern(Box<[AstGenDeclarationRoot]>),
+    Const(AstGenDeclarationRoot),
+    Error,
+}
+
+/// Exact contiguous arena interval emitted by one declaration producer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstGenDeclarationRoot {
+    pub start: u32,
+    pub declaration: InstRef,
+    pub end: u32,
+}
+
+/// One exact parser declaration producer lowered into a candidate-local RIR
+/// fragment. Module presentation and body analysis use these same producer
+/// primitives; composition is responsible only for remapping references and
+/// installing the struct-shell method edges.
+pub enum AstGenCandidate<'ast> {
+    Function(&'ast Function),
+    StructShell(&'ast StructDecl),
+    Enum(&'ast EnumDecl),
+    DropFn(&'ast DropFn),
+    Const(&'ast ConstDecl),
+    Method { method: &'ast Method, ordinal: u32 },
+    ExternFn(&'ast ExternFn),
+}
+
+struct PreparedStruct {
+    directives: Vec<RirDirective>,
+    is_public: bool,
+    is_linear: bool,
+    name: Spur,
+    fields: Vec<(Spur, Spur)>,
+    span: rue_span::Span,
 }
 
 impl<'a> AstGen<'a> {
@@ -96,7 +158,13 @@ impl<'a> AstGen<'a> {
             authoritative_anonymous_anchors: false,
             producer_root_depth: 0,
             normalize_symbol: Box::new(normalize_symbol),
+            cancellation_check: None,
+            canceled: false,
         }
+    }
+
+    pub fn install_cancellation_check(&mut self, check: impl FnMut() -> bool + 'a) {
+        self.cancellation_check = Some(Box::new(check));
     }
 
     /// Install the exact anonymous-type anchors transported for one complete
@@ -132,7 +200,54 @@ impl<'a> AstGen<'a> {
     #[doc(hidden)]
     pub fn append_items<'item>(&mut self, items: impl IntoIterator<Item = &'item Item>) {
         for item in items {
-            self.gen_item(item);
+            let _ = self.gen_item(item);
+        }
+    }
+
+    /// Append borrowed items and return their exact emitted declaration roots.
+    ///
+    /// Canonical module lowering uses this once to publish a candidate-keyed
+    /// root index beside the immutable module RIR. Body-plan consumers project
+    /// from that index and never invoke AstGen themselves.
+    #[doc(hidden)]
+    pub fn append_items_with_roots<'item>(
+        &mut self,
+        items: impl IntoIterator<Item = &'item Item>,
+    ) -> Vec<AstGenItemRoots> {
+        items.into_iter().map(|item| self.gen_item(item)).collect()
+    }
+
+    /// Lower exactly one declaration producer into this generator and return
+    /// its contiguous instruction interval. A struct shell deliberately
+    /// carries no method references; the module composer installs those typed
+    /// cross-fragment edges after appending the method fragments.
+    #[doc(hidden)]
+    pub fn append_candidate_with_root(
+        &mut self,
+        candidate: AstGenCandidate<'_>,
+    ) -> AstGenDeclarationRoot {
+        match candidate {
+            AstGenCandidate::Function(value) => {
+                self.capture_declaration(|this| this.gen_function(value))
+            }
+            AstGenCandidate::StructShell(value) => {
+                let prepared = self.prepare_struct(value);
+                self.capture_declaration(|this| this.emit_struct(prepared, &[]))
+            }
+            AstGenCandidate::Enum(value) => self.capture_declaration(|this| this.gen_enum(value)),
+            AstGenCandidate::DropFn(value) => {
+                self.capture_declaration(|this| this.gen_drop_fn(value))
+            }
+            AstGenCandidate::Const(value) => self.capture_declaration(|this| this.gen_const(value)),
+            AstGenCandidate::Method { method, ordinal } => self.capture_declaration(|this| {
+                this.with_structural_segment(
+                    crate::RirStructuralPathSegment::Method(ordinal),
+                    |this| this.gen_method(method),
+                )
+            }),
+            AstGenCandidate::ExternFn(value) => self.capture_declaration(|this| {
+                this.with_bodyless_producer_root(|this| this.gen_extern_fn(value))
+            }),
         }
     }
 
@@ -179,21 +294,39 @@ impl<'a> AstGen<'a> {
     /// Finish into the owner-mediated construction form used by the canonical
     /// validation/publication boundary.
     pub fn try_finish_editor(self) -> Result<RirEditor, crate::RirPayloadBuildError> {
+        match self.try_finish_editor_with_cancellation() {
+            Ok(editor) => Ok(editor),
+            Err(AstGenFinishError::Payload(error)) => Err(error),
+            Err(AstGenFinishError::Canceled) => {
+                Err(crate::RirPayloadBuildError::InvalidBuilderInput {
+                    family: "AstGen cancellation",
+                    reason: "lowering was canceled",
+                })
+            }
+        }
+    }
+
+    pub fn try_finish_editor_with_cancellation(self) -> Result<RirEditor, AstGenFinishError> {
+        if self.canceled {
+            return Err(AstGenFinishError::Canceled);
+        }
         if let Some(error) = self.payload_error {
-            return Err(error);
+            return Err(AstGenFinishError::Payload(error));
         }
         // An infallible `add_inst` that ran past the published instruction
         // ceiling latches the rejection on the owner rather than wrapping an
         // `InstRef` onto the reserved null payload (spec C.6:1, C.1:2). This is
         // the construction boundary where that latch becomes an error value.
         if let Some(error) = self.rir.capacity_error() {
-            return Err(error);
+            return Err(AstGenFinishError::Payload(error));
         }
         if self.authoritative_anonymous_anchors && !self.anonymous_anchors.is_empty() {
-            return Err(crate::RirPayloadBuildError::InvalidBuilderInput {
-                family: "anonymous type anchor",
-                reason: "authoritative table contains an unconsumed source locator",
-            });
+            return Err(AstGenFinishError::Payload(
+                crate::RirPayloadBuildError::InvalidBuilderInput {
+                    family: "anonymous type anchor",
+                    reason: "authoritative table contains an unconsumed source locator",
+                },
+            ));
         }
         self.rir
             .validate_payloads()
@@ -230,6 +363,8 @@ impl<'a> AstGen<'a> {
     /// globally unique, so the accumulated map needs no per-root reset.
     fn with_producer_root<T>(&mut self, root: &Expr, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
+        let outer_for_counter = std::mem::replace(&mut self.for_counter, 0);
+        let outer_compound_counter = std::mem::replace(&mut self.compound_counter, 0);
         let has_transported_root =
             self.authoritative_anonymous_anchors && self.producer_root_depth == 0;
         if !has_transported_root {
@@ -242,6 +377,8 @@ impl<'a> AstGen<'a> {
         let result = action(self);
         self.producer_root_depth -= 1;
         self.structural_path = outer_path;
+        self.for_counter = outer_for_counter;
+        self.compound_counter = outer_compound_counter;
         result
     }
 
@@ -250,8 +387,12 @@ impl<'a> AstGen<'a> {
     /// and therefore no value-position anonymous type literals.
     fn with_bodyless_producer_root<T>(&mut self, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
+        let outer_for_counter = std::mem::replace(&mut self.for_counter, 0);
+        let outer_compound_counter = std::mem::replace(&mut self.compound_counter, 0);
         let result = action(self);
         self.structural_path = outer_path;
+        self.for_counter = outer_for_counter;
+        self.compound_counter = outer_compound_counter;
         result
     }
 
@@ -323,28 +464,46 @@ impl<'a> AstGen<'a> {
         crate::RirStructuralAnchor::new(segments)
     }
 
-    fn gen_item(&mut self, item: &Item) {
+    fn gen_item(&mut self, item: &Item) -> AstGenItemRoots {
         match item {
             Item::Function(func) => {
-                self.gen_function(func);
+                AstGenItemRoots::Function(self.capture_declaration(|this| this.gen_function(func)))
             }
             Item::Struct(struct_decl) => {
-                self.gen_struct(struct_decl);
+                let (declaration, methods) = self.gen_struct(struct_decl);
+                AstGenItemRoots::Struct {
+                    declaration,
+                    methods: methods.into_boxed_slice(),
+                }
             }
             Item::Enum(enum_decl) => {
-                self.gen_enum(enum_decl);
+                AstGenItemRoots::Enum(self.capture_declaration(|this| this.gen_enum(enum_decl)))
             }
             Item::DropFn(drop_fn) => {
-                self.gen_drop_fn(drop_fn);
+                AstGenItemRoots::DropFn(self.capture_declaration(|this| this.gen_drop_fn(drop_fn)))
             }
             Item::Extern(extern_block) => {
-                self.gen_extern_block(extern_block);
+                AstGenItemRoots::Extern(self.gen_extern_block(extern_block).into_boxed_slice())
             }
             Item::Const(const_decl) => {
-                self.gen_const(const_decl);
+                AstGenItemRoots::Const(self.capture_declaration(|this| this.gen_const(const_decl)))
             }
             // Error nodes from parser recovery are skipped - errors were already reported
-            Item::Error(_) => {}
+            Item::Error(_) => AstGenItemRoots::Error,
+        }
+    }
+
+    fn capture_declaration(
+        &mut self,
+        produce: impl FnOnce(&mut Self) -> InstRef,
+    ) -> AstGenDeclarationRoot {
+        let start = u32::try_from(self.rir.len()).unwrap_or(u32::MAX);
+        let declaration = produce(self);
+        let end = u32::try_from(self.rir.len()).unwrap_or(u32::MAX);
+        AstGenDeclarationRoot {
+            start,
+            declaration,
+            end,
         }
     }
 
@@ -532,10 +691,39 @@ impl<'a> AstGen<'a> {
         }
     }
 
-    fn gen_struct(&mut self, struct_decl: &StructDecl) -> InstRef {
+    fn gen_struct(
+        &mut self,
+        struct_decl: &StructDecl,
+    ) -> (AstGenDeclarationRoot, Vec<AstGenDeclarationRoot>) {
+        // Prepare the shell first to preserve the canonical symbol insertion
+        // order even though methods are emitted before their owner instruction.
+        let prepared = self.prepare_struct(struct_decl);
+        // Generate each method defined inline in the struct.
+        let methods: Vec<_> = struct_decl
+            .methods
+            .iter()
+            .enumerate()
+            .map(|(index, method)| {
+                self.capture_declaration(|this| {
+                    this.with_structural_segment(
+                        crate::RirStructuralPathSegment::Method(index as u32),
+                        |this| this.gen_method(method),
+                    )
+                })
+            })
+            .collect();
+        let method_refs = methods
+            .iter()
+            .map(|method| method.declaration)
+            .collect::<Vec<_>>();
+        let declaration = self.capture_declaration(|this| this.emit_struct(prepared, &method_refs));
+        (declaration, methods)
+    }
+
+    fn prepare_struct(&mut self, struct_decl: &StructDecl) -> PreparedStruct {
         let directives = self.convert_directives(&struct_decl.directives);
         let name = self.symbol(struct_decl.name.name);
-        let fields: Vec<_> = struct_decl
+        let fields = struct_decl
             .fields
             .iter()
             .enumerate()
@@ -548,27 +736,26 @@ impl<'a> AstGen<'a> {
                 (field_name, field_type)
             })
             .collect();
-        // Generate each method defined inline in the struct
-        let methods: Vec<_> = struct_decl
-            .methods
-            .iter()
-            .enumerate()
-            .map(|(index, m)| {
-                self.with_structural_segment(
-                    crate::RirStructuralPathSegment::Method(index as u32),
-                    |this| this.gen_method(m),
-                )
-            })
-            .collect();
+        PreparedStruct {
+            directives,
+            is_public: struct_decl.visibility == Visibility::Public,
+            is_linear: struct_decl.is_linear,
+            name,
+            fields,
+            span: struct_decl.span,
+        }
+    }
+
+    fn emit_struct(&mut self, prepared: PreparedStruct, methods: &[InstRef]) -> InstRef {
         self.rir
             .add_struct_decl(
-                &directives,
-                struct_decl.visibility == Visibility::Public,
-                struct_decl.is_linear,
-                name,
-                &fields,
-                &methods,
-                struct_decl.span,
+                &prepared.directives,
+                prepared.is_public,
+                prepared.is_linear,
+                prepared.name,
+                &prepared.fields,
+                methods,
+                prepared.span,
             )
             .record_failure(&mut self.payload_error)
     }
@@ -848,10 +1035,16 @@ impl<'a> AstGen<'a> {
     /// foreign `FnDecl` (`is_extern = true`) with a synthesized unit placeholder
     /// body. Sema never analyzes and codegen never emits the placeholder; a call
     /// to the declaration lowers to an undefined linker symbol (ADR-0064).
-    fn gen_extern_block(&mut self, extern_block: &ExternBlock) {
-        for foreign in &extern_block.fns {
-            self.with_bodyless_producer_root(|this| this.gen_extern_fn(foreign));
-        }
+    fn gen_extern_block(&mut self, extern_block: &ExternBlock) -> Vec<AstGenDeclarationRoot> {
+        extern_block
+            .fns
+            .iter()
+            .map(|foreign| {
+                self.capture_declaration(|this| {
+                    this.with_bodyless_producer_root(|this| this.gen_extern_fn(foreign))
+                })
+            })
+            .collect()
     }
 
     fn gen_extern_fn(&mut self, foreign: &ExternFn) -> InstRef {
@@ -907,6 +1100,15 @@ impl<'a> AstGen<'a> {
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> InstRef {
+        if self.canceled
+            || self
+                .cancellation_check
+                .as_mut()
+                .is_some_and(|checkpoint| !checkpoint())
+        {
+            self.canceled = true;
+            return InstRef::from_raw(0);
+        }
         match expr {
             Expr::Int(lit) => self.rir.add_inst(Inst {
                 data: InstData::IntConst(lit.value),
@@ -1701,7 +1903,7 @@ impl<'a> AstGen<'a> {
             self.symbol(id.name)
         } else {
             let init = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), coll_expr);
-            let name = self.interner.get_or_intern(format!("__rue_for_coll_{n}"));
+            let name = self.interner.get_or_intern(format!("@rue:for:coll:{n}"));
             let alloc = self
                 .rir
                 .add_alloc(&[], Some(name), false, None, init, false, span)
@@ -1711,7 +1913,7 @@ impl<'a> AstGen<'a> {
         };
 
         // let mut __p: u64 = 0;   (position — usize is u64)
-        let p_name = self.interner.get_or_intern(format!("__rue_for_p_{n}"));
+        let p_name = self.interner.get_or_intern(format!("@rue:for:pos:{n}"));
         let u64_sym = self.interner.get_or_intern("u64");
         let zero = self.rir.add_inst(Inst {
             data: InstData::IntConst(0),
@@ -1728,7 +1930,7 @@ impl<'a> AstGen<'a> {
         // Sema's not-iterable type error (E0206) anchors on the intrinsic, and
         // it should underline the offending iterable expression.
         let iter_span = coll_expr.span();
-        let len_name = self.interner.get_or_intern(format!("__rue_for_len_{n}"));
+        let len_name = self.interner.get_or_intern(format!("@rue:for:len:{n}"));
         let coll_for_len = self.rir.add_inst(Inst {
             data: InstData::VarRef {
                 name: coll_name,
@@ -1803,7 +2005,7 @@ impl<'a> AstGen<'a> {
         let binder_name: Option<Spur> = match &for_expr.binder {
             LetPattern::Ident(id) => Some(self.symbol(id.name)),
             LetPattern::Wildcard(_) => {
-                Some(self.interner.get_or_intern(format!("_rue_for_elem_{n}")))
+                Some(self.interner.get_or_intern(format!("_@rue:for:elem:{n}")))
             }
         };
         let p_for_get = self.rir.add_inst(Inst {
@@ -2155,7 +2357,7 @@ impl<'a> AstGen<'a> {
         );
         let n = self.compound_counter;
         self.compound_counter += 1;
-        let name = self.interner.get_or_intern(format!("__rue_place_{n}"));
+        let name = self.interner.get_or_intern(format!("@rue:place:{n}"));
         let alloc = self
             .rir
             .add_alloc(&[], Some(name), false, None, init, false, index.span())
@@ -2397,6 +2599,103 @@ mod tests {
         (rir, interner)
     }
 
+    #[test]
+    fn candidate_primitives_emit_exact_producers_and_methodless_struct_shell() {
+        let source = "struct Box { value: i32, fn get(self) -> i32 { self.value } }";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, interner) = parser.parse().unwrap();
+        let Item::Struct(structure) = &ast.items[0] else {
+            panic!("expected struct syntax")
+        };
+
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        let method = astgen.append_candidate_with_root(AstGenCandidate::Method {
+            method: &structure.methods[0],
+            ordinal: 0,
+        });
+        let shell = astgen.append_candidate_with_root(AstGenCandidate::StructShell(structure));
+        let rir = astgen.finish();
+
+        assert_eq!(method.start, 0);
+        assert_eq!(method.end, shell.start);
+        assert_eq!(shell.end, rir.len() as u32);
+        assert!(matches!(
+            rir.get(method.declaration).data,
+            InstData::FnDecl { .. }
+        ));
+        let InstData::StructDecl { methods, .. } = &rir.get(shell.declaration).data else {
+            panic!("candidate shell must end in StructDecl")
+        };
+        assert!(rir.struct_methods(methods).is_empty());
+    }
+
+    #[test]
+    fn generated_loop_and_place_names_cannot_capture_source_identifiers() {
+        let (rir, interner) = gen_rir(
+            "fn index() -> u64 { 0 } \
+             fn f(inout values: [i32; 4]) -> i32 { \
+                 let __rue_for_p_0 = 41; \
+                 let __rue_place_0 = 1; \
+                 for _ in [1, 2] {} \
+                 values[index()] += 1; \
+                 __rue_for_p_0 + __rue_place_0 \
+             }",
+        );
+        let names = rir
+            .iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::Alloc {
+                    name: Some(name), ..
+                } => Some(interner.resolve(name)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for source_name in ["__rue_for_p_0", "__rue_place_0"] {
+            assert!(names.contains(&source_name));
+        }
+        for internal_name in [
+            "@rue:for:coll:0",
+            "@rue:for:pos:0",
+            "@rue:for:len:0",
+            "_@rue:for:elem:0",
+            "@rue:place:0",
+        ] {
+            assert!(names.contains(&internal_name));
+        }
+    }
+
+    #[test]
+    fn nested_anonymous_method_producers_save_reset_and_restore_temp_counters() {
+        let (rir, interner) = gen_rir(
+            "fn f() -> type { \
+                 for _ in [1] {} \
+                 let t = struct { fn nested(self) { for _ in [1] {} } }; \
+                 for _ in [1] {} \
+                 t \
+             }",
+        );
+        let spellings = rir
+            .iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::Alloc {
+                    name: Some(name), ..
+                } => Some(interner.resolve(name)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            spellings
+                .iter()
+                .filter(|&&value| value == "@rue:for:coll:0")
+                .count(),
+            2,
+            "outer and nested producers each begin at ordinal zero"
+        );
+        assert!(spellings.contains(&"@rue:for:coll:1"));
+    }
+
     fn anonymous_anchors(source: &str) -> Vec<crate::RirStructuralAnchor> {
         let (rir, _) = gen_rir(source);
         rir.iter()
@@ -2419,6 +2718,27 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    fn span_slot_schema(source: &str) -> Vec<crate::RirSpanSlot> {
+        let (rir, _) = gen_rir(source);
+        let mut slots = Vec::new();
+        rir.try_visit_span_slots(
+            || Ok::<_, std::convert::Infallible>(()),
+            |slot, _| {
+                slots.push(slot);
+                Ok(())
+            },
+        )
+        .unwrap();
+        slots
+    }
+
+    #[test]
+    fn span_slot_schema_is_stable_across_trivia_parens_and_literal_spelling() {
+        let compact = "fn f(x: i32) -> i32 { 1 }";
+        let equivalent = "\n// leading trivia\nfn f( x : i32 )->i32 { ((0x1)) }\n";
+        assert_eq!(span_slot_schema(compact), span_slot_schema(equivalent));
     }
 
     #[test]

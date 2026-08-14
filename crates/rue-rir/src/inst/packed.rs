@@ -1,0 +1,3791 @@
+//! Canonical compact transport for validated RIR.
+//!
+//! This is an exact representation codec, not a lowering path. It deliberately
+//! lives below `ValidatedRir` so every consumer shares one schema for payloads,
+//! anchors, symbols, references, and spans. Decoding appends directly into the
+//! caller's editor and rolls the complete append back on any failure.
+
+use std::collections::{HashMap, hash_map::RandomState};
+use std::fmt;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::Arc;
+
+use lasso::{Key, Spur, ThreadedRodeo};
+use rue_span::Span;
+
+use super::*;
+
+const MAGIC: &[u8; 4] = b"RIRP";
+const VERSION: u8 = 2;
+const HEADER_LEN: usize = 64;
+
+/// One fallible source intrinsic whose result requires a trusted `Option`
+/// payload. Stable bit assignments are part of the packed-RIR wire format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RirFallibleIntrinsic {
+    ParseI32,
+    ParseI64,
+    ParseU32,
+    ParseU64,
+    ReadLine,
+}
+
+impl RirFallibleIntrinsic {
+    const ALL: [Self; 5] = [
+        Self::ParseI32,
+        Self::ParseI64,
+        Self::ParseU32,
+        Self::ParseU64,
+        Self::ReadLine,
+    ];
+
+    const fn bit(self) -> u8 {
+        match self {
+            Self::ParseI32 => 1 << 0,
+            Self::ParseI64 => 1 << 1,
+            Self::ParseU32 => 1 << 2,
+            Self::ParseU64 => 1 << 3,
+            Self::ReadLine => 1 << 4,
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "parse_i32" => Self::ParseI32,
+            "parse_i64" => Self::ParseI64,
+            "parse_u32" => Self::ParseU32,
+            "parse_u64" => Self::ParseU64,
+            "read_line" => Self::ReadLine,
+            _ => return None,
+        })
+    }
+}
+
+/// Canonical five-bit set of fallible source intrinsics present in one packed
+/// candidate. It is derived while the encoder visits typed `Intrinsic` nodes;
+/// source text, comments, and string literals never participate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RirFallibleIntrinsicSet(u8);
+
+impl RirFallibleIntrinsicSet {
+    const VALID_BITS: u8 = 0b1_1111;
+
+    fn insert(&mut self, intrinsic: RirFallibleIntrinsic) {
+        self.0 |= intrinsic.bit();
+    }
+
+    pub fn contains(self, intrinsic: RirFallibleIntrinsic) -> bool {
+        self.0 & intrinsic.bit() != 0
+    }
+
+    pub fn iter(self) -> impl Iterator<Item = RirFallibleIntrinsic> {
+        RirFallibleIntrinsic::ALL
+            .into_iter()
+            .filter(move |intrinsic| self.contains(*intrinsic))
+    }
+}
+
+/// Candidate identity carried in the same allocation as its packed RIR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedRirMetadata {
+    pub declaration: InstRef,
+    pub method_owner: Option<PackedRirMethodOwner>,
+}
+
+/// RIR-level method-owner shell metadata. Compiler-specific identities stay
+/// outside this crate; these are precisely the scalars required to rebuild the
+/// canonical shell through `RirEditor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedRirMethodOwner {
+    pub declaration: InstRef,
+    pub name: Spur,
+    pub is_public: bool,
+    pub is_linear: bool,
+}
+
+/// Destination-local metadata returned by an atomic packed append.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedRirAppendMetadata {
+    pub declaration: InstRef,
+    pub method_owner: Option<PackedRirMethodOwner>,
+}
+
+/// The stores and candidate identities created by an atomic packed append.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedRirAppend {
+    pub range: RirAppendRange,
+    pub metadata: PackedRirAppendMetadata,
+}
+
+/// Exact, versioned byte representation of one validated RIR owner.
+///
+/// Construction is private to [`ValidatedRir::try_pack_candidate`], ensuring all values
+/// have passed the ordinary RIR validator before becoming durable bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedValidatedRir(Arc<[u8]>);
+
+impl PackedValidatedRir {
+    /// Canonical bytes. Equality of this slice is exact semantic equality for
+    /// the transported RIR because every integer has one minimal encoding.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Number of candidate-local instructions in the validated envelope.
+    pub fn instruction_count(&self) -> usize {
+        Header::parse(&self.0)
+            .expect("privately constructed packed RIR is valid")
+            .instructions as usize
+    }
+
+    /// Complete dense spelling table transported with the owner, including
+    /// empty and unreferenced ordinals.
+    pub fn symbols(&self) -> PackedRirSymbols<'_> {
+        PackedRirSymbols::new(&self.0).expect("privately constructed packed RIR is valid")
+    }
+
+    /// Typed fallible-intrinsic set derived by the canonical packing traversal.
+    pub fn fallible_intrinsics(&self) -> RirFallibleIntrinsicSet {
+        Header::parse(&self.0)
+            .expect("privately constructed packed RIR is valid")
+            .fallible_intrinsics
+    }
+
+    /// Append directly into `destination`. Candidate-local instruction
+    /// references use the checked affine destination prefix; symbol ordinals
+    /// and declaration-relative spans are remapped by the caller.
+    ///
+    /// Checkpoints occur at instruction and variable-payload element
+    /// granularity. Any decode, callback, capacity, or cancellation failure
+    /// restores both destination stores and the capacity latch exactly.
+    pub fn try_append_remapped<E>(
+        &self,
+        destination: &mut RirEditor,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_symbol: impl FnMut(u32) -> Result<Spur, E>,
+        remap_span: impl FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
+    ) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
+        self.try_append_remapped_internal(destination, None, checkpoint, remap_symbol, remap_span)
+    }
+
+    /// Append a methodless struct-shell candidate while installing the
+    /// composer's already-remapped method roots on its declaration.
+    pub fn try_append_remapped_with_root_methods<E>(
+        &self,
+        destination: &mut RirEditor,
+        methods: &[InstRef],
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_symbol: impl FnMut(u32) -> Result<Spur, E>,
+        remap_span: impl FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
+    ) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
+        self.try_append_remapped_internal(
+            destination,
+            Some(methods),
+            checkpoint,
+            remap_symbol,
+            remap_span,
+        )
+    }
+
+    fn try_append_remapped_internal<E>(
+        &self,
+        destination: &mut RirEditor,
+        root_methods: Option<&[InstRef]>,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_symbol: impl FnMut(u32) -> Result<Spur, E>,
+        remap_span: impl FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
+    ) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
+        let instruction_len = destination.rir.instructions.len();
+        let extra_len = destination.rir.extra.len();
+        let capacity_latch = destination.rir.instruction_limit_exceeded;
+        let result = Decoder::new(
+            &self.0,
+            destination,
+            root_methods,
+            checkpoint,
+            remap_symbol,
+            remap_span,
+        )
+        .decode();
+        if result.is_err() {
+            destination.rir.instructions.truncate(instruction_len);
+            destination.rir.extra.truncate(extra_len);
+            destination.rir.instruction_limit_exceeded = capacity_latch;
+        }
+        result
+    }
+
+    /// Exact bytes retained by the packed envelope's single Arc pointee.
+    pub fn retained_allocation_charge(&self) -> u64 {
+        self.0.len() as u64
+    }
+}
+
+/// Failure while producing canonical packed bytes.
+#[derive(Debug)]
+pub enum PackedRirEncodeError<E> {
+    Checkpoint(E),
+    CapacityFailure,
+    ResourceLimit,
+    Validation(RirPayloadError),
+    SpanProjection {
+        slot: RirSpanSlot,
+        error: E,
+    },
+    InvalidProjectedSpan {
+        slot: RirSpanSlot,
+        start: u32,
+        end: u32,
+    },
+    ForwardReference {
+        instruction: u32,
+        reference: u32,
+    },
+    InvalidMetadata,
+}
+
+impl<E: fmt::Display> fmt::Display for PackedRirEncodeError<E> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Checkpoint(error) => write!(formatter, "packed RIR encoding canceled: {error}"),
+            Self::CapacityFailure => formatter.write_str("could not allocate packed RIR bytes"),
+            Self::ResourceLimit => formatter.write_str("packed RIR exceeds its u32 count limit"),
+            Self::Validation(error) => write!(formatter, "packed RIR validation failed: {error:?}"),
+            Self::SpanProjection { slot, error } => {
+                write!(
+                    formatter,
+                    "packed RIR span projection failed at {slot:?}: {error}"
+                )
+            }
+            Self::InvalidProjectedSpan { slot, start, end } => {
+                write!(
+                    formatter,
+                    "packed RIR span projection at {slot:?} is inverted: {start}..{end}"
+                )
+            }
+            Self::ForwardReference {
+                instruction,
+                reference,
+            } => {
+                write!(
+                    formatter,
+                    "candidate instruction %{instruction} has non-postorder reference %{reference}"
+                )
+            }
+            Self::InvalidMetadata => {
+                formatter.write_str("packed RIR candidate metadata is invalid")
+            }
+        }
+    }
+}
+
+/// Structural corruption in canonical packed bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PackedRirDecodeError {
+    InvalidMagic,
+    UnsupportedVersion(u8),
+    Truncated,
+    NonMinimalVarint,
+    VarintOverflow,
+    InvalidOpcode(u8),
+    InvalidTag { family: &'static str, tag: u8 },
+    ReferenceOutOfBounds { reference: u32, instructions: u32 },
+    ForwardReference { instruction: u32, reference: u32 },
+    SymbolOutOfBounds { symbol: u32, symbols: u32 },
+    CountOutOfBounds { family: &'static str },
+    InvalidUtf8Symbol { symbol: u32 },
+    DuplicateSymbol { first: u32, duplicate: u32 },
+    InvalidBasisSpan { start: u32, end: u32 },
+    Payload(RirPayloadError),
+    DestinationInstructionMismatch,
+    TrailingBytes,
+}
+
+impl fmt::Display for PackedRirDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "invalid packed RIR: {self:?}")
+    }
+}
+
+impl std::error::Error for PackedRirDecodeError {}
+
+/// Failure while atomically appending packed RIR.
+#[derive(Debug)]
+pub enum PackedRirAppendError<E> {
+    Decode(PackedRirDecodeError),
+    Checkpoint(E),
+    SymbolRemap(E),
+    SpanRemap { slot: RirSpanSlot, error: E },
+    Build(RirPayloadBuildError),
+}
+
+impl<E> From<PackedRirDecodeError> for PackedRirAppendError<E> {
+    fn from(error: PackedRirDecodeError) -> Self {
+        Self::Decode(error)
+    }
+}
+
+impl<E> From<RirPayloadBuildError> for PackedRirAppendError<E> {
+    fn from(error: RirPayloadBuildError) -> Self {
+        Self::Build(error)
+    }
+}
+
+impl ValidatedRir {
+    /// Encode one validated candidate directly, projecting its absolute spans
+    /// into the declaration-relative diagnostic basis stored in the same
+    /// allocation. Absolute file identities and coordinates never enter the
+    /// semantic byte section.
+    pub fn try_pack_candidate<E>(
+        &self,
+        symbols: &ThreadedRodeo,
+        metadata: PackedRirMetadata,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        project_span: impl FnMut(RirSpanSlot, Span) -> Result<(u32, u32), E>,
+    ) -> Result<PackedValidatedRir, PackedRirEncodeError<E>> {
+        Encoder::new(checkpoint, project_span).encode(self, symbols, metadata)
+    }
+}
+
+struct Encoder<E, C, P> {
+    bytes: Vec<u8>,
+    basis: Vec<u8>,
+    span_count: u32,
+    checkpoint: C,
+    project_span: P,
+    current_instruction: u32,
+    symbol_count: usize,
+    fallible_intrinsics: RirFallibleIntrinsicSet,
+    marker: std::marker::PhantomData<fn() -> E>,
+}
+
+impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32, u32), E>>
+    Encoder<E, C, P>
+{
+    fn new(checkpoint: C, project_span: P) -> Self {
+        Self {
+            bytes: Vec::new(),
+            basis: Vec::new(),
+            span_count: 0,
+            checkpoint,
+            project_span,
+            current_instruction: 0,
+            symbol_count: 0,
+            fallible_intrinsics: RirFallibleIntrinsicSet::default(),
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    fn encode(
+        mut self,
+        rir: &ValidatedRir,
+        symbols: &ThreadedRodeo,
+        metadata: PackedRirMetadata,
+    ) -> Result<PackedValidatedRir, PackedRirEncodeError<E>> {
+        let instruction_count =
+            u32::try_from(rir.len()).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+        let symbol_count =
+            u32::try_from(symbols.len()).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+        self.symbol_count = symbols.len();
+
+        for (instruction, value) in rir.iter() {
+            self.check()?;
+            self.current_instruction = instruction.as_u32();
+            self.instruction(rir, symbols, instruction, value)?;
+        }
+
+        let mut symbol_bytes = Vec::new();
+        let spelling_bytes = (0..symbols.len()).try_fold(0usize, |total, ordinal| {
+            let symbol =
+                Spur::try_from_usize(ordinal).ok_or(PackedRirEncodeError::ResourceLimit)?;
+            total
+                .checked_add(symbols.resolve(&symbol).len() + 5)
+                .ok_or(PackedRirEncodeError::ResourceLimit)
+        })?;
+        symbol_bytes
+            .try_reserve_exact(spelling_bytes)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        for ordinal in 0..symbols.len() {
+            self.check()?;
+            let symbol =
+                Spur::try_from_usize(ordinal).ok_or(PackedRirEncodeError::ResourceLimit)?;
+            let spelling = symbols.resolve(&symbol).as_bytes();
+            put_u32(
+                &mut symbol_bytes,
+                u32::try_from(spelling.len()).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+            );
+            for chunk in spelling.chunks(4096) {
+                self.check()?;
+                symbol_bytes.extend_from_slice(chunk);
+            }
+        }
+
+        if metadata.declaration.as_u32() >= instruction_count
+            || metadata.declaration.as_u32().checked_add(1) != Some(instruction_count)
+            || metadata.method_owner.is_some_and(|owner| {
+                owner.declaration != metadata.declaration
+                    || owner.name.into_usize() >= symbols.len()
+            })
+        {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        let declaration = &rir.get(metadata.declaration).data;
+        let valid_declaration = match declaration {
+            InstData::FnDecl { .. }
+            | InstData::ConstDecl { .. }
+            | InstData::EnumDecl { .. }
+            | InstData::DropFnDecl { .. } => true,
+            InstData::StructDecl { methods, .. } => rir.struct_methods(methods).len() == 0,
+            _ => false,
+        };
+        if !valid_declaration {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        if metadata.method_owner.is_some()
+            && !matches!(&rir.get(metadata.declaration).data, InstData::FnDecl { .. })
+        {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+
+        let symbols_offset = HEADER_LEN;
+        let instructions_offset = symbols_offset + symbol_bytes.len();
+        let basis_offset = instructions_offset + self.bytes.len();
+        let end_offset = basis_offset + self.basis.len();
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(end_offset)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        bytes.resize(HEADER_LEN, 0);
+        bytes[0..4].copy_from_slice(MAGIC);
+        bytes[4] = VERSION;
+        bytes[5] = self.fallible_intrinsics.0;
+        write_header_u32(&mut bytes, 8, instruction_count)?;
+        write_header_u32(&mut bytes, 12, symbol_count)?;
+        write_header_u32(&mut bytes, 20, metadata.declaration.as_u32())?;
+        if let Some(owner) = metadata.method_owner {
+            bytes[24] = 1;
+            bytes[25] = owner.is_public as u8 | ((owner.is_linear as u8) << 1);
+            write_header_u32(&mut bytes, 28, owner.declaration.as_u32())?;
+            write_header_u32(
+                &mut bytes,
+                32,
+                u32::try_from(owner.name.into_usize())
+                    .map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+            )?;
+        }
+        write_header_u32(
+            &mut bytes,
+            36,
+            u32::try_from(symbols_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+        )?;
+        write_header_u32(
+            &mut bytes,
+            40,
+            u32::try_from(instructions_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+        )?;
+        write_header_u32(
+            &mut bytes,
+            44,
+            u32::try_from(basis_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+        )?;
+        write_header_u32(
+            &mut bytes,
+            48,
+            u32::try_from(end_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+        )?;
+        write_header_u32(&mut bytes, 56, self.span_count)?;
+        bytes.extend_from_slice(&symbol_bytes);
+        bytes.extend_from_slice(&self.bytes);
+        bytes.extend_from_slice(&self.basis);
+        assert_eq!(
+            bytes.len(),
+            end_offset,
+            "packed RIR section sizing must exactly match the emitted envelope",
+        );
+        Ok(PackedValidatedRir(Arc::from(bytes)))
+    }
+
+    fn check(&mut self) -> Result<(), PackedRirEncodeError<E>> {
+        (self.checkpoint)().map_err(PackedRirEncodeError::Checkpoint)
+    }
+
+    fn byte(&mut self, value: u8) -> Result<(), PackedRirEncodeError<E>> {
+        self.bytes
+            .try_reserve(1)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        self.bytes.push(value);
+        Ok(())
+    }
+
+    fn u32(&mut self, value: u32) -> Result<(), PackedRirEncodeError<E>> {
+        self.bytes
+            .try_reserve(5)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        put_u32(&mut self.bytes, value);
+        Ok(())
+    }
+
+    fn u64(&mut self, value: u64) -> Result<(), PackedRirEncodeError<E>> {
+        self.bytes
+            .try_reserve(10)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        put_u64(&mut self.bytes, value);
+        Ok(())
+    }
+
+    fn boolean(&mut self, value: bool) -> Result<(), PackedRirEncodeError<E>> {
+        self.byte(value as u8)
+    }
+
+    fn reference(&mut self, value: InstRef) -> Result<(), PackedRirEncodeError<E>> {
+        if value.as_u32() >= self.current_instruction {
+            return Err(PackedRirEncodeError::ForwardReference {
+                instruction: self.current_instruction,
+                reference: value.as_u32(),
+            });
+        }
+        self.u32(value.as_u32())
+    }
+
+    fn optional_ref(&mut self, value: Option<InstRef>) -> Result<(), PackedRirEncodeError<E>> {
+        self.boolean(value.is_some())?;
+        if let Some(value) = value {
+            self.reference(value)?;
+        }
+        Ok(())
+    }
+
+    fn symbol(&mut self, value: Spur) -> Result<(), PackedRirEncodeError<E>> {
+        let ordinal = value.into_usize();
+        if ordinal >= self.symbol_count {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        let value = u32::try_from(ordinal).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+        self.u32(value)
+    }
+
+    fn optional_symbol(&mut self, value: Option<Spur>) -> Result<(), PackedRirEncodeError<E>> {
+        self.boolean(value.is_some())?;
+        if let Some(value) = value {
+            self.symbol(value)?;
+        }
+        Ok(())
+    }
+
+    fn count(&mut self, count: usize) -> Result<(), PackedRirEncodeError<E>> {
+        self.u32(u32::try_from(count).map_err(|_| PackedRirEncodeError::ResourceLimit)?)
+    }
+
+    fn basis_span(&mut self, slot: RirSpanSlot, span: Span) -> Result<(), PackedRirEncodeError<E>> {
+        self.check()?;
+        let (start, end) = (self.project_span)(slot, span)
+            .map_err(|error| PackedRirEncodeError::SpanProjection { slot, error })?;
+        if start > end {
+            return Err(PackedRirEncodeError::InvalidProjectedSpan { slot, start, end });
+        }
+        self.basis
+            .try_reserve(10)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        put_u32(&mut self.basis, start);
+        put_u32(&mut self.basis, end);
+        self.span_count = self
+            .span_count
+            .checked_add(1)
+            .ok_or(PackedRirEncodeError::ResourceLimit)?;
+        Ok(())
+    }
+
+    fn anchor(&mut self, anchor: &RirStructuralAnchor) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(anchor.segments().len())?;
+        for segment in anchor.segments() {
+            self.check()?;
+            match *segment {
+                RirStructuralPathSegment::Body => self.byte(0)?,
+                RirStructuralPathSegment::ParameterType(value) => {
+                    self.byte(1)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::ReturnType => self.byte(2)?,
+                RirStructuralPathSegment::Statement(value) => {
+                    self.byte(3)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::Operand(value) => {
+                    self.byte(4)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::Branch(value) => {
+                    self.byte(5)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::MatchArm(value) => {
+                    self.byte(6)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::FieldType(value) => {
+                    self.byte(7)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::VariantPayload { variant, payload } => {
+                    self.byte(8)?;
+                    self.u32(variant)?;
+                    self.u32(payload)?;
+                }
+                RirStructuralPathSegment::Method(value) => {
+                    self.byte(9)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::AnonymousType(value) => {
+                    self.byte(10)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::StringLiteral(value) => {
+                    self.byte(11)?;
+                    self.u32(value)?;
+                }
+                RirStructuralPathSegment::ReadOnlyData(value) => {
+                    self.byte(12)?;
+                    self.u32(value)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn optional_anchor(
+        &mut self,
+        anchor: Option<&RirStructuralAnchor>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.boolean(anchor.is_some())?;
+        if let Some(anchor) = anchor {
+            self.anchor(anchor)?;
+        }
+        Ok(())
+    }
+
+    fn refs(&mut self, values: RirSlice<'_, InstRef>) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(values.len())?;
+        for value in values.values() {
+            self.check()?;
+            self.reference(value)?;
+        }
+        Ok(())
+    }
+
+    fn call_args(
+        &mut self,
+        rir: &ValidatedRir,
+        range: &RirCallArgsRange,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        let values = rir.call_args(range);
+        self.count(values.len())?;
+        for value in values.values() {
+            self.check()?;
+            self.reference(value.value)?;
+            self.byte(encode_arg_mode(value.mode))?;
+        }
+        Ok(())
+    }
+
+    fn fields(
+        &mut self,
+        values: RirSlice<'_, (Spur, Spur)>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(values.len())?;
+        for (name, ty) in values.values() {
+            self.check()?;
+            self.symbol(name)?;
+            self.symbol(ty)?;
+        }
+        Ok(())
+    }
+
+    fn field_inits(
+        &mut self,
+        values: RirSlice<'_, (Spur, InstRef)>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(values.len())?;
+        for (name, value) in values.values() {
+            self.check()?;
+            self.symbol(name)?;
+            self.reference(value)?;
+        }
+        Ok(())
+    }
+
+    fn directives(
+        &mut self,
+        rir: &ValidatedRir,
+        instruction: InstRef,
+        range: &RirDirectivesRange,
+        mut field: impl FnMut(u32) -> RirSpanField,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        let values = rir.directives(range);
+        self.count(values.len())?;
+        for (ordinal, value) in values.iter().enumerate() {
+            self.check()?;
+            self.symbol(value.name)?;
+            self.count(value.args.len())?;
+            for argument in value.args.values() {
+                self.check()?;
+                self.symbol(argument)?;
+            }
+            let ordinal =
+                u32::try_from(ordinal).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+            self.basis_span(RirSpanSlot::new(instruction, field(ordinal)), value.span)?;
+        }
+        Ok(())
+    }
+
+    fn pattern(&mut self, value: &RirPatternView<'_>) -> Result<(), PackedRirEncodeError<E>> {
+        match value {
+            RirPatternView::Wildcard(_) => self.byte(0)?,
+            RirPatternView::Int {
+                value, negative, ..
+            } => {
+                self.byte(1)?;
+                self.u64(*value)?;
+                self.boolean(*negative)?;
+            }
+            RirPatternView::Bool(value, _) => {
+                self.byte(2)?;
+                self.boolean(*value)?;
+            }
+            RirPatternView::Path {
+                module,
+                ctor_head,
+                type_name,
+                variant,
+                bindings,
+                ..
+            } => {
+                self.byte(3)?;
+                self.optional_ref(*module)?;
+                self.optional_ref(*ctor_head)?;
+                self.symbol(*type_name)?;
+                self.symbol(*variant)?;
+                self.count(bindings.len())?;
+                for binding in bindings.values() {
+                    self.check()?;
+                    self.symbol(binding)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn enum_payload(
+        &mut self,
+        variants: RirSymbols<'_>,
+        payloads: RirEnumPayloads<'_>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.count(variants.len())?;
+        for (variant, payload) in variants.values().zip(payloads) {
+            self.check()?;
+            self.symbol(variant)?;
+            self.count(payload.len())?;
+            for symbol in payload.values() {
+                self.check()?;
+                self.symbol(symbol)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn instruction(
+        &mut self,
+        rir: &ValidatedRir,
+        symbols: &ThreadedRodeo,
+        instruction: InstRef,
+        value: &Inst,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.basis_span(
+            RirSpanSlot::new(instruction, RirSpanField::Instruction),
+            value.span,
+        )?;
+        macro_rules! binary {
+            ($opcode:expr, $lhs:expr, $rhs:expr) => {{
+                self.byte($opcode)?;
+                self.reference(*$lhs)?;
+                self.reference(*$rhs)?;
+            }};
+        }
+        macro_rules! unary {
+            ($opcode:expr, $operand:expr) => {{
+                self.byte($opcode)?;
+                self.reference(*$operand)?;
+            }};
+        }
+        match &value.data {
+            InstData::IntConst(value) => {
+                self.byte(0)?;
+                self.u64(*value)?;
+            }
+            InstData::FloatConst { text } => {
+                self.byte(1)?;
+                self.symbol(*text)?;
+            }
+            InstData::BoolConst(value) => {
+                self.byte(2)?;
+                self.boolean(*value)?;
+            }
+            InstData::StringConst { content, anchor } => {
+                self.byte(3)?;
+                self.symbol(*content)?;
+                self.anchor(anchor)?;
+            }
+            InstData::UnitConst => self.byte(4)?,
+            InstData::Add { lhs, rhs } => binary!(5, lhs, rhs),
+            InstData::Sub { lhs, rhs } => binary!(6, lhs, rhs),
+            InstData::Mul { lhs, rhs } => binary!(7, lhs, rhs),
+            InstData::Div { lhs, rhs } => binary!(8, lhs, rhs),
+            InstData::Mod { lhs, rhs } => binary!(9, lhs, rhs),
+            InstData::Eq { lhs, rhs } => binary!(10, lhs, rhs),
+            InstData::Ne { lhs, rhs } => binary!(11, lhs, rhs),
+            InstData::Lt { lhs, rhs } => binary!(12, lhs, rhs),
+            InstData::Gt { lhs, rhs } => binary!(13, lhs, rhs),
+            InstData::Le { lhs, rhs } => binary!(14, lhs, rhs),
+            InstData::Ge { lhs, rhs } => binary!(15, lhs, rhs),
+            InstData::And { lhs, rhs } => binary!(16, lhs, rhs),
+            InstData::Or { lhs, rhs } => binary!(17, lhs, rhs),
+            InstData::BitAnd { lhs, rhs } => binary!(18, lhs, rhs),
+            InstData::BitOr { lhs, rhs } => binary!(19, lhs, rhs),
+            InstData::BitXor { lhs, rhs } => binary!(20, lhs, rhs),
+            InstData::Shl { lhs, rhs } => binary!(21, lhs, rhs),
+            InstData::Shr { lhs, rhs } => binary!(22, lhs, rhs),
+            InstData::Neg { operand } => unary!(23, operand),
+            InstData::Not { operand } => unary!(24, operand),
+            InstData::BitNot { operand } => unary!(25, operand),
+            InstData::Try { operand } => unary!(26, operand),
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                self.byte(27)?;
+                self.reference(*cond)?;
+                self.reference(*then_block)?;
+                self.optional_ref(*else_block)?;
+            }
+            InstData::Loop { cond, body } => binary!(28, cond, body),
+            InstData::InfiniteLoop { body, iter_borrow } => {
+                self.byte(29)?;
+                self.reference(*body)?;
+                self.optional_symbol(*iter_borrow)?;
+            }
+            InstData::Match { scrutinee, arms } => {
+                self.byte(30)?;
+                self.reference(*scrutinee)?;
+                let arms = rir.match_arms(arms);
+                self.count(arms.len())?;
+                for (ordinal, (pattern, body)) in arms.iter().enumerate() {
+                    self.check()?;
+                    self.pattern(&pattern)?;
+                    self.reference(body)?;
+                    self.basis_span(
+                        RirSpanSlot::new(
+                            instruction,
+                            RirSpanField::MatchPattern {
+                                arm: u32::try_from(ordinal)
+                                    .map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+                            },
+                        ),
+                        pattern.span(),
+                    )?;
+                }
+            }
+            InstData::Break { value } => {
+                self.byte(31)?;
+                self.optional_ref(*value)?;
+            }
+            InstData::Continue => self.byte(32)?,
+            InstData::FnDecl {
+                directives,
+                is_pub,
+                is_unchecked,
+                is_extern,
+                is_c_export,
+                name,
+                params,
+                return_type,
+                body,
+                has_self,
+                self_mode,
+                self_is_mut,
+                returns_borrow,
+            } => {
+                self.byte(33)?;
+                self.directives(rir, instruction, directives, |ordinal| {
+                    RirSpanField::FunctionDirective { directive: ordinal }
+                })?;
+                self.byte(
+                    *is_pub as u8
+                        | ((*is_unchecked as u8) << 1)
+                        | ((*is_extern as u8) << 2)
+                        | ((*is_c_export as u8) << 3)
+                        | ((*has_self as u8) << 4)
+                        | ((*self_is_mut as u8) << 5)
+                        | ((*returns_borrow as u8) << 6),
+                )?;
+                self.symbol(*name)?;
+                let params = rir.params(params);
+                self.count(params.len())?;
+                for (ordinal, parameter) in params.values().enumerate() {
+                    self.check()?;
+                    self.symbol(parameter.name)?;
+                    self.symbol(parameter.ty)?;
+                    self.byte(encode_param_mode(parameter.mode))?;
+                    self.boolean(parameter.is_comptime)?;
+                    self.basis_span(
+                        RirSpanSlot::new(
+                            instruction,
+                            RirSpanField::FunctionParameter {
+                                parameter: u32::try_from(ordinal)
+                                    .map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+                            },
+                        ),
+                        parameter.span,
+                    )?;
+                }
+                self.symbol(*return_type)?;
+                self.reference(*body)?;
+                self.byte(encode_param_mode(*self_mode))?;
+            }
+            InstData::ConstDecl {
+                directives,
+                is_pub,
+                name,
+                ty,
+                init,
+            } => {
+                self.byte(34)?;
+                self.directives(rir, instruction, directives, |ordinal| {
+                    RirSpanField::ConstDirective { directive: ordinal }
+                })?;
+                self.boolean(*is_pub)?;
+                self.symbol(*name)?;
+                self.optional_symbol(*ty)?;
+                self.reference(*init)?;
+            }
+            InstData::Call { name, args } => {
+                self.byte(35)?;
+                self.symbol(*name)?;
+                self.call_args(rir, args)?;
+            }
+            InstData::Intrinsic { name, args } => {
+                self.byte(36)?;
+                self.symbol(*name)?;
+                if let Some(intrinsic) = RirFallibleIntrinsic::from_name(symbols.resolve(name)) {
+                    self.fallible_intrinsics.insert(intrinsic);
+                }
+                self.refs(rir.intrinsic_args(args))?;
+            }
+            InstData::InternalIntrinsic { intrinsic, args } => {
+                self.byte(37)?;
+                self.byte(encode_internal_intrinsic(*intrinsic))?;
+                self.refs(rir.internal_intrinsic_args(args))?;
+            }
+            InstData::TypeIntrinsic { name, type_arg } => {
+                self.byte(38)?;
+                self.symbol(*name)?;
+                self.symbol(*type_arg)?;
+            }
+            InstData::OffsetOf { type_arg, field } => {
+                self.byte(39)?;
+                self.symbol(*type_arg)?;
+                self.symbol(*field)?;
+            }
+            InstData::Ret(value) => {
+                self.byte(40)?;
+                self.optional_ref(*value)?;
+            }
+            InstData::Yield(value) => unary!(41, value),
+            InstData::Block { instructions } => {
+                self.byte(42)?;
+                self.refs(rir.block_insts(instructions))?;
+            }
+            InstData::Alloc {
+                directives,
+                name,
+                is_mut,
+                ty,
+                init,
+                iter_elem,
+            } => {
+                self.byte(43)?;
+                self.directives(rir, instruction, directives, |ordinal| {
+                    RirSpanField::AllocDirective { directive: ordinal }
+                })?;
+                self.optional_symbol(*name)?;
+                self.boolean(*is_mut)?;
+                self.optional_symbol(*ty)?;
+                self.reference(*init)?;
+                self.boolean(*iter_elem)?;
+            }
+            InstData::VarRef { name, anchor } => {
+                self.byte(44)?;
+                self.symbol(*name)?;
+                self.optional_anchor(anchor.as_ref())?;
+            }
+            InstData::Assign { name, value } => {
+                self.byte(45)?;
+                self.symbol(*name)?;
+                self.reference(*value)?;
+            }
+            InstData::StructDecl {
+                directives,
+                is_pub,
+                is_linear,
+                name,
+                fields,
+                methods,
+            } => {
+                self.byte(46)?;
+                self.directives(rir, instruction, directives, |ordinal| {
+                    RirSpanField::StructDirective { directive: ordinal }
+                })?;
+                self.byte(*is_pub as u8 | ((*is_linear as u8) << 1))?;
+                self.symbol(*name)?;
+                self.fields(rir.struct_fields(fields))?;
+                self.refs(rir.struct_methods(methods))?;
+            }
+            InstData::StructInit {
+                module,
+                ctor_head,
+                type_name,
+                fields,
+                shorthand_span,
+            } => {
+                self.byte(47)?;
+                self.optional_ref(*module)?;
+                self.optional_ref(*ctor_head)?;
+                self.symbol(*type_name)?;
+                self.field_inits(rir.field_inits(fields))?;
+                self.boolean(shorthand_span.is_some())?;
+                if let Some(span) = shorthand_span {
+                    self.basis_span(
+                        RirSpanSlot::new(instruction, RirSpanField::StructInitShorthand),
+                        *span,
+                    )?;
+                }
+            }
+            InstData::FieldGet { base, field } => {
+                self.byte(48)?;
+                self.reference(*base)?;
+                self.symbol(*field)?;
+            }
+            InstData::FieldSet { base, field, value } => {
+                self.byte(49)?;
+                self.reference(*base)?;
+                self.symbol(*field)?;
+                self.reference(*value)?;
+            }
+            InstData::EnumDecl {
+                is_pub,
+                name,
+                variants,
+                payloads,
+            } => {
+                self.byte(50)?;
+                self.boolean(*is_pub)?;
+                self.symbol(*name)?;
+                self.enum_payload(
+                    rir.enum_variants(variants),
+                    rir.enum_payloads(payloads, variants),
+                )?;
+            }
+            InstData::EnumVariant {
+                module,
+                type_name,
+                variant,
+            } => {
+                self.byte(51)?;
+                self.optional_ref(*module)?;
+                self.symbol(*type_name)?;
+                self.symbol(*variant)?;
+            }
+            InstData::ArrayInit { elements } => {
+                self.byte(52)?;
+                self.refs(rir.array_elements(elements))?;
+            }
+            InstData::ArrayRepeat { value, count } => {
+                self.byte(53)?;
+                self.reference(*value)?;
+                match count {
+                    RepeatCount::Literal(value) => {
+                        self.byte(0)?;
+                        self.u64(*value)?;
+                    }
+                    RepeatCount::Named(value) => {
+                        self.byte(1)?;
+                        self.symbol(*value)?;
+                    }
+                }
+            }
+            InstData::IndexGet { base, index } => binary!(54, base, index),
+            InstData::IndexSet { base, index, value } => {
+                self.byte(55)?;
+                self.reference(*base)?;
+                self.reference(*index)?;
+                self.reference(*value)?;
+            }
+            InstData::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                self.byte(56)?;
+                self.reference(*receiver)?;
+                self.symbol(*method)?;
+                self.call_args(rir, args)?;
+            }
+            InstData::DropFnDecl { type_name, body } => {
+                self.byte(57)?;
+                self.symbol(*type_name)?;
+                self.reference(*body)?;
+            }
+            InstData::Comptime { expr } => unary!(58, expr),
+            InstData::Checked { expr } => unary!(59, expr),
+            InstData::TypeConst { type_name } => {
+                self.byte(60)?;
+                self.symbol(*type_name)?;
+            }
+            InstData::AnonStructType {
+                fields,
+                methods,
+                anchor,
+            } => {
+                self.byte(61)?;
+                self.fields(rir.anon_struct_fields(fields))?;
+                self.refs(rir.anon_struct_methods(methods))?;
+                self.anchor(anchor)?;
+            }
+            InstData::AnonEnumType {
+                variants,
+                payloads,
+                anchor,
+            } => {
+                self.byte(62)?;
+                self.enum_payload(
+                    rir.anon_enum_variants(variants),
+                    rir.anon_enum_payloads(payloads, variants),
+                )?;
+                self.anchor(anchor)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn put_u32(bytes: &mut Vec<u8>, value: u32) {
+    put_u64(bytes, u64::from(value));
+}
+
+fn put_u64(bytes: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        bytes.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+}
+
+fn write_header_u32<E>(
+    bytes: &mut [u8],
+    offset: usize,
+    value: u32,
+) -> Result<(), PackedRirEncodeError<E>> {
+    let target = bytes
+        .get_mut(offset..offset + 4)
+        .ok_or(PackedRirEncodeError::ResourceLimit)?;
+    target.copy_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn header_u32(bytes: &[u8], offset: usize) -> Result<u32, PackedRirDecodeError> {
+    let value = bytes
+        .get(offset..offset + 4)
+        .ok_or(PackedRirDecodeError::Truncated)?;
+    Ok(u32::from_le_bytes(
+        value.try_into().expect("four-byte slice"),
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Header {
+    instructions: u32,
+    symbols: u32,
+    declaration: u32,
+    owner: Option<(u32, u32, bool, bool)>,
+    symbols_offset: usize,
+    instructions_offset: usize,
+    basis_offset: usize,
+    end_offset: usize,
+    spans: u32,
+    fallible_intrinsics: RirFallibleIntrinsicSet,
+}
+
+impl Header {
+    fn parse(bytes: &[u8]) -> Result<Self, PackedRirDecodeError> {
+        if bytes.len() < HEADER_LEN {
+            return Err(PackedRirDecodeError::Truncated);
+        }
+        if &bytes[0..4] != MAGIC {
+            return Err(PackedRirDecodeError::InvalidMagic);
+        }
+        if bytes[4] != VERSION {
+            return Err(PackedRirDecodeError::UnsupportedVersion(bytes[4]));
+        }
+        if bytes[5] & !RirFallibleIntrinsicSet::VALID_BITS != 0 {
+            return Err(PackedRirDecodeError::InvalidTag {
+                family: "fallible intrinsic set",
+                tag: bytes[5],
+            });
+        }
+        if bytes[6..8].iter().any(|byte| *byte != 0)
+            || bytes[16..20].iter().any(|byte| *byte != 0)
+            || bytes[26..28].iter().any(|byte| *byte != 0)
+            || bytes[52..56].iter().any(|byte| *byte != 0)
+            || bytes[60..64].iter().any(|byte| *byte != 0)
+        {
+            return Err(PackedRirDecodeError::InvalidTag {
+                family: "header reserved byte",
+                tag: 1,
+            });
+        }
+        let owner = match bytes[24] {
+            0 => {
+                if bytes[25] != 0 || header_u32(bytes, 28)? != 0 || header_u32(bytes, 32)? != 0 {
+                    return Err(PackedRirDecodeError::InvalidTag {
+                        family: "absent method owner",
+                        tag: bytes[25],
+                    });
+                }
+                None
+            }
+            1 if bytes[25] & !0b11 == 0 => Some((
+                header_u32(bytes, 28)?,
+                header_u32(bytes, 32)?,
+                bytes[25] & 1 != 0,
+                bytes[25] & 2 != 0,
+            )),
+            tag => {
+                return Err(PackedRirDecodeError::InvalidTag {
+                    family: "method owner",
+                    tag,
+                });
+            }
+        };
+        let header = Self {
+            instructions: header_u32(bytes, 8)?,
+            symbols: header_u32(bytes, 12)?,
+            declaration: header_u32(bytes, 20)?,
+            owner,
+            symbols_offset: header_u32(bytes, 36)? as usize,
+            instructions_offset: header_u32(bytes, 40)? as usize,
+            basis_offset: header_u32(bytes, 44)? as usize,
+            end_offset: header_u32(bytes, 48)? as usize,
+            spans: header_u32(bytes, 56)?,
+            fallible_intrinsics: RirFallibleIntrinsicSet(bytes[5]),
+        };
+        if header.symbols_offset != HEADER_LEN
+            || header.symbols_offset > header.instructions_offset
+            || header.instructions_offset > header.basis_offset
+            || header.basis_offset > header.end_offset
+            || header.end_offset != bytes.len()
+            || header.declaration >= header.instructions
+            || header.declaration.checked_add(1) != Some(header.instructions)
+        {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "header section",
+            });
+        }
+        if let Some((declaration, name, _, _)) = header.owner
+            && (declaration != header.declaration || name >= header.symbols)
+        {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "method owner",
+            });
+        }
+        Ok(header)
+    }
+}
+
+#[derive(Clone)]
+struct Reader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn byte(&mut self) -> Result<u8, PackedRirDecodeError> {
+        let value = *self
+            .bytes
+            .get(self.position)
+            .ok_or(PackedRirDecodeError::Truncated)?;
+        self.position += 1;
+        Ok(value)
+    }
+
+    fn boolean(&mut self, family: &'static str) -> Result<bool, PackedRirDecodeError> {
+        match self.byte()? {
+            0 => Ok(false),
+            1 => Ok(true),
+            tag => Err(PackedRirDecodeError::InvalidTag { family, tag }),
+        }
+    }
+
+    fn u32(&mut self) -> Result<u32, PackedRirDecodeError> {
+        let value = self.u64()?;
+        u32::try_from(value).map_err(|_| PackedRirDecodeError::VarintOverflow)
+    }
+
+    fn u64(&mut self) -> Result<u64, PackedRirDecodeError> {
+        let start = self.position;
+        let mut value = 0u64;
+        let mut shift = 0u32;
+        loop {
+            let byte = self.byte()?;
+            let payload = u64::from(byte & 0x7f);
+            if shift == 63 && payload > 1 {
+                return Err(PackedRirDecodeError::VarintOverflow);
+            }
+            value |= payload
+                .checked_shl(shift)
+                .ok_or(PackedRirDecodeError::VarintOverflow)?;
+            if byte & 0x80 == 0 {
+                if self.position - start > 1 && payload == 0 {
+                    return Err(PackedRirDecodeError::NonMinimalVarint);
+                }
+                return Ok(value);
+            }
+            shift = shift
+                .checked_add(7)
+                .ok_or(PackedRirDecodeError::VarintOverflow)?;
+            if shift >= 70 {
+                return Err(PackedRirDecodeError::VarintOverflow);
+            }
+        }
+    }
+
+    fn bytes(&mut self, count: usize) -> Result<&'a [u8], PackedRirDecodeError> {
+        let end = self
+            .position
+            .checked_add(count)
+            .ok_or(PackedRirDecodeError::Truncated)?;
+        let value = self
+            .bytes
+            .get(self.position..end)
+            .ok_or(PackedRirDecodeError::Truncated)?;
+        self.position = end;
+        Ok(value)
+    }
+
+    fn finished(&self) -> bool {
+        self.position == self.bytes.len()
+    }
+
+    fn remaining(&self) -> usize {
+        self.bytes.len() - self.position
+    }
+}
+
+/// Borrowing dense spelling iterator over a packed candidate.
+pub struct PackedRirSymbols<'a> {
+    reader: Reader<'a>,
+    remaining: usize,
+    ordinal: u32,
+}
+
+impl<'a> PackedRirSymbols<'a> {
+    fn new(bytes: &'a [u8]) -> Result<Self, PackedRirDecodeError> {
+        let header = Header::parse(bytes)?;
+        let section = bytes
+            .get(header.symbols_offset..header.instructions_offset)
+            .ok_or(PackedRirDecodeError::Truncated)?;
+        let mut check = Reader::new(section);
+        for ordinal in 0..header.symbols {
+            let length = check.u32()? as usize;
+            let spelling = check.bytes(length)?;
+            std::str::from_utf8(spelling)
+                .map_err(|_| PackedRirDecodeError::InvalidUtf8Symbol { symbol: ordinal })?;
+        }
+        if !check.finished() {
+            return Err(PackedRirDecodeError::TrailingBytes);
+        }
+        Ok(Self {
+            reader: Reader::new(section),
+            remaining: header.symbols as usize,
+            ordinal: 0,
+        })
+    }
+}
+
+impl<'a> Iterator for PackedRirSymbols<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let length = self.reader.u32().expect("prevalidated spelling length") as usize;
+        let bytes = self
+            .reader
+            .bytes(length)
+            .expect("prevalidated spelling bytes");
+        let value = std::str::from_utf8(bytes).expect("prevalidated UTF-8 spelling");
+        self.remaining -= 1;
+        self.ordinal += 1;
+        Some(value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for PackedRirSymbols<'_> {}
+
+struct Decoder<'a, E, C, S, P> {
+    bytes: &'a [u8],
+    destination: &'a mut RirEditor,
+    root_methods: Option<&'a [InstRef]>,
+    checkpoint: C,
+    remap_symbol: S,
+    remap_span: P,
+    instructions: u32,
+    symbols: u32,
+    source_instruction: u32,
+    destination_instruction_start: u32,
+    spans_read: u32,
+    marker: std::marker::PhantomData<fn() -> E>,
+}
+
+impl<
+    'a,
+    E,
+    C: FnMut() -> Result<(), E>,
+    S: FnMut(u32) -> Result<Spur, E>,
+    P: FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
+> Decoder<'a, E, C, S, P>
+{
+    fn new(
+        bytes: &'a [u8],
+        destination: &'a mut RirEditor,
+        root_methods: Option<&'a [InstRef]>,
+        checkpoint: C,
+        remap_symbol: S,
+        remap_span: P,
+    ) -> Self {
+        Self {
+            bytes,
+            destination,
+            root_methods,
+            checkpoint,
+            remap_symbol,
+            remap_span,
+            instructions: 0,
+            symbols: 0,
+            source_instruction: 0,
+            destination_instruction_start: 0,
+            spans_read: 0,
+            marker: std::marker::PhantomData,
+        }
+    }
+
+    fn decode(mut self) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
+        let header = Header::parse(self.bytes)?;
+        self.validate_symbols(header)?;
+        self.instructions = header.instructions;
+        self.symbols = header.symbols;
+        let instruction_bytes = header.basis_offset - header.instructions_offset;
+        let basis_bytes = header.end_offset - header.basis_offset;
+        if header.instructions as usize > instruction_bytes
+            || header.spans as usize > basis_bytes / 2
+        {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "header counts",
+            }
+            .into());
+        }
+        let mut instructions = Reader::new(
+            self.bytes
+                .get(header.instructions_offset..header.basis_offset)
+                .ok_or(PackedRirDecodeError::Truncated)?,
+        );
+        let mut basis = Reader::new(
+            self.bytes
+                .get(header.basis_offset..header.end_offset)
+                .ok_or(PackedRirDecodeError::Truncated)?,
+        );
+        let instruction_start = self.destination.rir.instructions.len();
+        if let Some(methods) = self.root_methods {
+            for method in methods {
+                self.check()?;
+                let index = method.as_u32() as usize;
+                if index >= instruction_start
+                    || !matches!(
+                        self.destination.rir.instructions[index].data,
+                        InstData::FnDecl { .. }
+                    )
+                {
+                    return Err(PackedRirDecodeError::InvalidTag {
+                        family: "composed struct method",
+                        tag: 0,
+                    }
+                    .into());
+                }
+            }
+        }
+        self.destination_instruction_start = u32::try_from(instruction_start)
+            .map_err(|_| PackedRirDecodeError::DestinationInstructionMismatch)?;
+        let extra_start = self.destination.rir.extra.len();
+        for source in 0..header.instructions {
+            self.check()?;
+            self.source_instruction = source;
+            let span = self.span(&mut basis, RirSpanField::Instruction)?;
+            let opcode = instructions.byte()?;
+            let destination = self.instruction(opcode, span, &mut instructions, &mut basis)?;
+            let expected = instruction_start
+                .checked_add(source as usize)
+                .and_then(|value| u32::try_from(value).ok())
+                .ok_or(PackedRirDecodeError::DestinationInstructionMismatch)?;
+            if destination.as_u32() != expected {
+                return Err(PackedRirDecodeError::DestinationInstructionMismatch.into());
+            }
+        }
+        if !instructions.finished() || !basis.finished() || self.spans_read != header.spans {
+            return Err(PackedRirDecodeError::TrailingBytes.into());
+        }
+        if let Some(error) = self.destination.capacity_error() {
+            return Err(PackedRirAppendError::Build(error));
+        }
+        let root = instruction_start
+            .checked_add(header.declaration as usize)
+            .ok_or(PackedRirDecodeError::DestinationInstructionMismatch)?;
+        let root_data = &self.destination.rir.instructions[root].data;
+        let valid_declaration = if self.root_methods.is_some() {
+            matches!(root_data, InstData::StructDecl { .. })
+        } else {
+            match root_data {
+                InstData::FnDecl { .. }
+                | InstData::ConstDecl { .. }
+                | InstData::EnumDecl { .. }
+                | InstData::DropFnDecl { .. } => true,
+                InstData::StructDecl { methods, .. } => {
+                    self.destination.struct_methods(methods).len() == 0
+                }
+                _ => false,
+            }
+        };
+        if !valid_declaration
+            || (header.owner.is_some() && !matches!(root_data, InstData::FnDecl { .. }))
+        {
+            return Err(PackedRirDecodeError::InvalidTag {
+                family: "declaration root",
+                tag: 0,
+            }
+            .into());
+        }
+        let range = RirAppendRange {
+            instructions: u32::try_from(instruction_start)
+                .map_err(|_| PackedRirDecodeError::DestinationInstructionMismatch)?
+                ..u32::try_from(self.destination.rir.instructions.len())
+                    .map_err(|_| PackedRirDecodeError::DestinationInstructionMismatch)?,
+            extra: u32::try_from(extra_start)
+                .map_err(|_| PackedRirDecodeError::DestinationInstructionMismatch)?
+                ..u32::try_from(self.destination.rir.extra.len())
+                    .map_err(|_| PackedRirDecodeError::DestinationInstructionMismatch)?,
+        };
+        let declaration = self.destination_ref(header.declaration)?;
+        let method_owner = match header.owner {
+            Some((owner_declaration, name, is_public, is_linear)) => Some(PackedRirMethodOwner {
+                declaration: self.destination_ref(owner_declaration)?,
+                name: (self.remap_symbol)(name).map_err(PackedRirAppendError::SymbolRemap)?,
+                is_public,
+                is_linear,
+            }),
+            None => None,
+        };
+        Ok(PackedRirAppend {
+            range,
+            metadata: PackedRirAppendMetadata {
+                declaration,
+                method_owner,
+            },
+        })
+    }
+
+    fn check(&mut self) -> Result<(), PackedRirAppendError<E>> {
+        (self.checkpoint)().map_err(PackedRirAppendError::Checkpoint)
+    }
+
+    fn capacity(family: &'static str) -> PackedRirAppendError<E> {
+        PackedRirAppendError::Build(RirPayloadBuildError::CapacityFailure { family })
+    }
+
+    fn validate_symbols(&mut self, header: Header) -> Result<(), PackedRirAppendError<E>> {
+        let section = self
+            .bytes
+            .get(header.symbols_offset..header.instructions_offset)
+            .ok_or(PackedRirDecodeError::Truncated)?;
+        if header.symbols as usize > section.len() {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "dense symbols",
+            }
+            .into());
+        }
+        let mut reader = Reader::new(section);
+        let hash_builder = RandomState::new();
+        let mut seen: HashMap<(u64, usize, u32), (u32, &[u8])> = HashMap::new();
+        seen.try_reserve(header.symbols as usize)
+            .map_err(|_| Self::capacity("dense symbols"))?;
+        for ordinal in 0..header.symbols {
+            self.check()?;
+            let length = reader.u32()? as usize;
+            if length > reader.remaining() {
+                return Err(PackedRirDecodeError::Truncated.into());
+            }
+            let spelling = reader.bytes(length)?;
+            let mut hasher = hash_builder.build_hasher();
+            let mut position = 0;
+            while position < spelling.len() {
+                self.check()?;
+                let mut end = (position + 4096).min(spelling.len());
+                while end < spelling.len() && spelling[end] & 0xc0 == 0x80 {
+                    end -= 1;
+                }
+                if end == position {
+                    return Err(PackedRirDecodeError::InvalidUtf8Symbol { symbol: ordinal }.into());
+                }
+                let chunk = &spelling[position..end];
+                std::str::from_utf8(chunk)
+                    .map_err(|_| PackedRirDecodeError::InvalidUtf8Symbol { symbol: ordinal })?;
+                hasher.write(chunk);
+                position = end;
+            }
+            let hash = hasher.finish();
+            let mut collision = 0u32;
+            loop {
+                let Some(&(first, existing)) = seen.get(&(hash, spelling.len(), collision)) else {
+                    seen.insert((hash, spelling.len(), collision), (ordinal, spelling));
+                    break;
+                };
+                let mut equal = true;
+                for (lhs, rhs) in existing.chunks(4096).zip(spelling.chunks(4096)) {
+                    self.check()?;
+                    if lhs != rhs {
+                        equal = false;
+                        break;
+                    }
+                }
+                if equal {
+                    return Err(PackedRirDecodeError::DuplicateSymbol {
+                        first,
+                        duplicate: ordinal,
+                    }
+                    .into());
+                }
+                collision =
+                    collision
+                        .checked_add(1)
+                        .ok_or(PackedRirDecodeError::CountOutOfBounds {
+                            family: "dense symbol hash collisions",
+                        })?;
+            }
+        }
+        if !reader.finished() {
+            return Err(PackedRirDecodeError::TrailingBytes.into());
+        }
+        Ok(())
+    }
+
+    fn reference(&mut self, reader: &mut Reader<'_>) -> Result<InstRef, PackedRirAppendError<E>> {
+        let value = reader.u32()?;
+        if value >= self.instructions {
+            return Err(PackedRirDecodeError::ReferenceOutOfBounds {
+                reference: value,
+                instructions: self.instructions,
+            }
+            .into());
+        }
+        if value >= self.source_instruction {
+            return Err(PackedRirDecodeError::ForwardReference {
+                instruction: self.source_instruction,
+                reference: value,
+            }
+            .into());
+        }
+        self.destination_ref(value)
+    }
+
+    fn destination_ref(&self, source: u32) -> Result<InstRef, PackedRirAppendError<E>> {
+        let destination = self
+            .destination_instruction_start
+            .checked_add(source)
+            .ok_or(PackedRirDecodeError::DestinationInstructionMismatch)?;
+        Ok(InstRef::from_raw(destination))
+    }
+
+    fn optional_ref(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<InstRef>, PackedRirAppendError<E>> {
+        if reader.boolean("optional instruction reference")? {
+            self.reference(reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn refs(
+        &mut self,
+        reader: &mut Reader<'_>,
+        family: &'static str,
+    ) -> Result<Vec<InstRef>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, family, 1)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity(family))?;
+        for _ in 0..count {
+            self.check()?;
+            values.push(self.reference(reader)?);
+        }
+        Ok(values)
+    }
+
+    fn call_args(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Vec<RirCallArg>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "call arguments", 2)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("call arguments"))?;
+        for _ in 0..count {
+            self.check()?;
+            values.push(RirCallArg {
+                value: self.reference(reader)?,
+                mode: decode_arg_mode(reader.byte()?)?,
+            });
+        }
+        Ok(values)
+    }
+
+    fn fields(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Vec<(Spur, Spur)>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "struct fields", 2)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("struct fields"))?;
+        for _ in 0..count {
+            self.check()?;
+            let name = self.symbol(reader)?;
+            let ty = self.symbol(reader)?;
+            values.push((name, ty));
+        }
+        Ok(values)
+    }
+
+    fn field_inits(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Vec<(Spur, InstRef)>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "field initializers", 2)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("field initializers"))?;
+        for _ in 0..count {
+            self.check()?;
+            let name = self.symbol(reader)?;
+            let value = self.reference(reader)?;
+            values.push((name, value));
+        }
+        Ok(values)
+    }
+
+    fn directives(
+        &mut self,
+        reader: &mut Reader<'_>,
+        basis: &mut Reader<'_>,
+        mut field: impl FnMut(u32) -> RirSpanField,
+    ) -> Result<Vec<RirDirective>, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "directives", 2)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("directives"))?;
+        for ordinal in 0..count {
+            self.check()?;
+            let name = self.symbol(reader)?;
+            let argument_count = Self::count(reader, "directive arguments", 1)?;
+            let mut args = Vec::new();
+            args.try_reserve_exact(argument_count)
+                .map_err(|_| Self::capacity("directive arguments"))?;
+            for _ in 0..argument_count {
+                self.check()?;
+                args.push(self.symbol(reader)?);
+            }
+            let ordinal =
+                u32::try_from(ordinal).map_err(|_| PackedRirDecodeError::CountOutOfBounds {
+                    family: "directives",
+                })?;
+            let span = self.span(basis, field(ordinal))?;
+            values.push(RirDirective { name, args, span });
+        }
+        Ok(values)
+    }
+
+    fn pattern(
+        &mut self,
+        reader: &mut Reader<'_>,
+        span: Span,
+    ) -> Result<RirPattern, PackedRirAppendError<E>> {
+        Ok(match Self::byte_tag(reader, "match pattern", 3)? {
+            0 => RirPattern::Wildcard(span),
+            1 => RirPattern::Int {
+                value: reader.u64()?,
+                negative: reader.boolean("negative integer pattern")?,
+                span,
+            },
+            2 => RirPattern::Bool(reader.boolean("boolean pattern")?, span),
+            3 => {
+                let module = self.optional_ref(reader)?;
+                let ctor_head = self.optional_ref(reader)?;
+                let type_name = self.symbol(reader)?;
+                let variant = self.symbol(reader)?;
+                let count = Self::count(reader, "pattern bindings", 1)?;
+                let mut bindings = Vec::new();
+                bindings
+                    .try_reserve_exact(count)
+                    .map_err(|_| Self::capacity("pattern bindings"))?;
+                for _ in 0..count {
+                    self.check()?;
+                    bindings.push(self.symbol(reader)?);
+                }
+                RirPattern::Path {
+                    module,
+                    ctor_head,
+                    type_name,
+                    variant,
+                    bindings,
+                    span,
+                }
+            }
+            _ => unreachable!(),
+        })
+    }
+
+    fn enum_payload(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<(Vec<Spur>, Vec<Vec<Spur>>), PackedRirAppendError<E>> {
+        let count = Self::count(reader, "enum variants", 2)?;
+        let mut variants = Vec::new();
+        let mut payloads = Vec::new();
+        variants
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("enum variants"))?;
+        payloads
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("enum payloads"))?;
+        for _ in 0..count {
+            self.check()?;
+            variants.push(self.symbol(reader)?);
+            let payload_count = Self::count(reader, "enum payload", 1)?;
+            let mut payload = Vec::new();
+            payload
+                .try_reserve_exact(payload_count)
+                .map_err(|_| Self::capacity("enum payload"))?;
+            for _ in 0..payload_count {
+                self.check()?;
+                payload.push(self.symbol(reader)?);
+            }
+            payloads.push(payload);
+        }
+        Ok((variants, payloads))
+    }
+
+    fn instruction(
+        &mut self,
+        opcode: u8,
+        span: Span,
+        reader: &mut Reader<'_>,
+        basis: &mut Reader<'_>,
+    ) -> Result<InstRef, PackedRirAppendError<E>> {
+        macro_rules! add {
+            ($data:expr) => {
+                self.destination.add_inst(Inst { data: $data, span })
+            };
+        }
+        macro_rules! binary {
+            ($variant:ident) => {{
+                let lhs = self.reference(reader)?;
+                let rhs = self.reference(reader)?;
+                add!(InstData::$variant { lhs, rhs })
+            }};
+        }
+        macro_rules! unary {
+            ($variant:ident, $field:ident) => {{
+                let $field = self.reference(reader)?;
+                add!(InstData::$variant { $field })
+            }};
+        }
+        let result = match opcode {
+            0 => add!(InstData::IntConst(reader.u64()?)),
+            1 => {
+                let text = self.symbol(reader)?;
+                add!(InstData::FloatConst { text })
+            }
+            2 => add!(InstData::BoolConst(reader.boolean("boolean constant")?)),
+            3 => {
+                let content = self.symbol(reader)?;
+                let anchor = self.anchor(reader)?;
+                add!(InstData::StringConst { content, anchor })
+            }
+            4 => add!(InstData::UnitConst),
+            5 => binary!(Add),
+            6 => binary!(Sub),
+            7 => binary!(Mul),
+            8 => binary!(Div),
+            9 => binary!(Mod),
+            10 => binary!(Eq),
+            11 => binary!(Ne),
+            12 => binary!(Lt),
+            13 => binary!(Gt),
+            14 => binary!(Le),
+            15 => binary!(Ge),
+            16 => binary!(And),
+            17 => binary!(Or),
+            18 => binary!(BitAnd),
+            19 => binary!(BitOr),
+            20 => binary!(BitXor),
+            21 => binary!(Shl),
+            22 => binary!(Shr),
+            23 => unary!(Neg, operand),
+            24 => unary!(Not, operand),
+            25 => unary!(BitNot, operand),
+            26 => unary!(Try, operand),
+            27 => {
+                let cond = self.reference(reader)?;
+                let then_block = self.reference(reader)?;
+                let else_block = self.optional_ref(reader)?;
+                add!(InstData::Branch {
+                    cond,
+                    then_block,
+                    else_block
+                })
+            }
+            28 => {
+                let cond = self.reference(reader)?;
+                let body = self.reference(reader)?;
+                add!(InstData::Loop { cond, body })
+            }
+            29 => {
+                let body = self.reference(reader)?;
+                let iter_borrow = self.optional_symbol(reader)?;
+                add!(InstData::InfiniteLoop { body, iter_borrow })
+            }
+            30 => {
+                let scrutinee = self.reference(reader)?;
+                let count = Self::count(reader, "match arms", 2)?;
+                let mut arms = Vec::new();
+                arms.try_reserve_exact(count)
+                    .map_err(|_| Self::capacity("match arms"))?;
+                for ordinal in 0..count {
+                    self.check()?;
+                    let arm = u32::try_from(ordinal).map_err(|_| {
+                        PackedRirDecodeError::CountOutOfBounds {
+                            family: "match arms",
+                        }
+                    })?;
+                    let pattern_span = self.span(basis, RirSpanField::MatchPattern { arm })?;
+                    let pattern = self.pattern(reader, pattern_span)?;
+                    let body = self.reference(reader)?;
+                    arms.push((pattern, body));
+                }
+                self.destination.add_match(scrutinee, &arms, span)?
+            }
+            31 => {
+                let value = self.optional_ref(reader)?;
+                add!(InstData::Break { value })
+            }
+            32 => add!(InstData::Continue),
+            33 => {
+                let directives = self.directives(reader, basis, |directive| {
+                    RirSpanField::FunctionDirective { directive }
+                })?;
+                let flags = reader.byte()?;
+                if flags & !0x7f != 0 {
+                    return Err(PackedRirDecodeError::InvalidTag {
+                        family: "function flags",
+                        tag: flags,
+                    }
+                    .into());
+                }
+                let name = self.symbol(reader)?;
+                let count = Self::count(reader, "parameters", 4)?;
+                let mut params = Vec::new();
+                params
+                    .try_reserve_exact(count)
+                    .map_err(|_| Self::capacity("parameters"))?;
+                for ordinal in 0..count {
+                    self.check()?;
+                    let name = self.symbol(reader)?;
+                    let ty = self.symbol(reader)?;
+                    let mode = decode_param_mode(reader.byte()?)?;
+                    let is_comptime = reader.boolean("comptime parameter")?;
+                    let parameter = u32::try_from(ordinal).map_err(|_| {
+                        PackedRirDecodeError::CountOutOfBounds {
+                            family: "parameters",
+                        }
+                    })?;
+                    let parameter_span =
+                        self.span(basis, RirSpanField::FunctionParameter { parameter })?;
+                    params.push(RirParam {
+                        name,
+                        ty,
+                        mode,
+                        is_comptime,
+                        span: parameter_span,
+                    });
+                }
+                let return_type = self.symbol(reader)?;
+                let body = self.reference(reader)?;
+                let self_mode = decode_param_mode(reader.byte()?)?;
+                self.destination.add_fn_decl(
+                    &directives,
+                    flags & 1 != 0,
+                    flags & 2 != 0,
+                    flags & 4 != 0,
+                    flags & 8 != 0,
+                    name,
+                    &params,
+                    return_type,
+                    body,
+                    flags & 16 != 0,
+                    self_mode,
+                    flags & 32 != 0,
+                    flags & 64 != 0,
+                    span,
+                )?
+            }
+            34 => {
+                let directives = self.directives(reader, basis, |directive| {
+                    RirSpanField::ConstDirective { directive }
+                })?;
+                let is_pub = reader.boolean("constant visibility")?;
+                let name = self.symbol(reader)?;
+                let ty = self.optional_symbol(reader)?;
+                let init = self.reference(reader)?;
+                self.destination
+                    .add_const_decl(&directives, is_pub, name, ty, init, span)?
+            }
+            35 => {
+                let name = self.symbol(reader)?;
+                let args = self.call_args(reader)?;
+                self.destination.add_call(name, &args, span)?
+            }
+            36 => {
+                let name = self.symbol(reader)?;
+                let args = self.refs(reader, "intrinsic arguments")?;
+                self.destination.add_intrinsic(name, &args, span)?
+            }
+            37 => {
+                let intrinsic = decode_internal_intrinsic(reader.byte()?)?;
+                let args = self.refs(reader, "internal intrinsic arguments")?;
+                self.destination
+                    .add_internal_intrinsic(intrinsic, &args, span)?
+            }
+            38 => {
+                let name = self.symbol(reader)?;
+                let type_arg = self.symbol(reader)?;
+                add!(InstData::TypeIntrinsic { name, type_arg })
+            }
+            39 => {
+                let type_arg = self.symbol(reader)?;
+                let field = self.symbol(reader)?;
+                add!(InstData::OffsetOf { type_arg, field })
+            }
+            40 => {
+                let value = self.optional_ref(reader)?;
+                add!(InstData::Ret(value))
+            }
+            41 => {
+                let value = self.reference(reader)?;
+                add!(InstData::Yield(value))
+            }
+            42 => {
+                let instructions = self.refs(reader, "block instructions")?;
+                self.destination.add_block(&instructions, span)?
+            }
+            43 => {
+                let directives = self.directives(reader, basis, |directive| {
+                    RirSpanField::AllocDirective { directive }
+                })?;
+                let name = self.optional_symbol(reader)?;
+                let is_mut = reader.boolean("mutable allocation")?;
+                let ty = self.optional_symbol(reader)?;
+                let init = self.reference(reader)?;
+                let iter_elem = reader.boolean("iteration element")?;
+                self.destination
+                    .add_alloc(&directives, name, is_mut, ty, init, iter_elem, span)?
+            }
+            44 => {
+                let name = self.symbol(reader)?;
+                let anchor = self.optional_anchor(reader)?;
+                add!(InstData::VarRef { name, anchor })
+            }
+            45 => {
+                let name = self.symbol(reader)?;
+                let value = self.reference(reader)?;
+                add!(InstData::Assign { name, value })
+            }
+            46 => {
+                let directives = self.directives(reader, basis, |directive| {
+                    RirSpanField::StructDirective { directive }
+                })?;
+                let flags = reader.byte()?;
+                if flags & !3 != 0 {
+                    return Err(PackedRirDecodeError::InvalidTag {
+                        family: "struct flags",
+                        tag: flags,
+                    }
+                    .into());
+                }
+                let name = self.symbol(reader)?;
+                let fields = self.fields(reader)?;
+                let encoded_methods = self.refs(reader, "struct methods")?;
+                if self.source_instruction == self.instructions - 1
+                    && self.root_methods.is_some()
+                    && !encoded_methods.is_empty()
+                {
+                    return Err(PackedRirDecodeError::CountOutOfBounds {
+                        family: "methodless struct root",
+                    }
+                    .into());
+                }
+                let methods = if self.source_instruction == self.instructions - 1 {
+                    self.root_methods.unwrap_or(&encoded_methods)
+                } else {
+                    &encoded_methods
+                };
+                self.destination.add_struct_decl(
+                    &directives,
+                    flags & 1 != 0,
+                    flags & 2 != 0,
+                    name,
+                    &fields,
+                    methods,
+                    span,
+                )?
+            }
+            47 => {
+                let module = self.optional_ref(reader)?;
+                let ctor_head = self.optional_ref(reader)?;
+                let type_name = self.symbol(reader)?;
+                let fields = self.field_inits(reader)?;
+                let shorthand_span = if reader.boolean("struct shorthand span")? {
+                    Some(self.span(basis, RirSpanField::StructInitShorthand)?)
+                } else {
+                    None
+                };
+                self.destination.add_struct_init(
+                    module,
+                    ctor_head,
+                    type_name,
+                    &fields,
+                    shorthand_span,
+                    span,
+                )?
+            }
+            48 => {
+                let base = self.reference(reader)?;
+                let field = self.symbol(reader)?;
+                add!(InstData::FieldGet { base, field })
+            }
+            49 => {
+                let base = self.reference(reader)?;
+                let field = self.symbol(reader)?;
+                let value = self.reference(reader)?;
+                add!(InstData::FieldSet { base, field, value })
+            }
+            50 => {
+                let is_pub = reader.boolean("enum visibility")?;
+                let name = self.symbol(reader)?;
+                let (variants, payloads) = self.enum_payload(reader)?;
+                self.destination
+                    .add_enum_decl(is_pub, name, &variants, &payloads, span)?
+            }
+            51 => {
+                let module = self.optional_ref(reader)?;
+                let type_name = self.symbol(reader)?;
+                let variant = self.symbol(reader)?;
+                add!(InstData::EnumVariant {
+                    module,
+                    type_name,
+                    variant
+                })
+            }
+            52 => {
+                let elements = self.refs(reader, "array elements")?;
+                self.destination.add_array_init(&elements, span)?
+            }
+            53 => {
+                let value = self.reference(reader)?;
+                let count = match Self::byte_tag(reader, "array repeat count", 1)? {
+                    0 => RepeatCount::Literal(reader.u64()?),
+                    1 => RepeatCount::Named(self.symbol(reader)?),
+                    _ => unreachable!(),
+                };
+                add!(InstData::ArrayRepeat { value, count })
+            }
+            54 => {
+                let base = self.reference(reader)?;
+                let index = self.reference(reader)?;
+                add!(InstData::IndexGet { base, index })
+            }
+            55 => {
+                let base = self.reference(reader)?;
+                let index = self.reference(reader)?;
+                let value = self.reference(reader)?;
+                add!(InstData::IndexSet { base, index, value })
+            }
+            56 => {
+                let receiver = self.reference(reader)?;
+                let method = self.symbol(reader)?;
+                let args = self.call_args(reader)?;
+                self.destination
+                    .add_method_call(receiver, method, &args, span)?
+            }
+            57 => {
+                let type_name = self.symbol(reader)?;
+                let body = self.reference(reader)?;
+                add!(InstData::DropFnDecl { type_name, body })
+            }
+            58 => unary!(Comptime, expr),
+            59 => unary!(Checked, expr),
+            60 => {
+                let type_name = self.symbol(reader)?;
+                add!(InstData::TypeConst { type_name })
+            }
+            61 => {
+                let fields = self.fields(reader)?;
+                let methods = self.refs(reader, "anonymous struct methods")?;
+                let anchor = self.anchor(reader)?;
+                self.destination
+                    .add_anon_struct_type(&fields, &methods, anchor, span)?
+            }
+            62 => {
+                let (variants, payloads) = self.enum_payload(reader)?;
+                let anchor = self.anchor(reader)?;
+                self.destination
+                    .add_anon_enum_type(&variants, &payloads, anchor, span)?
+            }
+            tag => return Err(PackedRirDecodeError::InvalidOpcode(tag).into()),
+        };
+        if let Some(error) = self.destination.capacity_error() {
+            return Err(PackedRirAppendError::Build(error));
+        }
+        Ok(result)
+    }
+
+    fn symbol(&mut self, reader: &mut Reader<'_>) -> Result<Spur, PackedRirAppendError<E>> {
+        let value = reader.u32()?;
+        if value >= self.symbols {
+            return Err(PackedRirDecodeError::SymbolOutOfBounds {
+                symbol: value,
+                symbols: self.symbols,
+            }
+            .into());
+        }
+        (self.remap_symbol)(value).map_err(PackedRirAppendError::SymbolRemap)
+    }
+
+    fn optional_symbol(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<Spur>, PackedRirAppendError<E>> {
+        if reader.boolean("optional symbol")? {
+            self.symbol(reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn span(
+        &mut self,
+        basis: &mut Reader<'_>,
+        field: RirSpanField,
+    ) -> Result<Span, PackedRirAppendError<E>> {
+        self.check()?;
+        let start = basis.u32()?;
+        let end = basis.u32()?;
+        if start > end {
+            return Err(PackedRirDecodeError::InvalidBasisSpan { start, end }.into());
+        }
+        let slot = RirSpanSlot::new(
+            InstRef::from_raw(
+                self.destination_instruction_start
+                    .checked_add(self.source_instruction)
+                    .ok_or(PackedRirDecodeError::DestinationInstructionMismatch)?,
+            ),
+            field,
+        );
+        self.spans_read =
+            self.spans_read
+                .checked_add(1)
+                .ok_or(PackedRirDecodeError::CountOutOfBounds {
+                    family: "span slots",
+                })?;
+        (self.remap_span)(slot, (start, end))
+            .map_err(|error| PackedRirAppendError::SpanRemap { slot, error })
+    }
+
+    fn byte_tag(
+        reader: &mut Reader<'_>,
+        family: &'static str,
+        max: u8,
+    ) -> Result<u8, PackedRirDecodeError> {
+        let tag = reader.byte()?;
+        if tag > max {
+            Err(PackedRirDecodeError::InvalidTag { family, tag })
+        } else {
+            Ok(tag)
+        }
+    }
+
+    fn count(
+        reader: &mut Reader<'_>,
+        family: &'static str,
+        minimum_bytes: usize,
+    ) -> Result<usize, PackedRirDecodeError> {
+        let count = reader.u32()? as usize;
+        if count > MAX_RIR_ENTRIES_PER_PROGRAM as usize
+            || count
+                .checked_mul(minimum_bytes)
+                .is_none_or(|minimum| minimum > reader.remaining())
+        {
+            return Err(PackedRirDecodeError::CountOutOfBounds { family });
+        }
+        Ok(count)
+    }
+
+    fn anchor(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirStructuralAnchor, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "structural anchor", 1)?;
+        let mut segments = Vec::new();
+        segments
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("structural anchor"))?;
+        for _ in 0..count {
+            self.check()?;
+            let tag = Self::byte_tag(reader, "structural anchor segment", 12)?;
+            let segment = match tag {
+                0 => RirStructuralPathSegment::Body,
+                1 => RirStructuralPathSegment::ParameterType(reader.u32()?),
+                2 => RirStructuralPathSegment::ReturnType,
+                3 => RirStructuralPathSegment::Statement(reader.u32()?),
+                4 => RirStructuralPathSegment::Operand(reader.u32()?),
+                5 => RirStructuralPathSegment::Branch(reader.u32()?),
+                6 => RirStructuralPathSegment::MatchArm(reader.u32()?),
+                7 => RirStructuralPathSegment::FieldType(reader.u32()?),
+                8 => RirStructuralPathSegment::VariantPayload {
+                    variant: reader.u32()?,
+                    payload: reader.u32()?,
+                },
+                9 => RirStructuralPathSegment::Method(reader.u32()?),
+                10 => RirStructuralPathSegment::AnonymousType(reader.u32()?),
+                11 => RirStructuralPathSegment::StringLiteral(reader.u32()?),
+                12 => RirStructuralPathSegment::ReadOnlyData(reader.u32()?),
+                _ => unreachable!(),
+            };
+            segments.push(segment);
+        }
+        Ok(RirStructuralAnchor::new(segments))
+    }
+
+    fn optional_anchor(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<RirStructuralAnchor>, PackedRirAppendError<E>> {
+        if reader.boolean("optional structural anchor")? {
+            self.anchor(reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+const fn encode_param_mode(mode: RirParamMode) -> u8 {
+    match mode {
+        RirParamMode::Normal => 0,
+        RirParamMode::Inout => 1,
+        RirParamMode::Borrow => 2,
+    }
+}
+
+fn decode_param_mode(tag: u8) -> Result<RirParamMode, PackedRirDecodeError> {
+    match tag {
+        0 => Ok(RirParamMode::Normal),
+        1 => Ok(RirParamMode::Inout),
+        2 => Ok(RirParamMode::Borrow),
+        tag => Err(PackedRirDecodeError::InvalidTag {
+            family: "parameter mode",
+            tag,
+        }),
+    }
+}
+
+const fn encode_arg_mode(mode: RirArgMode) -> u8 {
+    match mode {
+        RirArgMode::Normal => 0,
+        RirArgMode::Inout => 1,
+        RirArgMode::Borrow => 2,
+    }
+}
+
+fn decode_arg_mode(tag: u8) -> Result<RirArgMode, PackedRirDecodeError> {
+    match tag {
+        0 => Ok(RirArgMode::Normal),
+        1 => Ok(RirArgMode::Inout),
+        2 => Ok(RirArgMode::Borrow),
+        tag => Err(PackedRirDecodeError::InvalidTag {
+            family: "argument mode",
+            tag,
+        }),
+    }
+}
+
+const fn encode_internal_intrinsic(intrinsic: InternalIntrinsic) -> u8 {
+    match intrinsic {
+        InternalIntrinsic::IterLen => 0,
+        InternalIntrinsic::CharScalar => 1,
+        InternalIntrinsic::CharNext => 2,
+        InternalIntrinsic::CharScalarLossy => 3,
+        InternalIntrinsic::CharNextLossy => 4,
+    }
+}
+
+fn decode_internal_intrinsic(tag: u8) -> Result<InternalIntrinsic, PackedRirDecodeError> {
+    match tag {
+        0 => Ok(InternalIntrinsic::IterLen),
+        1 => Ok(InternalIntrinsic::CharScalar),
+        2 => Ok(InternalIntrinsic::CharNext),
+        3 => Ok(InternalIntrinsic::CharScalarLossy),
+        4 => Ok(InternalIntrinsic::CharNextLossy),
+        tag => Err(PackedRirDecodeError::InvalidTag {
+            family: "internal intrinsic",
+            tag,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rue_span::FileId;
+
+    fn validated_owner(orphan_prefix: bool) -> (ValidatedRir, ThreadedRodeo, InstRef) {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("unused");
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(1, 2),
+        });
+        if orphan_prefix {
+            editor.rir.extra.push(0xfeed_beef);
+        }
+        let block = editor.add_block(&[value], Span::new(0, 3)).unwrap();
+        let root = editor
+            .add_const_decl(&[], false, name, None, block, Span::new(0, 3))
+            .unwrap();
+        let context = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::DEFAULT, 3)],
+        };
+        (
+            ValidatedRir::finish(editor, &context).unwrap(),
+            symbols,
+            root,
+        )
+    }
+
+    fn pack(rir: &ValidatedRir, symbols: &ThreadedRodeo, root: InstRef) -> PackedValidatedRir {
+        rir.try_pack_candidate(
+            symbols,
+            PackedRirMetadata {
+                declaration: root,
+                method_owner: None,
+            },
+            || Ok::<_, ()>(()),
+            |_slot, span| Ok((span.start, span.end)),
+        )
+        .unwrap()
+    }
+
+    fn pack_intrinsics(names: &[&str]) -> PackedValidatedRir {
+        let symbols = ThreadedRodeo::new();
+        let declaration_name = symbols.get_or_intern("probe");
+        let mut editor = RirEditor::new();
+        let mut instructions = Vec::new();
+        for name in names {
+            instructions.push(
+                editor
+                    .add_intrinsic(symbols.get_or_intern(name), &[], Span::new(1, 2))
+                    .unwrap(),
+            );
+        }
+        let block = editor.add_block(&instructions, Span::new(0, 3)).unwrap();
+        let root = editor
+            .add_const_decl(&[], false, declaration_name, None, block, Span::new(0, 3))
+            .unwrap();
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 3)],
+            },
+        )
+        .unwrap();
+        pack(&rir, &symbols, root)
+    }
+
+    fn append(
+        packed: &PackedValidatedRir,
+        destination: &mut RirEditor,
+    ) -> Result<PackedRirAppend, PackedRirAppendError<()>> {
+        packed.try_append_remapped(
+            destination,
+            || Ok(()),
+            |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+            |_slot, (start, end)| Ok(Span::new(start, end)),
+        )
+    }
+
+    fn decode_error(packed: PackedValidatedRir) -> PackedRirDecodeError {
+        let mut destination = RirEditor::new();
+        match append(&packed, &mut destination).unwrap_err() {
+            PackedRirAppendError::Decode(error) => error,
+            error => panic!("expected packed decode error, got {error:?}"),
+        }
+    }
+
+    fn set_header(bytes: &mut [u8], offset: usize, value: usize) {
+        bytes[offset..offset + 4].copy_from_slice(&(value as u32).to_le_bytes());
+    }
+
+    #[test]
+    fn roundtrip_is_exact_and_reencode_is_deterministic() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        assert_eq!(packed.symbols().collect::<Vec<_>>(), ["unused"]);
+        let mut destination = RirEditor::new();
+        let appended = append(&packed, &mut destination).unwrap();
+        assert_eq!(appended.metadata.declaration, root);
+        let context = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::DEFAULT, 3)],
+        };
+        let decoded = ValidatedRir::finish(destination, &context).unwrap();
+        assert!(source.exact_eq(&decoded));
+        assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    #[test]
+    fn logical_payload_ignores_orphan_prefix_and_raw_range_start() {
+        let (dense, dense_symbols, dense_root) = validated_owner(false);
+        let (holey, holey_symbols, holey_root) = validated_owner(true);
+        assert!(!dense.exact_eq(&holey));
+        assert_eq!(
+            pack(&dense, &dense_symbols, dense_root).as_bytes(),
+            pack(&holey, &holey_symbols, holey_root).as_bytes()
+        );
+    }
+
+    #[test]
+    fn wrong_version_is_rejected_without_destination_mutation() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let mut bytes = packed.as_bytes().to_vec();
+        bytes[4] = VERSION + 1;
+        let corrupt = PackedValidatedRir(Arc::from(bytes));
+        let mut destination = RirEditor::new();
+        destination.add_inst(Inst {
+            data: InstData::IntConst(9),
+            span: Span::new(4, 5),
+        });
+        destination.rir.extra.push(17);
+        destination.rir.instruction_limit_exceeded = true;
+        let before_instructions = format!("{:?}", destination.rir.instructions);
+        let before_extra = destination.rir.extra.clone();
+        assert!(matches!(
+            append(&corrupt, &mut destination),
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::UnsupportedVersion(_)
+            ))
+        ));
+        assert_eq!(
+            format!("{:?}", destination.rir.instructions),
+            before_instructions
+        );
+        assert_eq!(destination.rir.extra, before_extra);
+        assert!(destination.rir.instruction_limit_exceeded);
+    }
+
+    #[test]
+    fn fallible_intrinsic_set_uses_all_five_stable_header_bits() {
+        let packed = pack_intrinsics(&[
+            "parse_i32",
+            "parse_i64",
+            "parse_u32",
+            "parse_u64",
+            "read_line",
+            "to_string",
+        ]);
+        assert_eq!(packed.as_bytes()[5], 0b1_1111);
+        assert_eq!(
+            packed.fallible_intrinsics().iter().collect::<Vec<_>>(),
+            RirFallibleIntrinsic::ALL,
+        );
+    }
+
+    #[test]
+    fn intrinsic_name_changes_packed_identity_and_typed_set() {
+        let i32 = pack_intrinsics(&["parse_i32"]);
+        let i64 = pack_intrinsics(&["parse_i64"]);
+        assert_ne!(i32.as_bytes(), i64.as_bytes());
+        assert!(
+            i32.fallible_intrinsics()
+                .contains(RirFallibleIntrinsic::ParseI32)
+        );
+        assert!(
+            !i32.fallible_intrinsics()
+                .contains(RirFallibleIntrinsic::ParseI64)
+        );
+        assert!(
+            i64.fallible_intrinsics()
+                .contains(RirFallibleIntrinsic::ParseI64)
+        );
+        assert!(
+            !i64.fallible_intrinsics()
+                .contains(RirFallibleIntrinsic::ParseI32)
+        );
+    }
+
+    #[test]
+    fn reserved_fallible_intrinsic_header_bits_are_rejected() {
+        let packed = pack_intrinsics(&["parse_i32"]);
+        let mut bytes = packed.as_bytes().to_vec();
+        bytes[5] |= 1 << 5;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bytes))),
+            PackedRirDecodeError::InvalidTag {
+                family: "fallible intrinsic set",
+                tag: 0b10_0001,
+            }
+        );
+    }
+
+    #[test]
+    fn cancellation_rolls_back_nonempty_destination_and_can_retry() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let mut destination = RirEditor::new();
+        destination.add_inst(Inst {
+            data: InstData::IntConst(9),
+            span: Span::new(4, 5),
+        });
+        destination.rir.extra.push(17);
+        let before_instructions = format!("{:?}", destination.rir.instructions);
+        let before_extra = destination.rir.extra.clone();
+        let mut checkpoints = 0;
+        let result = packed.try_append_remapped(
+            &mut destination,
+            || {
+                checkpoints += 1;
+                if checkpoints == 5 { Err(()) } else { Ok(()) }
+            },
+            |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+            |_slot, (start, end)| Ok(Span::new(start, end)),
+        );
+        assert!(matches!(result, Err(PackedRirAppendError::Checkpoint(()))));
+        assert_eq!(
+            format!("{:?}", destination.rir.instructions),
+            before_instructions
+        );
+        assert_eq!(destination.rir.extra, before_extra);
+        assert!(!destination.rir.instruction_limit_exceeded);
+
+        let appended = append(&packed, &mut destination).unwrap();
+        assert_eq!(appended.range.instructions, 1..4);
+        assert_eq!(appended.metadata.declaration, InstRef::from_raw(3));
+    }
+
+    #[test]
+    fn corrupt_instruction_encodings_fail_closed() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+
+        let mut bad_opcode = packed.as_bytes().to_vec();
+        bad_opcode[header.instructions_offset] = 255;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_opcode))),
+            PackedRirDecodeError::InvalidOpcode(255)
+        );
+
+        let mut forward_ref = packed.as_bytes().to_vec();
+        forward_ref[header.instructions_offset + 3] = 1;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(forward_ref))),
+            PackedRirDecodeError::ForwardReference {
+                instruction: 1,
+                reference: 1,
+            }
+        );
+
+        let mut out_of_bounds_ref = packed.as_bytes().to_vec();
+        out_of_bounds_ref[header.instructions_offset + 3] = 127;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(out_of_bounds_ref))),
+            PackedRirDecodeError::ReferenceOutOfBounds {
+                reference: 127,
+                instructions: 3,
+            }
+        );
+
+        let mut bad_count = packed.as_bytes().to_vec();
+        bad_count[header.instructions_offset + 2] = 127;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_count))),
+            PackedRirDecodeError::CountOutOfBounds {
+                family: "block instructions",
+            }
+        );
+
+        let mut nonminimal = packed.as_bytes().to_vec();
+        nonminimal[header.instructions_offset + 2] = 0x81;
+        nonminimal.insert(header.instructions_offset + 3, 0);
+        set_header(&mut nonminimal, 44, header.basis_offset + 1);
+        set_header(&mut nonminimal, 48, header.end_offset + 1);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(nonminimal))),
+            PackedRirDecodeError::NonMinimalVarint
+        );
+
+        let mut truncated = packed.as_bytes().to_vec();
+        truncated.remove(header.basis_offset - 1);
+        set_header(&mut truncated, 44, header.basis_offset - 1);
+        set_header(&mut truncated, 48, header.end_offset - 1);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(truncated))),
+            PackedRirDecodeError::Truncated
+        );
+    }
+
+    #[test]
+    fn dense_symbol_corruption_and_scaling_are_bounded() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+        let spelling =
+            packed.as_bytes()[header.symbols_offset..header.instructions_offset].to_vec();
+        let mut duplicate = packed.as_bytes().to_vec();
+        duplicate.splice(
+            header.instructions_offset..header.instructions_offset,
+            spelling.clone(),
+        );
+        set_header(&mut duplicate, 12, 2);
+        set_header(
+            &mut duplicate,
+            40,
+            header.instructions_offset + spelling.len(),
+        );
+        set_header(&mut duplicate, 44, header.basis_offset + spelling.len());
+        set_header(&mut duplicate, 48, header.end_offset + spelling.len());
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(duplicate))),
+            PackedRirDecodeError::DuplicateSymbol {
+                first: 0,
+                duplicate: 1,
+            }
+        );
+
+        let many = ThreadedRodeo::new();
+        for ordinal in 0..2_000 {
+            many.get_or_intern(format!("symbol_{ordinal}"));
+        }
+        let packed = pack(&source, &many, root);
+        let mut destination = RirEditor::new();
+        let mut checkpoints = 0usize;
+        packed
+            .try_append_remapped(
+                &mut destination,
+                || {
+                    checkpoints += 1;
+                    Ok::<_, ()>(())
+                },
+                |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+                |_slot, (start, end)| Ok(Span::new(start, end)),
+            )
+            .unwrap();
+        assert!(
+            checkpoints <= many.len() * 3 + 10,
+            "symbol validation regressed beyond linear work: {checkpoints}"
+        );
+    }
+
+    #[test]
+    fn out_of_range_symbol_is_rejected() {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("name");
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::TypeConst { type_name: name },
+            span: Span::new(0, 1),
+        });
+        let root = editor
+            .add_const_decl(&[], false, name, None, value, Span::new(0, 1))
+            .unwrap();
+        let source = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 1)],
+            },
+        )
+        .unwrap();
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+        let mut corrupt = packed.as_bytes().to_vec();
+        corrupt[header.instructions_offset + 1] = 1;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(corrupt))),
+            PackedRirDecodeError::SymbolOutOfBounds {
+                symbol: 1,
+                symbols: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn exhaustive_variant_and_payload_fixture_roundtrips_exactly() {
+        let symbols = ThreadedRodeo::new();
+        let a = symbols.get_or_intern("a");
+        let b = symbols.get_or_intern("b");
+        symbols.get_or_intern("");
+        symbols.get_or_intern("unused");
+        let span = Span::new(1, 2);
+        let anchor = RirStructuralAnchor::new(vec![
+            RirStructuralPathSegment::Body,
+            RirStructuralPathSegment::ParameterType(1),
+            RirStructuralPathSegment::ReturnType,
+            RirStructuralPathSegment::Statement(2),
+            RirStructuralPathSegment::Operand(3),
+            RirStructuralPathSegment::Branch(4),
+            RirStructuralPathSegment::MatchArm(5),
+            RirStructuralPathSegment::FieldType(6),
+            RirStructuralPathSegment::VariantPayload {
+                variant: 7,
+                payload: 8,
+            },
+            RirStructuralPathSegment::Method(9),
+            RirStructuralPathSegment::AnonymousType(10),
+            RirStructuralPathSegment::StringLiteral(11),
+            RirStructuralPathSegment::ReadOnlyData(12),
+        ]);
+        let directive = RirDirective {
+            name: a,
+            args: vec![b],
+            span,
+        };
+        let mut editor = RirEditor::new();
+        let mut refs = Vec::new();
+        macro_rules! add {
+            ($data:expr) => {{
+                let value = editor.add_inst(Inst { data: $data, span });
+                refs.push(value);
+                value
+            }};
+        }
+        let unit = add!(InstData::UnitConst);
+        let block = editor.add_block(&[unit], span).unwrap();
+        refs.push(block);
+        add!(InstData::IntConst(u64::MAX));
+        add!(InstData::FloatConst { text: a });
+        add!(InstData::BoolConst(true));
+        add!(InstData::StringConst {
+            content: b,
+            anchor: anchor.clone()
+        });
+        macro_rules! binary {
+            ($variant:ident) => {
+                add!(InstData::$variant {
+                    lhs: unit,
+                    rhs: unit
+                });
+            };
+        }
+        binary!(Add);
+        binary!(Sub);
+        binary!(Mul);
+        binary!(Div);
+        binary!(Mod);
+        binary!(Eq);
+        binary!(Ne);
+        binary!(Lt);
+        binary!(Gt);
+        binary!(Le);
+        binary!(Ge);
+        binary!(And);
+        binary!(Or);
+        binary!(BitAnd);
+        binary!(BitOr);
+        binary!(BitXor);
+        binary!(Shl);
+        binary!(Shr);
+        add!(InstData::Neg { operand: unit });
+        add!(InstData::Not { operand: unit });
+        add!(InstData::BitNot { operand: unit });
+        add!(InstData::Try { operand: unit });
+        add!(InstData::Branch {
+            cond: unit,
+            then_block: block,
+            else_block: Some(block)
+        });
+        add!(InstData::Loop {
+            cond: unit,
+            body: block
+        });
+        add!(InstData::InfiniteLoop {
+            body: block,
+            iter_borrow: Some(a)
+        });
+        let matched = editor
+            .add_match(
+                unit,
+                &[(
+                    RirPattern::Path {
+                        module: Some(unit),
+                        ctor_head: Some(unit),
+                        type_name: a,
+                        variant: b,
+                        bindings: vec![a, b],
+                        span,
+                    },
+                    block,
+                )],
+                span,
+            )
+            .unwrap();
+        refs.push(matched);
+        add!(InstData::Break { value: Some(unit) });
+        add!(InstData::Continue);
+        let function = editor
+            .add_fn_decl(
+                std::slice::from_ref(&directive),
+                true,
+                true,
+                true,
+                true,
+                a,
+                &[RirParam {
+                    name: a,
+                    ty: b,
+                    mode: RirParamMode::Borrow,
+                    is_comptime: true,
+                    span,
+                }],
+                b,
+                block,
+                true,
+                RirParamMode::Inout,
+                true,
+                true,
+                span,
+            )
+            .unwrap();
+        refs.push(function);
+        let args = [RirCallArg {
+            value: unit,
+            mode: RirArgMode::Inout,
+        }];
+        refs.push(editor.add_call(a, &args, span).unwrap());
+        refs.push(editor.add_intrinsic(a, &[unit], span).unwrap());
+        refs.push(
+            editor
+                .add_internal_intrinsic(InternalIntrinsic::CharNextLossy, &[unit, unit], span)
+                .unwrap(),
+        );
+        add!(InstData::TypeIntrinsic {
+            name: a,
+            type_arg: b
+        });
+        add!(InstData::OffsetOf {
+            type_arg: a,
+            field: b
+        });
+        add!(InstData::Ret(Some(unit)));
+        add!(InstData::Yield(unit));
+        refs.push(
+            editor
+                .add_alloc(
+                    std::slice::from_ref(&directive),
+                    Some(a),
+                    true,
+                    Some(b),
+                    unit,
+                    true,
+                    span,
+                )
+                .unwrap(),
+        );
+        add!(InstData::VarRef {
+            name: a,
+            anchor: Some(anchor.clone())
+        });
+        add!(InstData::Assign {
+            name: a,
+            value: unit
+        });
+        refs.push(
+            editor
+                .add_struct_decl(
+                    std::slice::from_ref(&directive),
+                    true,
+                    true,
+                    a,
+                    &[(a, b)],
+                    &[function],
+                    span,
+                )
+                .unwrap(),
+        );
+        refs.push(
+            editor
+                .add_struct_init(Some(unit), Some(unit), a, &[(a, unit)], Some(span), span)
+                .unwrap(),
+        );
+        add!(InstData::FieldGet {
+            base: unit,
+            field: a
+        });
+        add!(InstData::FieldSet {
+            base: unit,
+            field: a,
+            value: unit
+        });
+        refs.push(
+            editor
+                .add_enum_decl(true, a, &[a, b], &[vec![a], vec![]], span)
+                .unwrap(),
+        );
+        add!(InstData::EnumVariant {
+            module: Some(unit),
+            type_name: a,
+            variant: b
+        });
+        refs.push(editor.add_array_init(&[unit, block], span).unwrap());
+        add!(InstData::ArrayRepeat {
+            value: unit,
+            count: RepeatCount::Literal(u64::MAX)
+        });
+        add!(InstData::IndexGet {
+            base: unit,
+            index: unit
+        });
+        add!(InstData::IndexSet {
+            base: unit,
+            index: unit,
+            value: unit
+        });
+        refs.push(editor.add_method_call(unit, a, &args, span).unwrap());
+        add!(InstData::DropFnDecl {
+            type_name: a,
+            body: block
+        });
+        add!(InstData::Comptime { expr: unit });
+        add!(InstData::Checked { expr: unit });
+        add!(InstData::TypeConst { type_name: a });
+        refs.push(
+            editor
+                .add_anon_struct_type(&[(a, b)], &[function], anchor.clone(), span)
+                .unwrap(),
+        );
+        refs.push(
+            editor
+                .add_anon_enum_type(&[a, b], &[vec![b], vec![]], anchor, span)
+                .unwrap(),
+        );
+        let root = editor
+            .add_const_decl(
+                std::slice::from_ref(&directive),
+                true,
+                a,
+                Some(b),
+                block,
+                span,
+            )
+            .unwrap();
+        refs.push(root);
+        assert_eq!(
+            refs.len(),
+            63,
+            "fixture must contain exactly one of every InstData variant"
+        );
+        assert_eq!(editor.len(), 63);
+        let variants = editor
+            .iter()
+            .map(|(_, instruction)| std::mem::discriminant(&instruction.data))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(variants.len(), 63, "fixture duplicated an InstData variant");
+        let payload_stats = editor.payload_storage_stats();
+        assert_eq!(RIR_PAYLOAD_FAMILY_NAMES.len(), 17);
+        assert!(
+            payload_stats
+                .family_logical_bytes
+                .iter()
+                .all(|bytes| *bytes != 0),
+            "fixture must populate every typed payload family: {:?}",
+            payload_stats.family_logical_bytes,
+        );
+
+        let context = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::DEFAULT, 3)],
+        };
+        let source = ValidatedRir::finish(editor, &context).unwrap();
+        let packed = pack(&source, &symbols, root);
+        let mut destination = RirEditor::new();
+        let appended = append(&packed, &mut destination).unwrap();
+        assert_eq!(appended.metadata.declaration, root);
+        let decoded = ValidatedRir::finish(destination, &context).unwrap();
+        assert!(source.exact_eq(&decoded));
+        assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    #[test]
+    fn primitive_tag_and_varint_decoders_reject_unknown_or_overflowing_values() {
+        assert!(matches!(
+            Reader::new(&[2]).boolean("test"),
+            Err(PackedRirDecodeError::InvalidTag {
+                family: "test",
+                tag: 2
+            })
+        ));
+        assert!(decode_param_mode(3).is_err());
+        assert!(decode_arg_mode(3).is_err());
+        assert!(decode_internal_intrinsic(5).is_err());
+        for mode in [
+            RirParamMode::Normal,
+            RirParamMode::Inout,
+            RirParamMode::Borrow,
+        ] {
+            assert_eq!(decode_param_mode(encode_param_mode(mode)).unwrap(), mode);
+        }
+        for mode in [RirArgMode::Normal, RirArgMode::Inout, RirArgMode::Borrow] {
+            assert_eq!(decode_arg_mode(encode_arg_mode(mode)).unwrap(), mode);
+        }
+        for intrinsic in [
+            InternalIntrinsic::IterLen,
+            InternalIntrinsic::CharScalar,
+            InternalIntrinsic::CharNext,
+            InternalIntrinsic::CharScalarLossy,
+            InternalIntrinsic::CharNextLossy,
+        ] {
+            assert_eq!(
+                decode_internal_intrinsic(encode_internal_intrinsic(intrinsic)).unwrap(),
+                intrinsic,
+            );
+        }
+        let mut too_large_u32 = Vec::new();
+        put_u64(&mut too_large_u32, u64::from(u32::MAX) + 1);
+        assert_eq!(
+            Reader::new(&too_large_u32).u32(),
+            Err(PackedRirDecodeError::VarintOverflow)
+        );
+        let mut too_large_u64 = vec![0x80; 9];
+        too_large_u64.push(2);
+        assert_eq!(
+            Reader::new(&too_large_u64).u64(),
+            Err(PackedRirDecodeError::VarintOverflow)
+        );
+    }
+
+    #[test]
+    fn basis_corruption_and_projection_inversion_are_typed() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+
+        let mut inverted = packed.as_bytes().to_vec();
+        inverted[header.basis_offset] = 2;
+        inverted[header.basis_offset + 1] = 1;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(inverted))),
+            PackedRirDecodeError::InvalidBasisSpan { start: 2, end: 1 }
+        );
+
+        let mut extra = packed.as_bytes().to_vec();
+        extra.push(0);
+        set_header(&mut extra, 48, header.end_offset + 1);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(extra))),
+            PackedRirDecodeError::TrailingBytes
+        );
+
+        let mut fewer = packed.as_bytes().to_vec();
+        set_header(&mut fewer, 56, header.spans as usize - 1);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(fewer))),
+            PackedRirDecodeError::TrailingBytes
+        );
+
+        let projection = source.try_pack_candidate(
+            &symbols,
+            PackedRirMetadata {
+                declaration: root,
+                method_owner: None,
+            },
+            || Ok::<_, ()>(()),
+            |_slot, _span| Ok((9, 3)),
+        );
+        assert!(matches!(
+            projection,
+            Err(PackedRirEncodeError::InvalidProjectedSpan {
+                start: 9,
+                end: 3,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn anchor_tags_and_counts_are_validated() {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("name");
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::StringConst {
+                content: name,
+                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::Body]),
+            },
+            span: Span::new(0, 1),
+        });
+        let root = editor
+            .add_const_decl(&[], false, name, None, value, Span::new(0, 1))
+            .unwrap();
+        let source = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 1)],
+            },
+        )
+        .unwrap();
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+        let mut bad_tag = packed.as_bytes().to_vec();
+        bad_tag[header.instructions_offset + 3] = 13;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_tag))),
+            PackedRirDecodeError::InvalidTag {
+                family: "structural anchor segment",
+                tag: 13
+            }
+        );
+        let mut bad_count = packed.as_bytes().to_vec();
+        bad_count[header.instructions_offset + 2] = 127;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_count))),
+            PackedRirDecodeError::CountOutOfBounds {
+                family: "structural anchor"
+            }
+        );
+    }
+
+    #[test]
+    fn method_owner_metadata_resolves_through_complete_dense_symbols() {
+        let symbols = ThreadedRodeo::new();
+        let empty = symbols.get_or_intern("");
+        symbols.get_or_intern("unused");
+        let name = symbols.get_or_intern("method");
+        let ty = symbols.get_or_intern("Type");
+        let mut editor = RirEditor::new();
+        let unit = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let block = editor.add_block(&[unit], Span::new(0, 1)).unwrap();
+        let root = editor
+            .add_fn_decl(
+                &[],
+                true,
+                false,
+                false,
+                false,
+                name,
+                &[],
+                ty,
+                block,
+                true,
+                RirParamMode::Normal,
+                false,
+                false,
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let context = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::DEFAULT, 1)],
+        };
+        let source = ValidatedRir::finish(editor, &context).unwrap();
+        let packed = source
+            .try_pack_candidate(
+                &symbols,
+                PackedRirMetadata {
+                    declaration: root,
+                    method_owner: Some(PackedRirMethodOwner {
+                        declaration: root,
+                        name: empty,
+                        is_public: true,
+                        is_linear: true,
+                    }),
+                },
+                || Ok::<_, ()>(()),
+                |_slot, span| Ok((span.start, span.end)),
+            )
+            .unwrap();
+        assert_eq!(
+            packed.symbols().collect::<Vec<_>>(),
+            ["", "unused", "method", "Type"]
+        );
+        let mut destination = RirEditor::new();
+        let appended = append(&packed, &mut destination).unwrap();
+        assert_eq!(appended.metadata.declaration, root);
+        assert_eq!(
+            appended.metadata.method_owner,
+            Some(PackedRirMethodOwner {
+                declaration: root,
+                name: empty,
+                is_public: true,
+                is_linear: true,
+            })
+        );
+    }
+
+    fn finish_metadata_fixture(editor: RirEditor, symbols: &ThreadedRodeo) -> ValidatedRir {
+        ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 4)],
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn declaration_root_and_owner_metadata_matrix_is_enforced() {
+        let symbols = ThreadedRodeo::new();
+        let a = symbols.get_or_intern("a");
+        let b = symbols.get_or_intern("b");
+        let metadata = |root| PackedRirMetadata {
+            declaration: root,
+            method_owner: None,
+        };
+        let pack_result = |rir: &ValidatedRir, value| {
+            rir.try_pack_candidate(
+                &symbols,
+                value,
+                || Ok::<_, ()>(()),
+                |_slot, span| Ok((span.start, span.end)),
+            )
+        };
+
+        let mut function = RirEditor::new();
+        let unit = function.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let block = function.add_block(&[unit], Span::new(0, 1)).unwrap();
+        let function_root = function
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                a,
+                &[],
+                b,
+                block,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let function = finish_metadata_fixture(function, &symbols);
+        assert!(pack_result(&function, metadata(function_root)).is_ok());
+        assert!(
+            pack_result(
+                &function,
+                PackedRirMetadata {
+                    declaration: function_root,
+                    method_owner: Some(PackedRirMethodOwner {
+                        declaration: function_root,
+                        name: a,
+                        is_public: false,
+                        is_linear: false,
+                    }),
+                }
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            pack_result(
+                &function,
+                PackedRirMetadata {
+                    declaration: function_root,
+                    method_owner: Some(PackedRirMethodOwner {
+                        declaration: unit,
+                        name: a,
+                        is_public: false,
+                        is_linear: false,
+                    }),
+                }
+            ),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+        let outside_name = Spur::try_from_usize(symbols.len() + 10).unwrap();
+        assert!(matches!(
+            pack_result(
+                &function,
+                PackedRirMetadata {
+                    declaration: function_root,
+                    method_owner: Some(PackedRirMethodOwner {
+                        declaration: function_root,
+                        name: outside_name,
+                        is_public: false,
+                        is_linear: false,
+                    }),
+                }
+            ),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+
+        let mut constant = RirEditor::new();
+        let unit = constant.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let constant_root = constant
+            .add_const_decl(&[], false, a, None, unit, Span::new(0, 1))
+            .unwrap();
+        let constant = finish_metadata_fixture(constant, &symbols);
+        assert!(pack_result(&constant, metadata(constant_root)).is_ok());
+        assert!(matches!(
+            pack_result(
+                &constant,
+                PackedRirMetadata {
+                    declaration: constant_root,
+                    method_owner: Some(PackedRirMethodOwner {
+                        declaration: constant_root,
+                        name: a,
+                        is_public: false,
+                        is_linear: false,
+                    }),
+                }
+            ),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+
+        let mut structure = RirEditor::new();
+        let structure_root = structure
+            .add_struct_decl(&[], false, false, a, &[(a, b)], &[], Span::new(0, 1))
+            .unwrap();
+        let structure = finish_metadata_fixture(structure, &symbols);
+        assert!(pack_result(&structure, metadata(structure_root)).is_ok());
+
+        let mut enumeration = RirEditor::new();
+        let enum_root = enumeration
+            .add_enum_decl(false, a, &[a], &[vec![b]], Span::new(0, 1))
+            .unwrap();
+        let enumeration = finish_metadata_fixture(enumeration, &symbols);
+        assert!(pack_result(&enumeration, metadata(enum_root)).is_ok());
+
+        let mut drop_fn = RirEditor::new();
+        let unit = drop_fn.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let drop_root = drop_fn.add_inst(Inst {
+            data: InstData::DropFnDecl {
+                type_name: a,
+                body: unit,
+            },
+            span: Span::new(0, 1),
+        });
+        let drop_fn = finish_metadata_fixture(drop_fn, &symbols);
+        assert!(pack_result(&drop_fn, metadata(drop_root)).is_ok());
+
+        let mut expression = RirEditor::new();
+        let expression_root = expression.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let expression = finish_metadata_fixture(expression, &symbols);
+        assert!(matches!(
+            pack_result(&expression, metadata(expression_root)),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+
+        let mut nonfinal = RirEditor::new();
+        let unit = nonfinal.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let nonfinal_root = nonfinal
+            .add_const_decl(&[], false, a, None, unit, Span::new(0, 1))
+            .unwrap();
+        nonfinal.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let nonfinal = finish_metadata_fixture(nonfinal, &symbols);
+        assert!(matches!(
+            pack_result(&nonfinal, metadata(nonfinal_root)),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+
+        let mut methodful = RirEditor::new();
+        let unit = methodful.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let block = methodful.add_block(&[unit], Span::new(0, 1)).unwrap();
+        let method = methodful
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                a,
+                &[],
+                b,
+                block,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let methodful_root = methodful
+            .add_struct_decl(&[], false, false, a, &[], &[method], Span::new(0, 1))
+            .unwrap();
+        let methodful = finish_metadata_fixture(methodful, &symbols);
+        assert!(matches!(
+            pack_result(&methodful, metadata(methodful_root)),
+            Err(PackedRirEncodeError::InvalidMetadata)
+        ));
+    }
+
+    #[test]
+    fn direct_typed_payload_mutation_changes_packed_identity() {
+        fn owner(elements: usize) -> (ValidatedRir, ThreadedRodeo, InstRef) {
+            let symbols = ThreadedRodeo::new();
+            let name = symbols.get_or_intern("name");
+            let mut editor = RirEditor::new();
+            let unit = editor.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(0, 1),
+            });
+            let block = editor
+                .add_block(&vec![unit; elements], Span::new(0, 1))
+                .unwrap();
+            let root = editor
+                .add_const_decl(&[], false, name, None, block, Span::new(0, 1))
+                .unwrap();
+            let rir = ValidatedRir::finish(
+                editor,
+                &RirValidationContext {
+                    symbol_count: symbols.len(),
+                    source_lengths: &[(FileId::DEFAULT, 1)],
+                },
+            )
+            .unwrap();
+            (rir, symbols, root)
+        }
+        let (one, one_symbols, one_root) = owner(1);
+        let (two, two_symbols, two_root) = owner(2);
+        assert_ne!(
+            pack(&one, &one_symbols, one_root).as_bytes(),
+            pack(&two, &two_symbols, two_root).as_bytes(),
+        );
+    }
+
+    #[test]
+    fn struct_root_method_override_is_typed_and_atomic() {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("S");
+        let ty = symbols.get_or_intern("T");
+        let mut shell = RirEditor::new();
+        let shell_root = shell
+            .add_struct_decl(&[], false, false, name, &[(name, ty)], &[], Span::new(0, 1))
+            .unwrap();
+        let shell = ValidatedRir::finish(
+            shell,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 1)],
+            },
+        )
+        .unwrap();
+        let packed_shell = pack(&shell, &symbols, shell_root);
+
+        let mut destination = RirEditor::new();
+        let unit = destination.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: Span::new(0, 1),
+        });
+        let block = destination.add_block(&[unit], Span::new(0, 1)).unwrap();
+        let method = destination
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                name,
+                &[],
+                ty,
+                block,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                Span::new(0, 1),
+            )
+            .unwrap();
+        let appended = packed_shell
+            .try_append_remapped_with_root_methods(
+                &mut destination,
+                &[method],
+                || Ok::<_, ()>(()),
+                |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+                |_slot, (start, end)| Ok(Span::new(start, end)),
+            )
+            .unwrap();
+        let InstData::StructDecl { methods, .. } =
+            &destination.get(appended.metadata.declaration).data
+        else {
+            panic!("override root must remain a struct");
+        };
+        assert_eq!(destination.struct_methods(methods).to_vec(), [method]);
+
+        let before_cancel_instructions = destination.rir.instructions.len();
+        let before_cancel_extra = destination.rir.extra.len();
+        let before_cancel_latch = destination.rir.instruction_limit_exceeded;
+        let many_methods = vec![method; 128];
+        let mut checks = 0usize;
+        let canceled = packed_shell.try_append_remapped_with_root_methods(
+            &mut destination,
+            &many_methods,
+            || {
+                checks += 1;
+                if checks == 6 { Err(()) } else { Ok(()) }
+            },
+            |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+            |_slot, (start, end)| Ok(Span::new(start, end)),
+        );
+        assert!(matches!(
+            canceled,
+            Err(PackedRirAppendError::Checkpoint(()))
+        ));
+        assert_eq!(
+            destination.rir.instructions.len(),
+            before_cancel_instructions
+        );
+        assert_eq!(destination.rir.extra.len(), before_cancel_extra);
+        assert_eq!(
+            destination.rir.instruction_limit_exceeded,
+            before_cancel_latch
+        );
+        packed_shell
+            .try_append_remapped_with_root_methods(
+                &mut destination,
+                &many_methods,
+                || Ok::<_, ()>(()),
+                |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+                |_slot, (start, end)| Ok(Span::new(start, end)),
+            )
+            .unwrap();
+
+        let instruction_len = destination.rir.instructions.len();
+        let extra_len = destination.rir.extra.len();
+        for invalid in [unit, InstRef::from_raw(u32::MAX - 1)] {
+            let error = packed_shell.try_append_remapped_with_root_methods(
+                &mut destination,
+                &[invalid],
+                || Ok::<_, ()>(()),
+                |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+                |_slot, (start, end)| Ok(Span::new(start, end)),
+            );
+            assert!(matches!(
+                error,
+                Err(PackedRirAppendError::Decode(
+                    PackedRirDecodeError::InvalidTag {
+                        family: "composed struct method",
+                        ..
+                    }
+                ))
+            ));
+            assert_eq!(destination.rir.instructions.len(), instruction_len);
+            assert_eq!(destination.rir.extra.len(), extra_len);
+        }
+
+        let (constant, constant_symbols, constant_root) = validated_owner(false);
+        let packed_constant = pack(&constant, &constant_symbols, constant_root);
+        let error = packed_constant.try_append_remapped_with_root_methods(
+            &mut destination,
+            &[],
+            || Ok::<_, ()>(()),
+            |ordinal| Ok(Spur::try_from_usize(ordinal as usize).unwrap()),
+            |_slot, (start, end)| Ok(Span::new(start, end)),
+        );
+        assert!(matches!(
+            error,
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::InvalidTag {
+                    family: "declaration root",
+                    ..
+                }
+            ))
+        ));
+        assert_eq!(destination.rir.instructions.len(), instruction_len);
+        assert_eq!(destination.rir.extra.len(), extra_len);
+    }
+}

@@ -1,27 +1,34 @@
 //! Provenance-safe translation from parsed-module symbols into one request.
 
 use std::sync::Arc;
+#[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use lasso::{Spur, ThreadedRodeo};
+#[cfg(test)]
+use lasso::Spur;
+use lasso::ThreadedRodeo;
+#[cfg(test)]
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 #[cfg(test)]
 use crate::parsed_modules::ParsedProgram;
+#[cfg(test)]
 use crate::parsed_modules::{ParsedAstView, ParsedSymbol};
 
+#[cfg(test)]
 #[derive(Debug)]
 struct SemanticSymbolProvenance;
 
 /// A symbol in exactly one request-local semantic universe.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct SemanticSymbol {
     spur: Spur,
-    #[cfg_attr(not(test), allow(dead_code))]
     provenance: Arc<SemanticSymbolProvenance>,
 }
 
 /// Structural work performed by semantic-symbol translation.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticTranslationWork {
     /// Canonical program modules admitted when the universe was constructed.
@@ -42,9 +49,13 @@ pub struct SemanticTranslationWork {
 pub struct SemanticSymbolUniverse {
     admitted_modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
     interner: Arc<ThreadedRodeo>,
+    #[cfg(test)]
     provenance: Arc<SemanticSymbolProvenance>,
+    #[cfg(test)]
     local_symbol_resolutions: AtomicUsize,
+    #[cfg(test)]
     semantic_intern_attempts: AtomicUsize,
+    #[cfg(test)]
     unique_semantic_strings: AtomicUsize,
 }
 
@@ -69,9 +80,13 @@ impl SemanticSymbolUniverse {
         let universe = Self {
             admitted_modules: modules.to_vec().into(),
             interner: Arc::new(ThreadedRodeo::new()),
+            #[cfg(test)]
             provenance: Arc::new(SemanticSymbolProvenance),
+            #[cfg(test)]
             local_symbol_resolutions: AtomicUsize::new(0),
+            #[cfg(test)]
             semantic_intern_attempts: AtomicUsize::new(0),
+            #[cfg(test)]
             unique_semantic_strings: AtomicUsize::new(0),
         };
         if let Some(first) = modules.first()
@@ -100,6 +115,7 @@ impl SemanticSymbolUniverse {
 
     /// Canonical lowering is a single-threaded builder even though its frozen
     /// output remains `Send + Sync`.
+    #[cfg(test)]
     fn translate_shared(
         &self,
         owner: &ParsedAstView,
@@ -142,6 +158,7 @@ impl SemanticSymbolUniverse {
             .ok_or_else(|| invalid_input("semantic symbol is absent from its universe"))
     }
 
+    #[cfg(test)]
     pub fn work(&self) -> SemanticTranslationWork {
         SemanticTranslationWork {
             modules_visited: self.admitted_modules.len(),
@@ -153,6 +170,7 @@ impl SemanticSymbolUniverse {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn translate_ast_symbol(
         &self,
         owner: &ParsedAstView,
@@ -184,12 +202,14 @@ impl SemanticSymbolUniverse {
     }
 }
 
+#[cfg(test)]
 impl SemanticSymbol {
     pub(crate) fn spur(&self) -> Spur {
         self.spur
     }
 }
 
+#[cfg(test)]
 fn invalid_input(message: impl Into<String>) -> CompileError {
     CompileError::without_span(ErrorKind::InvalidCompilerInput(message.into()))
 }

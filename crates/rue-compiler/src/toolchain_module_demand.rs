@@ -107,13 +107,13 @@ impl TrustedToolchainModuleDemand {
 }
 
 /// The trusted-toolchain-module demand projected from ONE reached body's exact
-/// raw declaration body (RUE-1112).
+/// canonical declaration artifact (RUE-1112).
 ///
 /// This is the deterministic output of the registered `body-toolchain-demands`
 /// query node: it names, sorted and deduplicated, the trusted modules the body's
 /// fallible intrinsics require, together with the stable key of the demanding
-/// body (its requester anchor). It is **pure**: it derives solely from the raw
-/// body text, performs no filesystem I/O, and does no presence check. The rooted
+/// body (its requester anchor). It is **pure**: it derives solely from the
+/// artifact's typed intrinsic set, performs no filesystem I/O, and does no presence check. The rooted
 /// semantic attempt separately checks these names against the satisfied
 /// trusted-module catalogue and parks the absent ones before entering the body
 /// transaction, so speculative evaluation of this projection is always safe.
@@ -126,23 +126,24 @@ pub(crate) struct BodyToolchainDemand {
     modules: Arc<[TrustedToolchainModuleDemand]>,
     payload_kinds: Arc<[FalliblePayload]>,
     requester: Option<StableDefinitionKey>,
-    raw_body_available: bool,
+    source_candidate_available: bool,
 }
 
 impl BodyToolchainDemand {
     /// Build a demand projection for `requester` from the body's fallible-intrinsic
     /// payload kinds, deriving the trusted-module demands and carrying the payload
-    /// kinds themselves so the body transaction observes ONE canonical scan rather
-    /// than rescanning the raw text (RUE-1112 C1). `raw_body_available` records
-    /// whether that scan had an available raw body, allowing the projection to own
-    /// the availability edge as well. Sorts/deduplicates both sets so the node's
-    /// output is canonical. `requester` is `None` only for a reached instance with
+    /// kinds themselves so the body transaction observes ONE canonical artifact
+    /// projection rather than rescanning source text (RUE-1112 C1).
+    /// `source_candidate_available` records whether a stable source candidate
+    /// exists, allowing artifact failures to reach the body transaction's typed
+    /// failure path. Sorts/deduplicates both sets so the node's output is
+    /// canonical. `requester` is `None` only for a reached instance with
     /// no source declaration key, which always projects the empty demand set;
     /// whenever a module is demanded the requester anchor is present.
     pub(crate) fn from_payload_kinds(
         payload_kinds: impl IntoIterator<Item = FalliblePayload>,
         requester: Option<StableDefinitionKey>,
-        raw_body_available: bool,
+        source_candidate_available: bool,
     ) -> Self {
         let mut payload_kinds: Vec<_> = payload_kinds.into_iter().collect();
         payload_kinds.sort();
@@ -160,7 +161,7 @@ impl BodyToolchainDemand {
             modules: Arc::from(modules),
             payload_kinds: Arc::from(payload_kinds),
             requester,
-            raw_body_available,
+            source_candidate_available,
         }
     }
 
@@ -170,8 +171,8 @@ impl BodyToolchainDemand {
     }
 
     /// The fallible-intrinsic payload kinds this body uses (sorted, deduplicated).
-    /// The single canonical per-body scan; the body transaction observes this
-    /// instead of rescanning the raw body text.
+    /// The body transaction observes this canonical artifact projection instead
+    /// of rescanning source text.
     pub(crate) fn payload_kinds(&self) -> &[FalliblePayload] {
         &self.payload_kinds
     }
@@ -182,13 +183,12 @@ impl BodyToolchainDemand {
         self.requester.as_ref()
     }
 
-    /// Whether the projection observed an available raw declaration body.
+    /// Whether the projection resolved a stable source declaration candidate.
     ///
-    /// This bit is part of the registered value so consumers can use this
-    /// terminal as the one raw-body availability authority without adding a
-    /// duplicate direct edge to the raw-body query.
-    pub(crate) fn raw_body_available(&self) -> bool {
-        self.raw_body_available
+    /// Artifact construction may still fail; this bit lets the body transaction
+    /// observe the same artifact terminal and publish that exact typed failure.
+    pub(crate) fn source_candidate_available(&self) -> bool {
+        self.source_candidate_available
     }
 }
 

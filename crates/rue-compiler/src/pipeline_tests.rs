@@ -2587,6 +2587,29 @@ mod tests {
     }
 
     #[test]
+    fn generated_loop_and_place_locals_are_hygienic_against_source_names() {
+        let output = test_compile_source(
+            "fn index() -> u64 { 0 } \
+             fn main() -> i32 { \
+                 let __rue_for_p_0 = 40; \
+                 let __rue_place_0 = 2; \
+                 for _ in [1, 2] {} \
+                 let mut values = [0, 0, 0, 0]; \
+                 values[index()] += 1; \
+                 __rue_for_p_0 + __rue_place_0 \
+             }",
+        )
+        .expect("source-legal names cannot alias source-impossible compiler locals");
+        assert!(output.warnings.is_empty());
+    }
+
+    #[test]
+    fn wildcard_for_binder_keeps_unused_warning_suppression() {
+        let output = test_compile_source("fn main() -> i32 { for _ in [1, 2] {} 0 }").unwrap();
+        assert!(output.warnings.is_empty());
+    }
+
+    #[test]
     fn test_used_variable_no_warning() {
         let output = test_compile_source("fn main() -> i32 { let x = 42; x }").unwrap();
         assert_eq!(output.warnings.len(), 0);

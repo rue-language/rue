@@ -406,6 +406,22 @@ impl SourceSnapshot {
         (0..self.data.len).map(|index| self.file_at(index))
     }
 
+    /// Exact file identities appended by a direct additive successor.
+    ///
+    /// The lineage check is structural and the indexed walk touches only the
+    /// appended suffix, preserving RUE-1112's O(delta) publication contract.
+    pub(crate) fn direct_appended_file_ids_from(&self, base: &Self) -> Option<Vec<FileId>> {
+        self.data
+            .revision
+            .module_segments()
+            .direct_delta_from(base.data.revision.module_segments())?;
+        Some(
+            (base.data.len..self.data.len)
+                .map(|index| self.record_at(index).file_id)
+                .collect(),
+        )
+    }
+
     fn content(&self, file_id: FileId) -> Option<&Arc<String>> {
         self.record(file_id).map(|record| &record.text)
     }

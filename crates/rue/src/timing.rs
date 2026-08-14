@@ -1928,24 +1928,24 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "optimized_cfg_collection")
             .unwrap();
-        // The session parses the source module once, then the registered
-        // declaration and body terminals each reparse their exact durable
-        // input. BodyInput is an owned-syntax boundary and no longer validates
-        // by performing a duplicate lowering. The query-native body-analysis
-        // span owns its one reparse so that lazy parse work is charged to the
-        // semantic phase which demanded it.
-        assert_eq!(session_parse_file.invocations, 3);
+        // The session parses the source module once and the registered
+        // declaration-signature terminal parses its exact durable input.
+        // Named BodyInput now projects the canonical module RIR plan and must
+        // never own a parser invocation.
+        assert_eq!(session_parse_file.invocations, 2);
         assert_eq!(session_parse_file.root_invocations, 0);
         for expected in [
             ("parse_program", "parse_file"),
             ("declaration_signature_parsing", "parse_file"),
-            ("body_input_lowering", "parse_file"),
         ] {
             assert!(
                 session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
                 "the demanded reparse is timed beneath its request: {session_edges:?}"
             );
         }
+        assert!(
+            !session_edges.contains(&("body_input_lowering".to_owned(), "parse_file".to_owned()))
+        );
         // Semantic presentation is a projection of the same rooted query
         // graph used by normal compilation. The old whole-program declaration
         // index and `sema` coordinator must therefore remain absent.
