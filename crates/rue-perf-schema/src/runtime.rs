@@ -3054,7 +3054,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-linux")
             .expect("aarch64-linux is a row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 3);
+        assert_eq!(epoch.suite_revision, 4);
         assert_eq!(epoch.target, "aarch64-linux");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -3082,7 +3082,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-macos")
             .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 3);
+        assert_eq!(epoch.suite_revision, 4);
         assert_eq!(epoch.target, "aarch64-macos");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -4811,16 +4811,19 @@ records_comparison_identity = true
         // THE APPEND-ONLY EVIDENCE, against the manifest the repository ships
         // rather than a fixture written to agree with it. RUE-1485 proved this
         // shape by deriving an epoch-1 record beside two epoch-2 records with
-        // none rejected; RUE-1493 changes what an observation RECORDS, so the
-        // same proof is owed again.
+        // none rejected; RUE-1493 changed what an observation RECORDS and
+        // RUE-1496 changed the assembly rule an observation is taken under, so
+        // the same proof is owed each time.
         //
-        // Epoch 2's records carry preparer revision 1 and no comparison
-        // identity, because neither existed when they were written. Epoch 3's
-        // carry revision 2 and the identity, because its peer policy pins it.
-        // Both must be appendable, and both must publish, or this change would
-        // have invalidated evidence nobody can rewrite.
+        // Each row carries the preparer revision its epoch was collected under:
+        // epoch 2's records carry revision 1 and no comparison identity,
+        // because neither existed when they were written; epoch 3's carry
+        // revision 2 and the identity its peer policy pins; epoch 4's carry
+        // revision 3, the corpus no longer lower-cased. All must be appendable,
+        // and all must publish, or one of these changes would have invalidated
+        // evidence nobody can rewrite.
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
-        for (epoch, suite_revision, preparer_revision) in [(2, 2, 1), (3, 3, 2)] {
+        for (epoch, suite_revision, preparer_revision) in [(2, 2, 1), (3, 3, 2), (4, 4, 3)] {
             let report = shipped_report(epoch, suite_revision, preparer_revision);
             let outcome = validate_runtime_report(&manifest, &report);
             assert_eq!(
@@ -4840,11 +4843,12 @@ records_comparison_identity = true
 
     #[test]
     fn the_new_epoch_refuses_a_record_written_without_the_comparison_identity() {
-        // The other half of the same rule: epoch 3 pins the identity, so a
-        // runner that skipped it is refused HERE rather than at the point
-        // someone reads a joined row and cannot say which peer pins it names.
+        // The other half of the same rule: the collecting epoch pins the
+        // identity, so a runner that skipped it is refused HERE rather than at
+        // the point someone reads a joined row and cannot say which peer pins
+        // it names.
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
-        let mut report = shipped_report(3, 3, 2);
+        let mut report = shipped_report(4, 4, 3);
         for observation in &mut report.workloads {
             observation.comparison = None;
         }

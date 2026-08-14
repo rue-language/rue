@@ -52,6 +52,11 @@ pub fn E_FRONT_MATTER() -> u64 { 1 }
 pub fn E_MARKDOWN() -> u64 { 2 }
 pub fn E_TEMPLATE() -> u64 { 3 }
 pub fn E_SHORTCODE() -> u64 { 4 }
+// A content path that cannot be turned into a route. Its own code rather than
+// one of the four above because it is neither a document's syntax nor a
+// template's: the file NAME is the input that failed, and the fix is to rename
+// the file or to widen the documented slug subset (RUE-1496).
+pub fn E_ROUTE() -> u64 { 5 }
 
 pub const Values = std.arraybuf.ArrayBuf(Value);
 pub const Entries = std.arraybuf.ArrayBuf(Entry);
@@ -276,5 +281,6 @@ pub fn code_name(code: u64) -> StrBuf {
     else if code == E_MARKDOWN() { "markdown" }
     else if code == E_TEMPLATE() { "template" }
     else if code == E_SHORTCODE() { "shortcode" }
+    else if code == E_ROUTE() { "route" }
     else { "unknown" }
 }

@@ -62,6 +62,17 @@ CorpusRules = collections.namedtuple(
 # files without changing a rule of it, and neither peer port's bytes moved. The
 # composition change is recorded by the workload preparer's revision, which is
 # what the manifest pins.
+#
+# It stays at 2 through RUE-1496 as well, and that case is the harder one to
+# state. Both peer configurations changed bytes — each carried a comment
+# explaining that the corpus was lower-cased for gazette's benefit, and the
+# corpus is not lower-cased any more — so `peer_port_digest` moves. Nothing
+# either peer RENDERS moved: Zola still slugifies, Hugo still lower-cases, and
+# both route the three appendices exactly where they did. The revision is the
+# label for a deliberate change to what a port renders, so advancing it here
+# would tell a reader diffing two observations that a peer's output changed
+# when only a comment did. The digest is the authoritative half and it records
+# the edit either way.
 PEER_PORT_REVISION = 2
 
 # What the PEERS render, and nothing gazette reads. Inside the comparison

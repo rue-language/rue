@@ -413,7 +413,9 @@ fn load_templates(inout site: Site, inout eng: ast.Engine) -> bool {
 // Read every `.md` file under `content/`, parse its front matter, and record
 // the route it takes. `content_route` is the same function the Markdown link
 // renderer uses to resolve a `@/…` destination, so a link to a page and the
-// page's own route cannot disagree.
+// page's own route cannot disagree — including about the slugification it
+// applies to a file stem, which is why the route is not computed from the file
+// name here.
 fn discover(inout site: Site, inout eng: ast.Engine) -> bool {
     let entries = match std.fs.walk(borrow site.content_root) {
         DirRes.Ok(list) => list,
@@ -452,7 +454,7 @@ fn discover(inout site: Site, inout eng: ast.Engine) -> bool {
 
 fn add_page(inout site: Site, inout eng: ast.Engine, borrow rel: StrBuf, borrow source: StrBuf) -> bool {
     let front = frontmatter.parse(inout eng.arena, borrow source);
-    let route = tmpl_eval.content_route(borrow rel, 0);
+    let route = tmpl_eval.content_route(inout eng, borrow rel, 0);
     let permalink = tmpl_eval.join_base(inout eng, borrow route);
 
     let rel_id = eng.arena.strings.intern(borrow rel);

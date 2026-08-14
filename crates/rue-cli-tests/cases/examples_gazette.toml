@@ -288,6 +288,130 @@ asset.txt
 gazette: 4 pages, 3 sections, 9 files written
 """
 
+# RUE-1496. A content path becomes a route through the slug rule ADR-0072
+# Decision 3 documents, and these three cases are its hermetic statement: the
+# corpus checks in `scripts/gazette-corpus-diff.py` need the pinned Zola and the
+# live site, and the live site could rename its three upper-case files without
+# anyone noticing the capability had gone unexercised.
+[[case]]
+name = "gazette_slugifies_a_file_stem_into_a_link_target"
+description = "an `@/…` link to an upper-case content path resolves to the route the page is served at"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+# The corpus's own case, by name: nothing in the live content links to these
+# three, but a link and the page's own route come from one function, so a link
+# is the cheapest way to assert what that function does with a fragment and a
+# section beside a page.
+files = [
+  { path = "page.md", source = """+++
+title = "Links"
++++
+
+[grammar](@/spec/appendices/A-grammar.md), [limits](@/spec/appendices/C-implementation-limits.md#rules), [all](@/spec/appendices/_index.md)
+""" },
+]
+program_args = ["render", "page.md"]
+exit_code = 0
+# The directories keep their case and the file stem loses it, which is Zola's
+# own asymmetry rather than a simplification of it; a section's route is its
+# directories, so nothing in it is slugified at all.
+stdout = """<p><a href="https://rue-lang.dev/spec/appendices/a-grammar/">grammar</a>, <a href="https://rue-lang.dev/spec/appendices/c-implementation-limits/#rules">limits</a>, <a href="https://rue-lang.dev/spec/appendices/">all</a></p>
+"""
+
+[[case]]
+name = "gazette_routes_an_upper_case_page_to_its_slug"
+description = "an upper-case file stem is emitted at its slugified route, and the section around it is not slugified"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [
+  { path = "site/config.toml", source = """base_url = "https://example.test"
+title = "Site"
+""" },
+  { path = "site/templates/page.html", source = """{{ page.content | safe }}""" },
+  { path = "site/templates/section.html", source = """{{ section.content | safe }}""" },
+  { path = "site/content/_index.md", source = """+++
+title = "Home"
++++
+
+home
+""" },
+  { path = "site/content/appendices/_index.md", source = """+++
+title = "Appendices"
++++
+
+appendices
+""" },
+  { path = "site/content/appendices/A-Grammar.md", source = """+++
+title = "Grammar"
++++
+
+grammar
+""" },
+]
+program_args = ["build", "site", "-o", "public", "--list"]
+exit_code = 0
+stdout = """appendices/a-grammar/index.html
+index.html
+appendices/index.html
+gazette: 1 pages, 2 sections, 3 files written
+"""
+
+[[case]]
+name = "gazette_refuses_a_content_path_outside_the_slug_subset"
+description = "a path the documented slug subset does not cover fails the build instead of routing by guess, in a directory component as well as a file stem"
+source_path = "examples/gazette/main.rue"
+env = { RUE_STD_PATH = "${REAL_STD}" }
+# THE WHOLE ROUTE IS CONSTRAINED, not only the stem that folds, and both halves
+# are pinned here because ADR-0072 Decision 3's enumeration is load-bearing: a
+# reader has to be able to tell that `Docs/page.md` fails.
+#
+# Each of these is a path the two pinned peers route differently. Zola's `slug`
+# crate folds `my_page` to `my-page` while Hugo keeps the underscore; Zola
+# copies `Docs` verbatim while Hugo lower-cases it. No rule gazette could
+# implement matches both, so the subset stops where they agree and the build
+# stops here — which is also why the section's own route is named separately
+# from its page's: `Docs/` is refused as a section route, where nothing folds
+# at all.
+files = [
+  { path = "site/config.toml", source = """base_url = "https://example.test"
+title = "Site"
+""" },
+  { path = "site/templates/page.html", source = """{{ page.content | safe }}""" },
+  { path = "site/templates/section.html", source = """{{ section.content | safe }}""" },
+  { path = "site/content/_index.md", source = """+++
+title = "Home"
++++
+
+home
+""" },
+  { path = "site/content/my_page.md", source = """+++
+title = "Mine"
++++
+
+mine
+""" },
+  { path = "site/content/Docs/_index.md", source = """+++
+title = "Docs"
++++
+
+docs
+""" },
+  { path = "site/content/Docs/page.md", source = """+++
+title = "Page"
++++
+
+page
+""" },
+]
+program_args = ["build", "site", "-o", "public"]
+exit_code = 1
+stdout_contains = [
+  "content path is outside the slug subset",
+  "(my_page)",
+  "(Docs/page)",
+  "(Docs/)",
+]
+
 [[case]]
 name = "gazette_refuses_a_content_directory_without_an_index"
 description = "a directory with no `_index.md` is a diagnostic, never an implicit section"
