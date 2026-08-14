@@ -101,6 +101,14 @@ Subcommands:
                        batching factors, and the flagging rule. Produces
                        artifacts only; nothing here enters a series.
 
+  calibrate --runtime-reports <dir> [--report <path>]
+                       the same analysis for the ADR-0072 runtime suite, over
+                       stored runtime reports: per workload and per platform
+                       epoch, the dispersion of an unchanged program over an
+                       unchanged corpus, and a flagging recommendation. Reads
+                       a workflow's freshly written reports or a checkout of
+                       performance-data-v1/runtime. Artifacts only.
+
   scaling --manifest <path> --compiler <path> --commit <sha> --out <path>
                        measure maintained programs with independent fresh
                        compiler processes; also writes a Markdown report.
@@ -206,6 +214,7 @@ fn main() -> ExitCode {
 /// and a recommendation for a maintainer, not a measurement.
 fn run_calibration() -> Result<(), String> {
     let mut runs_dir = None;
+    let mut runtime_dir = None;
     let mut report_path = None;
     let mut args = std::env::args().skip(2);
     while let Some(flag) = args.next() {
@@ -215,22 +224,56 @@ fn run_calibration() -> Result<(), String> {
         };
         match flag.as_str() {
             "--runs" => runs_dir = Some(PathBuf::from(value()?)),
+            "--runtime-reports" => runtime_dir = Some(PathBuf::from(value()?)),
             "--report" => report_path = Some(PathBuf::from(value()?)),
             other => return Err(format!("unrecognized argument {other:?}")),
         }
     }
-    let runs_dir = runs_dir.ok_or("calibrate requires --runs <directory>")?;
 
-    let runs = calibrate::load_runs(&runs_dir).map_err(|error| error.to_string())?;
-    let report = calibrate::calibrate(&runs).map_err(|error| error.to_string())?;
-    let rendered = calibrate::render(&report);
+    // One record kind per invocation. The two analyses answer the same
+    // questions about different measurements, and a single report holding both
+    // would invite reading one suite's dispersion as the other's — which is
+    // exactly the transfer ADR-0072 Decision 5 forbids.
+    let (rendered, encoded) = match (runs_dir, runtime_dir) {
+        (Some(_), Some(_)) => {
+            return Err(
+                "calibrate takes --runs or --runtime-reports, not both: they are different \
+                 record kinds and their dispersions do not transfer"
+                    .to_string(),
+            );
+        }
+        (Some(runs_dir), None) => {
+            let runs = calibrate::load_runs(&runs_dir).map_err(|error| error.to_string())?;
+            let report = calibrate::calibrate(&runs).map_err(|error| error.to_string())?;
+            (
+                calibrate::render(&report),
+                serde_json::to_string_pretty(&report),
+            )
+        }
+        (None, Some(runtime_dir)) => {
+            let reports =
+                calibrate::load_runtime_reports(&runtime_dir).map_err(|error| error.to_string())?;
+            let analyses =
+                calibrate::calibrate_runtime(&reports).map_err(|error| error.to_string())?;
+            (
+                calibrate::render_runtime(&analyses),
+                serde_json::to_string_pretty(&analyses),
+            )
+        }
+        (None, None) => {
+            return Err(
+                "calibrate requires --runs <directory> or --runtime-reports <directory>"
+                    .to_string(),
+            );
+        }
+    };
 
     if let Some(path) = report_path {
         std::fs::write(&path, &rendered)
             .map_err(|error| format!("could not write {}: {error}", path.display()))?;
         let json = path.with_extension("json");
-        let encoded = serde_json::to_string_pretty(&report)
-            .map_err(|error| format!("could not serialize the report: {error}"))?;
+        let encoded =
+            encoded.map_err(|error| format!("could not serialize the report: {error}"))?;
         std::fs::write(&json, encoded)
             .map_err(|error| format!("could not write {}: {error}", json.display()))?;
         eprintln!("rue-bench: wrote {} and {}", path.display(), json.display());

@@ -24,6 +24,15 @@
 # `ubuntu-24.04-arm`, both collected on every trunk push, and `aarch64-macos` on
 # `macos-15`, collected daily because its runner is the expensive one. No
 # platform inherits another's calibration, so a row arrives advisory and says so.
+#
+# The route out of advisory is `rue-bench calibrate --runtime-reports <dir>`
+# (RUE-1497), over this store's records or over the repeated reports the
+# `calibrate-runtime` lane of `.github/workflows/performance-calibration.yml`
+# produces. It reports each workload's dispersion on each platform and sweeps
+# `(k, window)` for the smallest pairing that flags nothing while nothing is
+# changing. What it emits is a recommendation to review; declaring an
+# `[epoch.calibration]` table below remains a maintainer's edit, because
+# ADR-0072's open question 4 is a maintainer's question.
 schema_version = 1
 
 [[suite]]

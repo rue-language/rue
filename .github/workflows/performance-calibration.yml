@@ -1,30 +1,73 @@
-# Noise calibration for the compiler-performance suite (ADR-0067 Phase 4).
+# Noise calibration for the performance suites (ADR-0067 Phase 4; ADR-0072
+# Decision 5).
 #
-# Repeatedly measures ONE unchanged compiler revision on each hosted platform,
-# then reports what the hardware's noise implies for sampling counts, batching
-# factors, and the flagging rule.
+# Two lanes, one method. The `calibrate` job repeatedly measures ONE unchanged
+# compiler revision on each hosted platform and reports what the hardware's
+# noise implies for sampling counts, batching factors, and the flagging rule.
+# The `calibrate-runtime` job does the same for the runtime suite: how fast the
+# programs the compiler produces run, over ADR-0072's own record kind.
 #
-# The method rests on measuring the same revision every time: nothing real is
-# changing, so any difference the flagging rule reports is a false positive by
-# construction, and `k` can be chosen as the smallest multiplier producing none.
+# The method rests on measuring something that is not changing, so any
+# difference the flagging rule reports is a false positive by construction and
+# `k` can be chosen as the smallest multiplier producing none. What must be held
+# constant differs between the lanes, and that is not a detail. The compiler
+# lane pins the compiler revision, because the compiler is the product under
+# measurement. The runtime lane's product is the executable the compiler
+# emitted, whose digest rides every observation — so the runtime calibrator
+# holds the PROGRAM digest and the recorded WORKLOAD identity constant, and a
+# repetition here satisfies both by construction.
 #
 # NOTHING THIS WORKFLOW PRODUCES MAY ENTER A SERIES. Output is uploaded as
-# workflow artifacts and never written to the data branch. This workflow holds
-# no write permission, so that is structural rather than a convention: there is
-# no path from a calibration artifact to published history.
+# workflow artifacts and never written to the data branch. Three things make
+# that structural rather than a convention, and all three are needed:
+#
+#   * this workflow declares `contents: read` and no job re-declares it, unlike
+#     `performance-collect.yml`'s publish job, which is where the write lives;
+#   * the only writer of `performance-data-v1` is that publish job, and it takes
+#     its input from `actions/download-artifact` WITHIN ITS OWN RUN, so an
+#     artifact produced here is not visible to it; and
+#   * every path `rue-bench` and `rue-bench runtime` write is one this job named
+#     — the `--out` record, the `--peer-state-dir` event state, and a work
+#     directory holding the prepared fixtures and compiled programs — all of
+#     them inside the runner's workspace. Neither subcommand touches a remote.
+#
+# There is no path from a calibration artifact to published history.
 name: Performance calibration
 
 on:
   workflow_dispatch:
     inputs:
       repetitions:
-        description: Calibration runs per platform
+        description: Compiler-suite calibration runs per platform (0 skips the lane)
         required: false
         default: "12"
       epoch:
         description: Manifest epoch to calibrate on every platform
         required: false
         default: "3"
+      runtime_repetitions:
+        description: Runtime-suite calibration runs per platform (0 skips the lane)
+        required: false
+        # Twenty, and the number is the sweep's arithmetic rather than a round
+        # figure. A trailing window of length W yields N - W comparisons from N
+        # observations, and the analysis declines to cite a pairing resting on
+        # fewer than ten. Twenty gives 17, 15, and 10 at the three swept
+        # windows: the smallest count at which all three candidates can be
+        # recommended from at all. Twelve, the compiler lane's figure, would
+        # leave the longest window with two.
+        #
+        # BE CLEAR WHAT THAT BUYS, because the nominal count flatters itself.
+        # Successive comparisons at window W share W - 1 observations, so twenty
+        # observations hold roughly five INDEPENDENT comparisons at window 3 and
+        # about two at window 10. Buying ten independent trials at the longest
+        # window would take of the order of a hundred repetitions, which is not
+        # a sensible use of a hosted macOS runner for a series whose flags are
+        # advisory. So twenty is a deliberate floor rather than a sufficiency
+        # claim: the report states the independent count beside every
+        # recommendation, the longest-window row is always the weakest, and a
+        # maintainer who wants a stronger answer raises this number knowing what
+        # it costs.
+        default: "20"
 
 # Read-only. Calibration must not be able to publish.
 permissions:
@@ -39,6 +82,8 @@ concurrency:
 
 jobs:
   calibrate:
+    # Each lane is hours of runner time, so either can be dispatched alone.
+    if: inputs.repetitions != '0'
     strategy:
       fail-fast: false
       matrix:
@@ -125,4 +170,128 @@ jobs:
             calibration-runs/
             calibration-${{ matrix.platform }}.md
             calibration-${{ matrix.platform }}.json
+          retention-days: 30
+
+  # The runtime suite's calibration lane (ADR-0072 Decision 5, RUE-1497).
+  #
+  # This is the only thing that can produce the calibration `runtime.toml`
+  # leaves empty on every platform row. The store accumulates one observation
+  # per push, so a series long enough to sweep a flagging rule over takes weeks
+  # of trunk activity and arrives interleaved with corpus changes, each of which
+  # ends a segment; this job produces the same evidence in one dispatch, at one
+  # checkout, with the corpus and the emitted executables identical throughout.
+  #
+  # It runs the platform's COLLECTION epoch rather than a calibration-only one,
+  # unlike the compiler lane. There is no non-collection hosted runtime epoch to
+  # use — `performance/runtime.toml`'s only such epoch is `local`, whose
+  # environment policy a hosted runner cannot satisfy — and the regime worth
+  # calibrating is the one that collects anyway. The reports are still artifacts
+  # and nothing else: see the header for the three reasons that is structural.
+  calibrate-runtime:
+    if: inputs.runtime_repetitions != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: x86_64-linux
+            image: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux
+            image: ubuntu-24.04
+          - os: macos-15
+            platform: aarch64-macos
+            image: macos-15
+    runs-on: ${{ matrix.os }}
+    name: calibrate runtime (${{ matrix.platform }})
+    # Longer than the compiler lane's budget, and for two reasons that add up.
+    # Twenty repetitions rather than twelve, and each repetition prepares the
+    # corpus, builds three programs' worth of measured processes, and runs the
+    # peer canary — on top of the release build of `rue` and `rue-bench` that
+    # dominates every job in these workflows.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      # Fetches the pinned peers as well as Rue's own tools: `zola` and `hugo`
+      # at the repository root are dotslash shims, and the runtime harness runs
+      # the canary against the same corpus gazette builds.
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and the runner
+        run: |
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release
+
+      - name: Run the runtime calibration repetitions
+        env:
+          # Declared rather than detected, exactly as the collection workflow
+          # declares it: a run must never be able to claim quietly that it
+          # satisfied an environment policy it did not.
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p runtime-calibration-reports runtime-peer-state
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
+          COMMIT="${{ github.sha }}"
+
+          for index in $(seq 1 "${{ inputs.runtime_repetitions }}"); do
+            echo "::group::runtime calibration run $index"
+            # Exit 3 is "written but not appendable" and 5 is "appendable but a
+            # workload did not complete". Both are recorded and analysed: the
+            # calibrator judges each observation on the record's own evidence —
+            # the oracle's verdict and whether the samples agreed — and reports
+            # what it excluded. Only a runner failure (2) stops the sweep, since
+            # after one there is nothing to analyse.
+            #
+            # The peer-state directory is local to this job and deliberately not
+            # restored from a cache. The first repetition finds no state and
+            # runs one full peer leg; every repetition after it joins on an
+            # unmoved comparison identity and pays for the canary alone, which
+            # is what keeps twenty repetitions affordable.
+            set +e
+            "$BENCH" runtime \
+              --manifest performance/runtime.toml \
+              --platform "${{ matrix.platform }}" \
+              --compiler "$RUE" \
+              --commit "$COMMIT" \
+              --repo-root . \
+              --peer-state-dir runtime-peer-state \
+              --out "runtime-calibration-reports/run-$(printf '%03d' "$index").json"
+            status=$?
+            set -e
+            if [ "$status" -eq 2 ]; then
+              echo "the runtime runner failed to produce a report; stopping"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Analyse
+        run: |
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench \
+            --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
+          "$BENCH" calibrate \
+            --runtime-reports runtime-calibration-reports \
+            --report "runtime-calibration-${{ matrix.platform }}.md"
+
+      - name: Upload runtime calibration artifacts
+        # Always, so a sweep stopped partway is still readable evidence about
+        # the regime that stopped it.
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: runtime-calibration-${{ matrix.platform }}
+          path: |
+            runtime-calibration-reports/
+            runtime-calibration-${{ matrix.platform }}.md
+            runtime-calibration-${{ matrix.platform }}.json
           retention-days: 30
