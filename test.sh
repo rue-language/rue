@@ -126,13 +126,49 @@ if [[ $# -eq 0 ]]; then
     local_targets=(//... toolchains//...)
     narrow_file="${RUE_TEST_TARGETS_FILE:-}"
     if [[ -n "$narrow_file" ]]; then
-        if [[ ! -r "$narrow_file" ]]; then
+        # A directory passes both -r and -s, and `read` fails on it without
+        # assigning, so it is classified as unreadable here rather than left to
+        # crash the loop below.
+        if [[ ! -r "$narrow_file" || -d "$narrow_file" ]]; then
             echo "test.sh: RUE_TEST_TARGETS_FILE='$narrow_file' is unreadable; running the full pattern" >&2
         elif [[ ! -s "$narrow_file" ]]; then
             echo "test.sh: no narrowed target list supplied; running the full pattern"
         else
-            mapfile -t local_targets <"$narrow_file"
-            echo "test.sh: narrowed to ${#local_targets[@]} impacted target(s) by the affected-targets determinator"
+            # Read with `while read`, not `mapfile`: macOS ships Bash 3.2 as
+            # /bin/bash, which has no `mapfile` builtin, so a narrowed run on a
+            # developer machine died with exit 127 before it tested anything
+            # (RUE-1506); ci.yml's native-units lane hit the same builtin first.
+            # `|| [[ -n ]]` keeps a final line that carries no newline.
+            #
+            # Bash 3.2 also treats `"${empty[@]}"` as an unbound variable under
+            # `set -u`, so build the list in its own array and leave the full
+            # pattern in place unless it ends up non-empty.
+            #
+            # Blank and whitespace-only lines are dropped rather than passed on
+            # as arguments: the producer strips empty lines already (ci.yml's
+            # `sed '/^$/d'`) but not whitespace-only ones, and a `buck2 test "
+            # "` argument is a confusing failure, not a narrowing. A list that
+            # holds nothing else therefore reaches the same fail-open fallback
+            # an empty file does. This is the one place the fix does not match
+            # `mapfile -t`, which would have kept those lines.
+            narrowed=()
+            while :; do
+                # Cleared before each read, not once before the loop: `read`
+                # assigns nothing when it FAILS (as against reaching EOF, which
+                # empties the variable), so the `-n` fallback would otherwise
+                # see either an unset variable — `set -u`, exit 1 — or the
+                # previous line, and append it twice.
+                narrowed_target=""
+                IFS= read -r narrowed_target || [[ -n "$narrowed_target" ]] || break
+                [[ "$narrowed_target" =~ [^[:space:]] ]] || continue
+                narrowed+=("$narrowed_target")
+            done <"$narrow_file"
+            if [[ ${#narrowed[@]} -eq 0 ]]; then
+                echo "test.sh: no narrowed target list supplied; running the full pattern"
+            else
+                local_targets=("${narrowed[@]}")
+                echo "test.sh: narrowed to ${#local_targets[@]} impacted target(s) by the affected-targets determinator"
+            fi
         fi
     fi
 
