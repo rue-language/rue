@@ -14,8 +14,24 @@ import math
 import platform
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+# RUE-1509: `tomllib` is stdlib only from 3.11, and this target carries
+# `rue_test_tier_premerge`, so below the floor the premerge suite died with
+# `ModuleNotFoundError: No module named 'tomllib'` out of a timeout validator --
+# a message naming neither the version nor the remedy. CI never saw it: its
+# runners are 3.12 and newer. The repository floor is 3.11 for this import and
+# nothing else; see AGENTS.md, "Repository tooling baseline".
+if sys.version_info < (3, 11):
+    raise SystemExit(
+        "error: scripts/cli-timeout-policy.py requires Python 3.11 or newer "
+        f"(this interpreter is {platform.python_version()} at {sys.executable}). "
+        "It reads the CLI execution contracts with the stdlib `tomllib` module, "
+        "added in 3.11. Install a 3.11+ interpreter and put it earlier on PATH; "
+        "see AGENTS.md, \"Repository tooling baseline\"."
+    )
+
+import tomllib
 
 PROFILE_NAMES = ("ordinary", "slow", "stress")
 PROFILE_KEYS = {"compile_hang_timeout_ms", "runtime_hang_timeout_ms"}

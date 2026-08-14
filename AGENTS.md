@@ -102,6 +102,41 @@ Rue uses Buck2 through the repository's `./buck2` wrapper, not Cargo:
 ./buck2 run //crates/rue:rue -- --emit <stage> src.rue
 ```
 
+## Repository tooling baseline
+
+The repository's Python tooling requires Python 3.11 or newer. Two files
+actually need that today: `scripts/cli-timeout-policy.py` and its tests read
+the CLI execution contracts with `tomllib`, stdlib only from 3.11. Every other
+Python file in the tree runs on 3.9, and the gate below depends on that — 3.9
+is the version it treats as one a file must either run on or explain itself to.
+
+A stock Mac is below the floor: macOS ships `/usr/bin/python3` as 3.9.6 and no
+newer interpreter. CI cannot see that gap, because its runners are comfortably
+above the floor — `ubuntu-latest` and `ubuntu-24.04-arm` provide 3.12.3,
+`macos-15` provides 3.14.6. So a premerge-tier target that needs 3.11 stays
+green in CI and fails on a developer machine, which is what
+`//:cli-timeout-policy-validation` did (RUE-1509). Install a 3.11+ interpreter
+and put it earlier on `PATH`.
+
+This floor governs the interpreter that runs repository tooling. It is not the
+Python number in `docs/process/build-cache.md`, which records what the pinned
+remote worker image ships for the Buck prelude's rustc wrapper — a different
+interpreter running different code. The remote-execution canary builds; it does
+not run these tests.
+
+A script that needs a construct newer than 3.9 must announce it rather than
+crash on it: guard the first use with `if sys.version_info < (3, 11): raise
+SystemExit(...)`, name the version in the message, and put the `raise`
+unconditionally in that `if`'s own body. An import inside `try:` with an
+`except ImportError` handler has already handled the failure and needs no
+guard. `scripts/validate-python-baseline.py` checks what a static scan can: a
+curated table of version-gated imports, stdlib attributes, builtins, keyword
+arguments and grammar, the presence and shape of those guards, and this
+section's stated floor against the gate's own constant. It is a curated table
+rather than a proof — its docstring lists what it cannot see, including grammar
+with no distinct AST node and every method call. Annotate a reviewed exception
+with `# python-baseline-ok: <reason>`.
+
 ## Compiler architecture
 
 The canonical flow is:

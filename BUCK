@@ -862,6 +862,27 @@ rue_sh_test(
     },
 )
 
+# The interpreter-floor gate (RUE-1509). Unlike the Bash baseline's tests, these
+# need no particular interpreter to be INSTALLED to mean something, so premerge
+# is enough. They are not thereby host-independent, and the fixtures are written
+# to keep the difference small and asserted rather than assumed: every fixture is
+# 3.9 syntax, so the scan itself answers identically everywhere, and the two
+# cases that cannot -- what a parse error means, and what the shipped tool does
+# when run -- assert on both sides of the floor. The scan proper is only as
+# strict as the interpreter running it, which is why the authoritative run is
+# ci.yml's `fmt` step, at or above the floor.
+rue_sh_test(
+    name = "python-baseline-tool-tests",
+    test = "scripts/test-validate-python-baseline.py",
+    resources = [
+        "scripts/cli-timeout-policy.py",
+        "scripts/validate-python-baseline.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",

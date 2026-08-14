@@ -30,6 +30,13 @@ just forwards to `./buck2 build //crates/rue:rue`, so you can drive Buck2
 directly if you prefer. macOS also requires Xcode Command Line Tools for linking
 Rue executables.
 
+The repository's own tooling is not hermetic: its gates and test runners are
+Python scripts that use whichever `python3` your `PATH` resolves, and a few of
+them require Python 3.11 or newer. macOS ships `/usr/bin/python3` as 3.9.6, so
+on a stock Mac `scripts/rue premerge` will report that a target needs a newer
+interpreter until you install one and put it earlier on `PATH`. See AGENTS.md,
+"Repository tooling baseline".
+
 On development machines with several Rue worktrees, unfiltered full suites are
 serialized automatically to avoid oversubscribing the host. Quick and filtered
 checks remain concurrent. Maintainers can opt into the shared action cache as

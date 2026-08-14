@@ -154,7 +154,14 @@ they're recorded here so a future config change doesn't silently regress:
 5. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
    3.6), by immutable digest rather than by its moving tag. See
-   "Updating the remote worker image" below.
+   "Updating the remote worker image" below. This number is the worker image's,
+   for that wrapper, and is not the repository's Python floor — that is 3.11,
+   in AGENTS.md under "Repository tooling baseline". The two are independent:
+   the worker runs Buck actions, and the `remote execution (linux-x64)` job
+   builds rather than tests, so repository `scripts/*.py` do not execute there.
+   The worker image *is* below the repository floor, so an explicit
+   `--prefer-remote` **test** run of the two targets that need `tomllib` would
+   meet their version guard on the worker.
 6. **Linker** (RUE-320): the remote worker needs **`cc`** instead of the absent
    `clang++`. A `remote-execution` constraint is inserted only into the explicit
    full-remote execution configuration. The cache-only configuration omits it

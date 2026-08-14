@@ -2,10 +2,25 @@
 import importlib.util
 import json
 import os
+import platform
+import sys
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
+
+# RUE-1509: the same floor the tool under test carries, stated here too because
+# this file reads the case TOML itself. See AGENTS.md, "Repository tooling
+# baseline".
+if sys.version_info < (3, 11):
+    raise SystemExit(
+        "error: scripts/test-cli-timeout-policy.py requires Python 3.11 or "
+        f"newer (this interpreter is {platform.python_version()} at "
+        f"{sys.executable}). It reads the CLI case TOML with the stdlib "
+        "`tomllib` module, added in 3.11. Install a 3.11+ interpreter and put "
+        "it earlier on PATH; see AGENTS.md, \"Repository tooling baseline\"."
+    )
+
+import tomllib
 
 SCRIPT = Path(__file__).with_name("cli-timeout-policy.py")
 SPEC = importlib.util.spec_from_file_location("cli_timeout_policy", SCRIPT)
