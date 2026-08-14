@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Enumerate every corpus suite whose run is a cacheable build action (RUE-1118).
+#
+# The inventory comes from the Buck graph, not from a list kept here: every
+# `cached_corpus_suite` expands to one `_corpus_action` rule, so querying that
+# rule kind names exactly the converted corpora and a corpus added later joins
+# the sweep without an edit. That property is the point — the caller (RUE-1222's
+# scheduled cache-free sweep) exists to guarantee that *every* corpus is really
+# executed periodically, and a hand-maintained list is precisely the thing that
+# would quietly stop being every.
+#
+# Fails closed. `scripts/affected-targets` fails open because over-running a
+# corpus is safe and under-running it is what selection is for; here the
+# opposite holds. An inventory that errored or came back empty would turn the
+# sweep green having proved nothing, which is the same false pass the sweep
+# exists to bound.
+set -uo pipefail
+
+json=false
+excludes=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --json)
+            json=true
+            shift
+            ;;
+        --exclude)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --exclude requires a glob" >&2
+                exit 2
+            fi
+            excludes+=("$2")
+            shift 2
+            ;;
+        *)
+            echo "usage: scripts/ci-corpus-inventory [--json] [--exclude GLOB]..." >&2
+            exit 2
+            ;;
+    esac
+done
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root" || exit 1
+
+if ! actions="$(./buck2 uquery "kind('_corpus_action', //...)")"; then
+    echo "error: could not query the corpus inventory from the Buck graph" >&2
+    exit 1
+fi
+
+# Parse and validate the whole inventory before anything is judged against it: a
+# malformed label makes both the cross-check below and the sweep meaningless.
+all_suites=""
+while IFS= read -r action; do
+    [[ -n "$action" ]] || continue
+    # `root//:cli-tests-action` names the action of the `//:cli-tests` suite.
+    suite="${action#root}"
+    if [[ "$suite" != *-action ]]; then
+        echo "error: unexpected corpus action label: $action" >&2
+        exit 1
+    fi
+    suite="${suite%-action}"
+    if [[ ! "$suite" =~ ^//[A-Za-z0-9._/-]*:[A-Za-z0-9._-]+$ ]]; then
+        echo "error: corpus target is not a plain Buck label: $suite" >&2
+        exit 1
+    fi
+    all_suites="$all_suites$suite"$'\n'
+done <<<"$actions"
+
+# Completeness, enforced rather than assumed. The query above says "every target
+# of one rule kind, in the root cell", which is the set of corpora that happen to
+# be converted — not the set that ought to be swept. `rue_heavy_suite` is the
+# label CI and test.sh already use to mean "expensive corpus", so require every
+# heavy suite to be one of these actions. A corpus that regresses to a plain
+# sh_test, or a new heavy suite that never gets converted, then fails this
+# instead of quietly dropping out of the sweep while it still reports success.
+# The converse is deliberately not required: //:release-smoke is a converted
+# corpus that carries no heavy label.
+if ! heavy="$(./buck2 uquery "attrfilter('labels', 'rue_heavy_suite', //...)")"; then
+    echo "error: could not query the heavy-suite set to cross-check the inventory" >&2
+    exit 1
+fi
+missing=""
+while IFS= read -r suite; do
+    [[ -n "$suite" ]] || continue
+    suite="${suite#root}"
+    # Newline-delimited on both sides, so this is an exact label match and not a
+    # prefix that another package's target could satisfy.
+    case $'\n'"$all_suites" in
+        *$'\n'"$suite"$'\n'*) ;;
+        *) missing="$missing $suite" ;;
+    esac
+done <<<"$heavy"
+if [[ -n "$missing" ]]; then
+    echo "error: heavy suite(s) with no corpus action, so the sweep would skip them:$missing" >&2
+    exit 1
+fi
+
+# macOS ships Bash 3.2, where an empty array is "unset" to `set -u`: guard every
+# expansion rather than relying on `${#name[@]}`.
+suites=()
+found=0
+while IFS= read -r suite; do
+    [[ -n "$suite" ]] || continue
+    skip=false
+    for glob in ${excludes[@]+"${excludes[@]}"}; do
+        # shellcheck disable=SC2053  # glob match is the point
+        if [[ "$suite" == $glob ]]; then
+            skip=true
+            break
+        fi
+    done
+    if [[ "$skip" == false ]]; then
+        suites+=("$suite")
+        found=$((found + 1))
+    fi
+done <<<"$all_suites"
+
+if [[ "$found" -eq 0 ]]; then
+    echo "error: the corpus inventory is empty; refusing to report a vacuous sweep" >&2
+    exit 1
+fi
+
+if [[ "$json" == true ]]; then
+    # The label pattern above admits nothing JSON would have to escape, so the
+    # array is assembled directly rather than through a Python dependency.
+    separator='['
+    for suite in "${suites[@]}"; do
+        printf '%s"%s"' "$separator" "$suite"
+        separator=','
+    done
+    printf ']\n'
+else
+    printf '%s\n' "${suites[@]}"
+fi

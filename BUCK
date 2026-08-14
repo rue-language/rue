@@ -519,9 +519,10 @@ CLI_TEST_SHARD_COUNT = 4
         timeout_seconds = _CLI_SHARD_TIMEOUT_SECONDS,
         # RUE-1158 rebalances the shards from measured per-case cost. The
         # measurements are a declared output of the action rather than an
-        # executor --env path, so a cache hit replays the timings that produced
-        # the tree instead of leaving shard-weights.json to refresh only when a
-        # shard actually executes. See cached_corpus_suite's case_timings doc.
+        # executor --env path, so they survive a replayed run instead of
+        # vanishing with it. RUE-1222: what a hit replays is still the run that
+        # wrote the entry, so the weekly cache-free repetitions are where these
+        # are actually re-measured. See cached_corpus_suite's case_timings doc.
         case_timings = True,
     )
     for _shard in range(CLI_TEST_SHARD_COUNT)
@@ -1362,6 +1363,7 @@ filegroup(
     srcs = {
         "crates/clippy-gate.sh": "//crates:clippy-gate",
         "fmt.sh": "fmt.sh",
+        "scripts/ci-corpus-inventory": "scripts/ci-corpus-inventory",
         "scripts/ci-heavy-suite": "scripts/ci-heavy-suite",
         "scripts/cli-timeout-policy.py": "scripts/cli-timeout-policy.py",
         "scripts/ci-timed": "scripts/ci-timed",

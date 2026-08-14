@@ -32,28 +32,112 @@ target="$1"
 # against the declarative policy by //:cli-timeout-policy-validation. The
 # per-case budgets in execution_contracts.toml remain the honest gates.
 test_args=("$target")
+# Seeded with the subcommand so the array is never empty: macOS ships Bash 3.2,
+# where expanding an empty array under `set -u` is an unbound-variable error.
+build_args=(build)
 
 # RUE-1158 shard weights. The measurements are a declared output of the corpus
 # action (`:NAME-action[timings]`), not an executor `--env` path, so they are
 # stored in the cache entry alongside the stamp and materialize on a hit too.
 # Copy them to the stable path ci.yml's upload step expects, after the run.
+#
+# RUE-1222: the destination is overridable. A cache hit replays the timings of
+# whichever run wrote the entry, so the only *fresh* measurements come from a
+# cache-free run — and the repetition loop makes several of those per shard.
+# Letting the caller name a per-repetition path keeps all of them instead of
+# having each iteration overwrite the last.
 timings=""
 if [[ "$target" == //:cli-tests-shard-* ]]; then
-    timings="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-cli-case-timings.jsonl"
+    timings="${RUE_CLI_CASE_TIMINGS_DEST:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-cli-case-timings.jsonl}"
 fi
 
-# RUE-1159 repeats a shard to expose flakes, which only works if each repetition
-# actually executes. A cached corpus action would serve repetitions 2..N from the
-# first one's result and report a clean sweep having run the cases once, so a
-# repetition run is explicitly cache-free. This is a scheduled workflow, not the
-# merge-queue critical path, so the lost reuse costs nothing that matters.
-if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" ]]; then
+# A scheduled cache-free run. `--no-remote-cache` is the weaker half of that
+# guarantee than it looks: it disables the REMOTE cache only, while buck2's local
+# DICE state and materialized outputs survive untouched. What actually makes CI's
+# sweep execute is the fresh runner's empty `buck-out` and the absent BuildBuddy
+# secret; the flag only stops a populated remote cache from serving the lane.
+if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" || -n "${RUE_CORPUS_CACHE_FREE:-}" ]]; then
     test_args+=(--no-remote-cache)
-    test_args+=(--env "RUE_CORRECTNESS_REPETITION=$RUE_CORRECTNESS_REPETITION")
+    build_args+=(--no-remote-cache)
 fi
 
-./buck2 test "${test_args[@]}"
+# RUE-1159 repeats a shard to expose flakes, which is only worth anything if each
+# repetition really executes. Within one workspace and one daemon nothing above
+# achieves that — repetitions 2..N are local DICE hits on repetition 1's result,
+# so the lane reported a clean sweep having run the cases once.
+#
+# The index therefore travels as a buckconfig that `cached_corpus_suite` folds
+# into the corpus action's environment (see corpus.bzl). That makes each
+# repetition a distinct action digest, which buck2 must execute, and it delivers
+# the value to the harness as well. It replaces an executor `--env`, which
+# RUE-1118 broke twice over: the harness moved inside a build action where an
+# executor env never arrives, and `buck2 test --env` is rejected at argument
+# parsing unless it follows `--`, so every scheduled run since has died in 18
+# seconds with `unexpected argument '--env' found`.
+#
+# Both invocations must carry it. Without it on the second, the timings fetch
+# would name the *un-nonced* action — a different digest, whose result is either
+# stale or has to be produced by running the whole corpus again.
+if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" ]]; then
+    test_args+=(-c "rue.corpus_repetition=$RUE_CORRECTNESS_REPETITION")
+    build_args+=(-c "rue.corpus_repetition=$RUE_CORRECTNESS_REPETITION")
+fi
+
+# RUE-1222: name the actions this lane actually executed.
+#
+# `Commands: N (cached: C, remote: R, local: L)` counts a miss but cannot say
+# which action it was, and until now the only record that could was the
+# BuildBuddy invocation view. That left a standing unexplained result: on
+# byte-identical trees the linux-x64 corpus lanes report exactly one locally
+# executed action where the arm64 and macOS lanes report none.
+#
+# The report must describe THIS invocation. A bare `buck2 log what-ran` reads the
+# most recent event log in the isolation directory, which is a different command
+# whenever this one wrote no log — exactly the case that matters, since a run
+# that died at argument parsing would otherwise print a reassuring all-clear
+# about a preceding query. Pinning the trace id makes that impossible: no log for
+# this id means no output.
+buck_trace_id=""
+if command -v uuidgen >/dev/null 2>&1; then
+    buck_trace_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+elif [[ -r /proc/sys/kernel/random/uuid ]]; then
+    buck_trace_id="$(cat /proc/sys/kernel/random/uuid)"
+fi
+
+BUCK_WRAPPER_UUID="$buck_trace_id" ./buck2 test "${test_args[@]}"
 status=$?
+
+# `what-ran` reports one tab-delimited row per command behind a header line that
+# has none. Only `build` rows are actions; a `test.run` row is a test execution,
+# which never entered the cached/remote/local accounting to begin with.
+if [[ -n "$buck_trace_id" ]] &&
+    executed="$(./buck2 log what-ran --trace-id "$buck_trace_id" \
+        --skip-cache-hits --skip-remote-executions 2>/dev/null |
+        awk -F'\t' '$1 == "build" && NF >= 3 { print $2 }')"; then
+    if [[ -n "$executed" ]]; then
+        # A cold lane — a fork pull_request gets no cache secret — executes the
+        # entire graph, and the question is only ever about the handful a warm
+        # lane misses. Keep the TAIL: rows are in execution order and the corpus
+        # action depends on the whole graph, so it is always last. Capping the
+        # head truncated away the one row anybody reads this for.
+        printf '%s\n' "$executed" | awk '
+            { rows[NR] = $0 }
+            END {
+                start = NR - 25 + 1
+                if (start < 1) {
+                    start = 1
+                } else if (start > 1) {
+                    printf "corpus lane: %d earlier locally executed actions omitted\n", start - 1
+                }
+                for (i = start; i <= NR; i++) {
+                    print "corpus lane: executed action " rows[i]
+                }
+            }'
+    else
+        echo "corpus lane: every build action was served from cache"
+    fi
+fi
+
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
 fi
@@ -62,7 +146,7 @@ if [[ -n "$timings" ]]; then
     # The sh_test only asserts the stamp, so the timings output is not
     # materialized by the test run. Ask for it explicitly; this is a cache
     # lookup on the action that just ran, never a re-execution of the corpus.
-    if produced="$(./buck2 build --show-simple-output "${target}-action[timings]" 2>/dev/null)" \
+    if produced="$(./buck2 "${build_args[@]}" --show-simple-output "${target}-action[timings]" 2>/dev/null)" \
         && [[ -n "$produced" && -f "$produced" ]]; then
         cp "$produced" "$timings"
         timing_cases="$(grep -c '"event":"rue_cli_case_timing"' "$timings" || true)"

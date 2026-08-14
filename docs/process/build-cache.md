@@ -182,10 +182,12 @@ path.
 ## CI
 
 CI reads the key from the `BUILDBUDDY_API_KEY` repo secret (never from a file).
-The cache is provisioned (RUE-1006/RUE-1019) in the `CI` workflow's `clippy`,
-`release`, ordinary platform-test, and macOS corpus jobs, and in the sanitizer
-`valgrind` job, via `scripts/provision-build-cache install && apply` gated on
-secret presence.
+The cache is provisioned (RUE-1006/RUE-1019) via
+`scripts/provision-build-cache install && apply`, gated on secret presence, in
+every `CI` job whose cost is a build — ten of them as of RUE-1504: `clippy`,
+`linux-premerge`, `native-platforms`, `platform-corpus`, `affected-targets`,
+`rue-program-digests`, `remote-execution`, `performance-staleness`, `release`,
+and the sanitizer `valgrind` job.
 
 Availability rules, which the workflow steps must respect:
 
@@ -370,10 +372,170 @@ This matters because the two failure modes look identical in the test output. A
 merge_group run that reports `Pass (0.0s)` on all eighteen corpus jobs while each
 one takes ten minutes is doing no caching at all.
 
-`//:reproducible-programs` and `//:oracle-diff-generated-smoke` remain plain
-`sh_test`s: their harnesses are shell scripts that read repository paths
-directly rather than through declared env inputs, so establishing that contract
-has to come first. Both are off the merge queue's critical path.
+Since RUE-1163 every heavy corpus is converted, including the two shell-script
+harnesses (`//:reproducible-programs`, `//:oracle-diff-generated-smoke`) that
+were held back until they read their repository paths through declared env
+inputs. `scripts/ci-corpus-inventory` reports the current set from the graph:
+
+```bash
+scripts/ci-corpus-inventory            # every cached_corpus_suite, one per line
+```
+
+`scripts/ci-heavy-suite` also names the actions a lane really executed, from the
+invocation's own event log, so the count above has an identity next to it:
+
+```text
+corpus lane: executed action root//:spec-tests-action (cfg#...) (rue_corpus spec-tests)
+corpus lane: every build action was served from cache
+```
+
+### The undeclared-input safeguard (RUE-1222)
+
+Consequence 1 above is the one with no in-band detector. A cache-served corpus
+asserts a stamp; if the harness reads a path the action does not declare, that
+stamp answers for a *different tree* and the suite passes without running. There
+is no signal in the lane: the counters say "cached", the test says `Pass`, and
+the wall time says the cache is working — which is exactly what a correct run
+looks like. The only thing that distinguishes them is a run that actually
+executes the harness against the current tree.
+
+The weekly `correctness-repetitions.yml` workflow is that run:
+
+- `repeat-cli-shards` runs each CLI shard five independent times (RUE-1159);
+- `execute-every-corpus` runs every *other* converted corpus once, one runner
+  each, taking its inventory from `scripts/ci-corpus-inventory` rather than from
+  a list in the workflow. A corpus converted later is swept without an edit; an
+  empty or unreadable inventory fails the job instead of passing vacuously; and
+  the inventory is cross-checked against the `rue_heavy_suite` label set, so a
+  heavy suite that is not a converted corpus fails rather than silently falling
+  out of the sweep.
+
+`//:cli-tests` is deliberately not swept. The four shards declare a strict
+superset of its inputs — same harness, args, and `absolutize`, plus the shard
+index and the weights file — and their union is the same case inventory, so the
+repeated shards already expose anything it could fail to declare.
+
+**What makes these runs execute is the runner, not a flag.** Each job starts with
+an empty `buck-out` and no BuildBuddy secret, so there is nothing to serve it
+from. `ci-heavy-suite` also passes `--no-remote-cache`, but that disables only
+the *remote* cache: buck2's local DICE state and materialized outputs are
+untouched, which is why repeating a target inside one workspace needs the
+separate mechanism below. Do not read the flag as the guarantee.
+
+What the sweep checks is the input *declaration*, which is a property of the rule
+rather than of a configuration. It executes each corpus under
+`prelude//platforms:default`, while `ci.yml` runs `//:release-smoke` under
+`//platforms:release`; an input the harness reads but the action does not name
+is missing in both, so either configuration exposes it. It does not exercise the
+release-configured actions' own cache entries.
+
+This bounds the exposure to one week; it does not remove it. The contract is
+still that every path a harness reads at runtime reaches it through `env`, and
+hence through `$(location ...)`. Nothing on the merge queue's critical path can
+check that for you.
+
+The nightly `release.yml` sweep is not a substitute either. It runs `//...` with
+the cache provisioned, so any corpus in it may legitimately be served rather than
+executed.
+
+Two cautions from RUE-1222, both of which cost this lane real coverage:
+
+- **Nothing turns red when a scheduled workflow fails.** Between RUE-1118 and
+  RUE-1222 every scheduled run died in 18 seconds at argument parsing
+  (`buck2 test --env` is rejected unless it follows `--`) and no one was told.
+  After changing anything here, read the run list.
+- **A repetition only counts if its action digest differs.** See below.
+
+### Keeping the shard weights fresh (RUE-1222)
+
+`shard-weights.json` (RUE-1158) balances the CLI shards from measured per-case
+cost, and consequence 4 above keeps those measurements alive across a cache hit
+by making them a declared output. What a hit replays, though, is the run that
+*wrote* the entry: on a well-cached tree the balance is computed from numbers
+nobody has re-measured.
+
+That staleness degrades two things, not one. The obvious one is how evenly four
+shards finish. The other is a gate: `scripts/cli-timeout-policy.py` derives each
+shard's correctness deadline from the same weights, and
+`//:cli-timeout-policy-validation` fails the build when a suite's
+`timeout_seconds` in `BUCK` no longer covers the derived deadline. Weights are an
+input to a required check, so "they only affect scheduling" is wrong.
+
+The repetitions are where the corpus measures itself again, and each repetition
+really executes because its index makes the action digest differ (below). Each
+writes its own `case-timings-N.jsonl` into the
+`correctness-repetitions-linux-x64-shard-N` artifact.
+
+To refresh the weights, collect the files from **all four shard artifacts** and
+pass every one:
+
+```bash
+scripts/generate-cli-shard-weights.py \
+  --timings linux-x64=shard-0/case-timings-1.jsonl \
+  --timings linux-x64=shard-1/case-timings-1.jsonl   # ... every file, every shard
+```
+
+The tool takes the median per case across all inputs, so several independent
+repetitions are better evidence than one. It **replaces** `platforms.linux-x64`
+with the union of what it is given rather than merging into what is there, and
+each artifact holds only its own shard's cases — so one shard's files alone
+would silently drop the other three shards' weights to the `common` fallback.
+
+### Repeating a corpus so it actually runs (RUE-1222)
+
+RUE-1159's shard repetitions are only evidence if each repetition executes. Two
+mechanisms that look sufficient are not:
+
+- `--no-remote-cache` disables the remote cache, not buck2's local DICE state.
+  Inside one workspace, repetitions 2..N are served from repetition 1's result.
+- An executor `--env` never reaches the harness: since RUE-1118 the harness runs
+  inside a build action, and the test executor's environment is the stamp
+  check's. Worse, `buck2 test --env` is rejected at argument parsing unless it
+  follows `--`, which is what killed every scheduled run for weeks.
+
+The index therefore travels as `-c rue.corpus_repetition=N`, which
+`cached_corpus_suite` folds into the corpus action's environment. That makes each
+repetition a distinct action digest buck2 must execute, and delivers the value to
+the harness as well. It is injected only when non-empty, so an ordinary build's
+digest is unchanged and no cache entry is invalidated. `ci-heavy-suite` passes it
+to **both** its Buck invocations: the timings fetch must name the same
+repetition's action, or it returns another repetition's measurements — or runs
+the whole corpus again to produce them.
+
+### The linux-x64 `local: 1` (RUE-1222, open)
+
+On byte-identical trees the linux-x64 corpus lanes have reported exactly one
+locally executed build action where the arm64 and macOS lanes report none. The
+wall-time cost is negligible, but a standing platform-specific miss nobody can
+name is the kind of thing that stops being one action.
+
+It is **not identified**. The `Commands:` line counts the miss without naming
+it, and the record that would name it is the BuildBuddy invocation view for
+those runs. Three things are worth knowing before anyone repeats the search:
+
+- **The cross-platform comparison is not like-for-like.** Every entry in
+  `ci.yml`'s `platform-corpus` matrix is `ubuntu-latest`, and has been since
+  before the conversion. arm64 and macOS reach the corpora through the
+  `native-platforms` job instead, which runs
+  `scripts/run-native-platform-corpus.sh` — `buck2 run` of the spec and CLI
+  harnesses under `RUE_PLATFORM_CASE_SELECTION=native`. No `cached_corpus_suite`
+  target is built there at all, so "zero local actions on arm64/macOS" is a
+  different action graph reporting zero, not the same graph succeeding where
+  linux-x64 fails.
+- **The corpus action itself is not the candidate.** Its `local_only = True`
+  governs where a *miss* executes, not whether the cache is consulted, and the
+  RUE-1118 measurements show the corpora being served.
+- **The Linux-only branches in the graph today are too new and too broad.**
+  mimalloc's `zig_c_static_archive` and the `_COMPILER_ALLOCATOR_DEPS` link edge
+  both postdate the observation, and both key on `prelude//os:linux` rather than
+  on x86-64, so they would appear on the arm64 lane too.
+
+Rather than guess further, `ci-heavy-suite` now prints the identity of every
+locally executed action after each corpus run (see above). The next merge_group
+run of an already-built tree answers this from the job log alone: read the
+`corpus lane: executed action ...` lines in a linux-x64 corpus job, and the
+target, configuration, and action category of the miss are all there. Until
+that log exists, treat the count as unexplained rather than benign.
 
 ## Updating the remote worker image
 

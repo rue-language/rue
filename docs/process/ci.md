@@ -439,6 +439,24 @@ after a failure only to gather flake evidence, and exits failed if *any*
 repetition failed; a later pass never masks an earlier failure. Required
 correctness jobs do not automatically retry failed cases.
 
+Every job in that workflow really executes its corpus — each starts on a fresh
+runner with an empty `buck-out` and no cache secret — which is also what makes
+it the undeclared-input safeguard for the corpus build actions (RUE-1222): a
+corpus that reads a path its action does not declare passes against the previous
+tree's result, and only a real execution against the current tree can tell.
+Alongside the repeated shards, `execute-every-corpus` runs each remaining
+converted corpus once, taking its inventory from `scripts/ci-corpus-inventory`
+so a corpus converted later is swept without editing the workflow. The same runs
+are where `crates/rue-cli-tests/shard-weights.json` gets freshly measured
+per-case timings, which feed both shard balance and the derived correctness
+deadline `//:cli-timeout-policy-validation` gates on.
+
+Repetition within one workspace needs more than `--no-remote-cache`, which
+disables only the remote cache: the index rides `-c rue.corpus_repetition=N` so
+each repetition is a distinct action digest. Nothing in this workflow is a
+required check, so a failure here turns nothing red — read the run list after
+changing it. See `docs/process/build-cache.md`.
+
 ## Nothing executes twice (ADR-0069 §2)
 
 **No test the gate can enumerate executes more than once per platform per run
