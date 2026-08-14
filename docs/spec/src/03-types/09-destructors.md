@@ -337,3 +337,4 @@ fn main() -> i32 {
     0
 }
 // prints: 100, 2, 1  (values drop in reverse declaration order at scope exit)
+```
