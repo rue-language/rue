@@ -99,6 +99,20 @@ python3 "$ROOT/scripts/generate-site-status.py" \
     --performance-data "$ROOT/website/static/performance-data.json"
 rm -f "$TRACEABILITY_JSON"
 
+# Cut the runtime page's side-by-side source excerpts out of the checked-in
+# ports (ADR-0072 Decision 8).
+#
+# The ports are the benchmark's actual input, so an excerpt pasted into the
+# template would be the one claim on that page with nothing checking it — and it
+# would fail by continuing to render. This is deliberately not optional and not
+# guarded: the extractor exits non-zero when a declaration has stopped
+# describing its source file, and `set -e` turns that into a failed site build
+# rather than a page published with a stale port on it.
+echo "Extracting source excerpts..."
+python3 "$ROOT/scripts/extract-source-excerpts.py" \
+    --repo "$ROOT" \
+    --out "$ROOT/website/source-excerpts.json"
+
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."
 cd website

@@ -17,6 +17,12 @@ on:
       # cases, so a case or a rule marker changes the published board even
       # though no file under website/ moved.
       - 'crates/rue-spec/**'
+      # The runtime page cuts its side-by-side port excerpts out of the gazette
+      # and peer sources when the site is built, so an edit to either one
+      # changes the published page with no file under website/ moving. The peer
+      # ports are already covered by the performance/** entry above.
+      - 'examples/gazette/**'
+      - 'scripts/extract-source-excerpts.py'
       - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
@@ -31,6 +37,12 @@ on:
       # cases, so a case or a rule marker changes the published board even
       # though no file under website/ moved.
       - 'crates/rue-spec/**'
+      # The runtime page cuts its side-by-side port excerpts out of the gazette
+      # and peer sources when the site is built, so an edit to either one
+      # changes the published page with no file under website/ moving. The peer
+      # ports are already covered by the performance/** entry above.
+      - 'examples/gazette/**'
+      - 'scripts/extract-source-excerpts.py'
       - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
   # The dashboard's other input is the `performance-data-v1` branch, which is

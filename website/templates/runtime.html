@@ -58,6 +58,49 @@
     #rt-root td.figure { font-variant-numeric: tabular-nums; }
     /* Wide tables scroll inside their own box rather than the page. */
     .rt-scroll { overflow-x: auto; }
+
+    /* The side-by-side ports. `minmax(0, 1fr)` rather than `1fr`, because a
+       grid track's automatic minimum is its content, and one 144-column
+       template line would otherwise push the other two columns off the page. */
+    #rt-source-ports { display: grid; gap: 1rem; grid-template-columns: 1fr; }
+    /* The grid stretches the figures to a common height and the box inside
+       grows to fill it, so the three captions sit on one line and the reader
+       is comparing ports rather than box heights. */
+    #rt-source-ports figure {
+      margin: 0; min-width: 0; display: flex; flex-direction: column;
+    }
+    #rt-source-ports .specimen { flex: 1; }
+    /* A path is one unbreakable token and these are long enough to run out of
+       a column and into its neighbour's caption. */
+    #rt-source-ports figcaption { overflow-wrap: anywhere; }
+    /* In the narrowest three-column case the tool name and the language would
+       otherwise collide on one line. */
+    #rt-source .specimen-head { flex-wrap: wrap; gap: 0.4rem 1rem; }
+    #rt-source .specimen pre {
+      /* Wrapped rather than scrolled, which is the opposite of the choice the
+         tables above make and for a reason that does not apply to them: three
+         columns cannot be scrolled in step, so a horizontal scrollbar would
+         hide a different part of each port. A reader comparing three ports
+         needs every line present at once more than the original line breaks. */
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 0.72rem;
+      line-height: 1.55;
+      padding: 0.85rem 0.95rem;
+    }
+    @media (min-width: 60rem) {
+      #rt-source-ports { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    /* Wider than the reading measure, because three columns of source are not
+       prose and do not shrink to a prose column. Only the grid breaks out; the
+       captions around it stay on the page's measure, and below this width
+       nothing moves at all. */
+    @media (min-width: 82rem) {
+      #rt-source-ports {
+        width: min(82rem, calc(100vw - 4rem));
+        margin-left: calc(50% - min(41rem, calc(50vw - 2rem)));
+      }
+    }
   </style>
 
   <noscript>
@@ -331,6 +374,111 @@
       <p id="rt-empty-rejected-summary" style="color: #b45309; max-width: 42rem;"></p>
       <ul id="rt-empty-rejected-list" style="margin-top: 0.5rem; line-height: 1.7;"></ul>
     </div>
+  </div>
+
+  {#
+    The side-by-side ports (ADR-0072 Decision 8).
+
+    Outside `#rt-root` on purpose. Everything above this point is a measurement
+    and hides itself when there is none; this is the one part of the page that
+    is true before the first run and stays true after the last one, and it is
+    most worth reading exactly when the table above has nothing in it. It also
+    needs no script, so it survives the noscript path the charts do not.
+
+    The excerpts are cut from the checked-in files at build time by
+    `scripts/extract-source-excerpts.py`, which `website/build.sh` runs before
+    Zola. `load_data` is a hard error on a missing file and the extractor is a
+    hard error on a declaration that no longer describes its source, so the two
+    failure modes that matter — an excerpt that drifted from the port, and a
+    page built without extracting one — both fail the build instead of
+    publishing something that merely looks right.
+  #}
+  {% set source = load_data(path="source-excerpts.json", format="json") %}
+  <div id="rt-source" style="margin-top: 3rem;">
+    <h2>The ports, side by side</h2>
+    <p style="color: var(--color-muted); max-width: 42rem;">
+      The ratio above divides one tool's time by another's; this is what the two
+      sides are made of. All three excerpts render the specification sidebar,
+      which is where this corpus's work is — 71 of the roughly 96 pages the
+      tools build at 1x are specification pages, and both the <code>active</code>
+      class and the recursion are gated on a prefix test against the
+      <em>current</em> page's permalink, so at 1x the sidebar is a different
+      document on every page. That is a claim about the original corpus only:
+      as the caption above records, duplication collapses it, and at 10x most
+      specification pages share one navigation.
+    </p>
+    <p style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
+      The three say it differently, which is the other reason to put them side
+      by side. Zola runs the production template unchanged — that is what the
+      port is for. Gazette needs four substitutions to say the same thing in a
+      smaller dialect: it has no arithmetic, so the depth parameter goes, and
+      the prefix test is spelled as a filter rather than a test. Only Hugo
+      restates the recursion outright — Go templates have no macros, so what
+      Tera calls on itself as <code>self::render_nav</code> becomes a partial
+      invoking itself with a <code>dict</code>.
+    </p>
+    <p style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
+      Each excerpt is cut from the checked-in file when this page is built,
+      never pasted, and the line numbers below are wherever the block was found
+      in that build. Rename it, split it, or precompute the prefix test out of
+      it, and the extraction fails and this page does not build.
+    </p>
+
+    <div id="rt-source-ports" style="margin-top: 1rem;">
+      {% for id in ["sidebar-gazette", "sidebar-zola", "sidebar-hugo"] %}
+      {% set excerpt = source.excerpts | get(key=id) %}
+      <figure>
+        <div class="specimen">
+          <div class="specimen-head">
+            <span class="no">{{ excerpt.tool }}</span>
+            <span>{{ excerpt.language }}</span>
+          </div>
+          <pre><code>{{ excerpt.text }}</code></pre>
+        </div>
+        <figcaption class="specimen-caption">
+          <b>{{ excerpt.path }}</b>, lines {{ excerpt.first_line }}–{{ excerpt.last_line }}.
+        </figcaption>
+      </figure>
+      {% endfor %}
+    </div>
+
+    {#
+      The fourth excerpt answers the question the first three raise. Three
+      template ports look like three equivalent pieces of work; the asymmetry
+      the comparison table's caption declares is not in the templates at all,
+      it is in what reads them.
+    #}
+    <h3 style="margin-top: 2.5rem;">And what reads them</h3>
+    <p style="color: var(--color-muted); max-width: 42rem;">
+      Zola and Hugo each arrive with a general-purpose template engine. Gazette
+      arrives with this. The prefix test the sidebar gates on is spelled as a
+      filter because gazette's grammar has no <code>is</code> tests, and it runs
+      where Tera's and Go's do — inside the program being measured. Computing
+      the open branch outside the template would move measured work out of the
+      benchmark, and no output check would catch it: a flattened sidebar emits
+      the same links and the same visible text on every page.
+    </p>
+    <p style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
+      The last line is what <strong>corpus-specialized</strong> means, stated in
+      source rather than in a caption. The filter chain ends in a diagnostic:
+      gazette implements the filters this corpus uses and refuses every other
+      one, where Zola and Hugo implement all of theirs. That is the structural
+      asymmetry the comparison table above discloses, and this is the line it
+      refers to.
+    </p>
+    {% set engine = source.excerpts | get(key="engine-starts-with") %}
+    <figure style="margin-top: 1rem; max-width: 52rem;">
+      <div class="specimen">
+        <div class="specimen-head">
+          <span class="no">{{ engine.tool }}</span>
+          <span>{{ engine.language }}</span>
+        </div>
+        <pre><code>{{ engine.text }}</code></pre>
+      </div>
+      <figcaption class="specimen-caption">
+        <b>{{ engine.path }}</b>, lines {{ engine.first_line }}–{{ engine.last_line }}.
+      </figcaption>
+    </figure>
   </div>
 </section>
 

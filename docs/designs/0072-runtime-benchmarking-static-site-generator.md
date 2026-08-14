@@ -9,16 +9,16 @@ accepted: 2026-08-13
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
+relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", "RUE-1481", "RUE-1482", "RUE-1483", "RUE-1484", "RUE-1485", "RUE-1488", "RUE-1495", "ADR-0006", "ADR-0057", "ADR-0067", "ADR-0068", "ADR-0070", "ADR-0071"]
 ---
 
 # ADR-0072: Runtime performance benchmarking anchored by a Rue static site generator
 
 ## Status
 
-Accepted 2026-08-13, with Phases 1 through 5 landed and Phase 6 open. This ADR
-is the design document requested by RUE-1045 and defines the
-Runtime performance benchmarking project as a whole. It deliberately narrows
+Accepted 2026-08-13, with Phases 1 through 6 landed. This ADR is the design
+document requested by RUE-1045 and defines the Runtime performance
+benchmarking project as a whole. It deliberately narrows
 that project's first concrete deliverable to one realistic workload — a static
 site generator written in Rue — compared tool-vs-tool against Zola and Hugo.
 Other comparison programs, the microbenchmark tier, and per-benchmark peer
@@ -708,8 +708,8 @@ silently.
   and the scaling-curve rung** - RUE-1484
 - [x] **Phase 5: Cross-tool comparison — Hugo pin, parity configs, CI runs;
   and gazette's entry in `performance/runtime.toml`** - RUE-1485
-- [ ] **Phase 6: Website publication — comparison table, time series,
-  side-by-side source** - RUE-1049
+- [x] **Phase 6: Website publication — comparison table, time series,
+  side-by-side source** - RUE-1049, RUE-1495
 
 Phase 4 delivered gazette, the fixture preparation, the scale variants, the
 recorded identity, and the whole validation stack, but deliberately did NOT
