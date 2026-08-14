@@ -1,11 +1,11 @@
 ---
 id: 0072
 title: "Runtime performance benchmarking anchored by a Rue static site generator"
-status: proposal
+status: accepted
 tags: [performance, benchmarking, process, examples, stdlib]
 feature-flag: null
 created: 2026-08-13
-accepted:
+accepted: 2026-08-13
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,7 +16,8 @@ relates: ["RUE-487", "RUE-945", "RUE-1045", "RUE-1046", "RUE-1047", "RUE-1049", 
 
 ## Status
 
-Proposal. This ADR is the design document requested by RUE-1045 and defines the
+Accepted 2026-08-13, with Phases 1 through 5 landed and Phase 6 open. This ADR
+is the design document requested by RUE-1045 and defines the
 Runtime performance benchmarking project as a whole. It deliberately narrows
 that project's first concrete deliverable to one realistic workload — a static
 site generator written in Rue — compared tool-vs-tool against Zola and Hugo.
