@@ -262,7 +262,15 @@ def validate(
             "ci-contract no longer checks that scheduled workflows still succeed; "
             "without it a weekly safeguard can fail every run unnoticed (RUE-1507)"
         )
-    elif "actions: read" not in contract:
+    elif not any(
+        line.strip() == "actions: read"
+        for line in contract.splitlines()
+        if not line.lstrip().startswith("#")
+    ):
+        # Matched as an executable line, not a substring: the comment above the
+        # permissions block explains the scope and so contains its own name.
+        # A substring test would be satisfied by that prose alone, leaving the
+        # scope deletable and the next run dead on an opaque 403.
         errors.append(
             "ci-contract runs the scheduled-workflow check without `actions: read`; "
             "the run-history query needs that scope"

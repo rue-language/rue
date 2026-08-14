@@ -1317,9 +1317,10 @@ jobs:
       # eleven days unnoticed. The check belongs *here*, on the pull-request
       # path, precisely because the thing being diagnosed is that unattended
       # signals are not read — reporting it on another timer would inherit the
-      # bug. It asks only whether each scheduled workflow has ever succeeded and
-      # has succeeded recently, so an ordinary red night is not a repository
-      # event, and a workflow that has quietly stopped working is.
+      # bug. Exactly one condition fails this step: a workflow that has run at
+      # least twice on its schedule and never once succeeded. Staleness, a
+      # disabled workflow, and any API trouble warn and pass, because a false
+      # positive here blocks every merge in the repository.
       - name: Check scheduled workflows are still succeeding
         env:
           GITHUB_TOKEN: ${{ github.token }}
