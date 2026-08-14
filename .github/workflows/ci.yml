@@ -73,6 +73,16 @@ jobs:
       - name: Check shell pipefail pipelines
         run: scripts/validate-shell-pipefail-pipelines.py
 
+      # macOS runs `#!/usr/bin/env bash` scripts with Bash 3.2, so a Bash 4
+      # builtin is exit 127 on every developer Mac while this Linux-only lane
+      # stays green -- which is precisely how `mapfile` in test.sh's narrowing
+      # path went unnoticed (RUE-1506). The scan is static, so it finds that
+      # from here. It also covers the `run:` steps of jobs that can land on a
+      # macOS runner; the `mapfile` this job itself uses above is NOT one of
+      # them, and is correct, because this job only ever runs on ubuntu-latest.
+      - name: Check shell Bash 3.2 baseline
+        run: scripts/validate-shell-bash-baseline.py
+
       - name: Validate Buck test-tier ownership
         run: ./buck2 bxl //test_tiers.bxl:validate
 
@@ -722,6 +732,18 @@ jobs:
             done <<< "$narrowed"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
+
+      # RUE-1506. The Bash 3.2 baseline policy's demonstrations — `mapfile`
+      # exiting 127, `"${empty[@]}"` unbound under `set -u`, `read` assigning
+      # nothing when it fails — need a 3.2 to demonstrate anything, and this is
+      # the only lane whose /bin/bash is one. Everywhere else they skip, so
+      # premerge alone would leave them a test that cannot fail. Unnarrowed:
+      # the policy scans the whole tree, so any diff can invalidate it.
+      - name: Demonstrate the Bash 3.2 baseline on the stock macOS Bash
+        if: steps.sel.outputs.run == 'true' && runner.os == 'macOS'
+        run: scripts/ci-timed "$LANE_NAME bash baseline" -- ./buck2 test //:shell-bash-baseline-tool-tests
+        env:
+          LANE_NAME: ${{ matrix.name }}
 
       - name: Run every declaratively platform-scoped spec and CLI case
         if: steps.sel.outputs.run == 'true'

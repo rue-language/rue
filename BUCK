@@ -854,6 +854,15 @@ rue_sh_test(
 )
 
 rue_sh_test(
+    name = "shell-bash-baseline-tool-tests",
+    test = "scripts/test-validate-shell-bash-baseline.py",
+    resources = ["scripts/validate-shell-bash-baseline.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
     env = {

@@ -152,7 +152,18 @@ def shell_scripts(root: Path) -> list[Path]:
     # Prune while walking rather than filtering afterwards: `buck-out` alone
     # holds enough build output to dominate the gate's runtime.
     for directory, names, files in os.walk(root):
-        names[:] = sorted(name for name in names if name not in SKIP_DIRECTORIES)
+        # Nested checkouts are pruned by their own VCS marker as well as by
+        # name: the working agreement puts sibling worktrees under
+        # `.claude/worktrees/`, and reporting a finding there as though it were
+        # a path in THIS tree is worse than not scanning it -- that copy runs
+        # its own gate (RUE-1506).
+        names[:] = sorted(
+            name
+            for name in names
+            if name not in SKIP_DIRECTORIES
+            and not (Path(directory) / name / ".git").exists()
+            and not (Path(directory) / name / ".jj").exists()
+        )
         for name in sorted(files):
             path = Path(directory) / name
             if path.is_symlink() or not path.is_file():

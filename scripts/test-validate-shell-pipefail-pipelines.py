@@ -102,6 +102,20 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(scanned, [])
         self.assertEqual(findings, [])
 
+    def test_skips_nested_checkouts(self) -> None:
+        # A sibling worktree carries its own copy of every script, and the
+        # working agreement puts those under `.claude/worktrees/` -- inside the
+        # tree this gate walks (RUE-1506).
+        scanned, findings = self.discover(
+            {
+                ".claude/worktrees/other/.git": "gitdir: elsewhere\n",
+                ".claude/worktrees/other/probe.sh": self.BAD,
+                ".claude/hooks/guard.sh": "#!/usr/bin/env bash\ntrue\n",
+            }
+        )
+        self.assertEqual(scanned, [".claude/hooks/guard.sh"])
+        self.assertEqual(findings, [])
+
     def test_finds_extensionless_scripts_by_shebang(self) -> None:
         scanned, findings = self.discover({"scripts/tool": self.BAD})
         self.assertEqual(scanned, ["scripts/tool"])
@@ -119,7 +133,10 @@ class RepositoryTests(unittest.TestCase):
         # exact shape of fail-open this policy exists to prevent. Skip loudly
         # instead; the authoritative scan is the `fmt` job's CI step.
         root = SCRIPT.resolve().parent.parent
-        if not (root / "clippy.sh").exists():
+        # `clippy.sh` used to be the sentinel; it was deleted, so this test
+        # skipped in real checkouts too and stopped scanning anything at all
+        # (RUE-1506). AGENTS.md is the repository's own canonical file.
+        if not (root / "AGENTS.md").exists():
             self.skipTest("not a repository checkout; scan runs as a CI step")
         findings = policy.validate(root)
         self.assertEqual([str(finding) for finding in findings], [])

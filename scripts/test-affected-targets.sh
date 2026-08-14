@@ -325,6 +325,42 @@ check_narrow "a narrowed suite keeps its tier and deferral filters" \
   "--include rue_test_tier_premerge --exclude rue_ci_dedicated_lane" \
   "RUE_TEST_TARGETS_FILE=$narrow_root/one"
 
+# RUE-1506. test.sh read this list with `mapfile`, a Bash 4 builtin macOS does
+# not have, so every narrowed run on a Mac exited 127 while this suite stayed
+# green on Linux CI — the only place it runs. These cases pin the reading
+# itself, in behavior a Bash 5 host can also see: each expectation below is
+# wrong under `mapfile -t`, or under a read loop missing one of its guards, so
+# a reintroduction fails here rather than only on a developer's machine.
+
+# A blank line is not a target. `mapfile` keeps it and buck2 receives an empty
+# argument between the two real ones.
+printf '//crates/rue-span:rue-span-test\n\n//crates/rue-parser:rue-parser-test\n' >"$narrow_root/blank-line"
+check_narrow "blank lines in the list are not passed to buck2" \
+  "ARGS: //crates/rue-span:rue-span-test //crates/rue-parser:rue-parser-test --always-exclude" \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/blank-line"
+
+# The producer's `sed '/^$/d'` drops empty lines but not whitespace-only ones,
+# so this is the reachable half: it must fall open, not narrow to " ".
+printf '   \n\t\n' >"$narrow_root/whitespace"
+check_narrow "a whitespace-only list runs the full pattern" \
+  "ARGS: //... toolchains//..." \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/whitespace"
+
+# A file whose last line has no newline. `mapfile` keeps that line; a plain
+# `while read` loop silently drops it, dropping a target from the run.
+printf '//crates/rue-span:rue-span-test' >"$narrow_root/unterminated"
+check_narrow "a final line without a newline is still a target" \
+  "ARGS: //crates/rue-span:rue-span-test --always-exclude" \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/unterminated"
+
+# A directory passes -r and -s, and `read` fails on it without assigning, which
+# left the loop's `-n` fallback expanding an unset variable: `set -u` killed the
+# whole suite over an input the fail-open contract says must fall back.
+mkdir -p "$narrow_root/a-directory"
+check_narrow "a directory runs the full pattern instead of failing the suite" \
+  "ARGS: //... toolchains//..." \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/a-directory"
+
 # The workflow-facing adapter must reserve `run=false` for the gate's explicit
 # deselection status. A gate crash or missing executable runs the corpus.
 decision_root="$(mktemp -d)"
