@@ -16,9 +16,32 @@ _DEPS = [
     "//third-party:tracing-subscriber",
 ]
 
+# The production compiler uses mimalloc only on the two maintained Linux host
+# platforms. The dependency itself is absent elsewhere, and rue-benchmark does
+# not consume this list, so allocation accounting remains System-backed.
+_COMPILER_ALLOCATOR_DEPS = select({
+    "DEFAULT": [],
+    "prelude//os:linux": select({
+        "DEFAULT": [],
+        "prelude//cpu:arm64": ["//third-party:mimalloc"],
+        "prelude//cpu:x86_64": ["//third-party:mimalloc"],
+    }),
+})
+
 export_file(
     name = "benchmark-definition",
     src = "src/main.rs",
+    visibility = ["PUBLIC"],
+)
+
+filegroup(
+    name = "allocator-policy-inputs",
+    srcs = {
+        "BUCK": "BUCK",
+        "allocation.rs": "src/allocation.rs",
+        "compiler_allocator.rs": "src/compiler_allocator.rs",
+        "main.rs": "src/main.rs",
+    },
     visibility = ["PUBLIC"],
 )
 
@@ -38,7 +61,7 @@ rue_crate(
 rue_binary(
     name = "rue",
     crate_root = "src/main.rs",
-    deps = _DEPS + [
+    deps = _DEPS + _COMPILER_ALLOCATOR_DEPS + [
         ":rue-driver",
     ],
     test_deps = [

@@ -159,6 +159,7 @@ pub fn workload_source_hash(
 ) -> Result<String, PinError> {
     let subject = source.display().to_string();
     let mut command = Command::new(compiler);
+    crate::environment::sanitize_compiler_environment(&mut command);
     command.arg("--emit").arg("deps").arg(source);
     if let Some(std_root) = std_root {
         command.env("RUE_STD_PATH", std_root);

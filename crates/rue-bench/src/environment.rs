@@ -18,6 +18,30 @@ use rue_perf_schema::EnvironmentFingerprint;
 /// What a probe reports when the host does not answer.
 const UNKNOWN: &str = "unknown";
 
+/// Remove inherited allocator tuning from a compiler child process.
+///
+/// mimalloc reads `MIMALLOC_*` before Rue's `main`, so the reference runner
+/// must sanitize that ASCII prefix case-insensitively while constructing the
+/// child rather than ask the compiler to undo a setting after initialization.
+pub(crate) fn sanitize_compiler_environment(command: &mut Command) {
+    sanitize_mimalloc_variables(command, std::env::vars_os().map(|(name, _)| name));
+}
+
+fn sanitize_mimalloc_variables(
+    command: &mut Command,
+    variables: impl IntoIterator<Item = std::ffi::OsString>,
+) {
+    for name in variables {
+        if name
+            .to_string_lossy()
+            .get(.."MIMALLOC_".len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("MIMALLOC_"))
+        {
+            command.env_remove(name);
+        }
+    }
+}
+
 /// Collect the current environment fingerprint.
 ///
 /// The runner label and image come from the environment rather than being
@@ -159,5 +183,27 @@ mod tests {
             command_output("definitely-not-a-real-program-xyz", &[]),
             None
         );
+    }
+
+    #[test]
+    fn compiler_children_remove_every_inherited_mimalloc_knob() {
+        let mut command = Command::new("compiler");
+        sanitize_mimalloc_variables(
+            &mut command,
+            [
+                "MIMALLOC_PURGE_DELAY".into(),
+                "mimalloc_verbose".into(),
+                "MiMaLlOc_Reserve_Huge_Os_Pages".into(),
+                "RUE_STD_PATH".into(),
+            ],
+        );
+        let changes = command
+            .get_envs()
+            .map(|(name, value)| (name.to_string_lossy().into_owned(), value.is_none()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(changes.get("MIMALLOC_PURGE_DELAY"), Some(&true));
+        assert_eq!(changes.get("mimalloc_verbose"), Some(&true));
+        assert_eq!(changes.get("MiMaLlOc_Reserve_Huge_Os_Pages"), Some(&true));
+        assert!(!changes.contains_key("RUE_STD_PATH"));
     }
 }

@@ -35,6 +35,22 @@ load("//:rue_rules.bzl", "rue_program", "rue_program_family", "rue_program_stagi
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
 load(":corpus.bzl", "cached_corpus_suite")
 
+rue_sh_test(
+    name = "compiler-allocator-policy-validation",
+    test = "scripts/check-compiler-allocator-policy.sh",
+    env = {
+        "RUE_ALLOCATOR_CRATE_ROOT": "$(location //crates/rue:allocator-policy-inputs)",
+        "RUE_ALLOCATOR_POLICY_NOTE": "$(location :compiler-allocator-policy-note)",
+        "RUE_ALLOCATOR_THIRD_PARTY_ROOT": "$(location //third-party:allocator-policy-inputs)",
+        "RUE_ALLOCATOR_ZIG_ROOT": "$(location toolchains//zig:policy-inputs)",
+    },
+)
+
+export_file(
+    name = "compiler-allocator-policy-note",
+    src = "docs/notes/adr-0071-phase-3-linux-compiler-allocator.md",
+)
+
 # Versioned configuration anchors for the repository's Rust quality gates.
 # Both files are intentionally policy-neutral today; exporting them makes
 # future configuration changes explicit Buck inputs rather than cwd-dependent

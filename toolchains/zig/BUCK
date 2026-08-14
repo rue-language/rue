@@ -1,0 +1,82 @@
+load(":defs.bzl", "ZIG_VERSION", "hermetic_zig_toolchain", "zig_c_static_archive", "zig_host_archive")
+load("@root//:test_defs.bzl", "rue_sh_test")
+
+zig_host_archive("linux-x86_64", "x86_64-linux")
+zig_host_archive("linux-aarch64", "aarch64-linux")
+zig_host_archive("macos-x86_64", "x86_64-macos")
+zig_host_archive("macos-aarch64", "aarch64-macos")
+
+hermetic_zig_toolchain(
+    name = "hermetic-linux-x86_64",
+    distribution = ":dist-linux-x86_64",
+    host_platform = "x86_64-linux",
+    visibility = ["PUBLIC"],
+)
+
+zig_c_static_archive(
+    name = "archive-smoke",
+    src = "archive_smoke.c",
+    headers = ["include/archive_smoke.h"],
+    include_directories = ["include"],
+    compiler_flags = ["-O3"],
+    target = select({
+        "prelude//os:linux": select({
+            "prelude//cpu:arm64": "aarch64-linux-gnu.2.17",
+            "prelude//cpu:x86_64": "x86_64-linux-gnu.2.17",
+        }),
+        "prelude//os:macos": select({
+            "prelude//cpu:arm64": "aarch64-macos",
+            "prelude//cpu:x86_64": "x86_64-macos",
+        }),
+    }),
+)
+
+rue_sh_test(
+    name = "archive-smoke-test",
+    test = "archive_smoke_test.sh",
+    args = ["$(location :archive-smoke)"],
+)
+
+hermetic_zig_toolchain(
+    name = "hermetic-linux-aarch64",
+    distribution = ":dist-linux-aarch64",
+    host_platform = "aarch64-linux",
+    visibility = ["PUBLIC"],
+)
+
+hermetic_zig_toolchain(
+    name = "hermetic-macos-x86_64",
+    distribution = ":dist-macos-x86_64",
+    host_platform = "x86_64-macos",
+    visibility = ["PUBLIC"],
+)
+
+hermetic_zig_toolchain(
+    name = "hermetic-macos-aarch64",
+    distribution = ":dist-macos-aarch64",
+    host_platform = "aarch64-macos",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "defs",
+    src = "defs.bzl",
+)
+
+filegroup(
+    name = "policy-inputs",
+    srcs = {
+        "BUCK": "BUCK",
+        "defs.bzl": "defs.bzl",
+    },
+    visibility = ["PUBLIC"],
+)
+
+rue_sh_test(
+    name = "toolchain-policy-test",
+    test = "toolchain_policy_test.sh",
+    args = [
+        "$(location :defs)",
+        ZIG_VERSION,
+    ],
+)

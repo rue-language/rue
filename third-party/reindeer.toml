@@ -11,3 +11,12 @@
 
 # Vendor sources locally (committed to repo for reproducibility)
 vendor = true
+
+[buck]
+rust_library = "rue_rust_library"
+rust_binary = "cargo.rust_binary"
+buckfile_imports = '''
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("@prelude//rust:cargo_package.bzl", "cargo")
+load(":reindeer_rules.bzl", "rue_rust_library")
+'''
