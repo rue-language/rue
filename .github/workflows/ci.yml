@@ -1288,6 +1288,12 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: CI contract
+    # `actions: read` is for the scheduled-workflow health check below. The
+    # block is explicit because declaring one narrows the whole job: checkout
+    # needs `contents: read` named alongside it.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v6
       - name: Validate aggregate gate and platform responsibilities
@@ -1304,6 +1310,20 @@ jobs:
           --test-tiers-bxl test_tiers.bxl
           --workflow .github/workflows/ci.yml
           --workflow .github/workflows/release.yml
+
+      # RUE-1507. A `schedule:` workflow has no audience: no pull request waits
+      # on it and its result is a row in a tab nobody opens, which is how
+      # `correctness-repetitions.yml` failed every scheduled run it ever had for
+      # eleven days unnoticed. The check belongs *here*, on the pull-request
+      # path, precisely because the thing being diagnosed is that unattended
+      # signals are not read — reporting it on another timer would inherit the
+      # bug. It asks only whether each scheduled workflow has ever succeeded and
+      # has succeeded recently, so an ordinary red night is not a repository
+      # event, and a workflow that has quietly stopped working is.
+      - name: Check scheduled workflows are still succeeding
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: scripts/check-scheduled-workflows.py --repo "$GITHUB_REPOSITORY"
 
   # The only stable branch-protection context. Matrix children may be reshaped
   # without changing this displayed name. The evaluator rejects missing,

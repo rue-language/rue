@@ -1176,6 +1176,30 @@ rue_sh_test(
     resources = ["scripts/fuzz-report-failure.py"],
 )
 
+# RUE-1507: the health check that notices a scheduled workflow which has never
+# succeeded. It runs in required CI, so both of its ways of being wrong are
+# expensive — a false red blocks every pull request, and a false green restores
+# the silence that let a weekly safeguard fail for its entire existence. The
+# run-history API cannot be reached from a test, so the classifier is driven
+# through its injected transport with a mock. The real workflow directory is an
+# input as well: discovery is by `schedule:` trigger rather than a list, so a
+# parser that stops recognizing how the workflows are actually written would
+# otherwise report a clean audit of nothing.
+filegroup(
+    name = "scheduled-workflow-test-inputs",
+    srcs = glob([".github/workflows/*.yml"]),
+)
+
+rue_sh_test(
+    name = "scheduled-workflow-tool-tests",
+    test = "scripts/test-check-scheduled-workflows.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_SCHEDULED_WORKFLOWS_ROOT": "$(location :scheduled-workflow-test-inputs)",
+    },
+    resources = ["scripts/check-scheduled-workflows.py"],
+)
+
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
 # corpus selection — the out-of-graph force-full matcher in
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.

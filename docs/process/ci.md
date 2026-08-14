@@ -34,6 +34,63 @@ dependencies, always runs, and itself feeds `CI success`. Removing or renaming
 a job without updating every reviewed contract edge therefore fails closed
 instead of silently shrinking coverage.
 
+## Scheduled workflows and their failure signal (RUE-1507)
+
+Workflows on a `schedule:` trigger have no audience. No pull request waits on
+one, nothing is blocked when one goes red, and the result is a row in a tab
+nobody opens. `correctness-repetitions.yml` failed on *every* scheduled run it
+ever had — each dead in 18 seconds on an argument the invoked script does not
+accept — and that went unnoticed for eleven days. A safeguard that fails
+silently is worth less than no safeguard, because its absence would be noticed
+while its presence is assumed.
+
+`scripts/check-scheduled-workflows.py` runs in the `CI contract` job on every
+pull request. It is deliberately **not** itself a scheduled workflow: the
+problem being solved is that unattended signals are not read, so reporting on
+another unattended timer would inherit the bug. Required CI is the one signal
+in this repository that provably reaches a human.
+
+It discovers scheduled workflows from the tree by their `schedule:` trigger
+rather than from a list, so a workflow added later is covered without anyone
+remembering to register it, and asks two questions per workflow:
+
+- **Has it ever succeeded?** An entire history of failures means nothing it
+  claims to protect was ever protected — stronger and cheaper evidence than any
+  single red run.
+- **Has it succeeded recently?** Within a generous multiple of its own cron
+  period (default four), so an ordinary red night is not a repository-wide
+  event while a workflow that has quietly stopped working is.
+
+Both properties are durable: a healthy workflow trips neither, however flaky an
+individual run is. Two cases run history cannot see get their own answers — a
+workflow GitHub has **disabled** stops producing runs entirely (its last one
+may well be green), and a workflow a branch **adds** has no history at all and
+passes with a note until its cron has had a chance to fire.
+
+A workflow that is genuinely broken with a fix already tracked is declared in
+that script's `POLICIES`, which is the workflow-level form of the repository's
+`known_bug = "RUE-NN"` xfail markers, and expires the same way: once the
+workflow is healthy again the waiver fails as stale and must be deleted, so an
+exemption written for one breakage cannot silently cover the next.
+
+The check is pinned by `scripts/validate-ci-gate.py`, so deleting the step
+fails required CI rather than quietly restoring the original silence, and its
+classification logic is pinned against a mock transport by
+`//:scheduled-workflow-tool-tests`.
+
+Scheduled lanes that run commands through `scripts/ci-timed` must also upload
+the preserved `rue-ci-failed-logs` artifact on failure. They need it more than
+pull-request lanes do, not less: nobody is watching when a weekly job goes red,
+so the first person to look arrives days later, by which time the Actions job
+log has been truncated to a tail or aged out entirely. That rule is enforced
+structurally, and only for workflows that actually use `ci-timed` — elsewhere
+the artifact would always be empty, and an empty artifact that looks like
+coverage is the same class of problem.
+
+`fuzz.yml` is exempt from the staleness window because it is red by design
+whenever it finds a crash, and already reports each one into Linear
+(RUE-802, `scripts/fuzz-report-failure.py`).
+
 ## Platform responsibility matrix
 
 | Owner | Required responsibility |
