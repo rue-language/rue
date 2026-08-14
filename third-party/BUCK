@@ -2,6 +2,7 @@
 
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load(":reindeer_rules.bzl", "rue_rust_library")
 
 alias(
     name = "ahash",
@@ -9,7 +10,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "ahash-0.8.12",
     srcs = [
         "vendor/ahash-0.8.12/src/aes_hash.rs",
@@ -89,7 +90,7 @@ buildscript_run(
     version = "0.8.12",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "aho-corasick-1.1.4",
     srcs = [
         "vendor/aho-corasick-1.1.4/src/ahocorasick.rs",
@@ -136,7 +137,7 @@ cargo.rust_library(
     deps = [":memchr-2.7.6"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "allocator-api2-0.2.21",
     srcs = [
         "vendor/allocator-api2-0.2.21/src/lib.rs",
@@ -170,7 +171,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "annotate-snippets-0.11.5",
     srcs = [
         "vendor/annotate-snippets-0.11.5/examples/expected_type.rs",
@@ -200,7 +201,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anstream-0.6.21",
     srcs = [
         "vendor/anstream-0.6.21/src/_macros.rs",
@@ -242,7 +243,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anstyle-1.0.13",
     srcs = [
         "vendor/anstyle-1.0.13/src/color.rs",
@@ -262,7 +263,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anstyle-parse-0.2.7",
     srcs = [
         "vendor/anstyle-parse-0.2.7/src/lib.rs",
@@ -283,7 +284,7 @@ cargo.rust_library(
     deps = [":utf8parse-0.2.2"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anstyle-query-1.1.5",
     srcs = [
         "vendor/anstyle-query-1.1.5/src/lib.rs",
@@ -303,7 +304,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anstyle-wincon-3.0.11",
     srcs = [
         "vendor/anstyle-wincon-3.0.11/src/ansi.rs",
@@ -328,7 +329,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "anyhow-1.0.100",
     srcs = [
         "vendor/anyhow-1.0.100/src/backtrace.rs",
@@ -452,7 +453,7 @@ buildscript_run(
     version = "1.0.100",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "beef-0.5.2",
     srcs = [
         "vendor/beef-0.5.2/src/generic.rs",
@@ -469,7 +470,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "bit-set-0.8.0",
     srcs = ["vendor/bit-set-0.8.0/src/lib.rs"],
     crate = "bit_set",
@@ -483,7 +484,7 @@ cargo.rust_library(
     deps = [":bit-vec-0.8.0"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "bit-vec-0.8.0",
     srcs = ["vendor/bit-vec-0.8.0/src/lib.rs"],
     crate = "bit_vec",
@@ -496,7 +497,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "bitflags-2.10.0",
     srcs = [
         "vendor/bitflags-2.10.0/src/example_generated.rs",
@@ -560,7 +561,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "block-buffer-0.10.4",
     srcs = [
         "vendor/block-buffer-0.10.4/src/lib.rs",
@@ -573,7 +574,7 @@ cargo.rust_library(
     deps = [":generic-array-0.14.7"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "cfg-if-1.0.4",
     srcs = ["vendor/cfg-if-1.0.4/src/lib.rs"],
     crate = "cfg_if",
@@ -582,7 +583,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "colorchoice-1.0.4",
     srcs = ["vendor/colorchoice-1.0.4/src/lib.rs"],
     crate = "colorchoice",
@@ -591,7 +592,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "cpufeatures-0.2.17",
     srcs = [
         "vendor/cpufeatures-0.2.17/src/aarch64.rs",
@@ -614,7 +615,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "crossbeam-deque-0.8.6",
     srcs = [
         "vendor/crossbeam-deque-0.8.6/src/deque.rs",
@@ -634,7 +635,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "crossbeam-epoch-0.9.18",
     srcs = [
         "vendor/crossbeam-epoch-0.9.18/src/atomic.rs",
@@ -661,7 +662,7 @@ cargo.rust_library(
     deps = [":crossbeam-utils-0.8.21"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "crossbeam-utils-0.8.21",
     srcs = [
         "vendor/crossbeam-utils-0.8.21/src/atomic/atomic_cell.rs",
@@ -689,7 +690,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "crypto-common-0.1.7",
     srcs = ["vendor/crypto-common-0.1.7/src/lib.rs"],
     crate = "crypto_common",
@@ -702,7 +703,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "dashmap-6.1.0",
     srcs = [
         "vendor/dashmap-6.1.0/src/arbitrary.rs",
@@ -742,7 +743,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "digest-0.10.7",
     srcs = [
         "vendor/digest-0.10.7/src/core_api.rs",
@@ -775,7 +776,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "either-1.15.0",
     srcs = [
         "vendor/either-1.15.0/src/into_either.rs",
@@ -790,7 +791,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "equivalent-1.0.2",
     srcs = ["vendor/equivalent-1.0.2/src/lib.rs"],
     crate = "equivalent",
@@ -799,7 +800,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "errno-0.3.14",
     srcs = [
         "vendor/errno-0.3.14/src/hermit.rs",
@@ -824,7 +825,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "fastrand-2.3.0",
     srcs = [
         "vendor/fastrand-2.3.0/src/global_rng.rs",
@@ -847,7 +848,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "fixedbitset-0.5.7",
     srcs = [
         "vendor/fixedbitset-0.5.7/src/block/avx.rs",
@@ -870,7 +871,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "fnv-1.0.7",
     srcs = ["vendor/fnv-1.0.7/lib.rs"],
     crate = "fnv",
@@ -883,7 +884,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "generic-array-0.14.7",
     srcs = [
         "vendor/generic-array-0.14.7/src/arr.rs",
@@ -904,7 +905,7 @@ cargo.rust_library(
     deps = [":typenum-1.20.1"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "getrandom-0.3.4",
     srcs = [
         "vendor/getrandom-0.3.4/README.md",
@@ -962,7 +963,7 @@ cargo.rust_library(
     deps = [":cfg-if-1.0.4"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "hashbrown-0.14.5",
     srcs = [
         "vendor/hashbrown-0.14.5/src/external_trait_impls/mod.rs",
@@ -1007,7 +1008,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "hashbrown-0.16.1",
     srcs = [
         "vendor/hashbrown-0.16.1/src/control/bitmask.rs",
@@ -1045,7 +1046,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "indexmap-2.12.1",
     srcs = [
         "vendor/indexmap-2.12.1/src/arbitrary.rs",
@@ -1088,7 +1089,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "is_terminal_polyfill-1.70.2",
     srcs = ["vendor/is_terminal_polyfill-1.70.2/src/lib.rs"],
     crate = "is_terminal_polyfill",
@@ -1104,7 +1105,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "itoa-1.0.16",
     srcs = [
         "vendor/itoa-1.0.16/src/lib.rs",
@@ -1116,7 +1117,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "json-write-0.0.2",
     srcs = [
         "vendor/json-write-0.0.2/README.md",
@@ -1142,7 +1143,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lasso-0.7.3",
     srcs = [
         "vendor/lasso-0.7.3/src/arenas/atomic_bucket.rs",
@@ -1181,7 +1182,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lazy_static-1.5.0",
     srcs = [
         "vendor/lazy_static-1.5.0/src/core_lazy.rs",
@@ -1194,7 +1195,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lexarg-0.0.2",
     srcs = [
         "vendor/lexarg-0.0.2/README.md",
@@ -1212,7 +1213,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lexarg-error-0.0.2",
     srcs = [
         "vendor/lexarg-error-0.0.2/README.md",
@@ -1227,7 +1228,7 @@ cargo.rust_library(
     deps = [":lexarg-parser-0.0.2"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lexarg-parser-0.0.2",
     srcs = [
         "vendor/lexarg-parser-0.0.2/README.md",
@@ -1248,7 +1249,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "libc-0.2.178",
     srcs = [
         "vendor/libc-0.2.178/src/fuchsia/aarch64.rs",
@@ -1573,7 +1574,27 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+alias(
+    name = "libmimalloc-sys",
+    actual = ":libmimalloc-sys-0.1.49",
+    visibility = ["PUBLIC"],
+)
+
+rue_rust_library(
+    name = "libmimalloc-sys-0.1.49",
+    srcs = [
+        "vendor/libmimalloc-sys-0.1.49/src/extended.rs",
+        "vendor/libmimalloc-sys-0.1.49/src/lib.rs",
+    ],
+    crate = "libmimalloc_sys",
+    crate_root = "vendor/libmimalloc-sys-0.1.49/src/lib.rs",
+    edition = "2018",
+    features = ["v2"],
+    visibility = [],
+    deps = [":libmimalloc-sys-native"],
+)
+
+rue_rust_library(
     name = "libtest-json-0.0.2",
     srcs = [
         "vendor/libtest-json-0.0.2/README.md",
@@ -1591,7 +1612,7 @@ cargo.rust_library(
     deps = [":json-write-0.0.2"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "libtest-lexarg-0.0.3",
     srcs = [
         "vendor/libtest-lexarg-0.0.3/README.md",
@@ -1609,7 +1630,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "libtest2-harness-0.0.3",
     srcs = [
         "vendor/libtest2-harness-0.0.3/README.md",
@@ -1645,50 +1666,13 @@ cargo.rust_library(
     ],
 )
 
-# Rue carries a scheduler fix for exclusive CLI-test lanes. Keep a native unit
-# target beside the vendored library so fail-fast worker draining remains
-# executable regression coverage rather than an untested vendor patch.
-rust_test(
-    name = "libtest2-harness-scheduler-test",
-    srcs = [
-        "vendor/libtest2-harness-0.0.3/src/case.rs",
-        "vendor/libtest2-harness-0.0.3/src/cli.rs",
-        "vendor/libtest2-harness-0.0.3/src/context.rs",
-        "vendor/libtest2-harness-0.0.3/src/harness.rs",
-        "vendor/libtest2-harness-0.0.3/src/lib.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/json.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/mod.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/no_style.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/pretty.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/style.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/summary.rs",
-        "vendor/libtest2-harness-0.0.3/src/notify/terse.rs",
-    ],
-    crate = "libtest2_harness",
-    crate_root = "vendor/libtest2-harness-0.0.3/src/lib.rs",
-    edition = "2021",
-    features = [
-        "color",
-        "default",
-        "threads",
-    ],
-    deps = [
-        ":anstream-0.6.21",
-        ":anstyle-1.0.13",
-        ":lexarg-error-0.0.2",
-        ":lexarg-parser-0.0.2",
-        ":libtest-json-0.0.2",
-        ":libtest-lexarg-0.0.3",
-    ],
-)
-
 alias(
     name = "libtest2-mimic",
     actual = ":libtest2-mimic-0.0.4",
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "libtest2-mimic-0.0.4",
     srcs = [
         "vendor/libtest2-mimic-0.0.4/README.md",
@@ -1709,7 +1693,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "linux-raw-sys-0.11.0",
     srcs = [
         "vendor/linux-raw-sys-0.11.0/src/aarch64/auxvec.rs",
@@ -2107,7 +2091,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "lock_api-0.4.14",
     srcs = [
         "vendor/lock_api-0.4.14/src/lib.rs",
@@ -2126,7 +2110,7 @@ cargo.rust_library(
     deps = [":scopeguard-1.2.0"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "log-0.4.29",
     srcs = [
         "vendor/log-0.4.29/src/__private_api.rs",
@@ -2152,7 +2136,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "logos-0.14.4",
     srcs = [
         "vendor/logos-0.14.4/src/internal.rs",
@@ -2173,7 +2157,7 @@ cargo.rust_library(
     deps = [":logos-derive-0.14.4"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "logos-codegen-0.14.4",
     srcs = [
         "vendor/logos-codegen-0.14.4/src/error.rs",
@@ -2217,7 +2201,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "logos-derive-0.14.4",
     srcs = ["vendor/logos-derive-0.14.4/src/lib.rs"],
     crate = "logos_derive",
@@ -2228,7 +2212,7 @@ cargo.rust_library(
     deps = [":logos-codegen-0.14.4"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "matchers-0.2.0",
     srcs = ["vendor/matchers-0.2.0/src/lib.rs"],
     crate = "matchers",
@@ -2238,7 +2222,7 @@ cargo.rust_library(
     deps = [":regex-automata-0.4.13"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "memchr-2.7.6",
     srcs = [
         "vendor/memchr-2.7.6/src/arch/aarch64/memchr.rs",
@@ -2297,7 +2281,27 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+alias(
+    name = "mimalloc",
+    actual = ":mimalloc-0.1.52",
+    visibility = ["PUBLIC"],
+)
+
+rue_rust_library(
+    name = "mimalloc-0.1.52",
+    srcs = [
+        "vendor/mimalloc-0.1.52/src/extended.rs",
+        "vendor/mimalloc-0.1.52/src/lib.rs",
+    ],
+    crate = "mimalloc",
+    crate_root = "vendor/mimalloc-0.1.52/src/lib.rs",
+    edition = "2018",
+    features = ["v2"],
+    visibility = [],
+    deps = [":libmimalloc-sys-0.1.49"],
+)
+
+rue_rust_library(
     name = "nu-ansi-term-0.50.3",
     srcs = [
         "vendor/nu-ansi-term-0.50.3/src/ansi.rs",
@@ -2334,7 +2338,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "num-traits-0.2.19",
     srcs = [
         "vendor/num-traits-0.2.19/src/bounds.rs",
@@ -2370,7 +2374,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "once_cell-1.21.3",
     srcs = [
         "vendor/once_cell-1.21.3/src/imp_cs.rs",
@@ -2391,7 +2395,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "once_cell_polyfill-1.70.2",
     srcs = [
         "vendor/once_cell_polyfill-1.70.2/src/lib.rs",
@@ -2404,7 +2408,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "parking_lot_core-0.9.12",
     srcs = [
         "vendor/parking_lot_core-0.9.12/src/lib.rs",
@@ -2455,7 +2459,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "pin-project-lite-0.2.16",
     srcs = ["vendor/pin-project-lite-0.2.16/src/lib.rs"],
     crate = "pin_project_lite",
@@ -2464,7 +2468,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "ppv-lite86-0.2.21",
     srcs = [
         "vendor/ppv-lite86-0.2.21/src/generic.rs",
@@ -2485,7 +2489,7 @@ cargo.rust_library(
     deps = [":zerocopy-0.8.31"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "proc-macro2-1.0.103",
     srcs = [
         "vendor/proc-macro2-1.0.103/src/detection.rs",
@@ -2522,7 +2526,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "proptest-1.9.0",
     srcs = [
         "vendor/proptest-1.9.0/src/arbitrary/_alloc/alloc.rs",
@@ -2645,7 +2649,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "quick-error-1.2.3",
     srcs = ["vendor/quick-error-1.2.3/src/lib.rs"],
     crate = "quick_error",
@@ -2654,7 +2658,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "quote-1.0.42",
     srcs = [
         "vendor/quote-1.0.42/src/ext.rs",
@@ -2676,7 +2680,7 @@ cargo.rust_library(
     deps = [":proc-macro2-1.0.103"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rand-0.9.2",
     srcs = [
         "vendor/rand-0.9.2/src/distr/bernoulli.rs",
@@ -2723,7 +2727,7 @@ cargo.rust_library(
     deps = [":rand_core-0.9.3"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rand_chacha-0.9.0",
     srcs = [
         "vendor/rand_chacha-0.9.0/src/chacha.rs",
@@ -2741,7 +2745,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rand_core-0.9.3",
     srcs = [
         "vendor/rand_core-0.9.3/src/block.rs",
@@ -2761,7 +2765,7 @@ cargo.rust_library(
     deps = [":getrandom-0.3.4"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rand_xorshift-0.4.0",
     srcs = ["vendor/rand_xorshift-0.4.0/src/lib.rs"],
     crate = "rand_xorshift",
@@ -2777,7 +2781,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rayon-1.11.0",
     srcs = [
         "vendor/rayon-1.11.0/src/array.rs",
@@ -2890,7 +2894,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rayon-core-1.13.0",
     srcs = [
         "vendor/rayon-core-1.13.0/src/broadcast/mod.rs",
@@ -2936,7 +2940,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "regex-1.12.2",
     srcs = [
         "vendor/regex-1.12.2/src/builders.rs",
@@ -2983,7 +2987,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "regex-automata-0.4.13",
     srcs = [
         "vendor/regex-automata-0.4.13/src/dfa/accel.rs",
@@ -3094,7 +3098,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "regex-syntax-0.8.8",
     srcs = [
         "vendor/regex-syntax-0.8.8/src/ast/mod.rs",
@@ -3149,7 +3153,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rustix-1.1.3",
     srcs = [
         "vendor/rustix-1.1.3/src/backend/libc/c.rs",
@@ -3524,7 +3528,7 @@ cargo.rust_library(
     deps = [":bitflags-2.10.0"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "rusty-fork-0.3.1",
     srcs = [
         "vendor/rusty-fork-0.3.1/src/child_wrapper.rs",
@@ -3551,7 +3555,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "scopeguard-1.2.0",
     srcs = ["vendor/scopeguard-1.2.0/src/lib.rs"],
     crate = "scopeguard",
@@ -3566,7 +3570,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "serde-1.0.228",
     srcs = [
         "vendor/serde-1.0.228/src/core/crate_root.rs",
@@ -3701,7 +3705,7 @@ buildscript_run(
     version = "1.0.228",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "serde_core-1.0.228",
     srcs = [
         "vendor/serde_core-1.0.228/src/crate_root.rs",
@@ -3816,7 +3820,7 @@ buildscript_run(
     version = "1.0.228",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "serde_derive-1.0.228",
     srcs = [
         "vendor/serde_derive-1.0.228/src/bound.rs",
@@ -3880,7 +3884,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "serde_json-1.0.147",
     srcs = [
         "vendor/serde_json-1.0.147/src/de.rs",
@@ -4067,7 +4071,7 @@ buildscript_run(
     version = "1.0.147",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "serde_spanned-0.6.9",
     srcs = [
         "vendor/serde_spanned-0.6.9/src/lib.rs",
@@ -4087,7 +4091,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "sha2-0.10.9",
     srcs = [
         "vendor/sha2-0.10.9/src/consts.rs",
@@ -4117,7 +4121,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "sharded-slab-0.1.7",
     srcs = [
         "vendor/sharded-slab-0.1.7/src/cfg.rs",
@@ -4152,7 +4156,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "smallvec-1.15.1",
     srcs = [
         "vendor/smallvec-1.15.1/src/arbitrary.rs",
@@ -4166,7 +4170,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "syn-2.0.111",
     srcs = [
         "vendor/syn-2.0.111/src/attr.rs",
@@ -4253,7 +4257,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tempfile-3.24.0",
     srcs = [
         "vendor/tempfile-3.24.0/src/dir/imp/any.rs",
@@ -4312,7 +4316,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "thiserror-2.0.17",
     srcs = [
         "vendor/thiserror-2.0.17/src/aserror.rs",
@@ -4452,7 +4456,7 @@ buildscript_run(
     version = "2.0.17",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "thiserror-impl-2.0.17",
     srcs = [
         "vendor/thiserror-impl-2.0.17/src/ast.rs",
@@ -4492,7 +4496,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "thread_local-1.1.9",
     srcs = [
         "vendor/thread_local-1.1.9/src/cached.rs",
@@ -4513,7 +4517,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "toml-0.8.23",
     srcs = [
         "vendor/toml-0.8.23/src/de.rs",
@@ -4548,7 +4552,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "toml_datetime-0.6.11",
     srcs = [
         "vendor/toml_datetime-0.6.11/src/datetime.rs",
@@ -4562,7 +4566,7 @@ cargo.rust_library(
     deps = [":serde-1.0.228"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "toml_edit-0.22.27",
     srcs = [
         "vendor/toml_edit-0.22.27/src/array.rs",
@@ -4629,7 +4633,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "toml_write-0.1.2",
     srcs = [
         "vendor/toml_write-0.1.2/src/key.rs",
@@ -4655,7 +4659,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-0.1.44",
     srcs = [
         "vendor/tracing-0.1.44/src/dispatcher.rs",
@@ -4684,7 +4688,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-attributes-0.1.31",
     srcs = [
         "vendor/tracing-attributes-0.1.31/src/attr.rs",
@@ -4703,7 +4707,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-core-0.1.36",
     srcs = [
         "vendor/tracing-core-0.1.36/src/callsite.rs",
@@ -4733,7 +4737,7 @@ cargo.rust_library(
     deps = [":once_cell-1.21.3"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-log-0.2.0",
     srcs = [
         "vendor/tracing-log-0.2.0/src/interest_cache.rs",
@@ -4755,7 +4759,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-serde-0.2.0",
     srcs = [
         "vendor/tracing-serde-0.2.0/src/fields.rs",
@@ -4777,7 +4781,7 @@ alias(
     visibility = ["PUBLIC"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "tracing-subscriber-0.3.22",
     srcs = [
         "vendor/tracing-subscriber-0.3.22/src/field/debug.rs",
@@ -4863,7 +4867,7 @@ cargo.rust_library(
     ],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "typenum-1.20.1",
     srcs = [
         "vendor/typenum-1.20.1/src/array.rs",
@@ -4887,7 +4891,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "unarray-0.1.4",
     srcs = [
         "vendor/unarray-0.1.4/src/build.rs",
@@ -4902,7 +4906,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "unicode-ident-1.0.22",
     srcs = [
         "vendor/unicode-ident-1.0.22/src/lib.rs",
@@ -4914,7 +4918,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "unicode-width-0.2.2",
     srcs = [
         "vendor/unicode-width-0.2.2/src/lib.rs",
@@ -4930,7 +4934,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "utf8parse-0.2.2",
     srcs = [
         "vendor/utf8parse-0.2.2/src/lib.rs",
@@ -4943,7 +4947,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "version_check-0.9.5",
     srcs = [
         "vendor/version_check-0.9.5/src/channel.rs",
@@ -4957,7 +4961,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "wait-timeout-0.2.1",
     srcs = [
         "vendor/wait-timeout-0.2.1/src/bin/exit.rs",
@@ -4987,7 +4991,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "windows-link-0.2.1",
     srcs = [
         "vendor/windows-link-0.2.1/readme.md",
@@ -4999,7 +5003,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "windows-sys-0.61.2",
     srcs = [
         "vendor/windows-sys-0.61.2/src/Windows/Wdk/Devices/Bluetooth/mod.rs",
@@ -5269,7 +5273,7 @@ cargo.rust_library(
     deps = [":windows-link-0.2.1"],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "winnow-0.7.14",
     srcs = [
         "vendor/winnow-0.7.14/examples/css/parser.rs",
@@ -5345,7 +5349,7 @@ cargo.rust_library(
     visibility = [],
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "zerocopy-0.8.31",
     srcs = [
         "vendor/zerocopy-0.8.31/src/byte_slice.rs",
@@ -5628,7 +5632,7 @@ buildscript_run(
     version = "0.8.31",
 )
 
-cargo.rust_library(
+rue_rust_library(
     name = "zmij-0.1.7",
     srcs = [
         "vendor/zmij-0.1.7/src/lib.rs",

@@ -268,6 +268,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     let compiler_binary_sha256 = sha256_file(request.compiler)?;
 
     let mut command = Command::new(request.compiler);
+    crate::environment::sanitize_compiler_environment(&mut command);
     command
         .arg(request.source)
         .arg("-o")

@@ -11,6 +11,8 @@ use tracing_subscriber::{EnvFilter, Layer as _, fmt};
 #[cfg(rue_benchmark_allocations)]
 mod allocation;
 mod compile;
+#[cfg(not(rue_benchmark_allocations))]
+mod compiler_allocator;
 mod emit;
 mod output;
 mod platform_signing;

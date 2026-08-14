@@ -1,0 +1,7 @@
+# Buck owns compilation of the bundled C source through the hermetic Zig
+# toolchain. Reindeer build scripts deliberately have no ambient C compiler.
+buildscript.run = false
+
+# This target is restored beside Reindeer's generated rules. Keeping the edge
+# in the fixup makes regeneration retain the Rust-to-native link relationship.
+extra_deps = [":libmimalloc-sys-native"]

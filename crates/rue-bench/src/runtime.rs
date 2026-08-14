@@ -833,6 +833,7 @@ fn build_program(
     binary: &Path,
 ) -> Result<ProgramIdentity, String> {
     let mut command = Command::new(&options.compiler);
+    crate::environment::sanitize_compiler_environment(&mut command);
     command
         .arg(source)
         .arg("-o")
@@ -1505,7 +1506,9 @@ fn truncate(bytes: &[u8]) -> String {
 /// Together with the commit this is what makes the series longitudinal: a
 /// movement is attributable to a compiler change from the record alone.
 fn compiler_version(compiler: &Path) -> Result<String, String> {
-    let output = Command::new(compiler)
+    let mut command = Command::new(compiler);
+    crate::environment::sanitize_compiler_environment(&mut command);
+    let output = command
         .arg("--version")
         .output()
         .map_err(|error| format!("could not run the compiler: {error}"))?;

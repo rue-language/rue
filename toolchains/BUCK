@@ -1,6 +1,6 @@
 # Toolchain configuration for Rue
 #
-# Status: Hermetic Rust toolchain
+# Status: Hermetic Rust and Zig toolchains
 # - Rust toolchain: Downloaded prebuilt binaries (Rust 1.92.0)
 # - C++ toolchain: System (clang/gcc)
 #
@@ -65,6 +65,24 @@ toolchain_alias(
         "prelude//os:macos": select({
             "prelude//cpu:arm64": "toolchains//rust:hermetic-macos-aarch64",
             "prelude//cpu:x86_64": "toolchains//rust:hermetic-macos-x86_64",
+        }),
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# Zig is a relocatable, SHA-pinned distribution. It is currently used for
+# compiler-host native dependencies and is deliberately separate from Rue's
+# internal program linker.
+toolchain_alias(
+    name = "zig",
+    actual = select({
+        "prelude//os:linux": select({
+            "prelude//cpu:arm64": "toolchains//zig:hermetic-linux-aarch64",
+            "prelude//cpu:x86_64": "toolchains//zig:hermetic-linux-x86_64",
+        }),
+        "prelude//os:macos": select({
+            "prelude//cpu:arm64": "toolchains//zig:hermetic-macos-aarch64",
+            "prelude//cpu:x86_64": "toolchains//zig:hermetic-macos-x86_64",
         }),
     }),
     visibility = ["PUBLIC"],
