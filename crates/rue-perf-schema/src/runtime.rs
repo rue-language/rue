@@ -547,6 +547,23 @@ pub struct PeerPolicy {
     /// The corpus scale the canary builds. 1x, because the canary is meant to
     /// be cheap enough to ride a per-push job.
     pub canary_scale: u32,
+    /// Whether observations under this epoch must record the
+    /// comparison-configuration identity (ADR-0072 Decision 2, RUE-1493).
+    ///
+    /// Declared per epoch rather than required outright BECAUSE THE STORE IS
+    /// APPEND-ONLY. Records written before that identity existed carry no such
+    /// field, and a validator that demanded it of them would invalidate
+    /// evidence nobody can rewrite. This is the same mechanism that retired
+    /// epoch 1 while keeping it declared: a new requirement arrives with a new
+    /// epoch, and the epoch a record names goes on describing the run it
+    /// describes.
+    ///
+    /// One direction only. An epoch that sets this may never unset it, because
+    /// the derive step's join reads the identity from both sides and an epoch
+    /// that stopped recording it would silently fall back to joining on the
+    /// workload identity alone — which is precisely the hole this closes.
+    #[serde(default)]
+    pub records_comparison_identity: bool,
 }
 
 impl RuntimeEpoch {
@@ -1177,6 +1194,50 @@ pub struct PeerObservation {
     pub samples: Vec<RuntimeSample>,
 }
 
+/// The configuration a cross-tool comparison was taken under.
+///
+/// ADR-0072 Decision 2 records TWO identities per observation, and the split is
+/// the whole of RUE-1493. The workload identity — the fixture's
+/// `identity_sha256` — is what gazette consumed: corpus, static assets,
+/// assembly rules, and gazette's own template port. It segments Rue's
+/// longitudinal series. This is the other one: the workload identity plus every
+/// peer template port, every peer version, and the epoch. It is what a joined
+/// peer row must match, and nothing else.
+///
+/// One identity could not do both jobs, and did neither correctly. Composed as
+/// it was, editing a Hugo template moved the digest that segments GAZETTE's own
+/// wall-clock series, for a change that cannot alter what gazette does — while
+/// bumping the Hugo shim moved no recorded identity at all, so a failed full
+/// peer leg left the next canary-only run joining a Hugo row taken under a
+/// version the project no longer pins. The row self-labelled its version, so no
+/// number was misattributed, but the table went on publishing against a pin
+/// that had never successfully run, and nothing in the data said so.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComparisonIdentity {
+    /// Digest over the workload identity, the peer ports, the peer PREPARER's
+    /// own digest and revision, the peer versions, and the epoch. The join
+    /// condition, and nothing a consumer has to reassemble from parts.
+    ///
+    /// The preparer's digest is in there because the peer half of the harness
+    /// is its own file: the respelling, the invocations, the thread parity, and
+    /// the cross-tool oracle all decide what a peer measurement means, and none
+    /// of them can move the WORKLOAD identity without segmenting Rue's series
+    /// for a change no gazette build can observe.
+    pub identity_sha256: String,
+    /// The peer-port revision this comparison was configured by: the
+    /// human-legible label beside the digest, as the workload identity's port
+    /// revision is beside its own.
+    pub peer_port_revision: u32,
+    /// EVERY pinned peer's version, on every observation — including a
+    /// canary-only one, which measures a single peer and must still record
+    /// what the others were pinned at. Without that, a bumped peer whose full
+    /// leg never succeeded is invisible: the canary run says nothing about the
+    /// tool it did not run, and the joined row names the version it was
+    /// measured under rather than the version now pinned.
+    pub peer_versions: BTreeMap<String, String>,
+}
+
 /// Raw measurements of one program.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1205,6 +1266,15 @@ pub struct RuntimeObservation {
     /// unchanged by this field existing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peers: Vec<PeerObservation>,
+    /// The comparison configuration this observation was taken under.
+    ///
+    /// Present exactly when the epoch's peer policy declares
+    /// `records_comparison_identity`. Optional in the wire form for the reason
+    /// that field exists: the store is append-only, and records written before
+    /// this identity existed must go on validating unchanged. Omitted when
+    /// absent, so no existing record's content address moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<ComparisonIdentity>,
 }
 
 /// Identity of one runtime report.
@@ -1557,6 +1627,19 @@ pub enum RuntimeValidationError {
         /// What is wrong.
         detail: String,
     },
+    /// The comparison-configuration identity is missing, malformed, or
+    /// contradicted by the peer observations stored beside it.
+    ///
+    /// Separate from a peer-policy violation because it is a claim about the
+    /// CONFIGURATION rather than about a measurement: the peers may each be
+    /// impeccable and the record still unable to say which peer pins they were
+    /// taken under, which is what a joined row is published against.
+    ComparisonIdentityViolation {
+        /// The workload.
+        workload: String,
+        /// What is wrong.
+        detail: String,
+    },
 }
 
 /// Why a stored runtime sample may not contribute to a statistic.
@@ -1730,6 +1813,11 @@ impl std::fmt::Display for RuntimeValidationError {
                 f,
                 "workload {workload:?} carries a peer observation its epoch does not \
                  admit: {detail}"
+            ),
+            RuntimeValidationError::ComparisonIdentityViolation { workload, detail } => write!(
+                f,
+                "workload {workload:?} does not record the comparison configuration its \
+                 epoch pins: {detail}"
             ),
         }
     }
@@ -2265,8 +2353,35 @@ fn check_observation(
 ///
 /// Peers are the denominator of a published ratio, so every property the ratio
 /// depends on is checked from the record rather than trusted from the runner:
-/// which tool, which version, which thread configuration, which scale, and
-/// whether the peer's own repeated samples agreed with each other.
+/// which tool, which version, which thread configuration, which scale, how many
+/// samples, whether each of those samples is a measurement at all, and whether
+/// the peer's own repeated builds agreed with each other.
+///
+/// THE PEER SAMPLES ANSWER TO THE SAME SANITY RULES AS THE RUE SAMPLES, and
+/// RUE-1493 is why that sentence is here rather than assumed. This function
+/// once checked only that every peer sample's artifact digest matched the
+/// recorded output digest, which a one-sample, zero-duration, non-zero-exit
+/// canary satisfies trivially — and `latest_comparison` would have published
+/// its median as the denominator of the headline ratio. A peer sample is judged
+/// harder than a Rue sample rather than more leniently: an invalid Rue sample
+/// is a measurement failure that keeps its evidence and publishes nothing
+/// (see [`collect_invalid_samples`]), while a peer observation carrying one
+/// cannot have come from this runner at all — `measure_one_peer` aborts the leg
+/// on a non-zero exit and never records a partial one — so it is a broken or
+/// dishonest producer, which is exactly what appendability exists to refuse.
+///
+/// The asymmetry is deliberate and it does cost something: one runner defect in
+/// a peer leg sinks the whole report, including the Rue observations of every
+/// other workload in it. Two things make that the right side. A peer row is
+/// judged as a RECORD rather than as a measurement — it is the configuration a
+/// published ratio divides by, and every other property of it (its tool, its
+/// version, its thread policy, its digests) is already appendability-checked
+/// here, so tiering the sample rules alone would leave the blast radius
+/// unchanged for most defects while making the loudest ones quiet. And a Rue
+/// sample is the evidence being collected, which is why a truncated one is kept
+/// and unpublished; a peer sample the runner would never have written is
+/// evidence of the producer, not of the workload, and the store cannot delete
+/// what it accepts.
 ///
 /// A peer whose build FAILED is not represented here at all — the runner
 /// records a [`RuntimeFailure`] instead — so an observation missing its canary
@@ -2289,11 +2404,54 @@ fn check_peers(
                 observation.peers.len()
             ));
         }
+        if observation.comparison.is_some() {
+            errors.push(RuntimeValidationError::ComparisonIdentityViolation {
+                workload: workload.id.clone(),
+                detail: "a comparison configuration is recorded, but this epoch declares no \
+                         peer policy for the workload; there is no comparison to configure"
+                    .to_string(),
+            });
+        }
         flush(errors, workload, details);
         return;
     };
 
+    // The scale every non-canary row must have built. The peers build the
+    // WORKLOAD's own fixture — a 1x denominator under a 10x numerator would not
+    // be a ratio of anything — so this is the workload's declared scale rather
+    // than a free field. The canary's is checked against the policy below,
+    // which the manifest already holds to the same number.
+    let declared_scale = match &workload.fixture {
+        FixtureDeclaration::CorpusTree { scale, .. } => Some(*scale),
+        FixtureDeclaration::SeededGenerator { .. } => None,
+    };
+    let expected_samples = epoch
+        .sampling
+        .get(&workload.id)
+        .map(|sampling| sampling.samples);
+
     let mut canaries = 0;
+    // The configuration key, checked as a UNIT rather than field by field:
+    // tool, scale, thread policy. ROLE IS DELIBERATELY NOT PART OF IT. The
+    // derive step keys a published row on (tool, thread policy) and keeps
+    // whichever it reaches first, so a canary and a full row of the same tool
+    // and policy are two denominators for one cell of the table with array
+    // order deciding between them — the thing this check exists to refuse,
+    // not an exception to it.
+    //
+    // The key here carries one field the table's does not, and the two are
+    // equivalent only because SCALE CANNOT VARY WITHIN AN OBSERVATION: the
+    // manifest holds a canary's scale to the workload's own (`check_epochs`),
+    // the canary's scale is checked against the policy below, and every other
+    // row's is checked against the workload's declared fixture scale. Those
+    // three are why keeping scale here is free rather than a mismatch. Do not
+    // "reconcile" the two keys by adding scale to the derive key or dropping
+    // it here without first checking that those pins still hold — the safety
+    // is in the pins, not in the spelling.
+    let mut configurations: BTreeSet<(&str, u32, String)> = BTreeSet::new();
+    // One emitted tree per (tool, scale), across thread policies: see the
+    // work-equivalence check after the loop.
+    let mut primary_trees: BTreeMap<(&str, u32), &str> = BTreeMap::new();
     for peer in &observation.peers {
         if !policy.tools.contains(&peer.tool) {
             details.push(format!(
@@ -2316,6 +2474,71 @@ fn check_peers(
                  nor its published secondary thread policy",
                 peer.tool, peer.thread_policy
             ));
+        }
+        if !configurations.insert((
+            peer.tool.as_str(),
+            peer.scale,
+            format!("{:?}", peer.thread_policy),
+        )) {
+            details.push(format!(
+                "two observations claim the same configuration — {:?} at {}x under {:?} — so \
+                 one cell of the published table has two denominators and no rule says which; \
+                 a differing role does not separate them, because the table does not key on \
+                 role",
+                peer.tool, peer.scale, peer.thread_policy
+            ));
+        }
+        if peer.thread_policy == policy.primary_thread_policy {
+            primary_trees.insert(
+                (peer.tool.as_str(), peer.scale),
+                peer.output_sha256.as_str(),
+            );
+        }
+        if peer.emitted_files == 0 {
+            details.push(format!(
+                "the {:?} observation emitted no files; a tool that built nothing is not a \
+                 denominator, however quickly it did it",
+                peer.tool
+            ));
+        }
+        // The epoch's sample count, exactly — the same protocol rule the Rue
+        // observation answers to. Fewer is a leg this runner would never have
+        // recorded, since it aborts rather than storing a short one, and more
+        // was not taken under the policy the series compares against.
+        if let Some(wanted) = expected_samples
+            && peer.samples.len() as u32 != wanted
+        {
+            details.push(format!(
+                "the {:?} observation stores {} sample(s) where this epoch's policy for the \
+                 workload is {wanted}; a denominator taken under another sampling policy is \
+                 not comparable with the numerator beside it",
+                peer.tool,
+                peer.samples.len()
+            ));
+        }
+        for (index, sample) in peer.samples.iter().enumerate() {
+            if !is_measurable_duration(sample.process_elapsed_ns) {
+                details.push(format!(
+                    "the {:?} observation's sample {index} elapsed zero ns; a monotonic clock \
+                     read either side of a process that ran cannot produce that, and it is \
+                     exactly the value that would make a peer look infinitely fast",
+                    peer.tool
+                ));
+            }
+            if sample.exit_code != 0 {
+                details.push(format!(
+                    "the {:?} observation's sample {index} exited with code {}; a build that \
+                     failed measured nothing",
+                    peer.tool, sample.exit_code
+                ));
+            }
+            if !is_sha256_digest(&sample.stdout_sha256) {
+                errors.push(RuntimeValidationError::MalformedDigest {
+                    workload: workload.id.clone(),
+                    field: format!("peers/{}/samples/{index}/stdout_sha256", peer.tool),
+                    found: sample.stdout_sha256.clone(),
+                });
+            }
         }
         if peer.samples.is_empty() {
             details.push(format!(
@@ -2371,6 +2594,15 @@ fn check_peers(
                     peer.thread_policy, policy.primary_thread_policy
                 ));
             }
+        } else if let Some(scale) = declared_scale
+            && peer.scale != scale
+        {
+            details.push(format!(
+                "the {:?} observation built the {}x corpus, but this workload's fixture is \
+                 the {scale}x one; the peers build the workload's own corpus or the ratio \
+                 divides two different jobs",
+                peer.tool, peer.scale
+            ));
         }
     }
     if canaries > 1 {
@@ -2379,7 +2611,117 @@ fn check_peers(
              must be one measurement, not a choice between several"
         ));
     }
+
+    // WORK EQUIVALENCE FOR THE DEFAULT-PARALLEL ROW (RUE-1493). The semantic
+    // oracle reads one emitted tree per tool — the primary-policy one — so a
+    // secondary row was previously proved only to be deterministic WITH
+    // ITSELF: a parallel build that reproducibly emitted a different site
+    // published as the number a user would actually experience. It is the same
+    // tool on the same corpus, so the check that closes it needs no second
+    // oracle pass, only the digest the oracle already judged.
+    for peer in &observation.peers {
+        if peer.thread_policy == policy.primary_thread_policy {
+            continue;
+        }
+        match primary_trees.get(&(peer.tool.as_str(), peer.scale)) {
+            Some(primary) if *primary == peer.output_sha256 => {}
+            Some(primary) => details.push(format!(
+                "the {:?} observation under {:?} emitted {} where its own {:?} build — the \
+                 one the semantic oracle judged — emitted {}; the same tool on the same \
+                 corpus did different work, so the secondary row is not the same job \
+                 measured with more threads",
+                peer.tool,
+                peer.thread_policy,
+                peer.output_sha256,
+                policy.primary_thread_policy,
+                primary
+            )),
+            None => details.push(format!(
+                "the {:?} observation under {:?} has no {:?} build at {}x beside it, so the \
+                 tree it emitted was never judged against anything",
+                peer.tool, peer.thread_policy, policy.primary_thread_policy, peer.scale
+            )),
+        }
+    }
+
+    errors.extend(check_comparison_identity(observation, workload, policy));
     flush(errors, workload, details);
+}
+
+/// Hold the comparison-configuration identity to the epoch that pins it.
+///
+/// The identity is what a joined peer row is published against (ADR-0072
+/// Decision 9), so the record has to carry it, carry it well-formed, and carry
+/// a peer-version table that agrees with the peer rows stored beside it. A row
+/// self-labelling a version the run did not pin is the exact shape of the
+/// staleness RUE-1493 closes.
+fn check_comparison_identity(
+    observation: &RuntimeObservation,
+    workload: &RuntimeWorkload,
+    policy: &PeerPolicy,
+) -> Vec<RuntimeValidationError> {
+    let mut errors: Vec<RuntimeValidationError> = Vec::new();
+    let violation = |detail: String| RuntimeValidationError::ComparisonIdentityViolation {
+        workload: workload.id.clone(),
+        detail,
+    };
+    let Some(comparison) = &observation.comparison else {
+        if policy.records_comparison_identity {
+            errors.push(violation(
+                "this epoch pins the comparison configuration, and the observation records \
+                 none; a peer row joined to it would be published against peer ports and \
+                 peer versions nobody can name"
+                    .to_string(),
+            ));
+        }
+        // An epoch that does not pin it is one whose records predate it. They
+        // stay valid, and the derive step joins them exactly as it did while
+        // they were being collected.
+        return errors;
+    };
+    if !is_sha256_digest(&comparison.identity_sha256) {
+        errors.push(RuntimeValidationError::MalformedDigest {
+            workload: workload.id.clone(),
+            field: "comparison/identity_sha256".to_string(),
+            found: comparison.identity_sha256.clone(),
+        });
+    }
+    // EVERY declared peer, not only the ones this run measured. A canary-only
+    // observation measures one tool and must still say what the others were
+    // pinned at, or a bump whose full leg never succeeded leaves no trace in
+    // the data at all.
+    let declared: BTreeSet<&str> = policy.tools.iter().map(String::as_str).collect();
+    let recorded: BTreeSet<&str> = comparison
+        .peer_versions
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if declared != recorded {
+        errors.push(violation(format!(
+            "the recorded peer versions cover {recorded:?}, but this epoch pins {declared:?}; \
+             every declared peer's version rides every observation, including a canary-only \
+             one that measured none of them"
+        )));
+    }
+    for (tool, version) in &comparison.peer_versions {
+        if version.trim().is_empty() {
+            errors.push(violation(format!(
+                "the recorded version of {tool:?} is empty; an unnamed pin is not a pin"
+            )));
+        }
+    }
+    for peer in &observation.peers {
+        if let Some(pinned) = comparison.peer_versions.get(&peer.tool)
+            && pinned != &peer.version
+        {
+            errors.push(violation(format!(
+                "the {:?} observation reports version {:?}, but this run pinned {pinned:?}; a \
+                 measurement and the configuration it was taken under cannot disagree",
+                peer.tool, peer.version
+            )));
+        }
+    }
+    errors
 }
 
 /// Turn collected peer complaints into validation errors.
@@ -2712,7 +3054,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-linux")
             .expect("aarch64-linux is a row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 2);
+        assert_eq!(epoch.suite_revision, 3);
         assert_eq!(epoch.target, "aarch64-linux");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -2740,7 +3082,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-macos")
             .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 2);
+        assert_eq!(epoch.suite_revision, 3);
         assert_eq!(epoch.target, "aarch64-macos");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -2872,6 +3214,7 @@ samples = 5
                     })
                     .collect(),
                 peers: Vec::new(),
+                comparison: None,
             }],
             failures: Vec::new(),
         }
@@ -3576,6 +3919,7 @@ primary_thread_policy = "pinned_single_thread"
 secondary_thread_policy = "tool_default_parallel"
 canary_tool = "zola"
 canary_scale = 1
+records_comparison_identity = true
 "#;
 
     fn gazette_manifest() -> RuntimeManifest {
@@ -3593,6 +3937,22 @@ canary_scale = 1
         }
     }
 
+    /// A peer sample, taken by the same harness and the same clock as the Rue
+    /// program's — and answering to the same sanity rules (RUE-1493).
+    fn peer_sample(elapsed: u64, tree: &str) -> RuntimeSample {
+        RuntimeSample {
+            process_elapsed_ns: elapsed,
+            peak_memory_bytes: 60 * 1024 * 1024,
+            exit_code: 0,
+            stdout_bytes: 64,
+            stdout_sha256: "a".repeat(64),
+            artifact_sha256: Some(tree.repeat(64)),
+        }
+    }
+
+    /// The per-run canary: the epoch's own sample count, because a denominator
+    /// taken under another sampling policy is not comparable with the numerator
+    /// beside it.
     fn canary() -> PeerObservation {
         PeerObservation {
             tool: "zola".to_string(),
@@ -3602,14 +3962,21 @@ canary_scale = 1
             scale: 1,
             output_sha256: "8".repeat(64),
             emitted_files: 131,
-            samples: vec![RuntimeSample {
-                process_elapsed_ns: 200_000_000,
-                peak_memory_bytes: 60 * 1024 * 1024,
-                exit_code: 0,
-                stdout_bytes: 64,
-                stdout_sha256: "a".repeat(64),
-                artifact_sha256: Some("8".repeat(64)),
-            }],
+            samples: (0..3)
+                .map(|index| peer_sample(200_000_000 + index, "8"))
+                .collect(),
+        }
+    }
+
+    /// The comparison configuration a gazette observation is taken under.
+    fn comparison() -> ComparisonIdentity {
+        ComparisonIdentity {
+            identity_sha256: "a".repeat(64),
+            peer_port_revision: 3,
+            peer_versions: BTreeMap::from([
+                ("zola".to_string(), "0.21.0".to_string()),
+                ("hugo".to_string(), "0.152.2".to_string()),
+            ]),
         }
     }
 
@@ -3659,6 +4026,7 @@ canary_scale = 1
                 .map(|index| site_sample(2_000_000_000 + index))
                 .collect(),
             peers: vec![canary()],
+            comparison: Some(comparison()),
         }];
         report
     }
@@ -3902,6 +4270,276 @@ canary_scale = 1
         );
     }
 
+    // -----------------------------------------------------------------------
+    // RUE-1493: the peer evidence a published ratio rests on.
+    //
+    // Every test below constructs a record that WAS appendable and must not be.
+    // The common shape is a peer observation that satisfies the one rule this
+    // module used to check — every sample's artifact digest equals the recorded
+    // output digest — while failing to be a measurement at all.
+    // -----------------------------------------------------------------------
+
+    /// A peer complaint mentioning `needle`, or a panic naming what was found.
+    fn refused_because(outcome: &RuntimeValidationOutcome, needle: &str) {
+        assert!(!outcome.is_appendable(), "the record was accepted");
+        assert!(
+            outcome
+                .errors
+                .iter()
+                .any(|error| error.to_string().contains(needle)),
+            "no error mentions {needle:?}: {:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_zero_length_peer_sample_cannot_anchor_a_ratio() {
+        // The headline case. A one-sample canary whose process elapsed zero ns
+        // used to be appendable — its artifact digest matched — and the derive
+        // step would have published its median as the denominator of the
+        // ratio, where a zero divides into anything.
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].samples[0].process_elapsed_ns = 0;
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "elapsed zero ns",
+        );
+    }
+
+    #[test]
+    fn a_peer_build_that_failed_cannot_anchor_a_ratio() {
+        // This runner aborts a peer leg on a non-zero exit and records a
+        // failure rather than a short observation, so a record carrying one did
+        // not come from it — which is exactly the producer appendability exists
+        // to refuse.
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].samples[1].exit_code = 2;
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "exited with code 2",
+        );
+    }
+
+    #[test]
+    fn a_peer_taken_under_another_sampling_policy_is_refused() {
+        // The epoch declares three samples of this workload, and the peer legs
+        // take the same count. A single-sample denominator has no spread and
+        // was not taken under the policy the numerator beside it was.
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].samples.truncate(1);
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "stores 1 sample(s) where this epoch's policy",
+        );
+    }
+
+    #[test]
+    fn a_peer_that_emitted_nothing_is_refused() {
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].emitted_files = 0;
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "emitted no files",
+        );
+    }
+
+    #[test]
+    fn a_full_peer_row_at_another_scale_is_refused() {
+        // The canary's scale was checked and a full row's was not, so a Hugo
+        // row could claim to have built a corpus this workload never assembled
+        // — a ratio dividing two different jobs.
+        let mut report = gazette_report();
+        report.workloads[0].peers.push(PeerObservation {
+            tool: "hugo".to_string(),
+            version: "0.152.2".to_string(),
+            role: PeerRole::Full,
+            thread_policy: PeerThreadPolicy::PinnedSingleThread,
+            scale: 10,
+            output_sha256: "9".repeat(64),
+            emitted_files: 131,
+            samples: (0..3)
+                .map(|index| peer_sample(300_000_000 + index, "9"))
+                .collect(),
+        });
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "this workload's fixture is the 1x one",
+        );
+    }
+
+    #[test]
+    fn two_rows_claiming_one_configuration_are_refused() {
+        // The configuration key is (tool, scale, thread policy), checked as a
+        // unit: two rows sharing it are two denominators for one cell of the
+        // published table, and the derive step's deduplication would silently
+        // keep whichever it reached first.
+        //
+        // A DIFFERING ROLE DOES NOT SEPARATE THEM, and that is the case this
+        // test is really about. The table keys a row on tool and thread policy
+        // and nothing else, so a canary and a full row of the same tool at the
+        // same policy collapse into one cell — array order deciding which
+        // median publishes and which is silently discarded. Cloning the canary
+        // as a full row with a ten-times-slower measurement was accepted before
+        // role left the key.
+        let mut report = gazette_report();
+        let slow = PeerObservation {
+            role: PeerRole::Full,
+            samples: (0..3)
+                .map(|index| peer_sample(2_000_000_000 + index, "8"))
+                .collect(),
+            ..report.workloads[0].peers[0].clone()
+        };
+        report.workloads[0].peers.push(slow);
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "two observations claim the same configuration",
+        );
+    }
+
+    #[test]
+    fn a_parallel_row_that_built_a_different_site_is_refused() {
+        // ADR-0072 Decision 4 for the SECONDARY row (RUE-1493). Only the
+        // primary-policy tree reaches the semantic oracle, so a deterministic
+        // parallel build emitting a different site satisfied every check there
+        // was and published as the number a user would actually experience. It
+        // is the same tool on the same corpus, so its digest must equal the one
+        // the oracle judged.
+        let mut report = gazette_report();
+        report.workloads[0].peers.push(PeerObservation {
+            tool: "zola".to_string(),
+            version: "0.21.0".to_string(),
+            role: PeerRole::Full,
+            thread_policy: PeerThreadPolicy::ToolDefaultParallel,
+            scale: 1,
+            output_sha256: "9".repeat(64),
+            emitted_files: 131,
+            samples: (0..3)
+                .map(|index| peer_sample(100_000_000 + index, "9"))
+                .collect(),
+        });
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "did different work",
+        );
+
+        // And the same row agreeing with its judged primary build is fine,
+        // which is what makes the check about work equivalence rather than
+        // about there being a secondary row at all.
+        let mut agreeing = gazette_report();
+        agreeing.workloads[0].peers.push(PeerObservation {
+            tool: "zola".to_string(),
+            version: "0.21.0".to_string(),
+            role: PeerRole::Full,
+            thread_policy: PeerThreadPolicy::ToolDefaultParallel,
+            scale: 1,
+            output_sha256: "8".repeat(64),
+            emitted_files: 131,
+            samples: (0..3)
+                .map(|index| peer_sample(100_000_000 + index, "8"))
+                .collect(),
+        });
+        let outcome = validate_runtime_report(&gazette_manifest(), &agreeing);
+        assert_eq!(outcome.errors, Vec::new());
+    }
+
+    #[test]
+    fn a_parallel_row_with_no_judged_primary_build_is_refused() {
+        // The tree of a secondary row is never handed to the oracle, so
+        // without its own tool's primary-policy build beside it there is
+        // nothing its digest could have been judged against.
+        let mut report = gazette_report();
+        report.workloads[0].peers = vec![
+            canary(),
+            PeerObservation {
+                tool: "hugo".to_string(),
+                version: "0.152.2".to_string(),
+                role: PeerRole::Full,
+                thread_policy: PeerThreadPolicy::ToolDefaultParallel,
+                scale: 1,
+                output_sha256: "9".repeat(64),
+                emitted_files: 131,
+                samples: (0..3)
+                    .map(|index| peer_sample(100_000_000 + index, "9"))
+                    .collect(),
+            },
+        ];
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "never judged against anything",
+        );
+    }
+
+    #[test]
+    fn an_observation_that_records_no_comparison_configuration_is_refused() {
+        // ADR-0072 Decision 2 as amended: the epoch pins the identity a joined
+        // peer row is published against, so an observation that records none
+        // cannot be joined to and is not appendable under that epoch.
+        let mut report = gazette_report();
+        report.workloads[0].comparison = None;
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "the observation records none",
+        );
+    }
+
+    #[test]
+    fn a_canary_only_observation_records_every_peer_version() {
+        // THE DATA GAP RUE-1493 NAMES. A canary-only run measures one tool, and
+        // recording only that tool's version is how a Hugo bump whose full leg
+        // failed became invisible: nothing in the store said which Hugo the run
+        // pinned, so nothing could say the joined row's Hugo was no longer it.
+        let mut report = gazette_report();
+        report.workloads[0]
+            .comparison
+            .as_mut()
+            .unwrap()
+            .peer_versions
+            .remove("hugo");
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "every declared peer's version rides every observation",
+        );
+    }
+
+    #[test]
+    fn a_peer_row_may_not_disagree_with_the_pin_it_ran_under() {
+        let mut report = gazette_report();
+        report.workloads[0].peers[0].version = "0.20.0".to_string();
+        refused_because(
+            &validate_runtime_report(&gazette_manifest(), &report),
+            "this run pinned",
+        );
+    }
+
+    #[test]
+    fn a_comparison_identity_without_a_peer_policy_is_refused() {
+        // The symmetric rule to peer observations without a policy: wordfreq
+        // has no comparison to configure, so a record describing one is
+        // describing a leg its epoch never declared.
+        let mut report = report();
+        report.workloads[0].comparison = Some(comparison());
+        refused_because(
+            &validate_runtime_report(&manifest(), &report),
+            "there is no comparison to configure",
+        );
+    }
+
+    #[test]
+    fn a_record_from_an_epoch_that_predates_the_comparison_identity_still_validates() {
+        // THE APPEND-ONLY RULE. Records taken before the comparison identity
+        // existed carry none and never could, and the store cannot delete them.
+        // An epoch that does not pin the identity therefore keeps accepting
+        // records without one — the same mechanism that retired epoch 1 in
+        // RUE-1485 while keeping it declared, so its records stayed valid.
+        let text = GAZETTE_MANIFEST.replace("records_comparison_identity = true\n", "");
+        let earlier = RuntimeManifest::parse(&text).expect("an epoch that pins no identity");
+        let mut report = gazette_report();
+        report.workloads[0].comparison = None;
+        let outcome = validate_runtime_report(&earlier, &report);
+        assert_eq!(outcome.errors, Vec::new());
+        assert!(outcome.publishes_workload("gazette"));
+    }
+
     #[test]
     fn a_fixture_table_still_refuses_unknown_fields_after_being_tagged() {
         // The tagging must not have bought its flexibility by accepting
@@ -4008,6 +4646,151 @@ canary_scale = 1
             assert!(suite.workload("gazette_10x").is_some());
             assert!(suite.workload("gazette_100x").is_none());
         }
+    }
+
+    /// A complete report against the CHECKED-IN manifest, as the runner writes
+    /// one: every declared workload, the canary each peer policy requires, and
+    /// the fixture provenance the suite revision pins.
+    ///
+    /// Parameterized by epoch because that is the whole point of it. The store
+    /// is append-only, so a record written under a retired epoch has to go on
+    /// validating against the manifest as it stands today.
+    fn shipped_report(epoch: u32, suite_revision: u32, preparer_revision: u32) -> RuntimeReport {
+        let comparison = (epoch >= 3).then(comparison);
+        let corpus = |scale: u32, samples: u32| RuntimeObservation {
+            workload: if scale == 1 {
+                "gazette".to_string()
+            } else {
+                format!("gazette_{scale}x")
+            },
+            source: "examples/gazette/main.rue".to_string(),
+            question: "How fast does a compiled Rue program build the real rue-lang.dev site, \
+                       against the production tools that build sites for a living?"
+                .to_string(),
+            program_args: vec![
+                "build".to_string(),
+                FIXTURE_ARGUMENT.to_string(),
+                "-o".to_string(),
+                OUTPUT_ARGUMENT.to_string(),
+            ],
+            recorded_inputs: vec![RecordedInput {
+                name: FIXTURE_INPUT_NAME.to_string(),
+                category: InputCategory::Recorded,
+                description: "the live corpus".to_string(),
+                identity_sha256: "f".repeat(64),
+                files: 130 * u64::from(scale),
+                bytes: 1_800_000 * u64::from(scale),
+                provenance: None,
+                tree: Some(CorpusTreeProvenance {
+                    preparer: "scripts/gazette-corpus-diff.py".to_string(),
+                    preparer_revision,
+                    scale,
+                    excluded: vec!["performance.md".to_string(), "runtime.md".to_string()],
+                }),
+            }],
+            program: ProgramIdentity {
+                binary_bytes: 1_048_576,
+                sha256: "b".repeat(64),
+            },
+            oracle: OracleOutcome {
+                kind: OracleKind::SemanticSitePages,
+                reference: "scripts/gazette-corpus-diff.py".to_string(),
+                reference_sha256: "d".repeat(64),
+                observed_sha256: "7".repeat(64),
+                verdict: OracleVerdict::Match,
+                deterministic_across_samples: true,
+                detail: String::new(),
+            },
+            samples: (0..u64::from(samples))
+                .map(|index| site_sample(2_000_000_000 + index))
+                .collect(),
+            peers: vec![PeerObservation {
+                tool: "zola".to_string(),
+                version: "0.21.0".to_string(),
+                role: PeerRole::Canary,
+                thread_policy: PeerThreadPolicy::PinnedSingleThread,
+                scale,
+                output_sha256: "8".repeat(64),
+                emitted_files: 131,
+                samples: (0..u64::from(samples))
+                    .map(|index| peer_sample(200_000_000 + index, "8"))
+                    .collect(),
+            }],
+            comparison: comparison.clone(),
+        };
+
+        let mut report = report();
+        report.identity.suite_revision = suite_revision;
+        report.identity.epoch = epoch;
+        report.identity.workload_source_hashes = BTreeMap::from([
+            ("wordfreq".to_string(), "3".repeat(64)),
+            ("gazette".to_string(), "4".repeat(64)),
+            ("gazette_10x".to_string(), "4".repeat(64)),
+        ]);
+        report.regime.target = "x86-64-linux".to_string();
+        report.workloads[0].recorded_inputs[0].bytes = 33_554_432;
+        report.workloads[0]
+            .recorded_inputs
+            .iter_mut()
+            .for_each(|input| {
+                if let Some(provenance) = input.provenance.as_mut() {
+                    provenance.vocabulary_size = 65_536;
+                }
+            });
+        report.workloads.push(corpus(1, 5));
+        report.workloads.push(corpus(10, 3));
+        report
+            .workloads
+            .sort_by(|left, right| left.workload.cmp(&right.workload));
+        report
+    }
+
+    #[test]
+    fn a_record_from_the_retired_epoch_validates_beside_one_from_the_new_epoch() {
+        // THE APPEND-ONLY EVIDENCE, against the manifest the repository ships
+        // rather than a fixture written to agree with it. RUE-1485 proved this
+        // shape by deriving an epoch-1 record beside two epoch-2 records with
+        // none rejected; RUE-1493 changes what an observation RECORDS, so the
+        // same proof is owed again.
+        //
+        // Epoch 2's records carry preparer revision 1 and no comparison
+        // identity, because neither existed when they were written. Epoch 3's
+        // carry revision 2 and the identity, because its peer policy pins it.
+        // Both must be appendable, and both must publish, or this change would
+        // have invalidated evidence nobody can rewrite.
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        for (epoch, suite_revision, preparer_revision) in [(2, 2, 1), (3, 3, 2)] {
+            let report = shipped_report(epoch, suite_revision, preparer_revision);
+            let outcome = validate_runtime_report(&manifest, &report);
+            assert_eq!(
+                outcome.errors,
+                Vec::new(),
+                "the epoch-{epoch} record was refused"
+            );
+            assert_eq!(outcome.completeness, RuntimeCompleteness::Complete);
+            for workload in ["wordfreq", "gazette", "gazette_10x"] {
+                assert!(
+                    outcome.publishes_workload(workload),
+                    "epoch {epoch} publishes {workload}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_new_epoch_refuses_a_record_written_without_the_comparison_identity() {
+        // The other half of the same rule: epoch 3 pins the identity, so a
+        // runner that skipped it is refused HERE rather than at the point
+        // someone reads a joined row and cannot say which peer pins it names.
+        let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
+        let mut report = shipped_report(3, 3, 2);
+        for observation in &mut report.workloads {
+            observation.comparison = None;
+        }
+        refused_because(
+            &validate_runtime_report(&manifest, &report),
+            "the observation records none",
+        );
     }
 
     #[test]

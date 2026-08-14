@@ -458,6 +458,19 @@ fn measure_workload(
         });
     }
 
+    // The configuration the peer legs were taken under, recorded on EVERY
+    // observation that has a peer policy — including a canary-only one, which
+    // measures one tool and must still say what the others were pinned at
+    // (ADR-0072 Decision 2, RUE-1493). The preparer composed it; nothing is
+    // recomposed here.
+    let comparison = peer_policy
+        .and(prepared.description.as_ref())
+        .map(|description| rue_perf_schema::ComparisonIdentity {
+            identity_sha256: description.identity.comparison_digest.clone(),
+            peer_port_revision: description.identity.peer_port_revision,
+            peer_versions: description.peer_versions.clone(),
+        });
+
     Ok(RuntimeObservation {
         workload: workload.id.clone(),
         source: workload.source.clone(),
@@ -471,6 +484,7 @@ fn measure_workload(
         oracle,
         samples,
         peers,
+        comparison,
     })
 }
 
@@ -566,6 +580,9 @@ fn measure_peers(
     // cross-tool checks read. The parallel leg builds the same site, so judging
     // both would compare a tool with itself.
     let mut trees: BTreeMap<String, PathBuf> = BTreeMap::new();
+    // The digest of that judged tree, per tool and scale. A secondary row is
+    // held to it below.
+    let mut primary_digests: BTreeMap<(String, u32), String> = BTreeMap::new();
     for (tool, thread_policy, scale, role) in wanted {
         match measure_one_peer(
             options,
@@ -578,8 +595,61 @@ fn measure_peers(
             samples_wanted,
             workdir,
         ) {
+            // WORK EQUIVALENCE FOR THE DEFAULT-PARALLEL ROW (ADR-0072
+            // Decision 4, RUE-1493). Only the primary-policy tree is kept for
+            // the semantic oracle, so before this check a secondary row was
+            // proved deterministic with itself and nothing more: a parallel
+            // build that reproducibly emitted a different site would publish
+            // as the number a user would actually experience. It is the same
+            // tool on the same corpus, so requiring its digest to equal the
+            // judged one closes the hole without a second oracle pass over a
+            // tree that is supposed to be identical.
+            //
+            // THE ROW IS DROPPED AND THE OBSERVATION STAYS PUBLISHABLE, which
+            // is a deliberate choice between two tierings. A lost canary makes
+            // the workload incomplete because the canary is the ratio's
+            // denominator and no ratio can be computed without it; a secondary
+            // row is published BESIDE the ratio and never as it (Decision 5),
+            // so suppressing the Rue median and the same-run canary over a
+            // defect in a labelled extra row would discard good evidence to
+            // report a different problem. What must not happen is that the row
+            // vanishes silently, so the failure is recorded here and the derive
+            // step now carries it to the page.
+            //
+            // The peer-state file is deliberately not written when this fires,
+            // so the full leg is due again on the next push. That is a real
+            // cost — a tool genuinely nondeterministic under parallelism would
+            // pay a peer leg per push until someone fixed it — and it is the
+            // right side to err on: the state file's meaning is "this
+            // comparison configuration has been fully measured", which is
+            // exactly what did not happen, and a run that stopped retrying
+            // would also stop re-reporting.
+            Ok((observation, _))
+                if thread_policy != policy.primary_thread_policy
+                    && primary_digests.get(&(tool.clone(), scale))
+                        != Some(&observation.output_sha256) =>
+            {
+                failures.push(RuntimeFailure::ValidationRejected {
+                    workload: workload.id.clone(),
+                    detail: match primary_digests.get(&(tool.clone(), scale)) {
+                        Some(primary) => format!(
+                            "peer {tool} at {scale}x under {thread_policy:?} emitted {} where \
+                             its judged {:?} build emitted {primary}; the same tool on the \
+                             same corpus did different work",
+                            observation.output_sha256, policy.primary_thread_policy
+                        ),
+                        None => format!(
+                            "peer {tool} at {scale}x under {thread_policy:?} has no judged \
+                             {:?} build to be equivalent to",
+                            policy.primary_thread_policy
+                        ),
+                    },
+                });
+            }
             Ok((observation, tree)) => {
                 if thread_policy == policy.primary_thread_policy {
+                    primary_digests
+                        .insert((tool.clone(), scale), observation.output_sha256.clone());
                     trees.insert(tool.clone(), tree);
                 }
                 observations.push(observation);
@@ -610,12 +680,19 @@ fn measure_peers(
             .count()
             + 1
             == wanted_count;
-    if complete_full_leg && let Some(directory) = options.peer_state.as_deref() {
-        let state = serde_json::json!({
-            "fixture_digest": description.identity.fixture_digest,
-            "peer_versions": description.peer_versions,
-            "epoch": options.epoch_label,
-        });
+    if complete_full_leg
+        && let Some(directory) = options.peer_state.as_deref()
+        // No state to record means the preparer was never asked the event
+        // question, so there is nothing to answer it with next time. Writing a
+        // placeholder would be worse than writing nothing: the next run would
+        // read it, find no identity, and have to decide what an empty state
+        // means.
+        && let Some(state) = description
+            .peer_event
+            .as_ref()
+            .map(|event| &event.state)
+            .filter(|state| !state.is_null())
+    {
         let path = directory.join(format!("{}.json", workload.id));
         if let Err(error) = std::fs::create_dir_all(directory)
             .and_then(|()| std::fs::write(&path, format!("{state:#}\n")))
@@ -833,9 +910,17 @@ pub struct PrepareDescription {
 }
 
 /// The identity fields this runner records from the preparer's report.
+///
+/// TWO IDENTITIES (ADR-0072 Decision 2 as amended by RUE-1493). `fixture_digest`
+/// is the WORKLOAD identity — everything gazette consumes, including gazette's
+/// own template port and excluding the peers' — and it is what segments Rue's
+/// longitudinal series. `comparison_digest` is the COMPARISON-CONFIGURATION
+/// identity — the workload identity plus every peer port, the peer preparer's
+/// own digest and revision, every peer version, and the epoch — and it is what
+/// a joined peer row is published against.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct FixtureIdentity {
-    /// One digest over every input class the tools consume.
+    /// One digest over every input class gazette consumes.
     pub fixture_digest: String,
     /// Files and bytes of the corpus as identified — before duplication, so a
     /// scale variant of an unchanged corpus does not look like a content
@@ -852,16 +937,24 @@ pub struct FixtureIdentity {
     pub static_files: u64,
     /// Their total bytes.
     pub static_bytes: u64,
-    /// Template-port and parity-config files.
-    pub port_files: u64,
+    /// Gazette's own template-port and configuration files.
+    pub gazette_port_files: u64,
     /// Their total bytes.
-    pub port_bytes: u64,
-    /// The port revision a maintainer bumps deliberately.
-    pub port_revision: u32,
+    pub gazette_port_bytes: u64,
+    /// The gazette-port revision a maintainer bumps deliberately.
+    pub gazette_port_revision: u32,
     /// The scale variant assembled.
     pub scale: u32,
     /// The content paths excluded from the corpus.
     pub excluded: Vec<String>,
+    /// The comparison-configuration identity, present when the peers' sites
+    /// were laid out. Absent for a run with no peer policy, which has no
+    /// comparison to configure.
+    #[serde(default)]
+    pub comparison_digest: String,
+    /// The peer-port revision that identity was configured by.
+    #[serde(default)]
+    pub peer_port_revision: u32,
 }
 
 /// One tool's measured invocation, as the preparer laid it out.
@@ -881,6 +974,16 @@ pub struct PeerEvent {
     pub due: bool,
     /// Which one, for the log and for the annotation.
     pub reason: String,
+    /// The state the NEXT run asks its event question against, exactly as the
+    /// preparer composed it.
+    ///
+    /// Carried through rather than rebuilt here: the preparer owns what the
+    /// comparison identity is made of, and a second construction of the same
+    /// shape in this file is a second thing to fall out of step with it — which
+    /// is how a peer-port change could stop firing the leg while the derive
+    /// step went on joining on an identity that had moved.
+    #[serde(default)]
+    pub state: serde_json::Value,
 }
 
 /// Prepare a workload's fixture and record the identity of what it consumed.
@@ -1076,30 +1179,44 @@ fn prepare_corpus_tree(
     // matches an observation to its segment by.
     eprintln!(
         "rue-bench runtime: prepared the {}x corpus for {}: {} page(s) from {} content file(s) \
-         and {} bytes of Markdown, template-port revision {}, fixture digest {}",
+         and {} bytes of Markdown, gazette-port revision {}, workload identity {}, \
+         comparison identity {}",
         identity.scale,
         workload.id,
         description_report.pages,
         identity.content_files,
         identity.content_bytes,
-        identity.port_revision,
-        identity.fixture_digest
+        identity.gazette_port_revision,
+        identity.fixture_digest,
+        if identity.comparison_digest.is_empty() {
+            "none (no peer leg)"
+        } else {
+            identity.comparison_digest.as_str()
+        }
     );
 
-    // Every input class the tools consume, counted together: the Markdown
+    // Every input class GAZETTE consumes, counted together: the Markdown
     // content, the static passthrough (more bytes than the Markdown itself),
-    // and the versioned template ports and parity configurations. The digest is
-    // the preparer's own fixture digest, which covers all three plus the
-    // exclusion set, so no input class can change the measured job without
-    // changing the value that segments the series.
+    // and gazette's own versioned template port and configuration. The digest
+    // is the preparer's workload identity, which covers all three plus the
+    // assembly rules and the exclusion set, so no input class can change the
+    // measured job without changing the value that segments the series.
+    //
+    // The PEER ports are deliberately outside both the count and the digest:
+    // gazette never reads them, so a Hugo layout edit is not a change to what
+    // this observation measured. They ride the comparison identity instead.
     Ok(PreparedFixture {
         recorded: RecordedInput {
             name: FIXTURE_INPUT_NAME.to_string(),
             category: *category,
             description: description.clone(),
             identity_sha256: identity.fixture_digest.clone(),
-            files: identity.scaled_content_files + identity.static_files + identity.port_files,
-            bytes: identity.scaled_content_bytes + identity.static_bytes + identity.port_bytes,
+            files: identity.scaled_content_files
+                + identity.static_files
+                + identity.gazette_port_files,
+            bytes: identity.scaled_content_bytes
+                + identity.static_bytes
+                + identity.gazette_port_bytes,
             provenance: None,
             tree: Some(CorpusTreeProvenance {
                 preparer: preparer.clone(),

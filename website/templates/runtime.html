@@ -308,11 +308,14 @@
       </figcaption>
     </figure>
     <p id="rt-comparison-empty" style="color: var(--color-muted); max-width: 42rem; margin-top: 0.75rem;">
-      No peer measurements have been collected on this platform yet. The peer
-      leg runs when the recorded fixture identity, a pinned peer's version, or
-      the runner epoch changes, and the per-run canary rides every observation
-      after that; this table fills in with the first such run. Nothing is
-      estimated here in the meantime.
+      No peer measurements are publishable for this platform's newest run. The
+      peer leg runs when the recorded comparison configuration changes — the
+      corpus, a template port, a pinned peer's version, or the runner epoch —
+      and the per-run canary rides every observation after that; this table
+      fills in with the first such run whose measurement is complete. A run
+      that lost its canary, or whose own observation was truncated, publishes
+      nothing here rather than an older table. Nothing is estimated in the
+      meantime.
     </p>
 
     <h2 style="margin-top: 2.5rem;">Field notes</h2>

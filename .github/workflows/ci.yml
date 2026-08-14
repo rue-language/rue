@@ -401,10 +401,27 @@ jobs:
       # the numbers are already collected. Two samples per tool, because
       # determinism needs at least two; the peers' default-parallel row is
       # skipped because it answers a measurement question, not this one.
+      #
+      # AT 2x, NOT 1x (RUE-1493), and the reason is a defect this lane could not
+      # have seen. Hugo picks a page's layout from its PATH, so every copy under
+      # a scale prefix fell out of the specification layout and rendered with no
+      # sidebar — nine tenths of the corpus at 10x, the port's most expensive
+      # template skipped — while the emitted file set and the page count stayed
+      # exactly right. Only the 10x run found it, and required CI ran 1x alone,
+      # where nothing is duplicated and the question is never asked.
+      #
+      # The fixture is 2x rather than 10x because ADR-0072 Decision 9 makes CI
+      # cost a first-class constraint: 2x is the SMALLEST duplicated corpus, and
+      # duplication is the whole of what 1x cannot exercise. The comparison
+      # covers every original page and one copy of each, so it strictly includes
+      # what the 1x run checked and adds the duplicated layout, type, and feed
+      # selection on top, for roughly twice the build work rather than ten
+      # times. 2x is deliberately not a rung of the published curve and never
+      # enters `performance/runtime.toml`; it exists to be checked, not plotted.
       - name: Check cross-tool work equivalence against pinned Zola and Hugo
         run: >-
           scripts/ci-timed "gazette peers" --
-          scripts/gazette-corpus-diff.py peers --samples 2 --no-secondary
+          scripts/gazette-corpus-diff.py peers --samples 2 --no-secondary --scale 2
 
       - name: Run explicit cross-backend compilation and encoding coverage
         # Both the x86-64 and AArch64 encoders are host-independent Rust tests.

@@ -210,9 +210,124 @@ description = "the same corpus at ten copies, by deterministic path-prefixed dup
 kind = "semantic_site_pages"
 path = "scripts/gazette-corpus-diff.py"
 
-# The pinned reference regime. Epoch 1 implements suite revision 1 and no
-# longer collects; epoch 2 implements revision 2 and does. Declaring a new
-# epoch rather than moving epoch 1 to the new revision is what keeps every
+# ===========================================================================
+# SUITE REVISION 3 (RUE-1493) pins preparer revision 2: the identity split.
+#
+# The workloads are revision 2's, unchanged in what they measure. What changed
+# is the preparer, and therefore what an observation RECORDS. ADR-0072
+# Decision 2 now asks for two identities rather than one:
+#
+#   * the WORKLOAD identity — corpus, static assets, assembly rules, and
+#     gazette's own template port — which segments Rue's longitudinal series
+#     and must not move when a peer port does; and
+#   * the COMPARISON-CONFIGURATION identity — that, plus every peer port, the
+#     peer preparer's own digest and revision, every peer version, and the
+#     epoch — which is what a joined peer row is published against.
+#
+# Revision 2's single identity did both jobs and did neither correctly: a Hugo
+# template edit opened a new segment in gazette's own series, while a Hugo shim
+# bump moved no recorded identity at all, so a failed full peer leg left the
+# next canary-only run joining a row measured under a version no longer pinned.
+#
+# The preparer is two files as of this revision, and the second is why the peer
+# digest is in the list above: `scripts/gazette_peer_ports.py` holds the peer
+# ports, the corpus respelling, the peers' invocations and thread parity, and
+# the cross-tool oracle. It is separate precisely so a change to any of them
+# moves the comparison identity and not the workload one — the `preparer`
+# pinned below is hashed into the WORKLOAD identity, so a peer knob sharing
+# that file would segment Rue's series for a change no gazette build reads.
+#
+# `preparer_revision` is bumped rather than the digest left to move on its own,
+# for the reason ADR-0067 gives for every pin: a harness running the older
+# preparer would produce records with no comparison identity, and refusing that
+# at preparation time is clearer than discovering it as an unappendable record.
+#
+# REVISION 2 STAYS DECLARED, and so do 1 and the epochs that implement them.
+# Records already in the store name their suite revision and their epoch, and a
+# manifest that forgot either could not validate them. That is the same reason
+# epoch 1 was retired rather than repointed at revision 2.
+# ===========================================================================
+[[suite]]
+revision = 3
+protocol_version = 1
+measured_boundary = "spawn_to_exit_v1"
+
+[[suite.workloads]]
+id = "wordfreq"
+source = "examples/wordfreq/main.rue"
+question = "How fast does a compiled Rue program tokenize and count words in tens of MiB of text?"
+program_args = ["{fixture}"]
+
+[suite.workloads.fixture]
+kind = "seeded_generator"
+category = "recorded"
+generator = "zipf_ascii_text"
+generator_revision = 1
+seed = 20260813
+bytes = 33554432
+vocabulary_size = 65536
+file_name = "wordfreq-input.txt"
+description = "32 MiB of deterministic ASCII word text with Zipf-distributed word ranks"
+
+[suite.workloads.oracle]
+kind = "golden_stdout"
+path = "performance/fixtures/wordfreq/expected-stdout.txt"
+
+[[suite.workloads]]
+id = "gazette"
+source = "examples/gazette/main.rue"
+question = "How fast does a compiled Rue program build the real rue-lang.dev site, against the production tools that build sites for a living?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 2
+scale = 1
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site"
+description = "the live rue-lang.dev content plus the copied specification, as website/build.sh assembles it, minus the two pages whose templates read derived benchmark data"
+
+# `path` LOCATES AND INVOKES the judge rather than digesting it, which is why
+# it stays one path while the judge became two files in this revision. The
+# gazette-side half is the script named here, and its digest rides
+# `oracle.reference_sha256` on every observation; the cross-tool half is
+# `scripts/gazette_peer_ports.py`, whose digest rides the comparison identity
+# instead. Each half's identity is recorded next to the thing it can
+# invalidate — the workload's judgement, and the comparison's — which is the
+# same partition the two preparers make.
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+# The 10x rung, unchanged from revision 2 but for the preparer pin. The two
+# honesty notes revision 2 records about this axis — it is a page-count curve,
+# and the specification sidebar collapses on a duplicated page — apply here
+# exactly as they did there.
+[[suite.workloads]]
+id = "gazette_10x"
+source = "examples/gazette/main.rue"
+question = "How does a compiled Rue site build scale with page count, at ten copies of the corpus?"
+program_args = ["build", "{fixture}", "-o", "{output}"]
+
+[suite.workloads.fixture]
+kind = "corpus_tree"
+category = "recorded"
+preparer = "scripts/gazette-corpus-diff.py"
+preparer_revision = 2
+scale = 10
+excluded = ["performance.md", "runtime.md"]
+root_name = "gazette-site-10x"
+description = "the same corpus at ten copies, by deterministic path-prefixed duplication"
+
+[suite.workloads.oracle]
+kind = "semantic_site_pages"
+path = "scripts/gazette-corpus-diff.py"
+
+# The pinned reference regime. Epoch 1 implements suite revision 1, epoch 2
+# revision 2, and epoch 3 revision 3; only the last collects. Declaring a new
+# epoch rather than moving an old one to the new revision is what keeps every
 # record already in the store valid: a stored report names the epoch it ran
 # under, and that epoch must go on describing the run it describes.
 [[epoch]]
@@ -388,7 +503,8 @@ runner_image = "local"
 samples = 2
 
 # ===========================================================================
-# EPOCH 2: suite revision 2, the epoch that collects (RUE-1485).
+# EPOCH 2: suite revision 2 (RUE-1485). SUPERSEDED by epoch 3 and kept
+# declared, because the records taken under it name it.
 #
 # One new thing is declared per platform beyond the added workloads: the peer
 # policy. Thread policy belongs to the epoch rather than the suite because it
@@ -416,7 +532,10 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 3, which implements suite revision 3 and pins the
+# comparison-configuration identity. Kept declared so the reports already
+# stored under it stay readable and valid.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -470,7 +589,10 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 3, which implements suite revision 3 and pins the
+# comparison-configuration identity. Kept declared so the reports already
+# stored under it stay readable and valid.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -516,7 +638,10 @@ compiler_args = ["-O3"]
 optimization = "o3"
 thread_policy = "single_threaded"
 hardware_counters = "unavailable_on_hosted_runner"
-collection = true
+# Superseded by epoch 3, which implements suite revision 3 and pins the
+# comparison-configuration identity. Kept declared so the reports already
+# stored under it stay readable and valid.
+collection = false
 
 [epoch.environment]
 runner_label = "github-hosted"
@@ -590,3 +715,221 @@ primary_thread_policy = "pinned_single_thread"
 secondary_thread_policy = "tool_default_parallel"
 canary_tool = "zola"
 canary_scale = 1
+
+# ===========================================================================
+# EPOCH 3: suite revision 3, the epoch that collects (RUE-1493).
+#
+# Everything about how these platforms run the workload is epoch 2's — same
+# runners, same sampling policies, same thread parity, same canary. One thing
+# is new, and it is the reason the epoch is new rather than epoch 2 being
+# edited: `records_comparison_identity`.
+#
+# ADR-0072 Decision 2 now records TWO identities per observation. The workload
+# identity segments Rue's own series and covers only what gazette consumes;
+# the comparison-configuration identity covers the peer ports, the peer
+# preparer's own digest, every peer version, and this epoch, and is what the
+# derive step joins a canary-only run to an earlier full peer leg on. Requiring it closes two holes at once: a
+# peer port change no longer segments gazette's wall-clock series, and a peer
+# VERSION bump can no longer leave a stale row joined in behind a failed full
+# leg.
+#
+# THE STORE IS APPEND-ONLY, so the requirement arrives with a new epoch rather
+# than as a rule applied backwards. Epoch 2's records carry no comparison
+# identity and never could; they stay valid, keep publishing, and keep joining
+# on the workload identity alone, which is the condition they were collected
+# under. This is the mechanism that retired epoch 1 in RUE-1485, used again
+# for the same reason.
+# ===========================================================================
+
+[[epoch]]
+id = 3
+platform = "x86_64-linux"
+suite_revision = 3
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# Unchanged from epoch 2: five samples of each per-push workload, three at
+# 10x. No `[epoch.calibration]` and no `[epoch.flagging]` either — calibration
+# is a property of a workload on a platform and is never inherited, not from
+# the compiler suites and not from this platform's own earlier epoch, so
+# gazette arrives advisory here exactly as it did there.
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+# The declaration that makes the comparison identity mandatory here. Every
+# observation of this workload must record which peer ports and which peer
+# versions its peer legs were configured by — including a canary-only one,
+# which measures a single tool and must still say what the others were pinned
+# at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 3
+platform = "aarch64-linux"
+suite_revision = 3
+target = "aarch64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# The runner is `ubuntu-24.04-arm`; the image it reports is `ubuntu-24.04`,
+# which is how ADR-0067's aarch64-linux epochs already record this regime.
+[epoch.sampling.wordfreq]
+samples = 5
+
+[epoch.sampling.gazette]
+samples = 5
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+# The declaration that makes the comparison identity mandatory here. Every
+# observation of this workload must record which peer ports and which peer
+# versions its peer legs were configured by — including a canary-only one,
+# which measures a single tool and must still say what the others were pinned
+# at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 3
+platform = "aarch64-macos"
+suite_revision = 3
+target = "aarch64-macos"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = true
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+# Nine, as in epoch 2, and for the same reason: this row is off the per-push
+# path, has no calibration of its own, and a larger n per observation makes
+# the dispersion estimate that calibration will be built from converge sooner.
+[epoch.sampling.wordfreq]
+samples = 9
+
+[epoch.sampling.gazette]
+samples = 9
+
+[epoch.sampling.gazette_10x]
+samples = 3
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+# The declaration that makes the comparison identity mandatory here. Every
+# observation of this workload must record which peer ports and which peer
+# versions its peer legs were configured by — including a canary-only one,
+# which measures a single tool and must still say what the others were pinned
+# at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
+
+[[epoch]]
+id = 3
+platform = "local"
+suite_revision = 3
+target = "x86-64-linux"
+compiler_args = ["-O3"]
+optimization = "o3"
+thread_policy = "single_threaded"
+hardware_counters = "unavailable_on_hosted_runner"
+collection = false
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+# The development epoch for local runs, at suite revision 3. Not a collection
+# target: its environment policy admits only `local`, so a hosted runner
+# cannot append to it and a laptop cannot append to the reference series.
+[epoch.sampling.wordfreq]
+samples = 2
+
+[epoch.sampling.gazette]
+samples = 2
+
+[epoch.sampling.gazette_10x]
+samples = 2
+
+[epoch.peers.gazette]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 1
+# The declaration that makes the comparison identity mandatory here. Every
+# observation of this workload must record which peer ports and which peer
+# versions its peer legs were configured by — including a canary-only one,
+# which measures a single tool and must still say what the others were pinned
+# at, or a bump whose full leg never succeeded leaves no trace in the data.
+records_comparison_identity = true
+
+[epoch.peers.gazette_10x]
+tools = ["zola", "hugo"]
+primary_thread_policy = "pinned_single_thread"
+secondary_thread_policy = "tool_default_parallel"
+canary_tool = "zola"
+canary_scale = 10
+records_comparison_identity = true
