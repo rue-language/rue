@@ -33,3 +33,11 @@ __pycache__/
 # with the observations it came from, and the stored copy is the one that would
 # be believed.
 website/static/performance-data.json
+
+# Cut from the checked-in gazette and peer-port sources at site build time
+# (ADR-0072 Decision 8). Never committed, for the same reason: a stored copy
+# could disagree with the ports the benchmark actually runs, and the stored copy
+# is the one the page would publish. It lives beside `config.toml` rather than
+# under `static/`, because `static/` is inside the recorded fixture identity and
+# a derived file there would move the identity on every build.
+website/source-excerpts.json

@@ -151,16 +151,20 @@ PORT_ROOTS = [
 # what starts a new comparable segment in the series rather than shifting an
 # existing one under a reader.
 #
-# The digest below was re-pinned for RUE-1485, and the review it records went
-# this way: the change was to `runtime.html`, which is the template of a page
+# The digest below was re-pinned for RUE-1495, and the review it records went
+# this way: the change was again to `runtime.html`, the template of a page
 # EXCLUDED from the benchmark corpus, so no port template derives from it and
-# none should follow. It moved because the cross-tool table it renders now has
-# data to render and captions for the scale axis to carry. `PORT_REVISION`
-# advanced anyway, because the peer ports joined the identity in the same
-# change.
+# none should follow. It moved because that page gained the side-by-side source
+# panel ADR-0072 Decision 8 asks for. `PORT_REVISION` did NOT advance, which is
+# the difference from the entry this one replaces: RUE-1485 advanced it because
+# the peer ports joined the fixture identity in that same change, not because a
+# re-pin requires it. Advancing it here would move the recorded fixture identity
+# — opening a new comparable segment in the published series — to record a
+# presentation change no port followed, which is the cost the paragraph above
+# says the revision exists to buy deliberately.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "536f7c68bf169ca1e2d32c67f2118c05d988a071fd2712b485eae5056b6d3d83"
+    "42fba7bb7afa44ac63e3846e244fde959cea2fc21a80194b07fa238d8f7dd4e5"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare

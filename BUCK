@@ -982,6 +982,23 @@ rue_sh_test(
     },
 )
 
+# RUE-1495: the runtime page publishes excerpts of the template ports the
+# benchmark actually runs, so the property worth a test is that a declaration
+# which has stopped describing its source FAILS rather than rendering something
+# else — a wrong excerpt looks exactly like a right one. The last two cases run
+# against the real ports in the tree, so the shipped declarations are checked
+# here rather than only when the site is built.
+rue_sh_test(
+    name = "source-excerpt-tool-tests",
+    test = "scripts/test-extract-source-excerpts.py",
+    resources = [
+        "scripts/extract-source-excerpts.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
 # previous measurement, neither of which a run object carries. The ordinal
 # follows trunk's first parents, so these tests pin the one property that makes
