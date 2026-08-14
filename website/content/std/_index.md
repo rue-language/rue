@@ -51,7 +51,7 @@ pub const math = @import("math.rue");
 
 | Module | Description |
 |--------|-------------|
-| [`math`](math/) | Mathematical functions: `abs`, `min`, `max`, `clamp` |
+| [`math`](01-math/) | Mathematical functions: `abs`, `min`, `max`, `clamp` |
 
 ## Future Modules
 

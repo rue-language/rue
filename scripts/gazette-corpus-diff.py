@@ -206,13 +206,13 @@ CORPUS_EXCLUSIONS = {
 # convention. So the check fails two ways: an entry that stops appearing is
 # stale and must go, and an entry that starts appearing MORE is new breakage
 # hiding behind an old excuse.
-KNOWN_BROKEN_LINKS = {
-    "std/math/": (
-        1,
-        "the standard-library index links `math/` relative to `/std/`, but the "
-        "page is `01-math.md` and so routes to `/std/01-math/`",
-    ),
-}
+#
+# The table is empty, and staying empty is the point rather than an accident of
+# there being nothing to say. Its one entry was `std/math/` — the standard-
+# library index linked `math/` relative to `/std/`, but the page is
+# `01-math.md` and routes to `/std/01-math/` — and RUE-1492 fixed the content
+# instead, so the entry went stale by its own rule and was removed with the fix.
+KNOWN_BROKEN_LINKS = {}
 
 # Links per page into the two excluded pages: the desktop navigation bar names
 # both, and the mobile menu names both again. Asserted rather than printed, for
@@ -1810,11 +1810,16 @@ def normalize_target(href: str, route: str = "") -> str:
         resolves it against the page's own permalink and Hugo leaves it as
         CommonMark wrote it. Both land on the same place.
 
-      * Relative. `[math](math/)` on the standard-library index resolves
+      * Relative. `[math](01-math/)` on the standard-library index resolves
         against the page in every browser, and Zola resolves it at build time
-        while Hugo does not. This one is a KNOWN BROKEN LINK in the content, so
-        the interesting thing about it is that all three tools agree on which
-        dead route it names — which they only do once both are resolved.
+        while Hugo does not. It is the corpus's ONLY page-relative destination
+        — the `../…` ones are parent-relative and every tool leaves those as
+        authored — so it is the single case that makes this bullet load-
+        bearing rather than hypothetical. Until RUE-1492 it read `math/` and
+        named a route no tool emits, and what the comparison showed then was
+        that all three agreed on the dead route; what it shows now is that all
+        three agree on the live one. Either way the agreement only exists once
+        both spellings are resolved, which is this function's job.
 
     Resolving here rather than allowing three spellings is what lets the
     comparison stay a strict equality: a link that genuinely moved still fails.

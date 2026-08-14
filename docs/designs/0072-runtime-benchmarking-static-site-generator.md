@@ -761,8 +761,8 @@ because each changes what a later reader should expect.
   stream.** Goldmark and pulldown-cmark do not emit the same markup for the
   same Markdown, so the three-way comparison is the heading tree, visible text,
   and link and image targets, with link targets resolved to one spelling —
-  Zola resolves a bare `#fragment` and a relative `math/` against the page and
-  Hugo leaves both as written. That is weaker than the gazette-vs-Zola body
+  Zola resolves a bare `#fragment` and a relative `01-math/` against the page
+  and Hugo leaves both as written. That is weaker than the gazette-vs-Zola body
   oracle, which stays as it was, and it still catches every way a tool can do
   less work. It caught two real port defects: Hugo's URL escaping turned every
   one of the corpus's 1,224 rule anchors into a link to a target that does not
