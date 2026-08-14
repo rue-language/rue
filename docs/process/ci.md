@@ -50,46 +50,78 @@ problem being solved is that unattended signals are not read, so reporting on
 another unattended timer would inherit the bug. Required CI is the one signal
 in this repository that provably reaches a human.
 
-It discovers scheduled workflows from the tree by their `schedule:` trigger
-rather than from a list, so a workflow added later is covered without anyone
-remembering to register it, and asks two questions per workflow:
+### What blocks, and what only warns
 
-- **Has it ever succeeded?** An entire history of failures means nothing it
-  claims to protect was ever protected — stronger and cheaper evidence than any
-  single red run.
-- **Has it succeeded recently?** Within a generous multiple of its own cron
-  period (default four), so an ordinary red night is not a repository-wide
-  event while a workflow that has quietly stopped working is.
+Exactly one condition fails the build: **a workflow that has run on its
+schedule at least twice and has never once succeeded.** That signal is durable
+(no flaky run produces it), unambiguous (nothing it protects was ever
+protected), and self-clearing (one green run ends it permanently). It is the
+RUE-1507 shape precisely.
 
-Both properties are durable: a healthy workflow trips neither, however flaky an
-individual run is. Two cases run history cannot see get their own answers — a
-workflow GitHub has **disabled** stops producing runs entirely (its last one
-may well be green), and a workflow a branch **adds** has no history at all and
-passes with a note until its cron has had a chance to fire.
+Everything else warns and exits 0, because this gate runs on every pull request
+in the repository — a false positive here blocks *all* work, which is worse
+than the bug being defended against. That covers staleness, a workflow GitHub
+has disabled, a schedule that has not yet fired, an unreachable or rate-limited
+API, and any response the classifier cannot make sense of. The repository's
+established posture for an unavailable capability is to say so and continue
+(see the BuildBuddy provisioning steps in `ci.yml`), not to halt every merge.
+
+Staleness is advisory for a concrete reason. It is a heuristic over cron
+cadence, and GitHub's scheduler jitter, queue delay, and a workflow's own
+designed red runs all move it. A `0 6 * * *` cron in this repository starts
+anywhere between 06:36 and 07:14 UTC; runs take 10–25 minutes; and a run enters
+the `status=success` filter only when it *completes*. An earlier revision of
+this gate used a four-period budget read from run creation time, which on real
+`release.yml` history came within thirteen minutes of blocking the repository.
+
+The structural checks below *do* block, because they are deterministic
+questions about the tree with no external state that could make them
+spuriously true.
+
+### Declared policies
 
 A workflow that is genuinely broken with a fix already tracked is declared in
-that script's `POLICIES`, which is the workflow-level form of the repository's
-`known_bug = "RUE-NN"` xfail markers, and expires the same way: once the
-workflow is healthy again the waiver fails as stale and must be deleted, so an
-exemption written for one breakage cannot silently cover the next.
+that script's `POLICIES` with the issue that owns it, which is the
+workflow-level form of the repository's `known_bug = "RUE-NN"` xfail markers.
+The declaration is checked for shape: it must name a real `RUE-NN` issue and
+carry a reason, and it must match a workflow that still exists.
 
-The check is pinned by `scripts/validate-ci-gate.py`, so deleting the step
-fails required CI rather than quietly restoring the original silence, and its
-classification logic is pinned against a mock transport by
+When the workflow becomes healthy the waiver is reported as no longer needed
+and should be deleted, but that report does **not** block — a workflow turning
+green is good news, and good news arriving on a cron nobody chose must not stop
+every merge until someone edits a file.
+
+`fuzz.yml` has its staleness assessment disabled outright rather than widened.
+It is red by design whenever it finds a crash and already files each one into
+Linear (RUE-802, `scripts/fuzz-report-failure.py`). Its full retained history —
+226 scheduled runs from 2026-01-01, measured 2026-08-14 — is 67.7% failures,
+with a longest failing streak of 74 runs and a longest gap between successes of
+75 days. No threshold separates that from a fuzzer that has stopped working, so
+this does not pretend one does.
+
+### Keeping the gate honest
+
+The step and its `actions: read` scope are both pinned by
+`scripts/validate-ci-gate.py` as executable lines rather than substrings, so
+neither can be deleted — nor satisfied by a comment mentioning them — without
+failing required CI. Discovery is by `schedule:` trigger rather than a list, so
+a workflow added later is covered automatically; a workflow whose triggers the
+parser cannot read is *reported* rather than skipped, since silently auditing
+nothing is the same failure at per-workflow granularity. The classifier, the
+API client, and the transport's error handling are pinned against mocks by
 `//:scheduled-workflow-tool-tests`.
+
+### Failure-log artifacts
 
 Scheduled lanes that run commands through `scripts/ci-timed` must also upload
 the preserved `rue-ci-failed-logs` artifact on failure. They need it more than
 pull-request lanes do, not less: nobody is watching when a weekly job goes red,
 so the first person to look arrives days later, by which time the Actions job
-log has been truncated to a tail or aged out entirely. That rule is enforced
-structurally, and only for workflows that actually use `ci-timed` — elsewhere
-the artifact would always be empty, and an empty artifact that looks like
-coverage is the same class of problem.
-
-`fuzz.yml` is exempt from the staleness window because it is red by design
-whenever it finds a crash, and already reports each one into Linear
-(RUE-802, `scripts/fuzz-report-failure.py`).
+log has been truncated to a tail or aged out entirely. The rule applies only to
+workflows that actually use `ci-timed` — elsewhere the artifact would always be
+empty, and an empty artifact that looks like coverage is the same class of
+problem. It is a whole-file check with comments stripped: it proves the upload
+exists, not that every `ci-timed` job has its own.
 
 ## Platform responsibility matrix
 

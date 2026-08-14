@@ -1187,7 +1187,9 @@ rue_sh_test(
 # otherwise report a clean audit of nothing.
 filegroup(
     name = "scheduled-workflow-test-inputs",
-    srcs = glob([".github/workflows/*.yml"]),
+    # Matches the script's own `*.y*ml` discovery. A narrower glob here would
+    # leave a `.yaml` workflow live in CI but invisible to these tests.
+    srcs = glob([".github/workflows/*.yml", ".github/workflows/*.yaml"]),
 )
 
 rue_sh_test(
