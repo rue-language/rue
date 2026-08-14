@@ -341,12 +341,20 @@ deferred_corpus_actions() {
         echo "affected-targets: could not query crate-scoped corpus actions" >&2
         return 1
     fi
-    # The query lives in its own variable rather than inline. Bash 3.2 — what
-    # macOS ships as /bin/bash, and this script runs on developer machines —
-    # cannot parse a `$(...)` whose body spans a line continuation and contains
-    # a quoted argument with parentheses; it dies with "unexpected EOF while
-    # looking for matching `\"'" several lines later, naming an innocent line.
-    # RUE-1506 and RUE-1509 are the same class caught in other files.
+    # The query lives in its own variable rather than inline, because the
+    # inline spelling ran several lines and lost its closing `"`: the `)`
+    # ending the command substitution was followed by `; then` instead of `)"`,
+    # so the quote opened before `$(` never closed and bash read to end of file
+    # looking for it — "unexpected EOF while looking for matching `\"'",
+    # reported several lines later at an innocent line.
+    #
+    # Correcting the note left here when that was repaired: this is not a Bash
+    # 3.2 limit. A `$(...)` whose body spans a line continuation and contains a
+    # quoted argument with parentheses parses on 3.2.57 and on 5.2.15 alike;
+    # the missing quote was the whole defect, and every bash rejects it. Hence
+    # RUE-1512 — `scripts/validate-shell-bash-baseline.py` now runs `bash -n`
+    # over every script, because its construct table could not see this: a
+    # syntax error is not a construct to name.
     query="attrfilter(labels, rue_test_tier_premerge, //crates/...)"
     query="$query except (attrfilter(labels, rue_ci_dedicated_lane, //crates/...)"
     query="$query + attrfilter(labels, rue_cli_shard, //crates/...))"

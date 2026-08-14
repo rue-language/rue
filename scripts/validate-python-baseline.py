@@ -63,6 +63,24 @@ WHAT THIS SCAN CANNOT SEE, stated plainly so the gate is not read as a proof:
     cannot be told apart from syntax the floor legitimately allows -- so such a
     file is reported as unscanned rather than guessed at, and the authoritative
     run is the `fmt` job's CI step, which is at or above the floor.
+  - Symmetrically, ABOVE the floor it is too permissive: a scanner on 3.14
+    parses a PEP 701 f-string that 3.11 would reject and calls the file clean.
+    The Bash gate closes its version of that gap by parsing with a real 3.2 on
+    ci.yml's macos-15 leg (RUE-1512). The Python counterpart is
+    `ast.parse(source, feature_version=(3, 11))`, which needs no 3.11 to be
+    installed -- it has existed since 3.8 and runs on whatever interpreter is
+    here. It is deliberately NOT used, and the reason is coverage rather than
+    availability: `feature_version` is documented best-effort, it gates only
+    what CPython's own parser gates by version, and it cannot manufacture
+    grammar the RUNNING interpreter lacks. Measured on 3.10.3: `(3, 9)`
+    correctly rejects a `match` statement, but `except*` (3.11, at the floor
+    and therefore legal) fails at every `feature_version`, because 3.10 cannot
+    parse it at all. So it would reject legal files on old hosts while still
+    missing what has no version gate. Pinning a real 3.11 in CI is the change
+    that would make a sound check possible; until then this is stated rather
+    than approximated. What the gate CAN see without any of that -- version-
+    gated imports, attributes, and grammar with a distinct AST node -- it sees
+    from any host, which is why the table is not redundant either.
   - Grammar with no distinct AST node is invisible: PEP 701 f-strings (3.12)
     and PEP 696 TypeVar defaults (3.13) parse into the same nodes as their
     older spellings on an interpreter new enough to accept them.

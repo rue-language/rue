@@ -80,6 +80,16 @@ jobs:
       # from here. It also covers the `run:` steps of jobs that can land on a
       # macOS runner; the `mapfile` this job itself uses above is NOT one of
       # them, and is correct, because this job only ever runs on ubuntu-latest.
+      #
+      # This is the AUTHORITATIVE run of the construct table. The gate's other
+      # half runs `bash -n` over every script, which catches what no table can
+      # name: RUE-1511 shipped an unbalanced quote inside a multi-line command
+      # substitution, and the table reported that file clean because a syntax
+      # error is not a construct. Every bash rejects that, so this runner's 5.x
+      # catches it here on every pull request — but `;;&`, `;&`, and `coproc`
+      # are a syntax error only on 3.2, so the step says it ran above the
+      # baseline and leaves that part to the macos-15 leg of native-platforms,
+      # which passes --require-baseline-bash (RUE-1512).
       - name: Check shell Bash 3.2 baseline
         run: scripts/validate-shell-bash-baseline.py
 
@@ -663,6 +673,46 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1512. The `fmt` job already runs this gate, but on Bash 5, which
+      # parses `;;&`, `;&`, and `coproc` happily — all three are a syntax error
+      # on the 3.2 every Mac and every macos-* runner uses, so a script
+      # carrying one dies there and passes there. This runner's /bin/bash IS
+      # that 3.2 and is the only one in CI that is, so the parse check is
+      # authoritative here. `--require-baseline-bash` refuses to report a pass
+      # on anything else: if this image's /bin/bash ever ages into 5.x the step
+      # fails instead of silently becoming a duplicate of the Linux run, which
+      # is the RUE-1506 lesson — a check that cannot fail where it runs is
+      # worse than no check, because it is believed.
+      #
+      # Deliberately above the lane-selection gate: it needs only the checkout
+      # and Python, takes about a second, and a pull request touching shell
+      # alone is precisely the one this lane might deselect.
+      - name: Parse every bash script with the stock macOS Bash 3.2
+        if: runner.os == 'macOS'
+        run: scripts/validate-shell-bash-baseline.py --require-baseline-bash
+
+      # RUE-1506's demonstrations — `mapfile` exiting 127, `"${empty[@]}"`
+      # unbound under `set -u`, `read` assigning nothing when it fails — plus
+      # RUE-1512's `;;&` parse case. All of them skip without a 3.2, so this
+      # leg is the only place they prove anything.
+      #
+      # They used to run below as `./buck2 test //:shell-bash-baseline-tool-
+      # tests`, which forced them under the lane-selection gate, because buck2
+      # is only installed there. That reproduced the very bug RUE-1506 was
+      # about: `lane_targets native-macos-arm64` does not list that target and
+      # FORCE_FULL_REGEX does not cover `scripts/validate-*.py`, so a pull
+      # request changing ONLY the Bash 3.2 policy and its tests deselects this
+      # lane and skips the step — leaving the target to linux-premerge, where
+      # bash is 5.x and every one of these skips. Run directly instead: the
+      # tests need Python and a /bin/bash, not buck2, so they need no gate.
+      # The target keeps its premerge tier and still runs on Linux, where the
+      # host-independent cases do the work.
+      - name: Demonstrate the Bash 3.2 baseline on the stock macOS Bash
+        if: runner.os == 'macOS'
+        run: python3 scripts/test-validate-shell-bash-baseline.py
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+
       # RUE-1130: consult the determinator before any heavy setup. On a
       # selective pull_request run where nothing this lane executes is affected,
       # the heavy steps are skipped and the check still reports success, so no
@@ -776,18 +826,6 @@ jobs:
             done <<< "$narrowed"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
-
-      # RUE-1506. The Bash 3.2 baseline policy's demonstrations — `mapfile`
-      # exiting 127, `"${empty[@]}"` unbound under `set -u`, `read` assigning
-      # nothing when it fails — need a 3.2 to demonstrate anything, and this is
-      # the only lane whose /bin/bash is one. Everywhere else they skip, so
-      # premerge alone would leave them a test that cannot fail. Unnarrowed:
-      # the policy scans the whole tree, so any diff can invalidate it.
-      - name: Demonstrate the Bash 3.2 baseline on the stock macOS Bash
-        if: steps.sel.outputs.run == 'true' && runner.os == 'macOS'
-        run: scripts/ci-timed "$LANE_NAME bash baseline" -- ./buck2 test //:shell-bash-baseline-tool-tests
-        env:
-          LANE_NAME: ${{ matrix.name }}
 
       - name: Run every declaratively platform-scoped spec and CLI case
         if: steps.sel.outputs.run == 'true'
