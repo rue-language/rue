@@ -532,307 +532,235 @@ question RUE-1505 asks — should ordinary CI builds run on BuildBuddy remote
 execution rather than only consuming its cache — and recommends *no*. It needs a
 maintainer ruling before it means anything.
 
+Full measurements, populations, and caveats are in
+`docs/notes/rue-1505-remote-execution-evaluation.md`, following the same
+decision-here / evidence-in-notes split this ADR already uses for RUE-1250.
+
 ### Recommendation
 
 **Keep remote execution scoped exactly where it is**: the merge-group canary in
 `.github/workflows/ci.yml`, which also serves as ADR-0070's negative control 2.
 Do not route `premerge`, the other linux-x64 build jobs, or any required lane
-through `//platforms:remote_execution`. The measurements below say RE is
-modestly faster on the graph the canary builds, materially less predictable, and
-— decisively — aimed at the wrong 1% of the problem.
+through `//platforms:remote_execution`.
 
 RUE-1505 framed the choice as "more cores, less work, or more overlap", with RE
 as the more-cores lever. The finding is that **the work that is cold is not the
-work that is wide**, so more cores has almost nothing to compress.
+work that is wide**, so more cores has almost nothing to compress — and that a
+much larger "less work" lever is sitting unexercised in the same step.
 
-### How this was measured, and what could not be
+### Evidence base
 
-Every number here comes from GitHub Actions job logs and the Actions API for
-`rue-language/rue`, over 500 `CI` runs spanning 2026-08-10T13:39Z to
-2026-08-14T15:32Z (4.08 days). Nothing was measured on a local host, so local
-contention from concurrent work is not a confound for any figure reported.
+500 `CI` runs and ~1,100 job logs, 2026-08-10 to 2026-08-14. Required CI already
+runs the controlled experiment on every merge: the `remote execution` canary and
+the `compiler reproducibility` job build **the same 396–405 actions** of
+`//crates/rue:rue`, cache-disabled, on the same commit and runner class, one
+remote and one local. That pair ran 212 times in the window.
 
-The evaluation deliberately did not run the experiments as RUE-1505 drafted
-them, because it could not: there is no BuildBuddy credential on this machine.
-The key exists only as the `BUILDBUDDY_API_KEY` repository secret, and GitHub
-does not return secret values through its API, so local `--prefer-remote` runs,
-the BuildBuddy invocation UI, and the account dashboard were all unreachable.
-Publishing a temporary workflow to measure the full premerge closure under RE
-would have required pushing, which was out of scope.
+No BuildBuddy credential is reachable from a developer host — the key exists
+only as a repository secret, and GitHub does not return secret values — so local
+RE runs, the invocation API, and the account dashboard were all unavailable.
+**No measurement of the full premerge closure under RE exists**; every claim
+about premerge under RE below is inference from measured composition.
 
-What replaced them is better than a laptop experiment would have been, because
-required CI already runs the controlled pair on every merge:
+### 1. RE is modestly faster, much less predictable, and wins only on width
 
-| lane | what it builds | executor | cache |
-| --- | --- | --- | --- |
-| `remote execution (linux-x64)` | `//crates/rue:rue` | `--prefer-remote`, `//platforms:remote_execution` | `--no-remote-cache` |
-| `compiler reproducibility (linux-x64)` | `//crates/rue:rue`, twice | `--local-only` | `--no-remote-cache` |
+Over 210 paired cold builds: remote p50 **51.5s** (cv **50%**, max 245.3s)
+against local p50 **74.2s** (cv **8%**, max 83.4s). Paired ratio p50 **1.4×**,
+min **0.31×** — RE was three times *slower* in the worst pair. Netting the
+toolchain `http_archive` fetch that only the local side performs (7.2s vs 0.8s)
+gives the like-for-like figure: **≈1.3×**.
 
-Same commit, same run, same `ubuntu-latest` runner class, started within
-seconds of each other, both genuinely cold, and — confirmed from the logs —
-**the same 396–405 actions**. That is the paired cold-build experiment, already
-running 137 times in the sample.
+Input transfer is not the constraint (Up/Down p50 3.7/3.4 MiB per build). The
+tail is shared-pool contention, and it is a recurring pattern rather than an
+incident: the 15 slowest builds span four days and 18 distinct hours, and
+**27 of 210 (12.9%) exceed 90s — slower than the slowest local build observed**.
 
-The gap that remains, and it is the important one: **no measurement exists of
-the full premerge closure under RE.** Every claim below about premerge under RE
-is inference from the closure's measured composition, not observation, and is
-marked as such.
+Per-action attribution across all 424 runs shows where the 1.3× comes from:
 
-### 1. Cold-build speedup: real, modest, and much less predictable
+| action | remote | local | local ÷ remote |
+| --- | ---: | ---: | ---: |
+| `rue-compiler` rustc rlib | 8.1s | 7.9s | **0.98** |
+| `rue-compiler` rustc metadata | 4.9s | 3.9s | **0.79** |
+| `winnow` rlib (41 queued locally) | 0.0s | 1.4s | 40.8 |
+| toolchain `http_archive` | 0.7s | 6.3s | 9.0 |
 
-Distribution over the paired runs, buck2 daemon start to `BUILD SUCCEEDED`:
+**RE ties or loses on every critical single action and wins only where actions
+queue behind the local executor.** Its advantage is width, not per-action speed.
 
-| build | n | p25 | p50 | p75 | p90 | max | sd | cv |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| remote | 60 | 44.9s | **48.7s** | 55.9s | 76.3s | 170.7s | 25.3 | **44%** |
-| local, full parallelism | 105 | 72.5s | **74.4s** | 76.9s | 79.7s | 83.4s | 5.8 | **8%** |
-| local, `--num-threads 2` | 105 | 82.4s | 84.1s | 87.2s | 91.0s | 97.4s | 6.5 | 8% |
+### 2. Why that cannot pay: 78.9% of the cold build is two indivisible actions
 
-Paired per-run ratio (local ÷ remote, n=60): min **0.5×**, p25 1.3×, p50
-**1.5×**, p75 1.7×, p90 1.8×, max 2.0×. RE wins the median and *loses* the tail:
-in the worst paired run it was twice as slow as the local build it replaces.
-
-One confound, stated rather than smoothed: the local build downloads the pinned
-rustc and Zig `http_archive` payloads to the runner (183–236 MiB; buck2 is still
-waiting on those actions 7.3s into the build at p50, 21.4s at p90). The remote
-build never does, because those actions execute on the worker. Net of that, the
-median advantage is nearer 1.4× than 1.5×. It is a real CI cost either way, but
-it is a runner-provisioning cost, not evidence about execution parallelism.
-
-The variance asymmetry is the durable result: **RE's coefficient of variation is
-five times local's**, and its worst case is 3.5× its median while local's is
-1.1×.
-
-### 2. Where the time goes: not upload, not download — contention
-
-Per remote build, buck2's own network accounting (n=60): **Up p50 3.7 MiB, Down
-p50 3.4 MiB**, maxima 17 MiB each. RE session establishment is 1.3–1.9s; roughly
-8s passes in loading and analysis before the first action dispatches.
-
-So the "a 2× on execution eaten by upload overhead" failure mode does not occur
-here, and the reason is structural: the toolchain payload is already resident in
-the CAS, so `FindMissingBlobs` keeps steady-state upload to single-digit MiB.
-Input transfer is not the constraint and would not become one.
-
-The tail is contention on the shared free-tier pool. The five slowest remote
-builds in the sample (99.4s, 106.5s, 128.0s, 152.8s, 170.7s) all fall inside
-2026-08-13 18:08–22:00Z, and their network figures are unremarkable (1.4–11 MiB).
-Tracing the slowest one shows no stall: every dependency stage is uniformly
-stretched, with a single `rue-perf-schema` rlib occupying 21s. Individual remote
-actions simply run slower when the pool is busy. That matters more than it would
-for a wide graph, because the graph this repository builds is latency-bound.
-
-### 3. Why RE cannot pay: 72% of the cold build is two indivisible actions
-
-This is the finding that decides the question. Over the 20 cold-compiler
-`pull_request` runs in the sample, `premerge`'s `Build all targets` step ran
-p25 275s / p50 294s / p90 322s, issuing 849–879 commands of which ~91% were
-cache-served and only **76 executed locally**. Attributing the step's wall time
-to the target buck2 reported waiting on:
+Over 169 cold-compiler `pull_request` runs, `premerge`'s `Build all targets`
+step ran p50 294s, ~91% cache-served, ~76 actions executed locally. Attributing
+its wall time:
 
 | target | mean | share |
 | --- | ---: | ---: |
-| `//crates/rue-oracle-diff:oracle-diff-test-action` | 126.4s | **44.5%** |
-| `//crates/rue-oracle-diff:oracle-diff-spec-test-action` | 78.4s | **27.6%** |
-| `//crates/rue-compiler:rue-compiler-test` | 19.4s | 6.8% |
-| `//crates/rue-compiler:rue-compiler` | 13.1s | 4.6% |
-| `//crates/rue-air:rue-air-test` | 12.5s | 4.4% |
-| `//crates/rue-air:rue-air` | 6.9s | 2.4% |
-| `//crates/rue-air:rue-air-fuzz-support` | 5.7s | 2.0% |
-| every third-party crate, together | ~2s | ~1% |
+| `//crates/rue-oracle-diff:oracle-diff-test-action` | 138.2s | **50.6%** |
+| `//crates/rue-oracle-diff:oracle-diff-spec-test-action` | 77.1s | **28.3%** |
+| `//crates/rue-compiler:rue-compiler-test` | 19.4s | 7.1% |
+| `//crates/rue-compiler:rue-compiler` | 13.1s | 4.8% |
+| every third-party crate, together | 0.4s | **0.13%** |
 
-**Two single actions are 72.1% of the cold premerge build.** They are one action
-each — `cached_corpus_suite` genrules (RUE-1118) that run a whole harness — so
-remote execution cannot subdivide them. It can only help if a BuildBuddy worker
-runs one action faster than the runner does, and §2's contention evidence says
-that is at best unreliable and at worst inverted.
+**Two single actions are 78.9% of the cold premerge build.** They are one
+`cached_corpus_suite` genrule each, so RE cannot subdivide them, and §1 says it
+would not run them faster. The wide fan RE does accelerate — and which supplies
+essentially all of the canary's 1.3× — is already fully cache-served on a real
+PR and worth **0.13%** of the step. The canary's speedup is not transferable to
+premerge, because the canary measures a cold graph premerge never has.
 
-Meanwhile the part of the graph that RE demonstrably *does* accelerate — the
-wide fan of third-party rlibs, which is most of the canary's 405 actions and
-most of its 1.5× — is already 100% cache-served on a real PR and worth about 1%
-of the step. **The canary's speedup is not transferable to premerge**, because
-the canary measures a cold graph that premerge never has.
+### 3. The lever this evaluation found instead, worth ~8× what RE offers
 
-This is exactly the situation §5 of this ADR describes and demands be named
-rather than expressed as a lane count. The two oracle-diff actions are the
-largest indivisible items in required CI, and §5's remedies apply to them:
-splitting them, or re-tiering them. Caching, the third remedy, is already done —
-it is why the merge queue sees this step at 23s.
+`crates/rue-oracle-diff/BUCK` declares both suites `tier = "slow"` and
+`rue_heavy_suite`, and `ci.yml` gives each its own dedicated lane. **Premerge
+builds them anyway**, on both branches of its build step: unnarrowed,
+`./buck2 build //crates/...` reaches them; narrowed,
+`scripts/affected-targets`' `build_scope()` filters with `grep '^//crates/'`,
+and these targets live at `//crates/rue-oracle-diff:…`.
 
-### 4. Concurrency: the feared duplication is not happening
+The comment directly above `build_scope()` explains that the filter exists
+precisely because building a `cached_corpus_suite` action *runs its corpus*, and
+that this once took premerge from ~12m to 32-42m. That fix removes root-level
+(`//:`) corpus actions only. These two are crate-level and pass through both
+branches.
 
-RUE-1505 predicted that simultaneously started jobs cannot warm each other's
-cache, so any split would make each half pay the same cold build. Measured over
-the 23 cold-compiler `pull_request` runs, per run:
+**Worth ~240s at the median, against ≤30s for routing the same step through
+RE.** Filed separately; named here because it is what RE was being proposed as
+an alternative to.
 
-| job | commands | cache hit | locally executed | job wall |
-| --- | ---: | ---: | ---: | ---: |
-| `premerge (linux-x64)` | 879 | 91% | 76 | 530s |
-| `native (linux-arm64)` | 462 | 96% | 19 | 117s |
-| `release (linux-x64)` | 455 | 97% | 16 | 170s |
-| `valgrind (linux-x64)` | 396 | 99% | 3 | 111s |
-| `compiler reproducibility (linux-x64)` | 396 | **0%** | **396** | 171s |
-| `asan (linux-x64)` | 0 | — | 0 | 8s |
+### 4. Concurrency: the duplication RUE-1505 predicted is real
 
-510 locally executed actions per run in total, 18.5 runner-minutes; a peripheral
-change costs 304 and 9.7 runner-minutes. The premise is false in practice:
-simultaneous start is not a problem because **what is cold is small and mostly
-job-specific**, and the bulk of every job's graph was populated by trunk's
-merge-group runs rather than by its siblings. A second concurrent job pays 3–19
-actions today, not a second cold build.
+`premerge (linux-x64)` and `test (linux-x64-oracle-diff)` **both execute
+`oracle-diff-test-action` cold, concurrently, at the identical execution
+configuration**, on two runners. Over 60 cold-compiler `pull_request` runs the
+median wall-clock overlap is **75s, present in 57 of 60 runs**, with both sides
+going `local_execute` → `upload (action)` — racing, not one serving the other.
 
-The one genuine duplicate cold compiler build per run is `compiler
-reproducibility`, and it is deliberate. RE would not change any of this: it
-would relocate the same small number of cold actions, not remove them.
+This is invisible in the obvious counter: the lane reports `Commands: 347
+(cached: 342, local: 5)`, and one of those five is the 148s harness. **A 99% hit
+rate and a two-and-a-half-minute duplicated execution look identical there.**
+Counting actions rather than seconds is the error the accepted §5 exists to
+forbid, and §2 above identifies the same action as the largest item in premerge.
 
-### 5. Reliability: RE is not the flaky part
+Prior runs are not an explanation: every `head_sha` in the sample is unique, so
+no earlier run warmed the changed crate. Siblings warm each other in real time
+when their windows happen not to overlap; when they start together, both pay.
 
-The canary succeeded in 135 of 137 merge-group runs (**1.5% failure**), against
-1.5% for `premerge` on merge_group and 6.8% on `pull_request`. Both failures
-were the same thing, and neither involved BuildBuddy: `dotslash` could not
-download buck2 from the GitHub releases CDN, before the RE endpoint was
-contacted. **Zero BuildBuddy-attributable failures in 137 runs.**
+The aggregate picture for the *other* siblings does hold — on cold compiler PRs
+`valgrind` executes 3 local actions, `release` 16, `native (linux-arm64)` 19,
+and `compiler reproducibility` 396 by design. RE would relocate those, not
+remove them.
 
-That is a favourable result for the canary and a misleading one for adoption,
-because the canary is not exposed to the failure modes a required lane would be:
+### 5. Reliability: RE is not the flaky part, but the canary is not exposed
 
-- `//platforms:remote_execution` sets `allow_hybrid_fallbacks_on_failure =
-  False`. A failed remote action is never retried locally. That is correct for a
-  canary whose entire purpose is to refuse to hide a worker regression, and it
-  is an outage amplifier on a required lane: BuildBuddy unavailability becomes
-  merge-queue unavailability.
-- The forgiving `//platforms:remote_cache` platform allows fallback *on action
-  failure*, which is not the same as tolerating an unreachable or slow endpoint.
-- **Fork PRs have no secret, hence no `.buckconfig.local`, hence no RE endpoint
-  or credential at all.** Today `scripts/provision-build-cache` treats an empty
-  key as "skip" and the lane builds cold and locally — the graceful degradation
-  RUE-1505 requires any replacement to match. An RE-by-default premerge needs a
-  second, conditional execution path, and that path would be the least exercised
-  and most depended upon code in required CI.
+The canary succeeded in **210 of 212** merge-group runs (**0.94%** failure,
+against 0.9% for `premerge` on `merge_group`). Both failures were the "Build
+compiler remotely" step failing because `dotslash` could not fetch buck2 from
+the GitHub releases CDN, before the RE endpoint was contacted. **Zero
+BuildBuddy-attributable failures in 212 runs.**
 
-### 6. Cost and the free tier: the honest answer is that this is already unfunded
+That flatters the canary and misleads about adoption.
+`//platforms:remote_execution` sets `allow_hybrid_fallbacks_on_failure = False`,
+so BuildBuddy unavailability becomes merge-queue unavailability; the forgiving
+platform tolerates action *failure*, not an unreachable endpoint; and **fork PRs
+have no secret, hence no endpoint at all**. Today that degrades gracefully to a
+cold local build. RE-by-default needs a second conditional path — the least
+exercised and most depended upon code in required CI.
 
-Sources, fetched 2026-08-14 from BuildBuddy's published pricing page. The
-Personal (free) plan, "For small teams and open source projects", states
-**"100 GB of cache transfer"**, **"Up to 80 cores for remote builds"**, and
-community support. Team states "Up to 800 cores" and "$X / GB of cache transfer
-over 100 GB". Their FAQ states: *"We don't apply hard limits that prevent you
-from using more than your plan allows. If you have a big temporary burst of
-usage, feel free"*, with sustained overage prompting an upgrade conversation.
+### 6. Cost: the free tier is already exceeded, on the cache alone
 
-**That answers "what happens when a cap is hit": nothing technical.** Not
-throttling, not hard failure, not a silent stop-caching. It is a commercial
-conversation. The correctness-adjacent surprise RUE-1505 was most worried about
-is not the exposure here.
+Published terms (buildbuddy.io/pricing, fetched 2026-08-14): the Personal free
+plan, "For small teams and open source projects", gives **"100 GB of cache
+transfer"** and **"Up to 80 cores for remote builds"**. Their FAQ: *"We don't
+apply hard limits that prevent you from using more than your plan allows."*
 
-Explicitly unverified, and it must not be presented otherwise:
+**So what happens at a cap is nothing technical** — not throttling, not hard
+failure, not a silent stop-caching. It is a commercial conversation. The
+correctness-adjacent surprise RUE-1505 feared is not the exposure here.
 
-- **The period the 100 GB is measured over is not published.** Per month is the
-  natural reading; it is not stated.
-- **The Team per-GB overage rate is not published** — the page renders it as
-  "$X / GB". Any paid step-up needs a quote before it can be costed.
-- **Current account usage against any cap could not be read.** No credential, no
-  dashboard, no API. Every usage figure below is buck2's *client-side*
-  accounting, not BuildBuddy's billing.
+The inference-free measurement: buck2's **upload** counter cannot be confused
+with `http_archive` traffic, and across 16 complete runs it is 0.38 GiB mean per
+`pull_request` run and 0.01 GiB per `merge_group` run. At the measured 70.6 and
+52.0 runs/day, **upload alone is ≈28 GiB/day ≈ 850 GiB/month — 8.5× the
+published allowance, with zero inference.** Including download (an upper bound,
+since it conflates CAS with toolchain fetches) gives ~3.7 TB/month.
 
-Measured volume: 500 CI runs in 4.08 days = **122.6 runs/day** (70.6
-`pull_request`, 52.0 `merge_group`) — higher than the ~50/day RUE-1505 assumed.
-Client-side network per complete run, summing every buck2 invocation in every
-job (n=8 of each): `merge_group` mean 1.6 GiB, `pull_request` mean 2.6 GiB, with
-cold-compiler PR runs near 3.8 GiB. Upload is unambiguously CAS traffic and is
-small (3–135 MiB/run); download conflates CAS with the toolchain `http_archive`
-fetches, so it is an upper bound.
-
-Even on a deliberately conservative reading — call it 1 GiB of genuine CAS
-transfer per run — that is ~120 GiB/day, **~3.7 TB/month against a published
-allowance of 100 GB**. The cache alone is one to two orders of magnitude over
-the free tier *today*, before any RE change, and nothing has broken. That is
-entirely consistent with the vendor's stated no-hard-limits policy.
+Unverified, and not to be presented otherwise: **the period the 100 GB covers is
+not published**; the Team overage rate renders as a literal `$X / GB`; and
+**current account usage against any cap could not be read** — no credential, no
+dashboard. Two reconciliation caveats: the window is Monday–Friday, so a ×30
+extrapolation states a weekday rate as a calendar rate (~2.7 TB on ~22 active
+days, still 27×); and RUE-1505's "~50 runs/day" meant *`pull_request`* runs, so
+the comparable measured figure is 70.6/day — a factor of 1.4, not 2.5.
 
 The conclusion is therefore not "RE would push us over the free tier". It is
-sharper and less comfortable: **the repository is already relying on BuildBuddy's
-goodwill well beyond the published allowance, and has been for some time.** RE's
-own transfer is negligible (~7 MiB/build) and would barely move that number;
-what would rise is core-hours against the 80-core figure — and §2 already shows
-the shared pool visibly contended at today's essentially zero RE usage.
-
-So the free-tier finding cuts against adoption without being the primary reason
-for it. Two things follow that are worth a maintainer's attention independent of
-this decision:
-
-1. Someone with dashboard access should check real consumption against real
-   limits. This evaluation could not, and the gap between 100 GB and ~3.7 TB is
-   too large to leave as an inference from client-side counters.
-2. If Rue wants a durable claim on this capacity, the conversation to have with
-   BuildBuddy is about the *cache* it already depends on, not about RE.
-
-Costed option, presented and not decided: Team tier buys "Up to 800 cores" and
-metered transfer at an unpublished rate. It is the only listed step-up short of
-Enterprise. Nothing in this evaluation argues it is worth buying for latency.
+that **the repository already draws on BuildBuddy's goodwill an order of
+magnitude beyond the published allowance, on the cache alone**, and nothing has
+broken. RE's own transfer is negligible; what would rise is core-hours against
+the 80-core figure, and §1 shows that pool already visibly contended at today's
+essentially zero RE usage.
 
 ### Scope questions RUE-1505 asked
 
-**Which jobs should default to RE?** None. `premerge` gains an inferred ~80–100s
-at p50 on cold compiler PRs at best — applying §1's measured 1.5× to the ~28% of
-the step RE could touch gives far less, and the honest projection is under 30s —
-while importing a shared-pool tail and a hard external dependency. Every other
-linux-x64 build job executes 3–19 cold actions per run and has nothing to gain.
+**Which jobs should default to RE?** None. Applying §1's 1.3× to the ~21% of the
+step RE could touch saves ~14s at p50; ~30s is a generous ceiling. `premerge`
+would trade that for a shared-pool tail with a 12.9% slow rate, and would import
+a hard external dependency into the merge queue. Every other linux-x64 build job
+executes 3–19 cold actions per run and has nothing to gain.
 
 **Does `compiler reproducibility` stay cache-free and locally executed?** Yes,
-unchanged, and RE would actively weaken it. The proof works by making the two
-builds differ — relocated root, `--num-threads 2`, different `TMPDIR`, `TZ`,
-`umask`, and mtimes — so that a byte-identical result indicts path, scheduling
-and environment leaks. A uniform remote container makes the two builds *more*
-alike, so a pass would prove less. `check-reproducible-compiler.sh` also
-hard-errors on a `.buckconfig.local` for precisely this reason. No change.
+and RE would actively weaken it. The proof works by making the two builds differ
+— relocated root, `--num-threads 2`, different `TMPDIR`, `TZ`, `umask`, mtimes —
+so that a byte-identical result indicts path, scheduling, and environment leaks.
+A uniform remote container makes them *more* alike, so a pass would prove less.
+`check-reproducible-compiler.sh` also hard-errors on a `.buckconfig.local`.
 
 **Does RE change ADR-0070's hermeticity story?** Not materially, and the effect
-is the opposite of the one RUE-1505 anticipated. Negative control 2 needs
-exactly one clean-root remote materialization to prove that undeclared inputs
-are simply unavailable, and it has one. Running everything remotely would catch
-undeclared inputs in more places — a real if small gain — but it would convert
-each latent instance into a required-lane failure with no local reproduction,
-which is the cost profile ADR-0070 chose a single canary to avoid. Broader
-adoption strengthens the *argument for keeping the canary*, not the case for
-generalizing it. `rue-program-digests` already covers the complementary
-direction.
+is the opposite of the one anticipated. Negative control 2 needs exactly one
+clean-root remote materialization, and it has one. Running everything remotely
+would catch undeclared inputs in more places — a real if small gain — but would
+convert each latent instance into a required-lane failure with no local
+reproduction, the cost profile ADR-0070 chose a single canary to avoid. Broader
+adoption strengthens the argument for *keeping* the canary, not for generalizing
+it. `rue-program-digests` covers the complementary direction.
 
-**Does this interact with RUE-1407?** No, and the reasoning RUE-1505 offers is
-correct. Keeping remote test-result caching off was a trust decision about
-*verdicts*; RE changes where build *actions* execute. The two do not touch. Rue
-additionally configures `noop_test_toolchain` and
-`noop_remote_test_execution_toolchain`, so nothing honours
-`supports_test_execution_caching` whatever the execution platform is. Adopting
-or declining RE neither enables nor pressures that decision.
+**Does this interact with RUE-1407?** No, and RUE-1505's reasoning is correct.
+Keeping remote test-result caching off was a trust decision about *verdicts*; RE
+changes where build *actions* execute. Rue additionally configures
+`noop_test_toolchain` and `noop_remote_test_execution_toolchain`, so nothing
+honours `supports_test_execution_caching` whatever the execution platform is.
+Adopting or declining RE neither enables nor pressures that decision.
 
 ### What this contributes back to the accepted text
 
-- **§5's indivisible-item alarm has a live, named instance.**
-  `oracle-diff-test-action` (126.4s) and `oracle-diff-spec-test-action` (78.4s)
-  are 72.1% of the cold premerge build. §5 says the planner must name such an
-  item and refuse to express it as a lane count; this is that item, and the
-  remaining remedy is to split or re-tier it. That is the work RE was proposed
-  as an alternative to, and it is still the work.
+- **The accepted §5's indivisible-item alarm has a live, named instance**, and
+  the accepted §2's "nothing executes twice" has a live violation. The two oracle-diff actions are 78.9% of
+  the cold premerge build *and* run twice per run against their dedicated lanes,
+  with a 75s median overlap. The duplication gate cannot see it, because the
+  gate compares test identities while this is a build action racing a lane.
+- **The accepted §5's remedies need correcting for this case.** These suites are *already*
+  re-tiered to `slow` with dedicated lanes; the defect is that premerge builds
+  them regardless, because `build_scope()`'s crate-prefix filter only excludes
+  root-level corpus actions. The remaining remedy is to fix the scope filter or
+  split the suites — not to re-tier something already tiered.
 - **The "compiler build is 286–317s" open question is refined.** That figure was
   the whole `Build all targets` step. The compiler *binary* is ~74s cold and
-  locally built; the entire rue-crate chain is ~20% of the step. Build-once-and-
-  fan-out was measured against the wrong quantity.
+  locally built; the entire rue-crate chain is ~21% of the step.
+  Build-once-and-fan-out was measured against the wrong quantity.
 - **RE is answered as a scheduling lever and can stop being an open option.**
-  The cache is doing its job (91% hit at p50 on cold compiler PRs); the residue
-  is two harnesses, and no executor change reaches them.
 
 ### What would change this recommendation
 
-- The two oracle-diff corpus actions being split into many actions. That would
-  make the cold premerge closure genuinely wide, at which point more cores start
-  to matter and this should be re-measured rather than re-argued.
-- A measurement of the full premerge closure under RE, which requires a
-  temporary workflow and a maintainer willing to spend the runs. It would
-  replace this amendment's one inferred number with an observed one.
-- Dedicated rather than shared executors, which would remove §2's tail.
+- The two oracle-diff actions being split into many actions, or removed from
+  premerge's scope. Either makes the cold closure genuinely wide, at which point
+  more cores start to matter and this should be re-measured, not re-argued.
+- An observed measurement of the full premerge closure under RE, which needs a
+  temporary workflow and a maintainer willing to spend the runs.
+- Dedicated rather than shared executors, which would remove §1's tail.
 
 ## References
 
+- `docs/notes/rue-1505-remote-execution-evaluation.md` — Amendment 1's
+  measurements, populations, and unverifiable items
 - `docs/notes/rue-1250-shard-topology-analysis.md` — shard decision and run sample
 - `docs/notes/rue-1250-premerge-critical-path.md` — premerge lane profile
 - `docs/notes/rue-1250-ci-architecture.md` — native lane profile and design detail
