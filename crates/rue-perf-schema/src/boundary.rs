@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::CompilerWork;
+use crate::sanity::is_sha256_digest;
 
 /// The complete product boundary measured by one compiler process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -510,7 +511,7 @@ impl BuildBoundaryEvidence {
     ) -> Result<(), String> {
         policy.validate()?;
         let runner = &self.runner;
-        if !is_sha256(&runner.compiler_binary_sha256) {
+        if !is_sha256_digest(&runner.compiler_binary_sha256) {
             return Err("runner reported an invalid compiler binary SHA-256".to_string());
         }
         if !runner.fresh_state_directory || !runner.fresh_output_directory {
@@ -529,7 +530,7 @@ impl BuildBoundaryEvidence {
                 "compiler did not exit successfully with verified native output".to_string(),
             );
         }
-        if !is_sha256(&runner.output_sha256) {
+        if !is_sha256_digest(&runner.output_sha256) {
             return Err("runner reported an invalid output SHA-256".to_string());
         }
         if runner.output_size_bytes == 0 {
@@ -588,7 +589,7 @@ impl BuildBoundaryEvidence {
                 compiler.artifact_hits
             ));
         }
-        if !is_sha256(&compiler.emitted_output_sha256)
+        if !is_sha256_digest(&compiler.emitted_output_sha256)
             || compiler.emitted_output_sha256 != runner.output_sha256
             || compiler.emitted_output_size_bytes != runner.output_size_bytes
         {
@@ -604,7 +605,7 @@ impl BuildBoundaryEvidence {
                     input.class
                 ));
             }
-            if input.logical_identity.is_empty() || !is_sha256(&input.sha256) {
+            if input.logical_identity.is_empty() || !is_sha256_digest(&input.sha256) {
                 return Err("compiler reported malformed input provenance".to_string());
             }
             let identity = (&input.class, input.logical_identity.as_str());
@@ -867,10 +868,6 @@ impl BuildBoundaryEvidence {
         }
         Ok(())
     }
-}
-
-fn is_sha256(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -1309,6 +1306,69 @@ mod tests {
                 .validate_against(&policy, "x86-64-linux")
                 .is_err()
         );
+    }
+
+    #[test]
+    fn every_boundary_digest_answers_to_the_one_digest_spelling() {
+        // Uppercase hexadecimal is a well-formed SHA-256; it is a *second*
+        // spelling of one, and two spellings give one measured artifact two
+        // content addresses. Boundary evidence is what a sample's admissibility
+        // is decided on, so the boundary must not be the one place a second
+        // spelling can enter a store that cannot delete it.
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+
+        let mut binary = evidence();
+        binary.runner.compiler_binary_sha256 =
+            binary.runner.compiler_binary_sha256.to_ascii_uppercase();
+        assert_eq!(
+            binary
+                .validate_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "runner reported an invalid compiler binary SHA-256"
+        );
+
+        // Runner and compiler still name the same output as each other here, so
+        // the spelling is the only thing left to reject.
+        let mut output = evidence();
+        output.runner.output_sha256 = output.runner.output_sha256.to_ascii_uppercase();
+        output.compiler.emitted_output_sha256 =
+            output.compiler.emitted_output_sha256.to_ascii_uppercase();
+        assert_eq!(
+            output
+                .validate_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "runner reported an invalid output SHA-256"
+        );
+
+        // This case pins the mismatch branch rather than the spelling one. The
+        // two share an error, and the runner's own digest is untouched and
+        // still lowercase, so a respelled compiler digest is caught as a
+        // disagreement whichever predicate is in force. It is here because the
+        // field is one of the four, not because it can tell the rules apart.
+        let mut emitted = evidence();
+        emitted.compiler.emitted_output_sha256 =
+            emitted.compiler.emitted_output_sha256.to_ascii_uppercase();
+        assert_eq!(
+            emitted
+                .validate_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler and runner output evidence disagrees"
+        );
+
+        let mut input = evidence();
+        input.compiler.accepted_inputs[0].sha256 = input.compiler.accepted_inputs[0]
+            .sha256
+            .to_ascii_uppercase();
+        assert_eq!(
+            input.validate_against(&policy, "x86-64-linux").unwrap_err(),
+            "compiler reported malformed input provenance"
+        );
+
+        // The lowercase spelling the compiler and runner actually emit is the
+        // one that passes; the fixture is otherwise unchanged.
+        evidence()
+            .validate_against(&policy, "x86-64-linux")
+            .unwrap();
     }
 
     #[test]
