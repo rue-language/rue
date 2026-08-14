@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import platform
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -19,6 +22,44 @@ policy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(policy)
 
 BASELINE_BASH = "/bin/bash"
+
+# The RUE-1511 break, as it shipped: the `"` opened after `covered=` is never
+# closed, because the `)` ending the command substitution is followed by
+# `; then` instead of `)"`. Every bash rejects it -- verified on 3.2.57 and
+# 5.2.15 -- and the construct table says nothing, because an unbalanced quote
+# is not a construct. That is the whole case for the parse check (RUE-1512).
+UNBALANCED_QUOTE = textwrap.dedent(
+    r"""
+    buck2=./buck2
+    if ! covered="$("$buck2" uquery \
+        "attrfilter(labels, a, //crates/...) except (attrfilter(labels, b, //crates/...))" \
+        2>/dev/null); then
+        exit 1
+    fi
+    printf '%s\n' "$covered"
+    """
+)
+
+# The same command, correctly quoted (`)"` before `; then`). Bash 3.2 parses
+# this, which is worth asserting: the comment left at the repaired site claims
+# 3.2 cannot parse a `$(...)` spanning a line continuation with a quoted
+# parenthesised argument, and it can.
+BALANCED_QUOTE = textwrap.dedent(
+    r"""
+    buck2=./buck2
+    if ! covered="$("$buck2" uquery \
+        "attrfilter(labels, a, //crates/...) except (attrfilter(labels, b, //crates/...))" \
+        2>/dev/null)"; then
+        exit 1
+    fi
+    printf '%s\n' "$covered"
+    """
+)
+
+# A syntax error on Bash 3.2 and valid on Bash 4+, so `bash -n` only rejects it
+# when a real 3.2 runs it. This is what a Linux runner's 5.x cannot see, and
+# why the macos-15 leg passes --require-baseline-bash.
+BASELINE_ONLY_SYNTAX = "case $x in a) run ;;& b) run ;; esac\n"
 
 
 def baseline_bash_version() -> int | None:
@@ -161,6 +202,15 @@ class ScanTests(unittest.TestCase):
             ["the `mapfile`/`readarray` builtin"],
         )
 
+    def test_the_table_cannot_see_a_syntax_error(self) -> None:
+        # The gap the parse check exists to close, asserted rather than
+        # described: this file is dead on every bash and the table says
+        # nothing, because there is no construct in it to name. `ParseTests`
+        # below catches the same source. Do not "fix" this by adding a rule --
+        # the class is unbounded, which is exactly why the second check is a
+        # parser and not a longer table.
+        self.assertEqual(self.scan(UNBALANCED_QUOTE), [])
+
 
 class WorkflowTests(unittest.TestCase):
     """`run:` steps are held to the baseline on macOS runners only."""
@@ -240,9 +290,12 @@ class DiscoveryTests(unittest.TestCase):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(contents)
-            scripts, workflows = policy.sources(root)
-            found = [p.relative_to(root).as_posix() for p in scripts + workflows]
-            findings = [str(f) for f in policy.validate(root)[0]]
+            discovered = policy.sources(root)
+            found = [
+                p.relative_to(root).as_posix()
+                for p in discovered.bash + discovered.workflows
+            ]
+            findings = [str(f) for f in policy.validate(root).findings]
         return found, findings
 
     BAD = "#!/usr/bin/env bash\nmapfile -t a <f\n"
@@ -280,7 +333,8 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertEqual(found, ["tool"])
 
     def test_ignores_non_bash_interpreters(self) -> None:
-        # A `sh` script has a POSIX problem, not a Bash-version one.
+        # A `sh` script has a POSIX problem, not a Bash-version one, so the
+        # TABLE skips it.
         found, _ = self.discover(
             {
                 "posix.sh": "#!/bin/sh\nmapfile -t a <f\n",
@@ -289,6 +343,26 @@ class DiscoveryTests(unittest.TestCase):
         )
         self.assertEqual(found, [])
 
+    def test_the_parse_set_takes_every_shell_script(self) -> None:
+        # ...but the parse check does not skip it: an unbalanced quote in a
+        # `#!/bin/sh` script is the same RUE-1511 bug, and before this the
+        # repository's one such file was parsed by nothing at all. A bare
+        # `.sh` with no shebang counts too, matching the pipefail gate's set
+        # so the two cover the same files.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bashy.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+            (root / "posix.sh").write_text("#!/bin/sh\ntrue\n")
+            (root / "bare.sh").write_text("true\n")
+            (root / "tool.py").write_text("#!/usr/bin/env python3\n")
+            discovered = policy.sources(root)
+            self.assertEqual([p.name for p in discovered.bash], ["bashy.sh"])
+            self.assertEqual([p.name for p in discovered.shell], ["bare.sh", "posix.sh"])
+            self.assertEqual(
+                [p.name for p in discovered.parseable],
+                ["bare.sh", "bashy.sh", "posix.sh"],
+            )
+
     def test_workflows_are_scanned_as_workflows(self) -> None:
         found, _ = self.discover(
             {".github/workflows/ci.yml": "jobs:\n  a:\n    runs-on: ubuntu-latest\n"}
@@ -296,17 +370,366 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(found, [".github/workflows/ci.yml"])
 
 
+class InterpreterTests(unittest.TestCase):
+    """Which bash the parse check picks, and what it admits about it.
+
+    A Bash 5 is a usable but weaker parser here, so the question is not whether
+    to accept one -- CI's Linux runners have nothing else -- but whether a run
+    on one can be mistaken for a run at the baseline. It must not be: `;;&` is
+    a syntax error on 3.2 and legal on 5, so a 5.x reporting a clean parse has
+    proved strictly less than it appears to. That is the RUE-1506 shape.
+    """
+
+    def stub(self, directory: str, body: str) -> Path:
+        """A fake `bash` answering the version probe however we like.
+
+        A real Bash 5 is what CI's Linux runners have and this host does not,
+        so the cases that matter most are the ones no macOS test could
+        otherwise reach.
+        """
+        path = Path(directory) / "stub-bash"
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o755)
+        return path
+
+    def resolve(self, body: str):
+        with tempfile.TemporaryDirectory() as directory:
+            stub = self.stub(directory, body)
+            with unittest.mock.patch.dict(
+                os.environ, {policy.BASELINE_ENV: str(stub)}
+            ):
+                return policy.parse_interpreter()
+
+    def test_a_bash_5_is_usable_but_not_at_the_baseline(self) -> None:
+        found = self.resolve('echo "5 5.2.37(1)-release"\n')
+        self.assertIsNotNone(found)
+        self.assertFalse(found.at_baseline)
+
+    def test_a_bash_4_is_usable_but_not_at_the_baseline(self) -> None:
+        found = self.resolve('echo "4 4.4.20(1)-release"\n')
+        self.assertIsNotNone(found)
+        self.assertFalse(found.at_baseline)
+
+    def test_a_bash_3_is_at_the_baseline_and_reports_its_version(self) -> None:
+        found = self.resolve('echo "3 3.2.57(1)-release"\n')
+        self.assertIsNotNone(found)
+        self.assertTrue(found.at_baseline)
+        self.assertEqual(found.version, "3.2.57(1)-release")
+
+    def test_a_non_bash_interpreter_is_not_usable(self) -> None:
+        # `BASH_VERSINFO` is unset, so the probe answers with neither field.
+        self.assertIsNone(self.resolve("echo\n"))
+
+    def test_an_interpreter_that_fails_the_probe_is_not_usable(self) -> None:
+        self.assertIsNone(self.resolve('echo "3 3.2.57(1)-release"\nexit 3\n'))
+
+    def test_a_missing_interpreter_is_not_usable(self) -> None:
+        with unittest.mock.patch.dict(
+            os.environ, {policy.BASELINE_ENV: "/nonexistent/bash"}
+        ):
+            self.assertIsNone(policy.parse_interpreter())
+
+    def test_the_override_is_not_advisory(self) -> None:
+        # A fallback here would let a broken override be silently replaced by
+        # whatever bash the host happens to have, which is the same "believed
+        # because it passed" failure in miniature.
+        with unittest.mock.patch.dict(
+            os.environ, {policy.BASELINE_ENV: "/nonexistent/bash"}
+        ):
+            self.assertIsNone(policy.parse_interpreter())
+        self.assertIsNotNone(policy.probe(BASELINE_BASH))
+
+
+class ParseTests(unittest.TestCase):
+    """`bash -n`, on whatever bash this host has.
+
+    The cases split by which interpreter can see them, and the split is the
+    design: what every bash rejects is checked on every host, and what only
+    3.2 rejects is checked where a 3.2 exists.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.interpreter = policy.parse_interpreter()
+        if cls.interpreter is None:
+            raise unittest.SkipTest("no bash on this host, so `bash -n` cannot run")
+
+    def failures(self, body: str, name: str = "probe.sh") -> list[policy.ParseFailure]:
+        failures, _ = self.check(body, name)
+        return failures
+
+    def check(self, body: str, name: str = "probe.sh"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / name
+            script.write_text(
+                "#!/usr/bin/env bash\nset -euo pipefail\n" + textwrap.dedent(body)
+            )
+            return policy.parse_check([script], root, self.interpreter)
+
+    def test_the_rue_1511_break_fails_to_parse(self) -> None:
+        # The decisive case. The construct table calls this file clean; here it
+        # is caught, without any rule describing it, on any bash.
+        failures = self.failures(UNBALANCED_QUOTE)
+        self.assertEqual([failure.path for failure in failures], ["probe.sh"])
+        self.assertIn("unexpected EOF", failures[0].detail)
+
+    def test_the_message_warns_that_the_named_line_is_not_the_mistake(self) -> None:
+        # Bash names where the parser gave up, which here is the end of the
+        # file. A contributor sent to that line finds nothing wrong with it.
+        message = str(self.failures(UNBALANCED_QUOTE)[0])
+        self.assertIn("PARSER gave up", message)
+        self.assertIn("unbalanced quote", message)
+
+    def test_the_same_command_correctly_quoted_parses(self) -> None:
+        # The repair, and the correction to the diagnosis recorded with it: a
+        # `$(...)` spanning a line continuation with a quoted parenthesised
+        # argument is fine everywhere, including Bash 3.2. The missing `"` was
+        # the whole defect.
+        self.assertEqual(self.failures(BALANCED_QUOTE), [])
+
+    def test_a_bash_4_builtin_is_not_a_parse_failure(self) -> None:
+        # Why the table is not retired: `mapfile` parses perfectly on 3.2 and
+        # then exits 127 at run time, and `${v:1:-1}` parses and answers
+        # wrongly. Neither is visible to a parser; only the table sees them.
+        self.assertEqual(self.failures('mapfile -t a <"$f"\n'), [])
+        self.assertEqual(self.failures("v=${w:1:-1}\n"), [])
+
+    def test_syntax_only_bash_3_2_rejects_needs_a_bash_3_2(self) -> None:
+        # Why the macos-15 leg exists. `;;&` is on the construct table too, so
+        # nothing escapes -- but the parse check's own answer here depends on
+        # the interpreter, and that dependence is the reason a Linux run must
+        # not be reported as a baseline run.
+        failures = self.failures(BASELINE_ONLY_SYNTAX)
+        if self.interpreter.at_baseline:
+            self.assertEqual(len(failures), 1)
+        else:
+            self.assertEqual(failures, [])
+
+    def test_the_portable_spellings_parse(self) -> None:
+        self.assertEqual(
+            self.failures(
+                """
+                targets=()
+                while :; do
+                    target=""
+                    IFS= read -r target || [[ -n "$target" ]] || break
+                    targets+=("$target")
+                done <"$file"
+                covered="$(list "a (b) c" 2>/dev/null)"
+                cat <<'EOF'
+                literal $( text
+                EOF
+                echo "${targets[$((${#targets[@]} - 1))]}" "$covered"
+                """
+            ),
+            [],
+        )
+
+    def test_a_runtime_shopt_makes_bash_n_over_catch(self) -> None:
+        # The check's one wrong answer, and the reason an escape exists.
+        # `bash -n` parses without executing, so it never runs the `shopt`
+        # that makes `@(a|b)` legal -- while the file itself RUNS correctly on
+        # the same interpreter, asserted below so this cannot rot into a claim
+        # about a file that was broken all along.
+        body = 'shopt -s extglob\ncase "$x" in @(abc|def)) echo yes ;; esac\n'
+        self.assertEqual(len(self.failures(body)), 1)
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "extglob.sh"
+            script.write_text("#!/usr/bin/env bash\nx=abc\n" + body)
+            ran = subprocess.run(
+                [self.interpreter.path, str(script)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(ran.stdout.strip(), "yes")
+
+    def test_the_annotation_exempts_the_file(self) -> None:
+        failures, exemptions = self.check(
+            "# bash-parse-ok: extglob is enabled at run time\n"
+            'shopt -s extglob\ncase "$x" in @(abc|def)) echo yes ;; esac\n'
+        )
+        self.assertEqual(failures, [])
+        self.assertEqual([e.reason for e in exemptions], ["extglob is enabled at run time"])
+
+    def test_the_annotation_must_be_a_real_comment(self) -> None:
+        # Inside a string it is text, exactly as `# bash-baseline-ok:` is.
+        failures, exemptions = self.check(
+            'X="# bash-parse-ok: fake"\n'
+            'shopt -s extglob\ncase "$x" in @(abc|def)) echo yes ;; esac\n'
+        )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(exemptions, [])
+
+    def test_a_leading_dash_filename_is_not_read_as_options(self) -> None:
+        # Without `--`, bash consumes `-weird.sh` as flags and the usage dump
+        # is reported as that file's syntax error.
+        self.assertEqual(self.failures("true\n", name="-weird.sh"), [])
+        failures = self.failures(UNBALANCED_QUOTE, name="-weird.sh")
+        self.assertEqual(len(failures), 1)
+        self.assertNotIn("invalid option", failures[0].detail)
+
+    def test_the_summary_names_the_interpreter_and_its_tier(self) -> None:
+        # The positive half of the visibility contract: a run that DID parse
+        # says which interpreter did it and whether that was the baseline, so
+        # "53 scanned" can never be mistaken for "53 parsed at 3.2".
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "probe.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), directory],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("1 script(s) parsed by", result.stdout)
+        self.assertIn(self.interpreter.version, result.stdout)
+        expected = "at the baseline" if self.interpreter.at_baseline else "above the"
+        self.assertIn(expected, result.stdout)
+
+
+class ShortfallTests(unittest.TestCase):
+    """What a run says when it could not reach the baseline, and how loudly.
+
+    Not a detail. Every host but a Mac is in one of these two states, so this
+    IS the check's behaviour almost everywhere it runs. It proceeds rather than
+    refusing, because a Bash 5 still catches the RUE-1511 class -- but it never
+    proceeds silently, and on the one runner that is supposed to have a 3.2 the
+    CI step passes `--require-baseline-bash`, so an interpreter that moved or
+    aged into 5.x fails the build instead of downgrading the check unnoticed.
+    """
+
+    def run_gate(self, bash: str, *flags: str) -> subprocess.CompletedProcess[str]:
+        """The shipped tool, against a one-script tree, on a chosen bash.
+
+        A subprocess rather than a call into `main`, because the contract under
+        test is the exit status and the two streams a CI step actually sees.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "probe.sh").write_text("#!/usr/bin/env bash\ntrue\n")
+            interpreter = root / ("absent-bash" if bash == "absent" else "stub-bash")
+            if bash != "absent":
+                interpreter.write_text(f'#!/bin/sh\necho "{bash}"\n')
+                interpreter.chmod(0o755)
+            environ = dict(os.environ)
+            environ[policy.BASELINE_ENV] = str(interpreter)
+            return subprocess.run(
+                [sys.executable, str(SCRIPT), directory, *flags],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environ,
+            )
+
+    def test_no_bash_notes_what_went_unparsed(self) -> None:
+        result = self.run_gate("absent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("note: no bash at", result.stderr)
+        self.assertIn("1 script(s) NOT parsed", result.stdout)
+
+    def test_no_bash_fails_under_require_baseline_bash(self) -> None:
+        result = self.run_gate("absent", "--require-baseline-bash")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: no bash at", result.stderr)
+
+    def test_a_bash_5_parses_but_says_it_is_above_the_baseline(self) -> None:
+        # The Linux CI case. The run is real and worth having -- it catches
+        # everything RUE-1511 was -- but the summary must not let it read as a
+        # baseline run, and the note names what it could not see.
+        result = self.run_gate("5 5.2.15(1)-release")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("note: the parse check ran on Bash 5.2.15", result.stderr)
+        self.assertIn(";;&", result.stderr)
+        self.assertIn("above the baseline", result.stdout)
+
+    def test_a_bash_5_fails_under_require_baseline_bash(self) -> None:
+        # The point of the flag: on macos-15 an above-baseline bash is not a
+        # weaker pass, it is a broken assumption about the runner.
+        result = self.run_gate("5 5.2.15(1)-release", "--require-baseline-bash")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: the parse check ran on Bash 5.2.15", result.stderr)
+
+    def test_a_bash_3_reports_no_shortfall_and_satisfies_the_flag(self) -> None:
+        result = self.run_gate("3 3.2.57(1)-release", "--require-baseline-bash")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("at the baseline", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_an_empty_discovery_set_fails_even_with_the_flag(self) -> None:
+        # The one state where every other signal is green and nothing has been
+        # proven: the interpreter is at the baseline, the flag is satisfied,
+        # and no file was checked. ci.yml makes the same call for the fmt
+        # job's target query sixteen lines above this gate's step (RUE-1152).
+        with tempfile.TemporaryDirectory() as directory:
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), directory, "--require-baseline-bash"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: no shell scripts found", result.stderr)
+        self.assertNotIn("policy valid", result.stdout)
+
+    def test_the_library_entry_point_keeps_no_such_floor(self) -> None:
+        # The floor belongs to the tool, not to `validate()`: the discovery
+        # tests scan deliberately empty trees.
+        with tempfile.TemporaryDirectory() as directory:
+            report = policy.validate(Path(directory))
+        self.assertEqual(report.scripts, 0)
+        self.assertEqual(report.findings, [])
+
+    def test_the_construct_table_still_runs_without_an_interpreter(self) -> None:
+        # The halves are independent: a host with no bash at all still gets
+        # every table finding, which is what makes the `fmt` job authoritative
+        # for that half.
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / "probe.sh").write_text(
+                "#!/usr/bin/env bash\nmapfile -t a <f\n"
+            )
+            environ = dict(os.environ)
+            environ[policy.BASELINE_ENV] = str(Path(directory) / "absent-bash")
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), directory],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environ,
+            )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("`mapfile`/`readarray` builtin", result.stderr)
+
+
 class RepositoryTests(unittest.TestCase):
-    def test_repository_is_clean(self) -> None:
-        # Under Buck this test runs from a sandbox holding only the validator,
-        # where a whole-tree scan would find nothing and pass vacuously -- the
-        # exact shape of fail-open this policy exists to prevent. Skip loudly
-        # instead; the authoritative scan is the `fmt` job's CI step.
+    def checkout(self) -> Path:
+        # These DO run under Buck, despite the sandbox holding only the
+        # validator: `SCRIPT.resolve()` follows the sandbox symlink back out
+        # to the real file, so `parent.parent` is the checkout and the
+        # whole-tree scan is genuine. The guard is for a copy of this file
+        # somewhere without a tree around it, where a scan would find nothing
+        # and pass vacuously -- the fail-open this policy exists to prevent.
         root = SCRIPT.resolve().parent.parent
         if not (root / "AGENTS.md").exists():
-            self.skipTest("not a repository checkout; scan runs as a CI step")
-        findings, _ = policy.validate(root)
-        self.assertEqual([str(finding) for finding in findings], [])
+            self.skipTest("not a repository checkout; the scan runs as a CI step")
+        return root
+
+    def test_repository_is_clean(self) -> None:
+        self.assertEqual(
+            [str(finding) for finding in policy.validate(self.checkout()).findings], []
+        )
+
+    def test_repository_parses(self) -> None:
+        root = self.checkout()
+        interpreter = policy.parse_interpreter()
+        if interpreter is None:
+            self.skipTest("no bash on this host")
+        report = policy.validate(root, interpreter)
+        self.assertEqual([str(failure) for failure in report.failures], [])
+        # A parse check over nothing would pass just as quietly.
+        self.assertGreater(report.scripts, 0)
 
 
 class MechanismTests(unittest.TestCase):
@@ -381,11 +804,19 @@ class MechanismTests(unittest.TestCase):
 
 class HostTests(unittest.TestCase):
     def test_a_mac_always_has_the_baseline_interpreter(self) -> None:
-        # Guards the skip above: on a macOS host the demonstrations MUST run,
-        # so a silently-skipping suite cannot become the normal state there.
+        # Guards both skips above: on a macOS host the demonstrations and the
+        # parse check MUST run, so a silently-skipping suite cannot become the
+        # normal state there -- which is the state ci.yml's macos-15 leg
+        # depends on, and enforces from its side with --require-baseline-bash.
         if platform.system() != "Darwin":
             self.skipTest("not macOS")
         self.assertEqual(baseline_bash_version(), 3)
+        with unittest.mock.patch.dict(os.environ):
+            os.environ.pop(policy.BASELINE_ENV, None)
+            interpreter = policy.parse_interpreter()
+        self.assertIsNotNone(interpreter)
+        self.assertEqual(interpreter.path, BASELINE_BASH)
+        self.assertTrue(interpreter.at_baseline, interpreter.version)
 
 
 if __name__ == "__main__":

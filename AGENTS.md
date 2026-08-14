@@ -137,6 +137,36 @@ rather than a proof — its docstring lists what it cannot see, including gramma
 with no distinct AST node and every method call. Annotate a reviewed exception
 with `# python-baseline-ok: <reason>`.
 
+Shell has the same shape of floor and a stricter one. macOS ships GNU Bash
+3.2.57 as `/bin/bash` and will not ship a GPLv3 one, so a `#!/usr/bin/env bash`
+script has to run on 3.2 — on a stock Mac and on a `macos-*` runner that is the
+interpreter it gets. `scripts/validate-shell-bash-baseline.py` holds two checks
+to that floor, and neither covers the other. A curated construct table names
+Bash 4+ spellings, which is what catches a script that parses on 3.2 and then
+misbehaves: `mapfile` exiting 127 (RUE-1506), `${v:1:-1}` silently answering
+empty. A `bash -n` pass parses every discovered shell script — `#!/bin/sh` and
+bare `.sh` included, since a syntax error is one in any shell — and that is
+what catches a file which does not parse at all: RUE-1511 shipped an unbalanced
+double quote inside a multi-line command substitution, and the table called it
+clean because a syntax error is not a construct (RUE-1512).
+
+The two halves need different interpreters and get them in different places.
+An unbalanced quote is a syntax error on every bash, so the Linux `fmt` job's
+run catches that class on every pull request. `;;&`, `;&`, and `coproc` are a
+syntax error only on 3.2, so that half is authoritative on the `macos-15` leg
+of `native-platforms`, which runs the gate with `--require-baseline-bash` and
+fails if its `/bin/bash` is not a 3.x. Every run says which interpreter parsed
+and whether that was the baseline, so a weaker run cannot read as a stronger
+one, and an empty discovery set fails rather than passing as a clean tree.
+
+Annotate a reviewed table exception with `# bash-baseline-ok: <reason>`. The
+parse check has its own, `# bash-parse-ok: <reason>`, which is file-level
+because a parse failure names where the parser gave up rather than where the
+mistake is. It exists for one real case: `bash -n` parses without executing, so
+it never runs a `shopt`, and a file enabling `extglob` and then using `@(a|b)`
+runs correctly on 3.2.57 while `bash -n` on that same interpreter rejects it.
+A genuine syntax error is fixed, not annotated.
+
 ## Compiler architecture
 
 The canonical flow is:

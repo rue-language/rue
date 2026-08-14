@@ -42,6 +42,92 @@ job may use the builtin sixteen lines above the step that runs this gate. A
 Annotate a reviewed exception with `# bash-baseline-ok: <reason>`. It has to
 sit in a real comment -- inside a string it is text, not an annotation -- and
 it silences its whole line.
+
+TWO CHECKS (RUE-1512), and neither implies the other's coverage.
+
+The table above names constructs. That is its strength -- it can say which
+version introduced a thing and how to spell it on 3.2 -- and it is also its
+ceiling: it cannot flag a file that does not PARSE, because a syntax error is
+not a construct and there is nothing to point at. RUE-1511 shipped one into a
+branch, in this shape:
+
+    if ! covered="$("$buck2" uquery \\
+        "attrfilter(labels, a, //crates/...) except (attrfilter(...))" \\
+        2>/dev/null); then
+
+The closing `"` that should follow the `)` is missing, so the double quote
+opened after `covered=` never closes. Bash reads to end of file looking for it
+and reports:
+
+    line 9: unexpected EOF while looking for matching `"'
+    line 12: syntax error: unexpected end of file
+
+Neither line is the mistake -- they are where the PARSER gave up, several lines
+past it and usually at the end of the file, which is why the error reads as a
+puzzle. Nothing on the table is used, so the gate answered `bash baseline
+policy valid: 53 file(s) scanned` and the break was found by running the suite
+by hand.
+
+So the second check is `bash -n`: parse the script, execute nothing. It needs
+no name for what it finds, which is exactly the class the table cannot
+enumerate. It does not replace the table either -- `mapfile` and `${v:1:-1}`
+parse perfectly on 3.2 and then exit 127 or answer wrongly -- so a file can be
+flawlessly parseable and still dead on a Mac. Run both.
+
+WHICH BASH, and why it matters more than it looks. Measured, not assumed:
+
+  both 3.2 and 5.2 reject   an unbalanced quote, an unterminated `if`, an
+                            unclosed heredoc -- the RUE-1511 class. ANY bash
+                            catches these, so this half runs wherever a bash
+                            exists, including Linux CI.
+  only 3.2 rejects          `;;&`, `;&`, `coproc`. Bash 5 parses all three
+                            happily, so a `bash -n` on Linux is genuinely
+                            weaker and must not be reported as though it were
+                            not.
+  neither rejects           `mapfile`, `declare -A`, `declare -g`, `${v^^}` --
+                            syntax on every version, wrong behaviour or a
+                            runtime error on 3.2. The table's territory, not
+                            the parser's.
+  both reject WRONGLY       `@(a|b)` after a runtime `shopt -s extglob`. See
+                            the annotation below; this is the one direction in
+                            which the parse check over-catches.
+
+Note what this does NOT say: the RUE-1511 construct is not a Bash 4 feature and
+3.2 is not what broke on it. The comment left at the repaired site said 3.2
+"cannot parse a `$(...)` whose body spans a line continuation and contains a
+quoted argument with parentheses"; it can, and so can 5.2, once the quote is
+balanced. The bug was ordinary, which is the point -- an ordinary syntax error
+is invisible to a table of exotic constructs.
+
+So the parse check runs with the strictest bash the host has, prefers a 3.2
+when one exists, and says which it used. On ci.yml's macos-15 leg -- the only
+runner whose /bin/bash IS a 3.2 -- it runs with `--require-baseline-bash`, so a
+bash that moved or aged into 5.x fails the build instead of quietly downgrading
+the check. A check that cannot fail where it runs is worse than no check,
+because it is believed (RUE-1506).
+
+The parse check has its own annotation, `# bash-parse-ok: <reason>`, and it is
+file-level because a parse failure has no line worth attaching to. It exists
+for one real case: `bash -n` parses without executing, so it never runs a
+`shopt`, and
+
+    shopt -s extglob
+    case "$x" in @(abc|def)) echo yes ;; esac
+
+RUNS correctly on 3.2.57 and is rejected by `bash -n` on that same 3.2.57.
+There the file is right and the check is wrong. Keep the bar there: a genuine
+syntax error must be fixed, not annotated, and the reason is reviewed here the
+way `# bash-baseline-ok:` is. Every exemption is printed and counted, because
+the annotation stops checking the whole file.
+
+Workflow `run:` steps get the table only. A step's text is not final Bash: the
+runner substitutes its `${{ }}` expressions first, and a block scalar's uniform
+indentation is not part of the script (an indented heredoc terminator would
+read as an unterminated heredoc). Parsing one as written can therefore differ
+from what the runner parses in both directions, and a gate with false positives
+is a gate that gets switched off. `actionlint` shellchecks those blocks in its
+own job. Extending the parse check there needs the reconstruction done
+properly, and is a separate decision.
 """
 
 from __future__ import annotations
@@ -49,12 +135,29 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The interpreter this policy is written against. macOS has shipped GNU Bash
+# 3.2.57 as `/bin/bash` since 2007 and will not ship a GPLv3 one, so the floor
+# is a concrete binary at a concrete path rather than a version to hunt for.
+BASELINE_BASH = "/bin/bash"
+BASELINE_MAJOR = 3
+
+# Names the one interpreter the parse check may use -- a hand-built 3.2 on a
+# Linux host, or a deliberately wrong one in a test. When it is set, nothing
+# else is tried: a fallback would make the override advisory, and an override
+# that can be silently ignored is worse than none. It is checked for version,
+# not for sanity: pointing it at macOS's /bin/sh passes the 3.x test, because
+# that IS Bash 3.2, and then parses everything in POSIX mode. Point it at a
+# bash.
+BASELINE_ENV = "RUE_BASELINE_BASH"
 
 # Build outputs and vendored trees are not ours to police, and `buck-out` in
 # particular makes the scan's cost and result depend on whether a build has run.
@@ -72,7 +175,19 @@ SKIP_DIRECTORIES = {
 # `#!/usr/bin/env bash`, `#!/bin/bash`, `#!/usr/bin/env -S bash -eu`.
 BASH_SHEBANG = re.compile(r"^#!\s*\S*(?:\s+-\S+)*\s*(?:\S*/)?bash\b|^#!\S*/bash\b")
 
+# Any shell. Only the PARSE check uses this: a `#!/bin/sh` script has a POSIX
+# problem rather than a Bash-version one, so the construct table rightly
+# ignores it -- but an unbalanced quote in it is the same syntax error, and
+# reaches trunk green if nothing parses the file. Deliberately the pipefail
+# gate's spelling, so the two gates cover the same set of files.
+SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba|da|k|z)?sh\b")
+
 ALLOW = re.compile(r"#\s*bash-baseline-ok:\s*(?P<reason>\S.*?)\s*$")
+
+# The parse check's own escape, and it needs a separate one: a parse failure
+# has no reliable line to annotate, since bash reports where it gave up rather
+# than where the mistake is. This is file-level and silences the whole file.
+PARSE_ALLOW = re.compile(r"#\s*bash-parse-ok:\s*(?P<reason>\S.*?)\s*$")
 
 # A parameter name, including the positional and special parameters: `${1^^}`
 # and `${@Q}` are as unavailable on 3.2 as `${name^^}` is.
@@ -422,6 +537,182 @@ def scan_workflow(source: str, path: str) -> list[Finding]:
     return findings
 
 
+class Interpreter(NamedTuple):
+    path: str
+    version: str
+    major: int
+
+    @property
+    def at_baseline(self) -> bool:
+        """Whether this interpreter can reject what only Bash 3.2 rejects.
+
+        A Bash 5 accepts `;;&`, `;&`, and `coproc`, so it is a real but weaker
+        parser for this policy. The distinction is carried in the type rather
+        than recomputed at each use, because every message that reports a clean
+        parse has to say which of the two it was.
+        """
+        return self.major == BASELINE_MAJOR
+
+
+def probe(candidate: str) -> Interpreter | None:
+    """Identify `candidate` as a bash, by asking it rather than by its path."""
+    try:
+        result = subprocess.run(
+            [candidate, "-c", 'echo "${BASH_VERSINFO[0]:-} ${BASH_VERSION:-}"'],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields = result.stdout.split()
+    # A non-bash interpreter leaves both variables unset, or answers with
+    # something that is not a version at all.
+    if len(fields) != 2 or not fields[0].isdigit():
+        return None
+    return Interpreter(candidate, fields[1], int(fields[0]))
+
+
+def parse_interpreter() -> Interpreter | None:
+    """A 3.2 if this host has one, else the first other bash it finds.
+
+    Preferring rather than requiring, because the two tiers catch different
+    things and the weaker one is worth having. An unbalanced quote -- the
+    RUE-1511 break -- is a syntax error on every bash, so a Linux runner's 5.x
+    catches it on every pull request; `;;&` is a syntax error only on 3.2, so
+    that half waits for the macos-15 leg. Requiring 3.2 outright would trade
+    the first for nothing, and reporting a 5.x as though it were the baseline
+    would claim the second without having it.
+    """
+    override = os.environ.get(BASELINE_ENV)
+    if override:
+        return probe(override)
+    candidates = [BASELINE_BASH]
+    on_path = shutil.which("bash")
+    if on_path and on_path not in candidates:
+        candidates.append(on_path)
+    # `/bin/bash` first, because that is the one macOS pins at 3.2 while a
+    # developer's PATH may well put a Homebrew 5.x ahead of it -- and this
+    # check wants the stricter parser, not the newer one.
+    fallback = None
+    for candidate in candidates:
+        interpreter = probe(candidate)
+        if interpreter is None:
+            continue
+        if interpreter.at_baseline:
+            return interpreter
+        fallback = fallback or interpreter
+    return fallback
+
+
+class ParseFailure(NamedTuple):
+    path: str
+    version: str
+    detail: str
+
+    def __str__(self) -> str:
+        return (
+            f"{self.path}: Bash {self.version} cannot parse this file -- "
+            f"{self.detail}. The line named is where the PARSER gave up, not "
+            "necessarily the mistake: look upward from it for an unbalanced "
+            "quote or bracket, an unclosed heredoc, or a missing `fi`/`done`. "
+            "If the file is correct and this is `bash -n` refusing syntax that "
+            "a runtime `shopt -s extglob` would enable -- it parses without "
+            "executing, so it never sees the `shopt` -- annotate the file with "
+            "`# bash-parse-ok: <reason>`"
+        )
+
+
+class ParseExemption(NamedTuple):
+    path: str
+    reason: str
+
+    def __str__(self) -> str:
+        return f"{self.path}: not parsed (# bash-parse-ok: {self.reason})"
+
+
+def parse_annotation(source: str) -> str | None:
+    """The reviewed reason this file is exempt from `bash -n`, if any.
+
+    File-level rather than per-line, because a parse failure has no trustworthy
+    line to attach to. It has to sit in a real comment, so a file quoting this
+    policy's own prose does not exempt itself.
+    """
+    for raw in source.splitlines():
+        _, comment = split_code(raw)
+        match = PARSE_ALLOW.search(comment)
+        if match:
+            return match.group("reason")
+    return None
+
+
+def parse_check(
+    scripts: list[Path], root: Path, interpreter: Interpreter
+) -> tuple[list[ParseFailure], list[ParseExemption]]:
+    """Parse each script with `interpreter`, executing nothing.
+
+    `bash -n` reads the file, builds the parse tree, and stops, so this costs a
+    process spawn per script and cannot run any of their side effects. That
+    matters here: these scripts drive builds, and a gate that ran them would be
+    a gate nobody could afford to run on every commit.
+
+    Not executing is also this check's one real blind spot in reverse. `shopt`
+    takes effect when it RUNS, so a file that enables `extglob` and then uses
+    `@(a|b)` executes correctly on 3.2 and is rejected by `bash -n` on the same
+    interpreter. That file is right and the check is wrong, which is what
+    `# bash-parse-ok:` is for.
+    """
+    failures: list[ParseFailure] = []
+    exemptions: list[ParseExemption] = []
+    for path in scripts:
+        relative = path.relative_to(root).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        reason = parse_annotation(source)
+        if reason is not None:
+            exemptions.append(ParseExemption(relative, reason))
+            continue
+        try:
+            result = subprocess.run(
+                # `--` because a repository-root file named `-x.sh` would
+                # otherwise be read as options, and the usage dump reported as
+                # that file's syntax error.
+                [interpreter.path, "-n", "--", relative],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                # Parsing is linear and these are small files, so a hang means
+                # something pathological. Fail it rather than sit until the CI
+                # job's own timeout, where the cause is far less obvious.
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            failures.append(
+                ParseFailure(relative, interpreter.version, "`bash -n` timed out")
+            )
+            continue
+        if result.returncode == 0:
+            continue
+        # Bash prefixes every diagnostic with the script name it was given.
+        # Repeating it in a message that already opens with the path is noise.
+        lines = []
+        for line in result.stderr.splitlines():
+            line = line.strip()
+            if line.startswith(f"{relative}: "):
+                line = line[len(relative) + 2 :]
+            if line:
+                lines.append(line)
+        detail = "; ".join(lines) or f"`bash -n` exited {result.returncode}"
+        failures.append(ParseFailure(relative, interpreter.version, detail))
+    return failures, exemptions
+
+
 def _prune(directory: Path, names: list[str]) -> list[str]:
     """Directory names to descend into.
 
@@ -441,9 +732,24 @@ def _prune(directory: Path, names: list[str]) -> list[str]:
     return kept
 
 
-def sources(root: Path) -> tuple[list[Path], list[Path]]:
-    """Every bash script and workflow file under `root`."""
+class Sources(NamedTuple):
+    # Bash-shebang scripts: the construct table's set, and parsed as well.
+    bash: list[Path]
+    # Other shell scripts -- a `#!/bin/sh` shebang, or a bare `.sh`. The table
+    # skips these on purpose (a POSIX policy is not a Bash-version policy), but
+    # a syntax error in one is the same bug, so the parse check takes them.
+    shell: list[Path]
+    workflows: list[Path]
+
+    @property
+    def parseable(self) -> list[Path]:
+        return sorted(self.bash + self.shell)
+
+
+def sources(root: Path) -> Sources:
+    """Every shell script and workflow file under `root`."""
     scripts: list[Path] = []
+    shell: list[Path] = []
     workflows: list[Path] = []
     for directory, names, files in os.walk(root):
         here = Path(directory)
@@ -464,38 +770,146 @@ def sources(root: Path) -> tuple[list[Path], list[Path]]:
                     first = handle.readline()
             except (OSError, UnicodeDecodeError):
                 continue
-            # Unlike the pipefail policy, the shebang is the whole question: it
-            # decides which bash runs the file, so a `.sh` without one is not
-            # this gate's business.
+            # For the TABLE the shebang is the whole question: it decides which
+            # bash runs the file, so a `.sh` without one is not that policy's
+            # business. The parse check has no such dependence -- a syntax
+            # error is one in any shell -- so it takes the wider set.
             if BASH_SHEBANG.match(first):
                 scripts.append(path)
-    return sorted(scripts), sorted(workflows)
+            elif path.suffix == ".sh" or SHELL_SHEBANG.match(first):
+                shell.append(path)
+    return Sources(sorted(scripts), sorted(shell), sorted(workflows))
 
 
-def validate(root: Path) -> tuple[list[Finding], int]:
+class Report(NamedTuple):
+    findings: list[Finding]
+    failures: list[ParseFailure]
+    exemptions: list[ParseExemption]
+    # Files the table scanned: bash scripts plus macOS-capable workflows.
+    scanned: int
+    # Scripts the parse check is responsible for, parsed or not. Reported even
+    # when it did not run, because "44 unparsed" is the honest summary of a
+    # host with no bash and "53 scanned" would read like full coverage.
+    scripts: int
+
+
+def validate(root: Path, interpreter: Interpreter | None = None) -> Report:
+    """Both checks over one discovery pass.
+
+    Discovery is shared deliberately: the parse check's claim is that it covers
+    at least the files the table does, so a second, subtly different walk would
+    be a way for a script to fall between them.
+    """
     findings: list[Finding] = []
-    scripts, workflows = sources(root)
-    for path in scripts:
+    found = sources(root)
+    for path in found.bash:
         relative = path.relative_to(root).as_posix()
         findings.extend(scan(path.read_text(encoding="utf-8"), relative))
-    for path in workflows:
+    for path in found.workflows:
         relative = path.relative_to(root).as_posix()
         findings.extend(scan_workflow(path.read_text(encoding="utf-8"), relative))
-    return findings, len(scripts) + len(workflows)
+    parseable = found.parseable
+    failures, exemptions = (
+        parse_check(parseable, root, interpreter) if interpreter else ([], [])
+    )
+    return Report(
+        findings,
+        failures,
+        exemptions,
+        len(found.bash) + len(found.workflows),
+        len(parseable),
+    )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", nargs="?", type=Path, default=ROOT)
+    parser.add_argument(
+        "--require-baseline-bash",
+        action="store_true",
+        help=(
+            f"fail unless the parse check ran on a Bash {BASELINE_MAJOR}.x, "
+            "rather than accepting a newer one or none at all. Pass it "
+            "wherever the host is supposed to have one -- ci.yml's macos-15 "
+            "leg -- so an interpreter that moved or aged into 5.x fails the "
+            "build instead of quietly downgrading the check."
+        ),
+    )
     args = parser.parse_args()
 
-    findings, scanned = validate(args.root)
-    if findings:
-        for finding in findings:
-            print(f"error: {finding}", file=sys.stderr)
+    interpreter = parse_interpreter()
+    report = validate(args.root, interpreter)
+
+    for finding in report.findings:
+        print(f"error: {finding}", file=sys.stderr)
+    for failure in report.failures:
+        print(f"error: {failure}", file=sys.stderr)
+    # An exemption is a reviewed decision, so it passes -- but it is never
+    # silent, because the whole file stops being checked.
+    for exemption in report.exemptions:
+        print(f"note: {exemption}", file=sys.stderr)
+    failed = bool(report.findings or report.failures)
+
+    # An empty discovery set is a broken walk, never a clean tree: the gate
+    # would report "0 file(s) scanned" and pass, which is the fail-open both
+    # halves exist to prevent, and `--require-baseline-bash` would certify the
+    # interpreter while certifying no coverage at all. ci.yml makes the same
+    # call sixteen lines above this gate's own step, for the same reason
+    # (RUE-1152). The library entry point `validate()` has no such floor, so a
+    # test may still scan a deliberately empty tree.
+    if report.scripts == 0:
+        print(
+            f"error: no shell scripts found under {args.root}. This gate is "
+            "run against a repository checkout, where that is a broken "
+            "discovery walk rather than a clean tree -- check the root "
+            "argument and SKIP_DIRECTORIES.",
+            file=sys.stderr,
+        )
+        failed = True
+
+    # The parse check's strength varies by host, so every run states which of
+    # the three it got. Silence would let "policy valid" mean any of them.
+    if interpreter is None:
+        looked = os.environ.get(BASELINE_ENV) or BASELINE_BASH
+        shortfall = (
+            f"no bash at {looked}, so {report.scripts} script(s) went "
+            "unparsed. The construct table names constructs and cannot see a "
+            "file that simply does not parse (RUE-1511)"
+        )
+    elif not interpreter.at_baseline:
+        shortfall = (
+            f"the parse check ran on Bash {interpreter.version}, above the "
+            "3.2 baseline. It catches what every bash rejects "
+            "-- unbalanced quotes, unterminated blocks -- but `;;&`, `;&`, and "
+            "`coproc` parse here and are a syntax error on macOS, so that half "
+            "belongs to ci.yml's macos-15 leg"
+        )
+    else:
+        shortfall = ""
+
+    if shortfall:
+        if args.require_baseline_bash:
+            print(f"error: {shortfall}", file=sys.stderr)
+            failed = True
+        else:
+            print(f"note: {shortfall}", file=sys.stderr)
+
+    if failed:
         return 1
 
-    print(f"bash baseline policy valid: {scanned} file(s) scanned")
+    summary = f"bash baseline policy valid: {report.scanned} file(s) scanned"
+    if interpreter is None:
+        summary += f"; {report.scripts} script(s) NOT parsed -- no bash here"
+    else:
+        where = "at the baseline" if interpreter.at_baseline else "above the baseline"
+        parsed = report.scripts - len(report.exemptions)
+        summary += (
+            f", {parsed} script(s) parsed by {interpreter.path} "
+            f"(Bash {interpreter.version}, {where})"
+        )
+        if report.exemptions:
+            summary += f", {len(report.exemptions)} annotated bash-parse-ok"
+    print(summary)
     return 0
 
 
