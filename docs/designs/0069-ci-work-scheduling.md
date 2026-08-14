@@ -20,10 +20,11 @@ Accepted. Phase 2 (determination on every lane, RUE-1130) is implemented in
 the same change that accepted this ADR. Phase 1 (RUE-1262) and Phase 3
 (the duplication gate, RUE-1265) have since landed; Phases 4-6 are unstarted.
 
-**Amendment 1 (RUE-1505) is a proposal and is not accepted.** It records the
-remote-execution evaluation this ADR's open questions invite, and recommends
-declining RE as a scheduling lever. Everything above and below it remains the
-accepted text; nothing in the amendment is implemented. See
+**Amendment 1 (2026-08-14)** records the remote-execution evaluation this ADR's
+open questions invite and declines RE as a scheduling lever: it is accepted as
+recommended. Nothing changes in CI as a result — RE stays in the merge-group
+canary, where it already was — so the amendment is a decision not to act, and is
+implemented by construction. See
 [Amendment 1: remote execution is not the "more cores" lever (RUE-1505)](#amendment-1-2026-08-14-remote-execution-is-not-the-more-cores-lever-rue-1505).
 
 ## Summary
@@ -527,10 +528,20 @@ same fixed-cost problem this ADR names in the compiler-cold regime.
 
 ## Amendment 1 (2026-08-14): remote execution is not the "more cores" lever (RUE-1505)
 
-**Status: proposal. Not accepted, not implemented.** This amendment answers the
+**Status: accepted 2026-08-14, as recommended.** This amendment answers the
 question RUE-1505 asks — should ordinary CI builds run on BuildBuddy remote
-execution rather than only consuming its cache — and recommends *no*. It needs a
-maintainer ruling before it means anything.
+execution rather than only consuming its cache — and answers *no*. Remote
+execution stays exactly where it is, in the merge-group canary, so accepting
+this changes no CI configuration: it is a decision not to act, and the reasons
+are recorded here so the question is not reopened without new evidence.
+
+Two findings outlived the RE question itself and are tracked separately.
+BuildBuddy cache transfer already exceeds the free tier's published 100 GB by
+roughly 8.5× on upload alone, independent of RE — the capacity conversation is
+about the cache. And the two oracle-diff actions this amendment identifies as
+78.9% of `Build all targets` were being built by premerge despite owning
+dedicated lanes; RUE-1511 fixed that, which is the ~240s lever RE was proposed
+as an alternative to.
 
 Full measurements, populations, and caveats are in
 `docs/notes/rue-1505-remote-execution-evaluation.md`, following the same
