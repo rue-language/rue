@@ -83,6 +83,22 @@ jobs:
       - name: Check shell Bash 3.2 baseline
         run: scripts/validate-shell-bash-baseline.py
 
+      # The same failure in the other language: `tomllib` is stdlib only from
+      # 3.11, so //:cli-timeout-policy-validation was green on these runners
+      # (3.12 here, 3.14 on macos-15) and dead on any developer host with an
+      # older interpreter (RUE-1509). This runner cannot reproduce that, so the
+      # check is static: nothing above the documented floor, a version guard on
+      # everything between a stock host's 3.9 and the floor, and AGENTS.md's
+      # stated floor matching the gate's.
+      #
+      # This step is the AUTHORITATIVE run, not a duplicate of the premerge
+      # target. A static scan is only as strict as the interpreter performing
+      # it: a host below the floor cannot tell syntax above the floor from
+      # syntax the floor allows, so it reports such a file as unscanned. This
+      # runner's 3.12.3 is above the floor, so nothing is left unjudged here.
+      - name: Check Python interpreter baseline
+        run: scripts/validate-python-baseline.py
+
       - name: Validate Buck test-tier ownership
         run: ./buck2 bxl //test_tiers.bxl:validate
 
