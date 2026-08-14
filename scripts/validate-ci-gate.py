@@ -251,6 +251,22 @@ def validate(
         errors.append("ci-contract no longer runs the structural validator")
     if "scripts/validate-tier-ci-selectors.py" not in contract:
         errors.append("ci-contract no longer proves every test tier is CI-selected")
+    # RUE-1507: the scheduled-workflow health check is the only thing that reads
+    # unattended run history on a path a human actually looks at. Dropping the
+    # step would restore the original silence without changing a single
+    # scheduled workflow, so its presence is part of the CI contract. The
+    # `actions: read` scope is pinned with it: without that, the step fails
+    # closed on every run rather than reporting.
+    if "scripts/check-scheduled-workflows.py" not in contract:
+        errors.append(
+            "ci-contract no longer checks that scheduled workflows still succeed; "
+            "without it a weekly safeguard can fail every run unnoticed (RUE-1507)"
+        )
+    elif "actions: read" not in contract:
+        errors.append(
+            "ci-contract runs the scheduled-workflow check without `actions: read`; "
+            "the run-history query needs that scope"
+        )
 
     remote = jobs.get("remote-execution", "")
     if "    if: github.event_name == 'merge_group'\n" not in remote:

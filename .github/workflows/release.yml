@@ -65,6 +65,19 @@ jobs:
           --ignore-tests-attribute
           --target-platforms //platforms:release
 
+      # A scheduled lane needs this more than a pull-request lane does, not
+      # less. Nobody is watching when it goes red, so the first person to look
+      # arrives days later — by which time the Actions job log has been
+      # truncated to a tail or aged out entirely, and the run that found the
+      # regression can no longer say what failed (RUE-1268, RUE-1507).
+      - name: Upload failing-suite output
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-suite-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
+
   # Caldera and Meridian are real compile-and-run coverage, not required-CI
   # success stubs. Each application compiles as one cached rue_program build
   # action (ADR-0070 / RUE-1405); the per-program `-slow` suite fans out to
@@ -133,3 +146,13 @@ jobs:
           scripts/ci-timed "${{ matrix.program }} stress" --
           ./buck2 test "//:large-example-${{ matrix.program }}-stress"
           --target-platforms //platforms:release
+
+      # See the release job's rationale. Named per program so a scheduled run
+      # that loses one of the two stays attributable.
+      - name: Upload failing-program output
+        if: failure() && steps.select.outputs.run == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: large-program-${{ matrix.program }}-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
