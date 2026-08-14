@@ -53,6 +53,16 @@ def main() -> None:
         "rue-air",
         "inst.rs",
     ), "validator missed AIR place store field"
+    assert not errors_for(
+        "fn rollback(rir: &mut Rir) { rir.extra.truncate(0); }\n",
+        "rue-rir",
+        "inst/packed.rs",
+    ), "validator rejected the reviewed packed-RIR owner extension"
+    assert errors_for(
+        "pub struct PackedOwner {\n    pub extra: Vec<u32>,\n}\n",
+        "rue-rir",
+        "inst/packed.rs",
+    ), "validator allowed a public store from the packed-RIR owner extension"
     print("payload ownership inventory tool tests passed")
 
 

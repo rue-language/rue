@@ -4,7 +4,7 @@
 //! universe, while [`ParsedProgram`] provides the sole parsed-program
 //! representation used by semantic compilation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -173,7 +173,8 @@ impl ParsedDefinitionCandidate {
 pub struct ParsedDefinitionIndex {
     candidates: Arc<[ParsedDefinitionCandidate]>,
     declarations: Arc<[ParsedDeclarationCandidate]>,
-    declaration_by_key: BTreeMap<DeclarationCandidateKey, usize>,
+    declaration_by_key: HashMap<DeclarationCandidateKey, usize>,
+    rir_recipes: Arc<[ParsedRirRecipe]>,
     declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
     #[cfg(test)]
     raw_const_syntax_materializations: Arc<AtomicUsize>,
@@ -233,6 +234,26 @@ impl ParsedDefinitionIndex {
                 * std::mem::size_of::<(DeclarationCandidateKey, usize)>()) as u64,
             |charge, (key, _)| charge.saturating_add(key.retained_charge()),
         );
+        let rir_recipes = self.rir_recipes.iter().fold(
+            (self.rir_recipes.len() * std::mem::size_of::<ParsedRirRecipe>()) as u64,
+            |charge, recipe| match recipe {
+                ParsedRirRecipe::Single(key) => charge.saturating_add(key.retained_charge()),
+                ParsedRirRecipe::Struct { shell, methods } => methods.iter().fold(
+                    charge
+                        .saturating_add(shell.retained_charge())
+                        .saturating_add(
+                            (methods.len() * std::mem::size_of::<DeclarationCandidateKey>()) as u64,
+                        ),
+                    |charge, key| charge.saturating_add(key.retained_charge()),
+                ),
+                ParsedRirRecipe::Extern { functions } => functions.iter().fold(
+                    charge.saturating_add(
+                        (functions.len() * std::mem::size_of::<DeclarationCandidateKey>()) as u64,
+                    ),
+                    |charge, key| charge.saturating_add(key.retained_charge()),
+                ),
+            },
+        );
         let declaration_capabilities = (self.declaration_capabilities.len()
             * std::mem::size_of::<DeclarationOccurrenceCapability>())
             as u64;
@@ -245,6 +266,7 @@ impl ParsedDefinitionIndex {
         let charge = candidates
             .saturating_add(declarations)
             .saturating_add(declaration_by_key)
+            .saturating_add(rir_recipes)
             .saturating_add(declaration_capabilities);
         #[cfg(test)]
         let charge = {
@@ -279,6 +301,10 @@ impl ParsedDefinitionIndex {
         self.declarations
             .iter()
             .map(|candidate| &candidate.fact.key)
+    }
+
+    pub(crate) fn rir_recipes(&self) -> &[ParsedRirRecipe] {
+        &self.rir_recipes
     }
 
     pub(crate) fn evaluate_declaration_shell(
@@ -537,6 +563,7 @@ impl ParsedDefinitionIndex {
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedDeclarationCandidate {
     fact: DeclarationShellFact,
+    ast_locator: ParsedDeclarationAstLocator,
     declaration_span: Span,
     raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
@@ -553,6 +580,49 @@ pub(crate) struct ParsedDeclarationCandidate {
     /// anchors. Sliced into fragment-relative sites when the raw const/body
     /// terminal is materialized (RUE-1089).
     anonymous_sites: Arc<[rue_rir::AnonymousTypeSite]>,
+}
+
+/// Stable parser-private route from a declaration candidate to its borrowed
+/// syntax node. Ordinals are independent of FileId rebinding and are checked
+/// against both the AST shape and the candidate category before use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ParsedDeclarationAstLocator {
+    TopLevel { item: u32 },
+    StructMethod { item: u32, method: u32 },
+    ExternFunction { item: u32, function: u32 },
+}
+
+/// Parser-owned composition order for candidate RIR fragments. Struct method
+/// fragments precede their shell so the shell can retain their exact roots;
+/// extern members retain lexical order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ParsedRirRecipe {
+    Single(DeclarationCandidateKey),
+    Struct {
+        shell: DeclarationCandidateKey,
+        methods: Arc<[DeclarationCandidateKey]>,
+    },
+    Extern {
+        functions: Arc<[DeclarationCandidateKey]>,
+    },
+}
+
+/// Exact borrowed syntax producer selected by a declaration key.
+#[doc(hidden)]
+pub enum ParsedDeclarationAstRef<'a> {
+    Function(&'a rue_parser::ast::Function),
+    Struct(&'a rue_parser::ast::StructDecl),
+    Enum(&'a rue_parser::ast::EnumDecl),
+    Const(&'a rue_parser::ast::ConstDecl),
+    Destructor(&'a rue_parser::ast::DropFn),
+    Method {
+        owner: &'a rue_parser::ast::StructDecl,
+        method: &'a rue_parser::ast::Method,
+        ordinal: u32,
+    },
+    ExternFunction {
+        function: &'a rue_parser::ast::ExternFn,
+    },
 }
 
 /// Parser-private locators for syntax that is materialized only after an exact
@@ -673,11 +743,13 @@ pub struct ParsedModule {
 ///
 /// Views are issued only by [`ParsedProgram`]; cloning a view retains the
 /// pointer-identical parsed module rather than copying its AST payload.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ParsedAstView {
     module: Arc<ParsedModule>,
 }
 
+#[cfg(test)]
 impl ParsedAstView {
     pub(crate) fn from_module(module: Arc<ParsedModule>) -> Self {
         Self { module }
@@ -814,6 +886,153 @@ impl ParsedModule {
         self.definitions.body_source_spans(key)
     }
 
+    /// Exact parser-indexed anonymous type sites for one declaration producer.
+    /// The shared site walker intentionally excludes methods nested inside an
+    /// anonymous type expression: AstGen enters each such method as its own
+    /// semantic producer and derives that nested producer's table separately.
+    pub(crate) fn declaration_anonymous_sites(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<&[rue_rir::AnonymousTypeSite]> {
+        let index = self.definitions.declaration_by_key.get(key).copied()?;
+        let candidate = self.definitions.declarations.get(index)?;
+        (candidate.fact.key == *key).then_some(candidate.anonymous_sites.as_ref())
+    }
+
+    /// Resolve an exact declaration key to the borrowed parser node that owns
+    /// its syntax. Every ordinal and variant is checked so corrupted or stale
+    /// locators fail closed instead of selecting a neighboring declaration.
+    #[doc(hidden)]
+    pub fn declaration_ast(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<ParsedDeclarationAstRef<'_>> {
+        let index = self.definitions.declaration_by_key.get(key).copied()?;
+        let candidate = self.definitions.declarations.get(index)?;
+        if candidate.fact.key != *key {
+            return None;
+        }
+        let item = |ordinal: u32| self.ast.items.get(usize::try_from(ordinal).ok()?);
+        let name_matches =
+            |symbol: Spur, expected: &str| self.try_resolve_raw_symbol(symbol) == Some(expected);
+        let span_matches = |span: Span| span == candidate.declaration_span;
+        match (candidate.ast_locator, key.category) {
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::Function,
+            ) => match item(ordinal)? {
+                Item::Function(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.name, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Function(value))
+                }
+                _ => None,
+            },
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::Struct,
+            ) => match item(ordinal)? {
+                Item::Struct(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.name, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Struct(value))
+                }
+                _ => None,
+            },
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::Enum,
+            ) => match item(ordinal)? {
+                Item::Enum(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.name, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Enum(value))
+                }
+                _ => None,
+            },
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::ConstCandidate,
+            ) => match item(ordinal)? {
+                Item::Const(value)
+                    if span_matches(value.span)
+                        && name_matches(value.name.name, key.name.as_ref())
+                        && key.owner.is_none() =>
+                {
+                    Some(ParsedDeclarationAstRef::Const(value))
+                }
+                _ => None,
+            },
+            (
+                ParsedDeclarationAstLocator::TopLevel { item: ordinal },
+                DeclarationCandidateCategory::Destructor,
+            ) => match item(ordinal)? {
+                Item::DropFn(value)
+                    if span_matches(value.span)
+                        && name_matches(value.type_name.name, key.name.as_ref())
+                        && key.owner.as_ref().is_some_and(|owner| {
+                            owner.category == DeclarationCandidateCategory::Struct
+                                && owner.name == key.name
+                        }) =>
+                {
+                    Some(ParsedDeclarationAstRef::Destructor(value))
+                }
+                _ => None,
+            },
+            (
+                ParsedDeclarationAstLocator::StructMethod {
+                    item: ordinal,
+                    method: method_ordinal,
+                },
+                DeclarationCandidateCategory::Method
+                | DeclarationCandidateCategory::AssociatedFunction,
+            ) => {
+                let Item::Struct(owner) = item(ordinal)? else {
+                    return None;
+                };
+                let method = owner.methods.get(usize::try_from(method_ordinal).ok()?)?;
+                let owner_key = key.owner.as_ref()?;
+                if !span_matches(method.span)
+                    || !name_matches(method.name.name, key.name.as_ref())
+                    || owner_key.category != DeclarationCandidateCategory::Struct
+                    || !name_matches(owner.name.name, owner_key.name.as_ref())
+                    || (key.category == DeclarationCandidateCategory::Method)
+                        != method.receiver.is_some()
+                {
+                    return None;
+                }
+                Some(ParsedDeclarationAstRef::Method {
+                    owner,
+                    method,
+                    ordinal: method_ordinal,
+                })
+            }
+            (
+                ParsedDeclarationAstLocator::ExternFunction {
+                    item: ordinal,
+                    function,
+                },
+                DeclarationCandidateCategory::ExternFunction,
+            ) => {
+                let Item::Extern(block) = item(ordinal)? else {
+                    return None;
+                };
+                let function = block.fns.get(usize::try_from(function).ok()?)?;
+                (span_matches(function.span)
+                    && name_matches(function.name.name, key.name.as_ref())
+                    && key.owner.is_none())
+                .then_some(ParsedDeclarationAstRef::ExternFunction { function })
+            }
+            _ => None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
         self.definitions
@@ -933,6 +1152,9 @@ impl ParsedModule {
     pub(crate) fn resolve_raw_symbol(&self, symbol: Spur) -> &str {
         self.payload.resolver.resolver.resolve(&symbol)
     }
+    pub(crate) fn try_resolve_raw_symbol(&self, symbol: Spur) -> Option<&str> {
+        self.payload.resolver.resolver.try_resolve(&symbol)
+    }
     #[cfg(test)]
     pub(crate) fn shared_source_text(&self) -> Arc<String> {
         self.payload.source_text.clone()
@@ -950,10 +1172,12 @@ impl ParsedModule {
         &self.invalid_imports
     }
 
+    #[cfg(test)]
     pub fn resolve(&self, symbol: &ParsedSymbol) -> CompileResult<&str> {
         self.payload.resolver.resolve(symbol)
     }
 
+    #[cfg(test)]
     pub(crate) fn parsed_symbol(&self, spur: Spur) -> CompileResult<ParsedSymbol> {
         self.payload.resolver.symbol(spur)
     }
@@ -1521,6 +1745,7 @@ fn bind_payload(
             .cloned()
             .map(|candidate| ParsedDeclarationCandidate {
                 fact: candidate.fact,
+                ast_locator: candidate.ast_locator,
                 declaration_span: remap_span(candidate.declaration_span),
                 raw_const_syntax_spans: candidate.raw_const_syntax_spans.map(|spans| {
                     RawConstSyntaxSpans {
@@ -1568,6 +1793,7 @@ fn bind_payload(
             .collect::<Vec<_>>()
             .into(),
         declaration_by_key: payload.definitions.declaration_by_key.clone(),
+        rir_recipes: payload.definitions.rir_recipes.clone(),
         declaration_capabilities: payload.definitions.declaration_capabilities.clone(),
         #[cfg(test)]
         raw_const_syntax_materializations: payload
@@ -2015,6 +2241,7 @@ fn build_definition_index(
     let mut pending = Vec::new();
     let mut pending_declarations = Vec::<(
         DeclarationShellFact,
+        ParsedDeclarationAstLocator,
         Span,
         Option<RawConstSyntaxSpans>,
         Option<RawDeclarationSignatureLocator>,
@@ -2074,7 +2301,9 @@ fn build_definition_index(
             .iter()
             .any(|parameter| parameter.mode == rue_parser::ast::ParamMode::Comptime))
     };
-    for item in &ast.items {
+    for (item_index, item) in ast.items.iter().enumerate() {
+        let item_index = u32::try_from(item_index)
+            .map_err(|_| invalid_input("parsed item ordinal exceeds u32"))?;
         // A foreign `extern "C"` block expands into one module-item definition
         // per member `fn` (ADR-0064 C FFI); every other item is a single
         // definition.
@@ -2115,6 +2344,7 @@ fn build_definition_index(
         let mut push = |category,
                         name: Arc<str>,
                         owner: Option<DeclarationCandidateOwner>,
+                        ast_locator: ParsedDeclarationAstLocator,
                         is_public,
                         parameters,
                         receiver,
@@ -2192,6 +2422,7 @@ fn build_definition_index(
                     is_extern,
                     signature_fingerprint,
                 },
+                ast_locator,
                 declaration_span,
                 raw_const_syntax_spans,
                 raw_signature_locator,
@@ -2209,6 +2440,7 @@ fn build_definition_index(
                 DeclarationCandidateCategory::Function,
                 resolve_name(function.name)?,
                 None,
+                ParsedDeclarationAstLocator::TopLevel { item: item_index },
                 function.visibility == Visibility::Public,
                 parameters(&function.params)?,
                 None,
@@ -2237,6 +2469,7 @@ fn build_definition_index(
                     DeclarationCandidateCategory::Struct,
                     owner_name.clone(),
                     None,
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
                     structure.visibility == Visibility::Public,
                     Arc::from([]),
                     None,
@@ -2257,7 +2490,9 @@ fn build_definition_index(
                     category: DeclarationCandidateCategory::Struct,
                     name: owner_name,
                 };
-                for method in &structure.methods {
+                for (method_index, method) in structure.methods.iter().enumerate() {
+                    let method_index = u32::try_from(method_index)
+                        .map_err(|_| invalid_input("parsed method ordinal exceeds u32"))?;
                     let receiver = method
                         .receiver
                         .as_ref()
@@ -2270,6 +2505,10 @@ fn build_definition_index(
                         },
                         resolve_name(method.name)?,
                         Some(owner.clone()),
+                        ParsedDeclarationAstLocator::StructMethod {
+                            item: item_index,
+                            method: method_index,
+                        },
                         false,
                         parameters(&method.params)?,
                         receiver,
@@ -2301,6 +2540,7 @@ fn build_definition_index(
                 DeclarationCandidateCategory::Enum,
                 resolve_name(value.name)?,
                 None,
+                ParsedDeclarationAstLocator::TopLevel { item: item_index },
                 value.visibility == Visibility::Public,
                 Arc::from([]),
                 None,
@@ -2334,6 +2574,7 @@ fn build_definition_index(
                     DeclarationCandidateCategory::ConstCandidate,
                     resolve_name(value.name)?,
                     None,
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
                     value.visibility == Visibility::Public,
                     Arc::from([]),
                     None,
@@ -2358,6 +2599,7 @@ fn build_definition_index(
                     category: DeclarationCandidateCategory::Struct,
                     name: resolve_name(value.type_name)?,
                 }),
+                ParsedDeclarationAstLocator::TopLevel { item: item_index },
                 false,
                 Arc::from([]),
                 Some(DeclarationParameterMode::Value),
@@ -2381,11 +2623,17 @@ fn build_definition_index(
                 rue_rir::anonymous_type_sites(&value.body).into(),
             )?,
             Item::Extern(block) => {
-                for function in &block.fns {
+                for (function_index, function) in block.fns.iter().enumerate() {
+                    let function_index = u32::try_from(function_index)
+                        .map_err(|_| invalid_input("parsed extern member ordinal exceeds u32"))?;
                     push(
                         DeclarationCandidateCategory::ExternFunction,
                         resolve_name(function.name)?,
                         None,
+                        ParsedDeclarationAstLocator::ExternFunction {
+                            item: item_index,
+                            function: function_index,
+                        },
                         false,
                         parameters(&function.params)?,
                         None,
@@ -2461,10 +2709,10 @@ fn build_definition_index(
         .map(|(key, value)| (key, value.into()))
         .collect();
     pending_declarations.sort_by(|left, right| {
-        left.1
+        left.2
             .start
-            .cmp(&right.1.start)
-            .then(left.1.end.cmp(&right.1.end))
+            .cmp(&right.2.start)
+            .then(left.2.end.cmp(&right.2.end))
             .then(left.0.key.category.cmp(&right.0.key.category))
             .then(left.0.key.name.cmp(&right.0.key.name))
     });
@@ -2474,6 +2722,7 @@ fn build_definition_index(
         .map(
             |(
                 mut fact,
+                ast_locator,
                 declaration_span,
                 raw_const_syntax_spans,
                 raw_signature_locator,
@@ -2496,6 +2745,7 @@ fn build_definition_index(
                 })?;
                 Ok(ParsedDeclarationCandidate {
                     fact,
+                    ast_locator,
                     declaration_span,
                     raw_const_syntax_spans,
                     raw_signature_locator,
@@ -2508,7 +2758,7 @@ fn build_definition_index(
             },
         )
         .collect::<CompileResult<Vec<_>>>()?;
-    let mut declaration_by_key = BTreeMap::new();
+    let mut declaration_by_key = HashMap::with_capacity(declarations.len());
     let mut declaration_capabilities = Vec::with_capacity(declarations.len());
     for (index, candidate) in declarations.iter().enumerate() {
         let key = candidate.fact.key.clone();
@@ -2527,11 +2777,83 @@ fn build_definition_index(
             });
         }
     }
+    let mut key_by_locator = HashMap::with_capacity(declarations.len());
+    for candidate in &declarations {
+        if key_by_locator
+            .insert(candidate.ast_locator, candidate.fact.key.clone())
+            .is_some()
+        {
+            return Err(invalid_input(
+                "multiple declaration candidates share one AST locator",
+            ));
+        }
+    }
+    let exact_key = |locator| {
+        key_by_locator
+            .get(&locator)
+            .cloned()
+            .ok_or_else(|| invalid_input("AST item has no exact declaration candidate"))
+    };
+    let mut rir_recipes = Vec::with_capacity(ast.items.len());
+    for (item, syntax) in ast.items.iter().enumerate() {
+        let item =
+            u32::try_from(item).map_err(|_| invalid_input("parsed item ordinal exceeds u32"))?;
+        match syntax {
+            Item::Function(_) | Item::Enum(_) | Item::Const(_) | Item::DropFn(_) => {
+                rir_recipes.push(ParsedRirRecipe::Single(exact_key(
+                    ParsedDeclarationAstLocator::TopLevel { item },
+                )?));
+            }
+            Item::Struct(structure) => {
+                let shell = exact_key(ParsedDeclarationAstLocator::TopLevel { item })?;
+                let methods = structure
+                    .methods
+                    .iter()
+                    .enumerate()
+                    .map(|(method, _)| {
+                        exact_key(ParsedDeclarationAstLocator::StructMethod {
+                            item,
+                            method: u32::try_from(method)
+                                .map_err(|_| invalid_input("parsed method ordinal exceeds u32"))?,
+                        })
+                    })
+                    .collect::<CompileResult<Vec<_>>>()?;
+                rir_recipes.push(ParsedRirRecipe::Struct {
+                    shell,
+                    methods: methods.into(),
+                });
+            }
+            Item::Extern(block) => {
+                let functions = block
+                    .fns
+                    .iter()
+                    .enumerate()
+                    .map(|(function, _)| {
+                        exact_key(ParsedDeclarationAstLocator::ExternFunction {
+                            item,
+                            function: u32::try_from(function).map_err(|_| {
+                                invalid_input("parsed extern member ordinal exceeds u32")
+                            })?,
+                        })
+                    })
+                    .collect::<CompileResult<Vec<_>>>()?;
+                rir_recipes.push(ParsedRirRecipe::Extern {
+                    functions: functions.into(),
+                });
+            }
+            Item::Error(_) => {
+                return Err(invalid_input(
+                    "parsed module contains recovered error item in RIR recipes",
+                ));
+            }
+        }
+    }
     declaration_capabilities.sort_by(|left, right| left.key().cmp(right.key()));
     Ok(ParsedDefinitionIndex {
         candidates: candidates.into(),
         declarations: declarations.into(),
         declaration_by_key,
+        rir_recipes: rir_recipes.into(),
         declaration_capabilities: declaration_capabilities.into(),
         #[cfg(test)]
         raw_const_syntax_materializations: Arc::new(AtomicUsize::new(0)),
@@ -2820,6 +3142,74 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
         assert_eq!(method.parameters.len(), 1);
         assert!(method.parameters[0].is_comptime);
         assert_eq!(method.receiver, Some(DeclarationParameterMode::Borrow));
+    }
+
+    #[test]
+    fn declaration_ast_locators_select_exact_typed_members_and_rebind() {
+        use DeclarationCandidateCategory as C;
+
+        let source = r#"
+struct Box {
+    fn get(self) -> i32 { 0 }
+    fn make() -> Box { Box {} }
+}
+enum Choice { A }
+const selected: i32 = 1;
+drop fn Box(self) {}
+fn duplicate() {}
+fn duplicate() {}
+extern "C" { fn getpid() -> i32; }
+"#;
+        let original = snapshot(&[(1, "/main.rue", "main.rue", source)], 1);
+        let parsed = parse_source_snapshot_modules(&original).unwrap();
+        let module = &parsed.modules()[0];
+        let keys = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys.iter()
+                .filter(|key| key.name.as_ref() == "duplicate")
+                .count(),
+            2
+        );
+        for key in &keys {
+            let locator = module.definitions().declaration_locator(key).unwrap();
+            let (category, span) = match module.declaration_ast(key).unwrap() {
+                ParsedDeclarationAstRef::Function(value) => (C::Function, value.span),
+                ParsedDeclarationAstRef::Struct(value) => (C::Struct, value.span),
+                ParsedDeclarationAstRef::Enum(value) => (C::Enum, value.span),
+                ParsedDeclarationAstRef::Const(value) => (C::ConstCandidate, value.span),
+                ParsedDeclarationAstRef::Destructor(value) => (C::Destructor, value.span),
+                ParsedDeclarationAstRef::Method { owner, method, .. } => {
+                    assert!(
+                        method.span.start >= owner.span.start && method.span.end <= owner.span.end
+                    );
+                    (key.category, method.span)
+                }
+                ParsedDeclarationAstRef::ExternFunction { function } => {
+                    (C::ExternFunction, function.span)
+                }
+            };
+            assert_eq!(category, key.category);
+            assert_eq!(span, locator.declaration_span);
+        }
+
+        let moved = snapshot(&[(9, "/main.rue", "main.rue", source)], 9);
+        let moved = rebind_parsed_module(&moved, module);
+        for key in keys {
+            let span = match moved.declaration_ast(&key).unwrap() {
+                ParsedDeclarationAstRef::Function(value) => value.span,
+                ParsedDeclarationAstRef::Struct(value) => value.span,
+                ParsedDeclarationAstRef::Enum(value) => value.span,
+                ParsedDeclarationAstRef::Const(value) => value.span,
+                ParsedDeclarationAstRef::Destructor(value) => value.span,
+                ParsedDeclarationAstRef::Method { method, .. } => method.span,
+                ParsedDeclarationAstRef::ExternFunction { function, .. } => function.span,
+            };
+            assert_eq!(span.file_id, FileId::new(9));
+        }
     }
 
     #[test]

@@ -9,7 +9,14 @@ use std::marker::PhantomData;
 use lasso::{Key, Spur};
 use rue_span::{FileId, Span};
 
+mod packed;
 mod payload_support;
+
+pub use packed::{
+    PackedRirAppend, PackedRirAppendError, PackedRirAppendMetadata, PackedRirDecodeError,
+    PackedRirEncodeError, PackedRirMetadata, PackedRirMethodOwner, PackedRirSymbols,
+    PackedValidatedRir, RirFallibleIntrinsic, RirFallibleIntrinsicSet,
+};
 
 /// The published per-program ceiling shared by the RIR instruction array and
 /// the RIR payload word store (spec Appendix C.6:1). Both are indexed by `u32`,
@@ -276,7 +283,7 @@ pub struct RirPayloadStorageStats {
 /// A reference to an instruction in the RIR.
 ///
 /// This is a lightweight handle (4 bytes) that indexes into the instruction array.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InstRef(u32);
 
 impl InstRef {
@@ -683,6 +690,98 @@ impl<T> ExactSizeIterator for RirSliceIter<'_, T> {}
 
 pub type RirSymbols<'a> = RirSlice<'a, Spur>;
 
+/// Stable tag for a span-bearing field inside one RIR instruction.
+///
+/// Record indices are local to their typed payload. Optional fields have their
+/// own tags, so adding or removing one never renumbers a later instruction or
+/// a different field family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RirSpanField {
+    Instruction,
+    MatchPattern { arm: u32 },
+    FunctionDirective { directive: u32 },
+    FunctionParameter { parameter: u32 },
+    ConstDirective { directive: u32 },
+    AllocDirective { directive: u32 },
+    StructDirective { directive: u32 },
+    StructInitShorthand,
+}
+
+/// Position-independent identity of one span field in structurally equal RIR.
+///
+/// The instruction index is a dense structural RIR location. It is never
+/// derived from callback order, source coordinates, tokens, or spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RirSpanSlot {
+    instruction: InstRef,
+    field: RirSpanField,
+}
+
+impl RirSpanSlot {
+    const fn new(instruction: InstRef, field: RirSpanField) -> Self {
+        Self { instruction, field }
+    }
+
+    pub const fn instruction(self) -> InstRef {
+        self.instruction
+    }
+
+    pub const fn field(self) -> RirSpanField {
+        self.field
+    }
+}
+
+/// Stable inventory of the span-bearing storage families in RIR.
+///
+/// `api_inventory` ties this list to the concrete storage declarations and to
+/// the canonical visitor. Adding a span field therefore requires an explicit
+/// visitor/schema update.
+pub const RIR_SPAN_FIELD_FAMILY_NAMES: [&str; 5] = [
+    "instruction",
+    "directive",
+    "parameter",
+    "match pattern",
+    "struct-init shorthand",
+];
+
+/// Failure from canonical RIR span-slot traversal.
+#[derive(Debug)]
+pub enum RirSpanTraversalError<E> {
+    MalformedPayload(RirPayloadError),
+    DuplicateSlot(RirSpanSlot),
+    Callback(E),
+}
+
+/// Failure while atomically appending and remapping a RIR owner by span slot.
+#[derive(Debug)]
+pub enum RirSpanRemapError<E> {
+    MalformedPayload(RirPayloadError),
+    DuplicateSlot(RirSpanSlot),
+    MissingSlot(RirSpanSlot),
+    UnexpectedSlot {
+        expected: RirSpanSlot,
+        actual: RirSpanSlot,
+    },
+    UnconsumedSlot(RirSpanSlot),
+    InvalidInstructionRange(std::ops::Range<u32>),
+    ForeignInstructionEdge {
+        instruction: InstRef,
+        child: InstRef,
+    },
+    Checkpoint(E),
+    Mapping {
+        slot: RirSpanSlot,
+        error: E,
+    },
+    Build(RirPayloadBuildError),
+}
+
+impl<E> From<RirPayloadBuildError> for RirSpanRemapError<E> {
+    fn from(error: RirPayloadBuildError) -> Self {
+        Self::Build(error)
+    }
+}
+
 /// One typed step in a definition-relative structural path. Indices are local
 /// to the immediately enclosing syntax node, never absolute source positions
 /// or global RIR instruction indices.
@@ -997,7 +1096,7 @@ fn decode_directive_record(
 /// Variable size due to args.
 
 /// The complete canonical RIR for one source revision.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct Rir {
     /// All instructions across the canonical module sequence.
     instructions: Vec<Inst>,
@@ -1067,21 +1166,9 @@ pub struct RirAppendRange {
     pub extra: std::ops::Range<u32>,
 }
 
-fn remap_directives(
-    source: &Rir,
-    range: &RirDirectivesRange,
-    symbol: &mut impl FnMut(Spur) -> Spur,
-    span: &mut impl FnMut(Span) -> Span,
-) -> Vec<RirDirective> {
-    source
-        .directives(range)
-        .iter()
-        .map(|directive| RirDirective {
-            name: symbol(directive.name),
-            args: directive.args.values().map(&mut *symbol).collect(),
-            span: span(directive.span),
-        })
-        .collect()
+struct StructMethodsOverride<'a> {
+    source_root: InstRef,
+    destination_methods: &'a [InstRef],
 }
 
 fn remap_call_args(
@@ -1487,29 +1574,231 @@ impl RirEditor {
     pub fn append_remapped_with_spans(
         &mut self,
         source: &ValidatedRir,
-        mut symbol: impl FnMut(Spur) -> Spur,
+        symbol: impl FnMut(Spur) -> Spur,
         mut remap_span: impl FnMut(Span) -> Span,
     ) -> Result<RirAppendRange, RirPayloadBuildError> {
+        match self.try_append_remapped_with_span_slots(
+            source,
+            symbol,
+            || Ok::<_, std::convert::Infallible>(()),
+            |_, span| Ok::<_, std::convert::Infallible>(remap_span(span)),
+        ) {
+            Ok(range) => Ok(range),
+            Err(RirSpanRemapError::Build(error)) => Err(error),
+            Err(
+                RirSpanRemapError::MalformedPayload(_)
+                | RirSpanRemapError::DuplicateSlot(_)
+                | RirSpanRemapError::MissingSlot(_)
+                | RirSpanRemapError::UnexpectedSlot { .. }
+                | RirSpanRemapError::UnconsumedSlot(_)
+                | RirSpanRemapError::InvalidInstructionRange(_)
+                | RirSpanRemapError::ForeignInstructionEdge { .. },
+            ) => unreachable!("validated RIR and canonical span schema must agree"),
+            Err(RirSpanRemapError::Checkpoint(error))
+            | Err(RirSpanRemapError::Mapping { error, .. }) => match error {},
+        }
+    }
+
+    /// Atomically append an immutable RIR owner while fallibly remapping each
+    /// span by its stable structural slot.
+    ///
+    /// The callback is evaluated by the canonical span visitor before the
+    /// append begins. Checkpoints continue during rebuilding; cancellation or
+    /// any error rolls the destination back to its original instruction and
+    /// payload lengths.
+    pub fn try_append_remapped_with_span_slots<E>(
+        &mut self,
+        source: &ValidatedRir,
+        symbol: impl FnMut(Spur) -> Spur,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_span: impl FnMut(RirSpanSlot, Span) -> Result<Span, E>,
+    ) -> Result<RirAppendRange, RirSpanRemapError<E>> {
+        self.try_append_remapped_selection_with_span_slots(
+            source, None, None, symbol, checkpoint, remap_span,
+        )
+    }
+
+    /// Atomically append one methodless `StructDecl` shell while wiring it to
+    /// method declarations that have already been composed in this editor.
+    ///
+    /// Candidate-local AstGen emits a struct shell independently from its
+    /// methods. This is the sole composition seam: every directive, field,
+    /// symbol, and span is rebuilt through the ordinary typed remapper, while
+    /// only the empty methods payload is replaced. The source must contain
+    /// exactly the supplied `StructDecl` root and no methods, and every
+    /// replacement must name an existing destination `FnDecl`.
+    pub fn try_append_methodless_struct_shell_with_methods<E>(
+        &mut self,
+        source: &ValidatedRir,
+        source_root: InstRef,
+        destination_methods: &[InstRef],
+        symbol: impl FnMut(Spur) -> Spur,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_span: impl FnMut(RirSpanSlot, Span) -> Result<Span, E>,
+    ) -> Result<RirAppendRange, RirSpanRemapError<E>> {
+        let invalid = |reason| {
+            RirSpanRemapError::Build(RirPayloadBuildError::InvalidBuilderInput {
+                family: "struct shell composition",
+                reason,
+            })
+        };
+        if usize::try_from(source_root.as_u32())
+            .ok()
+            .is_none_or(|root| root >= source.len())
+        {
+            return Err(invalid("source root is outside the candidate shell"));
+        }
+        let InstData::StructDecl { methods, .. } = &source.get(source_root).data else {
+            return Err(invalid("source root is not a struct declaration"));
+        };
+        if source.struct_methods(methods).len() != 0 {
+            return Err(invalid("source struct declaration is not methodless"));
+        }
+        if source.len() != 1 || source_root.as_u32() != 0 {
+            return Err(invalid(
+                "source candidate shell is not exactly one struct declaration",
+            ));
+        }
+        if destination_methods.iter().any(|method| {
+            !matches!(
+                self.rir.instructions.get(method.as_u32() as usize),
+                Some(Inst {
+                    data: InstData::FnDecl { .. },
+                    ..
+                })
+            )
+        }) {
+            return Err(invalid(
+                "replacement method is not an existing destination function declaration",
+            ));
+        }
+        self.try_append_remapped_selection_with_span_slots(
+            source,
+            None,
+            Some(StructMethodsOverride {
+                source_root,
+                destination_methods,
+            }),
+            symbol,
+            checkpoint,
+            remap_span,
+        )
+    }
+
+    /// Atomically copy one validated declaration-producer interval.
+    ///
+    /// Canonical AstGen records this interval around the producer call and the
+    /// module publisher proves every child edge remains within it. Projection
+    /// work is therefore proportional to this declaration, independent of the
+    /// number or size of sibling declarations.
+    pub fn try_append_instruction_range_remapped_with_span_slots<E>(
+        &mut self,
+        source: &ValidatedRir,
+        instructions: std::ops::Range<u32>,
+        symbol: impl FnMut(Spur) -> Spur,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+        remap_span: impl FnMut(RirSpanSlot, Span) -> Result<Span, E>,
+    ) -> Result<RirAppendRange, RirSpanRemapError<E>> {
+        if instructions.start >= instructions.end
+            || usize::try_from(instructions.end)
+                .ok()
+                .is_none_or(|end| end > source.len())
+        {
+            return Err(RirSpanRemapError::InvalidInstructionRange(instructions));
+        }
+        let mut children = Vec::new();
+        for ordinal in instructions.clone() {
+            checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+            let instruction = InstRef::from_raw(ordinal);
+            children.clear();
+            source.child_instructions(instruction, &mut children);
+            if let Some(child) = children.iter().copied().find(|child| {
+                child.as_u32() < instructions.start || child.as_u32() >= instructions.end
+            }) {
+                return Err(RirSpanRemapError::ForeignInstructionEdge { instruction, child });
+            }
+        }
+        self.try_append_remapped_selection_with_span_slots(
+            source,
+            Some(instructions),
+            None,
+            symbol,
+            checkpoint,
+            remap_span,
+        )
+    }
+
+    fn try_append_remapped_selection_with_span_slots<E>(
+        &mut self,
+        source: &ValidatedRir,
+        selected: Option<std::ops::Range<u32>>,
+        struct_methods_override: Option<StructMethodsOverride<'_>>,
+        mut symbol: impl FnMut(Spur) -> Spur,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+        mut remap_span: impl FnMut(RirSpanSlot, Span) -> Result<Span, E>,
+    ) -> Result<RirAppendRange, RirSpanRemapError<E>> {
+        enum CollectError<E> {
+            Checkpoint(E),
+            Mapping { slot: RirSpanSlot, error: E },
+        }
+
         let instruction_start = u32::try_from(self.rir.instructions.len()).map_err(|_| {
             RirPayloadBuildError::ResourceLimitExceeded {
                 family: "instructions",
             }
         })?;
-        let extra_start = u32::try_from(self.rir.extra.len()).map_err(|_| {
-            RirPayloadBuildError::ResourceLimitExceeded {
-                family: "payload words",
-            }
-        })?;
-        let source_instructions = u32::try_from(source.len()).map_err(|_| {
-            RirPayloadBuildError::ResourceLimitExceeded {
-                family: "instructions",
-            }
-        })?;
+        let source_start = selected.as_ref().map_or(0, |range| range.start);
+        let source_end = selected.as_ref().map_or_else(
+            || u32::try_from(source.len()).unwrap_or(u32::MAX),
+            |range| range.end,
+        );
+        let source_instructions = source_end - source_start;
         instruction_start.checked_add(source_instructions).ok_or(
             RirPayloadBuildError::ResourceLimitExceeded {
                 family: "instructions",
             },
         )?;
+
+        let mut mapped_spans = Vec::new();
+        let traversal = source.try_visit_instruction_range_span_slots(
+            source_start..source_end,
+            || checkpoint().map_err(CollectError::Checkpoint),
+            |slot, span| {
+                let destination = InstRef::from_raw(
+                    instruction_start + (slot.instruction().as_u32() - source_start),
+                );
+                let destination_slot = RirSpanSlot::new(destination, slot.field());
+                let mapped =
+                    remap_span(destination_slot, span).map_err(|error| CollectError::Mapping {
+                        slot: destination_slot,
+                        error,
+                    })?;
+                mapped_spans.push((slot, mapped));
+                Ok(())
+            },
+        );
+        if let Err(error) = traversal {
+            return Err(match error {
+                RirSpanTraversalError::MalformedPayload(error) => {
+                    RirSpanRemapError::MalformedPayload(error)
+                }
+                RirSpanTraversalError::DuplicateSlot(slot) => {
+                    RirSpanRemapError::DuplicateSlot(slot)
+                }
+                RirSpanTraversalError::Callback(CollectError::Checkpoint(error)) => {
+                    RirSpanRemapError::Checkpoint(error)
+                }
+                RirSpanTraversalError::Callback(CollectError::Mapping { slot, error }) => {
+                    RirSpanRemapError::Mapping { slot, error }
+                }
+            });
+        }
+        let mut mapped_spans = mapped_spans.into_iter();
+        let extra_start = u32::try_from(self.rir.extra.len()).map_err(|_| {
+            RirPayloadBuildError::ResourceLimitExceeded {
+                family: "payload words",
+            }
+        })?;
         let source_extra = u32::try_from(source.extra_len()).map_err(|_| {
             RirPayloadBuildError::ResourceLimitExceeded {
                 family: "payload words",
@@ -1520,16 +1809,24 @@ impl RirEditor {
                 family: "payload words",
             },
         )?;
-        let remap_ref = |value: InstRef| {
-            InstRef::from_raw(
-                instruction_start
-                    .checked_add(value.as_u32())
-                    .expect("RIR append instruction capacity was preflighted"),
-            )
-        };
+        let remap_ref =
+            |value: InstRef| InstRef::from_raw(instruction_start + (value.as_u32() - source_start));
         let result = (|| {
-            for (_, instruction) in source.iter() {
-                let span = remap_span(instruction.span);
+            for ordinal in source_start..source_end {
+                let source_instruction = InstRef::from_raw(ordinal);
+                let instruction = source.get(source_instruction);
+                checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+                let mut take_span = |field| {
+                    let expected = RirSpanSlot::new(source_instruction, field);
+                    let Some((actual, span)) = mapped_spans.next() else {
+                        return Err(RirSpanRemapError::MissingSlot(expected));
+                    };
+                    if actual != expected {
+                        return Err(RirSpanRemapError::UnexpectedSlot { expected, actual });
+                    }
+                    Ok(span)
+                };
+                let span = take_span(RirSpanField::Instruction)?;
                 let payload_free = |data| Inst { data, span };
                 match &instruction.data {
                     InstData::IntConst(value) => {
@@ -1661,22 +1958,27 @@ impl RirEditor {
                         let arms = source
                             .match_arms(arms)
                             .iter()
-                            .map(|(pattern, body)| {
+                            .enumerate()
+                            .map(|(arm, (pattern, body))| {
+                                let pattern_span = take_span(RirSpanField::MatchPattern {
+                                    arm: u32::try_from(arm)
+                                        .expect("validated match-arm count is encoded as u32"),
+                                })?;
                                 let pattern = match pattern {
-                                    RirPatternView::Wildcard(span) => {
-                                        RirPattern::Wildcard(remap_span(span))
+                                    RirPatternView::Wildcard(_) => {
+                                        RirPattern::Wildcard(pattern_span)
                                     }
                                     RirPatternView::Int {
                                         value,
                                         negative,
-                                        span,
+                                        span: _,
                                     } => RirPattern::Int {
                                         value,
                                         negative,
-                                        span: remap_span(span),
+                                        span: pattern_span,
                                     },
-                                    RirPatternView::Bool(value, span) => {
-                                        RirPattern::Bool(value, remap_span(span))
+                                    RirPatternView::Bool(value, _) => {
+                                        RirPattern::Bool(value, pattern_span)
                                     }
                                     RirPatternView::Path {
                                         module,
@@ -1684,19 +1986,19 @@ impl RirEditor {
                                         type_name,
                                         variant,
                                         bindings,
-                                        span,
+                                        span: _,
                                     } => RirPattern::Path {
                                         module: module.map(remap_ref),
                                         ctor_head: ctor_head.map(remap_ref),
                                         type_name: symbol(type_name),
                                         variant: symbol(variant),
                                         bindings: bindings.values().map(&mut symbol).collect(),
-                                        span: remap_span(span),
+                                        span: pattern_span,
                                     },
                                 };
-                                (pattern, remap_ref(body))
+                                Ok((pattern, remap_ref(body)))
                             })
-                            .collect::<Vec<_>>();
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         self.add_match(remap_ref(*scrutinee), &arms, span)?
                     }
                     InstData::Break { value } => self.add_inst(payload_free(InstData::Break {
@@ -1718,18 +2020,37 @@ impl RirEditor {
                         self_is_mut,
                         returns_borrow,
                     } => {
-                        let directives =
-                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let directives = source
+                            .directives(directives)
+                            .iter()
+                            .enumerate()
+                            .map(|(directive, value)| {
+                                Ok(RirDirective {
+                                    name: symbol(value.name),
+                                    args: value.args.values().map(&mut symbol).collect(),
+                                    span: take_span(RirSpanField::FunctionDirective {
+                                        directive: u32::try_from(directive)
+                                            .expect("validated directive count is encoded as u32"),
+                                    })?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         let params = source
                             .params(params)
                             .values()
-                            .map(|param| RirParam {
-                                name: symbol(param.name),
-                                ty: symbol(param.ty),
-                                span: remap_span(param.span),
-                                ..param
+                            .enumerate()
+                            .map(|(parameter, param)| {
+                                Ok(RirParam {
+                                    name: symbol(param.name),
+                                    ty: symbol(param.ty),
+                                    span: take_span(RirSpanField::FunctionParameter {
+                                        parameter: u32::try_from(parameter)
+                                            .expect("validated parameter count is encoded as u32"),
+                                    })?,
+                                    ..param
+                                })
                             })
-                            .collect::<Vec<_>>();
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         self.add_fn_decl(
                             &directives,
                             *is_pub,
@@ -1754,8 +2075,21 @@ impl RirEditor {
                         ty,
                         init,
                     } => {
-                        let directives =
-                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let directives = source
+                            .directives(directives)
+                            .iter()
+                            .enumerate()
+                            .map(|(directive, value)| {
+                                Ok(RirDirective {
+                                    name: symbol(value.name),
+                                    args: value.args.values().map(&mut symbol).collect(),
+                                    span: take_span(RirSpanField::ConstDirective {
+                                        directive: u32::try_from(directive)
+                                            .expect("validated directive count is encoded as u32"),
+                                    })?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         self.add_const_decl(
                             &directives,
                             *is_pub,
@@ -1819,8 +2153,21 @@ impl RirEditor {
                         init,
                         iter_elem,
                     } => {
-                        let directives =
-                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let directives = source
+                            .directives(directives)
+                            .iter()
+                            .enumerate()
+                            .map(|(directive, value)| {
+                                Ok(RirDirective {
+                                    name: symbol(value.name),
+                                    args: value.args.values().map(&mut symbol).collect(),
+                                    span: take_span(RirSpanField::AllocDirective {
+                                        directive: u32::try_from(directive)
+                                            .expect("validated directive count is encoded as u32"),
+                                    })?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         self.add_alloc(
                             &directives,
                             name.map(&mut symbol),
@@ -1851,18 +2198,39 @@ impl RirEditor {
                         fields,
                         methods,
                     } => {
-                        let directives =
-                            remap_directives(source, directives, &mut symbol, &mut remap_span);
+                        let directives = source
+                            .directives(directives)
+                            .iter()
+                            .enumerate()
+                            .map(|(directive, value)| {
+                                Ok(RirDirective {
+                                    name: symbol(value.name),
+                                    args: value.args.values().map(&mut symbol).collect(),
+                                    span: take_span(RirSpanField::StructDirective {
+                                        directive: u32::try_from(directive)
+                                            .expect("validated directive count is encoded as u32"),
+                                    })?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
                         let fields = source
                             .struct_fields(fields)
                             .values()
                             .map(|(name, ty)| (symbol(name), symbol(ty)))
                             .collect::<Vec<_>>();
-                        let methods = source
-                            .struct_methods(methods)
-                            .values()
-                            .map(remap_ref)
-                            .collect::<Vec<_>>();
+                        let methods = struct_methods_override
+                            .as_ref()
+                            .filter(|override_| override_.source_root == source_instruction)
+                            .map_or_else(
+                                || {
+                                    source
+                                        .struct_methods(methods)
+                                        .values()
+                                        .map(remap_ref)
+                                        .collect::<Vec<_>>()
+                                },
+                                |override_| override_.destination_methods.to_vec(),
+                            );
                         self.add_struct_decl(
                             &directives,
                             *is_pub,
@@ -1890,7 +2258,9 @@ impl RirEditor {
                             ctor_head.map(remap_ref),
                             symbol(*type_name),
                             &fields,
-                            shorthand_span.map(&mut remap_span),
+                            shorthand_span
+                                .map(|_| take_span(RirSpanField::StructInitShorthand))
+                                .transpose()?,
                             span,
                         )?
                     }
@@ -2025,8 +2395,11 @@ impl RirEditor {
                     }
                 };
             }
+            if let Some((slot, _)) = mapped_spans.next() {
+                return Err(RirSpanRemapError::UnconsumedSlot(slot));
+            }
             if let Some(error) = self.rir.latched_capacity_error() {
-                return Err(error);
+                return Err(RirSpanRemapError::Build(error));
             }
             let instruction_end = u32::try_from(self.rir.instructions.len()).map_err(|_| {
                 RirPayloadBuildError::ResourceLimitExceeded {
@@ -2117,6 +2490,154 @@ impl ValidatedRir {
         editor.validate_context(context)?;
         Ok(Self(editor.into_unvalidated()))
     }
+
+    /// Visit every span-bearing RIR slot through the canonical schema.
+    ///
+    /// `checkpoint` is called at instruction and payload-record granularity,
+    /// allowing cancellation before a large owner is fully traversed.
+    pub fn try_visit_span_slots<E>(
+        &self,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        visit: impl FnMut(RirSpanSlot, Span) -> Result<(), E>,
+    ) -> Result<(), RirSpanTraversalError<E>> {
+        self.0.try_visit_validated_span_slots(checkpoint, visit)
+    }
+
+    /// Consume this validated owner and rewrite every canonical span slot in
+    /// place, preserving the instruction and payload-word allocations.
+    ///
+    /// Mapping completes before the first write, so a callback failure cannot
+    /// leave a partially rewritten owner observable. The rewritten owner is
+    /// validated against `context` before publication. Instruction spans,
+    /// match-pattern spans, directives, parameters, and struct-initializer
+    /// shorthand spans all pass through the same canonical slot schema used by
+    /// [`Self::try_visit_span_slots`].
+    pub fn try_rewrite_span_slots<E>(
+        mut self,
+        context: &RirValidationContext<'_>,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+        mut remap_span: impl FnMut(RirSpanSlot, Span) -> Result<Span, E>,
+    ) -> Result<Self, RirSpanRemapError<E>> {
+        enum CollectError<E> {
+            Checkpoint(E),
+            Mapping { slot: RirSpanSlot, error: E },
+        }
+
+        let mut mapped_spans = Vec::new();
+        let traversal = self.try_visit_span_slots(
+            || checkpoint().map_err(CollectError::Checkpoint),
+            |slot, span| {
+                let mapped = remap_span(slot, span)
+                    .map_err(|error| CollectError::Mapping { slot, error })?;
+                mapped_spans.push((slot, mapped));
+                Ok(())
+            },
+        );
+        if let Err(error) = traversal {
+            return Err(match error {
+                RirSpanTraversalError::MalformedPayload(error) => {
+                    RirSpanRemapError::MalformedPayload(error)
+                }
+                RirSpanTraversalError::DuplicateSlot(slot) => {
+                    RirSpanRemapError::DuplicateSlot(slot)
+                }
+                RirSpanTraversalError::Callback(CollectError::Checkpoint(error)) => {
+                    RirSpanRemapError::Checkpoint(error)
+                }
+                RirSpanTraversalError::Callback(CollectError::Mapping { slot, error }) => {
+                    RirSpanRemapError::Mapping { slot, error }
+                }
+            });
+        }
+
+        for (slot, span) in &mapped_spans {
+            checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+            let reason = match context
+                .source_lengths
+                .iter()
+                .find(|(file, _)| *file == span.file_id)
+            {
+                None => Some("span file is outside the canonical source revision"),
+                Some((_, source_len)) if span.start > span.end || span.end > *source_len => {
+                    Some("span range is outside its canonical source")
+                }
+                Some(_) => None,
+            };
+            if let Some(reason) = reason {
+                return Err(RirSpanRemapError::MalformedPayload(RirPayloadError::new(
+                    "instruction context",
+                    slot.instruction().as_u32(),
+                    1,
+                    None,
+                    1,
+                    1,
+                    reason,
+                )));
+            }
+        }
+
+        self.0
+            .try_rewrite_validated_span_slots(&mapped_spans, &mut checkpoint)?;
+        self.0
+            .validate_payloads()
+            .map_err(RirSpanRemapError::MalformedPayload)?;
+        self.0
+            .validate_context(context)
+            .map_err(RirSpanRemapError::MalformedPayload)?;
+        Ok(self)
+    }
+
+    /// Visit the canonical span schema for one prevalidated contiguous
+    /// declaration-producer interval.
+    #[doc(hidden)]
+    fn try_visit_instruction_range_span_slots<E>(
+        &self,
+        instructions: std::ops::Range<u32>,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        visit: impl FnMut(RirSpanSlot, Span) -> Result<(), E>,
+    ) -> Result<(), RirSpanTraversalError<E>> {
+        self.0
+            .try_visit_validated_instruction_range_span_slots(instructions, checkpoint, visit)
+    }
+
+    /// Exact equality of the validated dense representation. Candidate body
+    /// plans zero every positional span under the reserved structural FileId;
+    /// their ordered declaration-relative diagnostic basis is compared by the
+    /// owning artifact terminal.
+    pub fn exact_eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    /// Logical heap bytes retained by this RIR owner, excluding the inline
+    /// [`ValidatedRir`] value itself.
+    ///
+    /// Dense instruction and payload storage is charged by logical length.
+    /// Every structural-anchor `Arc` pointee is charged in full along each
+    /// reaching instruction path, including when multiple instructions share
+    /// one allocation. This matches Rue's allocator-independent retained-value
+    /// policy and leaves the enclosing owner responsible for the inline value.
+    pub fn retained_allocation_charge(&self) -> u64 {
+        let instructions = self.len().saturating_mul(std::mem::size_of::<Inst>()) as u64;
+        let payload = self.extra_len().saturating_mul(std::mem::size_of::<u32>()) as u64;
+        self.iter().fold(
+            instructions.saturating_add(payload),
+            |charge, (_, instruction)| {
+                let anchors = match &instruction.data {
+                    InstData::StringConst { anchor, .. }
+                    | InstData::AnonStructType { anchor, .. }
+                    | InstData::AnonEnumType { anchor, .. } => {
+                        std::mem::size_of_val(anchor.segments()) as u64
+                    }
+                    InstData::VarRef {
+                        anchor: Some(anchor),
+                        ..
+                    } => std::mem::size_of_val(anchor.segments()) as u64,
+                    _ => 0,
+                };
+                charge.saturating_add(anchors)
+            },
+        )
+    }
 }
 
 impl std::ops::Deref for ValidatedRir {
@@ -2138,6 +2659,280 @@ impl Rir {
     /// Create a new empty RIR.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Validate payload structure, then visit every canonical span slot.
+    /// Published owners should use [`ValidatedRir::try_visit_span_slots`] to
+    /// avoid repeating validation.
+    pub fn try_visit_span_slots<E>(
+        &self,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+        visit: impl FnMut(RirSpanSlot, Span) -> Result<(), E>,
+    ) -> Result<(), RirSpanTraversalError<E>> {
+        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+        self.validate_payloads()
+            .map_err(RirSpanTraversalError::MalformedPayload)?;
+        self.try_visit_validated_span_slots(checkpoint, visit)
+    }
+
+    fn try_visit_validated_span_slots<E>(
+        &self,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        visit: impl FnMut(RirSpanSlot, Span) -> Result<(), E>,
+    ) -> Result<(), RirSpanTraversalError<E>> {
+        self.try_visit_validated_instruction_range_span_slots(
+            0..u32::try_from(self.len()).unwrap_or(u32::MAX),
+            checkpoint,
+            visit,
+        )
+    }
+
+    fn try_visit_validated_instruction_range_span_slots<E>(
+        &self,
+        instructions: std::ops::Range<u32>,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+        mut visit: impl FnMut(RirSpanSlot, Span) -> Result<(), E>,
+    ) -> Result<(), RirSpanTraversalError<E>> {
+        let mut previous_slot = None;
+
+        for ordinal in instructions {
+            let instruction = InstRef::from_raw(ordinal);
+            let inst = self.get(instruction);
+            checkpoint().map_err(RirSpanTraversalError::Callback)?;
+
+            macro_rules! emit {
+                ($field:expr, $span:expr) => {{
+                    let slot = RirSpanSlot::new(instruction, $field);
+                    if previous_slot.is_some_and(|previous| previous >= slot) {
+                        return Err(RirSpanTraversalError::DuplicateSlot(slot));
+                    }
+                    previous_slot = Some(slot);
+                    visit(slot, $span).map_err(RirSpanTraversalError::Callback)?;
+                }};
+            }
+
+            emit!(RirSpanField::Instruction, inst.span);
+            match &inst.data {
+                InstData::Match { arms, .. } => {
+                    for (arm, (pattern, _)) in self.match_arms(arms).iter().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::MatchPattern {
+                                arm: u32::try_from(arm)
+                                    .expect("validated match-arm count is encoded as u32"),
+                            },
+                            pattern.span()
+                        );
+                    }
+                }
+                InstData::FnDecl {
+                    directives, params, ..
+                } => {
+                    for (directive, value) in self.directives(directives).iter().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::FunctionDirective {
+                                directive: u32::try_from(directive)
+                                    .expect("validated directive count is encoded as u32"),
+                            },
+                            value.span
+                        );
+                    }
+                    for (parameter, value) in self.params(params).values().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::FunctionParameter {
+                                parameter: u32::try_from(parameter)
+                                    .expect("validated parameter count is encoded as u32"),
+                            },
+                            value.span
+                        );
+                    }
+                }
+                InstData::ConstDecl { directives, .. } => {
+                    for (directive, value) in self.directives(directives).iter().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::ConstDirective {
+                                directive: u32::try_from(directive)
+                                    .expect("validated directive count is encoded as u32"),
+                            },
+                            value.span
+                        );
+                    }
+                }
+                InstData::Alloc { directives, .. } => {
+                    for (directive, value) in self.directives(directives).iter().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::AllocDirective {
+                                directive: u32::try_from(directive)
+                                    .expect("validated directive count is encoded as u32"),
+                            },
+                            value.span
+                        );
+                    }
+                }
+                InstData::StructDecl { directives, .. } => {
+                    for (directive, value) in self.directives(directives).iter().enumerate() {
+                        checkpoint().map_err(RirSpanTraversalError::Callback)?;
+                        emit!(
+                            RirSpanField::StructDirective {
+                                directive: u32::try_from(directive)
+                                    .expect("validated directive count is encoded as u32"),
+                            },
+                            value.span
+                        );
+                    }
+                }
+                InstData::StructInit {
+                    shorthand_span: Some(span),
+                    ..
+                } => emit!(RirSpanField::StructInitShorthand, *span),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn try_rewrite_validated_span_slots<E>(
+        &mut self,
+        mapped_spans: &[(RirSpanSlot, Span)],
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(), RirSpanRemapError<E>> {
+        let mut mapped_spans = mapped_spans.iter().copied();
+        let mut take_span = |expected| {
+            let Some((actual, span)) = mapped_spans.next() else {
+                return Err(RirSpanRemapError::MissingSlot(expected));
+            };
+            if actual != expected {
+                return Err(RirSpanRemapError::UnexpectedSlot { expected, actual });
+            }
+            Ok(span)
+        };
+        let (instructions, extra) = (&mut self.instructions, &mut self.extra);
+
+        for (ordinal, instruction) in instructions.iter_mut().enumerate() {
+            checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+            let instruction_ref = InstRef::from_raw(
+                u32::try_from(ordinal).expect("validated RIR instruction index fits u32"),
+            );
+            instruction.span =
+                take_span(RirSpanSlot::new(instruction_ref, RirSpanField::Instruction))?;
+
+            let mut rewrite_directives = |range: &RirDirectivesRange,
+                                          field: &mut dyn FnMut(u32) -> RirSpanField|
+             -> Result<(), RirSpanRemapError<E>> {
+                let start = range.start() as usize;
+                let end = start + range.extent() as usize;
+                let words = &mut extra[start..end];
+                if words.is_empty() {
+                    return Ok(());
+                }
+                let count = words[0] as usize;
+                let mut position = 1usize;
+                for directive in 0..count {
+                    checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+                    let extent = decoded_directive_record_extent(words, position)
+                        .expect("validated directive record has an exact extent");
+                    let span = take_span(RirSpanSlot::new(
+                        instruction_ref,
+                        field(
+                            u32::try_from(directive)
+                                .expect("validated directive count is encoded as u32"),
+                        ),
+                    ))?;
+                    words[position + RECORD_SPAN_START] = span.start;
+                    words[position + RECORD_SPAN_LEN] = span.end - span.start;
+                    words[position + RECORD_SPAN_FILE] = span.file_id.index();
+                    position += extent;
+                }
+                Ok(())
+            };
+
+            match &mut instruction.data {
+                InstData::Match { arms, .. } => {
+                    let start = arms.start() as usize;
+                    let end = start + arms.extent() as usize;
+                    let words = &mut extra[start..end];
+                    if !words.is_empty() {
+                        let count = words[0] as usize;
+                        let mut position = 1usize;
+                        for arm in 0..count {
+                            checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+                            let extent = decoded_match_record_extent(words, position)
+                                .expect("validated match record has an exact extent");
+                            let span = take_span(RirSpanSlot::new(
+                                instruction_ref,
+                                RirSpanField::MatchPattern {
+                                    arm: u32::try_from(arm)
+                                        .expect("validated match-arm count is encoded as u32"),
+                                },
+                            ))?;
+                            words[position + RECORD_SPAN_START] = span.start;
+                            words[position + RECORD_SPAN_LEN] = span.end - span.start;
+                            words[position + RECORD_SPAN_FILE] = span.file_id.index();
+                            position += extent;
+                        }
+                    }
+                }
+                InstData::FnDecl {
+                    directives, params, ..
+                } => {
+                    rewrite_directives(directives, &mut |directive| {
+                        RirSpanField::FunctionDirective { directive }
+                    })?;
+                    let start = params.start() as usize;
+                    let end = start + params.extent() as usize;
+                    for (parameter, words) in extra[start..end]
+                        .chunks_exact_mut(PARAM_SCHEMA.width)
+                        .enumerate()
+                    {
+                        checkpoint().map_err(RirSpanRemapError::Checkpoint)?;
+                        let span = take_span(RirSpanSlot::new(
+                            instruction_ref,
+                            RirSpanField::FunctionParameter {
+                                parameter: u32::try_from(parameter)
+                                    .expect("validated parameter count is encoded as u32"),
+                            },
+                        ))?;
+                        words[PARAM_SPAN_FILE] = span.file_id.index();
+                        words[PARAM_SPAN_START] = span.start;
+                        words[PARAM_SPAN_END] = span.end;
+                    }
+                }
+                InstData::ConstDecl { directives, .. } => {
+                    rewrite_directives(directives, &mut |directive| {
+                        RirSpanField::ConstDirective { directive }
+                    })?;
+                }
+                InstData::Alloc { directives, .. } => {
+                    rewrite_directives(directives, &mut |directive| {
+                        RirSpanField::AllocDirective { directive }
+                    })?;
+                }
+                InstData::StructDecl { directives, .. } => {
+                    rewrite_directives(directives, &mut |directive| {
+                        RirSpanField::StructDirective { directive }
+                    })?;
+                }
+                InstData::StructInit {
+                    shorthand_span: Some(span),
+                    ..
+                } => {
+                    *span = take_span(RirSpanSlot::new(
+                        instruction_ref,
+                        RirSpanField::StructInitShorthand,
+                    ))?;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((slot, _)) = mapped_spans.next() {
+            return Err(RirSpanRemapError::UnconsumedSlot(slot));
+        }
+        Ok(())
     }
 
     /// Add an instruction and return its reference.
@@ -4229,7 +5024,7 @@ impl<'a> Iterator for RirDirectivesIter<'a> {
 impl ExactSizeIterator for RirDirectivesIter<'_> {}
 
 /// A single RIR instruction.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Inst {
     pub data: InstData,
     pub span: Span,
@@ -4287,7 +5082,7 @@ impl InternalIntrinsic {
 }
 
 /// Instruction data - the actual operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstData {
     /// Integer constant
     IntConst(u64),
@@ -6031,6 +6826,893 @@ mod typed_payload_tests {
             source_lengths: &[(FileId::new(7), 100)],
         };
         (ValidatedRir::finish(editor, &context).unwrap(), interner)
+    }
+
+    fn every_span_family_validated_rir(
+        shorthand: bool,
+        file: FileId,
+        shift: u32,
+    ) -> (ValidatedRir, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let a = interner.get_or_intern("a");
+        let b = interner.get_or_intern("b");
+        let at = |position| Span::with_file(file, shift + position, shift + position + 1);
+        let directive = |position| RirDirective {
+            name: a,
+            args: vec![b],
+            span: at(position),
+        };
+
+        let mut editor = RirEditor::new();
+        let value = editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: at(0),
+        });
+        editor
+            .add_fn_decl(
+                &[directive(2)],
+                false,
+                false,
+                false,
+                false,
+                a,
+                &[RirParam {
+                    name: a,
+                    ty: b,
+                    mode: RirParamMode::Normal,
+                    is_comptime: false,
+                    span: at(3),
+                }],
+                b,
+                value,
+                false,
+                RirParamMode::Normal,
+                false,
+                false,
+                at(1),
+            )
+            .unwrap();
+        editor
+            .add_match(
+                value,
+                &[
+                    (RirPattern::Wildcard(at(5)), value),
+                    (
+                        RirPattern::Int {
+                            value: 1,
+                            negative: false,
+                            span: at(6),
+                        },
+                        value,
+                    ),
+                    (RirPattern::Bool(true, at(7)), value),
+                    (
+                        RirPattern::Path {
+                            module: None,
+                            ctor_head: None,
+                            type_name: a,
+                            variant: b,
+                            bindings: vec![a],
+                            span: at(8),
+                        },
+                        value,
+                    ),
+                ],
+                at(4),
+            )
+            .unwrap();
+        editor
+            .add_const_decl(&[directive(10)], false, a, Some(b), value, at(9))
+            .unwrap();
+        editor
+            .add_alloc(
+                &[directive(12)],
+                Some(a),
+                false,
+                Some(b),
+                value,
+                false,
+                at(11),
+            )
+            .unwrap();
+        editor
+            .add_struct_decl(&[directive(14)], false, false, a, &[(a, b)], &[], at(13))
+            .unwrap();
+        editor
+            .add_struct_init(
+                None,
+                None,
+                a,
+                &[(a, value)],
+                shorthand.then(|| at(16)),
+                at(15),
+            )
+            .unwrap();
+        editor
+            .add_anon_struct_type(
+                &[(a, b)],
+                &[],
+                RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(7)]),
+                at(17),
+            )
+            .unwrap();
+        editor.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: at(18),
+        });
+
+        let context = RirValidationContext {
+            symbol_count: interner.len(),
+            source_lengths: &[(file, shift + 100)],
+        };
+        (ValidatedRir::finish(editor, &context).unwrap(), interner)
+    }
+
+    fn span_entries(rir: &ValidatedRir) -> Vec<(RirSpanSlot, Span)> {
+        let mut entries = Vec::new();
+        rir.try_visit_span_slots(
+            || Ok::<_, std::convert::Infallible>(()),
+            |slot, span| {
+                entries.push((slot, span));
+                Ok(())
+            },
+        )
+        .unwrap();
+        entries
+    }
+
+    #[test]
+    fn canonical_span_slots_inventory_every_storage_family() {
+        let (rir, _) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let entries = span_entries(&rir);
+        assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(slot, _)| slot.field() == RirSpanField::Instruction)
+                .count(),
+            rir.len()
+        );
+        for expected in [
+            RirSpanField::FunctionDirective { directive: 0 },
+            RirSpanField::FunctionParameter { parameter: 0 },
+            RirSpanField::ConstDirective { directive: 0 },
+            RirSpanField::AllocDirective { directive: 0 },
+            RirSpanField::StructDirective { directive: 0 },
+            RirSpanField::StructInitShorthand,
+        ] {
+            assert_eq!(
+                entries
+                    .iter()
+                    .filter(|(slot, _)| slot.field() == expected)
+                    .count(),
+                1,
+                "missing span family {expected:?}"
+            );
+        }
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|(slot, _)| matches!(slot.field(), RirSpanField::MatchPattern { .. }))
+                .count(),
+            4
+        );
+    }
+
+    #[test]
+    fn span_slot_schema_ignores_coordinates_and_optional_slots_do_not_renumber_peers() {
+        let (first, _) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let (relocated, _) = every_span_family_validated_rir(true, FileId::new(9), 40);
+        let first_entries = span_entries(&first);
+        let relocated_entries = span_entries(&relocated);
+        assert_eq!(
+            first_entries
+                .iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>(),
+            relocated_entries
+                .iter()
+                .map(|(slot, _)| slot)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            first_entries
+                .iter()
+                .zip(&relocated_entries)
+                .all(|((_, left), (_, right))| left != right)
+        );
+
+        let (explicit, _) = every_span_family_validated_rir(false, FileId::new(7), 0);
+        let explicit_slots = span_entries(&explicit)
+            .into_iter()
+            .map(|(slot, _)| slot)
+            .collect::<Vec<_>>();
+        let shorthand_slot = first_entries
+            .iter()
+            .find(|(slot, _)| slot.field() == RirSpanField::StructInitShorthand)
+            .unwrap()
+            .0;
+        let without_optional = first_entries
+            .iter()
+            .map(|(slot, _)| *slot)
+            .filter(|slot| *slot != shorthand_slot)
+            .collect::<Vec<_>>();
+        assert_eq!(explicit_slots, without_optional);
+        assert!(explicit_slots.iter().any(|slot| {
+            slot.instruction().as_u32() > shorthand_slot.instruction().as_u32()
+                && slot.field() == RirSpanField::Instruction
+        }));
+    }
+
+    #[test]
+    fn slot_aware_remap_is_atomic_and_preserves_anonymous_anchors() {
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let source_anchor = source
+            .iter()
+            .find_map(|(_, inst)| match &inst.data {
+                InstData::AnonStructType { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let mut destination = RirEditor::new();
+        destination
+            .try_append_remapped_with_span_slots(
+                &source,
+                std::convert::identity,
+                || Ok::<_, &'static str>(()),
+                |slot, span| {
+                    let tag_offset = match slot.field() {
+                        RirSpanField::Instruction => 100,
+                        _ => 200,
+                    };
+                    Ok(Span::with_file(
+                        FileId::new(9),
+                        span.start + tag_offset,
+                        span.end + tag_offset,
+                    ))
+                },
+            )
+            .unwrap();
+        let destination = ValidatedRir::finish(
+            destination,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(9), 1000)],
+            },
+        )
+        .unwrap();
+        let destination_entries = span_entries(&destination);
+        assert!(destination_entries.iter().all(|(slot, span)| {
+            span.file_id == FileId::new(9)
+                && span.start
+                    >= if slot.field() == RirSpanField::Instruction {
+                        100
+                    } else {
+                        200
+                    }
+        }));
+        let destination_anchor = destination
+            .iter()
+            .find_map(|(_, inst)| match &inst.data {
+                InstData::AnonStructType { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(destination_anchor, source_anchor);
+    }
+
+    #[test]
+    fn validated_span_rewrite_preserves_storage_and_covers_every_span_family() {
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let instruction_storage = source.0.instructions.as_ptr();
+        let instruction_capacity = source.0.instructions.capacity();
+        let payload_storage = source.0.extra.as_ptr();
+        let payload_capacity = source.0.extra.capacity();
+        let source_entries = span_entries(&source);
+        let mut visited = Vec::new();
+
+        let rewritten = source
+            .try_rewrite_span_slots(
+                &RirValidationContext {
+                    symbol_count: interner.len(),
+                    source_lengths: &[(FileId::new(9), 1000)],
+                },
+                || Ok::<_, &'static str>(()),
+                |slot, span| {
+                    visited.push(slot);
+                    Ok(Span::with_file(
+                        FileId::new(9),
+                        span.start + 40,
+                        span.end + 40,
+                    ))
+                },
+            )
+            .unwrap();
+        let (expected, _) = every_span_family_validated_rir(true, FileId::new(9), 40);
+
+        assert_eq!(rewritten.0.instructions.as_ptr(), instruction_storage);
+        assert_eq!(rewritten.0.instructions.capacity(), instruction_capacity);
+        assert_eq!(rewritten.0.extra.as_ptr(), payload_storage);
+        assert_eq!(rewritten.0.extra.capacity(), payload_capacity);
+        assert_eq!(
+            visited,
+            source_entries
+                .iter()
+                .map(|(slot, _)| *slot)
+                .collect::<Vec<_>>()
+        );
+        assert!(rewritten.exact_eq(&expected));
+        assert_eq!(span_entries(&rewritten), span_entries(&expected));
+    }
+
+    #[test]
+    fn validated_span_rewrite_rejects_mapping_and_context_failures() {
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let rejected_slot = span_entries(&source)
+            .into_iter()
+            .find(|(slot, _)| slot.field() == RirSpanField::StructInitShorthand)
+            .unwrap()
+            .0;
+        let error = source
+            .try_rewrite_span_slots(
+                &RirValidationContext {
+                    symbol_count: interner.len(),
+                    source_lengths: &[(FileId::new(9), 1000)],
+                },
+                || Ok::<_, &'static str>(()),
+                |slot, span| {
+                    if slot == rejected_slot {
+                        Err("rejected mapping")
+                    } else {
+                        Ok(span)
+                    }
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RirSpanRemapError::Mapping {
+                slot,
+                error: "rejected mapping"
+            } if slot == rejected_slot
+        ));
+
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let error = source
+            .try_rewrite_span_slots(
+                &RirValidationContext {
+                    symbol_count: interner.len(),
+                    source_lengths: &[(FileId::new(9), 10)],
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+                |_slot, span| Ok(Span::with_file(FileId::new(9), span.start, span.end)),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RirSpanRemapError::MalformedPayload(RirPayloadError {
+                reason: "span range is outside its canonical source",
+                ..
+            })
+        ));
+
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let remaining = std::cell::Cell::new(span_entries(&source).len());
+        let error = source
+            .try_rewrite_span_slots(
+                &RirValidationContext {
+                    symbol_count: interner.len(),
+                    source_lengths: &[(FileId::new(7), 100)],
+                },
+                || {
+                    if remaining.get() == 0 {
+                        Err("target validation canceled")
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_slot, span| {
+                    remaining.set(remaining.get() - 1);
+                    Ok(span)
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RirSpanRemapError::Checkpoint("target validation canceled")
+        ));
+    }
+
+    #[test]
+    fn validated_rir_retained_charge_counts_shared_anchor_pointees_per_path() {
+        let interner = ThreadedRodeo::new();
+        let name = interner.get_or_intern("anchor-heavy");
+        let anchor = RirStructuralAnchor::new(vec![
+            RirStructuralPathSegment::Body,
+            RirStructuralPathSegment::Statement(1),
+            RirStructuralPathSegment::Operand(2),
+            RirStructuralPathSegment::StringLiteral(3),
+        ]);
+        let anchor_pointee = std::mem::size_of_val(anchor.segments()) as u64;
+        let span = Span::with_file(FileId::new(7), 0, 1);
+        let mut editor = RirEditor::new();
+        editor.add_inst(Inst {
+            data: InstData::StringConst {
+                content: name,
+                anchor: anchor.clone(),
+            },
+            span,
+        });
+        editor.add_inst(Inst {
+            data: InstData::VarRef {
+                name,
+                anchor: Some(anchor.clone()),
+            },
+            span,
+        });
+        editor
+            .add_anon_struct_type(&[], &[], anchor.clone(), span)
+            .unwrap();
+        editor.add_anon_enum_type(&[], &[], anchor, span).unwrap();
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(7), 1)],
+            },
+        )
+        .unwrap();
+
+        let dense = (rir.len() * std::mem::size_of::<Inst>()) as u64
+            + (rir.extra_len() * std::mem::size_of::<u32>()) as u64;
+        assert_eq!(
+            rir.retained_allocation_charge(),
+            dense + 4 * anchor_pointee,
+            "each of four reaching instructions charges the shared Arc pointee in full"
+        );
+    }
+
+    #[test]
+    fn declaration_interval_projection_is_candidate_local_and_rejects_open_owner_edges() {
+        let interner = ThreadedRodeo::new();
+        let name = interner.get_or_intern("f");
+        let unit = interner.get_or_intern("()");
+        let mut source = RirEditor::new();
+        let mut method_roots = Vec::new();
+        for _ in 0..3 {
+            let body = source.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: span(),
+            });
+            method_roots.push(
+                source
+                    .add_fn_decl(
+                        &[],
+                        false,
+                        false,
+                        false,
+                        false,
+                        name,
+                        &[],
+                        unit,
+                        body,
+                        true,
+                        RirParamMode::Normal,
+                        false,
+                        false,
+                        span(),
+                    )
+                    .unwrap(),
+            );
+        }
+        source
+            .add_struct_decl(&[], false, false, name, &[], &method_roots, span())
+            .unwrap();
+        let source = ValidatedRir::finish(
+            source,
+            &RirValidationContext {
+                symbol_count: interner.len(),
+                source_lengths: &[(FileId::new(7), 100)],
+            },
+        )
+        .unwrap();
+
+        let mut projected = RirEditor::new();
+        projected
+            .try_append_instruction_range_remapped_with_span_slots(
+                &source,
+                2..4,
+                std::convert::identity,
+                || Ok::<_, std::convert::Infallible>(()),
+                |_, span| Ok(span),
+            )
+            .unwrap();
+        assert_eq!(projected.len(), 2);
+        let InstData::FnDecl { body, .. } = projected.get(InstRef::from_raw(1)).data else {
+            panic!("middle method root must remain a function declaration")
+        };
+        assert_eq!(body, InstRef::from_raw(0));
+
+        let before = (projected.len(), projected.extra_len());
+        let error = projected
+            .try_append_instruction_range_remapped_with_span_slots(
+                &source,
+                6..7,
+                std::convert::identity,
+                || Ok::<_, std::convert::Infallible>(()),
+                |_, span| Ok(span),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RirSpanRemapError::ForeignInstructionEdge {
+                instruction,
+                child
+            } if instruction == InstRef::from_raw(6) && method_roots.contains(&child)
+        ));
+        assert_eq!((projected.len(), projected.extra_len()), before);
+    }
+
+    #[test]
+    fn methodless_struct_shell_composition_preserves_payloads_and_wires_existing_methods() {
+        let source_symbols = ThreadedRodeo::new();
+        let source_name = source_symbols.get_or_intern("Container");
+        let source_field = source_symbols.get_or_intern("value");
+        let source_ty = source_symbols.get_or_intern("i32");
+        let source_directive = source_symbols.get_or_intern("derive");
+        let source_arg = source_symbols.get_or_intern("copy");
+        let mut source = RirEditor::new();
+        let source_root = source
+            .add_struct_decl(
+                &[RirDirective {
+                    name: source_directive,
+                    args: vec![source_arg],
+                    span: Span::with_file(FileId::new(7), 11, 17),
+                }],
+                true,
+                true,
+                source_name,
+                &[(source_field, source_ty)],
+                &[],
+                Span::with_file(FileId::new(7), 3, 40),
+            )
+            .unwrap();
+        let source = ValidatedRir::finish(
+            source,
+            &RirValidationContext {
+                symbol_count: source_symbols.len(),
+                source_lengths: &[(FileId::new(7), 100)],
+            },
+        )
+        .unwrap();
+
+        let destination_symbols = ThreadedRodeo::new();
+        let method_name = destination_symbols.get_or_intern("method");
+        let unit = destination_symbols.get_or_intern("()");
+        let mut destination = RirEditor::new();
+        let mut methods = Vec::new();
+        for _ in 0..2 {
+            let body = destination.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::with_file(FileId::new(9), 1, 2),
+            });
+            methods.push(
+                destination
+                    .add_fn_decl(
+                        &[],
+                        false,
+                        false,
+                        false,
+                        false,
+                        method_name,
+                        &[],
+                        unit,
+                        body,
+                        true,
+                        RirParamMode::Normal,
+                        false,
+                        false,
+                        Span::with_file(FileId::new(9), 1, 2),
+                    )
+                    .unwrap(),
+            );
+        }
+        let range = destination
+            .try_append_methodless_struct_shell_with_methods(
+                &source,
+                source_root,
+                &methods,
+                |symbol| {
+                    destination_symbols.get_or_intern(
+                        source_symbols
+                            .try_resolve(&symbol)
+                            .expect("source shell symbol belongs to its interner"),
+                    )
+                },
+                || Ok::<_, std::convert::Infallible>(()),
+                |_, span| {
+                    Ok(Span::with_file(
+                        FileId::new(9),
+                        span.start + 100,
+                        span.end + 100,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(range.instructions, 4..5);
+        let destination = ValidatedRir::finish(
+            destination,
+            &RirValidationContext {
+                symbol_count: destination_symbols.len(),
+                source_lengths: &[(FileId::new(9), 1000)],
+            },
+        )
+        .unwrap();
+        let InstData::StructDecl {
+            directives,
+            is_pub,
+            is_linear,
+            name,
+            fields,
+            methods: actual_methods,
+        } = &destination.get(InstRef::from_raw(4)).data
+        else {
+            panic!("composed shell must remain a struct declaration")
+        };
+        assert!(*is_pub);
+        assert!(*is_linear);
+        assert_eq!(destination_symbols.resolve(name), "Container");
+        assert_eq!(
+            destination
+                .struct_fields(fields)
+                .values()
+                .map(|(name, ty)| (
+                    destination_symbols.resolve(&name),
+                    destination_symbols.resolve(&ty),
+                ))
+                .collect::<Vec<_>>(),
+            [("value", "i32")]
+        );
+        assert_eq!(
+            destination
+                .struct_methods(actual_methods)
+                .values()
+                .collect::<Vec<_>>(),
+            methods
+        );
+        let directives = destination
+            .directives(directives)
+            .iter()
+            .collect::<Vec<_>>();
+        assert_eq!(directives.len(), 1);
+        assert_eq!(destination_symbols.resolve(&directives[0].name), "derive");
+        assert_eq!(
+            directives[0]
+                .args
+                .values()
+                .map(|arg| destination_symbols.resolve(&arg))
+                .collect::<Vec<_>>(),
+            ["copy"]
+        );
+        assert_eq!(
+            directives[0].span,
+            Span::with_file(FileId::new(9), 111, 117)
+        );
+        assert_eq!(
+            destination.get(InstRef::from_raw(4)).span,
+            Span::with_file(FileId::new(9), 103, 140)
+        );
+    }
+
+    #[test]
+    fn struct_shell_composition_rejects_invalid_sources_atomically() {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("S");
+        let unit = symbols.get_or_intern("()");
+        let validation = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::new(7), 100)],
+        };
+
+        let mut non_struct = RirEditor::new();
+        non_struct.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        let non_struct = ValidatedRir::finish(non_struct, &validation).unwrap();
+
+        let mut with_method = RirEditor::new();
+        let body = with_method.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        let method = with_method
+            .add_fn_decl(
+                &[],
+                false,
+                false,
+                false,
+                false,
+                name,
+                &[],
+                unit,
+                body,
+                true,
+                RirParamMode::Normal,
+                false,
+                false,
+                span(),
+            )
+            .unwrap();
+        let nonempty_root = with_method
+            .add_struct_decl(&[], false, false, name, &[], &[method], span())
+            .unwrap();
+        let with_method = ValidatedRir::finish(with_method, &validation).unwrap();
+
+        let mut destination = RirEditor::new();
+        let before = (destination.len(), destination.extra_len());
+        for (source, root, expected_reason) in [
+            (
+                &non_struct,
+                InstRef::from_raw(0),
+                "source root is not a struct declaration",
+            ),
+            (
+                &with_method,
+                nonempty_root,
+                "source struct declaration is not methodless",
+            ),
+        ] {
+            let error = destination
+                .try_append_methodless_struct_shell_with_methods(
+                    source,
+                    root,
+                    &[],
+                    std::convert::identity,
+                    || Ok::<_, std::convert::Infallible>(()),
+                    |_, span| Ok(span),
+                )
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                RirSpanRemapError::Build(RirPayloadBuildError::InvalidBuilderInput {
+                    family: "struct shell composition",
+                    reason,
+                }) if reason == expected_reason
+            ));
+            assert_eq!((destination.len(), destination.extra_len()), before);
+        }
+    }
+
+    #[test]
+    fn declaration_interval_projection_cancellation_rolls_back_atomically() {
+        let (source, _) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let mut destination = RirEditor::new();
+        let mut checkpoints = 0_u32;
+        let before = (destination.len(), destination.extra_len());
+        let error = destination
+            .try_append_instruction_range_remapped_with_span_slots(
+                &source,
+                0..u32::try_from(source.len()).unwrap(),
+                std::convert::identity,
+                || {
+                    checkpoints += 1;
+                    (checkpoints < 3).then_some(()).ok_or("canceled")
+                },
+                |_, span| Ok(span),
+            )
+            .unwrap_err();
+        assert!(matches!(error, RirSpanRemapError::Checkpoint("canceled")));
+        assert_eq!((destination.len(), destination.extra_len()), before);
+    }
+
+    #[test]
+    fn slot_aware_remap_cancellation_rolls_back_partial_append() {
+        let (source, interner) = every_span_family_validated_rir(true, FileId::new(7), 0);
+        let mut traversal_checkpoints = 0;
+        source
+            .try_visit_span_slots(
+                || {
+                    traversal_checkpoints += 1;
+                    Ok::<_, std::convert::Infallible>(())
+                },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+
+        let mut destination = RirEditor::new();
+        let prefix = destination.add_inst(Inst {
+            data: InstData::UnitConst,
+            span: span(),
+        });
+        destination
+            .add_call(interner.get("a").unwrap(), &[], span())
+            .unwrap();
+        let before = (destination.len(), destination.extra_len(), prefix);
+        let mut checkpoints = 0;
+        let error = destination
+            .try_append_remapped_with_span_slots(
+                &source,
+                std::convert::identity,
+                || {
+                    checkpoints += 1;
+                    if checkpoints > traversal_checkpoints + 2 {
+                        Err("cancelled")
+                    } else {
+                        Ok(())
+                    }
+                },
+                |_, span| Ok(span),
+            )
+            .unwrap_err();
+        assert!(matches!(error, RirSpanRemapError::Checkpoint("cancelled")));
+        assert_eq!(
+            (destination.len(), destination.extra_len()),
+            (before.0, before.1)
+        );
+    }
+
+    #[test]
+    fn raw_span_traversal_reports_malformed_payload() {
+        let mut rir = Rir::new();
+        rir.extra.extend([1, PatternKind::Path as u32]);
+        let arms = RirMatchArmsRange::from_parts(0, 2);
+        rir.add_inst(Inst {
+            data: InstData::Match {
+                scrutinee: InstRef::from_raw(0),
+                arms,
+            },
+            span: span(),
+        });
+        let error = rir
+            .try_visit_span_slots(|| Ok::<_, std::convert::Infallible>(()), |_, _| Ok(()))
+            .unwrap_err();
+        assert!(matches!(error, RirSpanTraversalError::MalformedPayload(_)));
+    }
+
+    #[test]
+    fn large_span_remap_work_and_allocations_are_linear() {
+        const COUNT: usize = 4096;
+        let mut source = RirEditor::new();
+        for index in 0..COUNT {
+            source.add_inst(Inst {
+                data: InstData::UnitConst,
+                span: Span::new(index as u32, index as u32 + 1),
+            });
+        }
+        let source = ValidatedRir::finish(
+            source,
+            &RirValidationContext {
+                symbol_count: 0,
+                source_lengths: &[(FileId::new(0), COUNT as u32 + 1)],
+            },
+        )
+        .unwrap();
+        let mut destination = RirEditor::new();
+        let mut checkpoints = 0;
+        let mut mappings = 0;
+        let (allocations, _) = allocation_evidence(|| {
+            destination
+                .try_append_remapped_with_span_slots(
+                    &source,
+                    std::convert::identity,
+                    || {
+                        checkpoints += 1;
+                        Ok::<_, std::convert::Infallible>(())
+                    },
+                    |_, span| {
+                        mappings += 1;
+                        Ok(span)
+                    },
+                )
+                .unwrap();
+        });
+        assert_eq!(mappings, COUNT);
+        assert_eq!(checkpoints, COUNT * 2);
+        assert!(
+            allocations < 64,
+            "dense remap unexpectedly allocated {allocations} times"
+        );
     }
 
     #[test]

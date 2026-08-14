@@ -86,6 +86,17 @@ impl Drop for TestBodyTransactionFailureGuard {
     }
 }
 
+#[cfg(test)]
+pub(crate) struct TestBodyMaterializationCancellationGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Drop for TestBodyMaterializationCancellationGuard {
+    fn drop(&mut self) {
+        self.0
+            .store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 use rue_query::{
     CancellationToken, InputIdentity, QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutput,
     QueryRequestAttempt, QueryRuntime, QuerySelection, QueryTerminalKind, RequestExecution,
@@ -105,7 +116,7 @@ use crate::{
     SourceSnapshot, Span, StableDefinitionKey, SyntaxWork,
 };
 
-use crate::canonical_lower::{ModuleRirOutput, lower_module_rir_with_work};
+use crate::canonical_lower::CandidateModuleRirOutput;
 use crate::parsed_modules::{ParsedModule, ParsedModulesWork, ParsedProgram};
 
 use crate::retained_charge::RetainedCharge;
@@ -224,6 +235,7 @@ const MODULE_QUERY_MEMO_RETENTION: usize = 4096;
 // unrooted history; a large reached program grows past this floor through its
 // exact pins and releases superseded/deleted members atomically.
 const BODY_QUERY_MEMO_RETENTION: usize = 8;
+
 const BODY_CLOSURE_MEMO_RETENTION: usize = 8;
 // Declaration-keyed families scale with the program's declaration universe
 // exactly as body-keyed families scale with reached bodies, and the
@@ -356,6 +368,16 @@ where
     }
 }
 
+#[cfg(test)]
+type DeclarationBodyPlanFailureInjection = Arc<
+    Mutex<
+        Option<(
+            crate::declaration_candidate::DeclarationCandidateKey,
+            crate::CompileErrors,
+        )>,
+    >,
+>;
+
 pub(crate) struct RevisionedQueryDatabase {
     runtime: QueryRuntime,
     next_revision: u64,
@@ -365,6 +387,8 @@ pub(crate) struct RevisionedQueryDatabase {
     module_store: Arc<Mutex<ModuleInputStore>>,
     #[cfg(test)]
     test_import_store: Arc<Mutex<TestImportInputStore>>,
+    #[cfg(test)]
+    declaration_body_plan_failure_injection: DeclarationBodyPlanFailureInjection,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
@@ -388,16 +412,17 @@ pub(crate) struct RevisionedQueryDatabase {
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     warning_body_references:
         QueryFamily<crate::body_query::BodyQueryKey, WarningBodyReferencesValue>,
-    #[allow(dead_code)]
+    #[cfg(test)]
     body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
-    body_source_locators:
+    #[allow(dead_code)]
+    body_source_bases:
         QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
     // The registered `body-toolchain-demands` node (RUE-1112). It projects one
-    // reached body's exact raw declaration body to the sorted, deduplicated set
-    // of trusted toolchain modules its fallible intrinsics demand plus the
-    // demanding body's stable requester anchor. It is pure (its only input is the
-    // raw-body query, so the dependency edge is honest for invalidation, metrics,
-    // and future parallel scheduling), does no presence check, and does no I/O.
+    // reached body's canonical declaration artifact to the sorted, deduplicated
+    // set of trusted toolchain modules its typed fallible-intrinsic set demands,
+    // plus the demanding body's stable requester anchor. Its only input is the
+    // packed artifact query, so the dependency edge is honest for invalidation,
+    // metrics, and future parallel scheduling. It does no presence check or I/O.
     // The rooted body-closure attempt queries it BEFORE each body transaction, checks
     // the demanded modules against the satisfied catalogue, and parks the absent
     // ones without entering the transaction.
@@ -429,7 +454,10 @@ pub(crate) struct RevisionedQueryDatabase {
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyReferences>,
     body_produced_anonymous:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::ProducedAnonymous>,
-    module_rirs: QueryFamily<ModuleQueryKey, ModuleRirValue>,
+    declaration_body_plan_artifacts:
+        QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
+    #[cfg(test)]
+    declaration_body_plan_astgen_evaluations: Arc<std::sync::atomic::AtomicU64>,
     resolve_imports: QueryFamily<ResolveImportKey, ResolveImportValue>,
     #[cfg(test)]
     declaration_imports: QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
@@ -582,6 +610,8 @@ pub(crate) struct RevisionedQueryDatabase {
     /// and cross-test interference between independent compiler sessions.
     #[cfg(test)]
     inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    inject_body_materialization_cancel_after: Arc<std::sync::atomic::AtomicUsize>,
     /// Test-only witness that the rooted-publication promotion hook took its
     /// non-empty branch — i.e. entered the promotion path at all (RUE-1091). The
     /// hook checks the observed set for emptiness FIRST, before formatting the
@@ -2107,6 +2137,77 @@ enum RawDeclarationBodyQueryValue {
     Failure(crate::declaration_candidate::RawDeclarationBodyFailure),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DeclarationBodyPlanQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+
+impl QueryKey for DeclarationBodyPlanQueryKey {
+    fn stable_identity(&self) -> String {
+        self.0.stable_identity()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DeclarationBodyPlanFailure {
+    CandidateRirRejected(crate::CompileErrors),
+    CandidateUnavailable(crate::declaration_candidate::DeclarationCandidateKey),
+    ForeignSymbol(Arc<str>),
+    Build(rue_error::ErrorKind),
+    Payload(Arc<str>),
+    Validation(Arc<str>),
+    SpanProjection(Arc<str>),
+}
+
+#[derive(Debug, Clone)]
+enum DeclarationBodyPlanArtifactsValue {
+    Available(Arc<crate::canonical_lower::DeclarationBodyPlanArtifacts>),
+    Failure(DeclarationBodyPlanFailure),
+}
+
+fn declaration_body_plan_artifacts_equal(
+    left: &DeclarationBodyPlanArtifactsValue,
+    right: &DeclarationBodyPlanArtifactsValue,
+) -> bool {
+    match (left, right) {
+        (
+            DeclarationBodyPlanArtifactsValue::Available(left),
+            DeclarationBodyPlanArtifactsValue::Available(right),
+        ) => left.plan.structurally_eq(&right.plan),
+        (
+            DeclarationBodyPlanArtifactsValue::Failure(left),
+            DeclarationBodyPlanArtifactsValue::Failure(right),
+        ) => left == right,
+        _ => false,
+    }
+}
+
+fn candidate_rir_artifact_failure_errors(
+    failure: &DeclarationBodyPlanFailure,
+) -> crate::CompileErrors {
+    match failure {
+        DeclarationBodyPlanFailure::CandidateRirRejected(errors) => errors.clone(),
+        DeclarationBodyPlanFailure::Build(kind) => {
+            crate::CompileErrors::from(crate::CompileError::without_span(kind.clone()))
+        }
+        failure => crate::CompileErrors::from(import_input_error(format!(
+            "candidate RIR artifact failed: {failure:?}"
+        ))),
+    }
+}
+
+fn candidate_rir_composition_failure_error(
+    failure: &crate::canonical_lower::DeclarationBodyPlanBuildFailure,
+) -> crate::CompileError {
+    match failure {
+        crate::canonical_lower::DeclarationBodyPlanBuildFailure::Build(error) => {
+            crate::CompileError::without_span(crate::canonical_lower::rir_build_error_kind(
+                "packed candidate module composition",
+                error,
+            ))
+        }
+        failure => import_input_error(format!("candidate module composition failed: {failure:?}")),
+    }
+}
+
 /// A syntax-resolved static call head retained solely for unused-function
 /// warning reachability. `module` is present only when a lexical `@import`
 /// alias was resolved by the canonical declaration-import query; otherwise
@@ -2206,21 +2307,23 @@ enum SemanticNucleusProjectionValue {
     },
 }
 
-#[derive(Debug, Clone)]
-struct ModuleRirValue {
-    result: Result<Arc<ModuleRirOutput>, crate::CompileErrors>,
-    work: crate::CanonicalRirWork,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ModuleInputLeaf {
     revision: ModuleRevision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ModuleMetadataLeaf {
+    module: ModuleId,
+    file_id: rue_span::FileId,
+    physical_path: Arc<str>,
 }
 
 #[derive(Debug)]
 struct ModuleInputView {
     revision: Revision,
     snapshot: SourceSnapshot,
+    metadata: crate::shared_segments::SharedSegments<ModuleMetadataLeaf>,
     stamp_lease: Arc<ModuleInputStampLease>,
 }
 
@@ -2228,6 +2331,7 @@ struct ModuleInputView {
 struct ModuleInputStampLease {
     parent: Option<Arc<ModuleInputStampLease>>,
     sources: Arc<[ModuleRevision]>,
+    metadata: Arc<[ModuleMetadataLeaf]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2246,6 +2350,7 @@ struct ModuleInputStore {
     retention_limit: usize,
     next_stamp: u64,
     stamps: HashMap<ModuleInputLeaf, RetainedValueStamp>,
+    metadata_stamps: HashMap<ModuleMetadataLeaf, RetainedValueStamp>,
 }
 
 #[cfg(test)]
@@ -2271,6 +2376,7 @@ impl Default for ModuleInputStore {
             retention_limit: MODULE_INPUT_REVISION_RETENTION,
             next_stamp: 1,
             stamps: HashMap::new(),
+            metadata_stamps: HashMap::new(),
         }
     }
 }
@@ -2647,6 +2753,29 @@ query_value_charge!(RawDeclarationBodyQueryValue);
 query_value_charge!(WarningBodySyntaxValue);
 query_value_charge!(WarningBodyReferencesValue);
 
+impl RetainedCharge for DeclarationBodyPlanFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::CandidateRirRejected(errors) => errors.retained_charge(),
+            Self::CandidateUnavailable(candidate) => candidate.retained_charge(),
+            Self::Build(kind) => kind.retained_charge(),
+            Self::ForeignSymbol(detail)
+            | Self::Payload(detail)
+            | Self::Validation(detail)
+            | Self::SpanProjection(detail) => detail.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DeclarationBodyPlanArtifactsValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(artifacts) => artifacts.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
 impl RetainedCharge for WarningStaticCallHead {
     fn retained_charge(&self) -> u64 {
         self.module
@@ -2701,12 +2830,6 @@ impl RetainedCharge for SemanticNucleusProjectionValue {
                 .retained_charge()
                 .saturating_add(failure.retained_charge()),
         }
-    }
-}
-
-impl RetainedCharge for ModuleRirValue {
-    fn retained_charge(&self) -> u64 {
-        self.result.retained_charge()
     }
 }
 
@@ -2865,6 +2988,46 @@ fn module_source_input(module: &ModuleId) -> InputIdentity {
     InputIdentity::new("module-source", Arc::<str>::from(module.as_str()))
 }
 
+fn module_metadata_input(module: &ModuleId) -> InputIdentity {
+    InputIdentity::new("module-metadata", Arc::<str>::from(module.as_str()))
+}
+
+fn module_metadata_order(
+    left: &ModuleMetadataLeaf,
+    right: &ModuleMetadataLeaf,
+) -> std::cmp::Ordering {
+    left.module.cmp(&right.module)
+}
+
+fn module_metadata_leaf_for_file(
+    snapshot: &SourceSnapshot,
+    file_id: rue_span::FileId,
+) -> ModuleMetadataLeaf {
+    let metadata = snapshot.metadata();
+    ModuleMetadataLeaf {
+        module: metadata
+            .module_id(file_id)
+            .expect("published file has logical module metadata"),
+        file_id,
+        physical_path: Arc::from(
+            metadata
+                .physical_path(file_id)
+                .expect("published module has physical-path metadata"),
+        ),
+    }
+}
+
+fn module_metadata_leaves(snapshot: &SourceSnapshot) -> HashMap<ModuleId, ModuleMetadataLeaf> {
+    let metadata = snapshot.metadata();
+    metadata
+        .file_ids()
+        .map(|file_id| {
+            let leaf = module_metadata_leaf_for_file(snapshot, file_id);
+            (leaf.module.clone(), leaf)
+        })
+        .collect()
+}
+
 fn import_context_input() -> InputIdentity {
     InputIdentity::new("import-discovery-context", "current")
 }
@@ -3010,6 +3173,9 @@ fn release_orphaned_module_stamp_leases(
                     revision: source.clone(),
                 },
             );
+        }
+        for metadata in lease.metadata.iter() {
+            release_stamp_value(&mut store.metadata_stamps, metadata);
         }
         next = lease.parent;
     }
@@ -3200,32 +3366,6 @@ fn declaration_occurrence_index_value_equal(
             DeclarationOccurrenceIndexValue::Failure(right),
         ) => left == right,
         _ => false,
-    }
-}
-
-fn module_rir_value_equal(left: &ModuleRirValue, right: &ModuleRirValue) -> bool {
-    match (&left.result, &right.result) {
-        (Ok(left), Ok(right)) => left.revision() == right.revision(),
-        (Err(left), Err(right)) => left == right,
-        _ => false,
-    }
-}
-
-fn module_rir_value_from_lowering(
-    result: Result<ModuleRirOutput, (crate::CompileError, crate::CanonicalRirWork)>,
-) -> ModuleRirValue {
-    match result {
-        Ok(output) => {
-            let work = output.work();
-            ModuleRirValue {
-                result: Ok(Arc::new(output)),
-                work,
-            }
-        }
-        Err((error, work)) => ModuleRirValue {
-            result: Err(crate::CompileErrors::from(error)),
-            work,
-        },
     }
 }
 
@@ -3469,33 +3609,63 @@ fn publish_module_inputs_delta(
     let mut store = store
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let parent_lease = store
+    let parent_view = store
         .revisions
         .back()
         .expect("a module overlay extends a retained parent view")
-        .stamp_lease
         .clone();
+    let parent_lease = parent_view.stamp_lease.clone();
     let mut leaves = Vec::new();
+    let mut metadata_leases = Vec::new();
+    let metadata_by_module = snapshot
+        .direct_appended_file_ids_from(&parent_view.snapshot)
+        .map(|file_ids| {
+            file_ids
+                .into_iter()
+                .map(|file_id| module_metadata_leaf_for_file(snapshot, file_id))
+                .map(|leaf| (leaf.module.clone(), leaf))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_else(|| module_metadata_leaves(snapshot));
     for source in new_sources {
         let leaf = ModuleInputLeaf {
             revision: source.clone(),
         };
+        let metadata = metadata_by_module
+            .get(&source.module)
+            .expect("new source has metadata")
+            .clone();
         let ModuleInputStore {
-            next_stamp, stamps, ..
+            next_stamp,
+            stamps,
+            metadata_stamps,
+            ..
         } = &mut *store;
         leaves.push((
             module_source_input(&source.module),
             exact_value_stamp(next_stamp, stamps, &leaf),
         ));
+        leaves.push((
+            module_metadata_input(&source.module),
+            exact_value_stamp(next_stamp, metadata_stamps, &metadata),
+        ));
         retain_stamp_value(stamps, &leaf);
+        retain_stamp_value(metadata_stamps, &metadata);
+        metadata_leases.push(metadata);
     }
+    let metadata = crate::shared_segments::SharedSegments::extend(
+        &parent_view.metadata,
+        metadata_leases.clone(),
+    );
     let stamp_lease = Arc::new(ModuleInputStampLease {
         parent: Some(parent_lease),
         sources: new_sources.to_vec().into(),
+        metadata: metadata_leases.into(),
     });
     store.revisions.push_back(Arc::new(ModuleInputView {
         revision,
         snapshot: snapshot.clone(),
+        metadata,
         stamp_lease,
     }));
     leaves
@@ -3510,27 +3680,50 @@ fn publish_module_inputs(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut leaves = Vec::new();
-    let sources = snapshot.source_revision().modules().to_vec();
+    let mut sources = Vec::new();
+    let mut metadata_leases = Vec::new();
+    let metadata_by_module = module_metadata_leaves(snapshot);
     for source in snapshot.source_revision().modules() {
         let leaf = ModuleInputLeaf {
             revision: source.clone(),
         };
+        let metadata = metadata_by_module
+            .get(&source.module)
+            .expect("module source has metadata")
+            .clone();
         let ModuleInputStore {
-            next_stamp, stamps, ..
+            next_stamp,
+            stamps,
+            metadata_stamps,
+            ..
         } = &mut *store;
         leaves.push((
             module_source_input(&source.module),
             exact_value_stamp(next_stamp, stamps, &leaf),
         ));
+        leaves.push((
+            module_metadata_input(&source.module),
+            exact_value_stamp(next_stamp, metadata_stamps, &metadata),
+        ));
         retain_stamp_value(stamps, &leaf);
+        retain_stamp_value(metadata_stamps, &metadata);
+        sources.push(source.clone());
+        metadata_leases.push(metadata);
     }
     let stamp_lease = Arc::new(ModuleInputStampLease {
         parent: None,
         sources: sources.into(),
+        metadata: metadata_leases.into(),
     });
+    let mut metadata = metadata_by_module.into_values().collect::<Vec<_>>();
+    metadata.sort_by(module_metadata_order);
     store.revisions.push_back(Arc::new(ModuleInputView {
         revision,
         snapshot: snapshot.clone(),
+        metadata: crate::shared_segments::SharedSegments::flat(
+            metadata.into(),
+            module_metadata_order,
+        ),
         stamp_lease,
     }));
     leaves
@@ -3872,7 +4065,7 @@ fn body_source_definition_key(
 
 fn closure_callable_has_body(
     context: &rue_query::QueryContext,
-    body_inputs: &QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
+    body_input: &BodyInputResolver,
     declarations: &[crate::DurableDeclarationSemantic],
     declaration_index: &crate::local_semantic_materialization::SharedDeclarationFactIndex,
     callable: &crate::FunctionInstanceKey,
@@ -3884,18 +4077,16 @@ fn closure_callable_has_body(
     if matches!(callable, crate::FunctionInstanceKey::AnonymousMember { .. }) {
         return Ok(Ok(true));
     }
-    let terminal = context.query_registered(
-        body_inputs,
-        crate::body_query::BodyQueryKey::new(callable.clone(), configuration.clone()),
-    )?;
-    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-        unreachable!("BodyInput publishes typed values")
-    };
+    let key = crate::body_query::BodyQueryKey::new(callable.clone(), configuration.clone());
+    let value = body_input.resolve(context, &key)?;
     let crate::body_query::BodyInputValue::Available(input) = value else {
-        return Ok(match value {
+        return Ok(match &value {
             crate::body_query::BodyInputValue::Incomplete(
                 crate::body_query::BodyInputIncomplete::MissingPrerequisite(detail),
             ) => Err(detail.clone()),
+            crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::BodyPlanFailure(_),
+            ) => Ok(true),
             crate::body_query::BodyInputValue::Incomplete(_) => Ok(false),
             crate::body_query::BodyInputValue::Available(_) => unreachable!(),
         });
@@ -3927,300 +4118,6 @@ fn closure_callable_has_body(
         | Payload::Const { .. }
         | Payload::ModuleBinding { .. } => false,
     }))
-}
-
-/// The request-local result of lowering one owned body input. This type is
-/// intentionally private to the evaluator module: its parsed module and RIR
-/// are fresh local artifacts and never become query values, keys, or durable
-/// publication data.
-#[derive(Debug)]
-struct OwnedBodyLowering {
-    module: Arc<crate::parsed_modules::ParsedModule>,
-    bundle: rue_air::BodyRirBundle,
-    owner_kind: crate::StableDefinitionKind,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct BodyInputLoweringAttribution {
-    assembly_snapshot_ns: u64,
-    lex_parse_ns: u64,
-    rir_lower_ns: u64,
-    span_remap_validation_ns: u64,
-    index: rue_air::BodyRirIndexAttribution,
-    source_bytes: u64,
-    declaration_fragments: u64,
-    rir_instructions: u64,
-    rir_payload_words: u64,
-}
-
-fn elapsed_ns(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-}
-
-fn publish_body_input_lowering_attribution(attribution: BodyInputLoweringAttribution) {
-    let attributed_total_ns = attribution
-        .assembly_snapshot_ns
-        .saturating_add(attribution.lex_parse_ns)
-        .saturating_add(attribution.rir_lower_ns)
-        .saturating_add(attribution.span_remap_validation_ns)
-        .saturating_add(attribution.index.duration_ns);
-    let declaration = attribution.index.declaration_index;
-    tracing::event!(
-        name: "semantic_body_lowering_breakdown",
-        target: "rue::timing",
-        tracing::Level::INFO,
-        attributed_total_ns,
-        assembly_snapshot_ns = attribution.assembly_snapshot_ns,
-        lex_parse_ns = attribution.lex_parse_ns,
-        rir_lower_ns = attribution.rir_lower_ns,
-        span_remap_validation_ns = attribution.span_remap_validation_ns,
-        body_rir_index_ns = attribution.index.duration_ns,
-        source_bytes = attribution.source_bytes,
-        declaration_fragments = attribution.declaration_fragments,
-        rir_instructions = attribution.rir_instructions,
-        rir_payload_words = attribution.rir_payload_words,
-        index_builds = declaration.build_invocations as u64,
-        index_rir_instructions_visited = declaration.rir_instructions_visited as u64,
-        index_method_references_visited = declaration.method_references_visited as u64,
-        index_shell_declarations_visited = attribution.index.shell_declarations_visited,
-        index_named_methods_indexed = attribution.index.named_methods_indexed,
-        index_const_declarations_indexed = attribution.index.const_declarations_indexed,
-    );
-}
-
-impl OwnedBodyLowering {
-    fn instruction_count(&self) -> usize {
-        self.bundle.instruction_count()
-    }
-
-    fn body_owner_count(&self) -> usize {
-        use crate::StableDefinitionKind as Kind;
-        use rue_parser::ast::Item;
-
-        self.module
-            .ast()
-            .items
-            .iter()
-            .filter(|item| match self.owner_kind {
-                Kind::Function => matches!(item, Item::Function(_)),
-                Kind::Method | Kind::AssociatedFunction => matches!(item, Item::Struct(_)),
-                Kind::Destructor => matches!(item, Item::DropFn(_)),
-                Kind::Struct | Kind::Enum | Kind::ValueConst | Kind::ModuleBinding => false,
-            })
-            .count()
-    }
-
-    #[cfg(test)]
-    fn function_count(&self) -> usize {
-        self.module
-            .ast()
-            .items
-            .iter()
-            .filter(|item| matches!(item, rue_parser::ast::Item::Function(_)))
-            .count()
-    }
-
-    fn is_valid(&self) -> bool {
-        self.body_owner_count() == 1 && self.instruction_count() > 0
-    }
-
-    #[cfg(test)]
-    fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
-        self.bundle.anonymous_type_anchors()
-    }
-}
-
-fn lower_owned_body_input(
-    input: &crate::body_query::OwnedBodyInput,
-) -> Result<OwnedBodyLowering, Arc<str>> {
-    let _body_input_lowering_span =
-        tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
-    let attribution_started = tracing::enabled!(
-        target: "rue::timing",
-        tracing::Level::INFO
-    )
-    .then(std::time::Instant::now);
-    // Constructing this parser input is deliberately just concatenation of the
-    // two exact syntax terminals. No module source, declaration slice, RIR, or
-    // live interner is consulted here.
-    let declaration = input
-        .signature
-        .declaration_fragments
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<&str>>()
-        .concat();
-    let (mut source, signature_prefix) = match input.owner.kind() {
-        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction => {
-            let owner = input
-                .owner
-                .owner()
-                .ok_or_else(|| Arc::from("owned member body has no nominal owner"))?;
-            let prefix = format!("struct {} {{", owner.name());
-            (prefix.clone(), prefix.len())
-        }
-        _ => (String::new(), 0),
-    };
-    source.push_str(&declaration);
-    source.push_str(input.body.body.as_ref());
-    if matches!(
-        input.owner.kind(),
-        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction
-    ) {
-        source.push('}');
-    }
-    let source_bytes = source.len() as u64;
-
-    let metadata = crate::SourceMetadata::new(
-        input.source.file_id,
-        [(input.source.file_id, input.source.physical_path.to_string())].into(),
-        [(
-            input.source.file_id,
-            input.owner.module().logical_path().to_owned(),
-        )]
-        .into(),
-    )
-    .map_err(|errors| Arc::from(errors.to_string()))?;
-    let snapshot =
-        crate::SourceSnapshot::new(metadata, vec![(input.source.file_id, Arc::new(source))])
-            .map_err(|errors| Arc::from(errors.to_string()))?;
-    let module_id = snapshot
-        .module_id(input.source.file_id)
-        .cloned()
-        .ok_or_else(|| Arc::from("owned body snapshot has no synthetic module"))?;
-    let assembly_finished_ns = attribution_started.map(elapsed_ns);
-    let (parsed, _) = crate::parsed_modules::parse_source_snapshot_module(&snapshot, &module_id);
-    let module = parsed.map_err(|errors| Arc::from(errors.to_string()))?;
-    let expected_item = match input.owner.kind() {
-        crate::StableDefinitionKind::Function => module
-            .ast()
-            .items
-            .first()
-            .is_some_and(|item| matches!(item, rue_parser::ast::Item::Function(_))),
-        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction => {
-            module
-                .ast()
-                .items
-                .first()
-                .is_some_and(|item| matches!(item, rue_parser::ast::Item::Struct(_)))
-        }
-        crate::StableDefinitionKind::Destructor => module
-            .ast()
-            .items
-            .first()
-            .is_some_and(|item| matches!(item, rue_parser::ast::Item::DropFn(_))),
-        crate::StableDefinitionKind::Struct
-        | crate::StableDefinitionKind::Enum
-        | crate::StableDefinitionKind::ValueConst
-        | crate::StableDefinitionKind::ModuleBinding => false,
-    };
-    if module.ast().items.len() != 1 || !expected_item {
-        return Err(Arc::from(
-            "owned body input did not lower to exactly one body owner",
-        ));
-    }
-    let parse_finished_ns = attribution_started.map(elapsed_ns);
-    let signature_len = signature_prefix
-        + input
-            .signature
-            .declaration_fragments
-            .iter()
-            .map(|fragment| fragment.len())
-            .sum::<usize>();
-    let body_len = input.body.body.len();
-    let anchors = input
-        .body
-        .anonymous_sites
-        .iter()
-        .map(|site| {
-            let start = signature_len
-                .checked_add(site.fragment_start as usize)
-                .and_then(|offset| u32::try_from(offset).ok())
-                .ok_or_else(|| Arc::from("anonymous anchor start exceeds local source"))?;
-            let end = signature_len
-                .checked_add(site.fragment_end as usize)
-                .and_then(|offset| u32::try_from(offset).ok())
-                .ok_or_else(|| Arc::from("anonymous anchor end exceeds local source"))?;
-            if site.fragment_start >= site.fragment_end || site.fragment_end as usize > body_len {
-                return Err(Arc::from(
-                    "anonymous anchor locator is outside the exact body syntax",
-                ));
-            }
-            Ok((
-                rue_span::Span::with_file(input.source.file_id, start, end),
-                site.kind,
-                site.anchor.clone(),
-            ))
-        })
-        .collect::<Result<Vec<_>, Arc<str>>>()?;
-    let rir = crate::canonical_lower::lower_module_rir_with_work_and_anonymous_anchors(
-        module.clone(),
-        &anchors,
-    )
-    .map_err(|(error, _)| Arc::from(error.to_string()))?;
-    let rir_finished_ns = attribution_started.map(elapsed_ns);
-    let local_body_start = u32::try_from(signature_len)
-        .map_err(|_| Arc::from("owned body signature exceeds span capacity"))?;
-    let local_prefix = u32::try_from(signature_prefix)
-        .map_err(|_| Arc::from("owned body prefix exceeds span capacity"))?;
-    let remap_offset = |offset: u32| {
-        if offset >= local_body_start {
-            input
-                .source
-                .body_start
-                .saturating_add(offset - local_body_start)
-                .min(input.source.source_length)
-        } else if offset >= local_prefix {
-            input
-                .source
-                .declaration_start
-                .saturating_add(offset - local_prefix)
-                .min(input.source.source_length)
-        } else {
-            input.source.declaration_start
-        }
-    };
-    let (bundle, remap) = rir
-        .into_remapped_body_rir_bundle_with_attribution(
-            input.source.file_id,
-            input.source.source_length,
-            |span| {
-                rue_span::Span::with_file(
-                    input.source.file_id,
-                    remap_offset(span.start),
-                    remap_offset(span.end),
-                )
-            },
-            attribution_started
-                .zip(rir_finished_ns)
-                .map(|(started, rir_lower_finished_ns)| {
-                    crate::canonical_lower::BodyRirAttributionClock {
-                        started,
-                        rir_lower_finished_ns,
-                    }
-                }),
-        )
-        .map_err(Arc::from)?;
-    if let (Some(assembly_finished_ns), Some(parse_finished_ns), Some(rir_finished_ns)) =
-        (assembly_finished_ns, parse_finished_ns, rir_finished_ns)
-    {
-        publish_body_input_lowering_attribution(BodyInputLoweringAttribution {
-            assembly_snapshot_ns: assembly_finished_ns,
-            lex_parse_ns: parse_finished_ns.saturating_sub(assembly_finished_ns),
-            rir_lower_ns: rir_finished_ns.saturating_sub(parse_finished_ns),
-            span_remap_validation_ns: remap.span_remap_validation_ns,
-            index: remap.index,
-            source_bytes,
-            declaration_fragments: input.signature.declaration_fragments.len() as u64,
-            rir_instructions: remap.rir_instructions,
-            rir_payload_words: remap.rir_payload_words,
-        });
-    }
-    Ok(OwnedBodyLowering {
-        module,
-        bundle,
-        owner_kind: input.owner.kind(),
-    })
 }
 
 /// Project statically resolvable free-function and type-constructor call heads
@@ -4795,12 +4692,89 @@ impl<'a> WarningStaticCallCollector<'a> {
     }
 }
 
+#[derive(Debug)]
+struct AnonymousMemberLowering {
+    bundle: rue_air::BodyRirBundle,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AnonymousMemberLoweringAttribution {
+    assembly_snapshot_ns: u64,
+    lex_parse_ns: u64,
+    rir_lower_ns: u64,
+    span_remap_validation_ns: u64,
+    index: rue_air::BodyRirIndexAttribution,
+    source_bytes: u64,
+    declaration_fragments: u64,
+    rir_instructions: u64,
+    rir_payload_words: u64,
+}
+
+fn elapsed_ns(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn publish_anonymous_member_lowering_attribution(attribution: AnonymousMemberLoweringAttribution) {
+    let attributed_total_ns = attribution
+        .assembly_snapshot_ns
+        .saturating_add(attribution.lex_parse_ns)
+        .saturating_add(attribution.rir_lower_ns)
+        .saturating_add(attribution.span_remap_validation_ns)
+        .saturating_add(attribution.index.duration_ns);
+    tracing::event!(
+        name: "semantic_anonymous_member_lowering_breakdown",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        attributed_total_ns,
+        assembly_snapshot_ns = attribution.assembly_snapshot_ns,
+        lex_parse_ns = attribution.lex_parse_ns,
+        rir_lower_ns = attribution.rir_lower_ns,
+        span_remap_validation_ns = attribution.span_remap_validation_ns,
+        body_rir_index_ns = attribution.index.duration_ns,
+        source_bytes = attribution.source_bytes,
+        declaration_fragments = attribution.declaration_fragments,
+        rir_instructions = attribution.rir_instructions,
+        rir_payload_words = attribution.rir_payload_words,
+    );
+}
+
+fn publish_body_plan_materialization_attribution(
+    attribution: crate::canonical_lower::BodyPlanMaterializationAttribution,
+) {
+    let attributed_total_ns = attribution
+        .span_remap_validation_ns
+        .saturating_add(attribution.index.duration_ns);
+    let declaration = attribution.index.declaration_index;
+    tracing::event!(
+        name: "semantic_body_lowering_breakdown",
+        target: "rue::timing",
+        tracing::Level::INFO,
+        attributed_total_ns,
+        assembly_snapshot_ns = 0_u64,
+        lex_parse_ns = 0_u64,
+        rir_lower_ns = 0_u64,
+        span_remap_validation_ns = attribution.span_remap_validation_ns,
+        body_rir_index_ns = attribution.index.duration_ns,
+        plan_materializations = 1_u64,
+        base_symbol_rebuild_ns = attribution.base_symbol_rebuild_ns,
+        base_symbols_rebuilt = attribution.base_symbols_rebuilt,
+        rir_instructions = attribution.rir_instructions,
+        rir_payload_words = attribution.rir_payload_words,
+        index_builds = declaration.build_invocations as u64,
+        index_rir_instructions_visited = declaration.rir_instructions_visited as u64,
+        index_method_references_visited = declaration.method_references_visited as u64,
+        index_shell_declarations_visited = attribution.index.shell_declarations_visited,
+        index_named_methods_indexed = attribution.index.named_methods_indexed,
+        index_const_declarations_indexed = attribution.index.const_declarations_indexed,
+    );
+}
+
 fn lower_anonymous_member_body_input(
     input: &crate::durable_semantics::DurableAnonymousMemberBodySyntax,
     member: &crate::AnonymousMemberKey,
     source_locator: &rue_air::DurableBodySourceLocator,
     producer_fragment_start: u32,
-) -> Result<OwnedBodyLowering, Arc<str>> {
+) -> Result<AnonymousMemberLowering, Arc<str>> {
     let _body_input_lowering_span =
         tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
     let attribution_started = tracing::enabled!(
@@ -4887,11 +4861,34 @@ fn lower_anonymous_member_body_input(
             ))
         })
         .collect::<Result<Vec<_>, Arc<str>>>()?;
-    let rir = crate::canonical_lower::lower_module_rir_with_work_and_anonymous_anchors(
+    let artifacts = module
+        .definitions()
+        .declaration_keys_in_source_order()
+        .map(|key| {
+            let artifact = if matches!(
+                key.category,
+                crate::declaration_candidate::DeclarationCandidateCategory::Method
+                    | crate::declaration_candidate::DeclarationCandidateCategory::AssociatedFunction
+            ) {
+                crate::canonical_lower::lower_parsed_declaration_body_plan_with_anonymous_anchors(
+                    &module,
+                    key,
+                    &anchors,
+                    || Ok(()),
+                )
+            } else {
+                crate::canonical_lower::lower_parsed_declaration_body_plan(&module, key, || Ok(()))
+            }
+            .map_err(|error| Arc::from(format!("{error:?}")))?;
+            Ok((key.clone(), Arc::new(artifact)))
+        })
+        .collect::<Result<HashMap<_, _>, Arc<str>>>()?;
+    let rir = crate::canonical_lower::compose_module_rir_from_candidate_artifacts(
         module.clone(),
-        &anchors,
+        &artifacts,
+        || Ok(()),
     )
-    .map_err(|(error, _)| Arc::from(error.to_string()))?;
+    .map_err(|error| Arc::from(format!("{error:?}")))?;
     let rir_finished_ns = attribution_started.map(elapsed_ns);
     let source_length = source_locator.source_length;
     let local_prefix = u32::try_from(prefix.len())
@@ -4947,7 +4944,7 @@ fn lower_anonymous_member_body_input(
     if let (Some(assembly_finished_ns), Some(parse_finished_ns), Some(rir_finished_ns)) =
         (assembly_finished_ns, parse_finished_ns, rir_finished_ns)
     {
-        publish_body_input_lowering_attribution(BodyInputLoweringAttribution {
+        publish_anonymous_member_lowering_attribution(AnonymousMemberLoweringAttribution {
             assembly_snapshot_ns: assembly_finished_ns,
             lex_parse_ns: parse_finished_ns.saturating_sub(assembly_finished_ns),
             rir_lower_ns: rir_finished_ns.saturating_sub(parse_finished_ns),
@@ -4959,11 +4956,7 @@ fn lower_anonymous_member_body_input(
             rir_payload_words: remap.rir_payload_words,
         });
     }
-    Ok(OwnedBodyLowering {
-        module,
-        bundle,
-        owner_kind: crate::StableDefinitionKind::Method,
-    })
+    Ok(AnonymousMemberLowering { bundle })
 }
 
 fn declaration_candidate_for_stable_key(
@@ -11608,6 +11601,12 @@ impl RevisionedQueryDatabase {
             next_stamp: 1,
             ..TestImportInputStore::default()
         }));
+        #[cfg(test)]
+        let declaration_body_plan_failure_injection: DeclarationBodyPlanFailureInjection =
+            Arc::new(Mutex::new(None));
+        #[cfg(test)]
+        let declaration_body_plan_astgen_evaluations =
+            Arc::new(std::sync::atomic::AtomicU64::new(0));
         let parse_store = module_store.clone();
         let parse_modules = runtime
             .family_with_equality_and_evaluator(
@@ -11624,6 +11623,7 @@ impl RevisionedQueryDatabase {
             )
             .expect("the ParseModule family has one canonical name");
         let parse_for_module_source_bases = parse_modules.clone();
+        let module_store_for_module_source_bases = module_store.clone();
         // Body-host module registration needs only stable file identity and
         // path. Keep that dependency independent of the exact parsed module so
         // an imported body's text edit does not invalidate every caller merely
@@ -11645,6 +11645,7 @@ impl RevisionedQueryDatabase {
                     }
                 },
                 move |context, _, key: &ModuleQueryKey| {
+                    context.input(module_metadata_input(&key.0))?;
                     let parsed =
                         context.query_registered(&parse_for_module_source_bases, key.clone())?;
                     let rue_query::QueryOutcome::Success(ParseModuleValue {
@@ -11654,10 +11655,18 @@ impl RevisionedQueryDatabase {
                     else {
                         return Ok(QueryOutput::success(None));
                     };
+                    let view = module_input_view(
+                        &module_store_for_module_source_bases,
+                        context.revision(),
+                    )?;
+                    let current = view
+                        .metadata
+                        .find_by(|leaf| leaf.module.cmp(&key.0))
+                        .ok_or(QueryAbort::Canceled)?;
                     Ok(QueryOutput::success(Some(
                         rue_air::DurableBodySourceLocator {
-                            file_id: parsed.file_id(),
-                            physical_path: Arc::from(parsed.physical_path()),
+                            file_id: current.file_id,
+                            physical_path: current.physical_path.clone(),
                             source_length: u32::try_from(parsed.source_text().len())
                                 .map_err(|_| QueryAbort::Canceled)?,
                         },
@@ -12463,6 +12472,119 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the RawDeclarationBody family has one canonical name");
+        let parse_for_declaration_body_plan_artifacts = parse_modules.clone();
+        let index_for_declaration_body_plan_artifacts = module_indexes.clone();
+        #[cfg(test)]
+        let plan_failure_injection_for_artifacts = declaration_body_plan_failure_injection.clone();
+        #[cfg(test)]
+        let astgen_evaluations_for_artifacts = declaration_body_plan_astgen_evaluations.clone();
+        let declaration_body_plan_artifacts = runtime
+            .family_with_equality_and_evaluator_and_retained_charge(
+                "compiler.declaration-body-plan-artifacts",
+                BODY_QUERY_MEMO_RETENTION,
+                declaration_body_plan_artifacts_equal,
+                DeclarationBodyPlanArtifactsValue::retained_charge,
+                move |context, _, key: &DeclarationBodyPlanQueryKey| {
+                    context.check_canceled()?;
+                    #[cfg(test)]
+                    if let Some((candidate, errors)) = plan_failure_injection_for_artifacts
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        && candidate == &key.0
+                    {
+                        return Ok(QueryOutput::success(
+                            DeclarationBodyPlanArtifactsValue::Failure(
+                                DeclarationBodyPlanFailure::CandidateRirRejected(errors.clone()),
+                            ),
+                        )
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    let parsed = context.query_registered(
+                        &parse_for_declaration_body_plan_artifacts,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let indexed = context.query_registered(
+                        &index_for_declaration_body_plan_artifacts,
+                        ModuleQueryKey(key.0.module.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
+                        unreachable!("ParseModule publishes typed values")
+                    };
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("ModuleIndex publishes typed values")
+                    };
+                    let value = match (&parsed.result, &indexed.0) {
+                        (Err(errors), _) | (_, Err(errors)) => DeclarationBodyPlanArtifactsValue::Failure(
+                            DeclarationBodyPlanFailure::CandidateRirRejected(errors.clone()),
+                        ),
+                        (Ok(module), Ok(_)) => {
+                            #[cfg(test)]
+                            astgen_evaluations_for_artifacts.fetch_add(
+                                1,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
+                            match crate::canonical_lower::lower_parsed_declaration_body_plan(
+                                module,
+                                &key.0,
+                                || context.check_canceled(),
+                            ) {
+                            Ok(artifacts) => {
+                                DeclarationBodyPlanArtifactsValue::Available(Arc::new(artifacts))
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::Query(
+                                abort,
+                            )) => return Err(abort),
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::MissingCandidate) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::CandidateUnavailable(key.0.clone()),
+                                )
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::ForeignSymbol(detail)) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::ForeignSymbol(detail),
+                                )
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::Build(error)) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::Build(
+                                        crate::canonical_lower::rir_build_error_kind(
+                                            "packed body-plan construction",
+                                            &error,
+                                        ),
+                                    ),
+                                )
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::Payload(detail)) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::Payload(detail),
+                                )
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::Validation(detail)) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::Validation(detail),
+                                )
+                            }
+                            Err(crate::canonical_lower::DeclarationBodyPlanBuildFailure::SpanProjection(detail)) => {
+                                DeclarationBodyPlanArtifactsValue::Failure(
+                                    DeclarationBodyPlanFailure::SpanProjection(detail),
+                                )
+                            }
+                            }
+                        }
+                    };
+                    let kind = if matches!(
+                        value,
+                        DeclarationBodyPlanArtifactsValue::Available(_)
+                    ) {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the DeclarationBodyPlanArtifacts family has one canonical name");
         let index_for_lookup = module_indexes.clone();
         #[cfg(test)]
         let lookup_name_eval_probe = lookup_name_eval_log.clone();
@@ -12571,35 +12693,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the LookupImport family has one canonical name");
-        let parse_for_rir = parse_modules.clone();
-        let index_for_rir = module_indexes.clone();
-        let module_rirs = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.module-rir",
-                MODULE_QUERY_MEMO_RETENTION,
-                module_rir_value_equal,
-                move |context, _, key: &ModuleQueryKey| {
-                    let parsed = context.query_registered(&parse_for_rir, key.clone())?;
-                    let indexed = context.query_registered(&index_for_rir, key.clone())?;
-                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
-                        unreachable!("ParseModule publishes typed values")
-                    };
-                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
-                        unreachable!("ModuleIndex publishes typed values")
-                    };
-                    let value = match (&parsed.result, &indexed.0) {
-                        (Ok(module), Ok(_)) => module_rir_value_from_lowering(
-                            lower_module_rir_with_work(module.clone()),
-                        ),
-                        (Err(errors), _) | (_, Err(errors)) => ModuleRirValue {
-                            result: Err(errors.clone()),
-                            work: crate::CanonicalRirWork::default(),
-                        },
-                    };
-                    Ok(QueryOutput::success(value))
-                },
-            )
-            .expect("the ModuleRir family has one canonical name");
         let import_store = Arc::new(Mutex::new(ImportInputStore::default()));
         let evaluator_store = import_store.clone();
         let index_for_import_resolution = module_indexes.clone();
@@ -12985,25 +13078,21 @@ impl RevisionedQueryDatabase {
         let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
         let names_for_semantic_nucleus = lookup_names.clone();
         let imports_for_semantic_nucleus = declaration_imports.clone();
-        let classifications_for_body_inputs = stable_declaration_classifications.clone();
-        let shells_for_body_inputs = declaration_shells.clone();
-        let signatures_for_body_inputs = raw_declaration_signatures.clone();
-        let bodies_for_body_inputs = raw_declaration_bodies.clone();
-        let classifications_for_body_source_locators = stable_declaration_classifications.clone();
-        let parse_for_body_source_locators = parse_modules.clone();
-        let module_store_for_body_source_locators = module_store.clone();
-        let body_source_locators = runtime
+        let classifications_for_body_source_bases = stable_declaration_classifications.clone();
+        let parse_for_body_source_bases = parse_modules.clone();
+        let module_store_for_body_source_bases = module_store.clone();
+        let body_source_bases = runtime
             .family_with_equality_and_evaluator(
-                "compiler.body-source-locator",
+                "compiler.body-source-basis",
                 BODY_QUERY_MEMO_RETENTION,
-                crate::body_query::body_source_locator_equal,
+                crate::body_query::body_source_basis_equal,
                 move |context, _, key: &crate::body_query::BodyQueryKey| {
                     let Some(definition) = body_source_definition_key(&key.instance).cloned()
                     else {
                         return Ok(QueryOutput::success(None));
                     };
                     let classification = context.query_registered(
-                        &classifications_for_body_source_locators,
+                        &classifications_for_body_source_bases,
                         StableDeclarationClassificationQueryKey(definition),
                     )?;
                     let rue_query::QueryOutcome::Success(
@@ -13017,8 +13106,9 @@ impl RevisionedQueryDatabase {
                     // projection must also observe the exact module-source leaf
                     // so presentation coordinates refresh independently.
                     context.input(module_source_input(&candidate.module))?;
+                    context.input(module_metadata_input(&candidate.module))?;
                     let parsed = context.query_registered(
-                        &parse_for_body_source_locators,
+                        &parse_for_body_source_bases,
                         ModuleQueryKey(candidate.module.clone()),
                     )?;
                     let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
@@ -13039,19 +13129,26 @@ impl RevisionedQueryDatabase {
                     let Some((declaration_span, body_span)) = spans else {
                         return Ok(QueryOutput::success(None));
                     };
-                    let view = module_input_view(
-                        &module_store_for_body_source_locators,
-                        context.revision(),
-                    )?;
+                    let view =
+                        module_input_view(&module_store_for_body_source_bases, context.revision())?;
+                    let current = view
+                        .metadata
+                        .find_by(|leaf| leaf.module.cmp(&candidate.module))
+                        .ok_or(QueryAbort::Canceled)?;
                     let source_length = view
                         .snapshot
-                        .source(module.file_id())
+                        .source(current.file_id)
                         .and_then(|source| u32::try_from(source.source.len()).ok())
+                        .ok_or(QueryAbort::Canceled)?;
+                    let physical_path = view
+                        .snapshot
+                        .metadata()
+                        .physical_path(current.file_id)
                         .ok_or(QueryAbort::Canceled)?;
                     Ok(QueryOutput::success(Some(
                         crate::body_query::BodySourceLocator {
-                            file_id: module.file_id(),
-                            physical_path: Arc::from(module.physical_path()),
+                            file_id: current.file_id,
+                            physical_path: Arc::from(physical_path),
                             source_length,
                             declaration_start: declaration_span.start,
                             declaration_end: declaration_span.end,
@@ -13061,196 +13158,28 @@ impl RevisionedQueryDatabase {
                     )))
                 },
             )
-            .expect("the BodySourceLocator family has one canonical name");
-        let exact_locators_for_body_source_bases = body_source_locators.clone();
-        let body_source_bases = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.body-source-basis",
-                BODY_QUERY_MEMO_RETENTION,
-                crate::body_query::body_source_basis_equal,
-                move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    let locator = context
-                        .query_registered(&exact_locators_for_body_source_bases, key.clone())?;
-                    let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
-                        unreachable!("BodySourceLocator publishes typed values")
-                    };
-                    Ok(QueryOutput::success(locator.clone()))
-                },
-            )
             .expect("the BodySourceBasis family has one canonical name");
-        let locators_for_body_inputs = body_source_locators.clone();
-        let body_inputs = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.body-input",
-                BODY_QUERY_MEMO_RETENTION,
-                crate::body_query::body_input_equal,
-                move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
-
-                    let Some(definition) = body_source_definition_key(&key.instance).cloned()
-                    else {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::UnsupportedInstance,
-                        )));
-                    };
-                    if !definition.kind().owns_body() {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::UnsupportedKind(definition.kind()),
-                        )));
-                    }
-                    let classification = match context.query_registered(
-                        &classifications_for_body_inputs,
-                        StableDeclarationClassificationQueryKey(definition.clone()),
-                    ) {
-                        Ok(value) => value,
-                        Err(QueryAbort::MissingInput(_)) => {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::MissingPrerequisite(Arc::from(
-                                    "stable declaration classification",
-                                )),
-                            )));
-                        }
-                        Err(abort) => return Err(abort),
-                    };
-                    let candidate = match classification.outcome() {
-                        rue_query::QueryOutcome::Success(
-                            StableDeclarationClassificationQueryValue::Selected(candidate),
-                        ) => candidate.clone(),
-                        _ => {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::MissingPrerequisite(Arc::from(
-                                    "stable declaration candidate",
-                                )),
-                            )));
-                        }
-                    };
-                    let shell = match context.query_registered(
-                        &shells_for_body_inputs,
-                        DeclarationShellQueryKey(candidate.clone()),
-                    ) {
-                        Ok(value) => value,
-                        Err(QueryAbort::MissingInput(_)) => {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::MissingPrerequisite(Arc::from(
-                                    "declaration shell",
-                                )),
-                            )));
-                        }
-                        Err(abort) => return Err(abort),
-                    };
-                    let rue_query::QueryOutcome::Success(
-                        DeclarationShellQueryValue::Available(shell),
-                    ) = shell.outcome()
-                    else {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::MissingPrerequisite(Arc::from("declaration shell")),
-                        )));
-                    };
-                    if shell.is_extern
-                        || candidate.category
-                            == crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
-                    {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::Extern,
-                        )));
-                    }
-                    let signature = match context.query_registered(
-                        &signatures_for_body_inputs,
-                        RawDeclarationSignatureQueryKey(candidate.clone()),
-                    ) {
-                        Ok(value) => value,
-                        Err(QueryAbort::MissingInput(_)) => {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::MissingPrerequisite(Arc::from(
-                                    "raw declaration signature",
-                                )),
-                            )));
-                        }
-                        Err(abort) => return Err(abort),
-                    };
-                    let rue_query::QueryOutcome::Success(
-                        RawDeclarationSignatureQueryValue::Available(signature),
-                    ) = signature.outcome()
-                    else {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::MissingPrerequisite(Arc::from(
-                                "raw declaration signature",
-                            )),
-                        )));
-                    };
-                    if shell.is_generic
-                        && matches!(
-                            key.instance,
-                            crate::FunctionInstanceKey::Definition(_)
-                        )
-                    {
-                        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
-                        use crate::semantic_query_nucleus::ParsedSemanticSignature;
-
-                        // Free functions with any comptime parameter are
-                        // materialized only through specialization identities.
-                        // Named members are different: their comptime value
-                        // parameters stay in the one runtime body and ABI.
-                        // Only a comptime type parameter makes that definition
-                        // unavailable without a specialized identity.
-                        let named_runtime_value_body = matches!(
-                            candidate.category,
-                            Category::Method | Category::AssociatedFunction
-                        ) && matches!(
-                            crate::semantic_query_nucleus::parse_semantic_signature(
-                                &candidate, signature
-                            ),
-                            Ok(ParsedSemanticSignature::Callable { parameters, .. })
-                                if parameters.iter().all(|parameter| {
-                                    !parameter.is_comptime || parameter.ty.trim() != "type"
-                                })
-                        );
-                        if !named_runtime_value_body {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::Generic,
-                            )));
-                        }
-                    }
-                    let body = match context.query_registered(
-                        &bodies_for_body_inputs,
-                        RawDeclarationBodyQueryKey(candidate.clone()),
-                    ) {
-                        Ok(value) => value,
-                        Err(QueryAbort::MissingInput(_)) => {
-                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                                Incomplete::MissingPrerequisite(Arc::from(
-                                    "raw declaration body",
-                                )),
-                            )));
-                        }
-                        Err(abort) => return Err(abort),
-                    };
-                    let rue_query::QueryOutcome::Success(
-                        RawDeclarationBodyQueryValue::Available(body),
-                    ) = body.outcome()
-                    else {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::MissingPrerequisite(Arc::from("raw declaration body")),
-                        )));
-                    };
-                    let locator =
-                        context.query_registered(&locators_for_body_inputs, key.clone())?;
-                    let rue_query::QueryOutcome::Success(Some(locator)) = locator.outcome()
-                    else {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::MissingPrerequisite(Arc::from("body source locator")),
-                        )));
-                    };
-                    let input = crate::body_query::OwnedBodyInput {
-                        owner: definition,
-                        source: locator.clone(),
-                        signature: signature.clone(),
-                        body: body.clone(),
-                    };
-                    Ok(QueryOutput::success(BodyInputValue::Available(input)))
-                },
-            )
-            .expect("the BodyInput family has one canonical name");
+        let body_input_resolver = BodyInputResolver {
+            stable_declaration_classifications: stable_declaration_classifications.clone(),
+            declaration_shells: declaration_shells.clone(),
+            raw_declaration_signatures: raw_declaration_signatures.clone(),
+            declaration_body_plan_artifacts: declaration_body_plan_artifacts.clone(),
+            body_source_bases: body_source_bases.clone(),
+        };
+        #[cfg(test)]
+        let body_inputs = {
+            let resolver = body_input_resolver.clone();
+            runtime
+                .family_with_equality_and_evaluator(
+                    "compiler.test-body-input-probe",
+                    BODY_QUERY_MEMO_RETENTION,
+                    crate::body_query::body_input_equal,
+                    move |context, _, key: &crate::body_query::BodyQueryKey| {
+                        Ok(QueryOutput::success(resolver.resolve(context, key)?))
+                    },
+                )
+                .expect("the test BodyInput probe family has one canonical name")
+        };
         let parse_for_warning_syntax = parse_modules.clone();
         let warning_body_syntax = runtime
             .family_with_equality_and_evaluator(
@@ -13506,13 +13435,14 @@ impl RevisionedQueryDatabase {
             )
             .expect("the CanonicalBody family has one canonical name");
         // The registered `body-toolchain-demands` node (RUE-1112). Its only
-        // input is the exact raw declaration body, so the raw-body dependency
-        // edge is recorded honestly; the projection itself is a pure lexical
-        // scan of that body's fallible intrinsics. It performs no presence check
-        // and no I/O, so the rooted attempt may evaluate it before deciding to
-        // park. A body with no source declaration, an unavailable raw body, or no
-        // fallible intrinsic projects the empty demand set.
-        let bodies_for_toolchain_demands = raw_declaration_bodies.clone();
+        // semantic input is the exact candidate artifact, whose canonical pack
+        // traversal derives the typed fallible-intrinsic set. It performs no
+        // source rescan, presence check, or I/O, so the rooted attempt may
+        // evaluate it before deciding to park. A missing source candidate, a
+        // failed artifact, or no fallible intrinsic projects the empty set; a
+        // failed artifact remains candidate-available so the body transaction
+        // publishes its exact typed failure rather than being canceled here.
+        let artifacts_for_toolchain_demands = declaration_body_plan_artifacts.clone();
         let body_toolchain_demands = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-toolchain-demands",
@@ -13536,33 +13466,22 @@ impl RevisionedQueryDatabase {
                             ),
                         ));
                     };
-                    let raw = context.query_registered(
-                        &bodies_for_toolchain_demands,
-                        RawDeclarationBodyQueryKey(candidate),
+                    let artifact = context.query_registered(
+                        &artifacts_for_toolchain_demands,
+                        DeclarationBodyPlanQueryKey(candidate),
                     )?;
-                    let rue_query::QueryOutcome::Success(RawDeclarationBodyQueryValue::Available(
-                        raw_body,
-                    )) = raw.outcome()
-                    else {
-                        // No scannable body text (absent, ambiguous, or an
-                        // occurrence failure): nothing is demanded. The body
-                        // transaction, which runs only on a satisfied prerequisite,
-                        // surfaces that failure through its ordinary path.
-                        return Ok(QueryOutput::success(
-                            crate::BodyToolchainDemand::from_payload_kinds(
-                                [],
-                                Some(definition),
-                                false,
-                            ),
-                        ));
+                    let rue_query::QueryOutcome::Success(artifact) = artifact.outcome() else {
+                        unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
                     };
-                    // The single canonical per-body fallible-intrinsic scan
-                    // (RUE-1112 C1). This node is the one authority for a body's
-                    // payload kinds AND the trusted-module demands they imply; the
-                    // body transaction observes this terminal instead of rescanning
-                    // the raw text.
-                    let payload_kinds =
-                        crate::well_known_option::scan_body_payload_kinds(&raw_body.body);
+                    let payload_kinds = match artifact {
+                        DeclarationBodyPlanArtifactsValue::Available(artifact) => artifact
+                            .plan
+                            .fallible_intrinsics()
+                            .iter()
+                            .map(crate::well_known_option::FalliblePayload::from_rir)
+                            .collect::<Vec<_>>(),
+                        DeclarationBodyPlanArtifactsValue::Failure(_) => Vec::new(),
+                    };
                     Ok(QueryOutput::success(
                         crate::BodyToolchainDemand::from_payload_kinds(
                             payload_kinds,
@@ -15521,6 +15440,9 @@ impl RevisionedQueryDatabase {
             .expect("the backend-root publication family has one canonical name");
         #[cfg(test)]
         let inject_body_transaction_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        #[cfg(test)]
+        let inject_body_materialization_cancel_after =
+            Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
         let canonical_for_analysis_bundle = canonical_bodies.clone();
@@ -15594,7 +15516,7 @@ impl RevisionedQueryDatabase {
         let transactions_for_body_reachability = body_transactions.clone();
         let references_for_body_closure = body_references.clone();
         let produced_for_body_reachability = body_produced_anonymous.clone();
-        let inputs_for_body_closure = body_inputs.clone();
+        let input_for_body_closure = body_input_resolver.clone();
         let declarations_for_body_closure = declaration_semantics_projection.clone();
         let type_facts_for_body_reachability = type_facts.clone();
         let call_abis_for_body_reachability = call_abis.clone();
@@ -16272,7 +16194,7 @@ impl RevisionedQueryDatabase {
                                     let _ = abi;
                                     match closure_callable_has_body(
                                         context,
-                                        &inputs_for_body_closure,
+                                        &input_for_body_closure,
                                         &projection.declarations,
                                         &projection.declaration_index,
                                         callable,
@@ -16774,7 +16696,7 @@ impl RevisionedQueryDatabase {
                     parse_modules: parse_modules.clone(),
                     module_source_bases: module_source_bases.clone(),
                     raw_declaration_signatures: raw_declaration_signatures.clone(),
-                    body_inputs: body_inputs.clone(),
+                    body_input: body_input_resolver,
                     body_source_bases: body_source_bases.clone(),
                     body_toolchain_demands: body_toolchain_demands.clone(),
                     body_produced_anonymous: body_produced_anonymous.clone(),
@@ -16788,6 +16710,9 @@ impl RevisionedQueryDatabase {
                     runtime: runtime.clone(),
                     #[cfg(test)]
                     inject_body_transaction_failure: inject_body_transaction_failure.clone(),
+                    #[cfg(test)]
+                    inject_body_materialization_cancel_after:
+                        inject_body_materialization_cancel_after.clone(),
                 })
                 .is_ok(),
             "BodyTransaction evaluator is installed once"
@@ -16811,6 +16736,8 @@ impl RevisionedQueryDatabase {
             module_store,
             #[cfg(test)]
             test_import_store,
+            #[cfg(test)]
+            declaration_body_plan_failure_injection,
             parse_modules,
             module_source_bases,
             module_indexes,
@@ -16825,8 +16752,9 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             raw_declaration_bodies: raw_declaration_bodies.clone(),
             warning_body_references,
+            #[cfg(test)]
             body_inputs,
-            body_source_locators,
+            body_source_bases,
             body_toolchain_demands,
             body_transactions,
             canonical_bodies,
@@ -16837,7 +16765,9 @@ impl RevisionedQueryDatabase {
             body_reachability_meter,
             body_references,
             body_produced_anonymous,
-            module_rirs,
+            declaration_body_plan_artifacts,
+            #[cfg(test)]
+            declaration_body_plan_astgen_evaluations,
             resolve_imports,
             #[cfg(test)]
             declaration_imports,
@@ -16894,6 +16824,8 @@ impl RevisionedQueryDatabase {
             next_backend_root_epoch: std::sync::atomic::AtomicU64::new(1),
             #[cfg(test)]
             inject_body_transaction_failure,
+            #[cfg(test)]
+            inject_body_materialization_cancel_after,
             #[cfg(test)]
             provider_probe: runtime
                 .family_with_equality(
@@ -16957,6 +16889,40 @@ impl RevisionedQueryDatabase {
             "body transaction failure injection is not nestable"
         );
         TestBodyTransactionFailureGuard(self.inject_body_transaction_failure.clone())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cancel_body_materialization_after_checkpoints_for_test(
+        &self,
+        checkpoints: usize,
+    ) -> TestBodyMaterializationCancellationGuard {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        assert_eq!(
+            self.inject_body_materialization_cancel_after
+                .swap(checkpoints, SeqCst),
+            usize::MAX,
+            "body materialization cancellation injection is not nestable"
+        );
+        TestBodyMaterializationCancellationGuard(
+            self.inject_body_materialization_cancel_after.clone(),
+        )
+    }
+
+    #[cfg(test)]
+    fn inject_declaration_body_plan_failure_for_test(
+        &self,
+        definition: &crate::StableDefinitionKey,
+        errors: crate::CompileErrors,
+    ) {
+        let candidate = declaration_candidate_for_stable_key(definition)
+            .expect("test plan-failure injection targets a source declaration");
+        let mut injection = self
+            .declaration_body_plan_failure_injection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(injection.is_none(), "plan-failure injection is single-use");
+        *injection = Some((candidate, errors));
     }
 
     #[cfg(test)]
@@ -17678,12 +17644,167 @@ impl RevisionedQueryDatabase {
     }
 }
 
+#[derive(Clone)]
+struct BodyInputResolver {
+    stable_declaration_classifications: QueryFamily<
+        StableDeclarationClassificationQueryKey,
+        StableDeclarationClassificationQueryValue,
+    >,
+    declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    raw_declaration_signatures:
+        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
+    declaration_body_plan_artifacts:
+        QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
+    body_source_bases:
+        QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
+}
+
+impl BodyInputResolver {
+    fn resolve(
+        &self,
+        context: &rue_query::QueryContext,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> Result<crate::body_query::BodyInputValue, QueryAbort> {
+        use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
+
+        let Some(definition) = body_source_definition_key(&key.instance).cloned() else {
+            return Ok(BodyInputValue::Incomplete(Incomplete::UnsupportedInstance));
+        };
+        if !definition.kind().owns_body() {
+            return Ok(BodyInputValue::Incomplete(Incomplete::UnsupportedKind(
+                definition.kind(),
+            )));
+        }
+        let classification = match context.query_registered(
+            &self.stable_declaration_classifications,
+            StableDeclarationClassificationQueryKey(definition.clone()),
+        ) {
+            Ok(value) => value,
+            Err(QueryAbort::MissingInput(_)) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                    Arc::from("stable declaration classification"),
+                )));
+            }
+            Err(abort) => return Err(abort),
+        };
+        let candidate = match classification.outcome() {
+            rue_query::QueryOutcome::Success(
+                StableDeclarationClassificationQueryValue::Selected(candidate),
+            ) => candidate.clone(),
+            _ => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                    Arc::from("stable declaration candidate"),
+                )));
+            }
+        };
+        let shell = match context.query_registered(
+            &self.declaration_shells,
+            DeclarationShellQueryKey(candidate.clone()),
+        ) {
+            Ok(value) => value,
+            Err(QueryAbort::MissingInput(_)) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                    Arc::from("declaration shell"),
+                )));
+            }
+            Err(abort) => return Err(abort),
+        };
+        let rue_query::QueryOutcome::Success(DeclarationShellQueryValue::Available(shell)) =
+            shell.outcome()
+        else {
+            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                Arc::from("declaration shell"),
+            )));
+        };
+        if shell.is_extern
+            || candidate.category
+                == crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+        {
+            return Ok(BodyInputValue::Incomplete(Incomplete::Extern));
+        }
+        let signature = match context.query_registered(
+            &self.raw_declaration_signatures,
+            RawDeclarationSignatureQueryKey(candidate.clone()),
+        ) {
+            Ok(value) => value,
+            Err(QueryAbort::MissingInput(_)) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                    Arc::from("raw declaration signature"),
+                )));
+            }
+            Err(abort) => return Err(abort),
+        };
+        let rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(
+            signature,
+        )) = signature.outcome()
+        else {
+            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                Arc::from("raw declaration signature"),
+            )));
+        };
+        if shell.is_generic && matches!(key.instance, crate::FunctionInstanceKey::Definition(_)) {
+            use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+            use crate::semantic_query_nucleus::ParsedSemanticSignature;
+
+            let named_runtime_value_body = matches!(
+                candidate.category,
+                Category::Method | Category::AssociatedFunction
+            ) && matches!(
+                crate::semantic_query_nucleus::parse_semantic_signature(&candidate, signature),
+                Ok(ParsedSemanticSignature::Callable { parameters, .. })
+                    if parameters.iter().all(|parameter| {
+                        !parameter.is_comptime || parameter.ty.trim() != "type"
+                    })
+            );
+            if !named_runtime_value_body {
+                return Ok(BodyInputValue::Incomplete(Incomplete::Generic));
+            }
+        }
+        let artifacts = match context.query_registered(
+            &self.declaration_body_plan_artifacts,
+            DeclarationBodyPlanQueryKey(candidate),
+        ) {
+            Ok(value) => value,
+            Err(QueryAbort::MissingInput(_)) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                    Arc::from("declaration body plan"),
+                )));
+            }
+            Err(abort) => return Err(abort),
+        };
+        let rue_query::QueryOutcome::Success(artifacts) = artifacts.outcome() else {
+            unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
+        };
+        let artifacts = match artifacts {
+            DeclarationBodyPlanArtifactsValue::Available(artifacts) => artifacts,
+            DeclarationBodyPlanArtifactsValue::Failure(failure) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::BodyPlanFailure(
+                    failure.clone(),
+                )));
+            }
+        };
+        let locator = context.query_registered(&self.body_source_bases, key.clone())?;
+        let rue_query::QueryOutcome::Success(Some(locator)) = locator.outcome() else {
+            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                Arc::from("body source basis"),
+            )));
+        };
+        Ok(BodyInputValue::Available(
+            crate::body_query::OwnedBodyInput {
+                owner: definition,
+                source: locator.clone(),
+                artifacts: artifacts.clone(),
+            },
+        ))
+    }
+}
+
 struct BodyTransactionEvaluator {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
-    body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
+    body_input: BodyInputResolver,
     body_source_bases:
         QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
     body_toolchain_demands:
@@ -17703,9 +17824,53 @@ struct BodyTransactionEvaluator {
     runtime: QueryRuntime,
     #[cfg(test)]
     inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    inject_body_materialization_cancel_after: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl BodyTransactionEvaluator {
+    fn materialization_checkpoint(
+        &self,
+        context: &rue_query::QueryContext,
+    ) -> Result<(), QueryAbort> {
+        #[cfg(test)]
+        {
+            use std::sync::atomic::Ordering::SeqCst;
+            let remaining = self.inject_body_materialization_cancel_after.load(SeqCst);
+            if remaining != usize::MAX {
+                if remaining == 0 {
+                    return Err(QueryAbort::Canceled);
+                }
+                self.inject_body_materialization_cancel_after
+                    .fetch_sub(1, SeqCst);
+            }
+        }
+        context.check_canceled()
+    }
+
+    fn body_plan_failure(
+        definition: &crate::StableDefinitionKey,
+        failure: &DeclarationBodyPlanFailure,
+    ) -> crate::body_query::BodyTransaction {
+        let errors = match failure {
+            DeclarationBodyPlanFailure::CandidateRirRejected(errors) => errors.clone(),
+            DeclarationBodyPlanFailure::Build(kind) => {
+                crate::CompileErrors::from(crate::CompileError::without_span(kind.clone()))
+            }
+            failure => crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::InternalError(format!(
+                    "canonical body plan failed for {definition:?}: {failure:?}"
+                )),
+            )),
+        };
+        crate::body_query::BodyTransaction::DeterministicFailure {
+            diagnostic_basis: None,
+            errors,
+            references: crate::body_query::BodyReferences(Arc::from([])),
+            lookup_observations: crate::body_query::BodyLookupObservations::default(),
+        }
+    }
+
     fn lowering_failure(
         definition: &crate::StableDefinitionKey,
         detail: impl std::fmt::Display,
@@ -17716,6 +17881,19 @@ impl BodyTransactionEvaluator {
                 rue_error::ErrorKind::InternalError(format!(
                     "owned body input lowering failed for {definition:?}: {detail}"
                 )),
+            )),
+            references: crate::body_query::BodyReferences(Arc::from([])),
+            lookup_observations: crate::body_query::BodyLookupObservations::default(),
+        }
+    }
+
+    fn lowering_build_failure(
+        error: &rue_rir::RirPayloadBuildError,
+    ) -> crate::body_query::BodyTransaction {
+        crate::body_query::BodyTransaction::DeterministicFailure {
+            diagnostic_basis: None,
+            errors: crate::CompileErrors::from(crate::CompileError::without_span(
+                crate::canonical_lower::rir_build_error_kind("packed body materialization", error),
             )),
             references: crate::body_query::BodyReferences(Arc::from([])),
             lookup_observations: crate::body_query::BodyLookupObservations::default(),
@@ -17795,7 +17973,7 @@ impl BodyTransactionEvaluator {
         let observed = std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new()));
         let positive_references = std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new()));
         let result = (|| {
-            // The transaction's prerequisite fan-out (toolchain demand/raw-body
+            // The transaction's prerequisite fan-out (toolchain demand/artifact
             // authority, transitive anonymous nominals, well-known `Option`
             // resolution) and its trailing lookup-edge recording both run
             // per reached body around the analysis itself. They are timed
@@ -17806,8 +17984,8 @@ impl BodyTransactionEvaluator {
                     .entered();
             // Observe THIS body's exact fallible-intrinsic payload set from the
             // registered `body-toolchain-demands` node — the ONE canonical
-            // per-body scan and raw-body availability authority (RUE-1112 C1)
-            // — instead of rescanning or adding a duplicate raw-body edge.
+            // typed intrinsic-set and source-candidate authority (RUE-1112 C1)
+            // — instead of rescanning or adding a duplicate source edge.
             // A body roots only the payloads it uses, so an unrelated body gains
             // no query edge to payloads it does not use.
             let toolchain_demand =
@@ -17819,7 +17997,7 @@ impl BodyTransactionEvaluator {
             if !matches!(
                 key.instance,
                 crate::FunctionInstanceKey::AnonymousMember { .. }
-            ) && !toolchain_demand.raw_body_available()
+            ) && !toolchain_demand.source_candidate_available()
             {
                 return Err(QueryAbort::Canceled);
             }
@@ -18076,15 +18254,57 @@ impl BodyTransactionEvaluator {
                         | crate::StableDefinitionKind::AssociatedFunction
                         | crate::StableDefinitionKind::Destructor
                 ) {
-                let input = context.query_registered(&self.body_inputs, key.clone())?;
-                let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(
-                    input,
-                )) = input.outcome()
-                else {
-                    return Err(QueryAbort::Canceled);
+                let input = self.body_input.resolve(context, key)?;
+                let input = match input {
+                    crate::body_query::BodyInputValue::Available(input) => input,
+                    crate::body_query::BodyInputValue::Incomplete(
+                        crate::body_query::BodyInputIncomplete::BodyPlanFailure(failure),
+                    ) => {
+                        return Ok(QueryOutput::success(Self::body_plan_failure(
+                            &definition,
+                            &failure,
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    crate::body_query::BodyInputValue::Incomplete(_) => {
+                        return Err(QueryAbort::Canceled);
+                    }
                 };
-                let lowering = match lower_owned_body_input(input) {
-                    Ok(lowering) if lowering.is_valid() => lowering,
+                let attribution_enabled =
+                    tracing::enabled!(target: "rue::timing", tracing::Level::INFO);
+                let _body_input_lowering_span =
+                    tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
+                        .entered();
+                let materialized = if attribution_enabled {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle_with_attribution(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|(bundle, attribution)| (bundle, Some(attribution)))
+                } else {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|bundle| (bundle, None))
+                };
+                let bundle = match materialized {
+                    Ok((bundle, attribution)) if input.artifacts.plan.instruction_count() > 0 => {
+                        if let Some(attribution) = attribution {
+                            publish_body_plan_materialization_attribution(attribution);
+                        }
+                        bundle
+                    }
                     Ok(_) => {
                         return Ok(QueryOutput::success(Self::lowering_failure(
                             &definition,
@@ -18092,7 +18312,16 @@ impl BodyTransactionEvaluator {
                         ))
                         .with_terminal_kind(QueryTerminalKind::Failure));
                     }
-                    Err(failure) => {
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort)) => {
+                        return Err(abort);
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Build(error)) => {
+                        return Ok(QueryOutput::success(Self::lowering_build_failure(&error))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Invalid(
+                        failure,
+                    )) => {
                         return Ok(QueryOutput::success(Self::lowering_failure(
                             &definition,
                             failure,
@@ -18100,6 +18329,7 @@ impl BodyTransactionEvaluator {
                         .with_terminal_kind(QueryTerminalKind::Failure));
                     }
                 };
+                drop(_body_input_lowering_span);
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -18138,7 +18368,7 @@ impl BodyTransactionEvaluator {
                     rue_air::analyze_provider_ordinary_body(
                         &provider,
                         source,
-                        &lowering.bundle,
+                        &bundle,
                         definition.clone(),
                         definition.name(),
                         definition.kind(),
@@ -18305,15 +18535,57 @@ impl BodyTransactionEvaluator {
                 &key.instance
                 && matches!(definition.kind(), crate::StableDefinitionKind::Function)
             {
-                let input = context.query_registered(&self.body_inputs, key.clone())?;
-                let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(
-                    input,
-                )) = input.outcome()
-                else {
-                    return Err(QueryAbort::Canceled);
+                let input = self.body_input.resolve(context, key)?;
+                let input = match input {
+                    crate::body_query::BodyInputValue::Available(input) => input,
+                    crate::body_query::BodyInputValue::Incomplete(
+                        crate::body_query::BodyInputIncomplete::BodyPlanFailure(failure),
+                    ) => {
+                        return Ok(QueryOutput::success(Self::body_plan_failure(
+                            &definition,
+                            &failure,
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    crate::body_query::BodyInputValue::Incomplete(_) => {
+                        return Err(QueryAbort::Canceled);
+                    }
                 };
-                let lowering = match lower_owned_body_input(input) {
-                    Ok(lowering) if lowering.is_valid() => lowering,
+                let attribution_enabled =
+                    tracing::enabled!(target: "rue::timing", tracing::Level::INFO);
+                let _body_input_lowering_span =
+                    tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
+                        .entered();
+                let materialized = if attribution_enabled {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle_with_attribution(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|(bundle, attribution)| (bundle, Some(attribution)))
+                } else {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|bundle| (bundle, None))
+                };
+                let bundle = match materialized {
+                    Ok((bundle, attribution)) if input.artifacts.plan.instruction_count() > 0 => {
+                        if let Some(attribution) = attribution {
+                            publish_body_plan_materialization_attribution(attribution);
+                        }
+                        bundle
+                    }
                     Ok(_) => {
                         return Ok(QueryOutput::success(Self::lowering_failure(
                             &definition,
@@ -18321,7 +18593,16 @@ impl BodyTransactionEvaluator {
                         ))
                         .with_terminal_kind(QueryTerminalKind::Failure));
                     }
-                    Err(failure) => {
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort)) => {
+                        return Err(abort);
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Build(error)) => {
+                        return Ok(QueryOutput::success(Self::lowering_build_failure(&error))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Invalid(
+                        failure,
+                    )) => {
                         return Ok(QueryOutput::success(Self::lowering_failure(
                             &definition,
                             failure,
@@ -18329,6 +18610,7 @@ impl BodyTransactionEvaluator {
                         .with_terminal_kind(QueryTerminalKind::Failure));
                     }
                 };
+                drop(_body_input_lowering_span);
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -18367,7 +18649,7 @@ impl BodyTransactionEvaluator {
                     rue_air::analyze_provider_specialized_body(
                         &provider,
                         source,
-                        &lowering.bundle,
+                        &bundle,
                         definition.clone(),
                         definition.name(),
                         arguments,
@@ -19106,7 +19388,7 @@ impl RevisionedQueryDatabase {
 
     /// Request the current presentation locator for one body independently of
     /// its retained semantic transaction and aggregate body closure.
-    pub(crate) fn body_source_locator_projection(
+    pub(crate) fn body_source_basis_projection(
         &self,
         revision: Revision,
         key: crate::body_query::BodyQueryKey,
@@ -19116,7 +19398,7 @@ impl RevisionedQueryDatabase {
         QueryAbort,
     > {
         self.runtime
-            .request_registered(&self.body_source_locators, revision, key, cancellation)
+            .request_registered(&self.body_source_bases, revision, key, cancellation)
             .into_result()
     }
 
@@ -19169,11 +19451,7 @@ impl RevisionedQueryDatabase {
             .into_result()
     }
 
-    /// Request the exact owned syntax input for one body. The evaluator for
-    /// this family performs all prerequisite requests and keeps any parser/RIR
-    /// artifacts local to that evaluation; callers receive only stable-owned
-    /// syntax or a typed incomplete classification.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn body_input(
         &self,
         revision: Revision,
@@ -19187,8 +19465,8 @@ impl RevisionedQueryDatabase {
 
     /// Project one reached body's trusted-toolchain-module demand set (RUE-1112)
     /// from the registered `body-toolchain-demands` node. This is the rooted
-    /// semantic attempt's park prerequisite: it observes the body's exact raw
-    /// body, is pure and I/O-free, and never itself parks. The rooted attempt
+    /// semantic attempt's park prerequisite: it observes the body's canonical
+    /// declaration artifact, is pure and I/O-free, and never itself parks. The rooted attempt
     /// checks the projected modules against the satisfied catalogue and decides
     /// whether to park BEFORE the body transaction runs.
     #[allow(dead_code)]
@@ -20870,42 +21148,96 @@ impl RevisionedQueryDatabase {
         (result, work)
     }
 
-    pub(crate) fn module_rirs(
+    pub(crate) fn compose_candidate_module_rirs(
         &self,
         revision: Revision,
         modules: impl IntoIterator<Item = ModuleId>,
     ) -> (
-        Result<Vec<Arc<ModuleRirOutput>>, crate::CompileErrors>,
+        Result<Vec<Arc<CandidateModuleRirOutput>>, crate::CompileErrors>,
         crate::CanonicalRirWork,
     ) {
+        let snapshot = self
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .revisions
+            .iter()
+            .find(|view| view.revision == revision)
+            .expect("candidate RIR composition retains its module input revision")
+            .snapshot
+            .clone();
         let mut outputs = Vec::new();
         let mut errors = crate::CompileErrors::new();
         let mut work = crate::CanonicalRirWork::default();
         for module in modules {
-            let attempt = self.runtime.request_registered(
-                &self.module_rirs,
+            let parsed_attempt = self.runtime.request_registered(
+                &self.parse_modules,
                 revision,
                 ModuleQueryKey(module.clone()),
                 CancellationToken::new(),
             );
-            let Some(terminal) = attempt.terminal() else {
+            let Some(parsed_terminal) = parsed_attempt.terminal() else {
                 errors.push(import_input_error(format!(
-                    "ModuleRir({module}) aborted: {:?}",
-                    attempt.abort()
+                    "candidate module composition parse({module}) aborted: {:?}",
+                    parsed_attempt.abort()
                 )));
                 continue;
             };
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("ModuleRir publishes typed values")
+            let rue_query::QueryOutcome::Success(parsed_value) = parsed_terminal.outcome() else {
+                unreachable!("ParseModule publishes typed values")
             };
-            if matches!(attempt.execution(), RequestExecution::Computed) {
-                work.accumulate(value.work);
-            }
-            match &value.result {
-                Ok(output) => {
-                    outputs.push(output.clone());
+            let parsed = match &parsed_value.result {
+                Ok(parsed) => crate::parsed_modules::rebind_parsed_module(&snapshot, parsed),
+                Err(module_errors) => {
+                    errors.extend(module_errors.clone());
+                    continue;
                 }
-                Err(module_errors) => errors.extend(module_errors.clone()),
+            };
+            let mut artifacts = HashMap::new();
+            let mut failed = false;
+            for candidate in parsed.definitions().declaration_keys_in_source_order() {
+                let attempt = self.runtime.request_registered(
+                    &self.declaration_body_plan_artifacts,
+                    revision,
+                    DeclarationBodyPlanQueryKey(candidate.clone()),
+                    CancellationToken::new(),
+                );
+                let Some(terminal) = attempt.terminal() else {
+                    errors.push(import_input_error(format!(
+                        "candidate RIR artifact {} aborted: {:?}",
+                        candidate.stable_identity(),
+                        attempt.abort()
+                    )));
+                    failed = true;
+                    break;
+                };
+                let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
+                };
+                match value {
+                    DeclarationBodyPlanArtifactsValue::Available(artifact) => {
+                        artifacts.insert(candidate.clone(), artifact.clone());
+                    }
+                    DeclarationBodyPlanArtifactsValue::Failure(failure) => {
+                        errors.extend(candidate_rir_artifact_failure_errors(failure));
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            if failed {
+                continue;
+            }
+            match crate::canonical_lower::compose_module_rir_from_candidate_artifacts(
+                parsed,
+                &artifacts,
+                || Ok(()),
+            ) {
+                Ok(output) => {
+                    work.accumulate(output.work());
+                    outputs.push(Arc::new(output));
+                }
+                Err(failure) => errors.push(candidate_rir_composition_failure_error(&failure)),
             }
         }
         if errors.is_empty() {
@@ -21044,7 +21376,7 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         module: ModuleId,
-    ) -> (Arc<ParsedModule>, Arc<ModuleIndex>, Arc<ModuleRirOutput>) {
+    ) -> (Arc<ParsedModule>, Arc<ModuleIndex>) {
         let parse = self.runtime.request_registered(
             &self.parse_modules,
             revision,
@@ -21057,12 +21389,6 @@ impl RevisionedQueryDatabase {
             ModuleQueryKey(module.clone()),
             CancellationToken::new(),
         );
-        let rir = self.runtime.request_registered(
-            &self.module_rirs,
-            revision,
-            ModuleQueryKey(module),
-            CancellationToken::new(),
-        );
         let parse = match parse.terminal().unwrap().outcome() {
             rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
             _ => unreachable!(),
@@ -21071,11 +21397,7 @@ impl RevisionedQueryDatabase {
             rue_query::QueryOutcome::Success(value) => value.0.clone().unwrap(),
             _ => unreachable!(),
         };
-        let rir = match rir.terminal().unwrap().outcome() {
-            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
-            _ => unreachable!(),
-        };
-        (parse, index, rir)
+        (parse, index)
     }
 
     pub(crate) fn select_parse(
@@ -25216,6 +25538,37 @@ mod tests {
     }
 
     #[test]
+    fn canonical_rir_presentation_preserves_resource_limit_and_capacity_codes() {
+        let cases = [
+            (
+                rue_rir::RirPayloadBuildError::ResourceLimitExceeded {
+                    family: "packed test",
+                },
+                rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT,
+            ),
+            (
+                rue_rir::RirPayloadBuildError::CapacityFailure {
+                    family: "packed test",
+                },
+                rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION,
+            ),
+        ];
+        for (error, expected) in cases {
+            let artifact_kind =
+                crate::canonical_lower::rir_build_error_kind("packed candidate artifact", &error);
+            let artifact = candidate_rir_artifact_failure_errors(
+                &DeclarationBodyPlanFailure::Build(artifact_kind),
+            );
+            assert_eq!(artifact.first().unwrap().kind.code(), expected);
+
+            let composition = candidate_rir_composition_failure_error(
+                &crate::canonical_lower::DeclarationBodyPlanBuildFailure::Build(error),
+            );
+            assert_eq!(composition.kind.code(), expected);
+        }
+    }
+
+    #[test]
     fn backend_root_publication_gate_serializes_distinct_epochs() {
         let gate = Arc::new(BackendRootPublicationGate::default());
         let first_epoch = gate.enter();
@@ -25979,7 +26332,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn body_transaction_owns_raw_body_through_canonical_projections() {
+    fn body_transaction_owns_candidate_artifact_through_canonical_projections() {
         let first = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 1 }")], 1);
         let second = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 2 }")], 1);
         let mut database = RevisionedQueryDatabase::default();
@@ -26011,7 +26364,7 @@ fn main() -> i32 {
         let rue_query::QueryOutcome::Success(first_demand_value) = first_demand.outcome() else {
             unreachable!("BodyToolchainDemand publishes typed values")
         };
-        assert!(first_demand_value.raw_body_available());
+        assert!(first_demand_value.source_candidate_available());
 
         let transaction_dependencies = first_transaction
             .dependencies()
@@ -26020,22 +26373,32 @@ fn main() -> i32 {
             .collect::<BTreeSet<_>>();
         assert!(
             transaction_dependencies.contains("compiler.body-toolchain-demands"),
-            "the canonical demand projection owns raw-body availability: {transaction_dependencies:?}"
+            "the canonical demand projection owns source-candidate availability: {transaction_dependencies:?}"
         );
         assert!(
-            transaction_dependencies.contains("compiler.body-input"),
-            "the canonical body input owns raw-body contents: {transaction_dependencies:?}"
+            transaction_dependencies.contains("compiler.declaration-body-plan-artifacts")
+                && transaction_dependencies.contains("compiler.body-source-basis"),
+            "the transaction directly observes the selected plan and current basis: {transaction_dependencies:?}"
         );
+        assert!(!transaction_dependencies.contains(concat!("compiler.body-", "input")));
         assert!(
             !transaction_dependencies.contains("compiler.raw-declaration-body"),
-            "the body transaction must not add a third peer raw-body edge: {transaction_dependencies:?}"
+            "the body transaction must not add a peer raw-body edge: {transaction_dependencies:?}"
         );
         assert!(
             first_demand
                 .dependencies()
                 .iter()
+                .any(|observation| observation.node.family()
+                    == "compiler.declaration-body-plan-artifacts"),
+            "the demand projection must retain its exact candidate-artifact edge"
+        );
+        assert!(
+            !first_demand
+                .dependencies()
+                .iter()
                 .any(|observation| observation.node.family() == "compiler.raw-declaration-body"),
-            "the demand projection must retain its exact raw-body edge"
+            "the demand projection must not retain a duplicate raw-body edge"
         );
 
         let second_revision = database.source_revision(
@@ -26072,6 +26435,244 @@ fn main() -> i32 {
             second_transaction.stamp(),
             "the canonical body-input edge still invalidates semantic analysis"
         );
+    }
+
+    #[test]
+    fn toolchain_demand_uses_typed_artifact_intrinsics_not_source_mentions() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+fn main() -> i32 {
+    // @parse_i64 is only a comment.
+    let _spelling = "@parse_i32";
+    let _ordinary_intrinsic = @to_string(1);
+    0
+}
+"#,
+            )],
+            1,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let terminal = database
+            .body_toolchain_demands(revision, main_body_key(), CancellationToken::new())
+            .expect("the typed artifact demand projection succeeds");
+        let rue_query::QueryOutcome::Success(demand) = terminal.outcome() else {
+            panic!("BodyToolchainDemand publishes a typed value")
+        };
+
+        assert!(demand.source_candidate_available());
+        assert!(demand.payload_kinds().is_empty());
+        assert!(demand.modules().is_empty());
+        assert!(
+            terminal
+                .dependencies()
+                .iter()
+                .all(|dependency| dependency.node.family() != "compiler.raw-declaration-body")
+        );
+    }
+
+    #[test]
+    fn toolchain_demand_maps_all_five_artifact_kinds_across_nested_method() {
+        let body = r#"{
+    let _i32 = @parse_i32("1");
+    let _i64 = @parse_i64("1");
+    let _u32 = @parse_u32("1");
+    let _u64 = @parse_u64("1");
+    let _duplicate = @parse_i32("2");
+    struct {
+        fn nested() -> i32 {
+            let _nested_duplicate = @parse_i64("3");
+            let _nested_only = @read_line();
+            0
+        }
+    }
+}"#;
+        let source_text = format!("fn Box() -> type {body}");
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "Box"),
+            semantic_configuration(),
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let terminal = database
+            .body_toolchain_demands(revision, key, CancellationToken::new())
+            .expect("the all-kind artifact demand projection succeeds");
+        let rue_query::QueryOutcome::Success(demand) = terminal.outcome() else {
+            panic!("BodyToolchainDemand publishes a typed value")
+        };
+        let artifact_kinds = demand
+            .payload_kinds()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let lexical_oracle = crate::well_known_option::scan_body_payload_kinds(body);
+
+        assert!(demand.source_candidate_available());
+        assert_eq!(artifact_kinds, lexical_oracle);
+        assert_eq!(artifact_kinds.len(), 5);
+        assert!(artifact_kinds.contains(&crate::well_known_option::FalliblePayload::StrBuf));
+        assert_eq!(demand.modules().len(), 2);
+    }
+
+    #[test]
+    fn rooted_runtime_avoids_raw_body_until_explicit_comptime_demand() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::durable_semantics::DurableType;
+        use crate::semantic_query_nucleus::{
+            ComptimeCallQueryKey, DeclarationSemanticQueryKey, SemanticNucleusKey,
+        };
+
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Make(comptime T: type) -> type { struct { value: T } }\n\
+                 fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            revision,
+            ModuleQueryKey(module.clone()),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(parsed) = parsed.terminal().unwrap().outcome() else {
+            panic!("parse terminal succeeds")
+        };
+        let parsed = parsed.result.as_ref().expect("module parses").clone();
+
+        database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("representative rooted runtime body closes");
+        assert_eq!(database.raw_declaration_bodies.retention().terminals, 0);
+        assert_eq!(
+            parsed.raw_declaration_body_terminal_materialization_count(),
+            0
+        );
+
+        let candidate =
+            declaration_candidate(&database, revision, &module, Category::Function, "Make");
+        let _ = request_semantic_nucleus_observed(
+            &database,
+            revision,
+            SemanticNucleusKey::ComptimeCall(ComptimeCallQueryKey {
+                declaration: DeclarationSemanticQueryKey {
+                    declaration: candidate,
+                    configuration: semantic_configuration(),
+                },
+                type_arguments: Arc::from([(Arc::from("T"), DurableType::I32)]),
+                value_arguments: Arc::from([]),
+            }),
+        );
+        assert_eq!(database.raw_declaration_bodies.retention().terminals, 1);
+        assert_eq!(
+            parsed.raw_declaration_body_terminal_materialization_count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cold_signature_only_demand_does_no_candidate_astgen_work() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected(value: i32) -> i32 { value }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let candidate = crate::declaration_candidate::DeclarationCandidateKey {
+            module,
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from("selected"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let requested = database.runtime.request_registered(
+            &database.raw_declaration_signatures,
+            revision,
+            RawDeclarationSignatureQueryKey(candidate),
+            CancellationToken::new(),
+        );
+        assert!(matches!(
+            requested.terminal().unwrap().outcome(),
+            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(_))
+        ));
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+        assert_eq!(
+            database
+                .declaration_body_plan_artifacts
+                .retention()
+                .terminals,
+            0
+        );
+        assert_eq!(database.raw_declaration_bodies.retention().terminals, 0);
+    }
+
+    #[test]
+    fn artifact_failure_is_candidate_available_and_reaches_exact_body_failure() {
+        let snapshot =
+            source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 1 }")], 1);
+        let key = main_body_key();
+        let crate::FunctionInstanceKey::Definition(definition) = &key.instance else {
+            unreachable!()
+        };
+        let errors = crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput("injected packed artifact failure".into()),
+        ));
+        let mut database = RevisionedQueryDatabase::default();
+        database.inject_declaration_body_plan_failure_for_test(definition, errors.clone());
+        let revision = revision_for(&mut database, &snapshot);
+        let demand = database
+            .body_toolchain_demands(revision, key.clone(), CancellationToken::new())
+            .expect("artifact failure still publishes an empty demand projection");
+        let rue_query::QueryOutcome::Success(demand) = demand.outcome() else {
+            panic!("BodyToolchainDemand publishes a typed value")
+        };
+        assert!(demand.source_candidate_available());
+        assert!(demand.payload_kinds().is_empty());
+        assert!(demand.modules().is_empty());
+
+        let transaction = database
+            .body_transaction(revision, key, CancellationToken::new())
+            .expect("artifact failure publishes a deterministic body transaction");
+        let rue_query::QueryOutcome::Success(
+            crate::body_query::BodyTransaction::DeterministicFailure {
+                errors: published, ..
+            },
+        ) = transaction.outcome()
+        else {
+            panic!("artifact failure reaches the exact typed body-plan failure")
+        };
+        assert_eq!(published, &errors);
     }
 
     #[test]
@@ -29908,26 +30509,20 @@ fn main() -> i32 {
             &super::super::session::ExactSourceInput::new(&first),
             &first,
         );
-        let (first_a_parse, first_a_index, first_a_rir) =
-            database.module_terminals(first_revision, a.clone());
-        let (first_b_parse, first_b_index, first_b_rir) =
-            database.module_terminals(first_revision, b.clone());
+        let (first_a_parse, first_a_index) = database.module_terminals(first_revision, a.clone());
+        let (first_b_parse, first_b_index) = database.module_terminals(first_revision, b.clone());
 
         let second_revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&second),
             &second,
         );
-        let (second_a_parse, second_a_index, second_a_rir) =
-            database.module_terminals(second_revision, a);
-        let (second_b_parse, second_b_index, second_b_rir) =
-            database.module_terminals(second_revision, b);
+        let (second_a_parse, second_a_index) = database.module_terminals(second_revision, a);
+        let (second_b_parse, second_b_index) = database.module_terminals(second_revision, b);
 
         assert!(Arc::ptr_eq(&first_a_parse, &second_a_parse));
         assert!(Arc::ptr_eq(&first_a_index, &second_a_index));
-        assert!(Arc::ptr_eq(&first_a_rir, &second_a_rir));
         assert!(!Arc::ptr_eq(&first_b_parse, &second_b_parse));
         assert!(!Arc::ptr_eq(&first_b_index, &second_b_index));
-        assert!(!Arc::ptr_eq(&first_b_rir, &second_b_rir));
     }
 
     #[test]
@@ -29954,19 +30549,16 @@ fn main() -> i32 {
             &super::super::session::ExactSourceInput::new(&first),
             &first,
         );
-        let (first_parse, first_index, first_rir) =
-            database.module_terminals(first_revision, a.clone());
+        let (first_parse, first_index) = database.module_terminals(first_revision, a.clone());
         let _ = database.module_terminals(first_revision, b.clone());
 
         let second_revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&second),
             &second,
         );
-        let (second_parse, second_index, second_rir) =
-            database.module_terminals(second_revision, a.clone());
+        let (second_parse, second_index) = database.module_terminals(second_revision, a.clone());
         assert!(Arc::ptr_eq(&first_parse, &second_parse));
         assert!(Arc::ptr_eq(&first_index, &second_index));
-        assert!(Arc::ptr_eq(&first_rir, &second_rir));
         assert_eq!(second_parse.file_id(), FileId::new(1));
 
         let (program, parse_work) =
@@ -30020,17 +30612,19 @@ fn main() -> i32 {
             .iter()
             .map(|module| module.module_id().clone())
             .collect::<Vec<_>>();
-        let (module_rirs, query_work) = database.module_rirs(second_revision, ordered_modules);
+        let (module_rirs, query_work) =
+            database.compose_candidate_module_rirs(second_revision, ordered_modules);
         let module_rirs = module_rirs.unwrap();
-        assert_eq!(query_work.modules_visited, 0);
-        let projected_rir = crate::canonical_lower::project_module_rirs_with_work(
+        assert_eq!(query_work.modules_visited, 2);
+        assert!(query_work.items_visited > 0);
+        let projected_rir = crate::canonical_lower::project_candidate_module_rirs_with_work(
             &merged,
             &module_rirs,
             query_work,
         )
         .unwrap();
-        assert_eq!(projected_rir.work().modules_visited, 0);
-        assert_eq!(projected_rir.work().items_visited, 0);
+        assert_eq!(projected_rir.work().modules_visited, 2);
+        assert!(projected_rir.work().items_visited > 0);
         assert_eq!(projected_rir.work().modules_projected, 2);
         assert_eq!(
             projected_rir.work().instructions_appended,
@@ -30045,6 +30639,22 @@ fn main() -> i32 {
                 .rir()
                 .iter()
                 .any(|(_, instruction)| instruction.span.file_id == FileId::new(2))
+        );
+        let mut projected_files = BTreeSet::new();
+        projected_rir
+            .rir()
+            .try_visit_span_slots(
+                || Ok::<_, std::convert::Infallible>(()),
+                |_slot, span| {
+                    projected_files.insert(span.file_id.index());
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            projected_files,
+            BTreeSet::from([2, 3]),
+            "canonical RIR presentation rebinds every span family to the current revision"
         );
     }
 
@@ -30099,18 +30709,6 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn module_rir_terminal_adapter_preserves_failed_lowering_work() {
-        let source = source_snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
-        let faulty = parsed.modules()[0].with_test_foreign_ast_symbol();
-        let value = module_rir_value_from_lowering(lower_module_rir_with_work(faulty));
-        assert!(value.result.is_err());
-        assert_eq!(value.work.modules_visited, 1);
-        assert_eq!(value.work.items_visited, 1);
-        assert_eq!(value.work.modules_projected, 0);
-    }
-
-    #[test]
     fn invalid_undemanded_module_is_neither_parsed_nor_lowered() {
         let base = source_snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
         let snapshot = source_snapshot(
@@ -30124,9 +30722,8 @@ fn main() -> i32 {
         let mut database = RevisionedQueryDatabase::default();
         let base_revision =
             database.source_revision(&super::super::session::ExactSourceInput::new(&base), &base);
-        let (base_parse, base_index, base_rir) =
-            database.module_terminals(base_revision, a.clone());
-        assert_eq!(database.runtime.metrics().claims, 3);
+        let (base_parse, base_index) = database.module_terminals(base_revision, a.clone());
+        assert_eq!(database.runtime.metrics().claims, 2);
         let revision = database.source_revision(
             &super::super::session::ExactSourceInput::new(&snapshot),
             &snapshot,
@@ -30134,13 +30731,17 @@ fn main() -> i32 {
         let (parsed, work) = database.parse_program(revision, &a, [a.clone()]);
         assert!(parsed.is_ok());
         assert_eq!(work.syntax.parser_invocations, 0);
-        assert!(database.module_rirs(revision, [a]).0.is_ok());
+        assert!(
+            database
+                .compose_candidate_module_rirs(revision, [a])
+                .0
+                .is_ok()
+        );
         assert_eq!(database.runtime.metrics().claims, 3);
         let demanded = ModuleId::from_logical_path("a.rue").unwrap();
-        let (next_parse, next_index, next_rir) = database.module_terminals(revision, demanded);
+        let (next_parse, next_index) = database.module_terminals(revision, demanded);
         assert!(Arc::ptr_eq(&base_parse, &next_parse));
         assert!(Arc::ptr_eq(&base_index, &next_index));
-        assert!(Arc::ptr_eq(&base_rir, &next_rir));
     }
 
     #[test]
@@ -30185,7 +30786,7 @@ fn main() -> i32 {
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let (_, index, _) = database.module_terminals(revision, module.clone());
+        let (_, index) = database.module_terminals(revision, module.clone());
 
         assert_eq!(index.definitions.len(), 129);
         assert_eq!(
@@ -30231,7 +30832,7 @@ fn main() -> i32 {
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let (_, index, _) = database.module_terminals(revision, module);
+        let (_, index) = database.module_terminals(revision, module);
 
         assert_eq!(index.imports.len(), 129);
         assert_eq!(
@@ -32341,6 +32942,7 @@ fn main() -> i32 {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(module_store.revisions.len(), GENERATIONS as usize * 2);
         let mut module_refs = HashMap::new();
+        let mut metadata_refs = HashMap::new();
         for view in &module_store.revisions {
             for source in view.snapshot.source_revision().modules() {
                 *module_refs
@@ -32349,8 +32951,12 @@ fn main() -> i32 {
                     })
                     .or_insert(0) += 1;
             }
+            for metadata in view.metadata.iter() {
+                *metadata_refs.entry(metadata.clone()).or_insert(0) += 1;
+            }
         }
         assert_exact_values(&module_store.stamps, &module_refs);
+        assert_exact_values(&module_store.metadata_stamps, &metadata_refs);
         drop(module_store);
 
         // Exercise the same centralized module-view trimming primitive at a
@@ -32376,6 +32982,14 @@ fn main() -> i32 {
                 (generation + 1) as u32,
             );
             let sources = snapshot.source_revision().modules().to_vec();
+            let mut metadata = module_metadata_leaves(&snapshot)
+                .into_values()
+                .collect::<Vec<_>>();
+            metadata.sort_by(module_metadata_order);
+            let metadata = crate::shared_segments::SharedSegments::flat(
+                metadata.into(),
+                module_metadata_order,
+            );
             for source in snapshot.source_revision().modules() {
                 let leaf = ModuleInputLeaf {
                     revision: source.clone(),
@@ -32391,9 +33005,11 @@ fn main() -> i32 {
                 Arc::new(ModuleInputView {
                     revision: Revision::new(generation as u64 + 1, 0),
                     snapshot,
+                    metadata,
                     stamp_lease: Arc::new(ModuleInputStampLease {
                         parent: None,
                         sources: sources.into(),
+                        metadata: Arc::from([]),
                     }),
                 }),
             );
@@ -37679,8 +38295,16 @@ fn main() -> i32 {
             panic!("specialized body input is available: {input:?}")
         };
         let input = input.clone();
-        let lowering = lower_owned_body_input(&input).expect("owned specialized body lowers");
-        assert!(lowering.is_valid());
+        let bundle = input
+            .artifacts
+            .plan
+            .materialize_body_rir_bundle(
+                input.source.file_id,
+                input.source.declaration_start,
+                input.source.source_length,
+                || Ok(()),
+            )
+            .expect("canonical specialized body plan materializes");
         let preview = configuration
             .preview_features
             .names()
@@ -37709,7 +38333,7 @@ fn main() -> i32 {
                 rue_air::analyze_provider_specialized_body(
                     provider,
                     source,
-                    &lowering.bundle,
+                    &bundle,
                     probe_base.clone(),
                     probe_base.name(),
                     &probe_arguments,
@@ -38441,135 +39065,139 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn body_input_registered_evaluator_owns_exact_fragments_and_local_lowering() {
-        let first = source_snapshot(
-            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 7 }\n")],
-            1,
-        );
-        let edited_body = source_snapshot(
-            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 9 }\n")],
-            1,
-        );
-        let signature_edit = source_snapshot(
-            &[(1, "/main.rue", "main.rue", "fn selected() -> i64 { 7 }\n")],
-            1,
+    fn transient_body_resolver_uses_canonical_plan_and_current_basis_without_reparse() {
+        let source = source_snapshot(
+            &[(7, "/main.rue", "main.rue", "fn selected() -> i32 { 7 }\n")],
+            7,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let instance = free_function_instance(&module, "selected");
-        let key =
-            |configuration| crate::body_query::BodyQueryKey::new(instance.clone(), configuration);
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "selected"),
+            semantic_configuration(),
+        );
         let mut database = RevisionedQueryDatabase::default();
-        let first_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&first),
-            &first,
-        );
-        let first_terminal = database
-            .body_input(
-                first_revision,
-                key(semantic_configuration()),
-                CancellationToken::new(),
-            )
-            .unwrap();
+        let revision = revision_for(&mut database, &source);
+        let terminal = database
+            .body_input(revision, key, CancellationToken::new())
+            .expect("body input request completes");
         let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
-            first_terminal.outcome()
+            terminal.outcome()
         else {
-            panic!("ordinary function did not produce owned body input: {first_terminal:?}");
+            panic!("ordinary body plan is available: {terminal:?}");
         };
-        assert_eq!(
-            input.owner,
-            match &instance {
-                crate::FunctionInstanceKey::Definition(owner) => owner.clone(),
-                _ => unreachable!(),
-            }
-        );
-        assert_eq!(input.body.body.as_ref(), "{ 7 }");
-        assert_eq!(
-            input.signature.declaration_fragments.concat(),
-            "fn selected() -> i32"
-        );
-        let lowered = lower_owned_body_input(input).unwrap();
-        assert_eq!(lowered.function_count(), 1);
-        assert!(lowered.instruction_count() > 0);
-        assert_eq!(lowered.bundle.source_file_id(), Some(input.source.file_id));
-
-        let body_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&edited_body),
-            &edited_body,
-        );
-        let body_terminal = database
-            .body_input(
-                body_revision,
-                key(semantic_configuration()),
-                CancellationToken::new(),
+        assert!(input.artifacts.plan.instruction_count() > 0);
+        assert_eq!(input.source.file_id, FileId::new(7));
+        let bundle = input
+            .artifacts
+            .plan
+            .materialize_body_rir_bundle(
+                input.source.file_id,
+                input.source.declaration_start,
+                input.source.source_length,
+                || Ok(()),
             )
-            .unwrap();
-        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(body)) =
-            body_terminal.outcome()
-        else {
-            panic!("body edit did not produce owned body input: {body_terminal:?}");
-        };
-        assert_eq!(body.signature, input.signature);
-        assert_ne!(body.body, input.body);
+            .expect("canonical body plan projects to current source");
+        assert_eq!(bundle.source_file_id(), Some(FileId::new(7)));
 
-        let signature_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&signature_edit),
-            &signature_edit,
+        let runtime = include_str!("revisioned_query_database.rs");
+        assert!(!runtime.contains(concat!("fn lower_owned_", "body_input(")));
+        assert!(!runtime.contains(concat!("struct OwnedBody", "Lowering")));
+        assert!(!runtime.contains(concat!("\"compiler.", "body-input\"")));
+        assert!(!runtime.contains("\"compiler.body-source-locator\""));
+        assert_eq!(
+            runtime.matches("\"compiler.body-source-basis\",\n").count(),
+            1
         );
-        let signature_terminal = database
-            .body_input(
-                signature_revision,
-                key(semantic_configuration()),
-                CancellationToken::new(),
-            )
+        let input_start = runtime.find("impl BodyInputResolver").unwrap();
+        let input_end = runtime[input_start..]
+            .find("struct BodyTransactionEvaluator")
+            .map(|offset| input_start + offset)
             .unwrap();
-        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(
-            signature,
-        )) = signature_terminal.outcome()
-        else {
-            panic!("signature edit did not produce owned body input: {signature_terminal:?}");
-        };
-        assert_eq!(signature.body, input.body);
-        assert_ne!(signature.signature, input.signature);
+        let input_source = &runtime[input_start..input_end];
+        for forbidden in [
+            "parse_source_snapshot_module",
+            "lower_module_rir_with_work",
+            "RawDeclarationBodyQueryKey",
+            "RawDeclarationBodyQueryValue",
+            "AstGen",
+        ] {
+            assert!(
+                !input_source.contains(forbidden),
+                "body-input cutover retained old frontend work: {forbidden}"
+            );
+        }
+        for required in [
+            "DeclarationBodyPlanArtifactsValue",
+            "self.declaration_body_plan_artifacts",
+            "self.body_source_bases",
+        ] {
+            assert!(
+                input_source.contains(required),
+                "body-input cutover lost canonical plan edge: {required}"
+            );
+        }
+
+        let transaction_start = runtime
+            .find("    fn evaluate(\n        &self,\n        context: &rue_query::QueryContext")
+            .unwrap();
+        let transaction_end = runtime[transaction_start..]
+            .find("\n}\n\nimpl RevisionedQueryDatabase")
+            .map(|offset| transaction_start + offset)
+            .unwrap();
+        let transaction = &runtime[transaction_start..transaction_end];
+        for forbidden in [
+            "parse_source_snapshot_module",
+            "lower_module_rir",
+            "SourceSnapshot::new",
+            "SourceSnapshot::single",
+            "AstGen",
+        ] {
+            assert!(
+                !transaction.contains(forbidden),
+                "body transaction retained a peer frontend path: {forbidden}"
+            );
+        }
+        assert_eq!(
+            transaction
+                .match_indices("materialize_body_rir_bundle_with_attribution")
+                .count(),
+            2,
+            "ordinary and specialization arms must be the only plan materializers",
+        );
     }
 
     #[test]
-    fn body_input_lowers_named_members_and_destructors_without_a_program_rir() {
+    fn test_probe_specializations_share_one_candidate_plan_arc() {
         let source = source_snapshot(
             &[(
                 1,
                 "/main.rue",
                 "main.rue",
-                "struct Counter { value: i32, fn get(self) -> i32 { self.value } }\n\
-                 drop fn Counter(self) {}\n",
+                "fn selected(comptime N: i32) -> i32 { N }\n",
             )],
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let member = crate::StableDefinitionKey::from_stable_parts(
-            module.clone(),
-            crate::StableDefinitionNamespace::Value,
-            crate::StableDefinitionKind::Method,
-            Arc::from("get"),
-            Some((crate::StableDefinitionKind::Struct, Arc::from("Counter"))),
-        );
-        let destructor = crate::StableDefinitionKey::from_stable_parts(
-            module,
-            crate::StableDefinitionNamespace::Value,
-            crate::StableDefinitionKind::Destructor,
-            Arc::from("Counter"),
-            Some((crate::StableDefinitionKind::Struct, Arc::from("Counter"))),
-        );
+        let crate::FunctionInstanceKey::Definition(base) =
+            free_function_instance(&module, "selected")
+        else {
+            unreachable!()
+        };
+        let specialization = |value| crate::FunctionInstanceKey::Specialization {
+            base: Box::new(crate::FunctionInstanceKey::Definition(base.clone())),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([]),
+                values: Arc::from([crate::CanonicalArgumentValue::Integer(value)]),
+            },
+        };
         let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        for definition in [member, destructor] {
+        let revision = revision_for(&mut database, &source);
+        let input = |database: &RevisionedQueryDatabase, value| {
             let terminal = database
                 .body_input(
                     revision,
                     crate::body_query::BodyQueryKey::new(
-                        crate::FunctionInstanceKey::Definition(definition.clone()),
+                        specialization(value),
                         semantic_configuration(),
                     ),
                     CancellationToken::new(),
@@ -38579,117 +39207,666 @@ fn main() -> i32 {
                 input,
             )) = terminal.outcome()
             else {
-                panic!("named body did not produce exact owned input: {terminal:?}");
+                panic!("specialization body plan unavailable: {terminal:?}");
             };
-            let lowered = lower_owned_body_input(input).unwrap();
-            assert_eq!(lowered.body_owner_count(), 1);
-            assert!(lowered.instruction_count() > 0);
-        }
+            input.clone()
+        };
+        let first = input(&database, 1);
+        let second = input(&database, 2);
+        assert!(Arc::ptr_eq(&first.artifacts, &second.artifacts));
     }
 
     #[test]
-    fn body_input_preserves_anonymous_anchor_transport_and_boundary_is_owned() {
+    fn rooted_specializations_observe_one_candidate_artifact_incarnation_and_astgen() {
         let source = source_snapshot(
             &[(
                 1,
                 "/main.rue",
                 "main.rue",
-                "fn selected() -> type { struct { value: i32 } }\n",
+                "fn selected(comptime N: i32) -> i32 { N }\n\
+                 fn main() -> i32 { selected(1) + selected(2) }\n",
             )],
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        let terminal = database
-            .body_input(
+        let revision = revision_for(&mut database, &source);
+        let closure = database
+            .body_closure(
                 revision,
-                crate::body_query::BodyQueryKey::new(
-                    free_function_instance(&module, "selected"),
-                    semantic_configuration(),
-                ),
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
                 CancellationToken::new(),
             )
-            .unwrap();
-        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
-            terminal.outcome()
-        else {
-            panic!("anonymous body did not produce owned input: {terminal:?}");
+            .expect("rooted specialization closure completes");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            panic!("body closure publishes a typed value")
         };
-        assert_eq!(input.body.anonymous_sites.len(), 1);
-        let supplied_anchor = rue_rir::RirStructuralAnchor::new(vec![
-            rue_rir::RirStructuralPathSegment::Body,
-            rue_rir::RirStructuralPathSegment::AnonymousType(99),
-        ]);
-        let mut anonymous_sites = input.body.anonymous_sites.to_vec();
-        anonymous_sites[0].anchor = supplied_anchor.clone();
-        let adversarial_input = crate::body_query::OwnedBodyInput {
-            owner: input.owner.clone(),
-            source: input.source.clone(),
-            signature: input.signature.clone(),
-            body: crate::declaration_candidate::RawDeclarationBodySyntax {
-                body: input.body.body.clone(),
-                anonymous_sites: anonymous_sites.into(),
-            },
-        };
-        let lowered = lower_owned_body_input(&adversarial_input).unwrap();
-        assert!(lowered.is_valid());
-        assert_eq!(lowered.anonymous_type_anchors(), vec![supplied_anchor]);
+        let specializations = output
+            .reached
+            .iter()
+            .filter(|instance| {
+                matches!(
+                    instance,
+                    crate::FunctionInstanceKey::Specialization { base, .. }
+                        if matches!(base.as_ref(),
+                            crate::FunctionInstanceKey::Definition(definition)
+                                if definition.name() == "selected")
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(specializations.len(), 2);
 
-        let query_value = include_str!("body_query.rs");
-        let value_start = query_value
-            .find("pub(crate) struct OwnedBodyInput")
+        let artifact_dependencies = specializations
+            .into_iter()
+            .map(|instance| {
+                let transaction = database
+                    .body_transaction(
+                        revision,
+                        crate::body_query::BodyQueryKey::new(instance, semantic_configuration()),
+                        CancellationToken::new(),
+                    )
+                    .expect("specialization transaction remains retained");
+                transaction
+                    .dependencies()
+                    .iter()
+                    .find(|dependency| {
+                        dependency.node.family() == "compiler.declaration-body-plan-artifacts"
+                    })
+                    .map(|dependency| (dependency.incarnation, dependency.stamp))
+                    .expect("transaction directly observes its candidate artifact")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(artifact_dependencies[0], artifact_dependencies[1]);
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "main and selected each lower once; the second specialization reuses selected"
+        );
+    }
+
+    #[test]
+    fn sibling_only_edit_keeps_artifact_transaction_and_downstream_green() {
+        let source = |sibling| {
+            let text = format!("fn sibling() -> i32 {{ {sibling} }}\nfn chosen() -> i32 {{ 7 }}\n");
+            source_snapshot(&[(1, "/main.rue", "main.rue", text.as_str())], 1)
+        };
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "chosen"),
+            semantic_configuration(),
+        );
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "chosen")]),
+            configuration: semantic_configuration(),
+        };
+        let downstream_stamps = |database: &RevisionedQueryDatabase,
+                                 revision,
+                                 key: &crate::body_query::BodyQueryKey,
+                                 input: &Arc<
+            rue_query::QueryTerminal<crate::body_query::BodyInputValue>,
+        >,
+                                 transaction: &Arc<
+            rue_query::QueryTerminal<crate::body_query::BodyTransaction>,
+        >| {
+            let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(
+                input,
+            )) = input.outcome()
+            else {
+                panic!("selected body input is available")
+            };
+            let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
+                body,
+                ..
+            }) = transaction.outcome()
+            else {
+                panic!("selected body transaction succeeds")
+            };
+            let function = key.instance.clone();
+            let owner = match body.as_ref() {
+                crate::body_query::CanonicalBody::Ordinary { owner, .. } => owner,
+                _ => panic!("selected free function has an ordinary canonical body"),
+            };
+            let facts = crate::local_semantic_materialization::LocalMaterializationFacts {
+                declarations: Arc::from([]),
+                anonymous_nominals: Arc::from([]),
+                callables: Arc::from([crate::local_semantic_materialization::LocalCallableFact {
+                    identity: function.clone(),
+                    symbol: Arc::from(owner.name()),
+                }]),
+                nominal_metadata: Arc::from([]),
+                modules: Arc::from([owner.module().clone()]),
+                builtin_nominals: Arc::from([]),
+                required_types: Arc::from([]),
+            };
+            let body_span = rue_span::Span::with_file(
+                input.source.file_id,
+                input.source.body_start,
+                input.source.body_end,
+            );
+            let cfg_key = crate::cfg_query::CfgQueryKey::new(
+                function.clone(),
+                semantic_configuration(),
+                crate::cfg_query::CfgSemanticInput::Body {
+                    input: Arc::new(crate::cfg_query::CfgBodyInput {
+                        function,
+                        canonical: body.clone(),
+                        body_span,
+                    }),
+                    materialization: Arc::new(facts),
+                },
+            );
+            let cfg = database
+                .runtime
+                .request_registered(
+                    &database.cfgs,
+                    revision,
+                    cfg_key.clone(),
+                    CancellationToken::new(),
+                )
+                .into_result()
+                .expect("CFG completes");
+            let (optimized_key, optimized_attempt) = database
+                .optimized_cfg(
+                    revision,
+                    cfg_key,
+                    rue_cfg::OptLevel::O1,
+                    Arc::from([]),
+                    CancellationToken::new(),
+                )
+                .expect("optimized CFG request is accepted");
+            let optimized = optimized_attempt
+                .into_result()
+                .expect("optimized CFG completes");
+            let codegen = database
+                .codegen_unit(
+                    revision,
+                    optimized_key,
+                    rue_target::Target::X86_64Linux,
+                    rue_codegen::BackendArtifactRequest::default(),
+                    rue_cfg::OptLevel::O1,
+                    CancellationToken::new(),
+                )
+                .expect("codegen request is accepted")
+                .into_result()
+                .expect("codegen completes");
+            (cfg.stamp(), optimized.stamp(), codegen.stamp())
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_source = source("1");
+        let first_revision = revision_for(&mut database, &first_source);
+        database
+            .body_closure(
+                first_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .expect("first selected closure publishes");
+        let candidate = declaration_candidate(
+            &database,
+            first_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "chosen",
+        );
+        let first_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            first_revision,
+            DeclarationBodyPlanQueryKey(candidate.clone()),
+            CancellationToken::new(),
+        );
+        let first_artifact_stamp = first_artifact
+            .terminal()
+            .expect("first candidate artifact publishes")
+            .stamp();
+        let first_input = database
+            .body_input(first_revision, key.clone(), CancellationToken::new())
             .unwrap();
-        let value_end = query_value[value_start..]
-            .find("pub(crate) fn body_input_equal")
-            .map(|offset| value_start + offset)
+        let first_transaction = database
+            .body_transaction(first_revision, key.clone(), CancellationToken::new())
+            .expect("first chosen body transaction completes");
+        let first_downstream = downstream_stamps(
+            &database,
+            first_revision,
+            &key,
+            &first_input,
+            &first_transaction,
+        );
+
+        let second_source = source("123456");
+        let second_revision = revision_for(&mut database, &second_source);
+        database
+            .body_closure(
+                second_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .expect("second selected closure publishes");
+        let second_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            second_revision,
+            DeclarationBodyPlanQueryKey(candidate),
+            CancellationToken::new(),
+        );
+        let second_artifact_stamp = second_artifact
+            .terminal()
+            .expect("second candidate artifact publishes")
+            .stamp();
+        let second_input = database
+            .body_input(second_revision, key.clone(), CancellationToken::new())
             .unwrap();
-        let value_definition = &query_value[value_start..value_end];
-        for banned in [
-            "CanonicalMergedProgram",
-            "CanonicalRirOutput",
-            "CanonicalMergedRir",
-            "BodySema",
-            "BoundSema",
-            "Spur",
-            "Rir",
-            "InstRef",
-            "manifest",
-            "slice",
-            "reachability",
-            "declaration slice",
-            "coordinator",
+        let second_transaction = database
+            .body_transaction(second_revision, key.clone(), CancellationToken::new())
+            .expect("shifted chosen body transaction completes");
+        let second_downstream = downstream_stamps(
+            &database,
+            second_revision,
+            &key,
+            &second_input,
+            &second_transaction,
+        );
+
+        assert_eq!(first_artifact_stamp, second_artifact_stamp);
+        assert_eq!(first_transaction.stamp(), second_transaction.stamp());
+        assert_eq!(first_downstream, second_downstream);
+
+        for sibling in [
+            "2000000", "3000000", "4000000", "5000000", "6000000", "7000000", "8000000", "9000000",
+            "10000000", "11000000", "12000000", "13000000", "14000000", "15000000", "16000000",
+            "17000000", "18000000", "19000000",
         ] {
+            let source = source(sibling);
+            let revision = revision_for(&mut database, &source);
+            database
+                .body_closure(revision, closure_key.clone(), CancellationToken::new())
+                .expect("successive selected closure publishes");
+            let artifact = database.runtime.request_registered(
+                &database.declaration_body_plan_artifacts,
+                revision,
+                DeclarationBodyPlanQueryKey(declaration_candidate(
+                    &database,
+                    revision,
+                    &module,
+                    crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                    "chosen",
+                )),
+                CancellationToken::new(),
+            );
+            assert_eq!(artifact.terminal().unwrap().stamp(), first_artifact_stamp);
+            let transaction = database
+                .body_transaction(revision, key.clone(), CancellationToken::new())
+                .expect("successive chosen transaction remains reusable");
+            assert_eq!(transaction.stamp(), first_transaction.stamp());
             assert!(
-                !value_definition.contains(banned),
-                "owned body query value contains banned boundary artifact `{banned}`"
+                database
+                    .declaration_body_plan_artifacts
+                    .retention()
+                    .terminals
+                    <= BODY_QUERY_MEMO_RETENTION + 1
             );
         }
-        let source = include_str!("revisioned_query_database.rs");
-        let start = source.find("\"compiler.body-input\"").unwrap();
-        let end = source[start..]
-            .find("// Body analysis is a canonical registered evaluator.")
-            .map(|offset| start + offset)
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            20,
+            "each revision lowers the reached candidate once, never once per consumer"
+        );
+    }
+
+    #[test]
+    fn candidate_artifact_retention_bounds_history_and_rederives_evicted_values() {
+        let mut text = (0..(BODY_QUERY_MEMO_RETENTION + 6))
+            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .collect::<String>();
+        text.push_str("fn chosen() -> i32 { 7 }\n");
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+
+        database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "chosen")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("current chosen body closure is rooted");
+        let chosen = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "chosen",
+        );
+        let chosen_terminal = database
+            .runtime
+            .request_registered(
+                &database.declaration_body_plan_artifacts,
+                revision,
+                DeclarationBodyPlanQueryKey(chosen),
+                CancellationToken::new(),
+            )
+            .into_result()
             .unwrap();
-        let evaluator = &source[start..end];
-        assert!(evaluator.contains("Err(QueryAbort::MissingInput(_))"));
-        assert!(evaluator.contains("Err(abort) => return Err(abort)"));
-        for banned in [
-            "CanonicalMergedProgram",
-            "CanonicalMergedRir",
-            "BodySema",
-            "BoundSema",
-            "coordinator",
-            "declaration loop",
-        ] {
-            assert!(
-                !evaluator.contains(banned),
-                "BodyInput evaluator boundary contains banned artifact `{banned}`"
+        let rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Available(
+            chosen_artifact,
+        )) = chosen_terminal.outcome()
+        else {
+            panic!("chosen artifact is available")
+        };
+        let chosen_weak = Arc::downgrade(chosen_artifact);
+        drop(chosen_terminal);
+
+        let first_candidate = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "f0",
+        );
+        let first_attempt = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            revision,
+            DeclarationBodyPlanQueryKey(first_candidate.clone()),
+            CancellationToken::new(),
+        );
+        let first_terminal = first_attempt.terminal().unwrap().clone();
+        let rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Available(
+            first_artifact,
+        )) = first_terminal.outcome()
+        else {
+            panic!("first artifact is available")
+        };
+        let first_weak = Arc::downgrade(first_artifact);
+        let render = |artifact: &crate::canonical_lower::DeclarationBodyPlanArtifacts| {
+            let declaration_start = u32::try_from(text.find("fn f0").unwrap()).unwrap();
+            let (rir, symbols) = artifact
+                .plan
+                .materialize_candidate_rir(
+                    rue_span::FileId::new(1),
+                    declaration_start,
+                    u32::try_from(text.len()).unwrap(),
+                    || Ok(()),
+                )
+                .unwrap();
+            rue_rir::RirPrinter::new(&rir, &symbols).to_string()
+        };
+        let first_render = render(first_artifact);
+        drop(first_terminal);
+        drop(first_attempt);
+
+        for index in 1..(BODY_QUERY_MEMO_RETENTION + 6) {
+            let candidate = declaration_candidate(
+                &database,
+                revision,
+                &module,
+                crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                &format!("f{index}"),
             );
+            let terminal = database
+                .runtime
+                .request_registered(
+                    &database.declaration_body_plan_artifacts,
+                    revision,
+                    DeclarationBodyPlanQueryKey(candidate),
+                    CancellationToken::new(),
+                )
+                .into_result()
+                .unwrap();
+            drop(terminal);
         }
+
+        let retention = database.declaration_body_plan_artifacts.retention();
+        assert!(
+            retention.terminals <= BODY_QUERY_MEMO_RETENTION + 1,
+            "only the current rooted artifact may exceed the bounded history: {retention:?}"
+        );
+        assert!(
+            chosen_weak.upgrade().is_some(),
+            "the current closure root stays live"
+        );
+        assert!(
+            first_weak.upgrade().is_none(),
+            "the stale unrooted artifact is released"
+        );
+
+        let rederived = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            revision,
+            DeclarationBodyPlanQueryKey(first_candidate),
+            CancellationToken::new(),
+        );
+        assert_eq!(rederived.execution(), rue_query::RequestExecution::Computed);
+        let rue_query::QueryOutcome::Success(DeclarationBodyPlanArtifactsValue::Available(
+            rederived_artifact,
+        )) = rederived.terminal().unwrap().outcome()
+        else {
+            panic!("evicted artifact rederives successfully")
+        };
+        assert_eq!(render(rederived_artifact), first_render);
+    }
+
+    #[test]
+    fn physical_path_change_invalidates_named_body_input() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "chosen"),
+            semantic_configuration(),
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let first = source_snapshot(
+            &[(
+                1,
+                "/first/main.rue",
+                "main.rue",
+                "fn chosen() -> i32 { 7 }\n",
+            )],
+            1,
+        );
+        let first_revision = revision_for(&mut database, &first);
+        let first_input = database
+            .body_input(first_revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let second = source_snapshot(
+            &[(
+                1,
+                "/second/main.rue",
+                "main.rue",
+                "fn chosen() -> i32 { 7 }\n",
+            )],
+            1,
+        );
+        let second_revision = revision_for(&mut database, &second);
+        let second_input = database
+            .body_input(second_revision, key, CancellationToken::new())
+            .unwrap();
+
+        assert_ne!(first_input.stamp(), second_input.stamp());
+    }
+
+    #[test]
+    fn file_id_reassignment_refreshes_current_basis_without_dirtying_body_input() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "chosen"),
+            semantic_configuration(),
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let text = "fn chosen() -> i32 { missing }\n";
+        let first = source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let first_revision = revision_for(&mut database, &first);
+        let first_input = database
+            .body_input(first_revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let second = source_snapshot(&[(7, "/main.rue", "main.rue", text)], 7);
+        let second_revision = revision_for(&mut database, &second);
+        let second_input = database
+            .body_input(second_revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let second_transaction = database
+            .body_transaction(second_revision, key, CancellationToken::new())
+            .expect("reassigned failure transaction publishes");
+
+        assert_eq!(first_input.stamp(), second_input.stamp());
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(second)) =
+            second_input.outcome()
+        else {
+            panic!("reassigned body input remains available")
+        };
+        assert_eq!(second.source.file_id, rue_span::FileId::new(7));
+        assert!(second.artifacts.plan.instruction_count() > 0);
+        let rue_query::QueryOutcome::Success(transaction) = second_transaction.outcome() else {
+            panic!("transaction publishes a typed value")
+        };
+        let projected = project_transaction_diagnostics(transaction.clone(), Some(&second.source));
+        let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } = projected
+        else {
+            panic!("undefined name remains a deterministic failure")
+        };
+        assert!(errors.iter().all(|error| {
+            error
+                .span()
+                .is_none_or(|span| span.file_id == rue_span::FileId::new(7))
+        }));
+    }
+
+    #[test]
+    fn body_plan_failure_preserves_compile_errors_and_referenced_body_reachability() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let bad = free_function_instance(&module, "bad");
+        let crate::FunctionInstanceKey::Definition(definition) = &bad else {
+            unreachable!()
+        };
+        let errors = crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput("broken canonical module RIR".into()),
+        ));
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn bad() -> i32 { 1 }\nfn main() -> i32 { bad() }\n",
+            )],
+            1,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        database.inject_declaration_body_plan_failure_for_test(definition, errors.clone());
+        let revision = revision_for(&mut database, &source);
+        let main = free_function_instance(&module, "main");
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module]),
+                    roots: Arc::from([main.clone()]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("referenced plan failure publishes a closure");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            panic!("body closure publishes a typed value")
+        };
+        assert_eq!(output.reached.as_ref(), &[bad.clone(), main]);
+        assert!(output.scheduling_errors.is_empty());
+        assert!(output.fatal.is_none());
+        let bad_bundle = output
+            .bodies
+            .iter()
+            .find(|body| body.key.instance == bad)
+            .expect("referenced failing body remains scheduled");
+        let rue_query::QueryOutcome::Success(bundle) = bad_bundle.bundle.outcome() else {
+            panic!("body-analysis bundle publishes a typed value")
+        };
+        let crate::body_query::BodyTransaction::DeterministicFailure {
+            errors: closure_errors,
+            ..
+        } = &bundle.transaction
+        else {
+            panic!("closure retains the referenced body's exact failure")
+        };
+        assert_eq!(closure_errors, &errors);
+
+        let transaction = database
+            .body_transaction(
+                revision,
+                crate::body_query::BodyQueryKey::new(bad, semantic_configuration()),
+                CancellationToken::new(),
+            )
+            .expect("referenced body failure publishes its transaction");
+        let rue_query::QueryOutcome::Success(transaction) = transaction.outcome() else {
+            panic!("body transaction publishes a typed value")
+        };
+        let crate::body_query::BodyTransaction::DeterministicFailure {
+            errors: published, ..
+        } = transaction
+        else {
+            panic!("body-plan failure publishes a deterministic transaction")
+        };
+        assert_eq!(published, &errors);
+    }
+
+    #[test]
+    fn internal_body_trivia_recomputes_failure_at_the_current_span() {
+        let source = |body: &str| source_snapshot(&[(1, "/main.rue", "main.rue", body)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "chosen"),
+            semantic_configuration(),
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let first_source = source("fn chosen() -> i32 { missing }\n");
+        let first_revision = revision_for(&mut database, &first_source);
+        let first_input = database
+            .body_input(first_revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let first_transaction = database
+            .body_transaction(first_revision, key.clone(), CancellationToken::new())
+            .expect("first failing transaction publishes");
+
+        let second_text = "fn chosen() -> i32 {       missing }\n";
+        let second_source = source(second_text);
+        let second_revision = revision_for(&mut database, &second_source);
+        let second_input = database
+            .body_input(second_revision, key.clone(), CancellationToken::new())
+            .unwrap();
+        let second_transaction = database
+            .body_transaction(second_revision, key, CancellationToken::new())
+            .expect("shifted failing transaction publishes");
+
+        assert_ne!(first_input.stamp(), second_input.stamp());
+        assert_ne!(first_transaction.stamp(), second_transaction.stamp());
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
+            second_input.outcome()
+        else {
+            panic!("second body input is available")
+        };
+        let rue_query::QueryOutcome::Success(transaction) = second_transaction.outcome() else {
+            panic!("second transaction publishes a typed failure")
+        };
+        let projected = project_transaction_diagnostics(transaction.clone(), Some(&input.source));
+        let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } = projected
+        else {
+            panic!("undefined name remains a deterministic body failure")
+        };
+        let missing = u32::try_from(second_text.find("missing").unwrap()).unwrap();
+        assert!(errors.iter().any(|error| {
+            error.span().is_some_and(|span| {
+                span.file_id == input.source.file_id && span.start <= missing && missing < span.end
+            })
+        }));
     }
 
     #[test]
@@ -39008,6 +40185,54 @@ fn main() -> i32 {
         assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
         assert!(attempt.terminal().is_none());
         assert!(!database.body_inputs.contains_retained_key(&key));
+    }
+
+    #[test]
+    fn cancellation_mid_body_materialization_publishes_no_terminal_and_retry_succeeds() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected() -> i32 { let a = 1; let b = 2; a + b }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let key = crate::body_query::BodyQueryKey::new(
+            free_function_instance(&module, "selected"),
+            semantic_configuration(),
+        );
+        database
+            .body_input(revision, key.clone(), CancellationToken::new())
+            .expect("body input is warm before transaction materialization");
+
+        {
+            let _injection = database.cancel_body_materialization_after_checkpoints_for_test(1);
+            let attempt = database.runtime.request_registered(
+                &database.body_transactions,
+                revision,
+                key.clone(),
+                CancellationToken::new(),
+            );
+            assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+            assert!(attempt.terminal().is_none());
+            assert!(!database.body_transactions.contains_retained_key(&key));
+        }
+
+        let retry = database
+            .body_transaction(revision, key.clone(), CancellationToken::new())
+            .expect("uncanceled retry completes");
+        assert!(matches!(
+            retry.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        assert!(database.body_transactions.contains_retained_key(&key));
     }
 
     #[test]

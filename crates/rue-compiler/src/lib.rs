@@ -164,8 +164,6 @@ pub(crate) use import_discovery::IMPORT_DISCOVERY_POLICY_VERSION;
 #[allow(unused_imports)]
 pub(crate) use parsed_modules::{ParseInvalidationSummary, ParsedModulesWork};
 pub(crate) use queries::{PipelineWork, SourceStats};
-#[allow(unused_imports)]
-pub(crate) use semantic_symbols::SemanticTranslationWork;
 #[cfg(test)]
 pub(crate) use session::RootedCfgOutput;
 #[allow(unused_imports)]

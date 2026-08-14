@@ -1,14 +1,17 @@
 //! Canonical, provenance-safe lowering from parsed modules to RIR.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 
+use lasso::Key;
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
 use rue_rir::{
-    AstGen, InstRef, Rir, RirEditor, RirPayloadBuildError, RirValidationContext, ValidatedRir,
+    AstGen, InstRef, PackedRirMetadata, PackedRirMethodOwner, PackedValidatedRir, Rir, RirEditor,
+    RirPayloadBuildError, RirValidationContext, ValidatedRir,
 };
 use rue_span::FileId;
 
@@ -67,12 +70,667 @@ pub struct CanonicalRirOutput {
 
 /// Independently reusable lowering result for exactly one module source leaf.
 #[derive(Debug)]
-pub(crate) struct ModuleRirOutput {
+pub(crate) struct CandidateModuleRirOutput {
     revision: crate::ModuleRevision,
     source_length: u32,
     rir: ValidatedRir,
     symbols: SemanticSymbolUniverse,
     work: CanonicalRirWork,
+    #[cfg(test)]
+    declaration_roots:
+        HashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleDeclarationRoot {
+    pub(crate) declaration: InstRef,
+    /// Exact contiguous instruction interval emitted for this declaration.
+    /// Canonical AstGen is post-order and never shares instruction nodes across
+    /// declaration producers; module publication validates that every child
+    /// edge remains inside this interval before retaining it.
+    pub(crate) instructions: Range<u32>,
+    /// Exact enclosing named-struct declaration for a method or associated
+    /// function. Projection retains this direct edge while omitting unrelated
+    /// sibling methods.
+    pub(crate) owner: Option<InstRef>,
+}
+
+/// Immutable RIR lowered for exactly one declaration candidate. The bundle is
+/// constructed once at the candidate-keyed query boundary and shared by the
+/// ordinary body plus every specialization.
+#[derive(Debug)]
+pub(crate) struct DeclarationBodyPlan {
+    packed: PackedValidatedRir,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BodyPlanMaterializationAttribution {
+    pub(crate) span_remap_validation_ns: u64,
+    pub(crate) base_symbol_rebuild_ns: u64,
+    pub(crate) base_symbols_rebuilt: u64,
+    pub(crate) index: rue_air::BodyRirIndexAttribution,
+    pub(crate) rir_instructions: u64,
+    pub(crate) rir_payload_words: u64,
+}
+
+#[derive(Debug)]
+pub(crate) enum BodyPlanMaterializationFailure {
+    Query(rue_query::QueryAbort),
+    Build(RirPayloadBuildError),
+    Invalid(Arc<str>),
+}
+
+impl std::fmt::Display for BodyPlanMaterializationFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Query(error) => write!(formatter, "{error:?}"),
+            Self::Build(error) => write!(formatter, "{error}"),
+            Self::Invalid(detail) => formatter.write_str(detail),
+        }
+    }
+}
+
+impl DeclarationBodyPlan {
+    pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
+        self.packed == other.packed
+    }
+
+    /// Reconstitute the existing rue-air body boundary from this canonical
+    /// candidate plan and the current source-coordinate basis.
+    ///
+    /// This is the sole temporary adapter while rue-air still requires an
+    /// owned, current-coordinate `ValidatedRir` and one mutable
+    /// `ThreadedRodeo` per analysis transaction. It performs no parsing or
+    /// AstGen lowering: instruction identity, payloads, symbols, and span-slot
+    /// topology all come from the plan. The remaining remap, validation,
+    /// interner reconstruction, and index build are deliberately visible here
+    /// for the subsequent immutable-base/projected-view tranche.
+    pub(crate) fn materialize_body_rir_bundle(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<rue_air::BodyRirBundle, BodyPlanMaterializationFailure> {
+        self.materialize_body_rir_bundle_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            false,
+            checkpoint,
+        )
+        .map(|(bundle, _)| bundle)
+    }
+
+    pub(crate) fn materialize_body_rir_bundle_with_attribution(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<
+        (rue_air::BodyRirBundle, BodyPlanMaterializationAttribution),
+        BodyPlanMaterializationFailure,
+    > {
+        self.materialize_body_rir_bundle_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            true,
+            checkpoint,
+        )
+    }
+
+    fn materialize_body_rir_bundle_internal(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        attribution_enabled: bool,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<
+        (rue_air::BodyRirBundle, BodyPlanMaterializationAttribution),
+        BodyPlanMaterializationFailure,
+    > {
+        let (rir, symbols, _remap_finished_ns, symbol_finished_ns, validation_finished_ns) = self
+            .materialize_candidate_rir_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            true,
+            attribution_enabled,
+            &mut checkpoint,
+        )?;
+        let rir_instructions = rir.len() as u64;
+        let rir_payload_words = rir.extra_len() as u64;
+        let (bundle, index) =
+            rue_air::BodyRirBundle::new_with_index_attribution(rir, symbols, attribution_enabled);
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        Ok((
+            bundle,
+            BodyPlanMaterializationAttribution {
+                // The historical schema field is now the complete bounded
+                // plan-materialization adapter interval: span projection,
+                // temporary base-symbol reconstruction, and validation. The
+                // symbol-only subset is also published separately so this
+                // transitional cost remains visible rather than masquerading
+                // as deleted parsing or RIR lowering.
+                span_remap_validation_ns: validation_finished_ns,
+                base_symbol_rebuild_ns: symbol_finished_ns,
+                base_symbols_rebuilt: self.packed.symbols().len() as u64,
+                index,
+                rir_instructions,
+                rir_payload_words,
+            },
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn materialize_candidate_rir(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<(ValidatedRir, lasso::ThreadedRodeo), BodyPlanMaterializationFailure> {
+        self.materialize_candidate_rir_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            true,
+            false,
+            &mut checkpoint,
+        )
+        .map(|(rir, symbols, _, _, _)| (rir, symbols))
+    }
+
+    fn materialize_candidate_rir_internal(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        include_method_owner: bool,
+        attribution_enabled: bool,
+        checkpoint: &mut impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<(ValidatedRir, lasso::ThreadedRodeo, u64, u64, u64), BodyPlanMaterializationFailure>
+    {
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        let started = attribution_enabled.then(Instant::now);
+        let elapsed = || {
+            started.map_or(0, |started| {
+                u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+            })
+        };
+        let symbols = lasso::ThreadedRodeo::new();
+        let mut ordinal_symbols = Vec::with_capacity(self.packed.symbols().len());
+        for (ordinal, spelling) in self.packed.symbols().enumerate() {
+            if ordinal & 63 == 0 {
+                checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+            }
+            let symbol: lasso::Spur = symbols.get_or_intern(spelling);
+            if symbol.into_usize() != ordinal {
+                return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                    "body-plan symbol universe did not preserve stable ordinals",
+                )));
+            }
+            ordinal_symbols.push(symbol);
+        }
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        let symbol_finished_ns = elapsed();
+        let mut editor = RirEditor::new();
+        let appended = self
+            .packed
+            .try_append_remapped(
+                &mut editor,
+                || checkpoint().map_err(BodyPlanMaterializationFailure::Query),
+                |ordinal| {
+                    ordinal_symbols
+                        .get(ordinal as usize)
+                        .copied()
+                        .ok_or_else(|| {
+                            BodyPlanMaterializationFailure::Invalid(Arc::from(
+                                "packed body-plan symbol ordinal is absent",
+                            ))
+                        })
+                },
+                |_slot, (relative_start, relative_end)| {
+                    let Some(start) = declaration_start.checked_add(relative_start) else {
+                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "projected body-plan span start overflows current source",
+                        )));
+                    };
+                    let Some(end) = declaration_start.checked_add(relative_end) else {
+                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "projected body-plan span end overflows current source",
+                        )));
+                    };
+                    if start > end || end > source_length {
+                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "projected body-plan span is outside current source",
+                        )));
+                    }
+                    Ok(rue_span::Span::with_file(file_id, start, end))
+                },
+            )
+            .map_err(|error| match error {
+                rue_rir::PackedRirAppendError::Checkpoint(failure)
+                | rue_rir::PackedRirAppendError::SymbolRemap(failure)
+                | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
+                rue_rir::PackedRirAppendError::Build(error) => {
+                    BodyPlanMaterializationFailure::Build(error)
+                }
+                rue_rir::PackedRirAppendError::Decode(error) => {
+                    BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                        "private packed body plan is invalid: {error}"
+                    )))
+                }
+            })?;
+        if include_method_owner && let Some(owner) = appended.metadata.method_owner {
+            let span = editor.get(owner.declaration).span;
+            editor
+                .add_struct_decl(
+                    &[],
+                    owner.is_public,
+                    owner.is_linear,
+                    owner.name,
+                    &[],
+                    &[owner.declaration],
+                    span,
+                )
+                .map_err(BodyPlanMaterializationFailure::Build)?;
+        }
+        let remap_finished_ns = elapsed();
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(file_id, source_length)],
+            },
+        )
+        .map_err(|error| {
+            BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                "projected body-plan RIR is invalid: {error}"
+            )))
+        })?;
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        let validation_finished_ns = elapsed();
+        Ok((
+            rir,
+            symbols,
+            remap_finished_ns,
+            symbol_finished_ns,
+            validation_finished_ns,
+        ))
+    }
+
+    pub(crate) fn instruction_count(&self) -> usize {
+        self.packed.instruction_count()
+    }
+
+    pub(crate) fn fallible_intrinsics(&self) -> rue_rir::RirFallibleIntrinsicSet {
+        self.packed.fallible_intrinsics()
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DeclarationBodyPlanArtifacts {
+    pub(crate) plan: DeclarationBodyPlan,
+}
+
+#[derive(Debug)]
+pub(crate) enum DeclarationBodyPlanBuildFailure {
+    Query(rue_query::QueryAbort),
+    MissingCandidate,
+    ForeignSymbol(Arc<str>),
+    Build(RirPayloadBuildError),
+    Payload(Arc<str>),
+    Validation(Arc<str>),
+    SpanProjection(Arc<str>),
+}
+
+impl RetainedCharge for DeclarationBodyPlan {
+    fn retained_charge(&self) -> u64 {
+        self.packed.retained_allocation_charge()
+    }
+}
+
+impl RetainedCharge for DeclarationBodyPlanArtifacts {
+    fn retained_charge(&self) -> u64 {
+        self.plan.retained_charge()
+    }
+}
+
+/// Lower one exact parser candidate directly into its reusable body plan.
+/// The candidate owns the only AstGen invocation; whole-RIR presentation
+/// composes the same candidate artifacts rather than lowering the module AST
+/// through a peer generator.
+pub(crate) fn lower_parsed_declaration_body_plan(
+    module: &crate::parsed_modules::ParsedModule,
+    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
+    let anchors = module
+        .declaration_anonymous_sites(candidate)
+        .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
+    lower_parsed_declaration_body_plan_internal(
+        module,
+        candidate,
+        CandidateAnonymousAnchors::Indexed(anchors),
+        checkpoint,
+    )
+}
+
+pub(crate) fn lower_parsed_declaration_body_plan_with_anonymous_anchors(
+    module: &crate::parsed_modules::ParsedModule,
+    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    anchors: &[(
+        rue_span::Span,
+        rue_rir::AnonymousTypeSiteKind,
+        rue_rir::RirStructuralAnchor,
+    )],
+    checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
+    lower_parsed_declaration_body_plan_internal(
+        module,
+        candidate,
+        CandidateAnonymousAnchors::Explicit(anchors),
+        checkpoint,
+    )
+}
+
+enum CandidateAnonymousAnchors<'a> {
+    Indexed(&'a [rue_rir::AnonymousTypeSite]),
+    Explicit(
+        &'a [(
+            rue_span::Span,
+            rue_rir::AnonymousTypeSiteKind,
+            rue_rir::RirStructuralAnchor,
+        )],
+    ),
+}
+
+fn lower_parsed_declaration_body_plan_internal(
+    module: &crate::parsed_modules::ParsedModule,
+    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    authoritative_anchors: CandidateAnonymousAnchors<'_>,
+    mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
+    checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
+    let ast = module
+        .declaration_ast(candidate)
+        .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
+    let symbols = lasso::ThreadedRodeo::new();
+    let symbol_failure = RefCell::<Option<Arc<str>>>::new(None);
+    let aborted = RefCell::new(None);
+    let mut cancellation_check = || match checkpoint() {
+        Ok(()) => true,
+        Err(abort) => {
+            if aborted.borrow().is_none() {
+                *aborted.borrow_mut() = Some(abort);
+            }
+            false
+        }
+    };
+    let (editor, declaration, method_owner) = {
+        let mut generator = AstGen::with_symbol_normalizer(&symbols, |local| {
+            match module.try_resolve_raw_symbol(local) {
+                Some(spelling) => symbols.get_or_intern(spelling),
+                None => {
+                    if symbol_failure.borrow().is_none() {
+                        *symbol_failure.borrow_mut() = Some(Arc::from(format!(
+                            "candidate AST references foreign symbol ordinal {}",
+                            local.into_usize()
+                        )));
+                    }
+                    symbols.get_or_intern("_@rue:invalid-candidate-symbol")
+                }
+            }
+        });
+        generator.install_cancellation_check(&mut cancellation_check);
+        match authoritative_anchors {
+            CandidateAnonymousAnchors::Indexed(anchors) => generator
+                .install_authoritative_anonymous_anchors(
+                    anchors
+                        .iter()
+                        .map(|site| (site.span, site.kind, site.anchor.clone())),
+                ),
+            CandidateAnonymousAnchors::Explicit(anchors) => {
+                generator.install_authoritative_anonymous_anchors(anchors.iter().cloned())
+            }
+        }
+        .map_err(|error| DeclarationBodyPlanBuildFailure::Payload(Arc::from(error.to_string())))?;
+        let (producer, owner) = match ast {
+            crate::parsed_modules::ParsedDeclarationAstRef::Function(value) => {
+                (rue_rir::AstGenCandidate::Function(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::Struct(value) => {
+                (rue_rir::AstGenCandidate::StructShell(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::Enum(value) => {
+                (rue_rir::AstGenCandidate::Enum(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::Const(value) => {
+                (rue_rir::AstGenCandidate::Const(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::Destructor(value) => {
+                (rue_rir::AstGenCandidate::DropFn(value), None)
+            }
+            crate::parsed_modules::ParsedDeclarationAstRef::Method {
+                owner,
+                method,
+                ordinal,
+            } => (
+                rue_rir::AstGenCandidate::Method { method, ordinal },
+                Some(owner),
+            ),
+            crate::parsed_modules::ParsedDeclarationAstRef::ExternFunction { function, .. } => {
+                (rue_rir::AstGenCandidate::ExternFn(function), None)
+            }
+        };
+        let root = generator.append_candidate_with_root(producer);
+        let editor = match generator.try_finish_editor_with_cancellation() {
+            Ok(editor) => editor,
+            Err(rue_rir::AstGenFinishError::Canceled) => {
+                let abort = aborted.borrow_mut().take().ok_or_else(|| {
+                    DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+                        "candidate AstGen canceled without a query cancellation",
+                    ))
+                })?;
+                return Err(DeclarationBodyPlanBuildFailure::Query(abort));
+            }
+            Err(rue_rir::AstGenFinishError::Payload(error)) => {
+                return Err(DeclarationBodyPlanBuildFailure::Payload(Arc::from(
+                    error.to_string(),
+                )));
+            }
+        };
+        (editor, root.declaration, owner)
+    };
+    if let Some(abort) = aborted.into_inner() {
+        return Err(DeclarationBodyPlanBuildFailure::Query(abort));
+    }
+    if let Some(error) = symbol_failure.into_inner() {
+        return Err(DeclarationBodyPlanBuildFailure::ForeignSymbol(error));
+    }
+    validate_candidate_root(&editor, declaration, candidate, &symbols)?;
+    let method_owner = if let Some(owner) = method_owner {
+        let owner_name = module
+            .try_resolve_raw_symbol(owner.name.name)
+            .ok_or_else(|| {
+                DeclarationBodyPlanBuildFailure::ForeignSymbol(Arc::from(
+                    "method owner name is foreign to the parsed module symbol universe",
+                ))
+            })?;
+        let owner_name = symbols.get_or_intern(owner_name);
+        Some(PackedRirMethodOwner {
+            declaration,
+            name: owner_name,
+            is_public: owner.visibility == rue_parser::ast::Visibility::Public,
+            is_linear: owner.is_linear,
+        })
+    } else {
+        None
+    };
+    let source_length = u32::try_from(module.source_text().len()).map_err(|_| {
+        DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+            "candidate source length exceeds RIR span capacity",
+        ))
+    })?;
+    let declaration_start = module
+        .definitions()
+        .declaration_locator(candidate)
+        .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?
+        .declaration_span
+        .start;
+    finish_declaration_body_plan(
+        editor,
+        symbols,
+        declaration,
+        method_owner,
+        module.file_id(),
+        declaration_start,
+        source_length,
+        checkpoint,
+    )
+}
+
+fn validate_candidate_root(
+    editor: &RirEditor,
+    declaration: InstRef,
+    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
+    symbols: &lasso::ThreadedRodeo,
+) -> Result<(), DeclarationBodyPlanBuildFailure> {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+    let instruction = editor.get(declaration);
+    let name_matches =
+        |name: &lasso::Spur| symbols.try_resolve(name) == Some(candidate.name.as_ref());
+    let exact = match (&instruction.data, candidate.category) {
+        (
+            rue_rir::InstData::FnDecl {
+                name,
+                has_self: false,
+                is_extern: false,
+                ..
+            },
+            Category::Function | Category::AssociatedFunction,
+        ) => name_matches(name),
+        (
+            rue_rir::InstData::FnDecl {
+                name,
+                has_self: true,
+                is_extern: false,
+                ..
+            },
+            Category::Method,
+        ) => name_matches(name),
+        (
+            rue_rir::InstData::FnDecl {
+                name,
+                has_self: false,
+                is_extern: true,
+                ..
+            },
+            Category::ExternFunction,
+        ) => name_matches(name),
+        (rue_rir::InstData::StructDecl { name, methods, .. }, Category::Struct) => {
+            name_matches(name) && editor.struct_methods(methods).is_empty()
+        }
+        (rue_rir::InstData::EnumDecl { name, .. }, Category::Enum)
+        | (rue_rir::InstData::ConstDecl { name, .. }, Category::ConstCandidate) => {
+            name_matches(name)
+        }
+        (rue_rir::InstData::DropFnDecl { type_name, .. }, Category::Destructor) => {
+            name_matches(type_name)
+        }
+        _ => false,
+    };
+    if !exact {
+        return Err(DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+            "candidate AstGen root does not match its exact declaration key",
+        )));
+    }
+    Ok(())
+}
+
+fn finish_declaration_body_plan(
+    extracted: RirEditor,
+    symbols: lasso::ThreadedRodeo,
+    declaration: InstRef,
+    method_owner: Option<PackedRirMethodOwner>,
+    file_id: FileId,
+    declaration_start: u32,
+    source_length: u32,
+    mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
+    let source_lengths = [(file_id, source_length)];
+    let rir = ValidatedRir::finish(
+        extracted,
+        &RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &source_lengths,
+        },
+    )
+    .map_err(|error| DeclarationBodyPlanBuildFailure::Validation(Arc::from(error.to_string())))?;
+    checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
+
+    #[derive(Debug)]
+    enum NormalizeFailure {
+        Query(rue_query::QueryAbort),
+        BeforeDeclaration,
+    }
+    let packed = rir
+        .try_pack_candidate(
+            &symbols,
+            PackedRirMetadata {
+                declaration,
+                method_owner,
+            },
+            || checkpoint().map_err(NormalizeFailure::Query),
+            |_slot, span| {
+                let start = span
+                    .start
+                    .checked_sub(declaration_start)
+                    .ok_or(NormalizeFailure::BeforeDeclaration)?;
+                let end = span
+                    .end
+                    .checked_sub(declaration_start)
+                    .ok_or(NormalizeFailure::BeforeDeclaration)?;
+                Ok((start, end))
+            },
+        )
+        .map_err(|error| match error {
+            rue_rir::PackedRirEncodeError::Checkpoint(NormalizeFailure::Query(abort))
+            | rue_rir::PackedRirEncodeError::SpanProjection {
+                error: NormalizeFailure::Query(abort),
+                ..
+            } => DeclarationBodyPlanBuildFailure::Query(abort),
+            rue_rir::PackedRirEncodeError::Checkpoint(NormalizeFailure::BeforeDeclaration)
+            | rue_rir::PackedRirEncodeError::SpanProjection {
+                error: NormalizeFailure::BeforeDeclaration,
+                ..
+            } => DeclarationBodyPlanBuildFailure::SpanProjection(Arc::from(
+                "body-plan span lies before its exact declaration origin",
+            )),
+            rue_rir::PackedRirEncodeError::CapacityFailure => {
+                DeclarationBodyPlanBuildFailure::Build(RirPayloadBuildError::CapacityFailure {
+                    family: "packed body-plan bytes",
+                })
+            }
+            rue_rir::PackedRirEncodeError::ResourceLimit => DeclarationBodyPlanBuildFailure::Build(
+                RirPayloadBuildError::ResourceLimitExceeded {
+                    family: "packed body-plan bytes",
+                },
+            ),
+            rue_rir::PackedRirEncodeError::Validation(error) => {
+                DeclarationBodyPlanBuildFailure::Validation(Arc::from(error.to_string()))
+            }
+            other => DeclarationBodyPlanBuildFailure::Validation(Arc::from(format!("{other:?}"))),
+        })?;
+    Ok(DeclarationBodyPlanArtifacts {
+        plan: DeclarationBodyPlan { packed },
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -89,7 +747,7 @@ pub(crate) struct BodyRirAttributionClock {
     pub(crate) rir_lower_finished_ns: u64,
 }
 
-impl ModuleRirOutput {
+impl CandidateModuleRirOutput {
     pub(crate) fn revision(&self) -> &crate::ModuleRevision {
         &self.revision
     }
@@ -163,7 +821,7 @@ impl ModuleRirOutput {
     }
 }
 
-impl RetainedCharge for ModuleRirOutput {
+impl RetainedCharge for CandidateModuleRirOutput {
     fn retained_charge(&self) -> u64 {
         let instructions = self
             .rir
@@ -288,23 +946,475 @@ impl CanonicalRirWork {
     }
 }
 
+#[derive(Clone)]
+#[cfg(test)]
+struct EmittedDeclarationRoot {
+    declaration: InstRef,
+    instructions: Range<u32>,
+    owner: Option<InstRef>,
+}
+
+#[cfg(test)]
+fn candidate_root_index(
+    module: &crate::parsed_modules::ParsedModule,
+    rir: &ValidatedRir,
+    symbols: &SemanticSymbolUniverse,
+    item_roots: &[rue_rir::AstGenItemRoots],
+) -> Result<
+    HashMap<crate::declaration_candidate::DeclarationCandidateKey, ModuleDeclarationRoot>,
+    &'static str,
+> {
+    use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+    use rue_rir::{AstGenItemRoots as Roots, InstData};
+
+    let mut emitted = Vec::new();
+    for roots in item_roots {
+        match roots {
+            Roots::Function(declaration)
+            | Roots::Enum(declaration)
+            | Roots::DropFn(declaration)
+            | Roots::Const(declaration) => emitted.push(EmittedDeclarationRoot {
+                declaration: declaration.declaration,
+                instructions: declaration.start..declaration.end,
+                owner: None,
+            }),
+            Roots::Struct {
+                declaration,
+                methods,
+            } => {
+                emitted.push(EmittedDeclarationRoot {
+                    declaration: declaration.declaration,
+                    instructions: declaration.start..declaration.end,
+                    owner: None,
+                });
+                emitted.extend(methods.iter().map(|method| EmittedDeclarationRoot {
+                    declaration: method.declaration,
+                    instructions: method.start..method.end,
+                    owner: Some(declaration.declaration),
+                }));
+            }
+            Roots::Extern(functions) => {
+                emitted.extend(functions.iter().map(|declaration| EmittedDeclarationRoot {
+                    declaration: declaration.declaration,
+                    instructions: declaration.start..declaration.end,
+                    owner: None,
+                }));
+            }
+            Roots::Error => {}
+        }
+    }
+
+    let keys = module
+        .definitions()
+        .declaration_keys_in_source_order()
+        .collect::<Vec<_>>();
+    if keys.len() != emitted.len() {
+        return Err("AstGen declaration roots disagree with the parser candidate count");
+    }
+
+    let mut arena_ranges = emitted
+        .iter()
+        .map(|root| (root.instructions.clone(), root.declaration))
+        .collect::<Vec<_>>();
+    arena_ranges.sort_unstable_by_key(|(range, _)| range.start);
+    let mut expected_start = 0_u32;
+    for (range, root) in &arena_ranges {
+        if range.start != expected_start
+            || range.start >= range.end
+            || root.as_u32() < range.start
+            || root.as_u32() >= range.end
+        {
+            return Err("AstGen declaration interval is not exact and contiguous");
+        }
+        expected_start = range.end;
+    }
+    if usize::try_from(expected_start).ok() != Some(rir.len()) {
+        return Err("AstGen emitted instructions outside every declaration interval");
+    }
+
+    let mut index = HashMap::with_capacity(keys.len());
+    for (key, emitted) in keys.into_iter().zip(emitted) {
+        let instruction = rir.get(emitted.declaration);
+        if instruction.span.file_id != module.file_id() {
+            return Err("AstGen declaration root has foreign file provenance");
+        }
+        let (category_matches, name) = match &instruction.data {
+            InstData::FnDecl {
+                is_extern,
+                name,
+                has_self,
+                ..
+            } => (
+                match key.category {
+                    Category::Function => !is_extern && emitted.owner.is_none() && !has_self,
+                    Category::ExternFunction => *is_extern && emitted.owner.is_none(),
+                    Category::Method => emitted.owner.is_some() && *has_self,
+                    Category::AssociatedFunction => emitted.owner.is_some() && !has_self,
+                    _ => false,
+                },
+                *name,
+            ),
+            InstData::StructDecl { name, .. } => (key.category == Category::Struct, *name),
+            InstData::EnumDecl { name, .. } => (key.category == Category::Enum, *name),
+            InstData::ConstDecl { name, .. } => (key.category == Category::ConstCandidate, *name),
+            InstData::DropFnDecl { type_name, .. } => {
+                (key.category == Category::Destructor, *type_name)
+            }
+            _ => return Err("AstGen candidate root is not a declaration instruction"),
+        };
+        if !category_matches || symbols.interner().resolve(&name) != key.name.as_ref() {
+            return Err("AstGen declaration root disagrees with its exact parser candidate");
+        }
+        match (&key.owner, emitted.owner) {
+            (Some(owner), Some(owner_ref)) => {
+                let InstData::StructDecl { name, methods, .. } = &rir.get(owner_ref).data else {
+                    return Err("method root owner is not a struct declaration");
+                };
+                if owner.category != Category::Struct
+                    || symbols.interner().resolve(name) != owner.name.as_ref()
+                    || !rir
+                        .struct_methods(methods)
+                        .values()
+                        .any(|method| method == emitted.declaration)
+                {
+                    return Err("method root has a foreign or missing direct owner edge");
+                }
+            }
+            (Some(owner), None) if key.category == Category::Destructor => {
+                if owner.category != Category::Struct || owner.name != key.name {
+                    return Err("destructor candidate has a foreign owner identity");
+                }
+            }
+            (None, None) => {}
+            _ => return Err("AstGen declaration owner shape disagrees with parser candidate"),
+        }
+        if index
+            .insert(
+                key.clone(),
+                ModuleDeclarationRoot {
+                    declaration: emitted.declaration,
+                    instructions: emitted.instructions.clone(),
+                    owner: emitted.owner,
+                },
+            )
+            .is_some()
+        {
+            return Err("duplicate exact declaration candidate in AstGen root index");
+        }
+    }
+    for (key, root) in &index {
+        if !matches!(
+            key.category,
+            Category::Function
+                | Category::ExternFunction
+                | Category::ConstCandidate
+                | Category::Destructor
+                | Category::Method
+                | Category::AssociatedFunction
+        ) {
+            continue;
+        }
+        for ordinal in root.instructions.clone() {
+            let instruction = InstRef::from_raw(ordinal);
+            let mut children = Vec::new();
+            rir.child_instructions(instruction, &mut children);
+            if children.iter().any(|child| {
+                child.as_u32() < root.instructions.start || child.as_u32() >= root.instructions.end
+            }) {
+                return Err("AstGen declaration interval has a foreign child edge");
+            }
+        }
+    }
+    Ok(index)
+}
+
+#[cfg(test)]
 pub(crate) fn lower_module_rir_with_work(
     module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
-) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
-    lower_module_rir_with_work_internal(module, None)
+) -> Result<CandidateModuleRirOutput, (CompileError, CanonicalRirWork)> {
+    lower_module_rir_with_work_internal(module, None, None)
 }
 
-pub(crate) fn lower_module_rir_with_work_and_anonymous_anchors(
+#[cfg(test)]
+pub(crate) fn lower_module_rir_with_work_and_checkpoint(
     module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
-    anchors: &[(
-        rue_span::Span,
-        rue_rir::AnonymousTypeSiteKind,
-        rue_rir::RirStructuralAnchor,
-    )],
-) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
-    lower_module_rir_with_work_internal(module, Some(anchors))
+    mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<Result<CandidateModuleRirOutput, (CompileError, CanonicalRirWork)>, rue_query::QueryAbort>
+{
+    let aborted = RefCell::new(None);
+    let mut cancellation_check = || match checkpoint() {
+        Ok(()) => true,
+        Err(abort) => {
+            if aborted.borrow().is_none() {
+                *aborted.borrow_mut() = Some(abort);
+            }
+            false
+        }
+    };
+    let result = lower_module_rir_with_work_internal(module, None, Some(&mut cancellation_check));
+    match aborted.into_inner() {
+        Some(abort) => Err(abort),
+        None => Ok(result),
+    }
 }
 
+/// Compose one module from the same candidate artifacts consumed by body
+/// analysis. This performs no AST lowering; recipes carry the sole typed
+/// cross-fragment edge from a struct shell to its method roots.
+fn project_candidate_span(
+    file_id: FileId,
+    declaration_start: u32,
+    source_length: u32,
+    relative_start: u32,
+    relative_end: u32,
+) -> Result<rue_span::Span, DeclarationBodyPlanBuildFailure> {
+    let start = declaration_start
+        .checked_add(relative_start)
+        .ok_or_else(|| {
+            DeclarationBodyPlanBuildFailure::SpanProjection(Arc::from(
+                "projected candidate span start overflows current source",
+            ))
+        })?;
+    let end = declaration_start.checked_add(relative_end).ok_or_else(|| {
+        DeclarationBodyPlanBuildFailure::SpanProjection(Arc::from(
+            "projected candidate span end overflows current source",
+        ))
+    })?;
+    if start > end || end > source_length {
+        return Err(DeclarationBodyPlanBuildFailure::SpanProjection(Arc::from(
+            "projected candidate span is outside current source",
+        )));
+    }
+    Ok(rue_span::Span::with_file(file_id, start, end))
+}
+
+pub(crate) fn compose_module_rir_from_candidate_artifacts(
+    module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
+    artifacts: &HashMap<
+        crate::declaration_candidate::DeclarationCandidateKey,
+        Arc<DeclarationBodyPlanArtifacts>,
+    >,
+    mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+) -> Result<CandidateModuleRirOutput, DeclarationBodyPlanBuildFailure> {
+    let source_length = u32::try_from(module.source_text().len()).map_err(|_| {
+        DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+            "module source length exceeds RIR span capacity",
+        ))
+    })?;
+    let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
+    let mut editor = RirEditor::new();
+    #[cfg(test)]
+    let mut declaration_roots = HashMap::with_capacity(artifacts.len());
+    let mut work = CanonicalRirWork {
+        modules_visited: 1,
+        items_visited: module.definitions().rir_recipes().len(),
+        ..CanonicalRirWork::default()
+    };
+
+    let append = |editor: &mut RirEditor,
+                  key: &crate::declaration_candidate::DeclarationCandidateKey,
+                  methods: Option<&[InstRef]>,
+                  checkpoint: &mut dyn FnMut() -> Result<(), rue_query::QueryAbort>|
+     -> Result<(Range<u32>, InstRef, usize), DeclarationBodyPlanBuildFailure> {
+        let artifact = artifacts
+            .get(key)
+            .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
+        let declaration_start = module
+            .definitions()
+            .declaration_locator(key)
+            .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?
+            .declaration_span
+            .start;
+        let mut local_symbols = Vec::with_capacity(artifact.plan.packed.symbols().len());
+        for (ordinal, spelling) in artifact.plan.packed.symbols().enumerate() {
+            if ordinal & 63 == 0 {
+                checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
+            }
+            local_symbols.push(symbols.interner().get_or_intern(spelling));
+        }
+        let mut symbols_translated = 0usize;
+        let appended = if let Some(methods) = methods {
+            artifact.plan.packed.try_append_remapped_with_root_methods(
+                editor,
+                methods,
+                || checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query),
+                |ordinal| {
+                    symbols_translated = symbols_translated.saturating_add(1);
+                    local_symbols.get(ordinal as usize).copied().ok_or_else(|| {
+                        DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+                            "candidate packed symbol ordinal is absent",
+                        ))
+                    })
+                },
+                |_slot, (relative_start, relative_end)| {
+                    project_candidate_span(
+                        module.file_id(),
+                        declaration_start,
+                        source_length,
+                        relative_start,
+                        relative_end,
+                    )
+                },
+            )
+        } else {
+            artifact.plan.packed.try_append_remapped(
+                editor,
+                || checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query),
+                |ordinal| {
+                    symbols_translated = symbols_translated.saturating_add(1);
+                    local_symbols.get(ordinal as usize).copied().ok_or_else(|| {
+                        DeclarationBodyPlanBuildFailure::Validation(Arc::from(
+                            "candidate packed symbol ordinal is absent",
+                        ))
+                    })
+                },
+                |_slot, (relative_start, relative_end)| {
+                    project_candidate_span(
+                        module.file_id(),
+                        declaration_start,
+                        source_length,
+                        relative_start,
+                        relative_end,
+                    )
+                },
+            )
+        }
+        .map_err(|error| match error {
+            rue_rir::PackedRirAppendError::Checkpoint(failure)
+            | rue_rir::PackedRirAppendError::SymbolRemap(failure)
+            | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
+            rue_rir::PackedRirAppendError::Build(error) => {
+                DeclarationBodyPlanBuildFailure::Build(error)
+            }
+            rue_rir::PackedRirAppendError::Decode(error) => {
+                DeclarationBodyPlanBuildFailure::Validation(Arc::from(format!(
+                    "private candidate packed RIR is invalid: {error}"
+                )))
+            }
+        })?;
+        Ok((
+            appended.range.instructions,
+            appended.metadata.declaration,
+            symbols_translated,
+        ))
+    };
+
+    for recipe in module.definitions().rir_recipes() {
+        checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
+        match recipe {
+            crate::parsed_modules::ParsedRirRecipe::Single(key) => {
+                let (instructions, declaration, symbols_translated) =
+                    append(&mut editor, key, None, &mut checkpoint)?;
+                work.symbol_fields_translated = work
+                    .symbol_fields_translated
+                    .saturating_add(symbols_translated);
+                #[cfg(not(test))]
+                let _ = (instructions, declaration);
+                #[cfg(test)]
+                declaration_roots.insert(
+                    key.clone(),
+                    ModuleDeclarationRoot {
+                        declaration,
+                        instructions,
+                        owner: None,
+                    },
+                );
+            }
+            crate::parsed_modules::ParsedRirRecipe::Extern { functions } => {
+                for key in functions.iter() {
+                    let (instructions, declaration, symbols_translated) =
+                        append(&mut editor, key, None, &mut checkpoint)?;
+                    work.symbol_fields_translated = work
+                        .symbol_fields_translated
+                        .saturating_add(symbols_translated);
+                    #[cfg(not(test))]
+                    let _ = (instructions, declaration);
+                    #[cfg(test)]
+                    declaration_roots.insert(
+                        key.clone(),
+                        ModuleDeclarationRoot {
+                            declaration,
+                            instructions,
+                            owner: None,
+                        },
+                    );
+                }
+            }
+            crate::parsed_modules::ParsedRirRecipe::Struct { shell, methods } => {
+                let mut method_roots = Vec::with_capacity(methods.len());
+                for key in methods.iter() {
+                    let (instructions, declaration, symbols_translated) =
+                        append(&mut editor, key, None, &mut checkpoint)?;
+                    work.symbol_fields_translated = work
+                        .symbol_fields_translated
+                        .saturating_add(symbols_translated);
+                    #[cfg(not(test))]
+                    let _ = instructions;
+                    method_roots.push(declaration);
+                    #[cfg(test)]
+                    declaration_roots.insert(
+                        key.clone(),
+                        ModuleDeclarationRoot {
+                            declaration,
+                            instructions,
+                            owner: None,
+                        },
+                    );
+                }
+                let (instructions, declaration, symbols_translated) =
+                    append(&mut editor, shell, Some(&method_roots), &mut checkpoint)?;
+                work.symbol_fields_translated = work
+                    .symbol_fields_translated
+                    .saturating_add(symbols_translated);
+                #[cfg(not(test))]
+                let _ = (instructions, declaration);
+                #[cfg(test)]
+                declaration_roots.insert(
+                    shell.clone(),
+                    ModuleDeclarationRoot {
+                        declaration,
+                        instructions,
+                        owner: None,
+                    },
+                );
+                #[cfg(test)]
+                for key in methods.iter() {
+                    declaration_roots
+                        .get_mut(key)
+                        .expect("method root was inserted before its shell")
+                        .owner = Some(declaration);
+                }
+            }
+        }
+    }
+    let rir = ValidatedRir::finish(
+        editor,
+        &RirValidationContext {
+            symbol_count: symbols.interner().len(),
+            source_lengths: &[(module.file_id(), source_length)],
+        },
+    )
+    .map_err(|error| {
+        DeclarationBodyPlanBuildFailure::Validation(Arc::from(format!(
+            "composed module RIR is invalid: {error}"
+        )))
+    })?;
+    work.instructions_appended = rir.len();
+    work.payload_words_appended = rir.extra_len();
+    work.semantic_intern_attempts = work.symbol_fields_translated;
+    work.semantic_strings_retained = symbols.interner().len();
+    Ok(CandidateModuleRirOutput {
+        revision: module.revision().clone(),
+        source_length,
+        rir,
+        symbols,
+        work,
+        #[cfg(test)]
+        declaration_roots,
+    })
+}
+
+#[cfg(test)]
 fn lower_module_rir_with_work_internal(
     module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
     authoritative_anchors: Option<
@@ -314,7 +1424,8 @@ fn lower_module_rir_with_work_internal(
             rue_rir::RirStructuralAnchor,
         )],
     >,
-) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
+    cancellation_check: Option<&mut dyn FnMut() -> bool>,
+) -> Result<CandidateModuleRirOutput, (CompileError, CanonicalRirWork)> {
     let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
     let view = crate::parsed_modules::ParsedAstView::from_module(module.clone());
     let first_error = RefCell::<Option<CompileError>>::new(None);
@@ -323,7 +1434,7 @@ fn lower_module_rir_with_work_internal(
         items_visited: module.ast().items.len(),
         ..CanonicalRirWork::default()
     };
-    let editor = {
+    let (editor, item_roots) = {
         let mut generator =
             AstGen::with_symbol_normalizer(symbols.interner(), |local| {
                 match symbols.translate_ast_symbol(&view, local) {
@@ -339,6 +1450,9 @@ fn lower_module_rir_with_work_internal(
                     }
                 }
             });
+        if let Some(checkpoint) = cancellation_check {
+            generator.install_cancellation_check(checkpoint);
+        }
         if let Some(anchors) = authoritative_anchors {
             generator
                 .install_authoritative_anonymous_anchors(anchors.iter().cloned())
@@ -354,11 +1468,11 @@ fn lower_module_rir_with_work_internal(
                     )
                 })?;
         }
-        generator.append_items(&module.ast().items);
+        let item_roots = generator.append_items_with_roots(&module.ast().items);
         if let Some(error) = first_error.borrow_mut().take() {
             return Err((error, work));
         }
-        generator.try_finish_editor().map_err(|error| {
+        let editor = generator.try_finish_editor().map_err(|error| {
             (
                 CompileError::new(
                     rir_build_error_kind("RIR module payload construction failed", &error),
@@ -366,7 +1480,8 @@ fn lower_module_rir_with_work_internal(
                 ),
                 work,
             )
-        })?
+        })?;
+        (editor, item_roots)
     };
     let source_length = u32::try_from(module.source_text().len()).map_err(|_| {
         (
@@ -393,25 +1508,37 @@ fn lower_module_rir_with_work_internal(
             work,
         )
     })?;
+    let declaration_roots =
+        candidate_root_index(&module, &rir, &symbols, &item_roots).map_err(|reason| {
+            (
+                CompileError::new(
+                    ErrorKind::InternalError(reason.to_owned()),
+                    rue_span::Span::new(0, 0),
+                ),
+                work,
+            )
+        })?;
     let translation = symbols.work();
     work.symbol_fields_translated = translation.local_symbol_resolutions;
     work.semantic_intern_attempts = translation.semantic_intern_attempts;
     work.unique_semantic_strings = translation.unique_semantic_strings;
     work.semantic_strings_retained = symbols.interner().len();
-    Ok(ModuleRirOutput {
+    Ok(CandidateModuleRirOutput {
         revision: module.revision().clone(),
         source_length,
         rir,
         symbols,
         work,
+        #[cfg(test)]
+        declaration_roots,
     })
 }
 
 /// Assemble the deterministic whole-program compatibility view from canonical
 /// module lowering terminals. This projection never traverses parser AST.
-pub(crate) fn project_module_rirs_with_work(
+pub(crate) fn project_candidate_module_rirs_with_work(
     merged: &CanonicalMergedProgram,
-    modules: &[std::sync::Arc<ModuleRirOutput>],
+    modules: &[std::sync::Arc<CandidateModuleRirOutput>],
     query_work: CanonicalRirWork,
 ) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
     let ast = merged.ast();
@@ -563,6 +1690,156 @@ mod tests {
         assert_send_sync::<CanonicalRirOutput>();
     }
 
+    #[test]
+    fn candidate_artifact_composition_matches_module_astgen_for_all_declaration_categories() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+@copy
+pub struct Box {
+    value: i32,
+    fn get(borrow self, comptime T: type) -> i32 { self.value }
+    fn make(value: i32) -> Box { Box { value: value } }
+}
+enum Choice { A, B(i32) }
+const selected: i32 = 1;
+drop fn Box(self) {}
+unchecked fn run(value: i32) -> i32 { value }
+extern "C" { fn getpid() -> i32; }
+"#,
+            )],
+            1,
+        );
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+        let module = parsed.modules()[0].clone();
+        let old = lower_module_rir_with_work(module.clone()).unwrap();
+        let mut artifacts = HashMap::new();
+        let mut categories = Vec::new();
+        for key in module.definitions().declaration_keys_in_source_order() {
+            categories.push(key.category);
+            let artifact = lower_parsed_declaration_body_plan(&module, key, || Ok(())).unwrap();
+            artifacts.insert(key.clone(), Arc::new(artifact));
+        }
+        let composed =
+            compose_module_rir_from_candidate_artifacts(module, &artifacts, || Ok(())).unwrap();
+        categories.sort_unstable();
+        categories.dedup();
+        for expected in [
+            Category::Function,
+            Category::Struct,
+            Category::Enum,
+            Category::ConstCandidate,
+            Category::Destructor,
+            Category::Method,
+            Category::AssociatedFunction,
+            Category::ExternFunction,
+        ] {
+            assert!(categories.contains(&expected), "missing {expected:?}");
+        }
+        assert_eq!(
+            RirPrinter::new(&composed.rir, composed.symbols.interner()).to_string(),
+            RirPrinter::new(&old.rir, old.symbols.interner()).to_string()
+        );
+        assert_eq!(composed.declaration_roots, old.declaration_roots);
+    }
+
+    #[test]
+    fn candidate_composition_is_parity_safe_with_local_counters_and_anonymous_types() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                r#"
+fn index() -> u64 { 1 }
+fn before(inout values: [i32; 4]) {
+    for _ in [1, 2] {}
+    values[index()] += 1;
+}
+fn target(inout values: [i32; 4]) -> type {
+    for _ in [1, 2] {}
+    values[index()] += 1;
+    struct { value: i32, fn nested(self) -> i32 { self.value } }
+}
+"#,
+            )],
+            1,
+        );
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
+        let module = parsed.modules()[0].clone();
+        let old = lower_module_rir_with_work(module.clone()).unwrap();
+        let artifacts = module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .map(|key| {
+                let artifact = lower_parsed_declaration_body_plan(&module, key, || Ok(())).unwrap();
+                (key.clone(), Arc::new(artifact))
+            })
+            .collect::<HashMap<_, _>>();
+        let target_key = artifacts
+            .keys()
+            .find(|key| key.name.as_ref() == "target")
+            .unwrap();
+        let indexed_anchors = module
+            .declaration_anonymous_sites(target_key)
+            .unwrap()
+            .iter()
+            .map(|site| site.anchor.clone())
+            .collect::<Vec<_>>();
+        let target_artifact = artifacts.get(target_key).unwrap();
+        let declaration_start = module
+            .definitions()
+            .declaration_locator(target_key)
+            .unwrap()
+            .declaration_span
+            .start;
+        let (target_rir, _) = target_artifact
+            .plan
+            .materialize_candidate_rir(
+                module.file_id(),
+                declaration_start,
+                module.source_text().len() as u32,
+                || Ok(()),
+            )
+            .unwrap();
+        let emitted_anchors = target_rir
+            .iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                rue_rir::InstData::AnonStructType { anchor, .. }
+                | rue_rir::InstData::AnonEnumType { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(emitted_anchors, indexed_anchors);
+
+        let mut corrupted_index = module
+            .declaration_anonymous_sites(target_key)
+            .unwrap()
+            .to_vec();
+        assert_eq!(corrupted_index.len(), 1);
+        corrupted_index[0].kind = rue_rir::AnonymousTypeSiteKind::Enum;
+        assert!(matches!(
+            lower_parsed_declaration_body_plan_internal(
+                &module,
+                target_key,
+                CandidateAnonymousAnchors::Indexed(&corrupted_index),
+                || Ok(()),
+            ),
+            Err(DeclarationBodyPlanBuildFailure::Payload(_))
+        ));
+
+        let composed =
+            compose_module_rir_from_candidate_artifacts(module, &artifacts, || Ok(())).unwrap();
+        let old = RirPrinter::new(&old.rir, old.symbols.interner()).to_string();
+        let composed = RirPrinter::new(&composed.rir, composed.symbols.interner()).to_string();
+        assert_eq!(old, composed);
+    }
+
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
             .iter()
@@ -634,6 +1911,254 @@ mod tests {
         assert_eq!(work.modules_projected, 0);
     }
 
+    fn candidate_named(
+        module: &crate::parsed_modules::ParsedModule,
+        name: &str,
+    ) -> crate::declaration_candidate::DeclarationCandidateKey {
+        module
+            .definitions()
+            .declaration_keys_in_source_order()
+            .find(|key| key.name.as_ref() == name)
+            .expect("test declaration candidate is indexed")
+            .clone()
+    }
+
+    #[test]
+    fn declaration_body_plan_ignores_sibling_vocabulary_but_refreshes_current_basis() {
+        let first = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn chosen() -> i32 { 1 + 2 }\nfn old_sibling() -> i32 { 3 }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "\n\nfn chosen() -> i32 { 1 + 2 }\nfn completely_new_vocabulary() -> i32 { 99 }",
+            )],
+            1,
+        );
+        let first_module = parse_source_snapshot_modules(&first).unwrap().modules()[0].clone();
+        let second_module = parse_source_snapshot_modules(&second).unwrap().modules()[0].clone();
+        let key = candidate_named(&first_module, "chosen");
+        assert_eq!(key, candidate_named(&second_module, "chosen"));
+        let first_plan =
+            lower_parsed_declaration_body_plan(&first_module, &key, || Ok(())).unwrap();
+        let second_plan =
+            lower_parsed_declaration_body_plan(&second_module, &key, || Ok(())).unwrap();
+
+        assert!(first_plan.plan.structurally_eq(&second_plan.plan));
+        assert!(
+            first_plan
+                .plan
+                .packed
+                .symbols()
+                .all(|symbol| symbol != "old_sibling")
+        );
+        assert!(
+            second_plan
+                .plan
+                .packed
+                .symbols()
+                .all(|symbol| symbol != "completely_new_vocabulary")
+        );
+    }
+
+    #[test]
+    fn declaration_body_plan_basis_tracks_in_declaration_coordinate_changes() {
+        let source = |body| {
+            snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    &format!("fn chosen() -> i32 {{ {body} }}"),
+                )],
+                1,
+            )
+        };
+        let first = parse_source_snapshot_modules(&source("1 + 2"))
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let second = parse_source_snapshot_modules(&source("(1  +  2)"))
+            .unwrap()
+            .modules()[0]
+            .clone();
+        let key = candidate_named(&first, "chosen");
+        assert_eq!(key, candidate_named(&second, "chosen"));
+        let first = lower_parsed_declaration_body_plan(&first, &key, || Ok(())).unwrap();
+        let second = lower_parsed_declaration_body_plan(&second, &key, || Ok(())).unwrap();
+
+        assert!(!first.plan.structurally_eq(&second.plan));
+    }
+
+    #[test]
+    fn declaration_body_plan_charge_is_exactly_one_packed_envelope() {
+        let source = snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 1 + 2 }")],
+            1,
+        );
+        let module = parse_source_snapshot_modules(&source).unwrap().modules()[0].clone();
+        let key = candidate_named(&module, "selected");
+        let artifact =
+            Arc::new(lower_parsed_declaration_body_plan(&module, &key, || Ok(())).unwrap());
+        assert_eq!(
+            artifact.retained_charge(),
+            std::mem::size_of::<DeclarationBodyPlanArtifacts>() as u64
+                + artifact.plan.packed.retained_allocation_charge(),
+        );
+    }
+
+    #[test]
+    fn body_plan_materialization_reprojects_fails_closed_and_retries() {
+        let source = snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 1 + 2 }")],
+            1,
+        );
+        let module = parse_source_snapshot_modules(&source).unwrap().modules()[0].clone();
+        let key = candidate_named(&module, "selected");
+        let file_id = module.file_id();
+        let declaration_start = module
+            .definitions()
+            .declaration_locator(&key)
+            .unwrap()
+            .declaration_span
+            .start;
+        let artifacts = lower_parsed_declaration_body_plan(&module, &key, || Ok(())).unwrap();
+        let source_length = module.source_text().len() as u32;
+        let materialized = artifacts
+            .plan
+            .materialize_candidate_rir(file_id, declaration_start, source_length, || Ok(()))
+            .unwrap()
+            .0;
+        assert!(
+            materialized
+                .iter()
+                .all(|(_, instruction)| instruction.span.file_id == file_id)
+        );
+        assert!(matches!(
+            artifacts
+                .plan
+                .materialize_body_rir_bundle(file_id, declaration_start, 1, || Ok(()),),
+            Err(BodyPlanMaterializationFailure::Invalid(_))
+        ));
+
+        assert!(matches!(
+            artifacts.plan.materialize_body_rir_bundle(
+                file_id,
+                declaration_start,
+                source_length,
+                || Err(rue_query::QueryAbort::Canceled),
+            ),
+            Err(BodyPlanMaterializationFailure::Query(
+                rue_query::QueryAbort::Canceled
+            ))
+        ));
+        assert!(
+            artifacts
+                .plan
+                .materialize_body_rir_bundle(file_id, declaration_start, source_length, || Ok(()),)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn middle_method_plan_retains_only_its_exact_owner_edge() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct S { fn first(borrow self) {} fn middle(borrow self) {} fn last(borrow self) {} }",
+            )],
+            1,
+        );
+        let module = parse_source_snapshot_modules(&source).unwrap().modules()[0].clone();
+        let key = candidate_named(&module, "middle");
+        let method_span = module
+            .definitions()
+            .declaration_locator(&key)
+            .expect("middle method has an exact parser locator")
+            .declaration_span;
+        let artifacts = lower_parsed_declaration_body_plan(&module, &key, || Ok(())).unwrap();
+        let spellings = artifacts.plan.packed.symbols().collect::<Vec<_>>();
+
+        assert!(spellings.contains(&"S"));
+        assert!(spellings.contains(&"middle"));
+        assert!(!spellings.contains(&"first"));
+        assert!(!spellings.contains(&"last"));
+        let (materialized, _) = artifacts
+            .plan
+            .materialize_candidate_rir(
+                module.file_id(),
+                method_span.start,
+                module.source_text().len() as u32,
+                || Ok(()),
+            )
+            .unwrap();
+        let owner_count = materialized
+            .iter()
+            .filter(|(_, instruction)| {
+                matches!(instruction.data, rue_rir::InstData::StructDecl { .. })
+            })
+            .count();
+        assert_eq!(owner_count, 1);
+
+        let (owner_ref, method_ref) = materialized
+            .iter()
+            .find_map(|(owner_ref, instruction)| {
+                let rue_rir::InstData::StructDecl { methods, .. } = &instruction.data else {
+                    return None;
+                };
+                Some((
+                    owner_ref,
+                    *materialized
+                        .struct_methods(methods)
+                        .iter()
+                        .next()
+                        .expect("synthetic owner retains the selected method"),
+                ))
+            })
+            .expect("plan retains one synthetic owner edge");
+        let owner_span = materialized.get(owner_ref).span;
+        let selected_span = materialized.get(method_ref).span;
+        assert_eq!(owner_span, selected_span);
+        assert!(method_span.start <= owner_span.start && owner_span.end <= method_span.end);
+    }
+
+    #[test]
+    fn module_rir_lowering_cancellation_aborts_and_retry_completes() {
+        let statements = (0..4_096)
+            .map(|index| format!("let value_{index} = {index};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = format!("fn main() -> i32 {{ {statements}\n0 }}");
+        let source = snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = parse_source_snapshot_modules(&source).unwrap().modules()[0].clone();
+        let mut checkpoints = 0_usize;
+        let canceled = lower_module_rir_with_work_and_checkpoint(module.clone(), || {
+            checkpoints += 1;
+            if checkpoints == 16 {
+                Err(rue_query::QueryAbort::Canceled)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(canceled, Err(rue_query::QueryAbort::Canceled)));
+        assert_eq!(checkpoints, 16);
+
+        let retried = lower_module_rir_with_work_and_checkpoint(module, || Ok(()))
+            .unwrap()
+            .unwrap();
+        assert!(retried.rir.len() > checkpoints);
+    }
+
     #[test]
     fn projection_failure_preserves_incoming_query_work() {
         let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
@@ -644,7 +2169,7 @@ mod tests {
             ..CanonicalRirWork::default()
         };
         let (_, failure_work) =
-            project_module_rirs_with_work(&merged, &[], query_work).unwrap_err();
+            project_candidate_module_rirs_with_work(&merged, &[], query_work).unwrap_err();
         assert_eq!(failure_work, query_work);
     }
 

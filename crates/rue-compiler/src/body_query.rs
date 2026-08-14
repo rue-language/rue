@@ -99,13 +99,6 @@ pub(crate) fn relative_body_diagnostics(
     )
 }
 
-pub(crate) fn body_source_locator_equal(
-    left: &Option<BodySourceLocator>,
-    right: &Option<BodySourceLocator>,
-) -> bool {
-    left == right
-}
-
 pub(crate) fn body_source_basis_equal(
     left: &Option<BodySourceLocator>,
     right: &Option<BodySourceLocator>,
@@ -119,16 +112,18 @@ pub(crate) fn body_source_basis_equal(
     }
 }
 
-/// Exact owned syntax requested by the registered body-input evaluator. The
-/// stable owner and its request-local source locator are the only identities
-/// carried with the syntax; parser and RIR handles remain confined to the
-/// evaluator-local lowering helper.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Exact canonical candidate plan requested by the body evaluator.
+///
+/// The current source locator owns absolute presentation state. The artifact
+/// owns both normalized structure and its candidate-relative diagnostic basis,
+/// so sibling/prefix relocation can refresh the locator without invalidating a
+/// retained body transaction, while internal coordinate changes dirty the
+/// artifact and transaction together.
+#[derive(Debug, Clone)]
 pub(crate) struct OwnedBodyInput {
     pub(crate) owner: crate::StableDefinitionKey,
     pub(crate) source: BodySourceLocator,
-    pub(crate) signature: crate::declaration_candidate::RawDeclarationSignatureSyntax,
-    pub(crate) body: crate::declaration_candidate::RawDeclarationBodySyntax,
+    pub(crate) artifacts: Arc<crate::canonical_lower::DeclarationBodyPlanArtifacts>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,23 +132,23 @@ pub(crate) enum BodyInputIncomplete {
     UnsupportedKind(crate::StableDefinitionKind),
     Generic,
     Extern,
+    BodyPlanFailure(crate::revisioned_query_database::DeclarationBodyPlanFailure),
     MissingPrerequisite(Arc<str>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum BodyInputValue {
     Available(OwnedBodyInput),
     Incomplete(BodyInputIncomplete),
 }
 
+#[cfg(test)]
 pub(crate) fn body_input_equal(left: &BodyInputValue, right: &BodyInputValue) -> bool {
     match (left, right) {
         (BodyInputValue::Available(left), BodyInputValue::Available(right)) => {
             left.owner == right.owner
-                && left.source.file_id == right.source.file_id
+                && left.artifacts.plan.structurally_eq(&right.artifacts.plan)
                 && left.source.physical_path == right.source.physical_path
-                && left.signature == right.signature
-                && left.body == right.body
         }
         (BodyInputValue::Incomplete(left), BodyInputValue::Incomplete(right)) => left == right,
         _ => false,
@@ -610,14 +605,14 @@ impl RetainedCharge for OwnedBodyInput {
         self.owner
             .retained_charge()
             .saturating_add(self.source.retained_charge())
-            .saturating_add(self.signature.retained_charge())
-            .saturating_add(self.body.retained_charge())
+            .saturating_add(self.artifacts.plan.retained_charge())
     }
 }
 
 impl RetainedCharge for BodyInputIncomplete {
     fn retained_charge(&self) -> u64 {
         match self {
+            Self::BodyPlanFailure(failure) => failure.retained_charge(),
             Self::MissingPrerequisite(detail) => detail.retained_charge(),
             Self::UnsupportedInstance | Self::UnsupportedKind(_) | Self::Generic | Self::Extern => {
                 0

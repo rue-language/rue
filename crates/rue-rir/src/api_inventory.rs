@@ -51,3 +51,149 @@ fn rir_payload_storage_and_raw_ranges_stay_owner_private() {
     assert!(!producer.contains(".extra."));
     assert!(!producer.contains("from_parts("));
 }
+
+#[test]
+fn rir_span_storage_is_tied_to_the_canonical_slot_visitor() {
+    let owner = include_str!("inst.rs");
+
+    let declaration = |start: &str, end: &str| {
+        owner
+            .split(start)
+            .nth(1)
+            .and_then(|rest| rest.split(end).next())
+            .unwrap_or_else(|| panic!("missing source inventory region {start:?}..{end:?}"))
+    };
+
+    let directive = declaration("pub struct RirDirective {", "pub enum RirParamMode");
+    assert_eq!(
+        directive.matches("Span").count(),
+        2,
+        "directive span schema changed"
+    );
+    assert!(directive.contains("pub span: Span"));
+
+    let parameter = declaration("pub struct RirParam {", "pub enum RirArgMode");
+    assert_eq!(
+        parameter.matches("Span").count(),
+        2,
+        "parameter span schema changed"
+    );
+    assert!(parameter.contains("pub span: Span"));
+
+    let pattern = declaration("pub enum RirPattern {", "impl RirPattern");
+    assert_eq!(
+        pattern.matches("Span").count(),
+        6,
+        "pattern span schema changed"
+    );
+    for shape in [
+        "Wildcard(Span)",
+        "span: Span",
+        "Bool(bool, Span)",
+        "span: Span",
+    ] {
+        assert!(pattern.contains(shape));
+    }
+
+    let instruction = declaration("pub struct Inst {", "pub enum RepeatCount");
+    assert_eq!(
+        instruction.matches("Span").count(),
+        1,
+        "instruction span schema changed"
+    );
+    assert!(instruction.contains("pub span: Span"));
+
+    let instruction_data = declaration("pub enum InstData {", "impl fmt::Display for InstRef");
+    assert_eq!(
+        instruction_data.matches("Span").count(),
+        2,
+        "embedded instruction span schema changed"
+    );
+    assert!(instruction_data.contains("shorthand_span: Option<Span>"));
+
+    assert_eq!(
+        crate::RIR_SPAN_FIELD_FAMILY_NAMES,
+        [
+            "instruction",
+            "directive",
+            "parameter",
+            "match pattern",
+            "struct-init shorthand",
+        ]
+    );
+
+    let visitor = declaration(
+        "fn try_visit_validated_span_slots<E>(",
+        "/// Add an instruction and return its reference.",
+    );
+    for tag in [
+        "RirSpanField::Instruction",
+        "RirSpanField::MatchPattern",
+        "RirSpanField::FunctionDirective",
+        "RirSpanField::FunctionParameter",
+        "RirSpanField::ConstDirective",
+        "RirSpanField::AllocDirective",
+        "RirSpanField::StructDirective",
+        "RirSpanField::StructInitShorthand",
+    ] {
+        assert!(visitor.contains(tag), "canonical visitor omits {tag}");
+    }
+
+    let remapper = declaration(
+        "pub fn try_append_remapped_with_span_slots<E>(",
+        "/// Atomically replace an instruction with a compiler-internal intrinsic.",
+    );
+    for tag in [
+        "RirSpanField::Instruction",
+        "RirSpanField::MatchPattern",
+        "RirSpanField::FunctionDirective",
+        "RirSpanField::FunctionParameter",
+        "RirSpanField::ConstDirective",
+        "RirSpanField::AllocDirective",
+        "RirSpanField::StructDirective",
+        "RirSpanField::StructInitShorthand",
+    ] {
+        assert!(remapper.contains(tag), "slot-aware remapper omits {tag}");
+    }
+}
+
+#[test]
+fn rir_structural_anchor_storage_is_tied_to_retained_charge() {
+    let owner = include_str!("inst.rs");
+    let instruction_data = owner
+        .split("pub enum InstData {")
+        .nth(1)
+        .and_then(|rest| rest.split("impl fmt::Display for InstRef").next())
+        .expect("InstData declaration");
+    assert_eq!(
+        instruction_data
+            .matches("anchor: RirStructuralAnchor")
+            .count(),
+        3,
+        "direct structural-anchor storage changed"
+    );
+    assert_eq!(
+        instruction_data
+            .matches("anchor: Option<RirStructuralAnchor>")
+            .count(),
+        1,
+        "optional structural-anchor storage changed"
+    );
+
+    let charge = owner
+        .split("pub fn retained_allocation_charge(&self) -> u64 {")
+        .nth(1)
+        .and_then(|rest| rest.split("impl std::ops::Deref for ValidatedRir").next())
+        .expect("ValidatedRir retained allocation charge");
+    for variant in [
+        "InstData::StringConst",
+        "InstData::VarRef",
+        "InstData::AnonStructType",
+        "InstData::AnonEnumType",
+    ] {
+        assert!(
+            charge.contains(variant),
+            "retained charge omits anchor-bearing {variant}"
+        );
+    }
+}

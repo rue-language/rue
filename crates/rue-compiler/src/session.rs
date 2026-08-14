@@ -9,7 +9,7 @@ use crate::{
     CompileError, CompileErrors, CompileOptions, CompileWarning, ErrorKind, ModuleResolutionInputs,
     ParseInvalidationSummary, ParsedModulesWork, SemanticInputDescriptor, SourceRevision,
     SourceSnapshot, StablePreviewFeatures,
-    canonical_lower::project_module_rirs_with_work,
+    canonical_lower::project_candidate_module_rirs_with_work,
     canonical_merge::merge_parsed_modules_reusing_indexes,
     parsed_modules::{ParsedProgram, classify_invalidation},
     validate_canonical_import_graph,
@@ -4344,13 +4344,15 @@ impl CompilerSession {
                     .collect::<Vec<_>>();
                 let (module_rirs, query_work) = {
                     let _span = tracing::info_span!("module_rir_lowering").entered();
-                    self.queries.revisioned.module_rirs(revision, module_ids)
+                    self.queries
+                        .revisioned
+                        .compose_candidate_module_rirs(revision, module_ids)
                 };
                 match module_rirs {
                     Ok(modules) => {
                         let projected = {
                             let _span = tracing::info_span!("rir_projection").entered();
-                            project_module_rirs_with_work(merged, &modules, query_work)
+                            project_candidate_module_rirs_with_work(merged, &modules, query_work)
                         };
                         match projected {
                             Ok(rir) => {
@@ -4611,7 +4613,7 @@ impl CompilerSession {
                 let locator = self
                     .queries
                     .revisioned
-                    .body_source_locator_projection(
+                    .body_source_basis_projection(
                         revision,
                         closure_body.key.clone(),
                         cancellation.clone(),
@@ -4904,7 +4906,7 @@ impl CompilerSession {
             let locator = self
                 .queries
                 .revisioned
-                .body_source_locator_projection(
+                .body_source_basis_projection(
                     graph.revision,
                     closure_body.key.clone(),
                     cancellation.clone(),
@@ -6722,7 +6724,7 @@ mod tests {
         (request.terminal.stamp(), body.bundle.stamp())
     }
 
-    fn retained_body_source_locator(
+    fn retained_body_source_basis(
         session: &CompilerSession,
         key: &crate::body_query::BodyQueryKey,
     ) -> (u64, crate::body_query::BodySourceLocator) {
@@ -6734,7 +6736,7 @@ mod tests {
         let terminal = session
             .queries
             .revisioned
-            .body_source_locator_projection(
+            .body_source_basis_projection(
                 revision,
                 key.clone(),
                 rue_query::CancellationToken::new(),
@@ -6835,11 +6837,39 @@ mod tests {
             "compiler.module-index",
             "compiler.lookup-name",
             "compiler.resolve-import",
-            "compiler.module-rir",
+            "compiler.declaration-body-plan-artifacts",
         ] {
             assert!(
                 revisioned.contains(family),
                 "missing canonical family {family}"
+            );
+        }
+        assert_eq!(
+            revisioned
+                .matches("\"compiler.declaration-body-plan-artifacts\",\n")
+                .count(),
+            1,
+            "candidate lowering must have one registered artifact family"
+        );
+        assert!(!revisioned.contains("\"compiler.module-rir\""));
+        assert!(!revisioned.contains(&["ModuleRir", "Value"].concat()));
+        let candidate_evaluator = revisioned
+            .split("let parse_for_declaration_body_plan_artifacts")
+            .nth(1)
+            .and_then(|tail| tail.split("let index_for_lookup").next())
+            .unwrap();
+        assert!(candidate_evaluator.contains("lower_parsed_declaration_body_plan"));
+        assert!(!candidate_evaluator.contains("lower_declaration_body_plan("));
+        assert!(!candidate_evaluator.contains("lower_module_rir"));
+
+        let canonical_lower = include_str!("canonical_lower.rs");
+        assert!(canonical_lower.contains("compose_module_rir_from_candidate_artifacts"));
+        assert!(!canonical_lower.contains("pub(crate) fn lower_declaration_body_plan("));
+        for oracle in ["fn lower_module_rir_with_work_internal("] {
+            let before = canonical_lower.split(oracle).next().unwrap();
+            assert!(
+                before.trim_end().ends_with("#[cfg(test)]"),
+                "former module-wide lowering helper must remain test-only: {oracle}"
             );
         }
         assert!(!revisioned.contains("ImportModuleDemand"));
@@ -9579,7 +9609,7 @@ mod tests {
         let first_errors = session.rooted_cfg(&options).unwrap_err();
         let (first_stamp, _, _) = retained_body_transaction(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
-        let (first_locator_stamp, _) = retained_body_source_locator(&session, &key);
+        let (first_locator_stamp, _) = retained_body_source_basis(&session, &key);
         assert_eq!(
             first_errors
                 .first()
@@ -9593,7 +9623,7 @@ mod tests {
         let shifted_errors = session.rooted_cfg(&options).unwrap_err();
         let (shifted_stamp, _, _) = retained_body_transaction(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
-        let (shifted_locator_stamp, _) = retained_body_source_locator(&session, &key);
+        let (shifted_locator_stamp, _) = retained_body_source_basis(&session, &key);
         assert_eq!(
             shifted_stamp, first_stamp,
             "a locator-only edit must reuse the semantic body transaction",
@@ -9602,9 +9632,9 @@ mod tests {
             shifted_closure_stamps, first_closure_stamps,
             "positioned diagnostic payload must not restamp the semantic body closure",
         );
-        assert_ne!(
+        assert_eq!(
             shifted_locator_stamp, first_locator_stamp,
-            "diagnostics obtain the shifted position from the independent locator projection",
+            "absolute relocation keeps the semantic source-basis stamp green",
         );
         let shifted_span = shifted_errors
             .first()
@@ -9632,14 +9662,14 @@ mod tests {
         let key = body_query_key(&mut session, &options, "main");
         let first_body_stamps = retained_body_query_stamps(&session, &key);
         let first_closure_stamps = retained_body_closure_stamps(&session, &key);
-        let (first_locator_stamp, first_locator) = retained_body_source_locator(&session, &key);
+        let (first_locator_stamp, first_locator) = retained_body_source_basis(&session, &key);
 
         session.update(&shifted).into_result().unwrap();
         session.rooted_cfg(&options).unwrap();
         session.canonical_rir().unwrap();
         let shifted_body_stamps = retained_body_query_stamps(&session, &key);
         let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
-        let (shifted_locator_stamp, shifted_locator) = retained_body_source_locator(&session, &key);
+        let (shifted_locator_stamp, shifted_locator) = retained_body_source_basis(&session, &key);
 
         assert_eq!(
             shifted_body_stamps, first_body_stamps,
@@ -9649,9 +9679,9 @@ mod tests {
             shifted_closure_stamps, first_closure_stamps,
             "the aggregate body-analysis bundle and body closure stay green",
         );
-        assert_ne!(
+        assert_eq!(
             shifted_locator_stamp, first_locator_stamp,
-            "the independently stamped source-locator projection refreshes",
+            "position-only relocation keeps the source-basis stamp green",
         );
         assert_eq!(first_locator.declaration_start, 0);
         assert_eq!(
@@ -11692,7 +11722,19 @@ fn main() -> i32 {
         assert!(
             dependencies
                 .iter()
-                .any(|dependency| dependency.contains("compiler.body-input")),
+                .any(|dependency| dependency.contains("compiler.declaration-body-plan-artifacts")),
+            "{dependencies:?}"
+        );
+        assert!(
+            dependencies
+                .iter()
+                .any(|dependency| dependency.contains("compiler.body-source-basis")),
+            "{dependencies:?}"
+        );
+        assert!(
+            dependencies
+                .iter()
+                .all(|dependency| !dependency.contains("compiler.body-input")),
             "{dependencies:?}"
         );
     }
@@ -11805,9 +11847,11 @@ fn main() -> i32 {
         assert!(
             dependencies
                 .iter()
-                .all(|node| !node.contains("compiler.raw-declaration-signature")),
-            "raw syntax is an internal dependency of the semantic-signature query, not a peer \
-             body dependency: transaction={main_transaction:?}; dependencies={dependencies:?}"
+                .filter(|node| node.contains("compiler.raw-declaration-signature"))
+                .all(|node| node.contains(":main:")),
+            "the transient body prerequisite resolver observes only its own raw signature; \
+             callee raw syntax stays behind exact semantic-signature queries: \
+             transaction={main_transaction:?}; dependencies={dependencies:?}"
         );
         assert!(
             dependencies.iter().any(|node| {
