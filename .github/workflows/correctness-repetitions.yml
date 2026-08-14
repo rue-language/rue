@@ -1,3 +1,23 @@
+# Everything here executes the corpora for real, which is the one property that
+# ties its two purposes together (RUE-1159, RUE-1222):
+#
+#   * repetition only detects flakes if each repetition really executes, and
+#   * a corpus is a cacheable build action, so an input it fails to declare is
+#     a false pass rather than an untracked re-run — the cache serves the
+#     previous tree's result for a tree that changed.
+#
+# The second is why the sweep below exists alongside the repeated shards.
+#
+# What makes that hold is the runner, not a flag. Each job starts on a fresh
+# runner with an empty `buck-out`, and no BuildBuddy secret is provisioned here,
+# so there is nothing to serve any of it from. `ci-heavy-suite` also passes
+# `--no-remote-cache`, but that only forecloses a populated remote cache — it
+# does not touch buck2's local DICE state, which is why repeating a target in one
+# workspace needs the separate mechanism `ci-heavy-suite` documents.
+#
+# Nothing here is a required check; it bounds how long a defect can stay
+# invisible, it does not gate a merge. That also means nothing turns red when it
+# fails, so read the run list after changing anything in it.
 name: Correctness repetitions
 
 on:
@@ -9,6 +29,10 @@ on:
         description: Independent executions per shard (failures are never cleared)
         default: "5"
         required: true
+      sweep:
+        description: Also execute every other corpus cache-free (the RUE-1222 safeguard)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -33,6 +57,11 @@ jobs:
         env:
           RUE_REPETITION_LOG_DIR: ${{ runner.temp }}/repetitions
         run: scripts/ci-repeat-correctness "//:cli-tests-shard-${{ matrix.shard }}" "${{ inputs.repetitions || '5' }}"
+      # Carries the per-repetition logs, the results table, and (RUE-1222) the
+      # `case-timings-N.jsonl` files, which are the freshly measured per-case
+      # costs `scripts/generate-cli-shard-weights.py` wants. A required-CI shard
+      # replays whatever timings the run that populated its cache entry recorded;
+      # these runs execute, so they are the corpus measuring itself again.
       - name: Upload independent-run report
         if: always()
         uses: actions/upload-artifact@v6
@@ -40,6 +69,89 @@ jobs:
           name: correctness-repetitions-linux-x64-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/repetitions
           if-no-files-found: error
+
+  # RUE-1222: the undeclared-input safeguard.
+  #
+  # Converting the corpora to build actions made the declared input contract
+  # load-bearing: a path a harness reads but the action does not name means the
+  # cache serves the previous tree's stamp for a tree that changed, and the
+  # corpus reports a pass it never ran. PR #2000's first CI run caught the UI
+  # corpus's undeclared `std/` exactly that way. Nothing detects the next one
+  # except a run that actually executes the harness against the current tree.
+  #
+  # The repeated shards above are such a run, but only for the CLI corpus. This
+  # sweep covers the rest, and it takes its inventory from the Buck graph rather
+  # than from a list in this file: `ci-corpus-inventory` queries the
+  # `_corpus_action` rule that `cached_corpus_suite` expands to, so a corpus
+  # converted later is swept without anyone remembering to add it. It fails
+  # closed on an empty or unreadable inventory, and cross-checks the result
+  # against the `rue_heavy_suite` label set, because a sweep that proves nothing
+  # must not report success.
+  #
+  # What the sweep checks is the input DECLARATION, which is a property of the
+  # rule rather than of a configuration: it runs each corpus under
+  # `prelude//platforms:default`, while `ci.yml` runs `//:release-smoke` under
+  # `//platforms:release`. An input the harness reads but the action does not
+  # name is missing in both, so executing either configuration exposes it. What
+  # this does NOT do is exercise the release-configured actions' own cache
+  # entries; nothing here should be read as covering those.
+  corpus-inventory:
+    name: cache-free corpus inventory (linux-x64)
+    if: github.event_name != 'workflow_dispatch' || inputs.sweep
+    runs-on: ubuntu-latest
+    outputs:
+      targets: ${{ steps.inventory.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: facebook/install-dotslash@v2
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: dotslash-repetitions-linux-x64-
+      - name: Enumerate every corpus that runs as a build action
+        id: inventory
+        # Both exclusions are the CLI corpus, which `repeat-cli-shards` above
+        # already executes five times over in this same workflow. The shards
+        # declare a strict SUPERSET of `//:cli-tests`' inputs — identical
+        # harness, args, and absolutize list, plus the shard index and the
+        # weights file — and their union is the same case inventory, so there is
+        # no undeclared input `//:cli-tests` could have that the repeated shards
+        # do not already expose. Sweeping it would be one more runner executing
+        # the whole premerge CLI corpus for no incremental guarantee.
+        run: |
+          set -euo pipefail
+          targets="$(scripts/ci-corpus-inventory --json \
+            --exclude '//:cli-tests' --exclude '//:cli-tests-shard-*')"
+          printf 'sweeping: %s\n' "$targets"
+          printf 'targets=%s\n' "$targets" >>"$GITHUB_OUTPUT"
+
+  execute-every-corpus:
+    name: cache-free execution (${{ matrix.target }})
+    needs: corpus-inventory
+    if: github.event_name != 'workflow_dispatch' || inputs.sweep
+    runs-on: ubuntu-latest
+    # Each corpus gets its own runner so a regression stays attributable and
+    # rerunnable, and so the slow-tier CLI suite cannot consume the budget the
+    # rest of the sweep needs. Cache-free means every lane also rebuilds the
+    # compiler; the bound is generous because none of this is on a critical path.
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(needs.corpus-inventory.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: facebook/install-dotslash@v2
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: dotslash-repetitions-linux-x64-
+      - name: Execute the corpus against the current tree
+        env:
+          RUE_CORPUS_CACHE_FREE: "1"
+        run: scripts/ci-heavy-suite "${{ matrix.target }}"
 
   # RUE-1260. On demand only: this answers a question, it does not stand guard.
   #

@@ -893,15 +893,77 @@ if [ "$1" = "bxl" ]; then
   printf 'Rue test tiers valid\n'
   exit 0
 fi
-if [ "$1" = "test" ]; then
-  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
-  if [ "${FAKE_OMIT:-0}" != 1 ]; then printf 'Pass: root%s (0.1s)\n' "$2"; fi
+# RUE-1222. This fake used to accept ANY argument shape, which is how
+# `buck2 test --env K=V` — rejected by the real binary at argument parsing,
+# before `--` — stayed green here for months while every scheduled repetition
+# run died in 18 seconds. Reproduce buck2's parser well enough that an argument
+# the real binary refuses fails the test suite too.
+subcommand="$1"
+shift
+reject_unknown() {
+  printf "error: unexpected argument '%s' found\n\n  tip: to pass '%s' as a value, use '-- %s'\n" \
+    "$1" "$1" "$1" >&2
+  exit 3
+}
+parse_buck_args() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --) return 0 ;;
+      -c) shift 2 || exit 3; continue ;;
+      --no-remote-cache|--show-simple-output) shift; continue ;;
+      --trace-id|--filter-category) shift 2 || exit 3; continue ;;
+      --skip-cache-hits|--skip-remote-executions) shift; continue ;;
+      -*) reject_unknown "$1" ;;
+      *) shift; continue ;;
+    esac
+  done
+}
+
+# `what-ran` reports one tab-delimited row per command behind a header line with
+# no tabs. Only `build` rows are Buck actions; a `test.run` row is a test
+# execution, which never enters the cached/remote/local accounting at all. The
+# fake serves rows only for the trace id the last `test` invocation recorded,
+# because a bare `what-ran` reads whatever ran last in the isolation directory —
+# the defect that made a failed run print a reassuring all-clear.
+if [ "$subcommand" = "log" ]; then
+  parse_buck_args "$@"
+  requested=""
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--trace-id" ]; then requested="$2"; fi
+    shift
+  done
+  recorded=""
+  if [ -f "$PWD/fake-last-trace-id" ]; then recorded="$(cat "$PWD/fake-last-trace-id")"; fi
+  if [ -z "$requested" ] || [ "$requested" != "$recorded" ]; then
+    printf 'no event log for that trace id\n' >&2
+    exit 1
+  fi
+  printf 'Showing commands from: buck2 test\n'
+  if [ "${FAKE_LOCAL_ACTIONS:-0}" = 1 ]; then
+    printf 'build\troot//:early (cfg#abc) (rustc early)\tlocal\tenv -C ...\n'
+    printf 'build\troot//:thing (cfg#abc) (rue_corpus thing)\tlocal\tenv -C ...\n'
+    printf 'test.run\tthing\tlocal\tthe stamp check\n'
+  fi
+  exit 0
+fi
+if [ "$subcommand" = "test" ]; then
+  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf 'test %s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+  parse_buck_args "$@"
+  # An invocation that dies before starting writes no event log; `what-ran` then
+  # answers about whatever ran previously in this isolation directory.
+  if [ "${FAKE_NO_EVENT_LOG:-0}" = 1 ]; then
+    rm -f "$PWD/fake-last-trace-id"
+  else
+    printf '%s' "${BUCK_WRAPPER_UUID:-}" >"$PWD/fake-last-trace-id"
+  fi
+  if [ "${FAKE_OMIT:-0}" != 1 ]; then printf 'Pass: root%s (0.1s)\n' "$1"; fi
   exit "${FAKE_EXIT:-0}"
 fi
 # RUE-1118: case timings are a declared output of the corpus action, fetched
 # after the run rather than handed in as an executor --env path.
-if [ "$1" = "build" ]; then
-  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+if [ "$subcommand" = "build" ]; then
+  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf 'build %s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+  parse_buck_args "$@"
   if [ "${FAKE_NO_TIMINGS:-0}" = 1 ]; then exit 1; fi
   out="$PWD/fake-case-timings.jsonl"
   printf '%s\n' '{"event":"rue_cli_case_timing","name":"fake","elapsed_s":0.1}' >"$out"
@@ -917,13 +979,21 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  # RUE-1159 flake detection only means anything if each repetition executes, so
-  # a repetition run must defeat the corpus action's cache.
+  # RUE-1159 flake detection only means anything if each repetition executes.
+  # RUE-1222: `--no-remote-cache` cannot deliver that on its own — it disables
+  # the remote cache while buck2's local DICE state serves repetitions 2..N — so
+  # the index rides a buckconfig that lands in the corpus action's env, making
+  # each repetition a distinct digest buck2 must run. The old executor `--env`
+  # spelling is what the real binary rejects outright, so assert its absence.
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && RUE_CORRECTNESS_REPETITION=2 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
   check "ci-heavy-suite: a correctness repetition runs cache-free" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--no-remote-cache' "$sb/calls.log" && grep -Fq 'RUE_CORRECTNESS_REPETITION=2' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--no-remote-cache' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: the repetition index reaches the action as a buckconfig" \
+    "$(grep -Fq -- '-c rue.corpus_repetition=2' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: no executor --env is passed, which buck2 rejects" \
+    "$(! grep -Fq -- '--env' "$sb/calls.log" && echo 0 || echo 1)"
 
   # RUE-1118/RUE-1163: ci-heavy-suite carries no per-target executor timeouts at
   # all. Every corpus runs as a cacheable build action and the test executor
@@ -1018,6 +1088,179 @@ EOF
   (cd "$sb" && FAKE_EXIT=29 ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
   check "ci-heavy-suite: Buck failure exit is preserved" \
     "$([ "$rc" -eq 29 ] && echo 0 || echo 1)"
+
+  # RUE-1222: the scheduled sweep needs the repetition guarantee under its own
+  # name, because it executes a corpus once instead of repeating it. Both buck2
+  # invocations must agree about the cache: the timings fetch reuses the result
+  # the test invocation just computed only if its execution configuration
+  # matches, and a disagreement risks re-running the whole corpus.
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && RUE_CORPUS_CACHE_FREE=1 FAKE_LABELED_TARGET=//:cli-tests-shard-1 \
+    FAKE_CALL_LOG="$sb/calls.log" RUNNER_TEMP="$timings_dir" \
+    ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: a sweep run executes the corpus cache-free" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-shard-1 --no-remote-cache' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: the timings fetch shares the cache-free configuration" \
+    "$(grep -Fq -- 'build --no-remote-cache --show-simple-output' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # The nonce must reach BOTH invocations. Naming the un-nonced action in the
+  # timings fetch would either return another repetition's measurements or make
+  # buck2 run the whole corpus a second time to produce them.
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && RUE_CORRECTNESS_REPETITION=4 FAKE_LABELED_TARGET=//:cli-tests-shard-1 \
+    FAKE_CALL_LOG="$sb/calls.log" RUNNER_TEMP="$timings_dir" \
+    ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: the timings fetch names the same repetition's action" \
+    "$([ "$rc" -eq 0 ] && [ "$(grep -Fc -- '-c rue.corpus_repetition=4' "$sb/calls.log")" = 2 ] && echo 0 || echo 1)"
+
+  # RUE-1222: a cache hit replays the timings of whichever run wrote the entry,
+  # so a cache-free repetition is the only source of freshly measured cost. Each
+  # repetition must be able to keep its own file instead of overwriting the last.
+  rc=0
+  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 \
+    RUNNER_TEMP="$timings_dir" RUE_CLI_CASE_TIMINGS_DEST="$timings_dir/case-timings-3.jsonl" \
+    ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: the timings destination is overridable per repetition" \
+    "$([ "$rc" -eq 0 ] && grep -Fq '"event":"rue_cli_case_timing"' "$timings_dir/case-timings-3.jsonl" && echo 0 || echo 1)"
+
+  # RUE-1222: `Commands: ... local: 1` counts a cache miss without naming it,
+  # which is why the linux-x64 corpus lanes' single non-cache-served action went
+  # unidentified. Report the identity of every locally executed *action*; a
+  # `test.run` row is a test execution and must not be reported as a miss.
+  rc=0
+  out="$(cd "$sb" && FAKE_LOCAL_ACTIONS=1 ./ci-heavy-suite //:cli-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: a locally executed action is named" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'corpus lane: executed action root//:thing (cfg#abc) (rue_corpus thing)' <<<"$out" && echo 0 || echo 1)"
+  check "ci-heavy-suite: a test execution is not reported as a cache miss" \
+    "$([ "$(grep -Fc 'corpus lane: executed action' <<<"$out")" = 2 ] && ! grep -Fq 'stamp check' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && ./ci-heavy-suite //:cli-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: a fully cache-served lane says so" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'corpus lane: every build action was served from cache' <<<"$out" && echo 0 || echo 1)"
+
+  # RUE-1222 F1/F3 regression guards, both of which the old fake could not see.
+  #
+  # The fake now parses arguments the way buck2 does, so the argument order that
+  # killed every scheduled run since RUE-1118 fails here instead of passing.
+  rc=0
+  out="$(cd "$sb" && ./buck2 test //:cli-tests --env RUE_CORRECTNESS_REPETITION=2 2>&1)" || rc=$?
+  check "fake buck2: rejects --env before -- exactly as the real binary does" \
+    "$([ "$rc" -eq 3 ] && grep -Fq "unexpected argument '--env' found" <<<"$out" && echo 0 || echo 1)"
+
+  # A bare `what-ran` reads whatever ran last in the isolation directory, so a
+  # run that wrote no event log would report a preceding command's actions as
+  # its own — printing an all-clear for a lane that executed nothing. The report
+  # must be pinned to this invocation's trace id.
+  rc=0
+  out="$(cd "$sb" && FAKE_LOCAL_ACTIONS=1 FAKE_NO_EVENT_LOG=1 FAKE_EXIT=3 \
+    ./ci-heavy-suite //:cli-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: an invocation that logged nothing reports nothing" \
+    "$([ "$rc" -eq 3 ] && ! grep -Fq 'served from cache' <<<"$out" && ! grep -Fq 'executed action' <<<"$out" && echo 0 || echo 1)"
+
+  rm -rf "$sb"
+}
+
+# ===========================================================================
+# RUE-1222 — the corpus inventory that drives the scheduled cache-free sweep.
+#
+# The sweep exists because an undeclared action input is a false pass: the cache
+# serves the previous tree's stamp and the corpus reports success having run
+# nothing. That guarantee is only worth as much as the inventory behind it, so
+# the list comes from the Buck graph and an inventory that cannot be read must
+# fail rather than report a vacuous clean sweep.
+# ===========================================================================
+
+test_ci_corpus_inventory_is_graph_derived_and_fails_closed() {
+  local sb; sb="$(mktemp -d)"
+  mkdir -p "$sb/scripts"
+  cp "$SRC_ROOT/scripts/ci-corpus-inventory" "$sb/scripts/ci-corpus-inventory"
+  chmod +x "$sb/scripts/ci-corpus-inventory"
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = "uquery" ]; then
+  if [ "${FAKE_QUERY_EXIT:-0}" != 0 ]; then
+    printf 'buck2 exploded\n' >&2
+    exit "$FAKE_QUERY_EXIT"
+  fi
+  # RUE-1222: the inventory cross-checks the corpus-action set against the
+  # rue_heavy_suite label set, so the fake must answer the two queries apart.
+  case "$2" in
+    *rue_heavy_suite*)
+      if [ "${FAKE_HEAVY_QUERY_EXIT:-0}" != 0 ]; then exit "$FAKE_HEAVY_QUERY_EXIT"; fi
+      # An empty graph has no heavy suites either; that case exercises the
+      # vacuous-sweep guard rather than the cross-check.
+      if [ "${FAKE_EMPTY:-0}" = 1 ]; then exit 0; fi
+      printf 'root//:cli-tests\n'
+      printf 'root//:spec-tests\n'
+      if [ "${FAKE_UNCONVERTED_HEAVY:-0}" = 1 ]; then printf 'root//:tutorial-snippet-tests\n'; fi
+      exit 0
+      ;;
+  esac
+  if [ "${FAKE_EMPTY:-0}" = 1 ]; then exit 0; fi
+  if [ "${FAKE_BAD_LABEL:-0}" = 1 ]; then printf 'root//:not-a-corpus\n'; exit 0; fi
+  printf 'root//:cli-tests-action\n'
+  printf 'root//:cli-tests-shard-0-action\n'
+  printf 'root//:cli-tests-shard-1-action\n'
+  printf 'root//:spec-tests-action\n'
+  printf 'root//crates/rue-oracle-diff:oracle-diff-test-action\n'
+  exit 0
+fi
+exit 90
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0 out
+  out="$(cd "$sb" && scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: every corpus action maps back to its suite" \
+    "$([ "$rc" -eq 0 ] && [ "$out" = '//:cli-tests
+//:cli-tests-shard-0
+//:cli-tests-shard-1
+//:spec-tests
+//crates/rue-oracle-diff:oracle-diff-test' ] && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && scripts/ci-corpus-inventory --json --exclude '//:cli-tests-shard-*' 2>&1)" || rc=$?
+  check "ci-corpus-inventory: --json emits a matrix-ready array with exclusions applied" \
+    "$([ "$rc" -eq 0 ] && [ "$out" = '["//:cli-tests","//:spec-tests","//crates/rue-oracle-diff:oracle-diff-test"]' ] && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_QUERY_EXIT=3 scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: a failed query fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'could not query the corpus inventory' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_EMPTY=1 scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: an empty inventory fails instead of sweeping nothing" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'refusing to report a vacuous sweep' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_EMPTY=1 scripts/ci-corpus-inventory --exclude '//:*' 2>&1)" || rc=$?
+  check "ci-corpus-inventory: excluding everything is an empty inventory too" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_BAD_LABEL=1 scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: an unrecognized action label is an error, not a silent drop" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'unexpected corpus action label' <<<"$out" && echo 0 || echo 1)"
+
+  # RUE-1222: "every corpus" has to be enforced, not conventional. A heavy suite
+  # that is not a converted corpus would be absent from the sweep while the
+  # sweep still reported success, which is the failure this whole lane exists to
+  # prevent one level down.
+  rc=0
+  out="$(cd "$sb" && FAKE_UNCONVERTED_HEAVY=1 scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: a heavy suite with no corpus action fails the inventory" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'heavy suite(s) with no corpus action' <<<"$out" \
+      && grep -Fq '//:tutorial-snippet-tests' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && FAKE_HEAVY_QUERY_EXIT=4 scripts/ci-corpus-inventory 2>&1)" || rc=$?
+  check "ci-corpus-inventory: an unreadable heavy-suite set fails closed too" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'cross-check' <<<"$out" && echo 0 || echo 1)"
+
   rm -rf "$sb"
 }
 
@@ -1119,6 +1362,7 @@ test_rue_unit_unknown_crate_errors_cleanly
 test_ci_timed_preserves_status_and_summarizes_actions
 test_cache_probe_counter_validation
 test_ci_heavy_suite_audits_its_target
+test_ci_corpus_inventory_is_graph_derived_and_fails_closed
 test_testsh_delegates_selection_to_buck
 test_sanitizer_defaults_std_path
 test_sanitizer_recursive_discovery_contract

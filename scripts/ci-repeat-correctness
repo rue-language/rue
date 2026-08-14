@@ -20,7 +20,16 @@ failures=0
 for ((iteration = 1; iteration <= repetitions; iteration++)); do
     log="$log_dir/repetition-$iteration.log"
     echo "correctness repetition $iteration/$repetitions: $target"
-    if RUE_CORRECTNESS_REPETITION="$iteration" scripts/ci-heavy-suite "$target" 2>&1 | tee "$log"; then
+    # RUE-1222: keep each repetition's per-case timings instead of letting them
+    # overwrite one file. These runs are cache-free, so they are the only place
+    # the CLI corpus still measures itself against the current tree; required CI
+    # replays whatever timings the run that populated the cache entry recorded.
+    # Several independent samples per case is also exactly what
+    # generate-cli-shard-weights.py wants — it takes the median across every
+    # --timings input it is given.
+    if RUE_CORRECTNESS_REPETITION="$iteration" \
+        RUE_CLI_CASE_TIMINGS_DEST="$log_dir/case-timings-$iteration.jsonl" \
+        scripts/ci-heavy-suite "$target" 2>&1 | tee "$log"; then
         result=PASS
     else
         result=FAIL
@@ -34,6 +43,19 @@ done
     echo
     echo "\`$target\`: $failures failure(s) across $repetitions independent runs."
     echo "Failures remain failures even if a later repetition passes; inspect the uploaded logs for the case name."
+    echo
+    echo "The uploaded \`case-timings-N.jsonl\` files are freshly measured per-case costs."
+    echo "To refresh \`crates/rue-cli-tests/shard-weights.json\`, collect the files from"
+    echo "**all four shard artifacts** and pass every one as its own \`--timings\`:"
+    echo
+    echo '```'
+    echo "scripts/generate-cli-shard-weights.py \\"
+    echo "  --timings linux-x64=shard-0/case-timings-1.jsonl \\"
+    echo "  --timings linux-x64=shard-1/case-timings-1.jsonl   # ... every file, every shard"
+    echo '```'
+    echo
+    echo "The tool REPLACES \`platforms.linux-x64\` with the union of the inputs it is given,"
+    echo "so one shard's files alone would drop the other three shards' cases."
 } | tee "$log_dir/summary.md"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     cat "$log_dir/summary.md" >>"$GITHUB_STEP_SUMMARY"

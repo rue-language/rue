@@ -64,9 +64,11 @@ def cached_corpus_suite(
             inside the action, where a test-executor `--env` never reaches it,
             and a per-run mktemp path would change the action's digest on every
             run and defeat the caching this rule exists for. As an output it is
-            stored with the stamp and materialized on a cache hit, so
-            shard-weights.json keeps refreshing on replayed runs rather than
-            only when a corpus actually executes.
+            stored with the stamp and materialized on a cache hit, so the
+            measurements survive a replayed run instead of vanishing with it.
+            What a hit materializes is still the measurement of whichever run
+            wrote the entry, so FRESH timings come only from a run that
+            executes; RUE-1222's scheduled repetitions are that run.
     """
     for key in absolutize:
         if key not in env:
@@ -80,6 +82,17 @@ def cached_corpus_suite(
         absolutize = absolutize,
         timeout_seconds = timeout_seconds,
         case_timings = case_timings,
+        # RUE-1222. RUE-1159's repetition index used to reach the harness as an
+        # executor `--env`, which RUE-1118 silently broke twice over: the
+        # harness moved inside a build action where an executor env never
+        # arrives, and `buck2 test --env` is not even accepted before `--`, so
+        # every scheduled repetition run failed at argument parsing. Routing it
+        # through a buckconfig fixes both and restores the property the lane
+        # exists for: the value is an action attribute, so each repetition is a
+        # distinct digest that must actually execute. `--no-remote-cache` alone
+        # never did that — it disables the remote cache, while buck2's local
+        # DICE state happily serves repetitions 2..N from repetition 1.
+        repetition = read_root_config("rue", "corpus_repetition", ""),
     )
 
     native.sh_test(
@@ -118,6 +131,12 @@ def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
     action_env["RUE_CORPUS_ABSOLUTIZE"] = " ".join(absolutize)
     if ctx.attrs.timeout_seconds != None:
         action_env["RUE_CORPUS_TIMEOUT_SECONDS"] = str(ctx.attrs.timeout_seconds)
+
+    # RUE-1222: the repetition index, when RUE-1159's scheduled lane sets it.
+    # Injected only when non-empty, so an ordinary run's digest is byte-for-byte
+    # what it was before this existed and no cache entry is invalidated.
+    if ctx.attrs.repetition:
+        action_env["RUE_CORRECTNESS_REPETITION"] = ctx.attrs.repetition
 
     ctx.actions.run(
         cmd_args(
@@ -184,6 +203,7 @@ _corpus_action = rule(
         "corpus_env": attrs.dict(attrs.string(), attrs.arg(), default = {}),
         "harness": attrs.dep(providers = [RunInfo]),
         "harness_args": attrs.list(attrs.string(), default = []),
+        "repetition": attrs.string(default = ""),
         "timeout_seconds": attrs.option(attrs.int(), default = None),
         "wrapper": attrs.dep(providers = [RunInfo], default = "//:corpus-action"),
     },
