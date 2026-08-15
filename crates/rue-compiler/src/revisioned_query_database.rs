@@ -2281,22 +2281,19 @@ pub(crate) struct WarningStaticCallHead {
     pub(crate) components: Arc<[Arc<str>]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct WarningSyntaxCallHead {
-    import: Option<crate::declaration_candidate::DeclarationImportSiteKey>,
-    components: Arc<[Arc<str>]>,
-}
-
+/// Candidate-local warning syntax projected once by the parser-owned module
+/// walk. This thin terminal exists only to preserve body-local stamps across
+/// sibling edits; it performs no AST traversal of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum WarningBodySyntaxValue {
-    Available(Arc<[WarningSyntaxCallHead]>),
+enum WarningCallHeadProjectionValue {
+    Available(Arc<[crate::parsed_modules::ParsedWarningCallHead]>),
     Failure(WarningBodyReferencesFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct WarningBodySyntaxQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
+struct WarningCallHeadProjectionQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
-impl QueryKey for WarningBodySyntaxQueryKey {
+impl QueryKey for WarningCallHeadProjectionQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
@@ -2811,7 +2808,7 @@ macro_rules! query_value_charge {
 
 #[cfg(test)]
 query_value_charge!(RawDeclarationBodyQueryValue);
-query_value_charge!(WarningBodySyntaxValue);
+query_value_charge!(WarningCallHeadProjectionValue);
 query_value_charge!(WarningBodyReferencesValue);
 
 impl RetainedCharge for DeclarationBodyPlanFailure {
@@ -2845,10 +2842,11 @@ impl RetainedCharge for WarningStaticCallHead {
     }
 }
 
-impl RetainedCharge for WarningSyntaxCallHead {
+impl RetainedCharge for crate::parsed_modules::ParsedWarningCallHead {
     fn retained_charge(&self) -> u64 {
         self.import
-            .retained_charge()
+            .as_ref()
+            .map_or(0, |import| import.specifier.retained_charge())
             .saturating_add(self.components.retained_charge())
     }
 }
@@ -4207,578 +4205,6 @@ fn closure_callable_has_body(
         | Payload::Const { .. }
         | Payload::ModuleBinding { .. } => false,
     }))
-}
-
-/// Project statically resolvable free-function and type-constructor call heads
-/// directly from the canonical parsed module. The exact declaration candidate
-/// selects one parser-owned AST body; no body fragment is reparsed and no RIR,
-/// semantic body analysis, reachability, CFG, or codegen query is entered.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct WarningBodySelectionWork {
-    top_level_items_examined: u32,
-    member_items_examined: u32,
-}
-
-fn warning_item_span(item: &rue_parser::ast::Item) -> rue_span::Span {
-    use rue_parser::ast::Item;
-    match item {
-        Item::Function(item) => item.span,
-        Item::Struct(item) => item.span,
-        Item::Enum(item) => item.span,
-        Item::DropFn(item) => item.span,
-        Item::Extern(item) => item.span,
-        Item::Const(item) => item.span,
-        Item::Error(span) => *span,
-    }
-}
-
-/// Find the source-ordered record containing `target` with a bounded binary
-/// search. Parser-owned top-level items and nominal members are non-overlapping,
-/// so the last record beginning no later than the target is the only possible
-/// owner. The exact declaration checks below remain authoritative.
-fn warning_record_containing<'a, T>(
-    records: &'a [T],
-    target: rue_span::Span,
-    mut span: impl FnMut(&T) -> rue_span::Span,
-    examined: &mut u32,
-) -> Option<&'a T> {
-    let mut start = 0;
-    let mut end = records.len();
-    while start < end {
-        let middle = start + (end - start) / 2;
-        *examined = examined.saturating_add(1);
-        if span(&records[middle]).start <= target.start {
-            start = middle + 1;
-        } else {
-            end = middle;
-        }
-    }
-    let record = records.get(start.checked_sub(1)?)?;
-    *examined = examined.saturating_add(1);
-    let record_span = span(record);
-    (record_span.start <= target.start && target.end <= record_span.end).then_some(record)
-}
-
-fn warning_static_call_heads(
-    module: &crate::parsed_modules::ParsedModule,
-    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
-    declaration_imports: &BTreeMap<
-        (u32, u32),
-        crate::declaration_candidate::DeclarationImportSiteKey,
-    >,
-) -> (
-    Result<Arc<[WarningSyntaxCallHead]>, Arc<str>>,
-    WarningBodySelectionWork,
-) {
-    use crate::declaration_candidate::DeclarationCandidateCategory as Category;
-    use rue_parser::ast::Item;
-
-    let mut work = WarningBodySelectionWork::default();
-    let result = (|| {
-        let locator = module
-            .definitions()
-            .declaration_locator(candidate)
-            .ok_or_else(|| {
-                Arc::from("warning call-head projection has no exact declaration locator")
-            })?;
-        let item = warning_record_containing(
-            &module.ast().items,
-            locator.declaration_span,
-            warning_item_span,
-            &mut work.top_level_items_examined,
-        )
-        .ok_or_else(|| Arc::from("warning call-head projection has no containing AST item"))?;
-        let mut collector = WarningStaticCallCollector::new(module, declaration_imports);
-        match (candidate.category, item) {
-            (Category::Function, Item::Function(function))
-                if function.span == locator.declaration_span
-                    && module.resolve_raw_symbol(function.name.name) == candidate.name.as_ref() =>
-            {
-                collector.visit_callable(
-                    &function.params,
-                    function.return_type.as_ref(),
-                    &function.body,
-                    false,
-                );
-            }
-            (Category::Method | Category::AssociatedFunction, Item::Struct(structure)) => {
-                let owner_matches = candidate.owner.as_ref().is_some_and(|owner| {
-                    module.resolve_raw_symbol(structure.name.name) == owner.name.as_ref()
-                });
-                let method = owner_matches
-                    .then(|| {
-                        warning_record_containing(
-                            &structure.methods,
-                            locator.declaration_span,
-                            |method| method.span,
-                            &mut work.member_items_examined,
-                        )
-                    })
-                    .flatten();
-                let Some(method) = method.filter(|method| {
-                    method.span == locator.declaration_span
-                        && module.resolve_raw_symbol(method.name.name) == candidate.name.as_ref()
-                }) else {
-                    return Err(Arc::from(format!(
-                        "warning call-head projection selected no exact member AST body for {}",
-                        candidate.stable_identity()
-                    )));
-                };
-                collector.visit_callable(
-                    &method.params,
-                    method.return_type.as_ref(),
-                    &method.body,
-                    method.receiver.is_some(),
-                );
-            }
-            (Category::Destructor, Item::DropFn(drop_fn))
-                if drop_fn.span == locator.declaration_span
-                    && module.resolve_raw_symbol(drop_fn.type_name.name)
-                        == candidate.name.as_ref() =>
-            {
-                collector.visit_callable(&[], None, &drop_fn.body, true);
-            }
-            _ => {
-                return Err(Arc::from(format!(
-                    "warning call-head projection selected no exact AST body for {}",
-                    candidate.stable_identity()
-                )));
-            }
-        }
-        Ok(collector.heads.into_iter().collect::<Vec<_>>().into())
-    })();
-    (result, work)
-}
-
-#[derive(Debug, Clone)]
-struct WarningStaticPath {
-    import: Option<crate::declaration_candidate::DeclarationImportSiteKey>,
-    components: Vec<Arc<str>>,
-}
-
-impl WarningStaticPath {
-    fn into_head(self) -> Option<WarningSyntaxCallHead> {
-        (!self.components.is_empty()).then(|| WarningSyntaxCallHead {
-            import: self.import,
-            components: self.components.into(),
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-enum WarningLexicalBinding {
-    Local,
-    StaticAlias(WarningStaticPath),
-}
-
-struct WarningStaticCallCollector<'a> {
-    module: &'a crate::parsed_modules::ParsedModule,
-    declaration_imports:
-        &'a BTreeMap<(u32, u32), crate::declaration_candidate::DeclarationImportSiteKey>,
-    scopes: Vec<BTreeMap<Arc<str>, WarningLexicalBinding>>,
-    heads: BTreeSet<WarningSyntaxCallHead>,
-}
-
-impl<'a> WarningStaticCallCollector<'a> {
-    fn new(
-        module: &'a crate::parsed_modules::ParsedModule,
-        declaration_imports: &'a BTreeMap<
-            (u32, u32),
-            crate::declaration_candidate::DeclarationImportSiteKey,
-        >,
-    ) -> Self {
-        Self {
-            module,
-            declaration_imports,
-            scopes: Vec::new(),
-            heads: BTreeSet::new(),
-        }
-    }
-
-    fn name(&self, ident: rue_parser::ast::Ident) -> Arc<str> {
-        Arc::from(self.module.resolve_raw_symbol(ident.name))
-    }
-
-    fn binding(&self, name: &str) -> Option<&WarningLexicalBinding> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name))
-    }
-
-    fn bind(&mut self, ident: rue_parser::ast::Ident, binding: WarningLexicalBinding) {
-        let name = self.name(ident);
-        self.scopes
-            .last_mut()
-            .expect("warning projection always has a lexical scope")
-            .insert(name, binding);
-    }
-
-    fn bind_local(&mut self, ident: rue_parser::ast::Ident) {
-        self.bind(ident, WarningLexicalBinding::Local);
-    }
-
-    fn add_path(&mut self, path: WarningStaticPath) {
-        if let Some(head) = path.into_head() {
-            self.heads.insert(head);
-        }
-    }
-
-    fn add_unqualified(&mut self, ident: rue_parser::ast::Ident) {
-        let name = self.name(ident);
-        match self.binding(&name) {
-            Some(WarningLexicalBinding::Local) => {}
-            Some(WarningLexicalBinding::StaticAlias(path)) => self.add_path(path.clone()),
-            None => self.add_path(WarningStaticPath {
-                import: None,
-                components: vec![name],
-            }),
-        }
-    }
-
-    fn add_qualified(&mut self, path: impl IntoIterator<Item = rue_parser::ast::Ident>) {
-        let mut names = path
-            .into_iter()
-            .map(|ident| self.name(ident))
-            .collect::<Vec<_>>();
-        let Some(first) = names.first().cloned() else {
-            return;
-        };
-        match self.binding(&first) {
-            Some(WarningLexicalBinding::Local) => {}
-            Some(WarningLexicalBinding::StaticAlias(alias)) => {
-                let mut alias = alias.clone();
-                alias.components.extend(names.drain(1..));
-                self.add_path(alias);
-            }
-            None => self.add_path(WarningStaticPath {
-                import: None,
-                components: names,
-            }),
-        }
-    }
-
-    fn visit_callable(
-        &mut self,
-        parameters: &[rue_parser::ast::Param],
-        result: Option<&rue_parser::ast::TypeExpr>,
-        body: &rue_parser::ast::Expr,
-        has_self: bool,
-    ) {
-        self.scopes.push(BTreeMap::new());
-        if has_self {
-            self.scopes
-                .last_mut()
-                .expect("scope was just pushed")
-                .insert(Arc::from("self"), WarningLexicalBinding::Local);
-        }
-        for parameter in parameters {
-            self.visit_type(&parameter.ty);
-            self.bind_local(parameter.name);
-        }
-        if let Some(result) = result {
-            self.visit_type(result);
-        }
-        self.visit_expr(body);
-        self.scopes.pop();
-    }
-
-    fn visit_args(&mut self, args: &[rue_parser::ast::CallArg]) {
-        for argument in args {
-            self.visit_expr(&argument.expr);
-        }
-    }
-
-    fn visit_array_length(&mut self, length: &rue_parser::ast::ArrayLength) {
-        match length {
-            rue_parser::ast::ArrayLength::Literal(_) | rue_parser::ast::ArrayLength::Named(_) => {}
-            rue_parser::ast::ArrayLength::Call { name, args } => {
-                self.add_unqualified(*name);
-                for argument in args {
-                    self.visit_array_length(argument);
-                }
-            }
-        }
-    }
-
-    fn visit_type(&mut self, ty: &rue_parser::ast::TypeExpr) {
-        use rue_parser::ast::TypeExpr;
-        match ty {
-            TypeExpr::Named(_)
-            | TypeExpr::Qualified { .. }
-            | TypeExpr::Unit(_)
-            | TypeExpr::Never(_)
-            | TypeExpr::StrFixed { .. }
-            | TypeExpr::IntArg { .. } => {}
-            TypeExpr::Array {
-                element, length, ..
-            } => {
-                self.visit_type(element);
-                self.visit_array_length(length);
-            }
-            TypeExpr::Slice { element, .. } => self.visit_type(element),
-            TypeExpr::AnonymousStruct {
-                fields, methods, ..
-            } => {
-                for field in fields {
-                    self.visit_type(&field.ty);
-                }
-                for method in methods {
-                    self.visit_callable(
-                        &method.params,
-                        method.return_type.as_ref(),
-                        &method.body,
-                        method.receiver.is_some(),
-                    );
-                }
-            }
-            TypeExpr::AnonymousEnum { variants, .. } => {
-                for variant in variants {
-                    for payload in &variant.payload {
-                        self.visit_type(payload);
-                    }
-                }
-            }
-            TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
-                self.visit_type(pointee);
-            }
-            TypeExpr::TypeCall { name, args, .. } => {
-                self.add_unqualified(*name);
-                for argument in args {
-                    self.visit_type(argument);
-                }
-            }
-            TypeExpr::QualifiedTypeCall { segments, args, .. } => {
-                self.add_qualified(segments.iter().copied());
-                for argument in args {
-                    self.visit_type(argument);
-                }
-            }
-        }
-    }
-
-    fn static_path(&self, expr: &rue_parser::ast::Expr) -> Option<WarningStaticPath> {
-        use rue_parser::ast::Expr;
-        match expr {
-            Expr::Ident(ident) => {
-                let name = self.name(*ident);
-                match self.binding(&name) {
-                    Some(WarningLexicalBinding::Local) => None,
-                    Some(WarningLexicalBinding::StaticAlias(path)) => Some(path.clone()),
-                    None => Some(WarningStaticPath {
-                        import: None,
-                        components: vec![name],
-                    }),
-                }
-            }
-            Expr::Field(field) => {
-                let mut path = self.static_path(&field.base)?;
-                path.components.push(self.name(field.field));
-                Some(path)
-            }
-            _ => None,
-        }
-    }
-
-    fn resolved_import_path(&self, expr: &rue_parser::ast::Expr) -> Option<WarningStaticPath> {
-        let rue_parser::ast::Expr::IntrinsicCall(import) = expr else {
-            return None;
-        };
-        (self.module.resolve_raw_symbol(import.name.name) == "import")
-            .then(|| {
-                self.declaration_imports
-                    .get(&(import.span.start, import.span.end))
-            })
-            .flatten()
-            .cloned()
-            .map(|import| WarningStaticPath {
-                import: Some(import),
-                components: Vec::new(),
-            })
-    }
-
-    fn visit_block(&mut self, block: &rue_parser::ast::BlockExpr) {
-        use rue_parser::ast::{AssignTarget, LetPattern, Statement};
-        self.scopes.push(BTreeMap::new());
-        for statement in &block.statements {
-            match statement {
-                Statement::Let(binding) => {
-                    if let Some(ty) = &binding.ty {
-                        self.visit_type(ty);
-                    }
-                    self.visit_expr(&binding.init);
-                    if let LetPattern::Ident(ident) = binding.pattern {
-                        let alias = (!binding.is_mut)
-                            .then(|| {
-                                self.resolved_import_path(&binding.init)
-                                    .or_else(|| self.static_path(&binding.init))
-                            })
-                            .flatten();
-                        self.bind(
-                            ident,
-                            alias.map_or(
-                                WarningLexicalBinding::Local,
-                                WarningLexicalBinding::StaticAlias,
-                            ),
-                        );
-                    }
-                }
-                Statement::Assign(assignment) => {
-                    match &assignment.target {
-                        AssignTarget::Var(_) => {}
-                        AssignTarget::Field(field) => self.visit_expr(&field.base),
-                        AssignTarget::Index(index) => {
-                            self.visit_expr(&index.base);
-                            self.visit_expr(&index.index);
-                        }
-                    }
-                    self.visit_expr(&assignment.value);
-                }
-                Statement::Expr(expr) => self.visit_expr(expr),
-            }
-        }
-        self.visit_expr(&block.expr);
-        self.scopes.pop();
-    }
-
-    fn visit_expr(&mut self, expr: &rue_parser::ast::Expr) {
-        use rue_parser::ast::{Expr, IntrinsicArg, LetPattern, Pattern};
-        match expr {
-            Expr::Int(_)
-            | Expr::Float(_)
-            | Expr::String(_)
-            | Expr::Bool(_)
-            | Expr::Unit(_)
-            | Expr::Ident(_)
-            | Expr::Continue(_)
-            | Expr::SelfExpr(_)
-            | Expr::Error(_) => {}
-            Expr::TypeLit(value) => self.visit_type(&value.type_expr),
-            Expr::Binary(value) => {
-                self.visit_expr(&value.left);
-                self.visit_expr(&value.right);
-            }
-            Expr::Unary(value) => self.visit_expr(&value.operand),
-            Expr::Paren(value) => self.visit_expr(&value.inner),
-            Expr::Block(value) => self.visit_block(value),
-            Expr::If(value) => {
-                self.visit_expr(&value.cond);
-                self.visit_block(&value.then_block);
-                if let Some(block) = &value.else_block {
-                    self.visit_block(block);
-                }
-            }
-            Expr::Match(value) => {
-                self.visit_expr(&value.scrutinee);
-                for arm in &value.arms {
-                    self.scopes.push(BTreeMap::new());
-                    if let Pattern::Path(path) = &arm.pattern {
-                        if let Some(base) = &path.base {
-                            self.visit_expr(base);
-                        }
-                        if let Some(args) = &path.ctor_args {
-                            if let Some(base) = &path.base {
-                                if let Some(mut head) = self.static_path(base) {
-                                    head.components.push(self.name(path.type_name));
-                                    self.add_path(head);
-                                }
-                            } else {
-                                self.add_unqualified(path.type_name);
-                            }
-                            self.visit_args(args);
-                        }
-                        for binding in &path.bindings {
-                            self.bind_local(*binding);
-                        }
-                    }
-                    self.visit_expr(&arm.body);
-                    self.scopes.pop();
-                }
-            }
-            Expr::While(value) => {
-                self.visit_expr(&value.cond);
-                self.visit_block(&value.body);
-            }
-            Expr::Loop(value) => self.visit_block(&value.body),
-            Expr::For(value) => {
-                self.visit_expr(&value.iterable);
-                self.scopes.push(BTreeMap::new());
-                if let LetPattern::Ident(ident) = value.binder {
-                    self.bind_local(ident);
-                }
-                self.visit_block(&value.body);
-                self.scopes.pop();
-            }
-            Expr::Call(value) => {
-                self.add_unqualified(value.name);
-                self.visit_args(&value.args);
-            }
-            Expr::Break(value) => {
-                if let Some(value) = &value.value {
-                    self.visit_expr(value);
-                }
-            }
-            Expr::Return(value) => {
-                if let Some(value) = &value.value {
-                    self.visit_expr(value);
-                }
-            }
-            Expr::Yield(value) => self.visit_expr(&value.value),
-            Expr::StructLit(value) => {
-                if let Some(base) = &value.base {
-                    self.visit_expr(base);
-                }
-                if let Some(args) = &value.ctor_args {
-                    if let Some(base) = &value.base {
-                        if let Some(mut path) = self.static_path(base) {
-                            path.components.push(self.name(value.name));
-                            self.add_path(path);
-                        }
-                    } else {
-                        self.add_unqualified(value.name);
-                    }
-                    self.visit_args(args);
-                }
-                for field in &value.fields {
-                    self.visit_expr(&field.value);
-                }
-            }
-            Expr::Field(value) => self.visit_expr(&value.base),
-            Expr::MethodCall(value) => {
-                if let Some(mut path) = self.static_path(&value.receiver) {
-                    path.components.push(self.name(value.method));
-                    self.add_path(path);
-                }
-                self.visit_expr(&value.receiver);
-                self.visit_args(&value.args);
-            }
-            Expr::Try(value) => self.visit_expr(&value.operand),
-            Expr::IntrinsicCall(value) => {
-                for argument in &value.args {
-                    match argument {
-                        IntrinsicArg::Expr(expr) => self.visit_expr(expr),
-                        IntrinsicArg::Type(ty) => self.visit_type(ty),
-                    }
-                }
-            }
-            Expr::ArrayLit(value) => {
-                for element in &value.elements {
-                    self.visit_expr(element);
-                }
-                if let Some(repeat) = &value.repeat {
-                    self.visit_array_length(repeat);
-                }
-            }
-            Expr::Index(value) => {
-                self.visit_expr(&value.base);
-                self.visit_expr(&value.index);
-            }
-            Expr::Path(value) => {
-                if let Some(base) = &value.base {
-                    self.visit_expr(base);
-                }
-            }
-            Expr::Comptime(value) => self.visit_expr(&value.expr),
-            Expr::Checked(value) => self.visit_expr(&value.expr),
-        }
-    }
 }
 
 fn publish_body_plan_materialization_attribution(
@@ -10290,38 +9716,6 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         ),
                     );
                 }
-                if matches!(length, rue_air::SemanticValueSyntax::Rendered(_))
-                    && let Some((call, arguments)) = rue_air::parse_type_call_syntax(name)
-                {
-                    let resolved = rue_air::resolve_semantic_comptime_call(
-                        self,
-                        scope,
-                        &call,
-                        &arguments,
-                        rue_air::SemanticComptimeCallExpectation::Value,
-                    )
-                    .map_err(|error| match semantic_type_query_failure(error) {
-                        ResolveSemanticSignatureError::Abort(abort) => {
-                            rue_air::SemanticProviderError::Abort(abort)
-                        }
-                        ResolveSemanticSignatureError::Failure(failure) => {
-                            rue_air::SemanticProviderError::Failure(*failure)
-                        }
-                    })?;
-                    let rue_air::SemanticComptimeCallResult::Value(
-                        crate::durable_semantics::DurableConstValue::Integer(value),
-                    ) = resolved.result
-                    else {
-                        return Self::provider_failure(format!(
-                            "array length `{name}` is not an integer"
-                        ));
-                    };
-                    return u64::try_from(value).map(Some).map_err(|_| {
-                        Self::provider_failure_value(format!(
-                            "array length `{name}` is negative or too large"
-                        ))
-                    });
-                }
                 let Some(candidate) = self.candidate(scope, name, DefinitionKind::Const)? else {
                     return Self::provider_failure(format!("unknown array length `{name}`"));
                 };
@@ -12679,16 +12073,18 @@ impl RevisionedQueryDatabase {
                 )
                 .expect("the test BodyInput probe family has one canonical name")
         };
-        let parse_for_warning_syntax = parse_modules.clone();
-        let warning_body_syntax = runtime
+        let parse_for_warning_call_heads = parse_modules.clone();
+        let warning_call_head_projections = runtime
             .family_with_equality_and_evaluator(
-                "compiler.warning-body-syntax",
+                "compiler.warning-call-head-projection",
                 declaration_memo_retention,
-                |left: &WarningBodySyntaxValue, right: &WarningBodySyntaxValue| left == right,
-                move |context, _, key: &WarningBodySyntaxQueryKey| {
+                |left: &WarningCallHeadProjectionValue, right: &WarningCallHeadProjectionValue| {
+                    left == right
+                },
+                move |context, _, key: &WarningCallHeadProjectionQueryKey| {
                     let candidate = &key.0;
                     let parsed = context.query_registered(
-                        &parse_for_warning_syntax,
+                        &parse_for_warning_call_heads,
                         ModuleQueryKey(candidate.module.clone()),
                     )?;
                     let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
@@ -12697,62 +12093,29 @@ impl RevisionedQueryDatabase {
                     let module = match &parsed.result {
                         Ok(module) => module,
                         Err(_) => {
-                            return Ok(QueryOutput::success(WarningBodySyntaxValue::Failure(
-                                WarningBodyReferencesFailure::ParseRejected(
-                                    candidate.module.clone(),
+                            return Ok(QueryOutput::success(
+                                WarningCallHeadProjectionValue::Failure(
+                                    WarningBodyReferencesFailure::ParseRejected(
+                                        candidate.module.clone(),
+                                    ),
                                 ),
-                            ))
+                            )
                             .with_terminal_kind(QueryTerminalKind::Failure));
                         }
                     };
-                    let Some(locator) = module.definitions().declaration_locator(candidate) else {
-                        return Ok(QueryOutput::success(WarningBodySyntaxValue::Failure(
-                            WarningBodyReferencesFailure::ParserCapabilityMismatch(
-                                candidate.clone(),
-                            ),
-                        ))
-                        .with_terminal_kind(QueryTerminalKind::Failure));
-                    };
-                    let mut declaration_imports = BTreeMap::new();
-                    for (occurrence, site) in module
-                        .imports()
-                        .iter()
-                        .filter(|site| {
-                            site.source_offset() >= locator.declaration_span.start
-                                && site.source_end() <= locator.declaration_span.end
-                        })
-                        .enumerate()
-                    {
-                        let Ok(occurrence) = u32::try_from(occurrence) else {
-                            return Ok(QueryOutput::success(WarningBodySyntaxValue::Failure(
-                                WarningBodyReferencesFailure::ParserCapabilityMismatch(
-                                    candidate.clone(),
-                                ),
-                            ))
-                            .with_terminal_kind(QueryTerminalKind::Failure));
-                        };
-                        declaration_imports.insert(
-                            (site.source_offset(), site.source_end()),
-                            crate::declaration_candidate::DeclarationImportSiteKey {
-                                declaration: candidate.clone(),
-                                occurrence,
-                                specifier: Arc::from(site.specifier()),
+                    let value = module
+                        .declaration_warning_call_heads(candidate)
+                        .map_or_else(
+                            || {
+                                WarningCallHeadProjectionValue::Failure(
+                                    WarningBodyReferencesFailure::ParserCapabilityMismatch(
+                                        candidate.clone(),
+                                    ),
+                                )
                             },
+                            |heads| WarningCallHeadProjectionValue::Available(heads.clone()),
                         );
-                    }
-                    let (projected, _) =
-                        warning_static_call_heads(module, candidate, &declaration_imports);
-                    let value = projected.map_or_else(
-                        |_| {
-                            WarningBodySyntaxValue::Failure(
-                                WarningBodyReferencesFailure::ParserCapabilityMismatch(
-                                    candidate.clone(),
-                                ),
-                            )
-                        },
-                        WarningBodySyntaxValue::Available,
-                    );
-                    let kind = if matches!(value, WarningBodySyntaxValue::Available(_)) {
+                    let kind = if matches!(value, WarningCallHeadProjectionValue::Available(_)) {
                         QueryTerminalKind::Success
                     } else {
                         QueryTerminalKind::Failure
@@ -12760,10 +12123,10 @@ impl RevisionedQueryDatabase {
                     Ok(QueryOutput::success(value).with_terminal_kind(kind))
                 },
             )
-            .expect("the WarningBodySyntax family has one canonical name");
+            .expect("the WarningCallHeadProjection family has one canonical name");
         let classifications_for_warning_references = stable_declaration_classifications.clone();
         let shells_for_warning_references = declaration_shells.clone();
-        let syntax_for_warning_references = warning_body_syntax.clone();
+        let call_heads_for_warning_references = warning_call_head_projections.clone();
         let imports_for_warning_references = declaration_imports.clone();
         let warning_body_references = runtime
             .family_with_equality_and_evaluator(
@@ -12825,16 +12188,16 @@ impl RevisionedQueryDatabase {
                             Arc::from([]),
                         )));
                     }
-                    let syntax = context.query_registered(
-                        &syntax_for_warning_references,
-                        WarningBodySyntaxQueryKey(candidate.clone()),
+                    let projection = context.query_registered(
+                        &call_heads_for_warning_references,
+                        WarningCallHeadProjectionQueryKey(candidate.clone()),
                     )?;
-                    let rue_query::QueryOutcome::Success(syntax) = syntax.outcome() else {
-                        unreachable!("WarningBodySyntax publishes typed values")
+                    let rue_query::QueryOutcome::Success(projection) = projection.outcome() else {
+                        unreachable!("WarningCallHeadProjection publishes typed values")
                     };
-                    let heads = match syntax {
-                        WarningBodySyntaxValue::Available(heads) => heads,
-                        WarningBodySyntaxValue::Failure(failure) => {
+                    let heads = match projection {
+                        WarningCallHeadProjectionValue::Available(heads) => heads,
+                        WarningCallHeadProjectionValue::Failure(failure) => {
                             return Ok(QueryOutput::success(WarningBodyReferencesValue::Failure(
                                 failure.clone(),
                             ))
@@ -12845,7 +12208,13 @@ impl RevisionedQueryDatabase {
                     for head in heads.iter() {
                         let module = match &head.import {
                             None => None,
-                            Some(import_key) => {
+                            Some(import) => {
+                                let import_key =
+                                    crate::declaration_candidate::DeclarationImportSiteKey {
+                                        declaration: candidate.clone(),
+                                        occurrence: import.occurrence,
+                                        specifier: import.specifier.clone(),
+                                    };
                                 let resolved = context.query_registered(
                                     &imports_for_warning_references,
                                     DeclarationImportQueryKey(import_key.clone()),
@@ -26757,21 +26126,37 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn warning_body_selection_is_logarithmic_and_fail_closed() {
+    fn warning_body_projection_is_candidate_exact_and_fail_closed() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let mut text = String::new();
         for index in 0..128 {
             text.push_str(&format!("fn unrelated_{index}() -> i32 {{ 0 }}\n"));
         }
-        text.push_str("fn target_free() -> i32 { 0 }\n");
+        text.push_str(
+            "fn target_free() -> i32 {\n\
+                 let local = 0;\n\
+                 target_direct();\n\
+                 local();\n\
+                 let helper = @import(\"helper.rue\");\n\
+                 helper.target_imported()\n\
+             }\n",
+        );
+        text.push_str(
+            "fn target_nested() -> type {\n\
+                 struct { fn hidden() -> i32 { nested_direct() } }\n\
+             }\n",
+        );
+        text.push_str("fn target_type(value: Factory(i32)) -> Result(i32) { value }\n");
         text.push_str("@copy struct Bag { value: i32,\n");
         for index in 0..128 {
             text.push_str(&format!("fn unrelated_member_{index}() -> i32 {{ 0 }}\n"));
         }
-        text.push_str("fn target_associated() -> i32 { 0 }\n");
-        text.push_str("fn target_method(borrow self) -> i32 { self.value }\n}\n");
-        text.push_str("drop fn Bag(self) {}\n");
+        text.push_str("fn target_associated() -> i32 { target_associated_direct() }\n");
+        text.push_str(
+            "fn target_method(borrow self) -> i32 { target_method_direct(); self.value }\n}\n",
+        );
+        text.push_str("drop fn Bag(self) { target_drop_direct(); }\n");
 
         let source = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
@@ -26792,35 +26177,58 @@ fn main() -> i32 {
             }) => parsed,
             other => panic!("expected parsed module, got {other:?}"),
         };
-        let empty_imports = std::collections::BTreeMap::new();
-
-        for (category, name, expects_member_search) in [
-            (Category::Function, "target_free", false),
-            (Category::AssociatedFunction, "target_associated", true),
-            (Category::Method, "target_method", true),
-            (Category::Destructor, "Bag", false),
+        for (category, name, expected) in [
+            (
+                Category::Function,
+                "target_free",
+                vec![
+                    (None, vec!["target_direct"]),
+                    (Some("helper.rue"), vec!["target_imported"]),
+                ],
+            ),
+            (
+                Category::AssociatedFunction,
+                "target_associated",
+                vec![(None, vec!["target_associated_direct"])],
+            ),
+            (
+                Category::Method,
+                "target_method",
+                vec![(None, vec!["target_method_direct"])],
+            ),
+            (
+                Category::Destructor,
+                "Bag",
+                vec![(None, vec!["target_drop_direct"])],
+            ),
+            (
+                Category::Function,
+                "target_nested",
+                vec![(None, vec!["nested_direct"])],
+            ),
+            (
+                Category::Function,
+                "target_type",
+                vec![(None, vec!["Factory"]), (None, vec!["Result"])],
+            ),
         ] {
             let candidate = declaration_candidate(&database, revision, &module, category, name);
-            let (projected, work) = warning_static_call_heads(parsed, &candidate, &empty_imports);
-            assert!(
-                projected.is_ok(),
-                "{category:?} selection failed: {projected:?}"
-            );
-            assert!(
-                work.top_level_items_examined <= 10,
-                "{category:?} inspected {} of {} top-level items",
-                work.top_level_items_examined,
-                parsed.ast().items.len()
-            );
-            if expects_member_search {
-                assert!(
-                    work.member_items_examined <= 10,
-                    "{category:?} inspected {} member items",
-                    work.member_items_examined
-                );
-            } else {
-                assert_eq!(work.member_items_examined, 0);
-            }
+            let projected = parsed
+                .declaration_warning_call_heads(&candidate)
+                .unwrap_or_else(|| panic!("{category:?} has no parser-owned warning projection"));
+            let actual = projected
+                .iter()
+                .map(|head| {
+                    (
+                        head.import.as_ref().map(|import| import.specifier.as_ref()),
+                        head.components
+                            .iter()
+                            .map(|component| component.as_ref())
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{category:?} projected wrong call heads");
         }
 
         let mut mismatched = declaration_candidate(
@@ -26831,12 +26239,10 @@ fn main() -> i32 {
             "target_free",
         );
         mismatched.name = Arc::from("not-target-free");
-        let (projected, work) = warning_static_call_heads(parsed, &mismatched, &empty_imports);
         assert!(
-            projected.is_err(),
+            parsed.declaration_warning_call_heads(&mismatched).is_none(),
             "a mismatched exact key must fail closed"
         );
-        assert_eq!(work, WarningBodySelectionWork::default());
     }
 
     fn request_semantic_nucleus(

@@ -15,8 +15,8 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 | Constants | The semantic-nucleus const evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-const source reconstruction, lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: constant evaluation consumes the declaration artifact directly; no production call or definition of `parse_semantic_const`, and the evaluator resolves packed ordinal spellings without reconstructing an interner |
 | Well-known option body scan | `PackedValidatedRir::fallible_intrinsics`; consumed by `compiler.body-toolchain-demands` through `DeclarationBodyPlanArtifacts` | Derives the typed five-kind set during the one canonical packed-RIR traversal; production performs no second lexer pass over retained body text | Complete: the packed header owns the stable typed set and the old lexical scanner remains only as an independent `cfg(test)` oracle |
 | Structured type syntax | Candidate RIR owns one declaration-local `RirTypeSyntaxArena<Spur>` projected directly from parser `TypeExpr`; the canonical packed declaration artifact stores that arena in its versioned type section, and ordinary, specialized, anonymous, constant, comptime, and canonical-RIR consumers decode the same nodes | Deletes `AstGen` compound-type rendering/interning and the RIR-to-sema string grammar for arrays, pointers, calls, qualified paths, anonymous aggregates, and integer/value arguments | Complete for every RIR type operand: instruction and payload schemas carry `RirTypeSyntaxRef`, packed encode/decode is exhaustive and fail-closed, semantic consumers traverse structured nodes, and source inventory forbids a rendered-type adapter at the RIR intake. Simple leaf-name lookup plus diagnostic or `--emit rir` formatting remain presentation policy rather than a semantic transport |
-| Semantic-nucleus type tokenization | `SemanticNucleusTypeProvider` in `crates/rue-compiler/src/revisioned_query_database.rs`, including the handwritten split/decomposition route around lines 10054–10129 and the `parse_type_call_syntax` route beginning around line 10551 | A second handwritten type grammar reconstructs declaration types while binding semantic signatures and constants | The provider consumes the artifact's dense type-syntax nodes; neither the handwritten tokenizer nor a production call to `parse_type_call_syntax` remains in the provider |
-| Warning-only static-call discovery | `warning_static_call_heads` and `WarningStaticCallCollector` in `revisioned_query_database.rs` independently walk canonical AST bodies, implement lexical scopes and static aliases/import paths, and discover value/type call heads for warning reachability | Maintains a peer body-discovery and partial name-resolution path even though it does not reparse text | The canonical candidate/artifact boundary publishes one structured body-reference projection; warning reachability is a thin consumer and the peer collector/scoping resolver is deleted |
+| Semantic-nucleus type tokenization | `SemanticNucleusTypeProvider` consumes the structured type/value nodes projected from the exact parsed declaration and packed candidate artifact | Deletes the last provider-local `parse_type_call_syntax` branch that could reinterpret a rendered array-length value with a second handwritten grammar | Complete: provider inventory forbids the rendered parser, lexer/parser entry points, and split/trim grammars; comptime type/value calls resolve only from typed nodes |
+| Warning-only static-call discovery | The parser-owned module projection collects imports and declaration-local warning call/type heads during one syntax traversal; `compiler.warning-call-head-projection` is an O(1) candidate projection used solely to retain body-local stamps, and `compiler.warning-body-references` resolves its indexed import occurrences | Deletes the independent `warning_static_call_heads` / `WarningStaticCallCollector` AST walk and its peer lexical-scope/name-resolution implementation | Complete: warning queries contain no AST traversal, raw-body request, RIR/AstGen request, or fallback; shadowing, aliases, imports, named methods, nested anonymous methods, type calls, sibling invalidation, and exact failure behavior are covered |
 
 ## Implementation checkpoint: parser-owned signature type syntax
 
@@ -32,12 +32,11 @@ and every parser-legal annotation shape have direct query tests. A source
 inventory fails if either the projection or semantic-signature resolver regains
 a lexer, parser, split/trim grammar, rendered-type adapter, `Span`, or `FileId`.
 
-This checkpoint deliberately does **not** claim the full structured-type row.
-Candidate RIR and the request-local rue-air body adapter still intern rendered
-compound type spellings, and the legacy semantic type resolver remains for those
-body/constant RIR slots. The next structured-type slice extends the same arena
-through candidate RIR and replaces those slots; only then can the old string
-resolver and `parse_type_call_syntax` branch be deleted globally.
+This checkpoint by itself did **not** claim the full structured-type row.
+The later RIR structured-type cutover extends the same arena through candidate
+RIR and replaces the body/constant slots, while the final frontend-integrity
+closure below deletes the remaining provider-local `parse_type_call_syntax`
+branch.
 
 The one-worker frozen Lattice measurement isolates why this slice should improve
 time. The parent rebuilt semantic type structure from compact signature text and
@@ -304,6 +303,61 @@ externally and +221,184 bytes in the compiler report (absolute medians
 movement is reported as measurement noise, not a memory improvement; the
 wall-time claim rests on the repeatable phase-local reductions and the 20/24
 paired root wins.
+
+## Implementation checkpoint: parser-owned warning projection closure
+
+The parser's one module syntax projection now discovers declaration-local
+warning call/type heads while it discovers imports. Lexical locals and static
+aliases use parser-local `Spur` identities during that traversal; only the
+sorted, deduplicated retained heads are converted to owned spellings. Imported
+heads carry the exact declaration-local import occurrence and specifier, so
+`compiler.warning-body-references` continues to resolve imports through the
+canonical declaration-import query rather than performing path resolution
+itself.
+
+A thin candidate-keyed `compiler.warning-call-head-projection` terminal performs
+one O(1) lookup into the parsed definition index. It retains no AST handle and
+does no syntax walk. The terminal is intentionally kept because its exact
+equality preserves body-local warning stamps when a sibling body changes; the
+downstream warning-reference query therefore does not need a broad module stamp
+or a second AST pass. The former `warning_static_call_heads`, candidate span
+search, `WarningStaticCallCollector`, and peer scope/alias resolver are deleted.
+
+The semantic-nucleus provider also no longer interprets a rendered array-length
+value with `parse_type_call_syntax`. Structured comptime calls arrive through
+the declaration/candidate type-syntax arenas; simple names continue through
+ordinary substitution and const lookup. Source inventory forbids the removed
+parser branch and every lexer/parser or split/trim grammar inside that provider.
+
+The expected critical-path improvement is modest: the replacement removes one
+whole declaration-body AST traversal and temporary scope/name allocations, but
+it preserves the small candidate projection terminal required for exact
+invalidation and it adds warning-head collection to the already-required parse
+pass. The rendered-type deletion is a correctness/deletion proof and was not a
+reachable production cost.
+
+The exact-parent gate used one warmup followed by twelve order-balanced
+release-thin-LTO x86-64 pairs with one query worker. Median compiler-root time
+was 664.504 ms for the parent and 664.125 ms for the replacement; the paired
+median was +1.850 ms with a 5.252 ms median absolute deviation, and 5 of 12
+prototype runs were faster. That is recorded as no measurable wall-time change,
+not a speedup. The displaced work is nevertheless observable: all twelve
+prototype runs retired fewer instructions, with a paired median reduction of
+15,800,058, while query claims, memo nodes, and memo display-identity bytes were
+exactly unchanged. Source discovery and parsing increased by a paired median
+1.138 ms because it now owns the projection; the independent later warning AST
+walk and its attribution disappeared.
+
+Peak RSS was allocator-bimodal on this interactive macOS host. External paired
+medians moved +6,914,048 bytes with a 10,002,432-byte paired MAD, and exactly six
+of twelve prototype runs used less memory. A separate counting-allocator run
+showed the replacement made 8,607 fewer allocations and requested 5,085,156
+fewer bytes. The RSS result is therefore recorded as inconclusive/no claimed
+memory improvement rather than as a stable ownership regression. All 24 native
+outputs were 1,662,976 bytes with SHA-256
+`45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`.
+Measurement artifacts are in
+`/private/tmp/rue-phase-warning-paired.gsJc0W` on the measuring host.
 
 ## Retained declaration artifact contract
 

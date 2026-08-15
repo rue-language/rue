@@ -9,13 +9,10 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[cfg(test)]
 use lasso::Key;
 use lasso::{RodeoResolver, Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
-use rue_parser::{
-    AssignTarget, Ast, Expr, IntrinsicArg, Item, Pattern, Statement, TypeExpr, ast::Visibility,
-};
+use rue_parser::{AssignTarget, Ast, Expr, IntrinsicArg, Item, TypeExpr, ast::Visibility};
 use rue_span::{FileId, Span};
 use sha2::{Digest, Sha256};
 
@@ -219,6 +216,26 @@ impl ParsedDefinitionIndex {
                     as u64;
                 charge
                     .saturating_add(declaration.fact.retained_charge())
+                    .saturating_add(declaration.warning_call_heads.iter().fold(
+                        (declaration.warning_call_heads.len()
+                            * std::mem::size_of::<ParsedWarningCallHead>())
+                            as u64,
+                        |charge, head| {
+                            let import = head
+                                .import
+                                .as_ref()
+                                .map_or(0, |import| import.specifier.retained_charge());
+                            head.components.iter().fold(
+                                charge.saturating_add(import).saturating_add(
+                                    (head.components.len() * std::mem::size_of::<Arc<str>>())
+                                        as u64,
+                                ),
+                                |charge, component| {
+                                    charge.saturating_add(component.retained_charge())
+                                },
+                            )
+                        },
+                    ))
                     .saturating_add(
                         declaration
                             .anonymous_sites
@@ -427,6 +444,15 @@ impl ParsedDefinitionIndex {
         })
     }
 
+    pub(crate) fn declaration_warning_call_heads(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<&Arc<[ParsedWarningCallHead]>> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        (candidate.fact.key == *key).then_some(&candidate.warning_call_heads)
+    }
+
     #[cfg(test)]
     pub fn candidates_named(
         &self,
@@ -456,6 +482,10 @@ pub(crate) struct ParsedDeclarationCandidate {
     /// (RUE-1282).
     self_call_targets: Arc<[Arc<str>]>,
     raw_import_range: Option<RawDeclarationImportRange>,
+    /// Static call/type-constructor heads projected during the canonical
+    /// module syntax walk. Names are already stripped of lexical locals and
+    /// aliases; import references use declaration-local occurrence ordinals.
+    warning_call_heads: Arc<[ParsedWarningCallHead]>,
     /// Value-position anonymous type literals inside this declaration's constant
     /// initializer or body, with module-relative spans and their frontend
     /// anchors. Sliced into fragment-relative sites only by the remaining
@@ -514,6 +544,45 @@ struct RawDeclarationImportRange {
     len: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ParsedWarningCallHead {
+    pub(crate) import: Option<ParsedWarningImport>,
+    pub(crate) components: Arc<[Arc<str>]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ParsedWarningImport {
+    pub(crate) occurrence: u32,
+    pub(crate) specifier: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RawWarningCallHead {
+    import_span: Option<Span>,
+    components: Vec<Spur>,
+}
+
+impl Ord for RawWarningCallHead {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let span_key =
+            |span: Option<Span>| span.map(|span| (span.file_id.index(), span.start, span.end));
+        span_key(self.import_span)
+            .cmp(&span_key(other.import_span))
+            .then_with(|| {
+                self.components
+                    .iter()
+                    .map(|spur| (*spur).into_usize())
+                    .cmp(other.components.iter().map(|spur| (*spur).into_usize()))
+            })
+    }
+}
+
+impl PartialOrd for RawWarningCallHead {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedDeclarationImportFailure {
     SiteOutOfRange { available: u32 },
@@ -563,6 +632,12 @@ struct ParsedInvalidImportSite {
 struct ImportSiteCollector {
     valid: Vec<ImportDirective>,
     invalid: Vec<ParsedInvalidImportSite>,
+}
+
+#[derive(Default)]
+struct ParsedModuleProjectionCollector {
+    imports: ImportSiteCollector,
+    warning_call_heads: HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
 }
 
 /// Immutable parsed syntax whose spans and symbols belong to one FileId epoch.
@@ -725,6 +800,13 @@ impl ParsedModule {
         let index = self.definitions.declaration_by_key.get(key).copied()?;
         let candidate = self.definitions.declarations.get(index)?;
         (candidate.fact.key == *key).then_some(candidate.anonymous_sites.as_ref())
+    }
+
+    pub(crate) fn declaration_warning_call_heads(
+        &self,
+        key: &DeclarationCandidateKey,
+    ) -> Option<&Arc<[ParsedWarningCallHead]>> {
+        self.definitions.declaration_warning_call_heads(key)
     }
 
     /// Exact parsed sibling facts needed to validate one accessor signature.
@@ -1465,7 +1547,7 @@ fn build_module(
 ) -> CompileResult<Arc<ParsedModule>> {
     let token = Arc::new(SymbolProvenance);
     let module = snapshot.module_id(file_id).expect("snapshot membership");
-    let import_sites = collect_imports(&ast, module, &interner)?;
+    let projections = collect_module_projections(&ast, module, &interner)?;
     let resolver = Arc::new(interner.into_resolver());
     build_module_with_resolver(
         snapshot,
@@ -1473,7 +1555,7 @@ fn build_module(
         ast,
         resolver,
         token,
-        import_sites,
+        projections,
         token_count,
         tokens,
     )
@@ -1485,7 +1567,7 @@ fn build_module_with_resolver(
     ast: Arc<Ast>,
     resolver: Arc<RodeoResolver<Spur>>,
     token: Arc<SymbolProvenance>,
-    import_sites: ImportSiteCollector,
+    projections: ParsedModuleProjectionCollector,
     token_count: usize,
     tokens: Arc<[rue_lexer::Token]>,
 ) -> CompileResult<Arc<ParsedModule>> {
@@ -1521,7 +1603,8 @@ fn build_module_with_resolver(
         &tokens,
         &provenanced_ast.ast,
         &resolver,
-        &import_sites.valid,
+        &projections.imports.valid,
+        &projections.warning_call_heads,
     )?;
     let payload = Arc::new(ParsedSyntaxPayload {
         source,
@@ -1531,8 +1614,8 @@ fn build_module_with_resolver(
         ast: provenanced_ast,
         resolver,
         definitions,
-        import_sites: import_sites.valid.into(),
-        invalid_import_sites: import_sites.invalid.into(),
+        import_sites: projections.imports.valid.into(),
+        invalid_import_sites: projections.imports.invalid.into(),
     });
     Ok(bind_payload(snapshot, file_id, payload))
 }
@@ -1602,6 +1685,7 @@ fn bind_payload(
                 is_accessor: candidate.is_accessor,
                 self_call_targets: candidate.self_call_targets.clone(),
                 raw_import_range: candidate.raw_import_range,
+                warning_call_heads: candidate.warning_call_heads.clone(),
                 anonymous_sites: candidate
                     .anonymous_sites
                     .iter()
@@ -1665,326 +1749,638 @@ fn bind_payload(
     })
 }
 
-fn collect_imports(
+#[derive(Debug, Clone)]
+struct ParsedWarningStaticPath {
+    import_span: Option<Span>,
+    components: Vec<Spur>,
+}
+
+impl ParsedWarningStaticPath {
+    fn into_head(self) -> Option<RawWarningCallHead> {
+        (!self.components.is_empty()).then_some(RawWarningCallHead {
+            import_span: self.import_span,
+            components: self.components,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ParsedWarningLexicalBinding {
+    Local,
+    StaticAlias(ParsedWarningStaticPath),
+}
+
+/// One parser-owned syntax projection pass. It discovers module imports and
+/// declaration-local warning call heads together, so unused-function warning
+/// reachability never re-enters the AST with a peer scope/name walker.
+struct ParsedBodyProjectionCollector<'a> {
+    module: &'a ModuleId,
+    resolver: &'a ThreadedRodeo,
+    imports: &'a mut ImportSiteCollector,
+    scopes: Vec<HashMap<Spur, ParsedWarningLexicalBinding>>,
+    heads: Vec<RawWarningCallHead>,
+}
+
+impl<'a> ParsedBodyProjectionCollector<'a> {
+    fn new(
+        module: &'a ModuleId,
+        resolver: &'a ThreadedRodeo,
+        imports: &'a mut ImportSiteCollector,
+    ) -> Self {
+        Self {
+            module,
+            resolver,
+            imports,
+            scopes: Vec::new(),
+            heads: Vec::new(),
+        }
+    }
+
+    fn finish(mut self) -> Vec<RawWarningCallHead> {
+        self.heads.sort();
+        self.heads.dedup();
+        self.heads
+    }
+
+    fn symbol(&self, ident: rue_parser::ast::Ident) -> CompileResult<Spur> {
+        self.resolver
+            .try_resolve(&ident.name)
+            .map(|_| ident.name)
+            .ok_or_else(|| invalid_input("AST symbol is absent from the module symbol universe"))
+    }
+
+    fn spelling(&self, ident: rue_parser::ast::Ident) -> CompileResult<&str> {
+        self.resolver
+            .try_resolve(&ident.name)
+            .ok_or_else(|| invalid_input("AST symbol is absent from the module symbol universe"))
+    }
+
+    fn binding(&self, symbol: Spur) -> Option<&ParsedWarningLexicalBinding> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(&symbol))
+    }
+
+    fn bind(
+        &mut self,
+        ident: rue_parser::ast::Ident,
+        binding: ParsedWarningLexicalBinding,
+    ) -> CompileResult<()> {
+        let symbol = self.symbol(ident)?;
+        self.scopes
+            .last_mut()
+            .expect("warning projection always has a lexical scope")
+            .insert(symbol, binding);
+        Ok(())
+    }
+
+    fn bind_local(&mut self, ident: rue_parser::ast::Ident) -> CompileResult<()> {
+        self.bind(ident, ParsedWarningLexicalBinding::Local)
+    }
+
+    fn add_path(&mut self, path: ParsedWarningStaticPath) {
+        if let Some(head) = path.into_head() {
+            self.heads.push(head);
+        }
+    }
+
+    fn add_unqualified(&mut self, ident: rue_parser::ast::Ident) -> CompileResult<()> {
+        let symbol = self.symbol(ident)?;
+        match self.binding(symbol).cloned() {
+            Some(ParsedWarningLexicalBinding::Local) => {}
+            Some(ParsedWarningLexicalBinding::StaticAlias(path)) => self.add_path(path),
+            None => self.add_path(ParsedWarningStaticPath {
+                import_span: None,
+                components: vec![symbol],
+            }),
+        }
+        Ok(())
+    }
+
+    fn add_qualified(
+        &mut self,
+        path: impl IntoIterator<Item = rue_parser::ast::Ident>,
+    ) -> CompileResult<()> {
+        let mut symbols = path
+            .into_iter()
+            .map(|ident| self.symbol(ident))
+            .collect::<CompileResult<Vec<_>>>()?;
+        let Some(first) = symbols.first().copied() else {
+            return Ok(());
+        };
+        match self.binding(first).cloned() {
+            Some(ParsedWarningLexicalBinding::Local) => {}
+            Some(ParsedWarningLexicalBinding::StaticAlias(mut alias)) => {
+                alias.components.extend(symbols.drain(1..));
+                self.add_path(alias);
+            }
+            None => self.add_path(ParsedWarningStaticPath {
+                import_span: None,
+                components: symbols,
+            }),
+        }
+        Ok(())
+    }
+
+    fn visit_callable(
+        &mut self,
+        parameters: &[rue_parser::ast::Param],
+        result: Option<&TypeExpr>,
+        body: &Expr,
+        _has_self: bool,
+    ) -> CompileResult<()> {
+        self.scopes.push(HashMap::new());
+        let outcome = (|| {
+            for parameter in parameters {
+                self.visit_type(&parameter.ty)?;
+                self.bind_local(parameter.name)?;
+            }
+            if let Some(result) = result {
+                self.visit_type(result)?;
+            }
+            self.visit_expr(body)
+        })();
+        self.scopes.pop();
+        outcome
+    }
+
+    fn visit_signature(
+        &mut self,
+        parameters: &[rue_parser::ast::Param],
+        result: Option<&TypeExpr>,
+    ) -> CompileResult<()> {
+        for parameter in parameters {
+            self.visit_type(&parameter.ty)?;
+        }
+        if let Some(result) = result {
+            self.visit_type(result)?;
+        }
+        Ok(())
+    }
+
+    fn visit_args(&mut self, args: &[rue_parser::ast::CallArg]) -> CompileResult<()> {
+        for argument in args {
+            self.visit_expr(&argument.expr)?;
+        }
+        Ok(())
+    }
+
+    fn visit_array_length(&mut self, length: &rue_parser::ast::ArrayLength) -> CompileResult<()> {
+        match length {
+            rue_parser::ast::ArrayLength::Literal(_) | rue_parser::ast::ArrayLength::Named(_) => {}
+            rue_parser::ast::ArrayLength::Call { name, args } => {
+                self.add_unqualified(*name)?;
+                for argument in args {
+                    self.visit_array_length(argument)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn visit_type(&mut self, ty: &TypeExpr) -> CompileResult<()> {
+        match ty {
+            TypeExpr::Named(_)
+            | TypeExpr::Qualified { .. }
+            | TypeExpr::Unit(_)
+            | TypeExpr::Never(_)
+            | TypeExpr::StrFixed { .. }
+            | TypeExpr::IntArg { .. } => {}
+            TypeExpr::Array {
+                element, length, ..
+            } => {
+                self.visit_type(element)?;
+                self.visit_array_length(length)?;
+            }
+            TypeExpr::Slice { element, .. } => self.visit_type(element)?,
+            TypeExpr::AnonymousStruct {
+                fields, methods, ..
+            } => {
+                for field in fields {
+                    self.visit_type(&field.ty)?;
+                }
+                for method in methods {
+                    self.visit_callable(
+                        &method.params,
+                        method.return_type.as_ref(),
+                        &method.body,
+                        method.receiver.is_some(),
+                    )?;
+                }
+            }
+            TypeExpr::AnonymousEnum { variants, .. } => {
+                for variant in variants {
+                    for payload in &variant.payload {
+                        self.visit_type(payload)?;
+                    }
+                }
+            }
+            TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
+                self.visit_type(pointee)?;
+            }
+            TypeExpr::TypeCall { name, args, .. } => {
+                self.add_unqualified(*name)?;
+                for argument in args {
+                    self.visit_type(argument)?;
+                }
+            }
+            TypeExpr::QualifiedTypeCall { segments, args, .. } => {
+                self.add_qualified(segments.iter().copied())?;
+                for argument in args {
+                    self.visit_type(argument)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn static_path(&self, expr: &Expr) -> CompileResult<Option<ParsedWarningStaticPath>> {
+        match expr {
+            Expr::Ident(ident) => {
+                let symbol = self.symbol(*ident)?;
+                Ok(match self.binding(symbol) {
+                    Some(ParsedWarningLexicalBinding::Local) => None,
+                    Some(ParsedWarningLexicalBinding::StaticAlias(path)) => Some(path.clone()),
+                    None => Some(ParsedWarningStaticPath {
+                        import_span: None,
+                        components: vec![symbol],
+                    }),
+                })
+            }
+            Expr::Field(field) => {
+                let Some(mut path) = self.static_path(&field.base)? else {
+                    return Ok(None);
+                };
+                path.components.push(self.symbol(field.field)?);
+                Ok(Some(path))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn resolved_import_path(&self, expr: &Expr) -> CompileResult<Option<ParsedWarningStaticPath>> {
+        let Expr::IntrinsicCall(import) = expr else {
+            return Ok(None);
+        };
+        if self.spelling(import.name)? != "import" {
+            return Ok(None);
+        }
+        let [IntrinsicArg::Expr(Expr::String(literal))] = import.args.as_slice() else {
+            return Ok(None);
+        };
+        self.resolver.try_resolve(&literal.value).ok_or_else(|| {
+            invalid_input("import literal is absent from the module symbol universe")
+        })?;
+        Ok(Some(ParsedWarningStaticPath {
+            import_span: Some(import.span),
+            components: Vec::new(),
+        }))
+    }
+
+    fn collect_import(&mut self, value: &rue_parser::ast::IntrinsicCallExpr) -> CompileResult<()> {
+        if self.spelling(value.name)? != "import" {
+            return Ok(());
+        }
+        if let [IntrinsicArg::Expr(Expr::String(literal))] = value.args.as_slice() {
+            let specifier = self.resolver.try_resolve(&literal.value).ok_or_else(|| {
+                invalid_input("import literal is absent from the module symbol universe")
+            })?;
+            self.imports.valid.push(ImportDirective::new(
+                self.module.clone(),
+                value.span.start,
+                value.span.end,
+                Arc::from(specifier),
+            ));
+        } else {
+            let (span, shape) = if value.args.len() != 1 {
+                (
+                    value.span,
+                    InvalidImportShape::WrongArity {
+                        actual: u32::try_from(value.args.len()).unwrap_or(u32::MAX),
+                    },
+                )
+            } else {
+                let span = match &value.args[0] {
+                    IntrinsicArg::Expr(expr) => expr.span(),
+                    IntrinsicArg::Type(ty) => ty.span(),
+                };
+                (span, InvalidImportShape::NonStringArgument)
+            };
+            self.imports
+                .invalid
+                .push(ParsedInvalidImportSite { span, shape });
+        }
+        Ok(())
+    }
+
+    fn visit_block(&mut self, block: &rue_parser::ast::BlockExpr) -> CompileResult<()> {
+        use rue_parser::ast::{LetPattern, Statement};
+        self.scopes.push(HashMap::new());
+        let outcome = (|| {
+            for statement in &block.statements {
+                match statement {
+                    Statement::Let(binding) => {
+                        if let Some(ty) = &binding.ty {
+                            self.visit_type(ty)?;
+                        }
+                        self.visit_expr(&binding.init)?;
+                        if let LetPattern::Ident(ident) = binding.pattern {
+                            let alias = (!binding.is_mut)
+                                .then(|| {
+                                    self.resolved_import_path(&binding.init).and_then(|path| {
+                                        path.map_or_else(
+                                            || self.static_path(&binding.init),
+                                            |path| Ok(Some(path)),
+                                        )
+                                    })
+                                })
+                                .transpose()?
+                                .flatten();
+                            self.bind(
+                                ident,
+                                alias.map_or(
+                                    ParsedWarningLexicalBinding::Local,
+                                    ParsedWarningLexicalBinding::StaticAlias,
+                                ),
+                            )?;
+                        }
+                    }
+                    Statement::Assign(assignment) => {
+                        match &assignment.target {
+                            AssignTarget::Var(_) => {}
+                            AssignTarget::Field(field) => self.visit_expr(&field.base)?,
+                            AssignTarget::Index(index) => {
+                                self.visit_expr(&index.base)?;
+                                self.visit_expr(&index.index)?;
+                            }
+                        }
+                        self.visit_expr(&assignment.value)?;
+                    }
+                    Statement::Expr(expr) => self.visit_expr(expr)?,
+                }
+            }
+            self.visit_expr(&block.expr)
+        })();
+        self.scopes.pop();
+        outcome
+    }
+
+    fn visit_expr(&mut self, expr: &Expr) -> CompileResult<()> {
+        use rue_parser::ast::{LetPattern, Pattern};
+        match expr {
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::String(_)
+            | Expr::Bool(_)
+            | Expr::Unit(_)
+            | Expr::Ident(_)
+            | Expr::Continue(_)
+            | Expr::SelfExpr(_)
+            | Expr::Error(_) => {}
+            Expr::TypeLit(value) => self.visit_type(&value.type_expr)?,
+            Expr::Binary(value) => {
+                self.visit_expr(&value.left)?;
+                self.visit_expr(&value.right)?;
+            }
+            Expr::Unary(value) => self.visit_expr(&value.operand)?,
+            Expr::Paren(value) => self.visit_expr(&value.inner)?,
+            Expr::Block(value) => self.visit_block(value)?,
+            Expr::If(value) => {
+                self.visit_expr(&value.cond)?;
+                self.visit_block(&value.then_block)?;
+                if let Some(block) = &value.else_block {
+                    self.visit_block(block)?;
+                }
+            }
+            Expr::Match(value) => {
+                self.visit_expr(&value.scrutinee)?;
+                for arm in &value.arms {
+                    self.scopes.push(HashMap::new());
+                    let outcome = (|| {
+                        if let Pattern::Path(path) = &arm.pattern {
+                            if let Some(base) = &path.base {
+                                self.visit_expr(base)?;
+                            }
+                            if let Some(args) = &path.ctor_args {
+                                if let Some(base) = &path.base {
+                                    if let Some(mut head) = self.static_path(base)? {
+                                        head.components.push(self.symbol(path.type_name)?);
+                                        self.add_path(head);
+                                    }
+                                } else {
+                                    self.add_unqualified(path.type_name)?;
+                                }
+                                self.visit_args(args)?;
+                            }
+                            for binding in &path.bindings {
+                                self.bind_local(*binding)?;
+                            }
+                        }
+                        self.visit_expr(&arm.body)
+                    })();
+                    self.scopes.pop();
+                    outcome?;
+                }
+            }
+            Expr::While(value) => {
+                self.visit_expr(&value.cond)?;
+                self.visit_block(&value.body)?;
+            }
+            Expr::Loop(value) => self.visit_block(&value.body)?,
+            Expr::For(value) => {
+                self.visit_expr(&value.iterable)?;
+                self.scopes.push(HashMap::new());
+                let outcome = (|| {
+                    if let LetPattern::Ident(ident) = value.binder {
+                        self.bind_local(ident)?;
+                    }
+                    self.visit_block(&value.body)
+                })();
+                self.scopes.pop();
+                outcome?;
+            }
+            Expr::Call(value) => {
+                self.add_unqualified(value.name)?;
+                self.visit_args(&value.args)?;
+            }
+            Expr::Break(value) => {
+                if let Some(value) = &value.value {
+                    self.visit_expr(value)?;
+                }
+            }
+            Expr::Return(value) => {
+                if let Some(value) = &value.value {
+                    self.visit_expr(value)?;
+                }
+            }
+            Expr::Yield(value) => self.visit_expr(&value.value)?,
+            Expr::StructLit(value) => {
+                if let Some(base) = &value.base {
+                    self.visit_expr(base)?;
+                }
+                if let Some(args) = &value.ctor_args {
+                    if let Some(base) = &value.base {
+                        if let Some(mut path) = self.static_path(base)? {
+                            path.components.push(self.symbol(value.name)?);
+                            self.add_path(path);
+                        }
+                    } else {
+                        self.add_unqualified(value.name)?;
+                    }
+                    self.visit_args(args)?;
+                }
+                for field in &value.fields {
+                    self.visit_expr(&field.value)?;
+                }
+            }
+            Expr::Field(value) => self.visit_expr(&value.base)?,
+            Expr::MethodCall(value) => {
+                if let Some(mut path) = self.static_path(&value.receiver)? {
+                    path.components.push(self.symbol(value.method)?);
+                    self.add_path(path);
+                }
+                self.visit_expr(&value.receiver)?;
+                self.visit_args(&value.args)?;
+            }
+            Expr::Try(value) => self.visit_expr(&value.operand)?,
+            Expr::IntrinsicCall(value) => {
+                self.collect_import(value)?;
+                for argument in &value.args {
+                    match argument {
+                        IntrinsicArg::Expr(expr) => self.visit_expr(expr)?,
+                        IntrinsicArg::Type(ty) => self.visit_type(ty)?,
+                    }
+                }
+            }
+            Expr::ArrayLit(value) => {
+                for element in &value.elements {
+                    self.visit_expr(element)?;
+                }
+                if let Some(repeat) = &value.repeat {
+                    self.visit_array_length(repeat)?;
+                }
+            }
+            Expr::Index(value) => {
+                self.visit_expr(&value.base)?;
+                self.visit_expr(&value.index)?;
+            }
+            Expr::Path(value) => {
+                if let Some(base) = &value.base {
+                    self.visit_expr(base)?;
+                }
+            }
+            Expr::Comptime(value) => self.visit_expr(&value.expr)?,
+            Expr::Checked(value) => self.visit_expr(&value.expr)?,
+        }
+        Ok(())
+    }
+}
+
+fn collect_module_projections(
     ast: &Ast,
     module: &ModuleId,
     resolver: &ThreadedRodeo,
-) -> CompileResult<ImportSiteCollector> {
-    let mut imports = ImportSiteCollector::default();
-    for item in &ast.items {
+) -> CompileResult<ParsedModuleProjectionCollector> {
+    let mut projections = ParsedModuleProjectionCollector::default();
+    for (item_index, item) in ast.items.iter().enumerate() {
+        let item_index = u32::try_from(item_index)
+            .map_err(|_| invalid_input("parsed item ordinal exceeds u32"))?;
         match item {
             Item::Function(value) => {
-                walk_signature(
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
+                collector.visit_callable(
                     &value.params,
                     value.return_type.as_ref(),
-                    module,
-                    resolver,
-                    &mut imports,
+                    &value.body,
+                    false,
                 )?;
-                walk_expr(&value.body, module, resolver, &mut imports)?;
+                projections.warning_call_heads.insert(
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
+                    collector.finish(),
+                );
             }
             Item::Struct(value) => {
                 for field in &value.fields {
-                    walk_type_expr(&field.ty, module, resolver, &mut imports)?;
+                    let mut collector = ParsedBodyProjectionCollector::new(
+                        module,
+                        resolver,
+                        &mut projections.imports,
+                    );
+                    collector.visit_type(&field.ty)?;
                 }
-                for method in &value.methods {
-                    walk_signature(
+                for (method_index, method) in value.methods.iter().enumerate() {
+                    let method_index = u32::try_from(method_index)
+                        .map_err(|_| invalid_input("parsed method ordinal exceeds u32"))?;
+                    let mut collector = ParsedBodyProjectionCollector::new(
+                        module,
+                        resolver,
+                        &mut projections.imports,
+                    );
+                    collector.visit_callable(
                         &method.params,
                         method.return_type.as_ref(),
-                        module,
-                        resolver,
-                        &mut imports,
+                        &method.body,
+                        method.receiver.is_some(),
                     )?;
-                    walk_expr(&method.body, module, resolver, &mut imports)?;
+                    projections.warning_call_heads.insert(
+                        ParsedDeclarationAstLocator::StructMethod {
+                            item: item_index,
+                            method: method_index,
+                        },
+                        collector.finish(),
+                    );
                 }
             }
-            Item::DropFn(value) => walk_expr(&value.body, module, resolver, &mut imports)?,
+            Item::DropFn(value) => {
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
+                collector.visit_callable(&[], None, &value.body, true)?;
+                projections.warning_call_heads.insert(
+                    ParsedDeclarationAstLocator::TopLevel { item: item_index },
+                    collector.finish(),
+                );
+            }
             Item::Extern(block) => {
                 for foreign in &block.fns {
-                    walk_signature(
-                        &foreign.params,
-                        foreign.return_type.as_ref(),
+                    let mut collector = ParsedBodyProjectionCollector::new(
                         module,
                         resolver,
-                        &mut imports,
-                    )?;
+                        &mut projections.imports,
+                    );
+                    collector.visit_signature(&foreign.params, foreign.return_type.as_ref())?;
                 }
             }
             Item::Const(value) => {
+                let mut collector =
+                    ParsedBodyProjectionCollector::new(module, resolver, &mut projections.imports);
                 if let Some(ty) = &value.ty {
-                    walk_type_expr(ty, module, resolver, &mut imports)?;
+                    collector.visit_type(ty)?;
                 }
-                walk_expr(&value.init, module, resolver, &mut imports)?;
+                collector.visit_expr(&value.init)?;
             }
             Item::Enum(value) => {
                 for variant in &value.variants {
                     for ty in &variant.payload {
-                        walk_type_expr(ty, module, resolver, &mut imports)?;
+                        let mut collector = ParsedBodyProjectionCollector::new(
+                            module,
+                            resolver,
+                            &mut projections.imports,
+                        );
+                        collector.visit_type(ty)?;
                     }
                 }
             }
             Item::Error(_) => {}
         }
     }
-    imports.valid.sort();
-    imports
+    projections.imports.valid.sort();
+    projections
+        .imports
         .invalid
         .sort_by_key(|site| (site.span.file_id.index(), site.span.start));
-    Ok(imports)
-}
-
-fn walk_signature(
-    params: &[rue_parser::ast::Param],
-    return_type: Option<&TypeExpr>,
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-    imports: &mut ImportSiteCollector,
-) -> CompileResult<()> {
-    for param in params {
-        walk_type_expr(&param.ty, module, resolver, imports)?;
-    }
-    if let Some(return_type) = return_type {
-        walk_type_expr(return_type, module, resolver, imports)?;
-    }
-    Ok(())
-}
-
-fn walk_type_expr(
-    ty: &TypeExpr,
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-    imports: &mut ImportSiteCollector,
-) -> CompileResult<()> {
-    match ty {
-        TypeExpr::Named(_)
-        | TypeExpr::Qualified { .. }
-        | TypeExpr::Unit(_)
-        | TypeExpr::Never(_)
-        | TypeExpr::StrFixed { .. }
-        | TypeExpr::IntArg { .. } => {}
-        TypeExpr::Array { element, .. } | TypeExpr::Slice { element, .. } => {
-            walk_type_expr(element, module, resolver, imports)?;
-        }
-        TypeExpr::AnonymousStruct {
-            fields, methods, ..
-        } => {
-            for field in fields {
-                walk_type_expr(&field.ty, module, resolver, imports)?;
-            }
-            for method in methods {
-                walk_signature(
-                    &method.params,
-                    method.return_type.as_ref(),
-                    module,
-                    resolver,
-                    imports,
-                )?;
-                walk_expr(&method.body, module, resolver, imports)?;
-            }
-        }
-        TypeExpr::AnonymousEnum { variants, .. } => {
-            for variant in variants {
-                for payload in &variant.payload {
-                    walk_type_expr(payload, module, resolver, imports)?;
-                }
-            }
-        }
-        TypeExpr::PointerConst { pointee, .. } | TypeExpr::PointerMut { pointee, .. } => {
-            walk_type_expr(pointee, module, resolver, imports)?;
-        }
-        TypeExpr::TypeCall { args, .. } | TypeExpr::QualifiedTypeCall { args, .. } => {
-            for arg in args {
-                walk_type_expr(arg, module, resolver, imports)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn walk_args(
-    args: &[rue_parser::ast::CallArg],
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-    imports: &mut ImportSiteCollector,
-) -> CompileResult<()> {
-    for arg in args {
-        walk_expr(&arg.expr, module, resolver, imports)?;
-    }
-    Ok(())
-}
-
-fn walk_block(
-    block: &rue_parser::ast::BlockExpr,
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-    imports: &mut ImportSiteCollector,
-) -> CompileResult<()> {
-    for statement in &block.statements {
-        match statement {
-            Statement::Let(value) => walk_expr(&value.init, module, resolver, imports)?,
-            Statement::Assign(value) => {
-                match &value.target {
-                    AssignTarget::Var(_) => {}
-                    AssignTarget::Field(field) => {
-                        walk_expr(&field.base, module, resolver, imports)?
-                    }
-                    AssignTarget::Index(index) => {
-                        walk_expr(&index.base, module, resolver, imports)?;
-                        walk_expr(&index.index, module, resolver, imports)?;
-                    }
-                }
-                walk_expr(&value.value, module, resolver, imports)?;
-            }
-            Statement::Expr(value) => walk_expr(value, module, resolver, imports)?,
-        }
-    }
-    walk_expr(&block.expr, module, resolver, imports)
-}
-
-fn walk_expr(
-    expr: &Expr,
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-    imports: &mut ImportSiteCollector,
-) -> CompileResult<()> {
-    match expr {
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::String(_)
-        | Expr::Bool(_)
-        | Expr::Unit(_)
-        | Expr::Ident(_)
-        | Expr::Continue(_)
-        | Expr::SelfExpr(_)
-        | Expr::Error(_) => {}
-        Expr::TypeLit(value) => {
-            walk_type_expr(&value.type_expr, module, resolver, imports)?;
-        }
-        Expr::Binary(value) => {
-            walk_expr(&value.left, module, resolver, imports)?;
-            walk_expr(&value.right, module, resolver, imports)?;
-        }
-        Expr::Unary(value) => walk_expr(&value.operand, module, resolver, imports)?,
-        Expr::Paren(value) => walk_expr(&value.inner, module, resolver, imports)?,
-        Expr::Block(value) => walk_block(value, module, resolver, imports)?,
-        Expr::If(value) => {
-            walk_expr(&value.cond, module, resolver, imports)?;
-            walk_block(&value.then_block, module, resolver, imports)?;
-            if let Some(block) = &value.else_block {
-                walk_block(block, module, resolver, imports)?;
-            }
-        }
-        Expr::Match(value) => {
-            walk_expr(&value.scrutinee, module, resolver, imports)?;
-            for arm in &value.arms {
-                if let Pattern::Path(path) = &arm.pattern {
-                    if let Some(base) = &path.base {
-                        walk_expr(base, module, resolver, imports)?;
-                    }
-                    if let Some(args) = &path.ctor_args {
-                        walk_args(args, module, resolver, imports)?;
-                    }
-                }
-                walk_expr(&arm.body, module, resolver, imports)?;
-            }
-        }
-        Expr::While(value) => {
-            walk_expr(&value.cond, module, resolver, imports)?;
-            walk_block(&value.body, module, resolver, imports)?;
-        }
-        Expr::Loop(value) => walk_block(&value.body, module, resolver, imports)?,
-        Expr::For(value) => {
-            walk_expr(&value.iterable, module, resolver, imports)?;
-            walk_block(&value.body, module, resolver, imports)?;
-        }
-        Expr::Call(value) => walk_args(&value.args, module, resolver, imports)?,
-        Expr::Break(value) => {
-            if let Some(value) = &value.value {
-                walk_expr(value, module, resolver, imports)?;
-            }
-        }
-        Expr::Return(value) => {
-            if let Some(value) = &value.value {
-                walk_expr(value, module, resolver, imports)?;
-            }
-        }
-        Expr::Yield(value) => walk_expr(&value.value, module, resolver, imports)?,
-        Expr::StructLit(value) => {
-            if let Some(base) = &value.base {
-                walk_expr(base, module, resolver, imports)?;
-            }
-            if let Some(args) = &value.ctor_args {
-                walk_args(args, module, resolver, imports)?;
-            }
-            for field in &value.fields {
-                walk_expr(&field.value, module, resolver, imports)?;
-            }
-        }
-        Expr::Field(value) => walk_expr(&value.base, module, resolver, imports)?,
-        Expr::MethodCall(value) => {
-            walk_expr(&value.receiver, module, resolver, imports)?;
-            walk_args(&value.args, module, resolver, imports)?;
-        }
-        Expr::Try(value) => walk_expr(&value.operand, module, resolver, imports)?,
-        Expr::IntrinsicCall(value) => {
-            let name = resolver.try_resolve(&value.name.name).ok_or_else(|| {
-                invalid_input("intrinsic name is absent from the module symbol universe")
-            })?;
-            if name == "import" {
-                if let [IntrinsicArg::Expr(Expr::String(literal))] = value.args.as_slice() {
-                    let specifier = resolver.try_resolve(&literal.value).ok_or_else(|| {
-                        invalid_input("import literal is absent from the module symbol universe")
-                    })?;
-                    imports.valid.push(ImportDirective::new(
-                        module.clone(),
-                        value.span.start,
-                        value.span.end,
-                        Arc::from(specifier),
-                    ));
-                } else {
-                    let (span, shape) = if value.args.len() != 1 {
-                        (
-                            value.span,
-                            InvalidImportShape::WrongArity {
-                                actual: u32::try_from(value.args.len()).unwrap_or(u32::MAX),
-                            },
-                        )
-                    } else {
-                        let span = match &value.args[0] {
-                            IntrinsicArg::Expr(expr) => expr.span(),
-                            IntrinsicArg::Type(ty) => ty.span(),
-                        };
-                        (span, InvalidImportShape::NonStringArgument)
-                    };
-                    imports
-                        .invalid
-                        .push(ParsedInvalidImportSite { span, shape });
-                }
-            }
-            for arg in &value.args {
-                if let IntrinsicArg::Expr(expr) = arg {
-                    walk_expr(expr, module, resolver, imports)?;
-                }
-            }
-        }
-        Expr::ArrayLit(value) => {
-            for element in &value.elements {
-                walk_expr(element, module, resolver, imports)?;
-            }
-        }
-        Expr::Index(value) => {
-            walk_expr(&value.base, module, resolver, imports)?;
-            walk_expr(&value.index, module, resolver, imports)?;
-        }
-        Expr::Path(value) => {
-            if let Some(base) = &value.base {
-                walk_expr(base, module, resolver, imports)?;
-            }
-        }
-        Expr::Comptime(value) => walk_expr(&value.expr, module, resolver, imports)?,
-        Expr::Checked(value) => walk_expr(&value.expr, module, resolver, imports)?,
-    }
-    Ok(())
+    Ok(projections)
 }
 
 fn validate_pair(
@@ -2026,6 +2422,96 @@ fn declaration_import_range(
     Ok(RawDeclarationImportRange { start, len })
 }
 
+fn project_warning_call_heads(
+    category: DeclarationCandidateCategory,
+    locator: ParsedDeclarationAstLocator,
+    declaration: Span,
+    import_range: Option<RawDeclarationImportRange>,
+    import_sites: &[ImportDirective],
+    resolver: &FrozenSymbolResolver,
+    raw_heads: &HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
+) -> CompileResult<Arc<[ParsedWarningCallHead]>> {
+    let owns_warning_body = matches!(
+        category,
+        DeclarationCandidateCategory::Function
+            | DeclarationCandidateCategory::Destructor
+            | DeclarationCandidateCategory::Method
+            | DeclarationCandidateCategory::AssociatedFunction
+    );
+    if !owns_warning_body {
+        if raw_heads.contains_key(&locator) {
+            return Err(invalid_input(
+                "bodyless declaration unexpectedly owns warning call heads",
+            ));
+        }
+        return Ok(Arc::from([]));
+    }
+
+    let raw_heads = raw_heads
+        .get(&locator)
+        .ok_or_else(|| invalid_input("body declaration has no warning call-head projection"))?;
+    let import_range = import_range
+        .ok_or_else(|| invalid_input("body declaration has no canonical import range"))?;
+    let start = usize::try_from(import_range.start)
+        .map_err(|_| invalid_input("declaration import start exceeds usize"))?;
+    let end = import_range
+        .start
+        .checked_add(import_range.len)
+        .and_then(|end| usize::try_from(end).ok())
+        .ok_or_else(|| invalid_input("declaration import range exceeds usize"))?;
+    let imports = import_sites
+        .get(start..end)
+        .ok_or_else(|| invalid_input("declaration import range is outside the module table"))?;
+
+    let mut projected = Vec::with_capacity(raw_heads.len());
+    for head in raw_heads.iter() {
+        if head.components.is_empty() {
+            return Err(invalid_input("warning call head has no path components"));
+        }
+        let import = head
+            .import_span
+            .map(|span| {
+                if span.file_id != declaration.file_id
+                    || span.start < declaration.start
+                    || span.end > declaration.end
+                {
+                    return Err(invalid_input(
+                        "warning import alias is outside its declaration",
+                    ));
+                }
+                let occurrence = imports
+                    .binary_search_by_key(&(span.start, span.end), |site| {
+                        (site.source_offset(), site.source_end())
+                    })
+                    .map_err(|_| {
+                        invalid_input("warning import alias has no canonical import site")
+                    })?;
+                let site = &imports[occurrence];
+                Ok(ParsedWarningImport {
+                    occurrence: u32::try_from(occurrence)
+                        .map_err(|_| invalid_input("declaration import occurrence exceeds u32"))?,
+                    specifier: Arc::from(site.specifier()),
+                })
+            })
+            .transpose()?;
+        let components = head
+            .components
+            .iter()
+            .map(|spur| {
+                let symbol = resolver.symbol(*spur)?;
+                Ok(Arc::from(resolver.resolve(&symbol)?))
+            })
+            .collect::<CompileResult<Vec<_>>>()?;
+        projected.push(ParsedWarningCallHead {
+            import,
+            components: components.into(),
+        });
+    }
+    projected.sort();
+    projected.dedup();
+    Ok(projected.into())
+}
+
 fn build_definition_index(
     module: ModuleId,
     file_id: FileId,
@@ -2034,6 +2520,7 @@ fn build_definition_index(
     ast: &Ast,
     resolver: &FrozenSymbolResolver,
     import_sites: &[ImportDirective],
+    raw_warning_call_heads: &HashMap<ParsedDeclarationAstLocator, Vec<RawWarningCallHead>>,
 ) -> CompileResult<ParsedDefinitionIndex> {
     if import_sites.windows(2).any(|sites| {
         (sites[0].source_offset(), sites[0].source_end())
@@ -2053,6 +2540,7 @@ fn build_definition_index(
         bool,
         Arc<[Arc<str>]>,
         Option<RawDeclarationImportRange>,
+        Arc<[ParsedWarningCallHead]>,
         Arc<[rue_rir::AnonymousTypeSite]>,
     )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
@@ -2194,6 +2682,15 @@ fn build_definition_index(
             } else {
                 None
             };
+            let warning_call_heads = project_warning_call_heads(
+                category,
+                ast_locator,
+                declaration_span,
+                raw_import_range,
+                import_sites,
+                resolver,
+                raw_warning_call_heads,
+            )?;
             pending_declarations.push((
                 DeclarationShellFact {
                     key: DeclarationCandidateKey {
@@ -2219,6 +2716,7 @@ fn build_definition_index(
                 is_accessor,
                 method_self_call_targets,
                 raw_import_range,
+                warning_call_heads,
                 anonymous_sites,
             ));
             Ok(())
@@ -2484,6 +2982,7 @@ fn build_definition_index(
                 is_accessor,
                 self_call_targets,
                 raw_import_range,
+                warning_call_heads,
                 anonymous_sites,
             )| {
                 let duplicate = duplicate_counts
@@ -2506,6 +3005,7 @@ fn build_definition_index(
                     is_accessor,
                     self_call_targets,
                     raw_import_range,
+                    warning_call_heads,
                     anonymous_sites,
                 })
             },

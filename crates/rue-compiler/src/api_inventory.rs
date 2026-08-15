@@ -276,32 +276,66 @@ fn source_between_exact_boundaries<'a>(source: &'a str, start: &str, next: &str)
 
 #[test]
 fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
-    let runtime = include_str!("revisioned_query_database.rs");
+    let parsed = include_str!("parsed_modules.rs");
     let projector = source_between_exact_boundaries(
-        runtime,
-        "fn warning_static_call_heads(",
-        "\nstruct WarningStaticCallCollector",
+        parsed,
+        "struct ParsedBodyProjectionCollector<'a>",
+        "\nfn validate_pair(",
     );
     for forbidden in ["lower_module_rir", "OwnedBodyInput", "ModuleRir"] {
         assert!(
             !projector.contains(forbidden),
-            "warning AST projector crossed into RIR/body lowering: {forbidden}"
+            "warning syntax projection crossed into RIR/body lowering: {forbidden}"
         );
     }
     for required in [
-        ".definitions()",
-        ".declaration_locator(candidate)",
-        "module.ast().items",
+        "fn collect_module_projections(",
+        "fn visit_callable(",
+        "fn visit_expr(",
+        "ParsedDeclarationAstLocator::StructMethod",
     ] {
         assert!(
             projector.contains(required),
-            "warning AST projector lost exact parsed-candidate selection: {required}"
+            "parser-owned warning projection lost its canonical syntax edge: {required}"
         );
     }
 
+    let runtime = include_str!("revisioned_query_database.rs");
+    for forbidden in [
+        "compiler.warning-body-syntax",
+        "WarningBodySyntaxQueryKey",
+        "WarningStaticCallCollector",
+        "fn warning_static_call_heads(",
+    ] {
+        assert!(
+            !runtime.contains(forbidden),
+            "warning reachability regained a peer syntax path: {forbidden}"
+        );
+    }
+    let projection_family = source_between_exact_boundaries(
+        runtime,
+        "let parse_for_warning_call_heads = parse_modules.clone();",
+        "        let classifications_for_warning_references =",
+    );
+    for required in [
+        "compiler.warning-call-head-projection",
+        "parse_for_warning_call_heads",
+        ".declaration_warning_call_heads(candidate)",
+    ] {
+        assert!(
+            projection_family.contains(required),
+            "warning call-head terminal lost its thin parser projection: {required}"
+        );
+    }
+    for forbidden in [".ast()", "rue_parser", "AstGen", "lower_module_rir"] {
+        assert!(
+            !projection_family.contains(forbidden),
+            "warning call-head terminal regained syntax/lowering work: {forbidden}"
+        );
+    }
     let evaluator = source_between_exact_boundaries(
         runtime,
-        "let parse_for_warning_syntax = parse_modules.clone();",
+        "let classifications_for_warning_references =",
         "        // Body analysis is a canonical registered evaluator.",
     );
     for forbidden in [
@@ -311,16 +345,16 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
         "body_transactions",
         "module_rirs",
         "lower_module_rir",
+        ".ast()",
     ] {
         assert!(
             !evaluator.contains(forbidden),
-            "warning query family crossed into RIR/body analysis: {forbidden}"
+            "warning query family crossed into a peer syntax/RIR/body path: {forbidden}"
         );
     }
     for required in [
-        "compiler.warning-body-syntax",
-        "parse_for_warning_syntax",
-        "WarningBodySyntaxQueryKey",
+        "call_heads_for_warning_references",
+        "WarningCallHeadProjectionQueryKey",
         "DeclarationImportQueryKey",
         "CanonicalImportResolution::Resolved",
     ] {
@@ -384,6 +418,25 @@ fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
     }
 
     let runtime = include_str!("revisioned_query_database.rs");
+    let provider = source_between_exact_boundaries(
+        runtime,
+        "impl rue_air::SemanticTypeSyntaxProvider<",
+        "\nimpl ResolveSemanticSignatureError",
+    );
+    for forbidden in [
+        "parse_type_call_syntax",
+        "resolve_semantic_type_syntax(",
+        "rue_lexer",
+        "rue_parser",
+        ".split(",
+        ".split_once(",
+        ".trim(",
+    ] {
+        assert!(
+            !provider.contains(forbidden),
+            "semantic nucleus provider regained a rendered-type grammar: {forbidden}"
+        );
+    }
     let resolver = source_between_exact_boundaries(
         runtime,
         "fn resolve_parsed_semantic_signature(",
@@ -2474,10 +2527,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let declaration_import_locator = parsed
         .split("struct RawDeclarationImportRange")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) enum ParsedDeclarationImportFailure")
-                .next()
-        })
+        .and_then(|tail| tail.split("pub(crate) struct ParsedWarningCallHead").next())
         .unwrap();
     for forbidden in ["Vec<", "Arc<", "Box<"] {
         assert!(
