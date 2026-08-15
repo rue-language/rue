@@ -14,10 +14,10 @@ use crate::scope::ScopedContext;
 use crate::sema::ConstValue;
 use crate::types::{
     ArrayLen, ModuleId, PtrMutability, StructId, TypeKind, parse_array_type_syntax,
-    parse_pointer_type_syntax, parse_type_call_syntax,
+    parse_pointer_type_syntax,
 };
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstData, InstRef, RepeatCount, Rir};
+use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -77,12 +77,12 @@ pub struct FunctionSig {
     pub param_comptime_type: Vec<bool>,
     /// Parameter names, needed for type substitution in generic returns.
     pub param_names: Vec<lasso::Spur>,
-    /// Each parameter's declared type, as the source-level type name symbol
-    /// (e.g. the symbol for "T" in `x: T`). Used to look up which comptime
-    /// type parameter a generic parameter refers to.
-    pub param_type_syms: Vec<lasso::Spur>,
-    /// The return type as a symbol (used for substitution lookup).
-    pub return_type_sym: lasso::Spur,
+    /// Exact structured parameter syntax used only when the reduced type is a
+    /// specialization placeholder. The arena is declaration-owned and shared;
+    /// inference never reconstructs or parses its spelling.
+    pub(crate) param_type_syntax: Vec<Option<crate::sema::StructuredTypeSyntax>>,
+    /// Exact structured return syntax for the same substitution path.
+    pub(crate) return_type_syntax: Option<crate::sema::StructuredTypeSyntax>,
 }
 
 /// Information about a method during constraint generation.
@@ -672,6 +672,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// couldn't resolve `N`, so the type fell back to the `COMPTIME_TYPE`
     /// placeholder and the call was misinferred as returning `type`
     /// (RUE-252).
+    #[cfg(test)]
     fn resolve_infer_array_length_with_values(
         &self,
         len: &ArrayLen,
@@ -1208,22 +1209,26 @@ impl<'a> ConstraintGenerator<'a> {
             } => {
                 let init_info = self.generate(*init, ctx);
 
-                let var_ty = if let Some(ty_sym) = type_annotation {
+                let var_ty = if let Some(type_syntax) = type_annotation {
                     // Explicit type annotation - use it and constrain init to
                     // match. Comptime type aliases (`let P = F(); let p: P =
                     // ...`) resolve first, mirroring sema's annotation
                     // validation order (`comptime_type_vars` before the type
                     // tables); without this the annotation was unenforced and
                     // any value typechecked against it (RUE-170).
-                    let annotated = self
-                        .comptime_alias_types
-                        .get(ty_sym)
-                        .copied()
-                        .or_else(|| self.const_type_alias((span.file_id, *ty_sym)))
-                        .map(|ty| self.type_to_infer(ty))
-                        .or_else(|| {
-                            self.resolve_type_name(self.interner.resolve(ty_sym), span.file_id)
-                        });
+                    // Preserve the established best-effort inference boundary:
+                    // a body-local annotation resolves file constants and
+                    // already-bound type aliases, but specialization values are
+                    // applied by the authoritative semantic pass. Eagerly
+                    // substituting them here makes inference reject programs
+                    // that the semantic annotation/coercion path accepts.
+                    let annotated = self.resolve_type_arena_with_subst(
+                        self.rir.type_syntax(),
+                        *type_syntax,
+                        None,
+                        None,
+                        span.file_id,
+                    );
                     if let Some(annotated_ty) = annotated {
                         // A `str` annotation (ADR-0043 Phase 3, RUE-324) accepts
                         // a string literal (HM type `String`) by coercion, and a
@@ -1440,13 +1445,15 @@ impl<'a> ConstraintGenerator<'a> {
                                 // Generic parameter like `x: T`, or a composite
                                 // mentioning a type parameter like `a: [T; 3]`
                                 // (RUE-172) - substitute T
-                                match func.param_type_syms.get(i).and_then(|sym| {
-                                    self.resolve_type_sym_with_subst(
-                                        *sym,
-                                        &type_subst,
-                                        &value_subst,
-                                        span.file_id,
-                                    )
+                                match func.param_type_syntax.get(i).and_then(|syntax| {
+                                    syntax.as_ref().and_then(|syntax| {
+                                        self.resolve_structured_type_with_subst(
+                                            syntax,
+                                            &type_subst,
+                                            &value_subst,
+                                            span.file_id,
+                                        )
+                                    })
                                 }) {
                                     Some(ty) => ty,
                                     // Unknown type parameter - checked in sema
@@ -1470,47 +1477,53 @@ impl<'a> ConstraintGenerator<'a> {
                         // Compute the actual return type by substituting type
                         // parameters - bare (`-> T`) or inside a composite
                         // (`-> [T; 3]`, RUE-172).
-                        let return_type =
-                            if func.return_type == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                match self.resolve_type_sym_with_subst(
-                                    func.return_type_sym,
+                        let return_type = if func.return_type
+                            == InferType::Concrete(Type::COMPTIME_TYPE)
+                        {
+                            match func.return_type_syntax.as_ref().and_then(|syntax| {
+                                self.resolve_structured_type_with_subst(
+                                    syntax,
                                     &type_subst,
                                     &value_subst,
                                     span.file_id,
-                                ) {
-                                    Some(ty) => ty,
-                                    None => {
-                                        // The declared return type is a
-                                        // type-function application to a type
-                                        // parameter (`-> Option(T)`; RUE-272).
-                                        // The constraint generator can't reduce
-                                        // a `-> type` constructor body, so it
-                                        // can't name the monomorphized
-                                        // struct/enum here — sema computes the
-                                        // true type in the analyze pass. Use a
-                                        // fresh inference variable (pinned by
-                                        // the call's use site) rather than the
-                                        // `COMPTIME_TYPE` placeholder, which
-                                        // would spuriously unify against the real
-                                        // result type and reject the program
-                                        // (E0206). A literal `-> type`
-                                        // constructor call is NOT a type-call in
-                                        // this sense and still yields
-                                        // `COMPTIME_TYPE`.
-                                        let is_type_call = parse_type_call_syntax(
-                                            self.interner.resolve(&func.return_type_sym),
-                                        )
-                                        .is_some();
-                                        if is_type_call {
-                                            InferType::Var(self.fresh_var())
-                                        } else {
-                                            func.return_type.clone()
-                                        }
+                                )
+                            }) {
+                                Some(ty) => ty,
+                                None => {
+                                    // The declared return type is a
+                                    // type-function application to a type
+                                    // parameter (`-> Option(T)`; RUE-272).
+                                    // The constraint generator can't reduce
+                                    // a `-> type` constructor body, so it
+                                    // can't name the monomorphized
+                                    // struct/enum here — sema computes the
+                                    // true type in the analyze pass. Use a
+                                    // fresh inference variable (pinned by
+                                    // the call's use site) rather than the
+                                    // `COMPTIME_TYPE` placeholder, which
+                                    // would spuriously unify against the real
+                                    // result type and reject the program
+                                    // (E0206). A literal `-> type`
+                                    // constructor call is NOT a type-call in
+                                    // this sense and still yields
+                                    // `COMPTIME_TYPE`.
+                                    let is_type_call =
+                                        func.return_type_syntax.as_ref().is_some_and(|syntax| {
+                                            matches!(
+                                                syntax.arena.node(syntax.root),
+                                                Some(RirTypeSyntaxNode::TypeCall { .. })
+                                            )
+                                        });
+                                    if is_type_call {
+                                        InferType::Var(self.fresh_var())
+                                    } else {
+                                        func.return_type.clone()
                                     }
                                 }
-                            } else {
-                                func.return_type.clone()
-                            };
+                            }
+                        } else {
+                            func.return_type.clone()
+                        };
 
                         return_type
                     } else if args.len() != func.param_types.len() {
@@ -2823,13 +2836,15 @@ impl<'a> ConstraintGenerator<'a> {
                                     let declared = &func.param_types[i];
                                     let expected =
                                         if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
-                                            match func.param_type_syms.get(i).and_then(|sym| {
-                                                self.resolve_type_sym_with_subst(
-                                                    *sym,
-                                                    &type_subst,
-                                                    &value_subst,
-                                                    span.file_id,
-                                                )
+                                            match func.param_type_syntax.get(i).and_then(|syntax| {
+                                                syntax.as_ref().and_then(|syntax| {
+                                                    self.resolve_structured_type_with_subst(
+                                                        syntax,
+                                                        &type_subst,
+                                                        &value_subst,
+                                                        span.file_id,
+                                                    )
+                                                })
                                             }) {
                                                 Some(ty) => ty,
                                                 None => continue,
@@ -3465,13 +3480,7 @@ impl<'a> ConstraintGenerator<'a> {
 
         match &self.rir.get(arg).data {
             InstData::TypeConst { type_name } => {
-                if let Some(ty) = resolve_sym(type_name) {
-                    return Some(ty);
-                }
-                match self.resolve_type_name(
-                    self.interner.resolve(type_name),
-                    self.rir.get(arg).span.file_id,
-                ) {
+                match self.resolve_rir_type(*type_name, self.rir.get(arg).span.file_id) {
                     Some(InferType::Concrete(ty)) => Some(ty),
                     _ => None,
                 }
@@ -3736,81 +3745,107 @@ impl<'a> ConstraintGenerator<'a> {
         if exhaustive { selected } else { None }
     }
 
-    /// Resolve a signature type symbol with type-parameter substitution,
-    /// looking through composite syntax (RUE-172).
-    ///
-    /// Like [`Self::resolve_type_name`], but substitutes comptime type
-    /// parameters (e.g. `T` with `T=i32` resolves `[T; 3]` to `[i32; 3]`).
-    /// Returns `None` when a mentioned type parameter isn't in `subst` (the
-    /// check then happens in sema / after specialization).
-    /// `file_id` is deliberately the REFERENCE site's file (`span.file_id`),
-    /// not the declaring file of whatever signature the symbol came from. For
-    /// callee signatures re-resolved at a cross-file call site, a callee-file
-    /// const array length therefore resolves to `None` here — inference is
-    /// best-effort in that position and sema, which resolves the length in the
-    /// callee's own file scope, stays authoritative (it still rejects size
-    /// mismatches; see `cross_file_generic_signature_*` in
-    /// bare_const_scope.toml). Do not widen this lookup beyond the reference
-    /// file: a program-wide search is the retired RUE-638 fallback.
-    fn resolve_type_sym_with_subst(
-        &self,
-        sym: Spur,
-        subst: &HashMap<Spur, Type>,
-        values: &HashMap<Spur, i128>,
-        file_id: FileId,
-    ) -> Option<InferType> {
-        if let Some(&ty) = subst.get(&sym) {
-            return Some(InferType::Concrete(ty));
-        }
-        self.resolve_type_name_with_subst(self.interner.resolve(&sym), subst, values, file_id)
+    /// Resolve parser-structured body type syntax for best-effort constraint
+    /// generation. Semantic analysis remains authoritative for qualified and
+    /// comptime-constructor types, but ordinary names, arrays, pointers, and
+    /// substitutions no longer round-trip through rendered syntax.
+    fn resolve_rir_type(&self, syntax: RirTypeSyntaxRef, file_id: FileId) -> Option<InferType> {
+        self.resolve_rir_type_with_subst(syntax, self.type_subst, None, file_id)
     }
 
-    fn resolve_type_name_with_subst(
+    fn resolve_rir_type_with_subst(
         &self,
-        name: &str,
+        syntax: RirTypeSyntaxRef,
+        subst: Option<&HashMap<Spur, Type>>,
+        values: Option<&HashMap<Spur, i128>>,
+        file_id: FileId,
+    ) -> Option<InferType> {
+        self.resolve_type_arena_with_subst(self.rir.type_syntax(), syntax, subst, values, file_id)
+    }
+
+    fn resolve_structured_type_with_subst(
+        &self,
+        syntax: &crate::sema::StructuredTypeSyntax,
         subst: &HashMap<Spur, Type>,
         values: &HashMap<Spur, i128>,
         file_id: FileId,
     ) -> Option<InferType> {
-        if let Some(name_spur) = self.interner.get(name) {
-            if let Some(&ty) = subst.get(&name_spur) {
-                return Some(InferType::Concrete(ty));
+        self.resolve_type_arena_with_subst(
+            &syntax.arena,
+            syntax.root,
+            Some(subst),
+            Some(values),
+            file_id,
+        )
+    }
+
+    fn resolve_type_arena_with_subst(
+        &self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        subst: Option<&HashMap<Spur, Type>>,
+        values: Option<&HashMap<Spur, i128>>,
+        file_id: FileId,
+    ) -> Option<InferType> {
+        match arena.node(syntax)? {
+            RirTypeSyntaxNode::Named(symbol) => {
+                let name = *arena.symbol(*symbol)?;
+                if let Some(ty) = subst.and_then(|subst| subst.get(&name)).copied() {
+                    return Some(self.type_to_infer(ty));
+                }
+                if let Some(ty) = self.comptime_alias_types.get(&name).copied() {
+                    return Some(self.type_to_infer(ty));
+                }
+                if let Some(ty) = self.const_type_alias((file_id, name)) {
+                    return Some(self.type_to_infer(ty));
+                }
+                self.resolve_type_name(self.interner.resolve(&name), file_id)
             }
+            RirTypeSyntaxNode::Unit => Some(InferType::Concrete(Type::UNIT)),
+            RirTypeSyntaxNode::Never => Some(InferType::Concrete(Type::NEVER)),
+            RirTypeSyntaxNode::Array { element, length } => {
+                let element =
+                    self.resolve_type_arena_with_subst(arena, *element, subst, values, file_id)?;
+                let length = match arena.node(*length)? {
+                    RirTypeSyntaxNode::Integer(value) => u64::try_from(*value).ok()?,
+                    RirTypeSyntaxNode::Named(symbol) => {
+                        let name = *arena.symbol(*symbol)?;
+                        values
+                            .and_then(|values| values.get(&name).copied())
+                            .or_else(|| self.scoped_const_value(name, file_id))
+                            .and_then(|value| u64::try_from(value).ok())?
+                    }
+                    _ => return None,
+                };
+                Some(InferType::Array {
+                    element: Box::new(element),
+                    length,
+                })
+            }
+            RirTypeSyntaxNode::PointerConst { pointee }
+            | RirTypeSyntaxNode::PointerMut { pointee } => {
+                let pointee = self
+                    .resolve_type_arena_with_subst(arena, *pointee, subst, values, file_id)?
+                    .as_concrete()?;
+                let ty = match arena.node(syntax)? {
+                    RirTypeSyntaxNode::PointerConst { .. } => {
+                        Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee))
+                    }
+                    RirTypeSyntaxNode::PointerMut { .. } => {
+                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(pointee))
+                    }
+                    _ => unreachable!(),
+                };
+                Some(InferType::Concrete(ty))
+            }
+            RirTypeSyntaxNode::Qualified { .. }
+            | RirTypeSyntaxNode::Slice { .. }
+            | RirTypeSyntaxNode::AnonymousStruct { .. }
+            | RirTypeSyntaxNode::AnonymousEnum { .. }
+            | RirTypeSyntaxNode::TypeCall { .. }
+            | RirTypeSyntaxNode::ValueCall { .. }
+            | RirTypeSyntaxNode::Integer(_) => None,
         }
-
-        // Array syntax: [T; N] - recurse so substituted element types work.
-        if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
-            let element_ty =
-                self.resolve_type_name_with_subst(&element_type_str, subst, values, file_id)?;
-            let length = self.resolve_infer_array_length_with_values(&len, values, file_id)?;
-            return Some(InferType::Array {
-                element: Box::new(element_ty),
-                length,
-            });
-        }
-
-        // Pointer syntax: ptr mut T / ptr const T - recurse on the pointee.
-        if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
-            let pointee_infer_ty =
-                self.resolve_type_name_with_subst(&pointee_type_str, subst, values, file_id)?;
-            // Only concrete pointees can be interned during constraint generation
-            // (same limitation as resolve_type_name).
-            let pointee_ty = match pointee_infer_ty {
-                InferType::Concrete(ty) => ty,
-                _ => return None,
-            };
-            let ptr_ty = match mutability {
-                PtrMutability::Mut => {
-                    Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(pointee_ty))
-                }
-                PtrMutability::Const => {
-                    Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee_ty))
-                }
-            };
-            return Some(InferType::Concrete(ptr_ty));
-        }
-
-        self.resolve_type_name(name, file_id)
     }
 
     fn resolve_type_name(&self, name: &str, file_id: FileId) -> Option<InferType> {
@@ -4414,8 +4449,8 @@ mod tests {
             param_comptime: vec![false; num_params],
             param_comptime_type: vec![false; num_params],
             param_names: vec![],
-            param_type_syms: vec![],
-            return_type_sym: lasso::Spur::default(),
+            param_type_syntax: vec![],
+            return_type_syntax: None,
         }
     }
 

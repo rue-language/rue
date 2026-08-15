@@ -278,6 +278,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .map(Type::new_struct)
                 .filter(|&ty| self.is_str_fixed_struct(ty)),
         );
+        // A provider-backed body may first encounter a generated `Str(N)` as
+        // the concrete result of a queried callable, before semantic analysis
+        // visits the local annotation that publishes it in `generated_structs`.
+        // Constraint generation already owns the exact concrete identities it
+        // consulted, so admit those fixed-string identities directly instead
+        // of depending on discovery order between body transactions.
+        if self.is_str_fixed_struct(return_type) {
+            string_literal_types.push(return_type);
+        }
+        string_literal_types.extend(expr_types.values().filter_map(|ty| match ty {
+            InferType::Concrete(ty) if self.is_str_fixed_struct(*ty) => Some(*ty),
+            _ => None,
+        }));
         string_literal_types.sort_unstable_by_key(Type::as_u32);
         string_literal_types.dedup();
         unifier.mark_string_literal_vars(&string_literal_vars, &string_literal_types);

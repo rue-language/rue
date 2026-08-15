@@ -42,7 +42,8 @@
 //!   `has_self`, `self_mode`, and a method's `struct_type` (the 2a-resolved
 //!   receiver);
 //! - **request/RIR (handle):** `body`/`declaration` (RIR `InstRef`s), `span`,
-//!   `return_type_sym` (pre-resolution RIR symbol), `is_extern`, `is_c_export`
+//!   `return_type_syntax` (owner-local structured RIR syntax), `is_extern`,
+//!   `is_c_export`
 //!   (an epoch RIR read, not a durable-shell fact), the three `@allow` flags
 //!   (RIR directives), `file_id`, and a method's `self_is_mut`.
 //!
@@ -790,7 +791,7 @@ where
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
 /// cached by callable key. Every field here is recoverable from the durable
 /// signature facts alone; the request/RIR-carried remainder (`body`,
-/// `declaration`, `span`, `return_type_sym`, `is_c_export`, the
+/// `declaration`, `span`, `return_type_syntax`, `is_c_export`, the
 /// `@allow` flags, `file_id`) is supplied by a [`FunctionIdentityHandle`] — the
 /// 2c / request-local seam.
 #[derive(Clone, Copy)]
@@ -2288,7 +2289,7 @@ pub trait DurableCallableSource<K, M> {
 /// signature (spans and RIR handles belong to an exact semantic request —
 /// `semantic_import.rs`); `is_c_export` is read from the current RIR by the
 /// epoch itself (`binding_manifest.rs`), never threaded through the durable
-/// shell; `return_type_sym` is a pre-resolution RIR symbol consumed only by
+/// shell; `return_type_syntax` is an owner-local structured RIR reference consumed only by
 /// generic specialization / export; the `@allow` flags come from RIR
 /// directives. Supplying them here (rather than fabricating them) is the honest
 /// boundary — the pool refuses to invent a fact the durable universe lacks.
@@ -2297,7 +2298,8 @@ pub(in crate::sema) struct FunctionIdentityHandle {
     pub body: InstRef,
     pub declaration: InstRef,
     pub span: Span,
-    pub return_type_sym: Spur,
+    pub return_type_syntax: rue_rir::RirTypeSyntaxRef,
+    pub returns_type: bool,
     pub is_extern: bool,
     pub is_c_export: bool,
     pub allow_unused_function: bool,
@@ -2337,7 +2339,8 @@ where
         Ok(FunctionInfo {
             params: signature.params,
             return_type: signature.return_type,
-            return_type_sym: handle.return_type_sym,
+            return_type_syntax: handle.return_type_syntax,
+            returns_type: handle.returns_type,
             body: handle.body,
             declaration: handle.declaration,
             span: handle.span,
@@ -2356,14 +2359,14 @@ where
     pub(in crate::sema) fn resolve_function_call(
         &mut self,
         key: &K,
-        return_type_sym: Spur,
+        returns_type: bool,
         file_id: FileId,
     ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
         let signature = self.function_signature(key)?;
         Ok(super::info::FunctionCallInfo {
             params: signature.params,
             return_type: signature.return_type,
-            return_type_sym,
+            returns_type,
             is_generic: signature.is_generic,
             is_pub: signature.is_pub,
             is_unchecked: signature.is_unchecked,
@@ -2380,14 +2383,14 @@ where
         &mut self,
         key: &K,
         function: &DurableFunction<K, M>,
-        return_type_sym: Spur,
+        returns_type: bool,
         file_id: FileId,
     ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
         let signature = self.function_signature_from(key, function)?;
         Ok(super::info::FunctionCallInfo {
             params: signature.params,
             return_type: signature.return_type,
-            return_type_sym,
+            returns_type,
             is_generic: signature.is_generic,
             is_pub: signature.is_pub,
             is_unchecked: signature.is_unchecked,
@@ -3612,12 +3615,13 @@ mod tests {
 
     /// A caller-provided function handle carrying deterministic request/RIR
     /// facts. `resolve_function` must reproduce every field verbatim.
-    fn fn_handle(return_type_sym: Spur) -> FunctionIdentityHandle {
+    fn fn_handle(_return_type_symbol: Spur) -> FunctionIdentityHandle {
         FunctionIdentityHandle {
             body: InstRef::from_raw(101),
             declaration: InstRef::from_raw(102),
             span: Span::with_file(FileId::new(7), 3, 9),
-            return_type_sym,
+            return_type_syntax: rue_rir::RirTypeSyntaxRef::from_u32(17),
+            returns_type: true,
             // Alternate true/false so a hardcoded passthrough of either
             // polarity fails the verbatim-handle assertions.
             is_extern: true,
@@ -5494,7 +5498,7 @@ mod tests {
         assert_eq!(info.body, handle.body);
         assert_eq!(info.declaration, handle.declaration);
         assert_eq!(info.span, handle.span);
-        assert_eq!(info.return_type_sym, handle.return_type_sym);
+        assert_eq!(info.return_type_syntax, handle.return_type_syntax);
         assert_eq!(info.is_extern, handle.is_extern);
         assert_eq!(info.is_c_export, handle.is_c_export);
         assert_eq!(info.allow_unused_function, handle.allow_unused_function);
@@ -5550,7 +5554,7 @@ mod tests {
             true,
             true,
         );
-        let return_symbol = ThreadedRodeo::new().get_or_intern("bool");
+        let returns_type = false;
         let file = FileId::new(17);
 
         let supplied_reads = Rc::new(Cell::new(0));
@@ -5560,13 +5564,13 @@ mod tests {
         let mut supplied_pool =
             BodyIdentityPool::new(supplied_source, Rc::new(ThreadedRodeo::new()));
         let first = supplied_pool
-            .resolve_function_call_from(&0, &function, return_symbol, file)
+            .resolve_function_call_from(&0, &function, returns_type, file)
             .unwrap();
         let second = supplied_pool
-            .resolve_function_call_from(&0, &function, return_symbol, file)
+            .resolve_function_call_from(&0, &function, returns_type, file)
             .unwrap();
         let cached_source_path = supplied_pool
-            .resolve_function_call(&0, return_symbol, file)
+            .resolve_function_call(&0, returns_type, file)
             .unwrap();
         assert_eq!(
             supplied_reads.get(),
@@ -5583,14 +5587,14 @@ mod tests {
         let mut ordinary_pool =
             BodyIdentityPool::new(ordinary_source, Rc::new(ThreadedRodeo::new()));
         let ordinary = ordinary_pool
-            .resolve_function_call(&0, return_symbol, file)
+            .resolve_function_call(&0, returns_type, file)
             .unwrap();
         assert_eq!(ordinary_reads.get(), 1);
         assert_eq!(
             (
                 first.params,
                 first.return_type,
-                first.return_type_sym,
+                first.returns_type,
                 first.is_generic,
                 first.is_pub,
                 first.is_unchecked,
@@ -5600,7 +5604,7 @@ mod tests {
             (
                 ordinary.params,
                 ordinary.return_type,
-                ordinary.return_type_sym,
+                ordinary.returns_type,
                 ordinary.is_generic,
                 ordinary.is_pub,
                 ordinary.is_unchecked,
@@ -5629,17 +5633,19 @@ mod tests {
         durable_source.functions.insert(0, broken.clone());
         durable_source.function_reads = Rc::clone(&reads);
         let mut pool = BodyIdentityPool::new(durable_source, Rc::new(ThreadedRodeo::new()));
-        let symbol = ThreadedRodeo::new().get_or_intern("unit");
+        let returns_type = false;
         let file = FileId::new(19);
 
         let first = pool
-            .resolve_function_call_from(&0, &broken, symbol, file)
+            .resolve_function_call_from(&0, &broken, returns_type, file)
             .unwrap_err();
         let params_after_failure = pool.param_arena().total_params();
         let second = pool
-            .resolve_function_call_from(&0, &valid, symbol, file)
+            .resolve_function_call_from(&0, &valid, returns_type, file)
             .unwrap_err();
-        let ordinary = pool.resolve_function_call(&0, symbol, file).unwrap_err();
+        let ordinary = pool
+            .resolve_function_call(&0, returns_type, file)
+            .unwrap_err();
         assert_eq!(first, IdentityMintError::Deferred("generic parameter"));
         assert_eq!(
             second, first,
@@ -6130,7 +6136,8 @@ mod tests {
             body: *body,
             declaration,
             span: inst.span,
-            return_type_sym: *return_type,
+            return_type_syntax: *return_type,
+            returns_type: sema.rir_type_is_named(*return_type, "type"),
             is_extern: *is_extern,
             is_c_export: *is_c_export,
             allow_unused_function: sema.has_allow_directive(dirs.iter(), "unused_function"),
@@ -6292,7 +6299,7 @@ mod tests {
         assert_eq!(info.body, prod.body);
         assert_eq!(info.declaration, prod.declaration);
         assert_eq!(info.span, prod.span);
-        assert_eq!(info.return_type_sym, prod.return_type_sym);
+        assert_eq!(info.return_type_syntax, prod.return_type_syntax);
         assert_eq!(info.is_extern, prod.is_extern);
         assert_eq!(info.is_c_export, prod.is_c_export);
         assert_eq!(info.allow_unused_function, prod.allow_unused_function);

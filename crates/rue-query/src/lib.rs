@@ -8695,6 +8695,7 @@ impl BatchValidationAuthority {
         let endorsement = child_endorsements
             .last()
             .expect("a nonempty endorsement scope has a canonical outer union");
+        let mut duplicate_leases = Vec::new();
         let mut child_leases = lock(&child.leases);
         let mut state = write(&self.state);
         for lease in child_leases.held.drain(..) {
@@ -8703,6 +8704,11 @@ impl BatchValidationAuthority {
                 state.leases.held.push(lease);
             } else {
                 self.core.metrics.task_leases_released(1);
+                // Releasing the last pin may enforce the owning family's
+                // retention limit. Do not enter that family lock while the
+                // batch authority write lock is held: a sibling can validate
+                // through this authority while it owns the family lock.
+                duplicate_leases.push(lease);
             }
         }
         child_leases.observed.clear();
@@ -8720,6 +8726,9 @@ impl BatchValidationAuthority {
         state
             .endorsements
             .extend(endorsement.identities.iter().copied());
+        drop(state);
+        drop(child_leases);
+        batched_release(&mut duplicate_leases);
     }
 
     fn retains_endorsement(&self, incarnation: u64, stamp: u64, exact_revision: Revision) -> bool {

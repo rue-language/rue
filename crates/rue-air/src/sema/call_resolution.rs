@@ -544,7 +544,19 @@ where
             body: *body,
             declaration,
             span: inst.span,
-            return_type_sym: *return_type,
+            return_type_syntax: *return_type,
+            returns_type: self
+                .rir
+                .rir()
+                .type_syntax()
+                .node(*return_type)
+                .and_then(|node| match node {
+                    rue_rir::RirTypeSyntaxNode::Named(symbol) => {
+                        self.rir.rir().type_syntax().symbol(*symbol)
+                    }
+                    _ => None,
+                })
+                .is_some_and(|symbol| self.rir.rir_interner().resolve(symbol) == "type"),
             is_extern: *is_extern,
             is_c_export: *is_c_export,
             allow_unused_function: self.has_allow(dirs.iter(), "unused_function"),

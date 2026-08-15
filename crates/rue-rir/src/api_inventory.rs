@@ -196,4 +196,8 @@ fn rir_structural_anchor_storage_is_tied_to_retained_charge() {
             "retained charge omits anchor-bearing {variant}"
         );
     }
+    assert!(
+        charge.contains("type_syntax().retained_allocation_charge()"),
+        "retained charge omits the structured type-syntax arena"
+    );
 }

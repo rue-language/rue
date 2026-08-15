@@ -913,17 +913,18 @@ where
     )
 }
 
-fn structured_path<Sym: AsRef<str>>(
-    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+fn structured_path<'a, Sym>(
+    arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
     range: rue_rir::RirTypeSyntaxRange,
-) -> Option<Vec<&str>> {
+    resolve_symbol: impl Copy + Fn(&'a Sym) -> &'a str,
+) -> Option<Vec<&'a str>> {
     arena
         .words(range)?
         .iter()
         .map(|word| {
             arena
                 .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
-                .map(AsRef::as_ref)
+                .map(resolve_symbol)
         })
         .collect()
 }
@@ -942,33 +943,36 @@ fn structured_references<Sym>(
     )
 }
 
-fn structured_syntax_display<Sym: AsRef<str>>(
-    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+fn structured_syntax_display<'a, Sym>(
+    arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
     reference: rue_rir::RirTypeSyntaxRef,
+    resolve_symbol: impl Copy + Fn(&'a Sym) -> &'a str,
 ) -> Arc<str> {
     arena
-        .render_type(reference)
+        .render_type_with(reference, resolve_symbol)
         .map(Arc::from)
         .unwrap_or_else(|| Arc::from("<invalid structured type syntax>"))
 }
 
-fn structured_value_syntax<'a, Sym: AsRef<str>>(
+fn structured_value_syntax<'a, Sym>(
     arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
     reference: rue_rir::RirTypeSyntaxRef,
+    resolve_symbol: impl Copy + Fn(&'a Sym) -> &'a str,
 ) -> Option<SemanticValueSyntax<'a>> {
     match arena.node(reference)? {
         rue_rir::RirTypeSyntaxNode::Integer(value) => Some(SemanticValueSyntax::Integer(*value)),
         rue_rir::RirTypeSyntaxNode::Named(symbol) => arena
             .symbol(*symbol)
-            .map(|symbol| SemanticValueSyntax::Name(symbol.as_ref())),
+            .map(|symbol| SemanticValueSyntax::Name(resolve_symbol(symbol))),
         _ => None,
     }
 }
 
-fn resolve_structured_semantic_comptime_call<S, Sym, M, A, K, N, T, V, P>(
+fn resolve_structured_semantic_comptime_call<'a, S, Sym, M, A, K, N, T, V, P, R>(
     provider: &mut P,
     root_scope: &S,
-    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
+    resolve_symbol: R,
     call_reference: rue_rir::RirTypeSyntaxRef,
     call_segments: Vec<&str>,
     arguments: Vec<rue_rir::RirTypeSyntaxRef>,
@@ -978,7 +982,7 @@ fn resolve_structured_semantic_comptime_call<S, Sym, M, A, K, N, T, V, P>(
     SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
 >
 where
-    Sym: AsRef<str>,
+    R: Copy + Fn(&'a Sym) -> &'a str,
     M: Clone,
     A: Clone,
     N: Clone,
@@ -991,8 +995,8 @@ where
         &call_segments,
         arguments.len(),
         expectation,
-        || structured_syntax_display(arena, call_reference),
-        |index| structured_syntax_display(arena, arguments[index]),
+        || structured_syntax_display(arena, call_reference, resolve_symbol),
+        |index| structured_syntax_display(arena, arguments[index], resolve_symbol),
         |index| {
             matches!(
                 arena.node(arguments[index]),
@@ -1002,12 +1006,16 @@ where
         |provider, parameter_index, is_type, head, type_arguments, value_arguments| {
             let argument = arguments[parameter_index];
             if is_type {
-                return resolve_structured_semantic_type_syntax(
-                    provider, root_scope, arena, argument,
+                return resolve_structured_semantic_type_syntax_with(
+                    provider,
+                    root_scope,
+                    arena,
+                    argument,
+                    resolve_symbol,
                 )
                 .map(ResolvedComptimeArgument::Type);
             }
-            if let Some(syntax) = structured_value_syntax(arena, argument) {
+            if let Some(syntax) = structured_value_syntax(arena, argument, resolve_symbol) {
                 return lift_provider(provider.resolve_value_argument(
                     root_scope,
                     &constructor,
@@ -1021,11 +1029,11 @@ where
             }
             let call = match arena.node(argument) {
                 Some(rue_rir::RirTypeSyntaxNode::TypeCall { path, arguments }) => Some((
-                    structured_path(arena, *path),
+                    structured_path(arena, *path, resolve_symbol),
                     structured_references(arena, *arguments),
                 )),
                 Some(rue_rir::RirTypeSyntaxNode::ValueCall { name, arguments }) => Some((
-                    arena.symbol(*name).map(|name| vec![name.as_ref()]),
+                    arena.symbol(*name).map(|name| vec![resolve_symbol(name)]),
                     structured_references(arena, *arguments),
                 )),
                 _ => None,
@@ -1035,6 +1043,7 @@ where
                     provider,
                     root_scope,
                     arena,
+                    resolve_symbol,
                     argument,
                     path,
                     arguments,
@@ -1049,8 +1058,14 @@ where
                     }
                 };
             }
-            resolve_structured_semantic_type_syntax(provider, root_scope, arena, argument)
-                .map(ResolvedComptimeArgument::Type)
+            resolve_structured_semantic_type_syntax_with(
+                provider,
+                root_scope,
+                arena,
+                argument,
+                resolve_symbol,
+            )
+            .map(ResolvedComptimeArgument::Type)
         },
     )
 }
@@ -1071,27 +1086,47 @@ where
     N: Clone,
     P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
 {
+    resolve_structured_semantic_type_syntax_with(provider, root_scope, arena, root, AsRef::as_ref)
+}
+
+/// Resolve a structured type whose symbols are owned by a separate authority,
+/// such as a body-local RIR interner. The resolver is consulted directly; no
+/// spelling is reconstructed and reparsed.
+pub fn resolve_structured_semantic_type_syntax_with<'a, S, Sym, M, A, K, N, T, V, P, R>(
+    provider: &mut P,
+    root_scope: &S,
+    arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
+    root: rue_rir::RirTypeSyntaxRef,
+    resolve_symbol: R,
+) -> Result<T, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    R: Copy + Fn(&'a Sym) -> &'a str,
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
     use SemanticResolutionError as E;
     use SemanticTypeSyntaxFailure as F;
     use rue_rir::RirTypeSyntaxNode as R;
 
     let unknown = || {
         E::Semantic(F::UnknownType {
-            syntax: structured_syntax_display(arena, root),
+            syntax: structured_syntax_display(arena, root, resolve_symbol),
         })
     };
     match arena.node(root).cloned().ok_or_else(unknown)? {
         R::Named(symbol) => {
-            let name = arena.symbol(symbol).ok_or_else(unknown)?.as_ref();
+            let name = resolve_symbol(arena.symbol(symbol).ok_or_else(unknown)?);
             resolve_unqualified_semantic_type(provider, root_scope, name)?.ok_or_else(unknown)
         }
         R::Qualified { path } => {
-            let segments = structured_path(arena, path).ok_or_else(unknown)?;
+            let segments = structured_path(arena, path, resolve_symbol).ok_or_else(unknown)?;
             resolve_qualified_semantic_type(
                 provider,
                 root_scope,
                 &segments,
-                structured_syntax_display(arena, root),
+                structured_syntax_display(arena, root, resolve_symbol),
             )
         }
         R::Unit => {
@@ -1101,56 +1136,78 @@ where
             resolve_unqualified_semantic_type(provider, root_scope, "!")?.ok_or_else(unknown)
         }
         R::Array { element, length } => {
-            let element =
-                resolve_structured_semantic_type_syntax(provider, root_scope, arena, element)?;
-            let length = if let Some(length) = structured_value_syntax(arena, length) {
-                lift_provider(provider.resolve_array_length(root_scope, length))?
-            } else if let Some(R::ValueCall { name, arguments }) = arena.node(length) {
-                let name = arena.symbol(*name).ok_or_else(unknown)?.as_ref();
-                let arguments = structured_references(arena, *arguments).ok_or_else(unknown)?;
-                let call = resolve_structured_semantic_comptime_call(
-                    provider,
-                    root_scope,
-                    arena,
-                    length,
-                    vec![name],
-                    arguments,
-                    SemanticComptimeCallExpectation::Value,
-                )?;
-                let SemanticComptimeCallResult::Value(value) = call.result else {
+            let element = resolve_structured_semantic_type_syntax_with(
+                provider,
+                root_scope,
+                arena,
+                element,
+                resolve_symbol,
+            )?;
+            let length =
+                if let Some(length) = structured_value_syntax(arena, length, resolve_symbol) {
+                    lift_provider(provider.resolve_array_length(root_scope, length))?
+                } else if let Some(R::ValueCall { name, arguments }) = arena.node(length) {
+                    let name = resolve_symbol(arena.symbol(*name).ok_or_else(unknown)?);
+                    let arguments = structured_references(arena, *arguments).ok_or_else(unknown)?;
+                    let call = resolve_structured_semantic_comptime_call(
+                        provider,
+                        root_scope,
+                        arena,
+                        resolve_symbol,
+                        length,
+                        vec![name],
+                        arguments,
+                        SemanticComptimeCallExpectation::Value,
+                    )?;
+                    let SemanticComptimeCallResult::Value(value) = call.result else {
+                        return Err(unknown());
+                    };
+                    lift_provider(provider.array_length_from_value(root_scope, &value))?
+                } else {
                     return Err(unknown());
                 };
-                lift_provider(provider.array_length_from_value(root_scope, &value))?
-            } else {
-                return Err(unknown());
-            };
             lift_provider(provider.array_type(element, length))
         }
         R::Slice { element } => {
-            let syntax = structured_syntax_display(arena, root);
+            let syntax = structured_syntax_display(arena, root, resolve_symbol);
             lift_provider(provider.preflight_slice(root_scope, &syntax))?;
-            let element =
-                resolve_structured_semantic_type_syntax(provider, root_scope, arena, element)?;
+            let element = resolve_structured_semantic_type_syntax_with(
+                provider,
+                root_scope,
+                arena,
+                element,
+                resolve_symbol,
+            )?;
             lift_provider(provider.slice_type(root_scope, &syntax, element))
         }
         R::PointerConst { pointee } => {
-            let pointee =
-                resolve_structured_semantic_type_syntax(provider, root_scope, arena, pointee)?;
+            let pointee = resolve_structured_semantic_type_syntax_with(
+                provider,
+                root_scope,
+                arena,
+                pointee,
+                resolve_symbol,
+            )?;
             lift_provider(provider.ptr_const_type(pointee))
         }
         R::PointerMut { pointee } => {
-            let pointee =
-                resolve_structured_semantic_type_syntax(provider, root_scope, arena, pointee)?;
+            let pointee = resolve_structured_semantic_type_syntax_with(
+                provider,
+                root_scope,
+                arena,
+                pointee,
+                resolve_symbol,
+            )?;
             lift_provider(provider.ptr_mut_type(pointee))
         }
         R::TypeCall { path, arguments } => {
-            let segments = structured_path(arena, path).ok_or_else(unknown)?;
+            let segments = structured_path(arena, path, resolve_symbol).ok_or_else(unknown)?;
             let arguments = structured_references(arena, arguments).ok_or_else(unknown)?;
             if let [name] = segments.as_slice()
                 && let Some(value_arguments) = arguments
                     .iter()
                     .copied()
-                    .map(|argument| structured_value_syntax(arena, argument))
+                    .map(|argument| structured_value_syntax(arena, argument, resolve_symbol))
                     .collect::<Option<Vec<_>>>()
                 && let Some(ty) =
                     lift_provider(provider.builtin_type_call(root_scope, name, &value_arguments))?
@@ -1161,6 +1218,7 @@ where
                 provider,
                 root_scope,
                 arena,
+                resolve_symbol,
                 root,
                 segments,
                 arguments,

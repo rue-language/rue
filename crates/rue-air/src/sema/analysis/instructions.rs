@@ -351,7 +351,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // Type constant: a type used as a value (e.g., `i32` in `identity(i32, 42)`)
             InstData::TypeConst { type_name } => {
                 // Resolve the type name to a concrete type
-                let ty = self.resolve_type(*type_name, inst.span)?;
+                let ty = self.resolve_rir_type(*type_name, inst.span)?;
                 let air_ref = air.add_inst(AirInst {
                     data: AirInstData::TypeConst(ty),
                     ty: Type::COMPTIME_TYPE,
@@ -382,7 +382,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 for (name_sym, type_sym) in field_decls {
                     let name_str = self.body_interner().resolve(&name_sym).to_string();
                     let field_ty = self
-                        .resolve_type_for_comptime_with_subst_and_values_at_span(
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
                             &ctx.comptime_type_vars,
                             &ctx.comptime_value_vars,
@@ -390,9 +390,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         )
                         .ok_or_else(|| {
                             CompileError::new(
-                                ErrorKind::UnknownType(
-                                    self.body_interner().resolve(&type_sym).to_owned(),
-                                ),
+                                ErrorKind::UnknownType(self.render_rir_type(type_sym)),
                                 inst.span,
                             )
                         })?;
@@ -467,7 +465,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 anchor,
             } => {
                 let variant_syms = self.body_rir_ref().anon_enum_variants(variants).to_vec();
-                let payload_symbols: Vec<Vec<Spur>> = self
+                let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
                     .body_rir_ref()
                     .anon_enum_payloads(payloads, variants)
                     .map(|payload| payload.to_vec())
@@ -480,7 +478,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let field_ty = self
-                            .resolve_type_for_comptime_with_subst_and_values_at_span(
+                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                                 ty_sym,
                                 &ctx.comptime_type_vars,
                                 &ctx.comptime_value_vars,
@@ -488,9 +486,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             )
                             .ok_or_else(|| {
                                 CompileError::new(
-                                    ErrorKind::UnknownType(
-                                        self.body_interner().resolve(&ty_sym).to_owned(),
-                                    ),
+                                    ErrorKind::UnknownType(self.render_rir_type(ty_sym)),
                                     inst.span,
                                 )
                             })?;

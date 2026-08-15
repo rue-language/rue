@@ -12,6 +12,7 @@ rue_crate(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-span:rue-span",
+        "//third-party:ahash",
         "//third-party:lasso",
     ],
 )
@@ -24,6 +25,7 @@ native.rust_library(
         "//crates/rue-lexer:rue-lexer",
         "//crates/rue-parser:rue-parser",
         "//crates/rue-span:rue-span",
+        "//third-party:ahash",
         "//third-party:lasso",
     ],
     rustc_flags = ["--cfg", "feature=\"fuzz-support\""],

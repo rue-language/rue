@@ -7194,6 +7194,44 @@ fn semantic_candidate_spelling<'a>(symbols: &'a [&'a str], symbol: &lasso::Spur)
     symbols[symbol.into_usize()]
 }
 
+fn resolve_semantic_candidate_type(
+    provider: &mut SemanticNucleusTypeProvider<'_>,
+    module: &ModuleId,
+    rir: &rue_rir::ValidatedRir,
+    symbols: &[&str],
+    syntax: rue_rir::RirTypeSyntaxRef,
+) -> Result<
+    crate::durable_semantics::DurableType,
+    rue_air::SemanticTypeSyntaxError<
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+        StableDefinitionKey,
+        Arc<str>,
+    >,
+> {
+    rue_air::resolve_structured_semantic_type_syntax_with(
+        provider,
+        module,
+        rir.type_syntax(),
+        syntax,
+        |symbol| symbols[symbol.into_usize()],
+    )
+}
+
+fn semantic_candidate_type_is_named(
+    rir: &rue_rir::ValidatedRir,
+    symbols: &[&str],
+    syntax: rue_rir::RirTypeSyntaxRef,
+    expected: &str,
+) -> bool {
+    let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = rir.type_syntax().node(syntax) else {
+        return false;
+    };
+    rir.type_syntax()
+        .symbol(*symbol)
+        .is_some_and(|symbol| symbols[symbol.into_usize()] == expected)
+}
+
 thread_local! {
     static SEMANTIC_COMPTIME_CALL_DEPTH: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
@@ -7568,12 +7606,12 @@ impl SemanticConstEvaluator<'_, '_> {
                 rue_rir::InstData::Alloc { name, ty, init, .. } => {
                     let mut value = self.eval(*init)?;
                     if let Some(annotation) = ty {
-                        let symbols = self.symbols;
-                        let syntax = semantic_candidate_spelling(symbols, annotation);
-                        let expected = rue_air::resolve_semantic_type_syntax(
+                        let expected = resolve_semantic_candidate_type(
                             self.provider,
                             &self.declaration.declaration.module,
-                            syntax,
+                            self.rir,
+                            self.symbols,
+                            *annotation,
                         )
                         .map_err(|error| match error {
                             rue_air::SemanticResolutionError::ProviderAbort(abort) => {
@@ -8119,9 +8157,10 @@ impl SemanticConstEvaluator<'_, '_> {
         let symbols = self.symbols;
         let rir = self.rir;
         let provider = &mut *self.provider;
-        let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>, syntax: &str| {
-            rue_air::resolve_semantic_type_syntax(provider, module, syntax).map_err(|error| {
-                match error {
+        let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
+                       syntax: rue_rir::RirTypeSyntaxRef| {
+            resolve_semantic_candidate_type(provider, module, rir, symbols, syntax).map_err(
+                |error| match error {
                     rue_air::SemanticResolutionError::ProviderAbort(abort) => {
                         EvaluateSemanticConstError::Abort(abort)
                     }
@@ -8129,8 +8168,8 @@ impl SemanticConstEvaluator<'_, '_> {
                         EvaluateSemanticConstError::failure(failure)
                     }
                     other => Self::failure_value(format!("{other:?}")),
-                }
-            })
+                },
+            )
         };
         let instruction = rir.get(expression);
         let (kind, shape, anchor) = match &instruction.data {
@@ -8146,21 +8185,23 @@ impl SemanticConstEvaluator<'_, '_> {
                         let (name, ty) = *field;
                         Ok((
                             Arc::from(semantic_candidate_spelling(symbols, &name)),
-                            resolve(provider, semantic_candidate_spelling(symbols, &ty))?,
+                            resolve(provider, ty)?,
                         ))
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                let method_type = |provider: &mut SemanticNucleusTypeProvider<'_>,
-                                   ty: lasso::Spur| {
-                    let syntax = semantic_candidate_spelling(symbols, &ty);
-                    Ok(if syntax.trim() == "Self" {
-                        crate::durable_semantics::DurableAnonymousMethodType::SelfType
-                    } else {
-                        crate::durable_semantics::DurableAnonymousMethodType::Concrete(resolve(
-                            provider, syntax,
-                        )?)
-                    })
-                };
+                let method_type =
+                    |provider: &mut SemanticNucleusTypeProvider<'_>,
+                     ty: rue_rir::RirTypeSyntaxRef| {
+                        Ok(
+                            if semantic_candidate_type_is_named(rir, symbols, ty, "Self") {
+                                crate::durable_semantics::DurableAnonymousMethodType::SelfType
+                            } else {
+                                crate::durable_semantics::DurableAnonymousMethodType::Concrete(
+                                    resolve(provider, ty)?,
+                                )
+                            },
+                        )
+                    };
                 let mode = |mode: rue_rir::RirParamMode| match mode {
                     rue_rir::RirParamMode::Normal => {
                         crate::durable_semantics::DurableParameterMode::Value
@@ -8192,8 +8233,12 @@ impl SemanticConstEvaluator<'_, '_> {
                         };
                         if rir.params(params).iter().any(|parameter| {
                             parameter.is_comptime
-                                && semantic_candidate_spelling(symbols, &parameter.ty).trim()
-                                    == "type"
+                                && semantic_candidate_type_is_named(
+                                    rir,
+                                    symbols,
+                                    parameter.ty,
+                                    "type",
+                                )
                         }) {
                             return Err(EvaluateSemanticConstError::failure(
                                 crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
@@ -8256,7 +8301,7 @@ impl SemanticConstEvaluator<'_, '_> {
                     .map(|(name, payload)| {
                         let payload = payload
                             .iter()
-                            .map(|ty| resolve(provider, semantic_candidate_spelling(symbols, &ty)))
+                            .map(|ty| resolve(provider, *ty))
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                         Ok((
                             Arc::from(semantic_candidate_spelling(symbols, &name)),
@@ -8274,10 +8319,7 @@ impl SemanticConstEvaluator<'_, '_> {
             }
             rue_rir::InstData::TypeConst { type_name } => {
                 return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                    V::Type(resolve(
-                        provider,
-                        semantic_candidate_spelling(symbols, type_name),
-                    )?),
+                    V::Type(resolve(provider, *type_name)?),
                     DurableType::ComptimeType,
                 )));
             }
@@ -8559,11 +8601,12 @@ impl SemanticConstEvaluator<'_, '_> {
                 ) =>
             {
                 let intrinsic_name = self.symbol(name);
-                let symbols = self.symbols;
-                let ty = rue_air::resolve_semantic_type_syntax(
+                let ty = resolve_semantic_candidate_type(
                     self.provider,
                     &self.declaration.declaration.module,
-                    semantic_candidate_spelling(symbols, type_arg),
+                    self.rir,
+                    self.symbols,
+                    *type_arg,
                 )
                 .map_err(|error| match error {
                     rue_air::SemanticResolutionError::ProviderAbort(abort) => {
@@ -13727,11 +13770,13 @@ impl RevisionedQueryDatabase {
                                                 deferred_ownership: BTreeSet::new(),
                                             };
                                             let expected_type = declared_type.as_ref().and_then(
-                                                |symbol| {
-                                                    rue_air::resolve_semantic_type_syntax(
+                                                |syntax| {
+                                                    resolve_semantic_candidate_type(
                                                         &mut provider,
                                                         &query.declaration.module,
-                                                        symbols[symbol.into_usize()],
+                                                        &rir,
+                                                        &symbols,
+                                                        *syntax,
                                                     )
                                                     .ok()
                                                 },
@@ -13796,10 +13841,12 @@ impl RevisionedQueryDatabase {
                                                     let typed = Arc::unwrap_or_clone(typed);
                                                     let value = typed.value;
                                                     let resolved_type = match declared_type.as_ref() {
-                                                        Some(type_symbol) => rue_air::resolve_semantic_type_syntax(
+                                                        Some(type_syntax) => resolve_semantic_candidate_type(
                                                             &mut provider,
                                                             &query.declaration.module,
-                                                            symbols[type_symbol.into_usize()],
+                                                            &rir,
+                                                            &symbols,
+                                                            *type_syntax,
                                                         ),
                                                         None if matches!(
                                                             value,
@@ -35114,7 +35161,7 @@ fn main() -> i32 {
         assert_eq!(info.is_generic, prod.is_generic);
         assert_eq!(info.is_unchecked, prod.is_unchecked);
         assert_eq!(
-            info.return_type_sym, prod.return_type_sym,
+            info.return_type_syntax, prod.return_type_syntax,
             "pre-resolution return symbol matches production"
         );
 

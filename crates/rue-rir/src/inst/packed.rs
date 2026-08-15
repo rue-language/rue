@@ -13,10 +13,12 @@ use std::sync::Arc;
 use lasso::{Key, Spur, ThreadedRodeo};
 use rue_span::{FileId, Span};
 
+use crate::{RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxSymbol};
+
 use super::*;
 
 const MAGIC: &[u8; 4] = b"RIRP";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 const HEADER_LEN: usize = 64;
 
 /// One fallible source intrinsic whose result requires a trusted `Option`
@@ -157,6 +159,12 @@ impl PackedValidatedRir {
         Header::parse(&self.0)
             .expect("privately constructed packed RIR is valid")
             .symbols as usize
+    }
+
+    pub fn type_node_count(&self) -> usize {
+        Header::parse(&self.0)
+            .expect("privately constructed packed RIR is valid")
+            .types as usize
     }
 
     /// Complete dense spelling table transported with the owner, including
@@ -355,6 +363,7 @@ impl PackedValidatedRir {
     ) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
         let instruction_len = destination.rir.instructions.len();
         let extra_len = destination.rir.extra.len();
+        let type_snapshot = destination.type_syntax.snapshot();
         let capacity_latch = destination.rir.instruction_limit_exceeded;
         let result = Decoder::new(
             &self.0,
@@ -369,6 +378,7 @@ impl PackedValidatedRir {
         if result.is_err() {
             destination.rir.instructions.truncate(instruction_len);
             destination.rir.extra.truncate(extra_len);
+            destination.type_syntax.rollback(type_snapshot);
             destination.rir.instruction_limit_exceeded = capacity_latch;
         }
         result
@@ -451,6 +461,8 @@ pub enum PackedRirDecodeError {
     ReferenceOutOfBounds { reference: u32, instructions: u32 },
     ForwardReference { instruction: u32, reference: u32 },
     SymbolOutOfBounds { symbol: u32, symbols: u32 },
+    TypeReferenceOutOfBounds { reference: u32, types: u32 },
+    ForwardTypeReference { owner: u32, reference: u32 },
     CountOutOfBounds { family: &'static str },
     InvalidUtf8Symbol { symbol: u32 },
     DuplicateSymbol { first: u32, duplicate: u32 },
@@ -508,12 +520,15 @@ impl ValidatedRir {
 
 struct Encoder<E, C, P> {
     bytes: Vec<u8>,
+    types: Vec<u8>,
     basis: Vec<u8>,
     span_count: u32,
     checkpoint: C,
     project_span: P,
     current_instruction: u32,
     symbol_count: usize,
+    type_count: usize,
+    current_type: u32,
     fallible_intrinsics: RirFallibleIntrinsicSet,
     marker: std::marker::PhantomData<fn() -> E>,
 }
@@ -524,12 +539,15 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
     fn new(checkpoint: C, project_span: P) -> Self {
         Self {
             bytes: Vec::new(),
+            types: Vec::new(),
             basis: Vec::new(),
             span_count: 0,
             checkpoint,
             project_span,
             current_instruction: 0,
             symbol_count: 0,
+            type_count: 0,
+            current_type: 0,
             fallible_intrinsics: RirFallibleIntrinsicSet::default(),
             marker: std::marker::PhantomData,
         }
@@ -546,6 +564,14 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         let symbol_count =
             u32::try_from(symbols.len()).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
         self.symbol_count = symbols.len();
+        self.type_count = rir.type_syntax().nodes().len();
+        let type_count =
+            u32::try_from(self.type_count).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+        // `ValidatedRir` already proved the arena's ranges, postorder child
+        // references, and symbol bounds. The typed encoder still checks every
+        // symbol/ref as it writes it, so repeating the complete arena walk here
+        // added candidate work without strengthening this boundary.
+        self.type_arena(rir.type_syntax())?;
 
         for (instruction, value) in rir.iter() {
             self.check()?;
@@ -607,7 +633,8 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         }
 
         let symbols_offset = HEADER_LEN;
-        let instructions_offset = symbols_offset + symbol_bytes.len();
+        let types_offset = symbols_offset + symbol_bytes.len();
+        let instructions_offset = types_offset + self.types.len();
         let basis_offset = instructions_offset + self.bytes.len();
         let end_offset = basis_offset + self.basis.len();
         let mut bytes = Vec::new();
@@ -620,6 +647,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         bytes[5] = self.fallible_intrinsics.0;
         write_header_u32(&mut bytes, 8, instruction_count)?;
         write_header_u32(&mut bytes, 12, symbol_count)?;
+        write_header_u32(&mut bytes, 16, type_count)?;
         write_header_u32(&mut bytes, 20, metadata.declaration.as_u32())?;
         if let Some(owner) = metadata.method_owner {
             bytes[24] = 1;
@@ -640,20 +668,26 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         write_header_u32(
             &mut bytes,
             40,
-            u32::try_from(instructions_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+            u32::try_from(types_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
         )?;
         write_header_u32(
             &mut bytes,
             44,
-            u32::try_from(basis_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+            u32::try_from(instructions_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
         )?;
         write_header_u32(
             &mut bytes,
             48,
+            u32::try_from(basis_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
+        )?;
+        write_header_u32(
+            &mut bytes,
+            52,
             u32::try_from(end_offset).map_err(|_| PackedRirEncodeError::ResourceLimit)?,
         )?;
         write_header_u32(&mut bytes, 56, self.span_count)?;
         bytes.extend_from_slice(&symbol_bytes);
+        bytes.extend_from_slice(&self.types);
         bytes.extend_from_slice(&self.bytes);
         bytes.extend_from_slice(&self.basis);
         assert_eq!(
@@ -727,6 +761,280 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
         self.boolean(value.is_some())?;
         if let Some(value) = value {
             self.symbol(value)?;
+        }
+        Ok(())
+    }
+
+    fn type_reference(&mut self, value: RirTypeSyntaxRef) -> Result<(), PackedRirEncodeError<E>> {
+        if value.index() >= self.type_count {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        self.u32(value.as_u32())
+    }
+
+    fn optional_type_reference(
+        &mut self,
+        value: Option<RirTypeSyntaxRef>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        self.boolean(value.is_some())?;
+        if let Some(value) = value {
+            self.type_reference(value)?;
+        }
+        Ok(())
+    }
+
+    fn type_byte(&mut self, value: u8) -> Result<(), PackedRirEncodeError<E>> {
+        self.types
+            .try_reserve(1)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        self.types.push(value);
+        Ok(())
+    }
+
+    fn type_u32(&mut self, value: u32) -> Result<(), PackedRirEncodeError<E>> {
+        self.types
+            .try_reserve(5)
+            .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+        put_u32(&mut self.types, value);
+        Ok(())
+    }
+
+    fn type_count(&mut self, value: usize) -> Result<(), PackedRirEncodeError<E>> {
+        self.type_u32(u32::try_from(value).map_err(|_| PackedRirEncodeError::ResourceLimit)?)
+    }
+
+    fn type_symbol(&mut self, value: Spur) -> Result<(), PackedRirEncodeError<E>> {
+        let ordinal = value.into_usize();
+        if ordinal >= self.symbol_count {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        self.type_u32(u32::try_from(ordinal).map_err(|_| PackedRirEncodeError::ResourceLimit)?)
+    }
+
+    fn type_child(&mut self, value: RirTypeSyntaxRef) -> Result<(), PackedRirEncodeError<E>> {
+        if value.as_u32() >= self.current_type {
+            return Err(PackedRirEncodeError::InvalidMetadata);
+        }
+        self.type_u32(value.as_u32())
+    }
+
+    fn arena_symbol(
+        arena: &RirTypeSyntaxArena<Spur>,
+        symbol: RirTypeSyntaxSymbol,
+    ) -> Result<Spur, PackedRirEncodeError<E>> {
+        arena
+            .symbol(symbol)
+            .copied()
+            .ok_or(PackedRirEncodeError::InvalidMetadata)
+    }
+
+    fn type_path(
+        &mut self,
+        arena: &RirTypeSyntaxArena<Spur>,
+        range: RirTypeSyntaxRange,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        let words = arena
+            .words(range)
+            .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+        self.type_count(words.len())?;
+        for word in words {
+            self.check()?;
+            let symbol = Self::arena_symbol(arena, RirTypeSyntaxSymbol::from_u32(*word))?;
+            self.type_symbol(symbol)?;
+        }
+        Ok(())
+    }
+
+    fn type_children(
+        &mut self,
+        arena: &RirTypeSyntaxArena<Spur>,
+        range: RirTypeSyntaxRange,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        let words = arena
+            .words(range)
+            .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+        self.type_count(words.len())?;
+        for word in words {
+            self.check()?;
+            self.type_child(RirTypeSyntaxRef::from_u32(*word))?;
+        }
+        Ok(())
+    }
+
+    fn type_arena(
+        &mut self,
+        arena: &RirTypeSyntaxArena<Spur>,
+    ) -> Result<(), PackedRirEncodeError<E>> {
+        for (owner, node) in arena.nodes().iter().enumerate() {
+            self.check()?;
+            self.current_type =
+                u32::try_from(owner).map_err(|_| PackedRirEncodeError::ResourceLimit)?;
+            match node {
+                RirTypeSyntaxNode::Named(symbol) => {
+                    self.type_byte(0)?;
+                    self.type_symbol(Self::arena_symbol(arena, *symbol)?)?;
+                }
+                RirTypeSyntaxNode::Qualified { path } => {
+                    self.type_byte(1)?;
+                    self.type_path(arena, *path)?;
+                }
+                RirTypeSyntaxNode::Unit => self.type_byte(2)?,
+                RirTypeSyntaxNode::Never => self.type_byte(3)?,
+                RirTypeSyntaxNode::Array { element, length } => {
+                    self.type_byte(4)?;
+                    self.type_child(*element)?;
+                    self.type_child(*length)?;
+                }
+                RirTypeSyntaxNode::Slice { element } => {
+                    self.type_byte(5)?;
+                    self.type_child(*element)?;
+                }
+                RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
+                    self.type_byte(6)?;
+                    let fields = arena
+                        .words(*fields)
+                        .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+                    self.type_count(fields.len() / 2)?;
+                    for field in fields.chunks_exact(2) {
+                        self.check()?;
+                        self.type_symbol(Self::arena_symbol(
+                            arena,
+                            RirTypeSyntaxSymbol::from_u32(field[0]),
+                        )?)?;
+                        self.type_child(RirTypeSyntaxRef::from_u32(field[1]))?;
+                    }
+
+                    let methods = arena
+                        .words(*methods)
+                        .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+                    let mut position = 0usize;
+                    let mut method_count = 0usize;
+                    while position < methods.len() {
+                        method_count = method_count
+                            .checked_add(1)
+                            .ok_or(PackedRirEncodeError::ResourceLimit)?;
+                        let header = &methods[position..position + 4];
+                        position += 4 + (header[3] as usize) * 3;
+                        let directives = methods[position + 1] as usize;
+                        position += 2;
+                        for _ in 0..directives {
+                            let arguments = methods[position + 1] as usize;
+                            position += 2 + arguments;
+                        }
+                    }
+                    self.type_count(method_count)?;
+                    position = 0;
+                    while position < methods.len() {
+                        self.check()?;
+                        let header = &methods[position..position + 4];
+                        self.type_symbol(Self::arena_symbol(
+                            arena,
+                            RirTypeSyntaxSymbol::from_u32(header[0]),
+                        )?)?;
+                        self.type_byte(u8::from(header[1] != u32::MAX))?;
+                        if header[1] != u32::MAX {
+                            self.type_byte(
+                                u8::try_from(header[1])
+                                    .map_err(|_| PackedRirEncodeError::InvalidMetadata)?,
+                            )?;
+                        }
+                        self.type_byte(
+                            u8::try_from(header[2])
+                                .map_err(|_| PackedRirEncodeError::InvalidMetadata)?,
+                        )?;
+                        self.type_u32(header[3])?;
+                        position += 4;
+                        for _ in 0..header[3] {
+                            let parameter = &methods[position..position + 3];
+                            self.type_byte(
+                                u8::try_from(parameter[0])
+                                    .map_err(|_| PackedRirEncodeError::InvalidMetadata)?,
+                            )?;
+                            self.type_symbol(Self::arena_symbol(
+                                arena,
+                                RirTypeSyntaxSymbol::from_u32(parameter[1]),
+                            )?)?;
+                            self.type_child(RirTypeSyntaxRef::from_u32(parameter[2]))?;
+                            position += 3;
+                        }
+                        self.type_child(RirTypeSyntaxRef::from_u32(methods[position]))?;
+                        let directive_count = methods[position + 1];
+                        self.type_u32(directive_count)?;
+                        position += 2;
+                        for _ in 0..directive_count {
+                            self.type_symbol(Self::arena_symbol(
+                                arena,
+                                RirTypeSyntaxSymbol::from_u32(methods[position]),
+                            )?)?;
+                            let argument_count = methods[position + 1];
+                            self.type_u32(argument_count)?;
+                            position += 2;
+                            for _ in 0..argument_count {
+                                self.type_symbol(Self::arena_symbol(
+                                    arena,
+                                    RirTypeSyntaxSymbol::from_u32(methods[position]),
+                                )?)?;
+                                position += 1;
+                            }
+                        }
+                    }
+                }
+                RirTypeSyntaxNode::AnonymousEnum { variants } => {
+                    self.type_byte(7)?;
+                    let words = arena
+                        .words(*variants)
+                        .ok_or(PackedRirEncodeError::InvalidMetadata)?;
+                    let mut position = 0usize;
+                    let mut count = 0usize;
+                    while position < words.len() {
+                        count = count
+                            .checked_add(1)
+                            .ok_or(PackedRirEncodeError::ResourceLimit)?;
+                        position += 2 + words[position + 1] as usize;
+                    }
+                    self.type_count(count)?;
+                    position = 0;
+                    while position < words.len() {
+                        self.check()?;
+                        self.type_symbol(Self::arena_symbol(
+                            arena,
+                            RirTypeSyntaxSymbol::from_u32(words[position]),
+                        )?)?;
+                        let payload_count = words[position + 1];
+                        self.type_u32(payload_count)?;
+                        position += 2;
+                        for _ in 0..payload_count {
+                            self.type_child(RirTypeSyntaxRef::from_u32(words[position]))?;
+                            position += 1;
+                        }
+                    }
+                }
+                RirTypeSyntaxNode::PointerConst { pointee } => {
+                    self.type_byte(8)?;
+                    self.type_child(*pointee)?;
+                }
+                RirTypeSyntaxNode::PointerMut { pointee } => {
+                    self.type_byte(9)?;
+                    self.type_child(*pointee)?;
+                }
+                RirTypeSyntaxNode::TypeCall { path, arguments } => {
+                    self.type_byte(10)?;
+                    self.type_path(arena, *path)?;
+                    self.type_children(arena, *arguments)?;
+                }
+                RirTypeSyntaxNode::ValueCall { name, arguments } => {
+                    self.type_byte(11)?;
+                    self.type_symbol(Self::arena_symbol(arena, *name)?)?;
+                    self.type_children(arena, *arguments)?;
+                }
+                RirTypeSyntaxNode::Integer(value) => {
+                    self.type_byte(12)?;
+                    self.types
+                        .try_reserve(16)
+                        .map_err(|_| PackedRirEncodeError::CapacityFailure)?;
+                    self.types.extend_from_slice(&value.to_le_bytes());
+                }
+            }
         }
         Ok(())
     }
@@ -848,13 +1156,13 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
 
     fn fields(
         &mut self,
-        values: RirSlice<'_, (Spur, Spur)>,
+        values: RirSlice<'_, (Spur, RirTypeSyntaxRef)>,
     ) -> Result<(), PackedRirEncodeError<E>> {
         self.count(values.len())?;
         for (name, ty) in values.values() {
             self.check()?;
             self.symbol(name)?;
-            self.symbol(ty)?;
+            self.type_reference(ty)?;
         }
         Ok(())
     }
@@ -943,9 +1251,9 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             self.check()?;
             self.symbol(variant)?;
             self.count(payload.len())?;
-            for symbol in payload.values() {
+            for ty in payload.values() {
                 self.check()?;
-                self.symbol(symbol)?;
+                self.type_reference(ty)?;
             }
         }
         Ok(())
@@ -1092,7 +1400,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 for (ordinal, parameter) in params.values().enumerate() {
                     self.check()?;
                     self.symbol(parameter.name)?;
-                    self.symbol(parameter.ty)?;
+                    self.type_reference(parameter.ty)?;
                     self.byte(encode_param_mode(parameter.mode))?;
                     self.boolean(parameter.is_comptime)?;
                     self.basis_span(
@@ -1106,7 +1414,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                         parameter.span,
                     )?;
                 }
-                self.symbol(*return_type)?;
+                self.type_reference(*return_type)?;
                 self.reference(*body)?;
                 self.byte(encode_param_mode(*self_mode))?;
             }
@@ -1123,7 +1431,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 })?;
                 self.boolean(*is_pub)?;
                 self.symbol(*name)?;
-                self.optional_symbol(*ty)?;
+                self.optional_type_reference(*ty)?;
                 self.reference(*init)?;
             }
             InstData::Call { name, args } => {
@@ -1147,11 +1455,11 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::TypeIntrinsic { name, type_arg } => {
                 self.byte(38)?;
                 self.symbol(*name)?;
-                self.symbol(*type_arg)?;
+                self.type_reference(*type_arg)?;
             }
             InstData::OffsetOf { type_arg, field } => {
                 self.byte(39)?;
-                self.symbol(*type_arg)?;
+                self.type_reference(*type_arg)?;
                 self.symbol(*field)?;
             }
             InstData::Ret(value) => {
@@ -1177,7 +1485,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 })?;
                 self.optional_symbol(*name)?;
                 self.boolean(*is_mut)?;
-                self.optional_symbol(*ty)?;
+                self.optional_type_reference(*ty)?;
                 self.reference(*init)?;
                 self.boolean(*iter_elem)?;
             }
@@ -1307,7 +1615,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::Checked { expr } => unary!(59, expr),
             InstData::TypeConst { type_name } => {
                 self.byte(60)?;
-                self.symbol(*type_name)?;
+                self.type_reference(*type_name)?;
             }
             InstData::AnonStructType {
                 fields,
@@ -1379,9 +1687,11 @@ fn header_u32(bytes: &[u8], offset: usize) -> Result<u32, PackedRirDecodeError> 
 struct Header {
     instructions: u32,
     symbols: u32,
+    types: u32,
     declaration: u32,
     owner: Option<(u32, u32, bool, bool)>,
     symbols_offset: usize,
+    types_offset: usize,
     instructions_offset: usize,
     basis_offset: usize,
     end_offset: usize,
@@ -1407,9 +1717,7 @@ impl Header {
             });
         }
         if bytes[6..8].iter().any(|byte| *byte != 0)
-            || bytes[16..20].iter().any(|byte| *byte != 0)
             || bytes[26..28].iter().any(|byte| *byte != 0)
-            || bytes[52..56].iter().any(|byte| *byte != 0)
             || bytes[60..64].iter().any(|byte| *byte != 0)
         {
             return Err(PackedRirDecodeError::InvalidTag {
@@ -1443,17 +1751,20 @@ impl Header {
         let header = Self {
             instructions: header_u32(bytes, 8)?,
             symbols: header_u32(bytes, 12)?,
+            types: header_u32(bytes, 16)?,
             declaration: header_u32(bytes, 20)?,
             owner,
             symbols_offset: header_u32(bytes, 36)? as usize,
-            instructions_offset: header_u32(bytes, 40)? as usize,
-            basis_offset: header_u32(bytes, 44)? as usize,
-            end_offset: header_u32(bytes, 48)? as usize,
+            types_offset: header_u32(bytes, 40)? as usize,
+            instructions_offset: header_u32(bytes, 44)? as usize,
+            basis_offset: header_u32(bytes, 48)? as usize,
+            end_offset: header_u32(bytes, 52)? as usize,
             spans: header_u32(bytes, 56)?,
             fallible_intrinsics: RirFallibleIntrinsicSet(bytes[5]),
         };
         if header.symbols_offset != HEADER_LEN
-            || header.symbols_offset > header.instructions_offset
+            || header.symbols_offset > header.types_offset
+            || header.types_offset > header.instructions_offset
             || header.instructions_offset > header.basis_offset
             || header.basis_offset > header.end_offset
             || header.end_offset != bytes.len()
@@ -1569,7 +1880,7 @@ impl<'a> PackedRirSymbols<'a> {
     fn new(bytes: &'a [u8]) -> Result<Self, PackedRirDecodeError> {
         let header = Header::parse(bytes)?;
         let section = bytes
-            .get(header.symbols_offset..header.instructions_offset)
+            .get(header.symbols_offset..header.types_offset)
             .ok_or(PackedRirDecodeError::Truncated)?;
         // PackedValidatedRir has no public unchecked constructor: the encoder
         // produced and validated this immutable section. The fallible decoder
@@ -1619,6 +1930,8 @@ struct Decoder<'a, E, C, S, P> {
     remap_span: P,
     instructions: u32,
     symbols: u32,
+    types: u32,
+    type_nodes: Vec<RirTypeSyntaxRef>,
     source_instruction: u32,
     destination_instruction_start: u32,
     spans_read: u32,
@@ -1652,6 +1965,8 @@ impl<
             remap_span,
             instructions: 0,
             symbols: 0,
+            types: 0,
+            type_nodes: Vec::new(),
             source_instruction: 0,
             destination_instruction_start: 0,
             spans_read: 0,
@@ -1666,15 +1981,27 @@ impl<
         }
         self.instructions = header.instructions;
         self.symbols = header.symbols;
+        self.types = header.types;
+        let type_bytes = header.instructions_offset - header.types_offset;
         let instruction_bytes = header.basis_offset - header.instructions_offset;
         let basis_bytes = header.end_offset - header.basis_offset;
-        if header.instructions as usize > instruction_bytes
+        if header.types as usize > type_bytes
+            || header.instructions as usize > instruction_bytes
             || header.spans as usize > basis_bytes / 2
         {
             return Err(PackedRirDecodeError::CountOutOfBounds {
                 family: "header counts",
             }
             .into());
+        }
+        let mut types = Reader::new(
+            self.bytes
+                .get(header.types_offset..header.instructions_offset)
+                .ok_or(PackedRirDecodeError::Truncated)?,
+        );
+        self.decode_types(&mut types)?;
+        if !types.finished() {
+            return Err(PackedRirDecodeError::TrailingBytes.into());
         }
         let mut instructions = Reader::new(
             self.bytes
@@ -1795,7 +2122,7 @@ impl<
     fn validate_symbols(&mut self, header: Header) -> Result<(), PackedRirAppendError<E>> {
         let section = self
             .bytes
-            .get(header.symbols_offset..header.instructions_offset)
+            .get(header.symbols_offset..header.types_offset)
             .ok_or(PackedRirDecodeError::Truncated)?;
         if header.symbols as usize > section.len() {
             return Err(PackedRirDecodeError::CountOutOfBounds {
@@ -1864,6 +2191,269 @@ impl<
         }
         if !reader.finished() {
             return Err(PackedRirDecodeError::TrailingBytes.into());
+        }
+        Ok(())
+    }
+
+    fn type_symbol(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirTypeSyntaxSymbol, PackedRirAppendError<E>> {
+        let symbol = self.symbol(reader)?;
+        self.destination
+            .type_syntax
+            .intern_symbol(symbol)
+            .map_err(|error| PackedRirAppendError::Build(type_syntax_build_error(error)))
+    }
+
+    fn type_child(
+        &self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirTypeSyntaxRef, PackedRirAppendError<E>> {
+        let reference = reader.u32()?;
+        self.type_nodes
+            .get(reference as usize)
+            .copied()
+            .ok_or_else(|| {
+                PackedRirDecodeError::ForwardTypeReference {
+                    owner: self.type_nodes.len() as u32,
+                    reference,
+                }
+                .into()
+            })
+    }
+
+    fn type_reference(
+        &self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirTypeSyntaxRef, PackedRirAppendError<E>> {
+        let reference = reader.u32()?;
+        if reference >= self.types {
+            return Err(PackedRirDecodeError::TypeReferenceOutOfBounds {
+                reference,
+                types: self.types,
+            }
+            .into());
+        }
+        self.type_nodes.get(reference as usize).copied().ok_or(
+            PackedRirDecodeError::TypeReferenceOutOfBounds {
+                reference,
+                types: self.types,
+            }
+            .into(),
+        )
+    }
+
+    fn optional_type_reference(
+        &self,
+        reader: &mut Reader<'_>,
+    ) -> Result<Option<RirTypeSyntaxRef>, PackedRirAppendError<E>> {
+        if reader.boolean("optional type-syntax reference")? {
+            self.type_reference(reader).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn type_path(
+        &mut self,
+        reader: &mut Reader<'_>,
+    ) -> Result<RirTypeSyntaxRange, PackedRirAppendError<E>> {
+        let count = Self::count(reader, "type path", 1)?;
+        if count == 0 {
+            return Err(PackedRirDecodeError::CountOutOfBounds {
+                family: "type path",
+            }
+            .into());
+        }
+        let mut words = Vec::new();
+        words
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity("type path"))?;
+        for _ in 0..count {
+            self.check()?;
+            words.push(self.type_symbol(reader)?.as_u32());
+        }
+        self.destination
+            .type_syntax
+            .push_words(words)
+            .map_err(|error| PackedRirAppendError::Build(type_syntax_build_error(error)))
+    }
+
+    fn type_children(
+        &mut self,
+        reader: &mut Reader<'_>,
+        family: &'static str,
+    ) -> Result<RirTypeSyntaxRange, PackedRirAppendError<E>> {
+        let count = Self::count(reader, family, 1)?;
+        let mut words = Vec::new();
+        words
+            .try_reserve_exact(count)
+            .map_err(|_| Self::capacity(family))?;
+        for _ in 0..count {
+            self.check()?;
+            words.push(self.type_child(reader)?.as_u32());
+        }
+        self.destination
+            .type_syntax
+            .push_words(words)
+            .map_err(|error| PackedRirAppendError::Build(type_syntax_build_error(error)))
+    }
+
+    fn decode_types(&mut self, reader: &mut Reader<'_>) -> Result<(), PackedRirAppendError<E>> {
+        self.type_nodes
+            .try_reserve_exact(self.types as usize)
+            .map_err(|_| Self::capacity("type syntax nodes"))?;
+        for _ in 0..self.types {
+            self.check()?;
+            let node = match Self::byte_tag(reader, "type syntax node", 12)? {
+                0 => RirTypeSyntaxNode::Named(self.type_symbol(reader)?),
+                1 => RirTypeSyntaxNode::Qualified {
+                    path: self.type_path(reader)?,
+                },
+                2 => RirTypeSyntaxNode::Unit,
+                3 => RirTypeSyntaxNode::Never,
+                4 => RirTypeSyntaxNode::Array {
+                    element: self.type_child(reader)?,
+                    length: self.type_child(reader)?,
+                },
+                5 => RirTypeSyntaxNode::Slice {
+                    element: self.type_child(reader)?,
+                },
+                6 => {
+                    let field_count = Self::count(reader, "anonymous type fields", 2)?;
+                    let mut field_words = Vec::new();
+                    field_words
+                        .try_reserve_exact(field_count.saturating_mul(2))
+                        .map_err(|_| Self::capacity("anonymous type fields"))?;
+                    for _ in 0..field_count {
+                        self.check()?;
+                        field_words.push(self.type_symbol(reader)?.as_u32());
+                        field_words.push(self.type_child(reader)?.as_u32());
+                    }
+                    let fields = self
+                        .destination
+                        .type_syntax
+                        .push_words(field_words)
+                        .map_err(|error| {
+                            PackedRirAppendError::Build(type_syntax_build_error(error))
+                        })?;
+
+                    let method_count = Self::count(reader, "anonymous type methods", 6)?;
+                    let mut method_words = Vec::new();
+                    for _ in 0..method_count {
+                        self.check()?;
+                        method_words.push(self.type_symbol(reader)?.as_u32());
+                        let has_receiver = reader.boolean("anonymous method receiver")?;
+                        method_words.push(if has_receiver {
+                            u32::from(Self::byte_tag(reader, "anonymous receiver mode", 3)?)
+                        } else {
+                            u32::MAX
+                        });
+                        method_words.push(u32::from(reader.boolean("anonymous borrow result")?));
+                        let parameter_count = Self::count(reader, "anonymous parameters", 4)?;
+                        method_words.push(u32::try_from(parameter_count).map_err(|_| {
+                            PackedRirDecodeError::CountOutOfBounds {
+                                family: "anonymous parameters",
+                            }
+                        })?);
+                        for _ in 0..parameter_count {
+                            self.check()?;
+                            method_words.push(u32::from(Self::byte_tag(
+                                reader,
+                                "anonymous parameter mode",
+                                3,
+                            )?));
+                            method_words.push(self.type_symbol(reader)?.as_u32());
+                            method_words.push(self.type_child(reader)?.as_u32());
+                        }
+                        method_words.push(self.type_child(reader)?.as_u32());
+                        let directive_count = Self::count(reader, "anonymous directives", 2)?;
+                        method_words.push(u32::try_from(directive_count).map_err(|_| {
+                            PackedRirDecodeError::CountOutOfBounds {
+                                family: "anonymous directives",
+                            }
+                        })?);
+                        for _ in 0..directive_count {
+                            self.check()?;
+                            method_words.push(self.type_symbol(reader)?.as_u32());
+                            let argument_count =
+                                Self::count(reader, "anonymous directive arguments", 1)?;
+                            method_words.push(u32::try_from(argument_count).map_err(|_| {
+                                PackedRirDecodeError::CountOutOfBounds {
+                                    family: "anonymous directive arguments",
+                                }
+                            })?);
+                            for _ in 0..argument_count {
+                                self.check()?;
+                                method_words.push(self.type_symbol(reader)?.as_u32());
+                            }
+                        }
+                    }
+                    let methods = self
+                        .destination
+                        .type_syntax
+                        .push_words(method_words)
+                        .map_err(|error| {
+                            PackedRirAppendError::Build(type_syntax_build_error(error))
+                        })?;
+                    RirTypeSyntaxNode::AnonymousStruct { fields, methods }
+                }
+                7 => {
+                    let variant_count = Self::count(reader, "anonymous type variants", 2)?;
+                    let mut words = Vec::new();
+                    for _ in 0..variant_count {
+                        self.check()?;
+                        words.push(self.type_symbol(reader)?.as_u32());
+                        let payload_count =
+                            Self::count(reader, "anonymous type variant payload", 1)?;
+                        words.push(u32::try_from(payload_count).map_err(|_| {
+                            PackedRirDecodeError::CountOutOfBounds {
+                                family: "anonymous type variant payload",
+                            }
+                        })?);
+                        for _ in 0..payload_count {
+                            self.check()?;
+                            words.push(self.type_child(reader)?.as_u32());
+                        }
+                    }
+                    let variants =
+                        self.destination
+                            .type_syntax
+                            .push_words(words)
+                            .map_err(|error| {
+                                PackedRirAppendError::Build(type_syntax_build_error(error))
+                            })?;
+                    RirTypeSyntaxNode::AnonymousEnum { variants }
+                }
+                8 => RirTypeSyntaxNode::PointerConst {
+                    pointee: self.type_child(reader)?,
+                },
+                9 => RirTypeSyntaxNode::PointerMut {
+                    pointee: self.type_child(reader)?,
+                },
+                10 => RirTypeSyntaxNode::TypeCall {
+                    path: self.type_path(reader)?,
+                    arguments: self.type_children(reader, "type arguments")?,
+                },
+                11 => RirTypeSyntaxNode::ValueCall {
+                    name: self.type_symbol(reader)?,
+                    arguments: self.type_children(reader, "value arguments")?,
+                },
+                12 => {
+                    let bytes = reader.bytes(16)?;
+                    RirTypeSyntaxNode::Integer(i128::from_le_bytes(
+                        bytes.try_into().expect("sixteen-byte slice"),
+                    ))
+                }
+                _ => unreachable!(),
+            };
+            let reference = self
+                .destination
+                .type_syntax
+                .push_node(node)
+                .map_err(|error| PackedRirAppendError::Build(type_syntax_build_error(error)))?;
+            self.type_nodes.push(reference);
         }
         Ok(())
     }
@@ -1945,7 +2535,7 @@ impl<
     fn fields(
         &mut self,
         reader: &mut Reader<'_>,
-    ) -> Result<Vec<(Spur, Spur)>, PackedRirAppendError<E>> {
+    ) -> Result<Vec<(Spur, RirTypeSyntaxRef)>, PackedRirAppendError<E>> {
         let count = Self::count(reader, "struct fields", 2)?;
         let mut values = Vec::new();
         values
@@ -1954,7 +2544,7 @@ impl<
         for _ in 0..count {
             self.check()?;
             let name = self.symbol(reader)?;
-            let ty = self.symbol(reader)?;
+            let ty = self.type_reference(reader)?;
             values.push((name, ty));
         }
         Ok(values)
@@ -2053,7 +2643,7 @@ impl<
     fn enum_payload(
         &mut self,
         reader: &mut Reader<'_>,
-    ) -> Result<(Vec<Spur>, Vec<Vec<Spur>>), PackedRirAppendError<E>> {
+    ) -> Result<(Vec<Spur>, Vec<Vec<RirTypeSyntaxRef>>), PackedRirAppendError<E>> {
         let count = Self::count(reader, "enum variants", 2)?;
         let mut variants = Vec::new();
         let mut payloads = Vec::new();
@@ -2073,7 +2663,7 @@ impl<
                 .map_err(|_| Self::capacity("enum payload"))?;
             for _ in 0..payload_count {
                 self.check()?;
-                payload.push(self.symbol(reader)?);
+                payload.push(self.type_reference(reader)?);
             }
             payloads.push(payload);
         }
@@ -2206,7 +2796,7 @@ impl<
                 for ordinal in 0..count {
                     self.check()?;
                     let name = self.symbol(reader)?;
-                    let ty = self.symbol(reader)?;
+                    let ty = self.type_reference(reader)?;
                     let mode = decode_param_mode(reader.byte()?)?;
                     let is_comptime = reader.boolean("comptime parameter")?;
                     let parameter = u32::try_from(ordinal).map_err(|_| {
@@ -2224,7 +2814,7 @@ impl<
                         span: parameter_span,
                     });
                 }
-                let return_type = self.symbol(reader)?;
+                let return_type = self.type_reference(reader)?;
                 let body = self.reference(reader)?;
                 let self_mode = decode_param_mode(reader.byte()?)?;
                 self.destination.add_fn_decl(
@@ -2250,7 +2840,7 @@ impl<
                 })?;
                 let is_pub = reader.boolean("constant visibility")?;
                 let name = self.symbol(reader)?;
-                let ty = self.optional_symbol(reader)?;
+                let ty = self.optional_type_reference(reader)?;
                 let init = self.reference(reader)?;
                 self.destination
                     .add_const_decl(&directives, is_pub, name, ty, init, span)?
@@ -2273,11 +2863,11 @@ impl<
             }
             38 => {
                 let name = self.symbol(reader)?;
-                let type_arg = self.symbol(reader)?;
+                let type_arg = self.type_reference(reader)?;
                 add!(InstData::TypeIntrinsic { name, type_arg })
             }
             39 => {
-                let type_arg = self.symbol(reader)?;
+                let type_arg = self.type_reference(reader)?;
                 let field = self.symbol(reader)?;
                 add!(InstData::OffsetOf { type_arg, field })
             }
@@ -2299,7 +2889,7 @@ impl<
                 })?;
                 let name = self.optional_symbol(reader)?;
                 let is_mut = reader.boolean("mutable allocation")?;
-                let ty = self.optional_symbol(reader)?;
+                let ty = self.optional_type_reference(reader)?;
                 let init = self.reference(reader)?;
                 let iter_elem = reader.boolean("iteration element")?;
                 self.destination
@@ -2440,7 +3030,7 @@ impl<
             58 => unary!(Comptime, expr),
             59 => unary!(Checked, expr),
             60 => {
-                let type_name = self.symbol(reader)?;
+                let type_name = self.type_reference(reader)?;
                 add!(InstData::TypeConst { type_name })
             }
             61 => {
@@ -2660,6 +3250,9 @@ fn decode_internal_intrinsic(tag: u8) -> Result<InternalIntrinsic, PackedRirDeco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
+    use rue_parser::ast::{Expr, Item};
     use rue_span::FileId;
 
     fn validated_owner(orphan_prefix: bool) -> (ValidatedRir, ThreadedRodeo, InstRef) {
@@ -2685,6 +3278,99 @@ mod tests {
             ValidatedRir::finish(editor, &context).unwrap(),
             symbols,
             root,
+        )
+    }
+
+    fn named_type(editor: &mut RirEditor, symbol: Spur) -> RirTypeSyntaxRef {
+        editor
+            .add_named_type(symbol)
+            .expect("test type arena must remain representable")
+    }
+
+    fn parsed_signature_owner(source: &str) -> (ValidatedRir, ThreadedRodeo, InstRef) {
+        let (tokens, symbols) = Lexer::new(source).tokenize().unwrap();
+        let (ast, symbols) = Parser::new(tokens, symbols).parse().unwrap();
+        let Item::Function(root_function) = &ast.items[0] else {
+            panic!("packed type fixture must parse as a function")
+        };
+        let mut editor = RirEditor::new();
+        let mut values = Vec::new();
+        for item in &ast.items {
+            let Item::Function(function) = item else {
+                continue;
+            };
+            for ty in function
+                .params
+                .iter()
+                .map(|parameter| &parameter.ty)
+                .chain(function.return_type.iter())
+            {
+                let reference = editor.add_parser_type(ty, std::convert::identity).unwrap();
+                values.push(editor.add_inst(Inst {
+                    data: InstData::TypeConst {
+                        type_name: reference,
+                    },
+                    span: ty.span(),
+                }));
+            }
+            if let Expr::Block(block) = &function.body
+                && let Expr::TypeLit(type_literal) = block.expr.as_ref()
+            {
+                let reference = editor
+                    .add_parser_type(&type_literal.type_expr, std::convert::identity)
+                    .unwrap();
+                values.push(editor.add_inst(Inst {
+                    data: InstData::TypeConst {
+                        type_name: reference,
+                    },
+                    span: type_literal.span,
+                }));
+            }
+        }
+        let body = editor.add_block(&values, root_function.span).unwrap();
+        let root = editor
+            .add_const_decl(
+                &[],
+                false,
+                root_function.name.name,
+                None,
+                body,
+                root_function.span,
+            )
+            .unwrap();
+        let source_length = u32::try_from(source.len()).unwrap();
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, source_length)],
+            },
+        )
+        .unwrap();
+        (rir, symbols, root)
+    }
+
+    fn every_structured_type_owner() -> (ValidatedRir, ThreadedRodeo, InstRef) {
+        parsed_signature_owner(
+            "fn types(\
+                named: Name,\
+                qualified: lib.Name,\
+                unit: (),\
+                never: !,\
+                array: [Widget; fact(N)],\
+                literal_array: [u8; 4],\
+                slice: [u8],\
+                const_ptr: ptr const i32,\
+                mut_ptr: ptr mut i32,\
+                call: Result([Widget; fact(N)], lib.Option(Str(8)))\
+            ) {}\
+            fn make_struct() -> type {\
+                struct {\
+                    value: i32,\
+                    fn get(borrow self, comptime index: u8) -> ptr const i32 { 0 }\
+                }\
+            }\
+            fn make_enum() -> type { enum { First(i32), Second } }",
         )
     }
 
@@ -2767,6 +3453,191 @@ mod tests {
         let decoded = ValidatedRir::finish(destination, &context).unwrap();
         assert!(source.exact_eq(&decoded));
         assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    #[test]
+    fn every_structured_type_node_roundtrips_and_repacks_exactly() {
+        let (source, symbols, root) = every_structured_type_owner();
+        let variants = source
+            .type_syntax()
+            .nodes()
+            .iter()
+            .map(std::mem::discriminant)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(variants.len(), 13, "fixture must cover every type node");
+
+        let packed = pack(&source, &symbols, root);
+        let (decoded, metadata) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: symbols.len(),
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: u32::MAX,
+                },
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert_eq!(metadata.declaration, root);
+        assert_eq!(source.0.instructions, decoded.0.instructions);
+        assert_eq!(source.0.extra, decoded.0.extra);
+        let render = |rir: &ValidatedRir| {
+            (0..rir.type_syntax().nodes().len())
+                .map(|ordinal| {
+                    rir.type_syntax()
+                        .render_type_with(RirTypeSyntaxRef::from_u32(ordinal as u32), |symbol| {
+                            symbols.resolve(symbol)
+                        })
+                        .unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(render(&source), render(&decoded));
+        assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    #[test]
+    fn structured_type_corruption_fails_closed() {
+        let (source, symbols, root) = parsed_signature_owner("fn types(value: [i32]) {}");
+        let packed = pack(&source, &symbols, root);
+        let header = Header::parse(packed.as_bytes()).unwrap();
+        assert_eq!(header.types, 2);
+
+        let mut bad_tag = packed.as_bytes().to_vec();
+        bad_tag[header.types_offset] = 13;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_tag))),
+            PackedRirDecodeError::InvalidTag {
+                family: "type syntax node",
+                tag: 13,
+            }
+        );
+
+        let mut bad_symbol = packed.as_bytes().to_vec();
+        bad_symbol[header.types_offset + 1] = u8::try_from(header.symbols).unwrap();
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_symbol))),
+            PackedRirDecodeError::SymbolOutOfBounds {
+                symbol: header.symbols,
+                symbols: header.symbols,
+            }
+        );
+
+        let mut forward_child = packed.as_bytes().to_vec();
+        forward_child[header.instructions_offset - 1] = 1;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(forward_child))),
+            PackedRirDecodeError::ForwardTypeReference {
+                owner: 1,
+                reference: 1,
+            }
+        );
+
+        let mut excessive_count = packed.as_bytes().to_vec();
+        set_header(&mut excessive_count, 16, 255);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(excessive_count))),
+            PackedRirDecodeError::CountOutOfBounds {
+                family: "header counts",
+            }
+        );
+
+        let mut truncated = packed.as_bytes().to_vec();
+        truncated.remove(header.instructions_offset - 1);
+        set_header(&mut truncated, 44, header.instructions_offset - 1);
+        set_header(&mut truncated, 48, header.basis_offset - 1);
+        set_header(&mut truncated, 52, header.end_offset - 1);
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(truncated))),
+            PackedRirDecodeError::Truncated
+        );
+
+        let mut bad_instruction_ref = packed.as_bytes().to_vec();
+        bad_instruction_ref[header.instructions_offset + 1] = 2;
+        assert_eq!(
+            decode_error(PackedValidatedRir(Arc::from(bad_instruction_ref))),
+            PackedRirDecodeError::TypeReferenceOutOfBounds {
+                reference: 2,
+                types: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn large_structured_type_pack_and_decode_are_cancellable_and_retryable() {
+        let symbols = ThreadedRodeo::new();
+        let name = symbols.get_or_intern("Repeated");
+        let mut editor = RirEditor::new();
+        let mut last = None;
+        for _ in 0..2_000 {
+            last = Some(named_type(&mut editor, name));
+        }
+        let value = editor.add_inst(Inst {
+            data: InstData::TypeConst {
+                type_name: last.unwrap(),
+            },
+            span: Span::new(0, 1),
+        });
+        let root = editor
+            .add_const_decl(&[], false, name, None, value, Span::new(0, 1))
+            .unwrap();
+        let source = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count: symbols.len(),
+                source_lengths: &[(FileId::DEFAULT, 1)],
+            },
+        )
+        .unwrap();
+
+        let mut encode_checks = 0usize;
+        let canceled = source.try_pack_candidate(
+            &symbols,
+            PackedRirMetadata {
+                declaration: root,
+                method_owner: None,
+            },
+            || {
+                encode_checks += 1;
+                if encode_checks == 1_000 {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            },
+            |_slot, span| Ok((span.start, span.end)),
+        );
+        assert!(matches!(
+            canceled,
+            Err(PackedRirEncodeError::Checkpoint(()))
+        ));
+
+        let packed = pack(&source, &symbols, root);
+        let projection = PackedRirProjection {
+            symbol_count: symbols.len(),
+            file_id: FileId::DEFAULT,
+            declaration_start: 0,
+            source_length: 1,
+        };
+        let mut decode_checks = 0usize;
+        let canceled = packed.try_decode_validated(projection, || {
+            decode_checks += 1;
+            if decode_checks == 1_000 {
+                Err(())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(
+            canceled,
+            Err(PackedRirAppendError::Checkpoint(()))
+        ));
+
+        let (decoded, metadata) = packed
+            .try_decode_validated(projection, || Ok::<_, ()>(()))
+            .unwrap();
+        assert_eq!(metadata.declaration, root);
+        assert!(source.exact_eq(&decoded));
     }
 
     #[test]
@@ -3010,8 +3881,8 @@ mod tests {
         let mut nonminimal = packed.as_bytes().to_vec();
         nonminimal[header.instructions_offset + 2] = 0x81;
         nonminimal.insert(header.instructions_offset + 3, 0);
-        set_header(&mut nonminimal, 44, header.basis_offset + 1);
-        set_header(&mut nonminimal, 48, header.end_offset + 1);
+        set_header(&mut nonminimal, 48, header.basis_offset + 1);
+        set_header(&mut nonminimal, 52, header.end_offset + 1);
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(nonminimal))),
             PackedRirDecodeError::NonMinimalVarint
@@ -3019,8 +3890,8 @@ mod tests {
 
         let mut truncated = packed.as_bytes().to_vec();
         truncated.remove(header.basis_offset - 1);
-        set_header(&mut truncated, 44, header.basis_offset - 1);
-        set_header(&mut truncated, 48, header.end_offset - 1);
+        set_header(&mut truncated, 48, header.basis_offset - 1);
+        set_header(&mut truncated, 52, header.end_offset - 1);
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(truncated))),
             PackedRirDecodeError::Truncated
@@ -3032,21 +3903,18 @@ mod tests {
         let (source, symbols, root) = validated_owner(false);
         let packed = pack(&source, &symbols, root);
         let header = Header::parse(packed.as_bytes()).unwrap();
-        let spelling =
-            packed.as_bytes()[header.symbols_offset..header.instructions_offset].to_vec();
+        let spelling = packed.as_bytes()[header.symbols_offset..header.types_offset].to_vec();
         let mut duplicate = packed.as_bytes().to_vec();
-        duplicate.splice(
-            header.instructions_offset..header.instructions_offset,
-            spelling.clone(),
-        );
+        duplicate.splice(header.types_offset..header.types_offset, spelling.clone());
         set_header(&mut duplicate, 12, 2);
+        set_header(&mut duplicate, 40, header.types_offset + spelling.len());
         set_header(
             &mut duplicate,
-            40,
+            44,
             header.instructions_offset + spelling.len(),
         );
-        set_header(&mut duplicate, 44, header.basis_offset + spelling.len());
-        set_header(&mut duplicate, 48, header.end_offset + spelling.len());
+        set_header(&mut duplicate, 48, header.basis_offset + spelling.len());
+        set_header(&mut duplicate, 52, header.end_offset + spelling.len());
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(duplicate))),
             PackedRirDecodeError::DuplicateSymbol {
@@ -3084,8 +3952,9 @@ mod tests {
         let symbols = ThreadedRodeo::new();
         let name = symbols.get_or_intern("name");
         let mut editor = RirEditor::new();
+        let type_name = named_type(&mut editor, name);
         let value = editor.add_inst(Inst {
-            data: InstData::TypeConst { type_name: name },
+            data: InstData::TypeConst { type_name },
             span: Span::new(0, 1),
         });
         let root = editor
@@ -3102,7 +3971,11 @@ mod tests {
         let packed = pack(&source, &symbols, root);
         let header = Header::parse(packed.as_bytes()).unwrap();
         let mut corrupt = packed.as_bytes().to_vec();
-        corrupt[header.instructions_offset + 1] = 1;
+        let root_opcode = corrupt[header.instructions_offset..header.basis_offset]
+            .iter()
+            .rposition(|byte| *byte == 34)
+            .expect("fixture has a final constant declaration");
+        corrupt[header.instructions_offset + root_opcode + 3] = 1;
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(corrupt))),
             PackedRirDecodeError::SymbolOutOfBounds {
@@ -3144,6 +4017,8 @@ mod tests {
             span,
         };
         let mut editor = RirEditor::new();
+        let type_a = named_type(&mut editor, a);
+        let type_b = named_type(&mut editor, b);
         let mut refs = Vec::new();
         macro_rules! add {
             ($data:expr) => {{
@@ -3235,12 +4110,12 @@ mod tests {
                 a,
                 &[RirParam {
                     name: a,
-                    ty: b,
+                    ty: type_b,
                     mode: RirParamMode::Borrow,
                     is_comptime: true,
                     span,
                 }],
-                b,
+                type_b,
                 block,
                 true,
                 RirParamMode::Inout,
@@ -3263,10 +4138,10 @@ mod tests {
         );
         add!(InstData::TypeIntrinsic {
             name: a,
-            type_arg: b
+            type_arg: type_b
         });
         add!(InstData::OffsetOf {
-            type_arg: a,
+            type_arg: type_a,
             field: b
         });
         add!(InstData::Ret(Some(unit)));
@@ -3277,7 +4152,7 @@ mod tests {
                     std::slice::from_ref(&directive),
                     Some(a),
                     true,
-                    Some(b),
+                    Some(type_b),
                     unit,
                     true,
                     span,
@@ -3299,7 +4174,7 @@ mod tests {
                     true,
                     true,
                     a,
-                    &[(a, b)],
+                    &[(a, type_b)],
                     &[function],
                     span,
                 )
@@ -3321,7 +4196,7 @@ mod tests {
         });
         refs.push(
             editor
-                .add_enum_decl(true, a, &[a, b], &[vec![a], vec![]], span)
+                .add_enum_decl(true, a, &[a, b], &[vec![type_a], vec![]], span)
                 .unwrap(),
         );
         add!(InstData::EnumVariant {
@@ -3350,15 +4225,15 @@ mod tests {
         });
         add!(InstData::Comptime { expr: unit });
         add!(InstData::Checked { expr: unit });
-        add!(InstData::TypeConst { type_name: a });
+        add!(InstData::TypeConst { type_name: type_a });
         refs.push(
             editor
-                .add_anon_struct_type(&[(a, b)], &[function], anchor.clone(), span)
+                .add_anon_struct_type(&[(a, type_b)], &[function], anchor.clone(), span)
                 .unwrap(),
         );
         refs.push(
             editor
-                .add_anon_enum_type(&[a, b], &[vec![b], vec![]], anchor, span)
+                .add_anon_enum_type(&[a, b], &[vec![type_b], vec![]], anchor, span)
                 .unwrap(),
         );
         let root = editor
@@ -3366,7 +4241,7 @@ mod tests {
                 std::slice::from_ref(&directive),
                 true,
                 a,
-                Some(b),
+                Some(type_b),
                 block,
                 span,
             )
@@ -3487,7 +4362,7 @@ mod tests {
 
         let mut extra = packed.as_bytes().to_vec();
         extra.push(0);
-        set_header(&mut extra, 48, header.end_offset + 1);
+        set_header(&mut extra, 52, header.end_offset + 1);
         assert_eq!(
             decode_error(PackedValidatedRir(Arc::from(extra))),
             PackedRirDecodeError::TrailingBytes
@@ -3571,6 +4446,7 @@ mod tests {
         let name = symbols.get_or_intern("method");
         let ty = symbols.get_or_intern("Type");
         let mut editor = RirEditor::new();
+        let return_type = named_type(&mut editor, ty);
         let unit = editor.add_inst(Inst {
             data: InstData::UnitConst,
             span: Span::new(0, 1),
@@ -3585,7 +4461,7 @@ mod tests {
                 false,
                 name,
                 &[],
-                ty,
+                return_type,
                 block,
                 true,
                 RirParamMode::Normal,
@@ -3699,6 +4575,7 @@ mod tests {
         };
 
         let mut function = RirEditor::new();
+        let function_return = named_type(&mut function, b);
         let unit = function.add_inst(Inst {
             data: InstData::UnitConst,
             span: Span::new(0, 1),
@@ -3713,7 +4590,7 @@ mod tests {
                 false,
                 a,
                 &[],
-                b,
+                function_return,
                 block,
                 false,
                 RirParamMode::Normal,
@@ -3798,15 +4675,31 @@ mod tests {
         ));
 
         let mut structure = RirEditor::new();
+        let structure_field = named_type(&mut structure, b);
         let structure_root = structure
-            .add_struct_decl(&[], false, false, a, &[(a, b)], &[], Span::new(0, 1))
+            .add_struct_decl(
+                &[],
+                false,
+                false,
+                a,
+                &[(a, structure_field)],
+                &[],
+                Span::new(0, 1),
+            )
             .unwrap();
         let structure = finish_metadata_fixture(structure, &symbols);
         assert!(pack_result(&structure, metadata(structure_root)).is_ok());
 
         let mut enumeration = RirEditor::new();
+        let enumeration_payload = named_type(&mut enumeration, b);
         let enum_root = enumeration
-            .add_enum_decl(false, a, &[a], &[vec![b]], Span::new(0, 1))
+            .add_enum_decl(
+                false,
+                a,
+                &[a],
+                &[vec![enumeration_payload]],
+                Span::new(0, 1),
+            )
             .unwrap();
         let enumeration = finish_metadata_fixture(enumeration, &symbols);
         assert!(pack_result(&enumeration, metadata(enum_root)).is_ok());
@@ -3856,6 +4749,7 @@ mod tests {
         ));
 
         let mut methodful = RirEditor::new();
+        let method_return = named_type(&mut methodful, b);
         let unit = methodful.add_inst(Inst {
             data: InstData::UnitConst,
             span: Span::new(0, 1),
@@ -3870,7 +4764,7 @@ mod tests {
                 false,
                 a,
                 &[],
-                b,
+                method_return,
                 block,
                 false,
                 RirParamMode::Normal,
@@ -3929,8 +4823,17 @@ mod tests {
         let name = symbols.get_or_intern("S");
         let ty = symbols.get_or_intern("T");
         let mut shell = RirEditor::new();
+        let shell_field_type = named_type(&mut shell, ty);
         let shell_root = shell
-            .add_struct_decl(&[], false, false, name, &[(name, ty)], &[], Span::new(0, 1))
+            .add_struct_decl(
+                &[],
+                false,
+                false,
+                name,
+                &[(name, shell_field_type)],
+                &[],
+                Span::new(0, 1),
+            )
             .unwrap();
         let shell = ValidatedRir::finish(
             shell,
@@ -3943,6 +4846,7 @@ mod tests {
         let packed_shell = pack(&shell, &symbols, shell_root);
 
         let mut destination = RirEditor::new();
+        let method_return = named_type(&mut destination, ty);
         let unit = destination.add_inst(Inst {
             data: InstData::UnitConst,
             span: Span::new(0, 1),
@@ -3957,7 +4861,7 @@ mod tests {
                 false,
                 name,
                 &[],
-                ty,
+                method_return,
                 block,
                 false,
                 RirParamMode::Normal,

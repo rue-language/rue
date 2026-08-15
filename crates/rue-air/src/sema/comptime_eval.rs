@@ -993,7 +993,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
                     // length at each specialization; RUE-16).
                     let Some(field_ty) = self
-                        .resolve_type_for_comptime_with_subst_and_values_at_span(
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
                             &local_type_subst,
                             &local_value_subst,
@@ -1109,7 +1109,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } => {
                 let variant_syms: Vec<lasso::Spur> =
                     self.body_rir_ref().anon_enum_variants(variants).to_vec();
-                let payload_symbols: Vec<Vec<lasso::Spur>> = self
+                let payload_symbols: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
                     .body_rir_ref()
                     .anon_enum_payloads(payloads, variants)
                     .map(|payload| payload.to_vec())
@@ -1129,7 +1129,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let Some(ty) = self
-                            .resolve_type_for_comptime_with_subst_and_values_at_span(
+                            .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                                 ty_sym,
                                 &enum_type_subst,
                                 &enum_value_subst,
@@ -1163,12 +1163,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::TypeConst { type_name } => {
                 let type_name = *type_name;
                 // Type parameters in scope substitute first.
-                if let Some(&ty) = env.type_subst.get(&type_name) {
-                    return Ok(Some(ConstValue::Type(ty)));
-                }
-                // A named type (primitive / struct / enum) resolves directly.
-                if let Some(ty) = self.resolve_named_type_value(type_name, span)? {
-                    return Ok(Some(ConstValue::Type(ty)));
+                if let Some(type_symbol) = self.rir_type_named_symbol(type_name) {
+                    if let Some(&ty) = env.type_subst.get(&type_symbol) {
+                        return Ok(Some(ConstValue::Type(ty)));
+                    }
+                    // A named type (primitive / struct / enum) resolves directly.
+                    if let Some(ty) = self.resolve_named_type_value(type_symbol, span)? {
+                        return Ok(Some(ConstValue::Type(ty)));
+                    }
                 }
                 // A *composite* or *unit* type value — `[i32; 2]`, `()`,
                 // `ptr const T` — is an equally-valid type argument (Appendix A
@@ -1179,7 +1181,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // pointee naming an enclosing `comptime T` still resolves). An
                 // unresolvable spelling stays non-evaluable (`None`).
                 Ok(self
-                    .resolve_type_for_comptime_with_subst_and_values_at_span(
+                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                         type_name,
                         env.type_subst,
                         env.value_subst,
@@ -1389,12 +1391,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // substitutions (`T -> Inner` for `ArrayBuf(Inner)`); a
                 // still-unresolved type parameter makes the gate non-evaluable
                 // (it will be re-checked at a concrete instantiation).
-                let Some(elem_ty) = self.resolve_type_for_comptime_with_subst_and_values_at_span(
-                    type_arg,
-                    env.type_subst,
-                    env.value_subst,
-                    span,
-                ) else {
+                let Some(elem_ty) = self
+                    .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                        type_arg,
+                        env.type_subst,
+                        env.value_subst,
+                        span,
+                    )
+                else {
                     return Ok(None);
                 };
                 if is_trivial_gate {

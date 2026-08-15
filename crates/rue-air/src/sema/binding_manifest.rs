@@ -12,9 +12,7 @@ use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
 use super::{ConstValue, Sema, SemaOutput};
-use crate::types::{
-    ArrayLen, PtrMutability, Type, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
-};
+use crate::types::{Type, TypeKind};
 use crate::{StableDefinitionKind, StableDefinitionNamespace};
 
 /// A nominal declaration identity valid for one successful binding request.
@@ -1346,14 +1344,13 @@ impl<'a> DeclarationShells<'a> {
                     }
                     let is_c_export = *is_c_export;
                     let returns_borrow = *returns_borrow;
-                    let type_name = self.sema.interner.get_or_intern("type");
                     let rir_parameters = self.sema.rir.params(params);
                     if parameters
                         .iter()
                         .zip(rir_parameters.iter())
                         .any(|(parameter, rir)| {
                             rir.is_comptime
-                                && rir.ty == type_name
+                                && self.sema.rir_type_is_named(rir.ty, "type")
                                 && parameter.ty != SemanticExportType::ComptimeType
                         })
                     {
@@ -1366,7 +1363,10 @@ impl<'a> DeclarationShells<'a> {
                         .map(|name| self.sema.interner.get_or_intern(name.as_ref()));
                     let generic_parameters = rir_parameters
                         .iter()
-                        .filter(|parameter| parameter.is_comptime && parameter.ty == type_name)
+                        .filter(|parameter| {
+                            parameter.is_comptime
+                                && self.sema.rir_type_is_named(parameter.ty, "type")
+                        })
                         .map(|_| Type::COMPTIME_TYPE)
                         .collect::<Vec<_>>();
                     let types = parameters
@@ -1428,7 +1428,8 @@ impl<'a> DeclarationShells<'a> {
                         let info = super::FunctionInfo {
                             params: range,
                             return_type: return_type_value,
-                            return_type_sym: *return_type,
+                            return_type_syntax: *return_type,
+                            returns_type: self.sema.rir_type_is_named(*return_type, "type"),
                             body,
                             declaration: pending.declaration,
                             span: pending.shell.declaration_span,
@@ -3312,11 +3313,14 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         &self,
         info: &super::FunctionInfo,
     ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
+        let InstData::FnDecl { return_type, .. } = &self.rir.get(info.declaration).data else {
+            return Err(SemanticExportFailure::UnmappedFunction);
+        };
         self.export_callable_signature(
             info.params,
             info.return_type,
             info.rir_params(self.rir),
-            info.return_type_sym,
+            *return_type,
         )
     }
 
@@ -3325,10 +3329,9 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         range: crate::ParamRange,
         return_type: Type,
         rir_params: &rue_rir::RirParamsRange,
-        return_type_sym: Spur,
+        return_type_syntax: rue_rir::RirTypeSyntaxRef,
     ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
         let rir_params = self.rir.params(rir_params);
-        let type_name = self.interner.get("type");
         // Deferred signature syntax can mention the same generic parameter in
         // many nested positions. Index the filtered parameter ordinals once so
         // each syntax leaf does one interner lookup and one map lookup instead
@@ -3338,18 +3341,17 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         let mut generic_name_indices = HashMap::new();
         for (index, param) in rir_params
             .iter()
-            .filter(|param| param.is_comptime && Some(param.ty) == type_name)
+            .filter(|param| param.is_comptime && self.rir_type_is_named(param.ty, "type"))
             .enumerate()
         {
             generic_name_indices
                 .entry(param.name)
                 .or_insert(index as u32);
         }
-        let convert = |ty: Type, symbol: Spur| {
+        let convert = |ty: Type, syntax: rue_rir::RirTypeSyntaxRef| {
             if ty == Type::COMPTIME_TYPE {
-                let syntax = self.interner.resolve(&symbol);
-                if syntax != "type" {
-                    return self.export_deferred_signature_type(syntax, &generic_name_indices);
+                if !self.rir_type_is_named(syntax, "type") {
+                    return self.export_deferred_rir_signature_type(syntax, &generic_name_indices);
                 }
             }
             self.export_type(ty, &mut Vec::new())
@@ -3377,41 +3379,51 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok((parameters.into(), convert(return_type, return_type_sym)?))
+        Ok((parameters.into(), convert(return_type, return_type_syntax)?))
     }
 
-    fn export_deferred_signature_type(
+    fn export_deferred_rir_signature_type(
         &self,
-        syntax: &str,
+        syntax: rue_rir::RirTypeSyntaxRef,
         generic_name_indices: &HashMap<Spur, u32>,
     ) -> Result<SemanticExportType, SemanticExportFailure> {
-        if let Some(index) = self
-            .interner
-            .get(syntax)
-            .and_then(|name| generic_name_indices.get(&name))
+        use rue_rir::RirTypeSyntaxNode as N;
+        let arena = self.rir.type_syntax();
+        match arena
+            .node(syntax)
+            .ok_or(SemanticExportFailure::UnsupportedGenericSignature)?
         {
-            return Ok(SemanticExportType::GenericParameter(*index));
+            N::Named(symbol) => {
+                let symbol = arena
+                    .symbol(*symbol)
+                    .ok_or(SemanticExportFailure::UnsupportedGenericSignature)?;
+                generic_name_indices
+                    .get(symbol)
+                    .copied()
+                    .map(SemanticExportType::GenericParameter)
+                    .ok_or(SemanticExportFailure::UnsupportedGenericSignature)
+            }
+            N::Array { element, length } => {
+                let Some(N::Integer(length)) = arena.node(*length) else {
+                    return Err(SemanticExportFailure::UnsupportedGenericSignature);
+                };
+                let len = u64::try_from(*length)
+                    .map_err(|_| SemanticExportFailure::UnsupportedGenericSignature)?;
+                Ok(SemanticExportType::Array {
+                    element: Box::new(
+                        self.export_deferred_rir_signature_type(*element, generic_name_indices)?,
+                    ),
+                    len,
+                })
+            }
+            N::PointerConst { pointee } => Ok(SemanticExportType::PtrConst(Box::new(
+                self.export_deferred_rir_signature_type(*pointee, generic_name_indices)?,
+            ))),
+            N::PointerMut { pointee } => Ok(SemanticExportType::PtrMut(Box::new(
+                self.export_deferred_rir_signature_type(*pointee, generic_name_indices)?,
+            ))),
+            _ => Err(SemanticExportFailure::UnsupportedGenericSignature),
         }
-        if let Some((element, len)) = parse_array_type_syntax(syntax) {
-            let ArrayLen::Literal(len) = len else {
-                return Err(SemanticExportFailure::UnsupportedGenericSignature);
-            };
-            return Ok(SemanticExportType::Array {
-                element: Box::new(
-                    self.export_deferred_signature_type(&element, generic_name_indices)?,
-                ),
-                len,
-            });
-        }
-        if let Some((pointee, mutability)) = parse_pointer_type_syntax(syntax) {
-            let pointee =
-                Box::new(self.export_deferred_signature_type(&pointee, generic_name_indices)?);
-            return Ok(match mutability {
-                PtrMutability::Const => SemanticExportType::PtrConst(pointee),
-                PtrMutability::Mut => SemanticExportType::PtrMut(pointee),
-            });
-        }
-        Err(SemanticExportFailure::UnsupportedGenericSignature)
     }
 
     fn build_declaration_semantics(
@@ -4255,6 +4267,7 @@ mod tests {
             })
             .unwrap();
         rir.set_function_public(method, true).unwrap();
+        let rir = rir.finish();
         let bound = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new())
             .bind_declarations()
             .unwrap();
