@@ -1028,6 +1028,7 @@ filegroup(
 rue_sh_test(
     name = "tier-ci-selector-validation",
     test = "scripts/validate-tier-ci-selectors.py",
+    resources = glob(["scripts/gatelib/*.py"]),
     args = [
         "--test-defs",
         "$(location :tier-ci-selector-inputs)/test_defs.bzl",
@@ -1043,7 +1044,8 @@ rue_sh_test(
 rue_sh_test(
     name = "tier-ci-selector-tool-tests",
     test = "scripts/test-validate-tier-ci-selectors.py",
-    resources = ["scripts/validate-tier-ci-selectors.py"],
+    resources = ["scripts/validate-tier-ci-selectors.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TIER_VALIDATION_ROOT": "$(location :tier-ci-selector-inputs)",
