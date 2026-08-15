@@ -164,7 +164,18 @@ GAZETTE_PORT_REVISION = 2
 # slightly, and the WORKLOAD identity has to move for it. That is the correct
 # outcome rather than a cost: a new comparable segment is exactly what a change
 # to what every tool consumes should open.
-PREPARER_REVISION = 3
+#
+# REVISION 4 (RUE-1503) derives the static passthrough from the committed
+# tree: every file git ignores under `website/static` is excluded from both
+# the copy and the digest. Until now the exclusion was one hardcoded name,
+# and `website/build.sh` generates TWO files there — `status.json` slipped
+# through, so a machine that had ever built the website recorded a different
+# `static_digest` than a clean checkout. The identity is supposed to be a
+# property of the corpus, not of the working tree's build history. Worse, two
+# of `status.json`'s rows are derived from the performance store, which is
+# the same benchmark-feeds-itself loop the `performance-data.json` exclusion
+# and ADR-0072 Decision 3's page carve-outs exist to prevent.
+PREPARER_REVISION = 4
 
 # What gazette itself renders. Inside the workload identity. The peers' roots
 # are `peer_ports.PEER_PORT_ROOTS`, deliberately in the other file.
@@ -250,9 +261,18 @@ def corpus_rules() -> peer_ports.CorpusRules:
 #   beside it in `gazette_peer_ports.py`: both peer configurations lost the same
 #   stale comment, and neither peer's rendering changed. What did change is an
 #   assembly rule, which PREPARER_REVISION records.
+#
+#   RUE-1503. `runtime.html` a fifth time, and the fifth identical conclusion:
+#   an excluded page's template, no port follows. It moved because the
+#   disclosure now says the static passthrough is the committed tree — the
+#   site build derives `status.json` and `performance-data.json` into
+#   `website/static`, and only the latter was excluded, so the recorded
+#   identity depended on whether the website was ever built. No port's bytes
+#   moved. What did change is an assembly rule, which PREPARER_REVISION
+#   records.
 PRODUCTION_TEMPLATE_ROOT = "website/templates"
 PRODUCTION_TEMPLATE_DIGEST = (
-    "be481eb70d83cbd0a5443027f22005ddf476dd375f1b658c9e2635db68350d9c"
+    "12e9ab194652e71ff147598103aed456d63206e2a8ca53d8461aad6b145fff9d"
 )
 
 # Pages Zola emits no rendered body for, so `body` mode has nothing to compare
@@ -1010,6 +1030,56 @@ def duplicate_corpus(content: str, scale: int) -> None:
         shutil.rmtree(original, ignore_errors=True)
 
 
+def static_passthrough_files(static_source: str) -> list[str]:
+    """The static files a fixture carries: the tree minus git-ignored output.
+
+    `website/build.sh` generates derived files INTO `website/static`
+    (`status.json`, `performance-data.json`), so what that directory contains
+    depends on whether the site was ever built in this working tree — and the
+    fixture identity must not (RUE-1503). The registry of "generated, never
+    committed" is the `.gitignore` entries that already have to exist for that
+    output, so the exclusion is derived from git rather than from a second
+    hand-maintained name list here, which is how `status.json` got past the
+    `performance-data.json` entry.
+
+    Refusal was considered and rejected for the ignored class: refusing would
+    make the preparer unrunnable on any machine that ever ran `build.sh`,
+    for files the repository has already declared to be build output. An
+    untracked file that is NOT ignored still rides along, exactly like an
+    uncommitted content edit: the digest moves and the record says so.
+
+    No git, no answer: without the ignore rules there is no way to tell site
+    content from build output, and preparing a fixture whose identity depends
+    on the working tree's build history is the defect this function exists to
+    prevent, so that case refuses rather than degrades.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", REPO, "ls-files", "--others", "--ignored",
+             "--exclude-standard", "-z", "--", "website/static"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as error:
+        raise SystemExit(
+            "gazette-corpus-diff: cannot run git to list ignored files under "
+            "website/static (%s); without the ignore rules, site content "
+            "cannot be told apart from generated build output, and a fixture "
+            "identity that depends on whether the website was ever built is "
+            "the defect this check prevents (RUE-1503)" % error)
+    if listing.returncode != 0:
+        raise SystemExit(
+            "gazette-corpus-diff: cannot list git-ignored files under "
+            "website/static (git exited %d: %s); without the ignore rules, "
+            "site content cannot be told apart from generated build output, "
+            "and a fixture identity that depends on whether the website was "
+            "ever built is the defect this check prevents (RUE-1503)"
+            % (listing.returncode, listing.stderr.decode("utf-8", "replace").strip()))
+    prefix = "website/static/"
+    ignored = {entry[len(prefix):] for entry in
+               listing.stdout.decode("utf-8").split("\0")
+               if entry.startswith(prefix)}
+    return [rel for rel in walk_files(static_source) if rel not in ignored]
+
+
 def prepare_fixture(root: str, scale: int) -> dict:
     """Assemble a complete gazette site and record its input identity.
 
@@ -1037,15 +1107,18 @@ def prepare_fixture(root: str, scale: int) -> dict:
     shutil.copy(os.path.join(REPO, "examples", "gazette", "config.toml"),
                 os.path.join(root, "config.toml"))
 
+    # ONE list drives both the digest and the copy, so the fixture cannot
+    # carry a file the recorded identity does not cover — the split where a
+    # hardcoded exclusion in one of two call sites could quietly disagree
+    # with the other.
     static_source = os.path.join(REPO, "website", "static")
-    static_files = [rel for rel in walk_files(static_source)
-                    # Derived at site-build time and never committed; including
-                    # it would make the fixture identity move with every
-                    # collection run rather than with the site.
-                    if rel != "performance-data.json"]
+    static_files = static_passthrough_files(static_source)
     static_digest, static_count, static_bytes = tree_digest(static_source, static_files)
-    shutil.copytree(static_source, os.path.join(root, "static"),
-                    ignore=shutil.ignore_patterns("performance-data.json"))
+    os.makedirs(os.path.join(root, "static"), exist_ok=True)
+    for rel in static_files:
+        dest = os.path.join(root, "static", rel.replace("/", os.sep))
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(os.path.join(static_source, rel), dest)
 
     port_digest, port_files, port_bytes = port_identity(GAZETTE_PORT_ROOTS)
 

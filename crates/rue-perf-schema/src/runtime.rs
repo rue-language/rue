@@ -3054,7 +3054,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-linux")
             .expect("aarch64-linux is a row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 4);
+        assert_eq!(epoch.suite_revision, 5);
         assert_eq!(epoch.target, "aarch64-linux");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -3082,7 +3082,7 @@ samples = 5
         let epoch = manifest
             .collection_epoch("aarch64-macos")
             .expect("aarch64-macos is the scheduled row of the v1 platform matrix");
-        assert_eq!(epoch.suite_revision, 4);
+        assert_eq!(epoch.suite_revision, 5);
         assert_eq!(epoch.target, "aarch64-macos");
         assert_eq!(epoch.optimization, OptimizationLevel::O3);
         assert_eq!(epoch.thread_policy, ThreadPolicy::SingleThreaded);
@@ -4819,11 +4819,14 @@ records_comparison_identity = true
         // epoch 2's records carry revision 1 and no comparison identity,
         // because neither existed when they were written; epoch 3's carry
         // revision 2 and the identity its peer policy pins; epoch 4's carry
-        // revision 3, the corpus no longer lower-cased. All must be appendable,
-        // and all must publish, or one of these changes would have invalidated
-        // evidence nobody can rewrite.
+        // revision 3, the corpus no longer lower-cased; epoch 5's carry
+        // revision 4, the static passthrough now the committed tree. All must
+        // be appendable, and all must publish, or one of these changes would
+        // have invalidated evidence nobody can rewrite.
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
-        for (epoch, suite_revision, preparer_revision) in [(2, 2, 1), (3, 3, 2), (4, 4, 3)] {
+        for (epoch, suite_revision, preparer_revision) in
+            [(2, 2, 1), (3, 3, 2), (4, 4, 3), (5, 5, 4)]
+        {
             let report = shipped_report(epoch, suite_revision, preparer_revision);
             let outcome = validate_runtime_report(&manifest, &report);
             assert_eq!(
@@ -4848,7 +4851,7 @@ records_comparison_identity = true
         // the point someone reads a joined row and cannot say which peer pins
         // it names.
         let manifest = RuntimeManifest::parse(CHECKED_IN_MANIFEST).expect("checked-in manifest");
-        let mut report = shipped_report(4, 4, 3);
+        let mut report = shipped_report(5, 5, 4);
         for observation in &mut report.workloads {
             observation.comparison = None;
         }
