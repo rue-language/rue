@@ -381,6 +381,12 @@ inputs. `scripts/ci-corpus-inventory` reports the current set from the graph:
 scripts/ci-corpus-inventory            # every cached_corpus_suite, one per line
 ```
 
+Exclusions are exact by construction — `--exclude //:cli-tests` names one
+target, `--exclude-label rue_cli_shard` resolves through the graph. There is
+deliberately no pattern form: exclusions are applied after the completeness
+cross-check below, so a wildcard is the one way a corpus could leave the sweep
+with every check still reporting green.
+
 `scripts/ci-heavy-suite` also names the actions a lane really executed, from the
 invocation's own event log, so the count above has an identity next to it:
 

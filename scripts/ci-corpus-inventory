@@ -18,7 +18,15 @@ set -uo pipefail
 
 json=false
 excludes=()
+exclude_labels=()
 
+# Exclusions are exact, never globs. A glob is the one way a corpus can leave
+# this inventory without an error: it is applied after the completeness
+# cross-check below, so a corpus whose name merely begins with an excluded
+# prefix — a `cli-tests-shard-weights-smoke` against `//:cli-tests-shard-*` —
+# would pass every check here and then silently drop out of the sweep. That is
+# the exact failure this script exists to make impossible, so the prefix
+# spelling is gone: name a target, or name a label the graph resolves.
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --json)
@@ -27,14 +35,30 @@ while [[ $# -gt 0 ]]; do
             ;;
         --exclude)
             if [[ $# -lt 2 ]]; then
-                echo "error: --exclude requires a glob" >&2
+                echo "error: --exclude requires a target label" >&2
+                exit 2
+            fi
+            if [[ ! "$2" =~ ^//[A-Za-z0-9._/-]*:[A-Za-z0-9._-]+$ ]]; then
+                echo "error: --exclude takes an exact target label, not a pattern: $2" >&2
                 exit 2
             fi
             excludes+=("$2")
             shift 2
             ;;
+        --exclude-label)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --exclude-label requires a label" >&2
+                exit 2
+            fi
+            if [[ ! "$2" =~ ^[A-Za-z0-9_-]+$ ]]; then
+                echo "error: --exclude-label takes a plain label: $2" >&2
+                exit 2
+            fi
+            exclude_labels+=("$2")
+            shift 2
+            ;;
         *)
-            echo "usage: scripts/ci-corpus-inventory [--json] [--exclude GLOB]..." >&2
+            echo "usage: scripts/ci-corpus-inventory [--json] [--exclude TARGET].. [--exclude-label LABEL].." >&2
             exit 2
             ;;
     esac
@@ -96,6 +120,23 @@ if [[ -n "$missing" ]]; then
     exit 1
 fi
 
+# Resolve label exclusions through the same graph the inventory came from, so
+# the excluded set tracks the labels rather than a name shape. `rue_cli_shard`
+# is what the four CLI shards actually are, and CLI_TEST_SHARD_COUNT can change
+# without an edit here; nothing else can join the set by being named like one.
+# An empty resolution is not an error — over-sweeping a corpus is safe, and this
+# script's whole failure direction is under-sweeping.
+for label in ${exclude_labels[@]+"${exclude_labels[@]}"}; do
+    if ! labeled="$(./buck2 uquery "attrfilter('labels', '$label', //...)")"; then
+        echo "error: could not query the '$label' set to resolve an exclusion" >&2
+        exit 1
+    fi
+    while IFS= read -r suite; do
+        [[ -n "$suite" ]] || continue
+        excludes+=("${suite#root}")
+    done <<<"$labeled"
+done
+
 # macOS ships Bash 3.2, where an empty array is "unset" to `set -u`: guard every
 # expansion rather than relying on `${#name[@]}`.
 suites=()
@@ -103,9 +144,8 @@ found=0
 while IFS= read -r suite; do
     [[ -n "$suite" ]] || continue
     skip=false
-    for glob in ${excludes[@]+"${excludes[@]}"}; do
-        # shellcheck disable=SC2053  # glob match is the point
-        if [[ "$suite" == $glob ]]; then
+    for excluded in ${excludes[@]+"${excludes[@]}"}; do
+        if [[ "$suite" == "$excluded" ]]; then
             skip=true
             break
         fi

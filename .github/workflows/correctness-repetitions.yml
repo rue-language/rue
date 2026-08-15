@@ -119,10 +119,17 @@ jobs:
         # no undeclared input `//:cli-tests` could have that the repeated shards
         # do not already expose. Sweeping it would be one more runner executing
         # the whole premerge CLI corpus for no incremental guarantee.
+        #
+        # The shards are excluded by their `rue_cli_shard` label rather than by
+        # name: that label is what makes the superset argument true, it is the
+        # same one `test.sh` subtracts for the same reason, and it follows
+        # CLI_TEST_SHARD_COUNT without an edit. A name pattern would also have
+        # quietly swallowed any future corpus that happened to be named like a
+        # shard, which is the one way a corpus could leave this sweep silently.
         run: |
           set -euo pipefail
           targets="$(scripts/ci-corpus-inventory --json \
-            --exclude '//:cli-tests' --exclude '//:cli-tests-shard-*')"
+            --exclude '//:cli-tests' --exclude-label rue_cli_shard)"
           printf 'sweeping: %s\n' "$targets"
           printf 'targets=%s\n' "$targets" >>"$GITHUB_OUTPUT"
 
