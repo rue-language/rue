@@ -144,13 +144,13 @@ pub use semantic_type_resolution::{
     SemanticResolvedModule, SemanticTypeConstructorHead, SemanticTypeConstructorParameter,
     SemanticTypeFact, SemanticTypeFactKind, SemanticTypeSyntaxError, SemanticTypeSyntaxFailure,
     SemanticTypeSyntaxProvider, SemanticValueSyntax, SemanticVisibilityDomain,
-    resolve_semantic_comptime_call, resolve_semantic_module_path, resolve_semantic_type_syntax,
-    resolve_structured_semantic_type_syntax, resolve_structured_semantic_type_syntax_with,
+    resolve_semantic_module_path, resolve_structured_semantic_type_syntax,
+    resolve_structured_semantic_type_syntax_with,
 };
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,
-    PtrMutTypeId, PtrMutability, StructDef, StructField, StructId, Type, TypeKind,
-    parse_array_type_syntax, parse_pointer_type_syntax, parse_type_call_syntax,
+    PtrMutTypeId, StructDef, StructField, StructId, Type, TypeKind, fixed_string_capacity,
+    is_slice_struct_name, is_string_view_struct_name,
 };
 
 /// Sentinel value used to encode parameter slots in AIR instructions.

@@ -1357,11 +1357,7 @@ where
             };
             name.as_ref() == "str"
                 || rue_builtins::get_builtin_enum(name).is_some()
-                || name
-                    .strip_prefix("Str(")
-                    .and_then(|name| name.strip_suffix(')'))
-                    .and_then(|capacity| capacity.parse::<u64>().ok())
-                    .is_some()
+                || crate::types::fixed_string_capacity(name).is_some()
         }) {
             return Err(SemanticImportFailure::BuiltinNominalShadow);
         }
@@ -1641,12 +1637,7 @@ where
         name: &Arc<str>,
         kind: SemanticImportNominalKind,
     ) -> Result<LocalNominal, SemanticImportFailure> {
-        if name
-            .strip_prefix("Str(")
-            .and_then(|name| name.strip_suffix(')'))
-            .and_then(|capacity| capacity.parse::<u64>().ok())
-            .is_some()
-        {
+        if crate::types::fixed_string_capacity(name).is_some() {
             if kind != SemanticImportNominalKind::Struct {
                 return Err(SemanticImportFailure::BuiltinNominalKindMismatch);
             }
@@ -1933,7 +1924,7 @@ where
             crate::TypeKind::ComptimeType => SemanticImportType::ComptimeType,
             crate::TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
-                if def.name.starts_with('[') && def.name.ends_with(']') && !def.name.contains(';') {
+                if crate::types::is_slice_struct_name(&def.name) {
                     let Some(field) = def.fields.first() else {
                         return Err(SemanticImportFailure::ForeignLocalType);
                     };
@@ -1955,13 +1946,7 @@ where
                         name: name.clone(),
                         kind: *kind,
                     }
-                } else if def.is_builtin
-                    && def
-                        .name
-                        .strip_prefix("Str(")
-                        .and_then(|name| name.strip_suffix(')'))
-                        .and_then(|capacity| capacity.parse::<u64>().ok())
-                        .is_some()
+                } else if def.is_builtin && crate::types::fixed_string_capacity(&def.name).is_some()
                 {
                     // `Str(N)` is registered lazily in the exact transaction
                     // pool. Its compiler-builtin bit plus canonical capacity

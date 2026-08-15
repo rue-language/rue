@@ -487,6 +487,27 @@ fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
 }
 
 #[test]
+fn compiler_uses_air_synthetic_type_identity_policy() {
+    for (name, source) in [
+        (
+            "local_semantic_materialization.rs",
+            include_str!("local_semantic_materialization.rs"),
+        ),
+        (
+            "revisioned_query_database.rs",
+            include_str!("revisioned_query_database.rs"),
+        ),
+    ] {
+        for peer in [".strip_prefix(\"Str(\")", ".starts_with(\"Str(\")"] {
+            assert!(
+                !source.contains(peer),
+                "{name} regained handwritten synthetic-type identity policy: {peer}"
+            );
+        }
+    }
+}
+
+#[test]
 fn body_transaction_has_no_complete_declaration_candidate_map() {
     let runtime = include_str!("revisioned_query_database.rs");
     let method = source_between_exact_boundaries(
@@ -2242,7 +2263,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             for evaluator_only in [
                 ".evaluate_declaration_shell(",
                 ".evaluate_raw_declaration_signature(",
-                ".evaluate_raw_declaration_body(",
                 ".declaration_import(",
                 ".declaration_capabilities()",
                 "project_semantic_shell(",
@@ -2268,19 +2288,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "body_query"
-                | "declaration_candidate"
-                | "parsed_modules"
-                | "revisioned_query_database"
-                | "semantic_query_nucleus"
-        ) {
-            assert!(
-                !code_identifiers(source).contains(&"RawDeclarationBody"),
-                "compiler production module {name} escaped the raw-body authority allowlist"
-            );
-        }
-        if !matches!(
-            *name,
             "declaration_candidate"
                 | "parsed_modules"
                 | "revisioned_query_database"
@@ -2301,6 +2308,9 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             "RawConstSyntax",
             "raw_const_syntax",
             "compiler.raw-const-syntax",
+            "RawDeclarationBody",
+            "raw_declaration_body",
+            "compiler.raw-declaration-body",
         ] {
             assert!(
                 !source.contains(removed),
@@ -2327,19 +2337,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         "the signature query must project the exact borrowed parsed declaration"
     );
     assert!(!runtime.contains("parse_semantic_signature("));
-    assert_eq!(
-        runtime.matches(".evaluate_raw_declaration_body(").count(),
-        1
-    );
-    assert_eq!(
-        parsed.matches("fn evaluate_raw_declaration_body(").count(),
-        1
-    );
-    assert_eq!(
-        runtime.matches("\"compiler.raw-declaration-body\"").count(),
-        1
-    );
-    assert_eq!(parsed.matches("RawDeclarationBodySyntax {").count(), 1);
     assert_eq!(runtime.matches(".declaration_import(").count(), 1);
     assert_eq!(parsed.matches("fn declaration_import(").count(), 1);
     assert_eq!(
@@ -2347,26 +2344,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         1
     );
     assert!(!runtime.contains("Vec::remove"));
-
-    let raw_body_evaluator = runtime
-        .split("let occurrences_for_raw_body")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("let parse_for_declaration_body_plan_artifacts")
-                .next()
-        })
-        .unwrap();
-    for forbidden in [
-        "module_rirs",
-        "lower_module_rir",
-        "CanonicalMergedProgram",
-        "SemanticView",
-    ] {
-        assert!(
-            !raw_body_evaluator.contains(forbidden),
-            "raw-body syntax evaluator gained a broad compiler dependency: {forbidden}"
-        );
-    }
 
     let toolchain_demand_evaluator = runtime
         .split("let artifacts_for_toolchain_demands")
@@ -2406,7 +2383,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let shell_terminal = runtime
         .split("enum DeclarationShellQueryValue")
         .nth(1)
-        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
+        .and_then(|tail| tail.split("struct DeclarationBodyPlanQueryKey").next())
         .unwrap();
     for forbidden in [
         "CompileErrors",
@@ -2420,28 +2397,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !shell_terminal.contains(forbidden),
             "shell terminal regained positioned/live semantic payload: {forbidden}"
-        );
-    }
-    let raw_body_terminal = runtime
-        .split("enum RawDeclarationBodyQueryValue")
-        .nth(1)
-        .and_then(|tail| tail.split("struct DeclarationBodyPlanQueryKey").next())
-        .unwrap();
-    for forbidden in [
-        "CompileErrors",
-        "Span",
-        "FileId",
-        "Spur",
-        "Ast",
-        "InstRef",
-        "Rir",
-        "TypeId",
-        "SemanticDefinitionToken",
-        "SemanticModuleToken",
-    ] {
-        assert!(
-            !raw_body_terminal.contains(forbidden),
-            "raw-body terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
     let declaration_import_terminal = runtime
@@ -2489,20 +2444,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !lookup_value.contains(forbidden),
             "LookupName terminal regained locator/live payload: {forbidden}"
-        );
-    }
-    let raw_body_payload = module("declaration_candidate")
-        .split("pub(crate) struct RawDeclarationBodySyntax")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) enum RawDeclarationBodyFailure")
-                .next()
-        })
-        .unwrap();
-    for forbidden in ["Span", "FileId", "Spur", "Ast", "Rir", "InstRef", "TypeId"] {
-        assert!(
-            !raw_body_payload.contains(forbidden),
-            "raw-body payload regained a positioned or live parser/semantic handle: {forbidden}"
         );
     }
     let declaration_import_payload = module("declaration_candidate")

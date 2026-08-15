@@ -12,10 +12,9 @@ use crate::Type;
 use crate::intern_pool::TypeInternPool;
 use crate::scope::ScopedContext;
 use crate::sema::ConstValue;
-use crate::types::{
-    ArrayLen, ModuleId, PtrMutability, StructId, TypeKind, parse_array_type_syntax,
-    parse_pointer_type_syntax,
-};
+#[cfg(test)]
+use crate::types::ArrayLen;
+use crate::types::{ModuleId, StructId, TypeKind};
 use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
@@ -494,11 +493,8 @@ impl<'a> ConstraintGenerator<'a> {
             && let Some(id) = t.as_struct()
         {
             let name: &str = &self.type_pool.struct_def(id).name;
-            return name == "str"
-                || (name.starts_with("Str(") && name.ends_with(')'))
-                || (name.starts_with('[')
-                    && name.ends_with(']')
-                    && crate::types::parse_array_type_syntax(name).is_none());
+            return crate::types::is_string_view_struct_name(name)
+                || crate::types::is_slice_struct_name(name);
         }
         false
     }
@@ -623,6 +619,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// against file-level integer constants (`[i32; K]`). Names that don't
     /// resolve here (e.g. a `comptime` value parameter, only known at
     /// specialization) yield `None`; sema resolves and diagnoses them (RUE-16).
+    #[cfg(test)]
     fn resolve_infer_array_length(&self, len: &ArrayLen, file_id: FileId) -> Option<u64> {
         match len {
             ArrayLen::Literal(n) => Some(*n),
@@ -1187,7 +1184,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // applied by the authoritative semantic pass. Eagerly
                     // substituting them here makes inference reject programs
                     // that the semantic annotation/coercion path accepts.
-                    let annotated = self.resolve_type_arena_with_subst(
+                    let annotated = self.infer_type_hint(
                         self.rir.type_syntax(),
                         *type_syntax,
                         None,
@@ -1412,7 +1409,7 @@ impl<'a> ConstraintGenerator<'a> {
                                 // (RUE-172) - substitute T
                                 match func.param_type_syntax.get(i).and_then(|syntax| {
                                     syntax.as_ref().and_then(|syntax| {
-                                        self.resolve_structured_type_with_subst(
+                                        self.infer_structured_type_hint(
                                             syntax,
                                             &type_subst,
                                             &value_subst,
@@ -1446,7 +1443,7 @@ impl<'a> ConstraintGenerator<'a> {
                             == InferType::Concrete(Type::COMPTIME_TYPE)
                         {
                             match func.return_type_syntax.as_ref().and_then(|syntax| {
-                                self.resolve_structured_type_with_subst(
+                                self.infer_structured_type_hint(
                                     syntax,
                                     &type_subst,
                                     &value_subst,
@@ -2803,7 +2800,7 @@ impl<'a> ConstraintGenerator<'a> {
                                         if *declared == InferType::Concrete(Type::COMPTIME_TYPE) {
                                             match func.param_type_syntax.get(i).and_then(|syntax| {
                                                 syntax.as_ref().and_then(|syntax| {
-                                                    self.resolve_structured_type_with_subst(
+                                                    self.infer_structured_type_hint(
                                                         syntax,
                                                         &type_subst,
                                                         &value_subst,
@@ -3414,10 +3411,6 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    /// Resolve a type name to an InferType.
-    ///
-    /// Handles primitive types, array syntax `[T; N]`, pointer syntax `ptr mut T` / `ptr const T`,
-    /// and struct/enum types.
     /// Resolve a call argument used as a comptime type value (e.g. the `i32` in
     /// `identity(i32, 42)`) to a concrete type, if it can be determined during
     /// constraint generation.
@@ -3445,7 +3438,7 @@ impl<'a> ConstraintGenerator<'a> {
 
         match &self.rir.get(arg).data {
             InstData::TypeConst { type_name } => {
-                match self.resolve_rir_type(*type_name, self.rir.get(arg).span.file_id) {
+                match self.infer_rir_type_hint(*type_name, self.rir.get(arg).span.file_id) {
                     Some(InferType::Concrete(ty)) => Some(ty),
                     _ => None,
                 }
@@ -3710,32 +3703,34 @@ impl<'a> ConstraintGenerator<'a> {
         if exhaustive { selected } else { None }
     }
 
-    /// Resolve parser-structured body type syntax for best-effort constraint
-    /// generation. Semantic analysis remains authoritative for qualified and
-    /// comptime-constructor types, but ordinary names, arrays, pointers, and
-    /// substitutions no longer round-trip through rendered syntax.
-    fn resolve_rir_type(&self, syntax: RirTypeSyntaxRef, file_id: FileId) -> Option<InferType> {
-        self.resolve_rir_type_with_subst(syntax, self.type_subst, None, file_id)
+    /// Derive a best-effort constraint hint from parser-structured type syntax.
+    ///
+    /// This is deliberately not semantic type resolution: it produces no
+    /// durable type fact or diagnostic, and fact-bearing forms such as qualified
+    /// names and comptime constructors return `None`. The one authoritative
+    /// semantic policy runs later through `resolve_structured_semantic_type_syntax`.
+    fn infer_rir_type_hint(&self, syntax: RirTypeSyntaxRef, file_id: FileId) -> Option<InferType> {
+        self.infer_rir_type_hint_with_substitutions(syntax, self.type_subst, None, file_id)
     }
 
-    fn resolve_rir_type_with_subst(
+    fn infer_rir_type_hint_with_substitutions(
         &self,
         syntax: RirTypeSyntaxRef,
         subst: Option<&HashMap<Spur, Type>>,
         values: Option<&HashMap<Spur, i128>>,
         file_id: FileId,
     ) -> Option<InferType> {
-        self.resolve_type_arena_with_subst(self.rir.type_syntax(), syntax, subst, values, file_id)
+        self.infer_type_hint(self.rir.type_syntax(), syntax, subst, values, file_id)
     }
 
-    fn resolve_structured_type_with_subst(
+    fn infer_structured_type_hint(
         &self,
         syntax: &crate::sema::StructuredTypeSyntax,
         subst: &HashMap<Spur, Type>,
         values: &HashMap<Spur, i128>,
         file_id: FileId,
     ) -> Option<InferType> {
-        self.resolve_type_arena_with_subst(
+        self.infer_type_hint(
             &syntax.arena,
             syntax.root,
             Some(subst),
@@ -3744,7 +3739,7 @@ impl<'a> ConstraintGenerator<'a> {
         )
     }
 
-    fn resolve_type_arena_with_subst(
+    fn infer_type_hint(
         &self,
         arena: &rue_rir::RirTypeSyntaxArena<Spur>,
         syntax: RirTypeSyntaxRef,
@@ -3764,13 +3759,12 @@ impl<'a> ConstraintGenerator<'a> {
                 if let Some(ty) = self.const_type_alias((file_id, name)) {
                     return Some(self.type_to_infer(ty));
                 }
-                self.resolve_type_name(self.interner.resolve(&name), file_id)
+                self.infer_named_type_hint(self.interner.resolve(&name), file_id)
             }
             RirTypeSyntaxNode::Unit => Some(InferType::Concrete(Type::UNIT)),
             RirTypeSyntaxNode::Never => Some(InferType::Concrete(Type::NEVER)),
             RirTypeSyntaxNode::Array { element, length } => {
-                let element =
-                    self.resolve_type_arena_with_subst(arena, *element, subst, values, file_id)?;
+                let element = self.infer_type_hint(arena, *element, subst, values, file_id)?;
                 let length = match arena.node(*length)? {
                     RirTypeSyntaxNode::Integer(value) => u64::try_from(*value).ok()?,
                     RirTypeSyntaxNode::Named(symbol) => {
@@ -3790,7 +3784,7 @@ impl<'a> ConstraintGenerator<'a> {
             RirTypeSyntaxNode::PointerConst { pointee }
             | RirTypeSyntaxNode::PointerMut { pointee } => {
                 let pointee = self
-                    .resolve_type_arena_with_subst(arena, *pointee, subst, values, file_id)?
+                    .infer_type_hint(arena, *pointee, subst, values, file_id)?
                     .as_concrete()?;
                 let ty = match arena.node(syntax)? {
                     RirTypeSyntaxNode::PointerConst { .. } => {
@@ -3813,44 +3807,7 @@ impl<'a> ConstraintGenerator<'a> {
         }
     }
 
-    fn resolve_type_name(&self, name: &str, file_id: FileId) -> Option<InferType> {
-        // Check for array syntax first: [T; N]
-        if let Some((element_type_str, len)) = parse_array_type_syntax(name) {
-            // Recursively resolve the element type
-            let element_ty = self.resolve_type_name(&element_type_str, file_id)?;
-            let length = self.resolve_infer_array_length(&len, file_id)?;
-            return Some(InferType::Array {
-                element: Box::new(element_ty),
-                length,
-            });
-        }
-
-        // Check for pointer syntax: ptr mut T / ptr const T
-        if let Some((pointee_type_str, mutability)) = parse_pointer_type_syntax(name) {
-            // Recursively resolve the pointee type
-            let pointee_infer_ty = self.resolve_type_name(&pointee_type_str, file_id)?;
-
-            // Convert InferType to Type so we can intern the pointer
-            let pointee_ty = match pointee_infer_ty {
-                InferType::Concrete(ty) => ty,
-                // Can't handle non-concrete types in pointer positions during constraint generation
-                _ => return None,
-            };
-
-            // Intern the pointer type
-            let ptr_ty = match mutability {
-                PtrMutability::Mut => {
-                    let ptr_id = self.type_pool.intern_ptr_mut_from_type(pointee_ty);
-                    Type::new_ptr_mut(ptr_id)
-                }
-                PtrMutability::Const => {
-                    let ptr_id = self.type_pool.intern_ptr_const_from_type(pointee_ty);
-                    Type::new_ptr_const(ptr_id)
-                }
-            };
-            return Some(InferType::Concrete(ptr_ty));
-        }
-
+    fn infer_named_type_hint(&self, name: &str, file_id: FileId) -> Option<InferType> {
         // Check primitives (single shared table, RUE-155)
         if let Some(ty) = Type::from_primitive_name(name) {
             return Some(InferType::Concrete(ty));
@@ -4970,11 +4927,11 @@ mod tests {
 
         // Same module: the alias head resolves to its aliased type.
         assert_eq!(
-            cgen.resolve_type_name("MyAlias", file_a),
+            cgen.infer_named_type_hint("MyAlias", file_a),
             Some(InferType::Concrete(Type::I32))
         );
         // Another module: out of scope, does not resolve bare.
-        assert_eq!(cgen.resolve_type_name("MyAlias", file_b), None);
+        assert_eq!(cgen.infer_named_type_hint("MyAlias", file_b), None);
     }
 
     /// Array lengths need an integer value; alias heads need a type. The two
@@ -5008,6 +4965,6 @@ mod tests {
             None
         );
         // An integer const name in alias-head position is not a type alias.
-        assert_eq!(cgen.resolve_type_name("K", file_a), None);
+        assert_eq!(cgen.infer_named_type_hint("K", file_a), None);
     }
 }

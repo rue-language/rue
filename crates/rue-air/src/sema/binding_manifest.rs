@@ -11,6 +11,7 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
+use super::body_endpoint::BodyEndpointProvider;
 use super::{ConstValue, Sema, SemaOutput};
 use crate::types::{Type, TypeKind};
 use crate::{StableDefinitionKind, StableDefinitionNamespace};
@@ -655,15 +656,8 @@ impl<'a> DeclarationShells<'a> {
                 {
                     if name.as_ref() == "str" {
                         *needs_str = true;
-                    } else if let Some(capacity) = name
-                        .strip_prefix("Str(")
-                        .and_then(|value| value.strip_suffix(')'))
-                    {
-                        fixed.insert(
-                            capacity
-                                .parse()
-                                .map_err(|_| DeclarationInstallFailure::UnsupportedType)?,
-                        );
+                    } else if let Some(capacity) = crate::types::fixed_string_capacity(name) {
+                        fixed.insert(capacity);
                     }
                 }
                 SemanticExportType::Array { element, .. }
@@ -2266,8 +2260,7 @@ impl<'a> BoundSema<'a> {
     }
 
     /// The request-local [`BodySema`] whose declaration maps this bind
-    /// populated — the exact reference [`super::body_endpoint::EpochFacts`]
-    /// wraps. Test-only: the pool-arc twin-parity tests
+    /// populated. Test-only: the pool-arc twin-parity tests
     /// (`body_identity.rs`) read the epoch's populated `FunctionInfo` /
     /// `MethodInfo` / RIR-index answers through this handle to compare against
     /// the provider-side pool + RIR index.
@@ -2314,14 +2307,13 @@ impl<'a> BoundSema<'a> {
     /// index-independent render / metadata (via [`Self::with_type_pool`]), never
     /// the raw id.
     pub fn epoch_nominal_type(&self, file: FileId, name: Spur) -> Option<crate::types::Type> {
-        use super::body_endpoint::BodyEndpointProvider;
         let facts = self.sema.endpoint_facts();
         facts
-            .struct_by_file_name(file, name)
+            .endpoint_struct_by_file_name(file, name)
             .map(crate::types::Type::new_struct)
             .or_else(|| {
                 facts
-                    .enum_by_file_name(file, name)
+                    .endpoint_enum_by_file_name(file, name)
                     .map(crate::types::Type::new_enum)
             })
     }
@@ -2338,7 +2330,7 @@ impl<'a> BoundSema<'a> {
             .values()
             .find(|endpoint| endpoint.file == file.index())?;
         let facts = self.sema.endpoint_facts();
-        resolve_instance_type(&facts, &crate::TypeInstanceKey::Module(endpoint.token)).ok()
+        resolve_instance_type(facts, &crate::TypeInstanceKey::Module(endpoint.token)).ok()
     }
 
     /// Recover the current request file for an epoch module type. This is the
@@ -2375,10 +2367,9 @@ impl<'a> BoundSema<'a> {
     /// caller compares its index-independent render / metadata via
     /// [`Self::with_type_pool`], never the raw id.
     pub fn epoch_generated_struct_type(&self, name: Spur) -> Option<crate::types::Type> {
-        use super::body_endpoint::BodyEndpointProvider;
         let facts = self.sema.endpoint_facts();
         facts
-            .generated_struct(name)
+            .endpoint_generated_struct(name)
             .map(crate::types::Type::new_struct)
     }
 
@@ -2493,10 +2484,9 @@ impl<'a> BoundSema<'a> {
         type_name: Spur,
         method: Spur,
     ) -> Option<super::info::MethodInfo> {
-        use super::body_endpoint::BodyEndpointProvider;
         let facts = self.sema.endpoint_facts();
-        let struct_id = facts.struct_by_file_name(file, type_name)?;
-        facts.method_info(struct_id, method)
+        let struct_id = facts.endpoint_struct_by_file_name(file, type_name)?;
+        facts.endpoint_method_info(struct_id, method)
     }
 
     /// Return the canonical
@@ -2513,7 +2503,7 @@ impl<'a> BoundSema<'a> {
     ) -> crate::ProviderModuleMember {
         use super::aggregate_resolution::{ModuleTypeMember, select_module_type_member};
         let facts = self.sema.aggregate_facts();
-        match select_module_type_member(&facts, file, name) {
+        match select_module_type_member(facts, file, name) {
             ModuleTypeMember::Struct(id) => {
                 crate::ProviderModuleMember::Struct(crate::types::Type::new_struct(id))
             }
@@ -2531,7 +2521,7 @@ impl<'a> BoundSema<'a> {
     pub fn epoch_qualified_type(&self, file: FileId, name: Spur) -> crate::ProviderQualifiedType {
         use super::aggregate_resolution::{QualifiedType, select_qualified_type};
         let facts = self.sema.aggregate_facts();
-        match select_qualified_type(&facts, file, name) {
+        match select_qualified_type(facts, file, name) {
             QualifiedType::Enum(id) => {
                 crate::ProviderQualifiedType::Enum(crate::types::Type::new_enum(id))
             }
@@ -2548,7 +2538,7 @@ impl<'a> BoundSema<'a> {
     pub fn epoch_struct_literal_head(&self, file: FileId, name: Spur) -> crate::ProviderStructHead {
         use super::aggregate_resolution::{StructLiteralHead, select_struct_literal_head};
         let facts = self.sema.aggregate_facts();
-        match select_struct_literal_head(&facts, None, file, name) {
+        match select_struct_literal_head(facts, None, file, name) {
             StructLiteralHead::Bound(ty) => crate::ProviderStructHead::Bound(ty),
             StructLiteralHead::Named(id) => {
                 crate::ProviderStructHead::Named(crate::types::Type::new_struct(id))
@@ -2570,7 +2560,7 @@ impl<'a> BoundSema<'a> {
     ) -> bool {
         use super::aggregate_resolution::is_accessible;
         let facts = self.sema.aggregate_facts();
-        is_accessible(&facts, accessing_file, defining_file, is_public)
+        is_accessible(facts, accessing_file, defining_file, is_public)
     }
 
     /// Return the canonical physical file path for `file`, so parity checks
@@ -3128,7 +3118,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
             TypeKind::Struct(id) => {
                 let def = self.type_pool.struct_def(id);
                 if let Some(element) = self.slice_element_type(ty)
-                    && def.name.starts_with('[')
+                    && crate::types::is_slice_struct_name(&def.name)
                 {
                     Ok(SemanticExportType::Slice {
                         element: Box::new(self.export_type(element, stack)?),

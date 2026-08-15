@@ -10,6 +10,29 @@ use std::sync::Arc;
 
 use crate::type_encoding::{self, Composite, Decoded, Primitive};
 
+/// Return the capacity encoded by the canonical synthetic `Str(N)` name.
+///
+/// Fixed strings are nominal for ABI and identity purposes, so every compiler
+/// phase must recognize their generated spelling identically.
+pub fn fixed_string_capacity(name: &str) -> Option<u64> {
+    let digits = name.strip_prefix("Str(")?.strip_suffix(')')?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let capacity: u64 = digits.parse().ok()?;
+    (capacity.to_string() == digits).then_some(capacity)
+}
+
+/// Whether `name` is the canonical spelling of a synthetic slice struct.
+pub fn is_slice_struct_name(name: &str) -> bool {
+    name.starts_with('[') && name.ends_with(']') && !name.contains(';')
+}
+
+/// Whether `name` is a two-word string-view nominal (`str` or `Str(N)`).
+pub fn is_string_view_struct_name(name: &str) -> bool {
+    name == "str" || fixed_string_capacity(name).is_some()
+}
+
 /// A unique identifier for a struct definition.
 ///
 /// Values are issued by [`TypeInternPool`](crate::TypeInternPool); their raw
@@ -1076,29 +1099,6 @@ impl std::fmt::Display for Type {
     }
 }
 
-/// Pointer mutability - whether the pointed-to data can be modified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PtrMutability {
-    /// Immutable pointer (`ptr const T`)
-    Const,
-    /// Mutable pointer (`ptr mut T`)
-    Mut,
-}
-
-/// Parse pointer type syntax "ptr const T" or "ptr mut T" and return (pointee_type_str, mutability).
-///
-/// Returns `None` if the string doesn't match pointer syntax.
-pub fn parse_pointer_type_syntax(type_name: &str) -> Option<(String, PtrMutability)> {
-    let type_name = type_name.trim();
-    if let Some(rest) = type_name.strip_prefix("ptr const ") {
-        Some((rest.trim().to_string(), PtrMutability::Const))
-    } else if let Some(rest) = type_name.strip_prefix("ptr mut ") {
-        Some((rest.trim().to_string(), PtrMutability::Mut))
-    } else {
-        None
-    }
-}
-
 /// The length component of an array type syntax `[T; N]`.
 ///
 /// The length is either a literal (`[i32; 4]`) or a name referring to a
@@ -1113,164 +1113,26 @@ pub enum ArrayLen {
     Named(String),
 }
 
-/// Parse array type syntax "[T; N]" and return (element_type_str, length).
-///
-/// This handles nested arrays correctly by tracking bracket depth.
-/// For example, `[[i32; 3]; 4]` returns `("[i32; 3]", ArrayLen::Literal(4))`.
-///
-/// The length component may be a decimal literal ([`ArrayLen::Literal`]) or a
-/// name ([`ArrayLen::Named`]) referring to a `const` / `comptime` value
-/// parameter; the caller resolves named lengths to a concrete value (RUE-16).
-pub fn parse_array_type_syntax(type_name: &str) -> Option<(String, ArrayLen)> {
-    let type_name = type_name.trim();
-    if !type_name.starts_with('[') || !type_name.ends_with(']') {
-        return None;
-    }
-
-    // Remove the outer brackets
-    let inner = &type_name[1..type_name.len() - 1];
-
-    // Find the semicolon separator - need to handle nested arrays
-    // We look for the last `;` that's at nesting level 0
-    let mut bracket_depth = 0;
-    let mut semi_pos = None;
-    for (i, ch) in inner.char_indices() {
-        match ch {
-            '[' => bracket_depth += 1,
-            ']' => bracket_depth -= 1,
-            ';' if bracket_depth == 0 => semi_pos = Some(i),
-            _ => {}
-        }
-    }
-
-    let semi_pos = semi_pos?;
-    let element_type = inner[..semi_pos].trim().to_string();
-    let length_str = inner[semi_pos + 1..].trim();
-    if length_str.is_empty() {
-        return None;
-    }
-    let length = match length_str.parse::<u64>() {
-        Ok(n) => ArrayLen::Literal(n),
-        // Not a decimal literal: a named length (`const` / `comptime` param).
-        Err(_) => ArrayLen::Named(length_str.to_string()),
-    };
-
-    Some((element_type, length))
-}
-
-/// Parse a type-function application `Name(arg, ...)` and return
-/// `(name, [arg_str, ...])` (RUE-241).
-///
-/// Recognizes the canonical string [`intern_type`] produces for a
-/// `TypeExpr::TypeCall`: an identifier immediately followed by a
-/// parenthesized, comma-separated argument list. Arguments are returned as raw
-/// substrings (the caller resolves each as a type), split only at top-level
-/// commas so nested calls, arrays, and braces are preserved intact
-/// (`Result(Option(i32), i32)` -> `("Result", ["Option(i32)", "i32"])`).
-///
-/// Returns `None` for anything that is not this shape — array (`[T; N]`),
-/// pointer (`ptr const T`), and anonymous type strings (`enum { Ok(i32) }`,
-/// whose prefix before the first `(` is not a bare identifier) all fall
-/// through so their dedicated resolution paths still apply.
-///
-/// [`intern_type`]: (rue_rir astgen)
-pub fn parse_type_call_syntax(type_name: &str) -> Option<(String, Vec<String>)> {
-    let s = type_name.trim();
-    if !s.ends_with(')') {
-        return None;
-    }
-    let open = s.find('(')?;
-    let name = &s[..open];
-    // The callee name must be a bare identifier or a dotted module-qualified
-    // identifier. This excludes anonymous type strings like
-    // `enum { Ok(i32) }`, whose text before the first `(` contains
-    // spaces/braces.
-    let mut name_chars = name.chars();
-    match name_chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
-        _ => return None,
-    }
-    if name.ends_with('.') || name.contains("..") {
-        return None;
-    }
-    if !name_chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.') {
-        return None;
-    }
-
-    // Split the argument list at top-level commas, tracking nesting depth so a
-    // comma inside a nested call/array/brace does not split an argument.
-    let inner = &s[open + 1..s.len() - 1];
-    let mut args = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, ch) in inner.char_indices() {
-        match ch {
-            '(' | '[' | '{' => depth += 1,
-            ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                let arg = inner[start..i].trim();
-                if !arg.is_empty() {
-                    args.push(arg.to_string());
-                }
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = inner[start..].trim();
-    if !last.is_empty() {
-        args.push(last.to_string());
-    }
-
-    Some((name.to_string(), args))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_type_call_syntax_basic() {
-        assert_eq!(
-            parse_type_call_syntax("Result(i32, i32)"),
-            Some((
-                "Result".to_string(),
-                vec!["i32".to_string(), "i32".to_string()]
-            ))
-        );
-    }
+    fn synthetic_string_and_slice_names_have_one_canonical_classifier() {
+        assert_eq!(fixed_string_capacity("Str(0)"), Some(0));
+        assert_eq!(fixed_string_capacity("Str(42)"), Some(42));
+        for invalid in [
+            "str", "Str()", "Str(-1)", "Str(+1)", "Str(01)", "Str(1", "Str(1)x",
+        ] {
+            assert_eq!(fixed_string_capacity(invalid), None, "{invalid}");
+        }
 
-    #[test]
-    fn test_parse_type_call_syntax_nested() {
-        assert_eq!(
-            parse_type_call_syntax("Result(Option(i32), i32)"),
-            Some((
-                "Result".to_string(),
-                vec!["Option(i32)".to_string(), "i32".to_string()]
-            ))
-        );
-    }
-
-    #[test]
-    fn test_parse_type_call_syntax_zero_args() {
-        assert_eq!(
-            parse_type_call_syntax("Foo()"),
-            Some(("Foo".to_string(), vec![]))
-        );
-    }
-
-    #[test]
-    fn test_parse_type_call_syntax_rejects_anon_enum() {
-        // Anonymous enum canonical strings contain `(` but their prefix is not
-        // a bare identifier, so they must not be mistaken for a type call.
-        assert_eq!(parse_type_call_syntax("enum { Ok(i32), Err(i32) }"), None);
-    }
-
-    #[test]
-    fn test_parse_type_call_syntax_rejects_plain() {
-        assert_eq!(parse_type_call_syntax("i32"), None);
-        assert_eq!(parse_type_call_syntax("[i32; 4]"), None);
-        assert_eq!(parse_type_call_syntax("ptr const i32"), None);
+        assert!(is_slice_struct_name("[u8]"));
+        assert!(!is_slice_struct_name("[u8; 4]"));
+        assert!(!is_slice_struct_name("u8"));
+        assert!(is_string_view_struct_name("str"));
+        assert!(is_string_view_struct_name("Str(42)"));
+        assert!(!is_string_view_struct_name("Str(042)"));
     }
 
     // ========== Type ID tests ==========

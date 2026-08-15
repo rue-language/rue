@@ -464,10 +464,7 @@ impl<'a> CfgBuilder<'a> {
         }
         if let TypeKind::Struct(struct_id) = ty.kind() {
             let name: &str = &self.type_pool.struct_def(struct_id).name;
-            if self.type_pool.is_strbuf(struct_id)
-                || name == "str"
-                || (name.starts_with("Str(") && name.ends_with(')'))
-            {
+            if self.type_pool.is_strbuf(struct_id) || rue_air::is_string_view_struct_name(name) {
                 return Some(R::Text);
             }
         }

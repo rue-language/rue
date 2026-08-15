@@ -1,8 +1,7 @@
 //! Provider-generic aggregate, field, and variant resolution.
 //!
-//! Selection order lives here. [`EpochFacts`] is the generic production adapter
-//! that delegates declaration reads to an [`AggregateFactSource`] supplied by
-//! its host; `Sema` supplies the current declaration-epoch source.
+//! Selection order lives here. Both body-analysis hosts implement the one
+//! [`AggregateFacts`] boundary directly.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,23 +19,6 @@ use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{SemanticImportNominalKind, SemanticImportType};
 
 pub(crate) trait AggregateFacts {
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
-    fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId>;
-    fn builtin_struct(&self, name: Spur) -> Option<StructId>;
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId>;
-    fn module(&self, module: ModuleId) -> AggregateModuleFact;
-    fn file_path(&self, file: FileId) -> Option<&str>;
-    #[allow(dead_code)]
-    fn source_path(&self, span: rue_span::Span) -> Option<&str>;
-    fn visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
-        crate::SemanticVisibilityDomain::from_file_path(self.file_path(file))
-    }
-}
-
-/// Raw immutable aggregate-resolution reads supplied by a body-analysis host.
-pub(super) trait AggregateFactSource {
     fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
@@ -70,15 +52,13 @@ impl AggregateModuleFact {
     }
 }
 
-/// Direct epoch reads for the current host. The generic adapter below owns the
-/// read-only abstraction; this impl is only the production source of facts.
-impl<D: DeclarationPhase> AggregateFactSource for Sema<'_, D> {
+impl<D: DeclarationPhase> AggregateFacts for Sema<'_, D> {
     fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.value_const(&(file, name)).cloned()
+        self.declarations.value_const(&(file, name)).cloned()
     }
 
     fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.module_binding(&(file, name)).cloned()
+        self.declarations.module_binding(&(file, name)).cloned()
     }
 
     fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
@@ -115,50 +95,6 @@ impl<D: DeclarationPhase> AggregateFactSource for Sema<'_, D> {
     }
 }
 
-/// Read-only aggregate-resolution adapter used by the canonical body engine.
-pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost> {
-    host: &'host H,
-}
-
-impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
-    pub(in crate::sema) fn new(host: &'host H) -> Self {
-        Self { host }
-    }
-}
-
-impl<H: super::fact_mode::BodyAnalysisReadHost> AggregateFacts for EpochFacts<'_, H> {
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.host.aggregate_value_const(file, name)
-    }
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.host.aggregate_module_binding(file, name)
-    }
-    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.host.aggregate_struct_in_file(file, name)
-    }
-    fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.host.aggregate_enum_in_file(file, name)
-    }
-    fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        self.host.aggregate_builtin_struct(name)
-    }
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.host.aggregate_builtin_enum(name)
-    }
-    fn module(&self, module: ModuleId) -> AggregateModuleFact {
-        self.host.aggregate_module(module)
-    }
-    fn file_path(&self, file: FileId) -> Option<&str> {
-        self.host.aggregate_file_path(file)
-    }
-    fn source_path(&self, span: rue_span::Span) -> Option<&str> {
-        self.host.aggregate_source_path(span)
-    }
-    fn visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
-        self.host.aggregate_visibility_domain(file)
-    }
-}
-
 pub(crate) enum StructLiteralHead {
     Bound(Type),
     Named(StructId),
@@ -188,14 +124,14 @@ pub(crate) fn resolve_enum_type_name<P: AggregateFacts>(
     if let Some(ty) = local_type {
         return ty.as_enum().map(|id| (id, true));
     }
-    if let Some(info) = facts.value_const(file, name)
+    if let Some(info) = facts.aggregate_value_const(file, name)
         && let ConstValue::Type(ty) = info.value
     {
         return ty.as_enum().map(|id| (id, true));
     }
     facts
-        .enum_in_file(file, name)
-        .or_else(|| facts.builtin_enum(name))
+        .aggregate_enum_in_file(file, name)
+        .or_else(|| facts.aggregate_builtin_enum(name))
         .map(|id| (id, false))
 }
 
@@ -208,14 +144,14 @@ pub(crate) fn resolve_struct_type_name<P: AggregateFacts>(
     if let Some(ty) = local_type {
         return ty.as_struct().map(|id| (id, true));
     }
-    if let Some(info) = facts.value_const(file, name)
+    if let Some(info) = facts.aggregate_value_const(file, name)
         && let ConstValue::Type(ty) = info.value
     {
         return ty.as_struct().map(|id| (id, true));
     }
     facts
-        .struct_in_file(file, name)
-        .or_else(|| facts.builtin_struct(name))
+        .aggregate_struct_in_file(file, name)
+        .or_else(|| facts.aggregate_builtin_struct(name))
         .map(|id| (id, false))
 }
 
@@ -228,14 +164,14 @@ pub(crate) fn select_struct_literal_head<P: AggregateFacts>(
     if let Some(ty) = local_type {
         return StructLiteralHead::Bound(ty);
     }
-    if let Some(info) = facts.value_const(file, name)
+    if let Some(info) = facts.aggregate_value_const(file, name)
         && let ConstValue::Type(ty) = info.value
     {
         return StructLiteralHead::Bound(ty);
     }
     facts
-        .struct_in_file(file, name)
-        .or_else(|| facts.builtin_struct(name))
+        .aggregate_struct_in_file(file, name)
+        .or_else(|| facts.aggregate_builtin_struct(name))
         .map_or(StructLiteralHead::Absent, StructLiteralHead::Named)
 }
 
@@ -244,15 +180,15 @@ pub(crate) fn select_module_type_member<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> ModuleTypeMember {
-    if let Some(id) = facts.struct_in_file(file, name) {
+    if let Some(id) = facts.aggregate_struct_in_file(file, name) {
         return ModuleTypeMember::Struct(id);
     }
-    if let Some(id) = facts.enum_in_file(file, name) {
+    if let Some(id) = facts.aggregate_enum_in_file(file, name) {
         return ModuleTypeMember::Enum(id);
     }
     if let Some(info) = facts
-        .module_binding(file, name)
-        .or_else(|| facts.value_const(file, name))
+        .aggregate_module_binding(file, name)
+        .or_else(|| facts.aggregate_value_const(file, name))
     {
         return ModuleTypeMember::Const(info);
     }
@@ -264,11 +200,11 @@ pub(crate) fn select_qualified_type<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> QualifiedType {
-    if let Some(id) = facts.enum_in_file(file, name) {
+    if let Some(id) = facts.aggregate_enum_in_file(file, name) {
         return QualifiedType::Enum(id);
     }
     facts
-        .struct_in_file(file, name)
+        .aggregate_struct_in_file(file, name)
         .map_or(QualifiedType::Absent, QualifiedType::Struct)
 }
 
@@ -277,7 +213,7 @@ pub(crate) fn select_qualified_enum<P: AggregateFacts>(
     file: FileId,
     name: Spur,
 ) -> Option<EnumId> {
-    facts.enum_in_file(file, name)
+    facts.aggregate_enum_in_file(file, name)
 }
 
 pub(crate) fn resolve_aggregate_module_ref<P: AggregateFacts>(
@@ -295,14 +231,14 @@ pub(crate) fn resolve_aggregate_module_ref<P: AggregateFacts>(
                 }
             }
             facts
-                .module_binding(root_file, name)
+                .aggregate_module_binding(root_file, name)
                 .and_then(|binding| binding.ty.as_module())
         }
         InstData::FieldGet { base, field } => {
             let parent = resolve_aggregate_module_ref(facts, rir, base, root_file, locals)?;
-            let parent_file = facts.module(parent).file;
+            let parent_file = facts.aggregate_module(parent).file;
             facts
-                .module_binding(parent_file, field)
+                .aggregate_module_binding(parent_file, field)
                 .and_then(|binding| binding.ty.as_module())
         }
         _ => None,
@@ -319,14 +255,14 @@ pub(crate) fn resolve_visibility_module_ref<P: AggregateFacts>(
     let module_ty = match inst.data {
         InstData::VarRef { name, .. } => locals.get(&name).map(|local| local.ty).or_else(|| {
             facts
-                .module_binding(inst.span.file_id, name)
+                .aggregate_module_binding(inst.span.file_id, name)
                 .map(|binding| binding.ty)
         }),
         InstData::FieldGet { base, field } => {
             let parent = resolve_visibility_module_ref(facts, rir, base, locals)?;
-            let parent_file = facts.module(parent).file;
+            let parent_file = facts.aggregate_module(parent).file;
             facts
-                .module_binding(parent_file, field)
+                .aggregate_module_binding(parent_file, field)
                 .map(|binding| binding.ty)
         }
         _ => None,
@@ -343,8 +279,8 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
     if is_public || accessing_file == defining_file {
         return true;
     }
-    let accessing = facts.visibility_domain(accessing_file);
-    let defining = facts.visibility_domain(defining_file);
+    let accessing = facts.aggregate_visibility_domain(accessing_file);
+    let defining = facts.aggregate_visibility_domain(defining_file);
     defining.is_visible_from(&accessing, is_public)
 }
 
@@ -398,9 +334,9 @@ pub enum ProviderStructHead {
     Absent,
 }
 
-/// The aggregate-resolution ProviderFacts driver: answers the family-1D
-/// [`AggregateFacts`] from a body identity pool + a caller-populated overlay,
-/// instead of the epoch `Sema` tables [`EpochFacts`] reads.
+/// Query-backed aggregate fact state: answers [`AggregateFacts`] from a body
+/// identity pool plus a caller-populated overlay, while the epoch host reads
+/// its own tables directly.
 ///
 /// Generic over the pool durable source `S` and the pool's durable nominal key
 /// `K` and module `M` (rue-compiler binds `K = StableDefinitionKey`,
@@ -457,7 +393,7 @@ where
         }
     }
 
-    /// Construct the aggregate facade from the one task-local provider
+    /// Construct the aggregate fact state from the one task-local provider
     /// authority shared with endpoint and call resolution.
     pub fn with_state(state: &super::ProviderBodyAnalysisState<K, M, S>) -> Self {
         Self::with_overlay_identity(state.identity_context())
@@ -546,13 +482,13 @@ where
     /// `structs_by_file_name` lookup under the durable-key bijection.
     pub fn struct_in_file(&self, file: FileId, name: &str) -> Option<Type> {
         let symbol = self.identity.pool().intern_name(name);
-        AggregateFacts::struct_in_file(self, file, symbol).map(Type::new_struct)
+        AggregateFacts::aggregate_struct_in_file(self, file, symbol).map(Type::new_struct)
     }
 
     /// (P) The enum declared as `(file, name)`, as a pool [`Type`].
     pub fn enum_in_file(&self, file: FileId, name: &str) -> Option<Type> {
         let symbol = self.identity.pool().intern_name(name);
-        AggregateFacts::enum_in_file(self, file, symbol).map(Type::new_enum)
+        AggregateFacts::aggregate_enum_in_file(self, file, symbol).map(Type::new_enum)
     }
 
     /// (P) The builtin struct for a bare name (the pool's pre-registered `str`),
@@ -560,14 +496,14 @@ where
     /// (r6 builtin facts).
     pub fn builtin_struct(&self, name: &str) -> Option<Type> {
         let symbol = self.identity.pool().intern_name(name);
-        AggregateFacts::builtin_struct(self, symbol).map(Type::new_struct)
+        AggregateFacts::aggregate_builtin_struct(self, symbol).map(Type::new_struct)
     }
 
     /// (P) The builtin enum for a bare name (one of `BUILTIN_ENUMS`), as a pool
     /// [`Type`].
     pub fn builtin_enum(&self, name: &str) -> Option<Type> {
         let symbol = self.identity.pool().intern_name(name);
-        AggregateFacts::builtin_enum(self, symbol).map(Type::new_enum)
+        AggregateFacts::aggregate_builtin_enum(self, symbol).map(Type::new_enum)
     }
 
     /// Run the provider-generic [`select_module_type_member`] over this driver:
@@ -635,21 +571,21 @@ where
     M: Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+    fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.value_consts
             .borrow()
             .get(&(file.index(), name))
             .cloned()
     }
 
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+    fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.module_bindings
             .borrow()
             .get(&(file.index(), name))
             .cloned()
     }
 
-    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+    fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
         let key = self.by_file_name.get(&(file.index(), name)).cloned()?;
         self.identity
             .pool_mut()?
@@ -658,7 +594,7 @@ where
             .as_struct()
     }
 
-    fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
+    fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
         let key = self.by_file_name.get(&(file.index(), name)).cloned()?;
         self.identity
             .pool_mut()?
@@ -667,7 +603,7 @@ where
             .as_enum()
     }
 
-    fn builtin_struct(&self, name: Spur) -> Option<StructId> {
+    fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
         let name = self.identity.pool().resolve_symbol(name).to_owned();
         self.identity
             .pool_mut()?
@@ -679,7 +615,7 @@ where
             .as_struct()
     }
 
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
+    fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId> {
         let name = self.identity.pool().resolve_symbol(name).to_owned();
         self.identity
             .pool_mut()?
@@ -691,7 +627,7 @@ where
             .as_enum()
     }
 
-    fn module(&self, module: ModuleId) -> AggregateModuleFact {
+    fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact {
         let definition = self
             .identity
             .modules()
@@ -704,11 +640,11 @@ where
         }
     }
 
-    fn file_path(&self, file: FileId) -> Option<&str> {
+    fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
         self.file_paths.get(&file).map(String::as_str)
     }
 
-    fn source_path(&self, _span: rue_span::Span) -> Option<&str> {
+    fn aggregate_source_path(&self, _span: rue_span::Span) -> Option<&str> {
         // Deferred to the flip: consumed only by inline `aggregates.rs`
         // diagnostic paths, never by the provider-generic selection logic.
         None

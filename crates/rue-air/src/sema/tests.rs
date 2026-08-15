@@ -6,7 +6,7 @@ mod tests {
     use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::{StructId, Type};
-    use lasso::ThreadedRodeo;
+    use lasso::{Spur, ThreadedRodeo};
     use rue_error::{
         CompileErrors, CompileResult, ErrorKind, MultiErrorResult, PreviewFeature, PreviewFeatures,
     };
@@ -82,60 +82,24 @@ mod tests {
         sema.analyze_all()
     }
 
-    fn gather_two_file_declarations_for_testing(main: &str, dependency: &str) -> Sema<'static> {
-        let dependency_file = FileId::new(1);
-        let (rir, interner) =
-            lower_files(&[(main, FileId::DEFAULT), (dependency, dependency_file)]);
-        let import = rir
-            .iter()
-            .find_map(|(_, inst)| {
-                let InstData::Intrinsic { name, args } = &inst.data else {
-                    return None;
-                };
-                (interner.resolve(name) == "import").then_some((inst.span.start, args))
+    fn structured_type_for_sema(
+        sema: &mut Sema<'_>,
+        syntax: &str,
+    ) -> (rue_rir::RirTypeSyntaxArena<Spur>, rue_rir::RirTypeSyntaxRef) {
+        let source = format!("fn probe(value: {syntax}) {{}}");
+        let (tokens, parser_interner): (_, ThreadedRodeo) = Lexer::new(&source).tokenize().unwrap();
+        let (ast, parser_interner) = Parser::new(tokens, parser_interner).parse().unwrap();
+        let rue_parser::ast::Item::Function(function) = &ast.items[0] else {
+            panic!("type fixture parses as a function");
+        };
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let root = builder
+            .push_parser_type(&function.params[0].ty, |symbol| {
+                sema.interner
+                    .get_or_intern(parser_interner.resolve(&symbol))
             })
-            .expect("two-file test main must import its dependency");
-        let argument = rir
-            .intrinsic_args(import.1)
-            .get(0)
-            .expect("import must have one argument");
-        let InstData::StringConst { content, .. } = rir.get(argument).data else {
-            panic!("import argument must be a string")
-        };
-        let specifier = interner.resolve(&content).to_owned();
-        let view = TestCanonicalImportView {
-            modules: vec![
-                TestModule {
-                    id: "main.rue".to_owned(),
-                    file_id: FileId::DEFAULT,
-                    path: "/main.rue".to_owned(),
-                },
-                TestModule {
-                    id: specifier.clone(),
-                    file_id: dependency_file,
-                    path: "/dep.rue".to_owned(),
-                },
-            ],
-            sites: vec![TestSite {
-                importer: "main.rue".to_owned(),
-                offset: import.0,
-                specifier: specifier.clone(),
-                target: specifier,
-            }],
-        };
-        let rir = Box::leak(Box::new(rir));
-        let interner = Box::leak(Box::new(interner));
-        let mut sema = Sema::new_synthetic(rir, interner, PreviewFeatures::new());
-        sema.set_root_file_id(FileId::DEFAULT);
-        sema.set_file_paths(HashMap::from([
-            (FileId::DEFAULT, "/main.rue".to_owned()),
-            (dependency_file, "/dep.rue".to_owned()),
-        ]));
-        sema.set_canonical_imports(&view).unwrap();
-        sema.inject_builtin_types();
-        sema.register_type_names().unwrap();
-        sema.resolve_declarations().unwrap();
-        sema
+            .unwrap();
+        (builder.finish(), root)
     }
 
     fn compile_to_air_with_authoritative_identity_order(
@@ -3911,31 +3875,19 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn deferred_array_lengths_reject_qualified_value_heads_but_allow_qualified_type_arguments() {
+    fn deferred_array_lengths_resolve_type_arguments_through_the_structured_policy() {
         let span = Span::with_file(FileId::DEFAULT, 0, 0);
-        let mut sema = gather_two_file_declarations_for_testing(
-            "const dep = @import(\"dep.rue\"); fn main() -> i32 { 0 }",
-            "pub fn Width(comptime T: type) -> i32 { 2 }",
-        );
-        let type_param = sema.interner.get_or_intern("T");
-        let error = sema
-            .validate_deferred_type_position_for_testing("[T; dep.Width(T)]", &[type_param], span)
-            .unwrap_err();
-        assert!(matches!(
-            &error.kind,
-            ErrorKind::UnknownType(name) if name == "dep.Width(...)"
-        ));
-
-        let mut sema = gather_two_file_declarations_for_testing(
-            "const dep = @import(\"dep.rue\");
+        let mut sema = gather_declarations_for_testing(
+            "struct Item { value: i32 }
              fn Width(comptime T: type) -> i32 { 2 }
              fn main() -> i32 { 0 }",
-            "pub struct Item { value: i32 }",
         );
         let type_param = sema.interner.get_or_intern("T");
+        let (arena, syntax) = structured_type_for_sema(&mut sema, "[T; Width(Item)]");
         assert_eq!(
-            sema.validate_deferred_type_position_for_testing(
-                "[T; Width(dep.Item)]",
+            sema.validate_deferred_structured_type_for_testing(
+                &arena,
+                syntax,
                 &[type_param],
                 span,
             )
@@ -3962,14 +3914,16 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn array_length_nested_type_argument_preserves_provider_diagnostic() {
+    fn nested_type_constructor_argument_preserves_provider_diagnostic() {
         let mut sema = gather_declarations_for_testing(
-            "fn Width(comptime T: type) -> i32 { 2 }
+            "fn Make(comptime T: type) -> type { T }
              fn main() -> i32 { 0 }",
         );
+        let (arena, syntax) = structured_type_for_sema(&mut sema, "Make([i32])");
         let error = sema
-            .resolve_type_syntax_for_testing(
-                "[i32; Width([i32])]",
+            .resolve_structured_type_syntax_for_testing(
+                &arena,
+                syntax,
                 Span::with_file(FileId::DEFAULT, 0, 0),
             )
             .unwrap_err();
@@ -3985,12 +3939,15 @@ fn main() -> i32 {
     #[test]
     fn array_length_reducer_failure_preserves_provider_diagnostic() {
         let mut sema = gather_declarations_for_testing(
-            "fn Width(comptime T: type) -> i32 { Width(T) }
+            "struct Leaf { value: i32 }
+             fn Width(comptime T: type) -> i32 { Width(T) }
              fn main() -> i32 { 0 }",
         );
+        let (arena, syntax) = structured_type_for_sema(&mut sema, "[i32; Width(Leaf)]");
         let error = sema
-            .resolve_type_syntax_for_testing(
-                "[i32; Width(i32)]",
+            .resolve_structured_type_syntax_for_testing(
+                &arena,
+                syntax,
                 Span::with_file(FileId::DEFAULT, 0, 0),
             )
             .unwrap_err();
@@ -4067,8 +4024,10 @@ fn main() -> i32 {
             "[i32; 4]",
             "Str(4)",
         ] {
+            let (arena, root) = structured_type_for_sema(&mut sema, syntax);
             assert!(
-                sema.resolve_type_syntax_for_testing(syntax, span).is_ok(),
+                sema.resolve_structured_type_syntax_for_testing(&arena, root, span)
+                    .is_ok(),
                 "scoped resolution should reach '{syntax}' from its own file"
             );
         }

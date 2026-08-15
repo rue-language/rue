@@ -1,12 +1,10 @@
-//! Neutral storage and access seams for the canonical ordinary-body engine.
+//! The canonical ordinary-body algorithm over its two concrete storage hosts.
 //!
-//! The existing body implementation is split across many inherent `BodySema`
-//! blocks. This module is the first migration seam: it makes the request-local
-//! RIR, identity-backed fact families, type pool, and exact parameter-point
-//! copies available through capabilities rather than through a `Sema` wrapper
-//! or `Deref`. The current production adapter is `BodySema`; a provider-backed
-//! receiver will implement the same contract only after its evaluator owns
-//! exact facts.
+//! [`OrdinaryBodyAnalysisHost`] names the state the algorithm actually needs;
+//! the epoch `Sema` host and the query-backed provider host implement it
+//! directly. [`OrdinaryBodyEngine`] only gives that one generic algorithm an
+//! inherent-method receiver, which stable Rust cannot define on a trait. It
+//! owns no state, representation conversion, cache, or alternative policy.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,21 +15,23 @@ use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
 use rue_rir::{InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 
-use super::aggregate_resolution::{AggregateFacts, is_accessible as aggregate_is_accessible};
+use super::aggregate_resolution::is_accessible as aggregate_is_accessible;
 use super::analysis::{ElementwiseConsumption, FirstClassStrSite, linear_not_consumed_error};
 use super::anon_structs::{
     IssuedCanonicalArguments, IssuedFunctionInstanceKey, IssuedStableProducerId,
 };
-use super::call_resolution::CallResolutionFacts;
 use super::context::{AnalysisContext, ParamIndex, ParamInfo};
-use super::fact_mode::{BodyAnalysisHost, StructuredTypeSyntax, StructuredTypeSyntaxRequest};
+use super::fact_mode::{
+    ArrayLengthRequest, BodyAnalysisReadHost, ModulePrefixRequest, StructuredTypeSyntax,
+    StructuredTypeSyntaxRequest, TypeSyntaxResult,
+};
 use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationPhase, DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
     FunctionInfo, InferenceContext, KnownSymbols, MethodInfo, ParamSlotModes, StructId, Type,
 };
-use crate::inference::InferType;
+use crate::inference::{InferType, LazyInferenceFacts};
 use crate::inst::Air;
 use crate::inst::{AirInst, AirInstData};
 use crate::intern_pool::TypeInternPool;
@@ -78,7 +78,21 @@ pub(crate) struct ExpressionAnalysisBreakdown {
 /// covers the body authority, semantic overlays, and exact point facts needed
 /// by the ordinary expression engine. Transaction publication remains outside
 /// this extraction.
-pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
+pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
+    type InferenceFacts<'a>: LazyInferenceFacts
+    where
+        Self: 'a;
+    fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a>;
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> TypeSyntaxResult;
+    fn resolve_type_module_prefix(
+        &mut self,
+        request: ModulePrefixRequest<'_>,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)>;
+    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64>;
+
     fn record_expression_analysis_breakdown(&mut self, _breakdown: ExpressionAnalysisBreakdown) {}
 
     fn body_param_data(&self, range: ParamRange) -> ParamRangeData;
@@ -274,14 +288,10 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate>;
 }
 
-// Kept as a private source-compatibility alias while the remaining sema
-// adapters migrate to the receiver name. No engine code depends on a storage
-// object or exposes storage escape hatches.
-/// Generic ordinary-body engine facade over neutral body storage.
+/// Inherent-method receiver for the generic ordinary-body algorithm.
 ///
 /// The engine owns no analyzer representation and has no alternate semantic
-/// algorithm. Its accessors are the migration point used by the canonical
-/// ordinary engine as concrete `BodySema` state is moved behind this contract.
+/// algorithm. Both concrete hosts enter the same methods through this receiver.
 pub(crate) struct OrdinaryBodyEngine<'h, H: OrdinaryBodyAnalysisHost> {
     storage: &'h mut H,
 }
@@ -312,7 +322,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.active_anonymous_producer()
     }
     pub(crate) fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
-        self.storage.function_info(name)
+        OrdinaryBodyAnalysisHost::function_info(self.storage, name)
     }
     pub(crate) fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.storage.function_body_info(name)
@@ -324,22 +334,22 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self.storage.function_identity(symbol)
     }
     pub(crate) fn value_const(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
-        self.storage.value_const(key.0, key.1)
+        OrdinaryBodyAnalysisHost::value_const(self.storage, key.0, key.1)
     }
     pub(crate) fn source_function_name(&self, name: Spur) -> Spur {
-        self.storage.source_function_name(name)
+        OrdinaryBodyAnalysisHost::source_function_name(self.storage, name)
     }
     pub(crate) fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        self.storage.resolve_function_name_local(name, file)
+        OrdinaryBodyAnalysisHost::resolve_function_name_local(self.storage, name, file)
     }
     pub(crate) fn module_def(&self, module: ModuleId) -> ModuleDef {
-        self.storage.module_def(module)
+        OrdinaryBodyAnalysisHost::module_def(self.storage, module)
     }
     pub(crate) fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.storage.struct_in_file(file, name)
+        OrdinaryBodyAnalysisHost::struct_in_file(self.storage, file, name)
     }
     pub(crate) fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        self.storage.builtin_struct(name)
+        OrdinaryBodyAnalysisHost::builtin_struct(self.storage, name)
     }
     pub(crate) fn target(&self) -> Target {
         self.storage.target()
@@ -732,9 +742,21 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
-        let syntax = self.body_interner().resolve(&type_sym).to_owned();
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let root = builder.push_named_type(type_sym).map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "failed to preserve a resolved type-name token: {failure:?}"
+                )),
+                span,
+            )
+        })?;
+        let syntax = StructuredTypeSyntax {
+            arena: builder.finish(),
+            root,
+        };
         self.storage
-            .resolve_type_syntax(super::fact_mode::TypeSyntaxRequest {
+            .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
                 syntax: &syntax,
                 root_file,
                 span,
@@ -921,7 +943,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         span: Span,
         values: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        BodyAnalysisHost::resolve_array_length(
+        OrdinaryBodyAnalysisHost::resolve_array_length(
             self.storage,
             super::fact_mode::ArrayLengthRequest {
                 length,
@@ -936,7 +958,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
-        BodyAnalysisHost::resolve_type_module_prefix(
+        OrdinaryBodyAnalysisHost::resolve_type_module_prefix(
             self.storage,
             super::fact_mode::ModulePrefixRequest {
                 root_file,
@@ -951,9 +973,25 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<Type> {
-        let syntax = segments.join(".");
+        let symbols = segments
+            .iter()
+            .map(|segment| self.body_interner().get_or_intern(segment))
+            .collect::<Vec<_>>();
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let root = builder.push_qualified_type(symbols).map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "failed to preserve a qualified type path: {failure:?}"
+                )),
+                span,
+            )
+        })?;
+        let syntax = StructuredTypeSyntax {
+            arena: builder.finish(),
+            root,
+        };
         self.storage
-            .resolve_type_syntax(super::fact_mode::TypeSyntaxRequest {
+            .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
                 syntax: &syntax,
                 root_file,
                 span,
@@ -969,7 +1007,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             })
     }
     pub(crate) fn module_binding(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
-        self.call_facts().module_binding(key.0, key.1)
+        self.call_facts().call_module_binding(key.0, key.1)
     }
     pub(crate) fn known_linear_during_binding(&self, ty: Type) -> Option<bool> {
         self.storage.known_linear_during_binding(ty)
@@ -997,9 +1035,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) -> Result<(IssuedStableProducerId, IssuedCanonicalArguments), crate::SemanticBodyExportFailure>
     {
         use crate::SemanticBodyExportFailure as F;
-        let function = self
-            .storage
-            .function_info(name)
+        let function = OrdinaryBodyAnalysisHost::function_info(self.storage, name)
             .ok_or(F::MissingStableIdentity)?;
         let flags = self.storage.comptime_type_param_flags(&function);
         let mut types = Vec::new();
@@ -1258,8 +1294,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn types_equivalent(&self, left: Type, right: Type) -> bool {
         self.storage.types_equivalent(left, right)
     }
-    pub(crate) fn aggregate_facts(&self) -> H::AggregateFacts<'_> {
-        self.storage.aggregate_facts()
+    pub(crate) fn aggregate_facts(&self) -> &H {
+        self.storage
     }
     pub(crate) fn is_accessible(
         &self,
@@ -1268,7 +1304,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         is_pub: bool,
     ) -> bool {
         aggregate_is_accessible(
-            &self.aggregate_facts(),
+            self.aggregate_facts(),
             accessing_file_id,
             target_file_id,
             is_pub,
@@ -1287,7 +1323,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         let defining_file = self
             .aggregate_facts()
-            .file_path(defining_file_id)
+            .aggregate_file_path(defining_file_id)
             .unwrap_or("<unknown>")
             .to_string();
         Err(CompileError::new(
@@ -1304,11 +1340,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             "`{name}` is not marked `pub`; private items are only visible within their defining directory"
         )))
     }
-    pub(crate) fn call_facts(&self) -> H::CallFacts<'_> {
-        self.storage.call_facts()
+    pub(crate) fn call_facts(&self) -> &H {
+        self.storage
     }
     pub(crate) fn method_info(&self, key: (StructId, Spur)) -> Option<MethodCallInfo> {
-        self.call_facts().method_info(key.0, key.1)
+        self.call_facts().call_method_info(key.0, key.1)
     }
     pub(crate) fn has_method(&self, key: (StructId, Spur)) -> bool {
         self.method_info(key).is_some()
@@ -1427,11 +1463,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             return None;
         };
         let def = self.body_type_pool().struct_def(struct_id);
-        let is_slice = def.name.starts_with('[')
-            && def.name.ends_with(']')
-            && crate::types::parse_array_type_syntax(&def.name).is_none();
-        let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
-        if is_slice || &*def.name == "str" || is_str_fixed {
+        if crate::types::is_slice_struct_name(&def.name)
+            || crate::types::is_string_view_struct_name(&def.name)
+        {
             if let crate::types::TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                 return Some(self.body_type_pool().ptr_const_def(ptr_id));
             }
@@ -2322,6 +2356,48 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 }
 
 impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
+    type InferenceFacts<'b>
+        = super::HostInferenceFacts<'b, Self>
+    where
+        Self: 'b;
+
+    fn inference_facts<'b>(&'b self, ctx: &'b InferenceContext) -> Self::InferenceFacts<'b> {
+        super::HostInferenceFacts::new(ctx, self)
+    }
+
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> TypeSyntaxResult {
+        self.resolve_structured_type_syntax_with_epoch_facts(
+            &request.syntax.arena,
+            request.syntax.root,
+            request.root_file,
+            request.span,
+            request.type_substitutions,
+            request.value_substitutions,
+        )
+    }
+
+    fn resolve_type_module_prefix(
+        &mut self,
+        request: ModulePrefixRequest<'_>,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
+        self.resolve_type_module_prefix_with_epoch_facts(
+            request.root_file,
+            request.segments,
+            request.span,
+        )
+    }
+
+    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64> {
+        self.resolve_array_length_with_epoch_facts(
+            request.length,
+            request.span,
+            request.value_substitutions,
+        )
+    }
+
     fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
         self.param_arena.copy_range(range)
     }

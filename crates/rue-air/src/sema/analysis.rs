@@ -202,13 +202,13 @@ fn materialize_argument_value(
         V::Integer(value) => super::ConstValue::Integer(*value),
         V::Bool(value) => super::ConstValue::Bool(*value),
         V::Type(value) => {
-            super::ConstValue::Type(super::body_endpoint::resolve_instance_type(&facts, value)?)
+            super::ConstValue::Type(super::body_endpoint::resolve_instance_type(facts, value)?)
         }
         V::Function(value) => {
             let crate::FunctionInstanceKey::Definition(token) = value.as_ref() else {
                 return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
             };
-            let symbol = super::body_endpoint::resolve_free_function_symbol(&facts, *token)
+            let symbol = super::body_endpoint::resolve_free_function_symbol(facts, *token)
                 .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
             super::ConstValue::Function(symbol)
         }
@@ -221,7 +221,7 @@ fn materialize_instance_type(
     sema: &BodySema<'_>,
     value: &crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
 ) -> Result<Type, crate::SemanticBodyExportFailure> {
-    super::body_endpoint::resolve_instance_type(&sema.endpoint_facts(), value)
+    super::body_endpoint::resolve_instance_type(sema.endpoint_facts(), value)
 }
 
 fn canonical_composed_identity(
@@ -358,7 +358,7 @@ fn composed_callable_metadata(
                 .ok_or_else(missing)?;
             let info = sema
                 .call_facts()
-                .method_info(struct_id, method)
+                .call_method_info(struct_id, method)
                 .ok_or_else(missing)?;
             Ok((
                 sema.method_symbol(struct_id, member.name.as_ref(), info.has_self),
@@ -428,11 +428,7 @@ pub(crate) fn import_staged_body(
                 name,
                 kind: NK::Struct,
             } => {
-                if let Some(capacity) = name
-                    .strip_prefix("Str(")
-                    .and_then(|name| name.strip_suffix(')'))
-                    .and_then(|capacity| capacity.parse().ok())
-                {
+                if let Some(capacity) = crate::types::fixed_string_capacity(name) {
                     capacities.insert(capacity);
                 }
             }
@@ -812,7 +808,7 @@ pub(crate) fn import_staged_body(
             .ok_or(BF::Semantic(F::MissingFunction))?;
         let info = sema
             .call_facts()
-            .method_info(struct_id, name)
+            .call_method_info(struct_id, name)
             .ok_or(BF::Semantic(F::MissingFunction))?;
         let expected = match identity.kind {
             DK::Method => info.has_self && identity.name.as_ref() != "__drop",
@@ -857,7 +853,7 @@ pub(crate) fn import_staged_body(
                     .ok_or(BF::Semantic(F::MissingFunction))?;
                 let info = sema
                     .call_facts()
-                    .method_info(struct_id, name)
+                    .call_method_info(struct_id, name)
                     .ok_or(BF::Semantic(F::MissingFunction))?;
                 let expected = match member.kind {
                     crate::AnonymousMemberKind::Method => {
@@ -987,7 +983,7 @@ pub(crate) fn imported_body_references(
         let AirInstData::Call { name, .. } = instruction.data else {
             continue;
         };
-        if facts.function_contains(name) {
+        if facts.call_function_contains(name) {
             functions.insert(name);
         }
     }
@@ -1387,7 +1383,7 @@ fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
     for (_, inst) in sema.rir.iter() {
         if let InstData::Call { name, .. } = &inst.data
             && let Some(function_key) =
-                resolve_static_call_reference(&sema.call_facts(), *name, inst.span.file_id)
+                resolve_static_call_reference(sema.call_facts(), *name, inst.span.file_id)
         {
             referenced.insert(function_key);
         }
@@ -1403,7 +1399,7 @@ fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
         };
         if let Some(function) = sema
             .call_facts()
-            .resolve_function_name_local(name, FileId::new(event.callable_file))
+            .call_resolve_function_name_local(name, FileId::new(event.callable_file))
         {
             referenced.insert(function);
         }
@@ -1563,7 +1559,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 
     // Find main() - the reference root for executable body analysis.
     let main_sym = match sema.interner.get("main") {
-        Some(sym) if sema.call_facts().function_contains(sym) => sym,
+        Some(sym) if sema.call_facts().call_function_contains(sym) => sym,
         _ => {
             // No main function found - this is an error
             return Err(CompileErrors::from(CompileError::without_span(
@@ -2192,7 +2188,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     .interner
                     .get(&type_name_str)
                     .expect("named struct definition must retain its interned source name");
-                let Some(method_ref) = sema.call_facts().named_method_declaration(
+                let Some(method_ref) = sema.call_facts().call_named_method_declaration(
                     struct_def.file_id,
                     owner_name,
                     method_name,

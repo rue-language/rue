@@ -33,7 +33,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         is_pub: bool,
     ) -> bool {
         let facts = self.aggregate_facts();
-        is_accessible(&facts, accessing_file_id, target_file_id, is_pub)
+        is_accessible(facts, accessing_file_id, target_file_id, is_pub)
     }
 
     /// Check that an *unqualified* reference may reach the item (RUE-37,
@@ -71,7 +71,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // always known here.
         let defining_file = self
             .aggregate_facts()
-            .file_path(defining_file_id)
+            .aggregate_file_path(defining_file_id)
             .unwrap_or("<unknown>")
             .to_string();
 
@@ -118,8 +118,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let enum_id = module_file_id
             .and_then(|module_id| {
                 let facts = self.aggregate_facts();
-                let file = facts.module(module_id).file;
-                select_qualified_enum(&facts, file, type_name)
+                let file = facts.aggregate_module(module_id).file;
+                select_qualified_enum(facts, file, type_name)
             })
             .ok_or_else(|| {
                 CompileError::new(ErrorKind::UnknownEnumType(type_name_str.to_string()), span)
@@ -149,6 +149,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
         let facts = self.aggregate_facts();
-        resolve_visibility_module_ref(&facts, self.body_rir_ref(), module_ref, &ctx.locals)
+        resolve_visibility_module_ref(facts, self.body_rir_ref(), module_ref, &ctx.locals)
     }
 }

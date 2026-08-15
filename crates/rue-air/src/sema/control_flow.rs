@@ -15,7 +15,6 @@ use rue_span::Span;
 
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
-use super::call_resolution::CallResolutionFacts;
 use super::context::{
     AnalysisContext, AnalysisResult, ConstValue, LocalVar, LoopEdgeStates, union_move_maps,
 };
@@ -2002,7 +2001,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let is_accessor = ctx
                         .resolved_type_of(*receiver)
                         .and_then(|ty| ty.as_struct())
-                        .and_then(|struct_id| self.call_facts().method_info(struct_id, *method))
+                        .and_then(|struct_id| {
+                            self.call_facts().call_method_info(struct_id, *method)
+                        })
                         .is_some_and(|info| info.returns_borrow);
                     let link = if is_accessor {
                         AccessorMethodLink::Accessor

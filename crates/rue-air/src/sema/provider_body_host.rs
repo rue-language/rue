@@ -1,7 +1,7 @@
 //! Concrete body-local host for query-backed ordinary body evaluation.
 //!
 //! This receiver owns only body analysis's RIR and compact semantic state. Durable
-//! declaration facts are materialized through the provider facades as they are
+//! declaration facts are materialized through the provider-owned fact state as they are
 //! consulted; no declaration epoch or whole-program `Sema` is reachable here.
 
 use std::cell::{Cell, RefCell};
@@ -20,23 +20,20 @@ use rue_rir::{
 use rue_span::{FileId, Span};
 use rue_target::Target;
 
-use super::aggregate_resolution::{
-    AggregateFactSource, AggregateFacts as AggregateFactsTrait, EpochFacts as AggregateFacts,
-};
-use super::body_endpoint::{
-    BodyEndpointFactSource, BodyEndpointProvider, EpochFacts as EndpointFacts,
-};
-use super::call_resolution::{CallResolutionFactSource, EpochFacts as CallFacts};
-use super::fact_mode::{
-    ArrayLengthRequest, BodyAnalysisHost, ModulePrefixRequest, StructuredTypeSyntaxRequest,
-    TypeSyntaxRequest,
-};
+use super::aggregate_resolution::AggregateFacts as AggregateFactsTrait;
+use super::body_endpoint::BodyEndpointProvider;
+use super::call_resolution::CallResolutionFacts;
+use super::fact_mode::{ArrayLengthRequest, ModulePrefixRequest, StructuredTypeSyntaxRequest};
 use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
 use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::ordinary_engine::{
     ExpressionAnalysisBreakdown, OrdinaryBodyAnalysisHost, OrdinaryBodyEngine,
 };
 use super::semantic_body_export::SemanticBodyExportHost;
+use super::typeck::{
+    SemaTypeResolutionContext, TypeRootAuthority, TypeSyntaxHost, TypeSyntaxNamedKind,
+    TypeSyntaxProvider, semantic_type_syntax_compile_error,
+};
 use super::{
     AnalyzedFunction, BodyAnalysisWork, BodyFactProvider, ConstInfo, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, FunctionInfo,
@@ -47,7 +44,7 @@ use crate::inference::{FunctionSig, MethodSig};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId, StructId, Type, TypeKind};
 use crate::{
-    ArrayLen, BodyRirBundle, CanonicalArgumentValue, DurableAnonymousSource, DurableCallableSource,
+    BodyRirBundle, CanonicalArgumentValue, DurableAnonymousSource, DurableCallableSource,
     DurableConstSource, DurableNominalSource, FunctionInstanceKey, ParamRange, ParamRangeData,
     SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
 };
@@ -1241,24 +1238,6 @@ where
         Some((body, declaration, instruction.span))
     }
 
-    fn is_accessible(
-        &self,
-        accessing_file: FileId,
-        defining_file: FileId,
-        is_public: bool,
-    ) -> bool {
-        if is_public || accessing_file == defining_file {
-            return true;
-        }
-        let domain = |file| {
-            self.source.source_path(file).map_or_else(
-                || AggregateFactsTrait::visibility_domain(&self.aggregate, file),
-                |path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)),
-            )
-        };
-        domain(defining_file).is_visible_from(&domain(accessing_file), is_public)
-    }
-
     fn function_info_for_symbol(&self, symbol: Spur) -> Option<FunctionCallInfo> {
         if let Some(info) = self.function_infos.borrow().get(&symbol).copied() {
             return Some(info);
@@ -1266,7 +1245,7 @@ where
         if symbol == self.function_symbol {
             return self
                 .endpoint
-                .function_info(symbol)
+                .endpoint_function_info(symbol)
                 .map(FunctionCallInfo::from_body);
         }
         let (key, file, name) =
@@ -1818,10 +1797,10 @@ where
         if let Some(id) = self.generated_enums.get(&symbol) {
             return Some(Type::new_enum(*id));
         }
-        if let Some(id) = self.endpoint.builtin_or_generated_struct(symbol) {
+        if let Some(id) = self.endpoint.endpoint_builtin_or_generated_struct(symbol) {
             return Some(Type::new_struct(id));
         }
-        if let Some(id) = self.endpoint.builtin_enum(symbol) {
+        if let Some(id) = self.endpoint.endpoint_builtin_enum(symbol) {
             return Some(Type::new_enum(id));
         }
         let name = self.interner.resolve(&symbol);
@@ -2282,24 +2261,29 @@ where
         })
     }
 
+    fn materialize_durable_type(&mut self, ty: &crate::SemanticImportType<K, M>) -> Option<Type> {
+        self.register_import_nominal_identities(ty).ok()?;
+        let resolved = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_provider_type(ty)
+            .ok()?;
+        if let crate::SemanticImportType::AnonymousNominal(identity) = ty {
+            self.install_provider_anonymous_methods(identity, resolved)?;
+        }
+        Some(resolved)
+    }
+
     fn materialize_durable_const_value(
-        &self,
+        &mut self,
         value: &crate::SemanticImportConstValue<K, M>,
     ) -> Option<ConstValue> {
         use crate::SemanticImportConstValue as V;
         Some(match value {
             V::Integer(value) => ConstValue::Integer(*value),
             V::Bool(value) => ConstValue::Bool(*value),
-            V::Type(ty) => {
-                self.register_import_nominal_identities(ty).ok()?;
-                ConstValue::Type(
-                    self.state
-                        .identity_context()
-                        .pool_mut()?
-                        .resolve_provider_type(ty)
-                        .ok()?,
-                )
-            }
+            V::Type(ty) => ConstValue::Type(self.materialize_durable_type(ty)?),
             V::Function(definition) => ConstValue::Function(
                 self.interner
                     .get_or_intern(&self.source.definition_name(definition)?),
@@ -2793,7 +2777,7 @@ where
     }
 }
 
-impl<P, S, K, M> BodyEndpointFactSource for ProviderBodyHost<'_, P, S, K, M>
+impl<P, S, K, M> BodyEndpointProvider for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -2805,19 +2789,19 @@ where
     M: Clone + Eq + Hash + Ord,
 {
     fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
-        self.endpoint.name_symbol(name)
+        self.endpoint.endpoint_name_symbol(name)
     }
     fn endpoint_definition_endpoint(
         &self,
         token: SemanticDefinitionToken,
     ) -> Option<crate::SemanticDefinitionEndpoint> {
-        self.endpoint.definition_endpoint(token)
+        self.endpoint.endpoint_definition_endpoint(token)
     }
     fn endpoint_module_endpoint(
         &self,
         token: SemanticModuleToken,
     ) -> Option<crate::SemanticModuleEndpoint> {
-        self.endpoint.module_endpoint(token)
+        self.endpoint.endpoint_module_endpoint(token)
     }
     fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
         self.function_for_file_symbol(file, name)
@@ -2829,37 +2813,37 @@ where
         self.nominal_type_for_symbol(file, name)?.as_enum()
     }
     fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.endpoint.builtin_or_generated_struct(name)
+        self.endpoint.endpoint_builtin_or_generated_struct(name)
     }
     fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.endpoint.generated_struct(name)
+        self.endpoint.endpoint_generated_struct(name)
     }
     fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.endpoint.builtin_enum(name)
+        self.endpoint.endpoint_builtin_enum(name)
     }
     fn endpoint_anon_struct(
         &self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
     ) -> Option<StructId> {
-        self.endpoint.anon_struct(identity)
+        self.endpoint.endpoint_anon_struct(identity)
     }
     fn endpoint_anon_enum(
         &self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
     ) -> Option<EnumId> {
-        self.endpoint.anon_enum(identity)
+        self.endpoint.endpoint_anon_enum(identity)
     }
     fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.endpoint.function_info(name)
+        self.endpoint.endpoint_function_info(name)
     }
     fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
         self.endpoint.method_info(struct_id, name)
     }
     fn endpoint_source_function_name(&self, name: Spur) -> Spur {
-        self.endpoint.source_function_name(name)
+        self.endpoint.endpoint_source_function_name(name)
     }
     fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        self.endpoint.module_id_for_file(file)
+        self.endpoint.endpoint_module_id_for_file(file)
     }
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
         self.type_pool.try_intern_array(element, len).ok()
@@ -2872,7 +2856,7 @@ where
     }
 }
 
-impl<P, S, K, M> CallResolutionFactSource for ProviderBodyHost<'_, P, S, K, M>
+impl<P, S, K, M> CallResolutionFacts for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -2890,7 +2874,7 @@ where
         self.function_info_for_symbol(name).is_some()
     }
     fn call_source_function_name(&self, name: Spur) -> Spur {
-        self.endpoint.source_function_name(name)
+        self.endpoint.endpoint_source_function_name(name)
     }
     fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
         self.function_for_file_symbol(file, name)
@@ -2926,7 +2910,7 @@ where
     }
 }
 
-impl<P, S, K, M> AggregateFactSource for ProviderBodyHost<'_, P, S, K, M>
+impl<P, S, K, M> AggregateFactsTrait for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -2950,26 +2934,26 @@ where
         self.nominal_type_for_symbol(file, name)?.as_enum()
     }
     fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
-        AggregateFactsTrait::builtin_struct(&self.aggregate, name)
+        AggregateFactsTrait::aggregate_builtin_struct(&self.aggregate, name)
     }
     fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        AggregateFactsTrait::builtin_enum(&self.aggregate, name)
+        AggregateFactsTrait::aggregate_builtin_enum(&self.aggregate, name)
     }
     fn aggregate_module(
         &self,
         module: ModuleId,
     ) -> super::aggregate_resolution::AggregateModuleFact {
-        AggregateFactsTrait::module(&self.aggregate, module)
+        AggregateFactsTrait::aggregate_module(&self.aggregate, module)
     }
     fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
-        AggregateFactsTrait::file_path(&self.aggregate, file)
+        AggregateFactsTrait::aggregate_file_path(&self.aggregate, file)
     }
     fn aggregate_source_path(&self, span: Span) -> Option<&str> {
-        AggregateFactsTrait::source_path(&self.aggregate, span)
+        AggregateFactsTrait::aggregate_source_path(&self.aggregate, span)
     }
     fn aggregate_visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
         self.source.source_path(file).map_or_else(
-            || AggregateFactsTrait::visibility_domain(&self.aggregate, file),
+            || AggregateFactsTrait::aggregate_visibility_domain(&self.aggregate, file),
             |path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)),
         )
     }
@@ -3075,7 +3059,7 @@ where
     }
     fn inference_builtin_struct_type(&self, name: Spur) -> Option<Type> {
         self.endpoint
-            .builtin_or_generated_struct(name)
+            .endpoint_builtin_or_generated_struct(name)
             .map(Type::new_struct)
     }
     fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
@@ -3083,7 +3067,9 @@ where
             .filter(|ty| ty.as_struct().is_some())
     }
     fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
-        self.endpoint.builtin_enum(name).map(Type::new_enum)
+        self.endpoint
+            .endpoint_builtin_enum(name)
+            .map(Type::new_enum)
     }
     fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
         self.nominal_type_for_symbol(key.0, key.1)
@@ -3122,7 +3108,7 @@ where
     }
 }
 
-impl<P, S, K, M> BodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
+impl<P, S, K, M> TypeSyntaxHost for ProviderBodyHost<'_, P, S, K, M>
 where
     P: BodyFactProvider,
     S: DurableNominalSource<K, M>
@@ -3133,200 +3119,365 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    type EndpointFacts<'b>
-        = EndpointFacts<'b, Self>
-    where
-        Self: 'b;
-    fn endpoint_facts(&self) -> Self::EndpointFacts<'_> {
-        EndpointFacts::new(self)
+    fn type_syntax_symbol(&mut self, name: &str) -> Spur {
+        self.interner.get_or_intern(name)
     }
 
-    type CallFacts<'b>
-        = CallFacts<'b, Self>
-    where
-        Self: 'b;
-    fn call_facts(&self) -> Self::CallFacts<'_> {
-        CallFacts::new(self)
+    fn existing_type_syntax_symbol(&self, name: &str) -> Option<Spur> {
+        self.interner.get(name)
     }
 
-    type AggregateFacts<'b>
-        = AggregateFacts<'b, Self>
-    where
-        Self: 'b;
-    fn aggregate_facts(&self) -> Self::AggregateFacts<'_> {
-        AggregateFacts::new(self)
-    }
-
-    type InferenceFacts<'b>
-        = HostInferenceFacts<'b, Self>
-    where
-        Self: 'b;
-    fn inference_facts<'b>(&'b self, ctx: &'b InferenceContext) -> Self::InferenceFacts<'b> {
-        HostInferenceFacts::new(ctx, self)
-    }
-
-    fn resolve_type_syntax(
+    fn type_syntax_module_binding(
         &mut self,
-        request: TypeSyntaxRequest<'_>,
-    ) -> Result<
-        Type,
-        crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
-    > {
-        fn recurse<P, S, K, M>(
-            host: &mut ProviderBodyHost<'_, P, S, K, M>,
-            syntax: &str,
-            root_file: FileId,
-            span: Span,
-            type_substitutions: Option<&HashMap<Spur, Type>>,
-            value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-        ) -> CompileResult<Type>
-        where
-            P: BodyFactProvider,
-            S: DurableNominalSource<K, M>
-                + DurableAnonymousSource<K, M>
-                + DurableCallableSource<K, M>
-                + DurableConstSource<K, M>
-                + DurableBodyLookupSource<K, M>,
-            K: Clone + Eq + Hash + Ord,
-            M: Clone + Eq + Hash + Ord,
-        {
-            if let Some(substitutions) = type_substitutions {
-                let symbol = host.interner.get_or_intern(syntax);
-                if let Some(ty) = substitutions.get(&symbol) {
-                    return Ok(*ty);
-                }
-            }
-            if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(syntax) {
-                return host.resolve_type_constructor_call(
-                    &callee,
-                    &arguments,
-                    syntax,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                );
-            }
-            if let Some((element, length)) = crate::types::parse_array_type_syntax(syntax) {
-                let element = recurse(
-                    host,
-                    &element,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                let length = host.resolve_array_length_in_file(
-                    &length,
-                    root_file,
-                    span,
-                    value_substitutions,
-                )?;
-                return host
-                    .type_pool
-                    .try_intern_array(element, length)
-                    .map_err(|failure| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(format!("{syntax}: {failure:?}")),
-                            span,
-                        )
-                    });
-            }
-            if let Some((pointee, mutability)) = crate::types::parse_pointer_type_syntax(syntax) {
-                let pointee = recurse(
-                    host,
-                    &pointee,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                return match mutability {
-                    crate::types::PtrMutability::Const => {
-                        host.type_pool.try_intern_ptr_const(pointee)
-                    }
-                    crate::types::PtrMutability::Mut => host.type_pool.try_intern_ptr_mut(pointee),
-                }
-                .map_err(|failure| {
-                    CompileError::new(
-                        rue_error::ErrorKind::UnknownType(format!("{syntax}: {failure:?}")),
-                        span,
-                    )
-                });
-            }
-            host.resolve_type_name_in_file(syntax, root_file, span)
-        }
-        recurse(
-            self,
-            request.syntax,
-            request.root_file,
-            request.span,
-            request.type_substitutions,
-            request.value_substitutions,
-        )
-        .map_err(crate::SemanticResolutionError::ProviderFailure)
+        authority: TypeRootAuthority,
+        module: Option<ModuleId>,
+        name: Spur,
+    ) -> CompileResult<Option<crate::SemanticModuleBinding<ModuleId, FileId>>> {
+        let file = module
+            .and_then(|module| {
+                self.calls
+                    .module_def(module)
+                    .map(|definition| definition.file_id)
+            })
+            .unwrap_or_else(|| authority.file());
+        let Some(binding) = self.module_binding_for_symbol(file, name) else {
+            return Ok(None);
+        };
+        let Some(target) = binding.ty.as_module() else {
+            return Ok(None);
+        };
+        let defining_file = binding.span.file_id;
+        let defining_path = self
+            .source
+            .source_path(defining_file)
+            .unwrap_or_else(|| Arc::from("<unknown>"));
+        Ok(Some(crate::SemanticModuleBinding {
+            target,
+            site: defining_file,
+            is_public: binding.is_pub,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(Some(
+                defining_path.as_ref(),
+            )),
+            defining_file: defining_path,
+        }))
     }
-    fn resolve_structured_type_syntax(
-        &mut self,
-        request: StructuredTypeSyntaxRequest<'_>,
-    ) -> Result<
-        Type,
-        crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
-    > {
-        self.resolve_rir_type_syntax_in_arena(
-            &request.syntax.arena,
-            request.syntax.root,
-            request.root_file,
-            request.span,
-            request.type_substitutions,
-            request.value_substitutions,
-        )
-        .map_err(crate::SemanticResolutionError::ProviderFailure)
+
+    fn type_syntax_module_display_name(&self, module: ModuleId) -> Arc<str> {
+        self.calls
+            .module_def(module)
+            .map(|definition| Arc::from(definition.import_path.as_str()))
+            .unwrap_or_else(|| Arc::from("<unknown module>"))
     }
-    fn resolve_type_module_prefix(
+
+    fn type_syntax_accessing_domain(
+        &self,
+        authority: TypeRootAuthority,
+    ) -> crate::SemanticVisibilityDomain {
+        let path = self.source.source_path(authority.file());
+        crate::SemanticVisibilityDomain::from_file_path(path.as_deref())
+    }
+
+    fn type_syntax_named_type(
         &mut self,
-        request: ModulePrefixRequest<'_>,
-    ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
-        let mut file = request.root_file;
-        let mut module = None;
-        for segment in request.segments {
-            let symbol = self.interner.get_or_intern(segment);
-            let Some(binding) = self.module_binding_for_symbol(file, symbol) else {
-                return Err(CompileError::new(
-                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
-                    request.span,
-                ));
-            };
-            let Some(id) = binding.ty.as_module() else {
-                return Err(CompileError::new(
-                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
-                    request.span,
-                ));
-            };
-            let def = self.calls.module_def(id).ok_or_else(|| {
+        authority: TypeRootAuthority,
+        module: Option<ModuleId>,
+        name: Spur,
+        kind: TypeSyntaxNamedKind,
+    ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
+        let file = module
+            .and_then(|module| {
+                self.calls
+                    .module_def(module)
+                    .map(|definition| definition.file_id)
+            })
+            .unwrap_or_else(|| authority.file());
+        let selected = match kind {
+            TypeSyntaxNamedKind::Struct => self
+                .nominal_type_for_symbol(file, name)
+                .filter(|ty| ty.as_struct().is_some())
+                .map(|ty| {
+                    let metadata = self
+                        .type_pool
+                        .struct_metadata(ty.as_struct().expect("checked struct type"))
+                        .expect("provider struct type has registered metadata");
+                    (ty, metadata.file_id, metadata.is_pub)
+                }),
+            TypeSyntaxNamedKind::Enum => self
+                .nominal_type_for_symbol(file, name)
+                .filter(|ty| ty.as_enum().is_some())
+                .map(|ty| {
+                    let metadata = self
+                        .type_pool
+                        .enum_metadata(ty.as_enum().expect("checked enum type"))
+                        .expect("provider enum type has registered metadata");
+                    (ty, metadata.file_id, metadata.is_pub)
+                }),
+            TypeSyntaxNamedKind::Alias => {
+                self.const_info_for_symbol(file, name)
+                    .and_then(|info| match info.value {
+                        ConstValue::Type(ty) => Some((ty, info.span.file_id, info.is_pub)),
+                        _ => None,
+                    })
+            }
+        };
+        let Some((value, site, is_public)) = selected else {
+            return Ok(None);
+        };
+        let defining_file = self
+            .source
+            .source_path(site)
+            .unwrap_or_else(|| Arc::from("<unknown>"));
+        Ok(Some(crate::SemanticTypeFact {
+            value,
+            site,
+            is_public,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(Some(
+                defining_file.as_ref(),
+            )),
+            defining_file,
+        }))
+    }
+
+    fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type> {
+        let name = self.interner.get_or_intern("str");
+        self.nominal_type_for_symbol(span.file_id, name)
+            .filter(|ty| ty.as_struct().is_some())
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType("str".to_owned()), span)
+            })
+    }
+
+    fn type_syntax_make_array(
+        &mut self,
+        element: Type,
+        length: u64,
+        span: Span,
+    ) -> CompileResult<Type> {
+        self.type_pool
+            .try_intern_array(element, length)
+            .map_err(|failure| {
                 CompileError::new(
-                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
-                    request.span,
+                    rue_error::ErrorKind::UnknownType(format!("array type: {failure:?}")),
+                    span,
+                )
+            })
+    }
+
+    fn type_syntax_make_ptr_const(&mut self, pointee: Type, span: Span) -> CompileResult<Type> {
+        self.type_pool
+            .try_intern_ptr_const(pointee)
+            .map_err(|failure| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(format!("pointer type: {failure:?}")),
+                    span,
+                )
+            })
+    }
+
+    fn type_syntax_make_ptr_mut(&mut self, pointee: Type, span: Span) -> CompileResult<Type> {
+        self.type_pool
+            .try_intern_ptr_mut(pointee)
+            .map_err(|failure| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(format!("pointer type: {failure:?}")),
+                    span,
+                )
+            })
+    }
+
+    fn type_syntax_require_slices(&mut self, span: Span) -> CompileResult<()> {
+        self.require_preview(
+            rue_error::PreviewFeature::Slices,
+            "the slice type `[T]`",
+            span,
+        )
+    }
+
+    fn type_syntax_make_slice(
+        &mut self,
+        syntax: &str,
+        element: Type,
+        span: Span,
+    ) -> CompileResult<Type> {
+        let durable = self.durable_type_from_concrete(element).ok_or_else(|| {
+            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+        })?;
+        let id = self
+            .endpoint
+            .register_generated_slice(&durable, syntax)
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+        Ok(Type::new_struct(id))
+    }
+
+    fn type_syntax_make_fixed_str(&mut self, capacity: u64, span: Span) -> CompileResult<Type> {
+        let id = self
+            .endpoint
+            .register_generated_fixed_string(capacity)
+            .ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(format!("Str({capacity})")),
+                    span,
                 )
             })?;
-            file = def.file_id;
-            module = Some((id, def.file_path));
-        }
-        let (module, path) = module.ok_or_else(|| {
-            CompileError::new(
-                rue_error::ErrorKind::UnknownType(request.segments.join(".")),
-                request.span,
-            )
-        })?;
-        Ok((module, Some(file), path))
+        self.generated_structs
+            .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
+        Ok(Type::new_struct(id))
     }
-    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64> {
-        self.resolve_array_length_in_file(
-            request.length,
-            request.span.file_id,
-            request.span,
-            request.value_substitutions,
-        )
+
+    fn type_syntax_record_builtin_call(&mut self) {}
+
+    fn type_syntax_constructor(
+        &mut self,
+        authority: TypeRootAuthority,
+        module: Option<ModuleId>,
+        name: Spur,
+    ) -> CompileResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
+        let file = module
+            .and_then(|module| {
+                self.calls
+                    .module_def(module)
+                    .map(|definition| definition.file_id)
+            })
+            .unwrap_or_else(|| authority.file());
+        let Some(symbol) = self.function_for_file_symbol(file, name) else {
+            return Ok(None);
+        };
+        let Some((_, definition)) = self.function_token_for_symbol(symbol) else {
+            return Ok(None);
+        };
+        let Some(signature) = DurableCallableSource::function(&self.source, &definition) else {
+            return Ok(None);
+        };
+        let site = self
+            .source
+            .definition_source(&definition)
+            .map_or(file, |locator| locator.file_id);
+        let defining_file = self
+            .source
+            .source_path(site)
+            .unwrap_or_else(|| Arc::from("<unknown>"));
+        let parameters = signature
+            .parameters
+            .iter()
+            .map(|parameter| crate::SemanticTypeConstructorParameter {
+                name: self.interner.get_or_intern(parameter.name.as_ref()),
+                is_comptime: parameter.is_comptime,
+                is_type: matches!(parameter.ty, crate::SemanticImportType::ComptimeType),
+            })
+            .collect::<Vec<_>>();
+        Ok(Some(crate::SemanticTypeConstructorHead {
+            key: symbol,
+            site,
+            parameters: parameters.into(),
+            returns_type: self.callable_returns_type(&signature, signature.type_syntax.as_ref()),
+            is_public: signature.is_public,
+            defining_domain: crate::SemanticVisibilityDomain::from_file_path(Some(
+                defining_file.as_ref(),
+            )),
+            defining_file,
+        }))
+    }
+
+    fn type_syntax_reduce_constructor(
+        &mut self,
+        head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
+        type_arguments: &[(Spur, Type)],
+        value_arguments: &[(Spur, ConstValue)],
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        let Some((_, definition)) = self.function_token_for_symbol(head.key) else {
+            return Ok(None);
+        };
+        let mut durable_types = Vec::with_capacity(type_arguments.len());
+        for &(name, value) in type_arguments {
+            let Some(value) = self.durable_type_from_concrete(value) else {
+                return Ok(None);
+            };
+            durable_types.push((Arc::from(self.interner.resolve(&name)), value));
+        }
+        let mut durable_values = Vec::with_capacity(value_arguments.len());
+        for &(name, value) in value_arguments {
+            let Some(value) = self.durable_value_from_concrete(value) else {
+                return Ok(None);
+            };
+            durable_values.push((Arc::from(self.interner.resolve(&name)), value));
+        }
+        let reduced =
+            match self
+                .source
+                .reduce_comptime_call(&definition, &durable_types, &durable_values)
+            {
+                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+                DurableComptimeCallOutcome::NotReduced => return Ok(None),
+                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
+                    return Err(CompileError::new(
+                        diagnostic.kind,
+                        diagnostic.span.unwrap_or(span),
+                    ));
+                }
+            };
+        let value = match reduced.result {
+            crate::SemanticComptimeCallResult::Type(ty) => {
+                crate::SemanticImportConstValue::Type(ty)
+            }
+            crate::SemanticComptimeCallResult::Value(value) => value,
+        };
+        Ok(self.materialize_durable_const_value(&value))
+    }
+
+    fn type_syntax_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.const_info_for_symbol(file, name)
+    }
+
+    fn type_syntax_recover_const(
+        &mut self,
+        file: FileId,
+        name: Spur,
+    ) -> CompileResult<Option<ConstValue>> {
+        Ok(self
+            .const_info_for_symbol(file, name)
+            .map(|info| info.value))
+    }
+
+    fn type_syntax_record_named_const_dependency(&mut self, _file: FileId, _name: String) {}
+
+    fn type_syntax_out_of_scope_const_hint(&self, name: Spur, _exclude: FileId) -> String {
+        let mut paths = self
+            .source
+            .out_of_scope_integer_const_paths(&self.key, self.interner.resolve(&name));
+        paths.sort_unstable();
+        paths.dedup();
+        if paths.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {}: i32 = <module>.{};`) to use it as an array length here",
+                paths
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .collect::<Vec<&str>>()
+                    .join(", "),
+                self.interner.resolve(&name),
+                self.interner.resolve(&name),
+            )
+        }
+    }
+
+    fn type_syntax_dependencies(
+        &self,
+        _ty: Type,
+    ) -> Vec<(FileId, String, super::DeclarationTypeDependencyTargetKind)> {
+        Vec::new()
+    }
+
+    fn type_syntax_flush_dependency(
+        &mut self,
+        _file: FileId,
+        _name: String,
+        _kind: super::DeclarationTypeDependencyTargetKind,
+    ) {
     }
 }
 
@@ -3356,1224 +3507,6 @@ where
             &self.preview,
         )
     }
-
-    fn resolve_array_length_in_file(
-        &mut self,
-        length: &ArrayLen,
-        root_file: FileId,
-        span: Span,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
-        let invalid =
-            |reason| CompileError::new(rue_error::ErrorKind::InvalidArrayLength { reason }, span);
-        let ArrayLen::Named(name) = length else {
-            let ArrayLen::Literal(value) = length else {
-                unreachable!()
-            };
-            return Ok(*value);
-        };
-        if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(name) {
-            if !callee.contains('.')
-                && let Some(definition) = self.source.free_function(&self.key, &callee)
-                && let Some(signature) = DurableCallableSource::function(&self.source, &definition)
-                && (signature.parameters.len() != arguments.len()
-                    || signature
-                        .parameters
-                        .iter()
-                        .any(|parameter| !parameter.is_comptime))
-            {
-                return Err(invalid(format!(
-                    "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
-                )));
-            }
-            let reduced = self
-                .reduce_comptime_constructor_call(
-                    &callee,
-                    &arguments,
-                    name,
-                    root_file,
-                    span,
-                    None,
-                    value_substitutions,
-                )
-                .map_err(|error| match error.kind {
-                    rue_error::ErrorKind::ComptimeArgNotConst { .. } => invalid(format!(
-                        "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
-                    )),
-                    _ => invalid(format!(
-                        "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
-                    )),
-                })?;
-            return match reduced.result {
-                crate::SemanticComptimeCallResult::Value(
-                    crate::SemanticImportConstValue::Integer(value),
-                ) if value >= 0 => u64::try_from(value).map_err(|_| {
-                    invalid(format!(
-                        "array length '{callee}(...)' ({value}) is too large"
-                    ))
-                }),
-                crate::SemanticComptimeCallResult::Value(
-                    crate::SemanticImportConstValue::Integer(value),
-                ) => Err(invalid(format!(
-                    "array length '{callee}(...)' is negative ({value})"
-                ))),
-                _ => Err(invalid(format!(
-                    "array length call '{callee}(...)' did not evaluate to a compile-time integer"
-                ))),
-            };
-        }
-        let symbol = self.interner.get_or_intern(name);
-        let value = value_substitutions
-            .and_then(|values| values.get(&symbol))
-            .copied()
-            .or_else(|| {
-                self.call_value_const(root_file, symbol)
-                    .map(|info| info.value)
-            });
-        match value {
-            Some(ConstValue::Integer(value)) if value >= 0 => u64::try_from(value)
-                .map_err(|_| invalid(format!("array length '{name}' ({value}) is too large"))),
-            Some(ConstValue::Integer(value)) => Err(invalid(format!(
-                "array length '{name}' is negative ({value})"
-            ))),
-            Some(_) => Err(invalid(format!("array length '{name}' is not an integer"))),
-            None => {
-                let mut paths = self
-                    .source
-                    .out_of_scope_integer_const_paths(&self.key, name);
-                paths.sort_unstable();
-                paths.dedup();
-                let hint = if paths.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {name}: i32 = <module>.{name};`) to use it as an array length here",
-                        paths
-                            .iter()
-                            .map(AsRef::as_ref)
-                            .collect::<Vec<&str>>()
-                            .join(", ")
-                    )
-                };
-                Err(invalid(format!(
-                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
-                )))
-            }
-        }
-    }
-
-    fn resolve_rir_type_syntax(
-        &mut self,
-        syntax: RirTypeSyntaxRef,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type> {
-        let arena = self.rir.rir().type_syntax().clone();
-        self.resolve_rir_type_syntax_in_arena(
-            &arena,
-            syntax,
-            span.file_id,
-            span,
-            type_substitutions,
-            value_substitutions,
-        )
-    }
-
-    fn resolve_rir_type_syntax_in_arena(
-        &mut self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type> {
-        use rue_rir::RirTypeSyntaxNode as N;
-
-        // Successful structured resolution must not reconstruct the spelling it
-        // replaced. Besides being unnecessary, rendering here made a nested
-        // type render each of its subtrees again during recursive resolution.
-        // Keep spelling reconstruction on the diagnostic path only.
-        let Some(node) = arena.node(syntax).cloned() else {
-            return Err(self.rir_type_unknown_error(arena, syntax, span));
-        };
-        match node {
-            N::Named(symbol) => {
-                let Some(symbol) = arena.symbol(symbol).copied() else {
-                    return Err(self.rir_type_unknown_error(arena, syntax, span));
-                };
-                if let Some(ty) = type_substitutions.and_then(|values| values.get(&symbol)) {
-                    return Ok(*ty);
-                }
-                self.resolve_named_type_symbol_in_file(symbol, root_file, span)
-            }
-            N::Qualified { path } => {
-                let Some(words) = arena.words(path) else {
-                    return Err(self.rir_type_unknown_error(arena, syntax, span));
-                };
-                let mut segments = Vec::with_capacity(words.len());
-                for word in words {
-                    let Some(symbol) = arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
-                    else {
-                        return Err(self.rir_type_unknown_error(arena, syntax, span));
-                    };
-                    segments.push(*symbol);
-                }
-                self.resolve_qualified_rir_type(&segments, root_file)
-                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))
-            }
-            N::Unit => Ok(Type::UNIT),
-            N::Never => Ok(Type::NEVER),
-            N::Array { element, length } => {
-                let element = self.resolve_rir_type_syntax_in_arena(
-                    arena,
-                    element,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                let length = self.resolve_rir_array_length(
-                    arena,
-                    length,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                self.type_pool
-                    .try_intern_array(element, length)
-                    .map_err(|failure| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(format!(
-                                "{}: {failure:?}",
-                                self.rir_type_display(arena, syntax)
-                            )),
-                            span,
-                        )
-                    })
-            }
-            N::Slice { element } => {
-                self.require_preview(
-                    rue_error::PreviewFeature::Slices,
-                    "the slice type `[T]`",
-                    span,
-                )?;
-                let element = self.resolve_rir_type_syntax_in_arena(
-                    arena,
-                    element,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                let durable = self
-                    .durable_type_from_concrete(element)
-                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
-                let spelling = self.rir_type_display(arena, syntax);
-                let id = self
-                    .endpoint
-                    .register_generated_slice(&durable, &spelling)
-                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
-                Ok(Type::new_struct(id))
-            }
-            N::PointerConst { pointee } | N::PointerMut { pointee } => {
-                let is_mut = matches!(arena.node(syntax), Some(N::PointerMut { .. }));
-                let pointee = self.resolve_rir_type_syntax_in_arena(
-                    arena,
-                    pointee,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                if is_mut {
-                    self.type_pool.try_intern_ptr_mut(pointee)
-                } else {
-                    self.type_pool.try_intern_ptr_const(pointee)
-                }
-                .map_err(|failure| {
-                    CompileError::new(
-                        rue_error::ErrorKind::UnknownType(format!(
-                            "{}: {failure:?}",
-                            self.rir_type_display(arena, syntax)
-                        )),
-                        span,
-                    )
-                })
-            }
-            N::TypeCall { path, arguments } => self.resolve_rir_type_constructor_call(
-                arena,
-                syntax,
-                path,
-                arguments,
-                root_file,
-                span,
-                type_substitutions,
-                value_substitutions,
-            ),
-            N::AnonymousStruct { .. }
-            | N::AnonymousEnum { .. }
-            | N::ValueCall { .. }
-            | N::Integer(_) => Err(self.rir_type_unknown_error(arena, syntax, span)),
-        }
-    }
-
-    fn rir_type_display(
-        &self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-    ) -> String {
-        arena
-            .render_type_with(syntax, |symbol| self.interner.resolve(symbol))
-            .unwrap_or_else(|| "<invalid structured type syntax>".to_owned())
-    }
-
-    fn rir_type_unknown_error(
-        &self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-        span: Span,
-    ) -> CompileError {
-        CompileError::new(
-            rue_error::ErrorKind::UnknownType(self.rir_type_display(arena, syntax)),
-            span,
-        )
-    }
-
-    fn resolve_qualified_rir_type(&mut self, segments: &[Spur], root_file: FileId) -> Option<Type> {
-        let (leaf, prefix) = segments.split_last()?;
-        let mut file = root_file;
-        for segment in prefix {
-            let binding = self.module_binding_for_symbol(file, *segment)?;
-            let module = binding.ty.as_module()?;
-            file = self.calls.module_def(module)?.file_id;
-        }
-        let ty = self.nominal_type_for_symbol(file, *leaf).or_else(|| {
-            self.const_info_for_symbol(file, *leaf)
-                .and_then(|info| match info.value {
-                    ConstValue::Type(ty) => Some(ty),
-                    _ => None,
-                })
-        });
-        ty
-    }
-
-    fn resolve_type_name_in_file(
-        &mut self,
-        name: &str,
-        root_file: FileId,
-        span: Span,
-    ) -> CompileResult<Type> {
-        if let Some(capacity) = name
-            .strip_prefix("Str(")
-            .and_then(|name| name.strip_suffix(')'))
-            .and_then(|capacity| capacity.parse::<u64>().ok())
-        {
-            let id = self
-                .endpoint
-                .register_generated_fixed_string(capacity)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                })?;
-            self.generated_structs
-                .insert(self.interner.get_or_intern(name), id);
-            return Ok(Type::new_struct(id));
-        }
-        if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(name) {
-            return self.resolve_type_constructor_call(
-                &callee, &arguments, name, root_file, span, None, None,
-            );
-        }
-        if name.contains('.') {
-            let segments = name.split('.').collect::<Vec<_>>();
-            let Some((leaf, prefix)) = segments.split_last() else {
-                unreachable!()
-            };
-            if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
-                return Err(CompileError::new(
-                    rue_error::ErrorKind::UnknownType(name.to_owned()),
-                    span,
-                ));
-            }
-            let mut file = root_file;
-            for segment in prefix {
-                let symbol = self.interner.get_or_intern(segment);
-                let binding = self
-                    .module_binding_for_symbol(file, symbol)
-                    .ok_or_else(|| {
-                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                    })?;
-                let module = binding.ty.as_module().ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                })?;
-                file = self
-                    .calls
-                    .module_def(module)
-                    .ok_or_else(|| {
-                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                    })?
-                    .file_id;
-            }
-            let leaf = self.interner.get_or_intern(leaf);
-            if let Some(ty) = self.nominal_type_for_symbol(file, leaf) {
-                let (defining_file, is_public, item_kind) = if let Some(id) = ty.as_struct() {
-                    let definition = self.type_pool.struct_def(id);
-                    (definition.file_id, definition.is_pub, "struct")
-                } else if let Some(id) = ty.as_enum() {
-                    let definition = self.type_pool.enum_def(id);
-                    (definition.file_id, definition.is_pub, "enum")
-                } else {
-                    (file, true, "type")
-                };
-                if !self.is_accessible(root_file, defining_file, is_public) {
-                    return Err(CompileError::new(
-                        rue_error::ErrorKind::PrivateMemberAccess {
-                            item_kind: item_kind.to_owned(),
-                            name: self.interner.resolve(&leaf).to_owned(),
-                        },
-                        span,
-                    ));
-                }
-                return Ok(ty);
-            }
-            if let Some(info) = self.const_info_for_symbol(file, leaf)
-                && let ConstValue::Type(ty) = info.value
-            {
-                if !self.is_accessible(root_file, info.span.file_id, info.is_pub) {
-                    return Err(CompileError::new(
-                        rue_error::ErrorKind::PrivateMemberAccess {
-                            item_kind: "const".to_owned(),
-                            name: self.interner.resolve(&leaf).to_owned(),
-                        },
-                        span,
-                    ));
-                }
-                return Ok(ty);
-            }
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(name.to_owned()),
-                span,
-            ));
-        }
-        if let Some((element, length)) = crate::types::parse_array_type_syntax(name) {
-            let element = self.resolve_type_name_in_file(&element, root_file, span)?;
-            let length = self.resolve_array_length_in_file(&length, root_file, span, None)?;
-            return self
-                .type_pool
-                .try_intern_array(element, length)
-                .map_err(|failure| {
-                    CompileError::new(
-                        rue_error::ErrorKind::UnknownType(format!("{name}: {failure:?}")),
-                        span,
-                    )
-                });
-        }
-        if let Some((pointee, mutability)) = crate::types::parse_pointer_type_syntax(name) {
-            let pointee = self.resolve_type_name_in_file(&pointee, root_file, span)?;
-            return match mutability {
-                crate::types::PtrMutability::Const => self.type_pool.try_intern_ptr_const(pointee),
-                crate::types::PtrMutability::Mut => self.type_pool.try_intern_ptr_mut(pointee),
-            }
-            .map_err(|failure| {
-                CompileError::new(
-                    rue_error::ErrorKind::UnknownType(format!("{name}: {failure:?}")),
-                    span,
-                )
-            });
-        }
-        if let Some(element) = name
-            .strip_prefix('[')
-            .and_then(|name| name.strip_suffix(']'))
-            .filter(|element| !element.contains(';'))
-        {
-            self.require_preview(
-                rue_error::PreviewFeature::Slices,
-                "the slice type `[T]`",
-                span,
-            )?;
-            let element_type = self.resolve_type_name_in_file(element, root_file, span)?;
-            let durable_element =
-                self.durable_type_from_concrete(element_type)
-                    .ok_or_else(|| {
-                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                    })?;
-            let id = self
-                .endpoint
-                .register_generated_slice(&durable_element, name)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
-                })?;
-            return Ok(Type::new_struct(id));
-        }
-        let ty = if name == "unit" {
-            Type::UNIT
-        } else if name == "never" {
-            Type::NEVER
-        } else if let Some(ty) = Type::from_primitive_name(name) {
-            ty
-        } else {
-            let symbol = self.state.identity_context().name_symbol(name);
-            if let Some(ty) = self.nominal_type_for_symbol(root_file, symbol) {
-                ty
-            } else if let Some(info) = self.const_info_for_symbol(root_file, symbol)
-                && let ConstValue::Type(ty) = info.value
-            {
-                ty
-            } else {
-                return Err(CompileError::new(
-                    rue_error::ErrorKind::UnknownType(name.to_owned()),
-                    span,
-                ));
-            }
-        };
-        Ok(ty)
-    }
-
-    /// Resolve a parser-proven simple type name without reconstructing its
-    /// spelling or interning it again. Compound source spellings never reach
-    /// this boundary: arrays, pointers, calls, paths, unit, and never each have
-    /// their own structured RIR node.
-    fn resolve_named_type_symbol_in_file(
-        &mut self,
-        symbol: Spur,
-        root_file: FileId,
-        span: Span,
-    ) -> CompileResult<Type> {
-        if let Some(ty) = Type::from_primitive_name(self.interner.resolve(&symbol)) {
-            return Ok(ty);
-        }
-        if let Some(ty) = self.nominal_type_for_symbol(root_file, symbol) {
-            return Ok(ty);
-        }
-        if let Some(info) = self.const_info_for_symbol(root_file, symbol)
-            && let ConstValue::Type(ty) = info.value
-        {
-            return Ok(ty);
-        }
-        Err(CompileError::new(
-            rue_error::ErrorKind::UnknownType(self.interner.resolve(&symbol).to_owned()),
-            span,
-        ))
-    }
-
-    fn resolve_type_constructor_call(
-        &mut self,
-        callee: &str,
-        arguments: &[String],
-        syntax: &str,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type> {
-        if callee == "Str" {
-            let [capacity] = arguments else {
-                return Err(CompileError::new(
-                    rue_error::ErrorKind::UnknownType(syntax.to_owned()),
-                    span,
-                ));
-            };
-            let length = capacity
-                .parse::<u64>()
-                .map(ArrayLen::Literal)
-                .unwrap_or_else(|_| ArrayLen::Named(capacity.clone()));
-            let capacity =
-                self.resolve_array_length_in_file(&length, root_file, span, value_substitutions)?;
-            let id = self
-                .endpoint
-                .register_generated_fixed_string(capacity)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-                })?;
-            self.generated_structs
-                .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
-            return Ok(Type::new_struct(id));
-        }
-        let reduced = self.reduce_comptime_constructor_call(
-            callee,
-            arguments,
-            syntax,
-            root_file,
-            span,
-            type_substitutions,
-            value_substitutions,
-        )?;
-        let crate::SemanticComptimeCallResult::Type(ty) = reduced.result else {
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(syntax.to_owned()),
-                span,
-            ));
-        };
-        self.register_import_nominal_identities(&ty).map_err(|_| {
-            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-        })?;
-        let resolved = self
-            .state
-            .identity_context()
-            .pool_mut()
-            .and_then(|mut pool| pool.resolve_provider_type(&ty).ok())
-            .ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-            })?;
-        if let crate::SemanticImportType::AnonymousNominal(identity) = &ty {
-            self.install_provider_anonymous_methods(identity, resolved)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-                })?;
-        }
-        Ok(resolved)
-    }
-
-    fn rir_type_path(
-        &self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        path: rue_rir::RirTypeSyntaxRange,
-    ) -> Option<Vec<String>> {
-        arena
-            .words(path)?
-            .iter()
-            .map(|word| {
-                arena
-                    .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
-                    .map(|symbol| self.interner.resolve(symbol).to_owned())
-            })
-            .collect()
-    }
-
-    fn rir_type_references(
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        range: rue_rir::RirTypeSyntaxRange,
-    ) -> Option<Vec<RirTypeSyntaxRef>> {
-        Some(
-            arena
-                .words(range)?
-                .iter()
-                .copied()
-                .map(RirTypeSyntaxRef::from_u32)
-                .collect(),
-        )
-    }
-
-    fn resolve_rir_array_length(
-        &mut self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
-        use rue_rir::RirTypeSyntaxNode as N;
-        let Some(node) = arena.node(syntax) else {
-            return Err(self.rir_array_length_error(arena, syntax, span));
-        };
-        let invalid =
-            |reason| CompileError::new(rue_error::ErrorKind::InvalidArrayLength { reason }, span);
-        match node {
-            N::Integer(value) if *value >= 0 => u64::try_from(*value).map_err(|_| {
-                invalid(format!(
-                    "array length '{}' ({value}) is too large",
-                    self.rir_type_display(arena, syntax)
-                ))
-            }),
-            N::Integer(value) => Err(invalid(format!(
-                "array length '{}' is negative ({value})",
-                self.rir_type_display(arena, syntax)
-            ))),
-            N::Named(name) => {
-                let Some(symbol) = arena.symbol(*name).copied() else {
-                    return Err(self.rir_array_length_error(arena, syntax, span));
-                };
-                let name = self.interner.resolve(&symbol).to_owned();
-                let value = value_substitutions
-                    .and_then(|values| values.get(&symbol))
-                    .copied()
-                    .or_else(|| {
-                        self.call_value_const(root_file, symbol)
-                            .map(|info| info.value)
-                    });
-                match value {
-                    Some(ConstValue::Integer(value)) if value >= 0 => {
-                        u64::try_from(value).map_err(|_| {
-                            invalid(format!("array length '{name}' ({value}) is too large"))
-                        })
-                    }
-                    Some(ConstValue::Integer(value)) => Err(invalid(format!(
-                        "array length '{name}' is negative ({value})"
-                    ))),
-                    Some(_) => Err(invalid(format!("array length '{name}' is not an integer"))),
-                    None => {
-                        let mut paths = self
-                            .source
-                            .out_of_scope_integer_const_paths(&self.key, &name);
-                        paths.sort_unstable();
-                        paths.dedup();
-                        let hint = if paths.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {name}: i32 = <module>.{name};`) to use it as an array length here",
-                                paths
-                                    .iter()
-                                    .map(AsRef::as_ref)
-                                    .collect::<Vec<&str>>()
-                                    .join(", ")
-                            )
-                        };
-                        Err(invalid(format!(
-                            "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
-                        )))
-                    }
-                }
-            }
-            N::ValueCall { name, arguments } => {
-                let Some(name) = arena.symbol(*name) else {
-                    return Err(self.rir_array_length_error(arena, syntax, span));
-                };
-                let Some(arguments) = Self::rir_type_references(arena, *arguments) else {
-                    return Err(self.rir_array_length_error(arena, syntax, span));
-                };
-                let callee = self.interner.resolve(name).to_owned();
-                if let Some(definition) = self.source.free_function(&self.key, &callee)
-                    && let Some(signature) =
-                        DurableCallableSource::function(&self.source, &definition)
-                    && (signature.parameters.len() != arguments.len()
-                        || signature
-                            .parameters
-                            .iter()
-                            .any(|parameter| !parameter.is_comptime))
-                {
-                    return Err(invalid(format!(
-                        "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
-                    )));
-                }
-                let display = self.rir_type_display(arena, syntax);
-                let reduced = self
-                    .reduce_rir_comptime_constructor_call(
-                        arena,
-                        std::slice::from_ref(&callee),
-                        &arguments,
-                        root_file,
-                        span,
-                        type_substitutions,
-                        value_substitutions,
-                        &display,
-                    )
-                    .map_err(|error| match error.kind {
-                        rue_error::ErrorKind::ComptimeArgNotConst { .. } => invalid(format!(
-                            "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
-                        )),
-                        _ => invalid(format!(
-                            "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
-                        )),
-                    })?;
-                match reduced.result {
-                    crate::SemanticComptimeCallResult::Value(
-                        crate::SemanticImportConstValue::Integer(value),
-                    ) if value >= 0 => u64::try_from(value).map_err(|_| {
-                        invalid(format!(
-                            "array length '{callee}(...)' ({value}) is too large"
-                        ))
-                    }),
-                    crate::SemanticComptimeCallResult::Value(
-                        crate::SemanticImportConstValue::Integer(value),
-                    ) => Err(invalid(format!(
-                        "array length '{callee}(...)' is negative ({value})"
-                    ))),
-                    _ => Err(invalid(format!(
-                        "array length call '{callee}(...)' did not evaluate to a compile-time integer"
-                    ))),
-                }
-            }
-            _ => Err(self.rir_array_length_error(arena, syntax, span)),
-        }
-    }
-
-    fn rir_array_length_error(
-        &self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-        span: Span,
-    ) -> CompileError {
-        CompileError::new(
-            rue_error::ErrorKind::InvalidArrayLength {
-                reason: arena
-                    .render_type_with(syntax, |symbol| self.interner.resolve(symbol))
-                    .unwrap_or_else(|| "<invalid structured array length>".to_owned()),
-            },
-            span,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn resolve_rir_type_constructor_call(
-        &mut self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        syntax: RirTypeSyntaxRef,
-        path: rue_rir::RirTypeSyntaxRange,
-        arguments: rue_rir::RirTypeSyntaxRange,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<Type> {
-        let path = self
-            .rir_type_path(arena, path)
-            .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
-        let arguments = Self::rir_type_references(arena, arguments)
-            .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
-        if path.as_slice() == ["Str"] {
-            let [capacity] = arguments.as_slice() else {
-                return Err(self.rir_type_unknown_error(arena, syntax, span));
-            };
-            let capacity = self.resolve_rir_array_length(
-                arena,
-                *capacity,
-                root_file,
-                span,
-                type_substitutions,
-                value_substitutions,
-            )?;
-            let id = self
-                .endpoint
-                .register_generated_fixed_string(capacity)
-                .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
-            self.generated_structs
-                .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
-            return Ok(Type::new_struct(id));
-        }
-        let display = self.rir_type_display(arena, syntax);
-        let reduced = self.reduce_rir_comptime_constructor_call(
-            arena,
-            &path,
-            &arguments,
-            root_file,
-            span,
-            type_substitutions,
-            value_substitutions,
-            &display,
-        )?;
-        let crate::SemanticComptimeCallResult::Type(ty) = reduced.result else {
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(display.clone()),
-                span,
-            ));
-        };
-        self.register_import_nominal_identities(&ty).map_err(|_| {
-            CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
-        })?;
-        let resolved = self
-            .state
-            .identity_context()
-            .pool_mut()
-            .and_then(|mut pool| pool.resolve_provider_type(&ty).ok())
-            .ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
-            })?;
-        if let crate::SemanticImportType::AnonymousNominal(identity) = &ty {
-            self.install_provider_anonymous_methods(identity, resolved)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
-                })?;
-        }
-        Ok(resolved)
-    }
-
-    fn reduce_comptime_constructor_call(
-        &mut self,
-        callee: &str,
-        arguments: &[String],
-        syntax: &str,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<crate::DurableReducedComptimeCall<K, M>> {
-        let mut segments = callee.split('.').collect::<Vec<_>>();
-        let Some(name) = segments.pop() else {
-            unreachable!()
-        };
-        let mut file = root_file;
-        for segment in segments {
-            let symbol = self.interner.get_or_intern(segment);
-            let binding = self
-                .module_binding_for_symbol(file, symbol)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-                })?;
-            let module = binding.ty.as_module().ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-            })?;
-            file = self
-                .calls
-                .module_def(module)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-                })?
-                .file_id;
-        }
-        let source_name = self.interner.get_or_intern(name);
-        let symbol = self
-            .function_for_file_symbol(file, source_name)
-            .ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-            })?;
-        let (_, definition) = self.function_token_for_symbol(symbol).ok_or_else(|| {
-            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-        })?;
-        let signature =
-            DurableCallableSource::function(&self.source, &definition).ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-            })?;
-        if let Some(locator) = self.source.definition_source(&definition)
-            && !self.is_accessible(root_file, locator.file_id, signature.is_public)
-        {
-            return Err(
-                CompileError::new(
-                    rue_error::ErrorKind::PrivateUnqualifiedAccess(Box::new(
-                        rue_error::PrivateUnqualifiedAccessData {
-                            item_kind: "function".to_owned(),
-                            name: name.to_owned(),
-                            defining_file: locator.physical_path.to_string(),
-                        },
-                    )),
-                    span,
-                )
-                .with_help(format!(
-                    "`{name}` is not marked `pub`; private items are only visible within their defining directory"
-                )),
-            );
-        }
-        if signature.parameters.len() != arguments.len()
-            || signature
-                .parameters
-                .iter()
-                .any(|parameter| !parameter.is_comptime)
-        {
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(syntax.to_owned()),
-                span,
-            ));
-        }
-
-        let mut type_arguments = Vec::new();
-        let mut value_arguments = Vec::new();
-        for (parameter, argument) in signature.parameters.iter().zip(arguments) {
-            if matches!(parameter.ty, crate::SemanticImportType::ComptimeType) {
-                let argument_symbol = self.interner.get_or_intern(argument);
-                let ty = if let Some(ty) =
-                    type_substitutions.and_then(|substitutions| substitutions.get(&argument_symbol))
-                {
-                    *ty
-                } else if let Some((callee, arguments)) =
-                    crate::types::parse_type_call_syntax(argument)
-                {
-                    self.resolve_type_constructor_call(
-                        &callee,
-                        &arguments,
-                        argument,
-                        root_file,
-                        span,
-                        type_substitutions,
-                        value_substitutions,
-                    )?
-                } else {
-                    self.resolve_type_name_in_file(argument, root_file, span)?
-                };
-                let value = self.durable_type_from_concrete(ty).ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-                })?;
-                type_arguments.push((parameter.name.clone(), value));
-                continue;
-            }
-            let concrete = if argument == "true" {
-                Some(ConstValue::Bool(true))
-            } else if argument == "false" {
-                Some(ConstValue::Bool(false))
-            } else if let Ok(value) = argument.parse::<i128>() {
-                Some(ConstValue::Integer(value))
-            } else if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(argument)
-            {
-                match self
-                    .reduce_comptime_constructor_call(
-                        &callee,
-                        &arguments,
-                        argument,
-                        root_file,
-                        span,
-                        type_substitutions,
-                        value_substitutions,
-                    )?
-                    .result
-                {
-                    crate::SemanticComptimeCallResult::Value(value) => {
-                        self.materialize_durable_const_value(&value)
-                    }
-                    crate::SemanticComptimeCallResult::Type(_) => None,
-                }
-            } else {
-                let symbol = self.interner.get_or_intern(argument);
-                value_substitutions
-                    .and_then(|substitutions| substitutions.get(&symbol).cloned())
-                    .or_else(|| {
-                        self.const_info_for_symbol(root_file, symbol)
-                            .map(|info| info.value)
-                    })
-            }
-            .ok_or_else(|| {
-                CompileError::new(
-                    rue_error::ErrorKind::ComptimeArgNotConst {
-                        param_name: parameter.name.to_string(),
-                    },
-                    span,
-                )
-            })?;
-            let value = self.durable_value_from_concrete(concrete).ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
-            })?;
-            value_arguments.push((parameter.name.clone(), value));
-        }
-
-        let reduced =
-            match self
-                .source
-                .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
-            {
-                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
-                DurableComptimeCallOutcome::NotReduced => {
-                    return Err(CompileError::new(
-                        rue_error::ErrorKind::UnknownType(syntax.to_owned()),
-                        span,
-                    ));
-                }
-                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
-                    return Err(CompileError::new(
-                        diagnostic.kind,
-                        diagnostic.span.unwrap_or(span),
-                    ));
-                }
-            };
-        Ok(reduced)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn reduce_rir_comptime_constructor_call(
-        &mut self,
-        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
-        path: &[String],
-        arguments: &[RirTypeSyntaxRef],
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-        display: &str,
-    ) -> CompileResult<crate::DurableReducedComptimeCall<K, M>> {
-        let Some((name, prefix)) = path.split_last() else {
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(display.to_owned()),
-                span,
-            ));
-        };
-        let mut file = root_file;
-        for segment in prefix {
-            let symbol = self.interner.get_or_intern(segment);
-            let binding = self
-                .module_binding_for_symbol(file, symbol)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-                })?;
-            let module = binding.ty.as_module().ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-            })?;
-            file = self
-                .calls
-                .module_def(module)
-                .ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-                })?
-                .file_id;
-        }
-        let source_name = self.interner.get_or_intern(name);
-        let symbol = self
-            .function_for_file_symbol(file, source_name)
-            .ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-            })?;
-        let (_, definition) = self.function_token_for_symbol(symbol).ok_or_else(|| {
-            CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-        })?;
-        let signature =
-            DurableCallableSource::function(&self.source, &definition).ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-            })?;
-        if let Some(locator) = self.source.definition_source(&definition)
-            && !self.is_accessible(root_file, locator.file_id, signature.is_public)
-        {
-            return Err(
-                CompileError::new(
-                    rue_error::ErrorKind::PrivateUnqualifiedAccess(Box::new(
-                        rue_error::PrivateUnqualifiedAccessData {
-                            item_kind: "function".to_owned(),
-                            name: name.to_owned(),
-                            defining_file: locator.physical_path.to_string(),
-                        },
-                    )),
-                    span,
-                )
-                .with_help(format!(
-                    "`{name}` is not marked `pub`; private items are only visible within their defining directory"
-                )),
-            );
-        }
-        if signature.parameters.len() != arguments.len()
-            || signature
-                .parameters
-                .iter()
-                .any(|parameter| !parameter.is_comptime)
-        {
-            return Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(display.to_owned()),
-                span,
-            ));
-        }
-
-        let mut type_arguments = Vec::new();
-        let mut value_arguments = Vec::new();
-        for (parameter, argument) in signature.parameters.iter().zip(arguments) {
-            if matches!(parameter.ty, crate::SemanticImportType::ComptimeType) {
-                let ty = self.resolve_rir_type_syntax_in_arena(
-                    arena,
-                    *argument,
-                    root_file,
-                    span,
-                    type_substitutions,
-                    value_substitutions,
-                )?;
-                let value = self.durable_type_from_concrete(ty).ok_or_else(|| {
-                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-                })?;
-                type_arguments.push((parameter.name.clone(), value));
-                continue;
-            }
-            let concrete = match arena.node(*argument) {
-                Some(rue_rir::RirTypeSyntaxNode::Integer(value)) => {
-                    Some(ConstValue::Integer(*value))
-                }
-                Some(rue_rir::RirTypeSyntaxNode::Named(name)) => {
-                    let symbol = *arena.symbol(*name).ok_or_else(|| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(display.to_owned()),
-                            span,
-                        )
-                    })?;
-                    match self.interner.resolve(&symbol) {
-                        "true" => Some(ConstValue::Bool(true)),
-                        "false" => Some(ConstValue::Bool(false)),
-                        _ => value_substitutions
-                            .and_then(|values| values.get(&symbol))
-                            .copied()
-                            .or_else(|| {
-                                self.const_info_for_symbol(root_file, symbol)
-                                    .map(|info| info.value)
-                            }),
-                    }
-                }
-                Some(rue_rir::RirTypeSyntaxNode::ValueCall { name, arguments }) => {
-                    let name = arena.symbol(*name).ok_or_else(|| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(display.to_owned()),
-                            span,
-                        )
-                    })?;
-                    let nested = Self::rir_type_references(arena, *arguments).ok_or_else(|| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(display.to_owned()),
-                            span,
-                        )
-                    })?;
-                    match self
-                        .reduce_rir_comptime_constructor_call(
-                            arena,
-                            &[self.interner.resolve(name).to_owned()],
-                            &nested,
-                            root_file,
-                            span,
-                            type_substitutions,
-                            value_substitutions,
-                            display,
-                        )?
-                        .result
-                    {
-                        crate::SemanticComptimeCallResult::Value(value) => {
-                            self.materialize_durable_const_value(&value)
-                        }
-                        crate::SemanticComptimeCallResult::Type(_) => None,
-                    }
-                }
-                Some(rue_rir::RirTypeSyntaxNode::TypeCall { path, arguments }) => {
-                    let nested_path = self.rir_type_path(arena, *path).ok_or_else(|| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(display.to_owned()),
-                            span,
-                        )
-                    })?;
-                    let nested = Self::rir_type_references(arena, *arguments).ok_or_else(|| {
-                        CompileError::new(
-                            rue_error::ErrorKind::UnknownType(display.to_owned()),
-                            span,
-                        )
-                    })?;
-                    match self
-                        .reduce_rir_comptime_constructor_call(
-                            arena,
-                            &nested_path,
-                            &nested,
-                            root_file,
-                            span,
-                            type_substitutions,
-                            value_substitutions,
-                            display,
-                        )?
-                        .result
-                    {
-                        crate::SemanticComptimeCallResult::Value(value) => {
-                            self.materialize_durable_const_value(&value)
-                        }
-                        crate::SemanticComptimeCallResult::Type(_) => None,
-                    }
-                }
-                _ => None,
-            }
-            .ok_or_else(|| {
-                CompileError::new(
-                    rue_error::ErrorKind::ComptimeArgNotConst {
-                        param_name: parameter.name.to_string(),
-                    },
-                    span,
-                )
-            })?;
-            let value = self.durable_value_from_concrete(concrete).ok_or_else(|| {
-                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
-            })?;
-            value_arguments.push((parameter.name.clone(), value));
-        }
-        match self
-            .source
-            .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
-        {
-            DurableComptimeCallOutcome::Reduced(reduced) => Ok(reduced),
-            DurableComptimeCallOutcome::NotReduced => Err(CompileError::new(
-                rue_error::ErrorKind::UnknownType(display.to_owned()),
-                span,
-            )),
-            DurableComptimeCallOutcome::Diagnostic(diagnostic) => Err(CompileError::new(
-                diagnostic.kind,
-                diagnostic.span.unwrap_or(span),
-            )),
-        }
-    }
 }
 
 impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
@@ -4587,6 +3520,93 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    type InferenceFacts<'b>
+        = HostInferenceFacts<'b, Self>
+    where
+        Self: 'b;
+
+    fn inference_facts<'b>(&'b self, ctx: &'b InferenceContext) -> Self::InferenceFacts<'b> {
+        HostInferenceFacts::new(ctx, self)
+    }
+
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> Result<
+        Type,
+        crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
+    > {
+        let interner = Rc::clone(&self.interner);
+        let mut provider = TypeSyntaxProvider::new(
+            self,
+            request.span,
+            TypeRootAuthority::in_file(request.root_file),
+            SemaTypeResolutionContext::Type,
+            request.type_substitutions,
+            request.value_substitutions,
+        );
+        let result = crate::resolve_structured_semantic_type_syntax_with(
+            &mut provider,
+            &request.root_file,
+            &request.syntax.arena,
+            request.syntax.root,
+            |symbol| interner.resolve(symbol),
+        );
+        provider.flush_observed_type_dependencies();
+        result
+    }
+
+    fn resolve_type_module_prefix(
+        &mut self,
+        request: ModulePrefixRequest<'_>,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
+        let mut provider = TypeSyntaxProvider::new(
+            self,
+            request.span,
+            TypeRootAuthority::in_file(request.root_file),
+            SemaTypeResolutionContext::Type,
+            None,
+            None,
+        );
+        let resolved = crate::resolve_semantic_module_path(
+            &mut provider,
+            &request.root_file,
+            request.segments,
+        )
+        .map_err(|failure| {
+            super::typeck::module_path_resolution_compile_error(failure, request.span)
+        })?;
+        provider.flush_observed_type_dependencies();
+        let definition = self.calls.module_def(resolved.module).ok_or_else(|| {
+            CompileError::new(
+                rue_error::ErrorKind::UnknownType(request.segments.join(".")),
+                request.span,
+            )
+        })?;
+        // `resolved.site` is the source file containing the final module
+        // binding. Member lookup must continue from the target module's file;
+        // imports commonly bind a module in a different file.
+        Ok((
+            resolved.module,
+            Some(definition.file_id),
+            definition.file_path,
+        ))
+    }
+
+    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64> {
+        let mut provider = TypeSyntaxProvider::new(
+            self,
+            request.span,
+            TypeRootAuthority::in_file(request.span.file_id),
+            SemaTypeResolutionContext::Type,
+            None,
+            request.value_substitutions,
+        );
+        let result = provider.resolve_array_length_fact(request.span.file_id, request.length);
+        provider.flush_observed_type_dependencies();
+        result
+    }
+
     fn record_expression_analysis_breakdown(&mut self, breakdown: ExpressionAnalysisBreakdown) {
         self.expression_breakdown = Some(breakdown);
     }
@@ -4848,7 +3868,7 @@ where
         let same_call = |candidate: FunctionCallInfo| candidate.params == function.params;
         let symbol = if self
             .endpoint
-            .function_info(self.function_symbol)
+            .endpoint_function_info(self.function_symbol)
             .is_some_and(same_body)
         {
             Some(self.function_symbol)
@@ -4901,7 +3921,7 @@ where
                 arena: syntax.arena,
             });
         }
-        let local = self.endpoint.function_info(self.function_symbol)?;
+        let local = self.endpoint.endpoint_function_info(self.function_symbol)?;
         if local.params != function.params {
             return None;
         }
@@ -4929,7 +3949,7 @@ where
                 root: syntax.result,
             });
         }
-        let local = self.endpoint.function_info(self.function_symbol)?;
+        let local = self.endpoint.endpoint_function_info(self.function_symbol)?;
         if local.params != function.params {
             return None;
         }
@@ -5062,18 +4082,7 @@ where
         }
         let value = match reduced.result {
             crate::SemanticComptimeCallResult::Type(ty) => {
-                let _ = self.register_import_nominal_identities(&ty);
-                let resolved = self
-                    .state
-                    .identity_context()
-                    .pool_mut()
-                    .and_then(|mut pool| pool.resolve_provider_type(&ty).ok());
-                if let (crate::SemanticImportType::AnonymousNominal(identity), Some(resolved)) =
-                    (&ty, resolved)
-                {
-                    let _ = self.install_provider_anonymous_methods(identity, resolved);
-                }
-                resolved.map(ConstValue::Type)
+                self.materialize_durable_type(&ty).map(ConstValue::Type)
             }
             crate::SemanticComptimeCallResult::Value(value) => {
                 self.materialize_durable_const_value(&value)
@@ -5088,7 +4097,7 @@ where
         format!("m{}-{}", token.issuer(), token.slot())
     }
     fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
-        self.resolve_rir_type_syntax(syntax, span, None, None)
+        self.resolve_body_type_with_substitutions(syntax, span, None, None)
     }
     fn resolve_body_type_with_substitutions(
         &mut self,
@@ -5097,7 +4106,22 @@ where
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
-        self.resolve_rir_type_syntax(syntax, span, type_substitutions, value_substitutions)
+        let syntax = super::fact_mode::StructuredTypeSyntax {
+            arena: self.rir.rir().type_syntax().clone(),
+            root: syntax,
+        };
+        let interner = Rc::clone(&self.interner);
+        OrdinaryBodyAnalysisHost::resolve_structured_type_syntax(
+            self,
+            StructuredTypeSyntaxRequest {
+                syntax: &syntax,
+                root_file: span.file_id,
+                span,
+                type_substitutions,
+                value_substitutions,
+            },
+        )
+        .map_err(|failure| semantic_type_syntax_compile_error(&interner, failure, span))
     }
     fn replace_active_anonymous_producer(
         &mut self,
@@ -5150,13 +4174,13 @@ where
         self.function_info_for_symbol(name)
     }
     fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.endpoint.function_info(name)
+        self.endpoint.endpoint_function_info(name)
     }
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.call_value_const(file, name)
     }
     fn source_function_name(&self, name: Spur) -> Spur {
-        self.endpoint.source_function_name(name)
+        self.endpoint.endpoint_source_function_name(name)
     }
     fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
         self.function_for_file_symbol(file, name)
@@ -5170,22 +4194,22 @@ where
         self.nominal_type_for_symbol(file, name)?.as_struct()
     }
     fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        self.endpoint.builtin_or_generated_struct(name)
+        self.endpoint.endpoint_builtin_or_generated_struct(name)
     }
     fn target(&self) -> Target {
         self.target
     }
     fn builtin_arch_id(&self) -> Option<EnumId> {
         self.endpoint
-            .builtin_enum(self.interner.get_or_intern_static("Arch"))
+            .endpoint_builtin_enum(self.interner.get_or_intern_static("Arch"))
     }
     fn builtin_os_id(&self) -> Option<EnumId> {
         self.endpoint
-            .builtin_enum(self.interner.get_or_intern_static("Os"))
+            .endpoint_builtin_enum(self.interner.get_or_intern_static("Os"))
     }
     fn builtin_data_model_id(&self) -> Option<EnumId> {
         self.endpoint
-            .builtin_enum(self.interner.get_or_intern_static("DataModel"))
+            .endpoint_builtin_enum(self.interner.get_or_intern_static("DataModel"))
     }
     fn destructor_span(&self, _struct_id: StructId) -> Option<Span> {
         None
@@ -5389,7 +4413,7 @@ where
         crate::StableDefinitionKind::Function => {
             let info = host
                 .endpoint
-                .function_info(host.function_symbol)
+                .endpoint_function_info(host.function_symbol)
                 .ok_or_else(|| {
                     CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
                         name.to_owned(),
@@ -6414,7 +5438,7 @@ where
         .rir()
         .get(
             host.endpoint
-                .function_info(host.function_symbol)
+                .endpoint_function_info(host.function_symbol)
                 .ok_or_else(|| {
                     CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
                         name.to_owned(),

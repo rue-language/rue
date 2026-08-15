@@ -5,12 +5,11 @@
 //! the same fact vocabulary for its non-body responsibilities.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
 use ahash::AHashMap;
-use lasso::{Spur, ThreadedRodeo};
+use lasso::Spur;
 use rue_rir::InstRef;
 use rue_span::FileId;
 
@@ -35,253 +34,136 @@ use crate::{
 pub(crate) trait BodyEndpointProvider {
     /// Intern a source name to its symbol, or `None` if never interned. Mirrors
     /// `interner.get`.
-    fn name_symbol(&self, name: &str) -> Option<Spur>;
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur>;
 
     /// The current stable endpoint for a definition token.
-    fn definition_endpoint(
+    fn endpoint_definition_endpoint(
         &self,
         token: SemanticDefinitionToken,
     ) -> Option<SemanticDefinitionEndpoint>;
 
     /// The current stable endpoint for a module token.
-    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint>;
-
-    /// The internal free-function symbol declared as `(file, name)`.
-    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur>;
-
-    /// The struct id declared as `(file, name)`.
-    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId>;
-
-    /// The enum id declared as `(file, name)`.
-    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId>;
-
-    /// The built-in or compiler-generated struct id for a bare name, preferring
-    /// the built-in table. Mirrors `builtin_structs.or_else(generated_structs)`.
-    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId>;
-
-    /// The compiler-generated struct id for a bare name.
-    fn generated_struct(&self, name: Spur) -> Option<StructId>;
-
-    /// The built-in enum id for a bare name.
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId>;
-
-    /// The struct id for an issued anonymous nominal identity.
-    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId>;
-
-    /// The enum id for an issued anonymous nominal identity.
-    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId>;
-
-    /// The signature/binding info for an internal free-function symbol.
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo>;
-
-    /// The signature/binding info for a `(struct, name)` member.
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
-
-    /// The source name a specialized/internal function name derives from.
-    /// Mirrors `Sema::source_function_name` (identity when unmapped).
-    fn source_function_name(&self, name: Spur) -> Spur;
-
-    /// The module id whose definition lives in `file`.
-    fn module_id_for_file(&self, file: u32) -> Option<ModuleId>;
-
-    /// Intern an array type, or `None` on a type-validation failure.
-    fn intern_array(&self, element: Type, len: u64) -> Option<Type>;
-
-    /// Intern a `ptr const` type, or `None` on a type-validation failure.
-    fn intern_ptr_const(&self, pointee: Type) -> Option<Type>;
-
-    /// Intern a `ptr mut` type, or `None` on a type-validation failure.
-    fn intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
-}
-
-/// Endpoint reads supplied by a body-analysis host. Most operations are
-/// immutable table reads. Type interning is host-specific and is not part of
-/// the shared read view.
-pub(super) trait BodyEndpointFactSource {
-    fn endpoint_read_view(&self) -> Option<BodyEndpointReadView<'_>> {
-        None
-    }
-
-    fn endpoint_view(&self) -> BodyEndpointReadView<'_> {
-        self.endpoint_read_view()
-            .expect("body endpoint fact source has no shared read view")
-    }
-
-    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
-        self.endpoint_view().name_symbol(name)
-    }
-    fn endpoint_definition_endpoint(
-        &self,
-        token: SemanticDefinitionToken,
-    ) -> Option<SemanticDefinitionEndpoint> {
-        self.endpoint_view().definition_endpoint(token)
-    }
     fn endpoint_module_endpoint(
         &self,
         token: SemanticModuleToken,
-    ) -> Option<SemanticModuleEndpoint> {
-        self.endpoint_view().module_endpoint(token)
-    }
-    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.endpoint_view().function_by_file_name(file, name)
-    }
-    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.endpoint_view().struct_by_file_name(file, name)
-    }
-    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.endpoint_view().enum_by_file_name(file, name)
-    }
-    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.endpoint_view().builtin_or_generated_struct(name)
-    }
-    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.endpoint_view().generated_struct(name)
-    }
-    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.endpoint_view().builtin_enum(name)
-    }
-    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
-        self.endpoint_view().anon_struct(identity)
-    }
-    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
-        self.endpoint_view().anon_enum(identity)
-    }
-    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.endpoint_view().function_info(name)
-    }
-    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.endpoint_view().method_info(struct_id, name)
-    }
-    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
-        self.endpoint_view().source_function_name(name)
-    }
-    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        self.endpoint_view().module_id_for_file(file)
-    }
-    fn endpoint_intern_array(&self, _element: Type, _len: u64) -> Option<Type> {
-        None
-    }
-    fn endpoint_intern_ptr_const(&self, _pointee: Type) -> Option<Type> {
-        None
-    }
-    fn endpoint_intern_ptr_mut(&self, _pointee: Type) -> Option<Type> {
-        None
-    }
+    ) -> Option<SemanticModuleEndpoint>;
+
+    /// The internal free-function symbol declared as `(file, name)`.
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur>;
+
+    /// The struct id declared as `(file, name)`.
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId>;
+
+    /// The enum id declared as `(file, name)`.
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId>;
+
+    /// The built-in or compiler-generated struct id for a bare name, preferring
+    /// the built-in table. Mirrors `builtin_structs.or_else(generated_structs)`.
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId>;
+
+    /// The compiler-generated struct id for a bare name.
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId>;
+
+    /// The built-in enum id for a bare name.
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId>;
+
+    /// The struct id for an issued anonymous nominal identity.
+    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId>;
+
+    /// The enum id for an issued anonymous nominal identity.
+    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId>;
+
+    /// The signature/binding info for an internal free-function symbol.
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo>;
+
+    /// The signature/binding info for a `(struct, name)` member.
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+
+    /// The source name a specialized/internal function name derives from.
+    /// Mirrors `Sema::source_function_name` (identity when unmapped).
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur;
+
+    /// The module id whose definition lives in `file`.
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId>;
+
+    /// Intern an array type, or `None` on a type-validation failure.
+    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type>;
+
+    /// Intern a `ptr const` type, or `None` on a type-validation failure.
+    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type>;
+
+    /// Intern a `ptr mut` type, or `None` on a type-validation failure.
+    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
 }
 
-/// Shared read view for declaration-owned endpoint facts.
-pub(super) struct BodyEndpointReadView<'a> {
-    interner: &'a ThreadedRodeo,
-    declarations: &'a super::DeclarationNamespace,
-    stable_definition_endpoints: &'a HashMap<SemanticDefinitionToken, SemanticDefinitionEndpoint>,
-    stable_module_endpoints: &'a HashMap<SemanticModuleToken, SemanticModuleEndpoint>,
-    anonymous_methods: &'a HashMap<(StructId, Spur), MethodInfo>,
-    generated_structs: &'a HashMap<Spur, StructId>,
-    anon_struct_identities: &'a HashMap<IssuedAnonymousNominalKey, StructId>,
-    anon_enum_identities: &'a HashMap<IssuedAnonymousNominalKey, EnumId>,
-    module_registry: &'a crate::module_registry::ModuleRegistry,
-}
-
-impl BodyEndpointReadView<'_> {
-    fn name_symbol(&self, name: &str) -> Option<Spur> {
+impl<D: DeclarationPhase> BodyEndpointProvider for Sema<'_, D> {
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
         self.interner.get(name)
     }
 
-    fn definition_endpoint(
+    fn endpoint_definition_endpoint(
         &self,
         token: SemanticDefinitionToken,
     ) -> Option<SemanticDefinitionEndpoint> {
         self.stable_definition_endpoints.get(&token).cloned()
     }
 
-    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
-        self.stable_module_endpoints.get(&token).copied()
+    fn endpoint_module_endpoint(
+        &self,
+        token: SemanticModuleToken,
+    ) -> Option<SemanticModuleEndpoint> {
+        self.stable_module_endpoints.get(&token).cloned()
     }
 
-    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.declarations
-            .functions_by_file_name
-            .get(&(file, name))
-            .copied()
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.functions_by_file_name.get(&(file, name)).copied()
     }
 
-    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.declarations
-            .structs_by_file_name
-            .get(&(file, name))
-            .copied()
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.structs_by_file_name.get(&(file, name)).copied()
     }
 
-    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.declarations
-            .enums_by_file_name
-            .get(&(file, name))
-            .copied()
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.enums_by_file_name.get(&(file, name)).copied()
     }
 
-    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.declarations
-            .builtin_structs
-            .get(&name)
-            .or_else(|| self.generated_structs.get(&name))
-            .copied()
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.resolve_builtin_struct_name(name)
+            .or_else(|| self.generated_structs.get(&name).copied())
     }
 
-    fn generated_struct(&self, name: Spur) -> Option<StructId> {
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
         self.generated_structs.get(&name).copied()
     }
 
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.declarations.builtin_enums.get(&name).copied()
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.resolve_builtin_enum_name(name)
     }
 
-    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
+    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
         self.anon_struct_identities.get(identity).copied()
     }
 
-    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
         self.anon_enum_identities.get(identity).copied()
     }
 
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.declarations.functions.get(&name).copied()
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.functions.get(&name).copied()
     }
 
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.anonymous_methods
-            .get(&(struct_id, name))
-            .copied()
-            .or_else(|| self.declarations.methods.get(&(struct_id, name)).copied())
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.method_info((struct_id, name)).copied()
     }
 
-    fn source_function_name(&self, name: Spur) -> Spur {
-        self.declarations
-            .function_source_names
-            .get(&name)
-            .copied()
-            .unwrap_or(name)
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
+        Sema::source_function_name(self, name)
     }
 
-    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         (0..self.module_registry.len())
             .map(|index| ModuleId::new(index as u32))
             .find(|id| self.module_registry.get_def(*id).file_id.index() == file)
-    }
-}
-
-impl<D: DeclarationPhase> BodyEndpointFactSource for Sema<'_, D> {
-    fn endpoint_read_view(&self) -> Option<BodyEndpointReadView<'_>> {
-        Some(BodyEndpointReadView {
-            interner: self.interner,
-            declarations: &self.declarations,
-            stable_definition_endpoints: &self.stable_definition_endpoints,
-            stable_module_endpoints: &self.stable_module_endpoints,
-            anonymous_methods: &self.anonymous_methods,
-            generated_structs: &self.generated_structs,
-            anon_struct_identities: &self.anon_struct_identities,
-            anon_enum_identities: &self.anon_enum_identities,
-            module_registry: &self.module_registry,
-        })
     }
 
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
@@ -297,80 +179,6 @@ impl<D: DeclarationPhase> BodyEndpointFactSource for Sema<'_, D> {
     }
 }
 
-/// Read-only endpoint adapter used by the canonical body engine.
-///
-/// It carries only a host capability; the current epoch-backed host is one
-/// production source, while an owned body state can supply the same reads next.
-pub(crate) struct EpochFacts<'host, H: BodyEndpointFactSource> {
-    host: &'host H,
-}
-
-impl<'host, H: BodyEndpointFactSource> EpochFacts<'host, H> {
-    pub(in crate::sema) fn new(host: &'host H) -> Self {
-        Self { host }
-    }
-}
-
-impl<H: BodyEndpointFactSource> BodyEndpointProvider for EpochFacts<'_, H> {
-    fn name_symbol(&self, name: &str) -> Option<Spur> {
-        self.host.endpoint_name_symbol(name)
-    }
-    fn definition_endpoint(
-        &self,
-        token: SemanticDefinitionToken,
-    ) -> Option<SemanticDefinitionEndpoint> {
-        self.host.endpoint_definition_endpoint(token)
-    }
-    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
-        self.host.endpoint_module_endpoint(token)
-    }
-    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.host.endpoint_function_by_file_name(file, name)
-    }
-    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.host.endpoint_struct_by_file_name(file, name)
-    }
-    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.host.endpoint_enum_by_file_name(file, name)
-    }
-    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.host.endpoint_builtin_or_generated_struct(name)
-    }
-    fn generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.host.endpoint_generated_struct(name)
-    }
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.host.endpoint_builtin_enum(name)
-    }
-    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
-        self.host.endpoint_anon_struct(identity)
-    }
-    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
-        self.host.endpoint_anon_enum(identity)
-    }
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.host.endpoint_function_info(name)
-    }
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.host.endpoint_method_info(struct_id, name)
-    }
-    fn source_function_name(&self, name: Spur) -> Spur {
-        self.host.endpoint_source_function_name(name)
-    }
-    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        self.host.endpoint_module_id_for_file(file)
-    }
-    fn intern_array(&self, element: Type, len: u64) -> Option<Type> {
-        self.host.endpoint_intern_array(element, len)
-    }
-    fn intern_ptr_const(&self, pointee: Type) -> Option<Type> {
-        self.host.endpoint_intern_ptr_const(pointee)
-    }
-    fn intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
-        self.host.endpoint_intern_ptr_mut(pointee)
-    }
-}
-
 /// Resolve a definition-token function reference to its internal free-function
 /// symbol. The endpoint, name interning, and by-file lookup all fail to the
 /// same `MissingStableIdentity` in the caller, so a single `None` is faithful.
@@ -378,9 +186,9 @@ pub(in crate::sema) fn resolve_free_function_symbol<P: BodyEndpointProvider>(
     facts: &P,
     token: SemanticDefinitionToken,
 ) -> Option<Spur> {
-    let endpoint = facts.definition_endpoint(token)?;
-    let symbol = facts.name_symbol(endpoint.name.as_ref())?;
-    facts.function_by_file_name(FileId::new(endpoint.file), symbol)
+    let endpoint = facts.endpoint_definition_endpoint(token)?;
+    let symbol = facts.endpoint_name_symbol(endpoint.name.as_ref())?;
+    facts.endpoint_function_by_file_name(FileId::new(endpoint.file), symbol)
 }
 
 /// Materialize a canonical type-instance key into a concrete [`Type`]. The
@@ -407,67 +215,85 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
         T::Never => Type::NEVER,
         T::ComptimeType => Type::COMPTIME_TYPE,
         T::BuiltinNominal { kind, name } => {
-            let symbol = facts.name_symbol(name.as_ref()).ok_or_else(missing)?;
+            let symbol = facts
+                .endpoint_name_symbol(name.as_ref())
+                .ok_or_else(missing)?;
             match kind {
                 AK::Struct => Type::new_struct(
                     facts
-                        .builtin_or_generated_struct(symbol)
+                        .endpoint_builtin_or_generated_struct(symbol)
                         .ok_or_else(missing)?,
                 ),
-                AK::Enum => Type::new_enum(facts.builtin_enum(symbol).ok_or_else(missing)?),
+                AK::Enum => {
+                    Type::new_enum(facts.endpoint_builtin_enum(symbol).ok_or_else(missing)?)
+                }
             }
         }
         T::Nominal(N::Builtin { kind, name }) => {
-            let symbol = facts.name_symbol(name.as_ref()).ok_or_else(missing)?;
+            let symbol = facts
+                .endpoint_name_symbol(name.as_ref())
+                .ok_or_else(missing)?;
             match kind {
                 AK::Struct => Type::new_struct(
                     facts
-                        .builtin_or_generated_struct(symbol)
+                        .endpoint_builtin_or_generated_struct(symbol)
                         .ok_or_else(missing)?,
                 ),
-                AK::Enum => Type::new_enum(facts.builtin_enum(symbol).ok_or_else(missing)?),
+                AK::Enum => {
+                    Type::new_enum(facts.endpoint_builtin_enum(symbol).ok_or_else(missing)?)
+                }
             }
         }
         T::Nominal(N::Named(token)) => {
-            let endpoint = facts.definition_endpoint(*token).ok_or_else(missing)?;
+            let endpoint = facts
+                .endpoint_definition_endpoint(*token)
+                .ok_or_else(missing)?;
             let symbol = facts
-                .name_symbol(endpoint.name.as_ref())
+                .endpoint_name_symbol(endpoint.name.as_ref())
                 .ok_or_else(missing)?;
             match endpoint.kind {
                 StableDefinitionKind::Struct => Type::new_struct(
                     facts
-                        .struct_by_file_name(FileId::new(endpoint.file), symbol)
+                        .endpoint_struct_by_file_name(FileId::new(endpoint.file), symbol)
                         .ok_or_else(missing)?,
                 ),
                 StableDefinitionKind::Enum => Type::new_enum(
                     facts
-                        .enum_by_file_name(FileId::new(endpoint.file), symbol)
+                        .endpoint_enum_by_file_name(FileId::new(endpoint.file), symbol)
                         .ok_or_else(missing)?,
                 ),
                 _ => return Err(missing()),
             }
         }
         T::Nominal(N::Anonymous(identity)) => match identity.kind {
-            AK::Struct => Type::new_struct(facts.anon_struct(identity).ok_or_else(missing)?),
-            AK::Enum => Type::new_enum(facts.anon_enum(identity).ok_or_else(missing)?),
+            AK::Struct => {
+                Type::new_struct(facts.endpoint_anon_struct(identity).ok_or_else(missing)?)
+            }
+            AK::Enum => Type::new_enum(facts.endpoint_anon_enum(identity).ok_or_else(missing)?),
         },
         T::Array { element, len } => facts
-            .intern_array(resolve_instance_type(facts, element)?, *len)
+            .endpoint_intern_array(resolve_instance_type(facts, element)?, *len)
             .ok_or_else(missing)?,
         T::Slice { name, .. } => {
-            let symbol = facts.name_symbol(name.as_ref()).ok_or_else(missing)?;
-            Type::new_struct(facts.generated_struct(symbol).ok_or_else(missing)?)
+            let symbol = facts
+                .endpoint_name_symbol(name.as_ref())
+                .ok_or_else(missing)?;
+            Type::new_struct(
+                facts
+                    .endpoint_generated_struct(symbol)
+                    .ok_or_else(missing)?,
+            )
         }
         T::PtrConst(value) => facts
-            .intern_ptr_const(resolve_instance_type(facts, value)?)
+            .endpoint_intern_ptr_const(resolve_instance_type(facts, value)?)
             .ok_or_else(missing)?,
         T::PtrMut(value) => facts
-            .intern_ptr_mut(resolve_instance_type(facts, value)?)
+            .endpoint_intern_ptr_mut(resolve_instance_type(facts, value)?)
             .ok_or_else(missing)?,
         T::Module(token) => {
-            let endpoint = facts.module_endpoint(*token).ok_or_else(missing)?;
+            let endpoint = facts.endpoint_module_endpoint(*token).ok_or_else(missing)?;
             let id = facts
-                .module_id_for_file(endpoint.file)
+                .endpoint_module_id_for_file(endpoint.file)
                 .ok_or_else(missing)?;
             Type::new_module(id)
         }
@@ -556,9 +382,9 @@ impl<K> Default for EndpointOverlay<K> {
     }
 }
 
-/// The endpoint-resolution ProviderFacts driver: answers the family-1A endpoint
-/// ops from a body identity pool + RIR index + [`BodyFactProvider`], instead of
-/// the epoch `Sema` tables [`EpochFacts`] reads.
+/// Query-backed endpoint fact state. It owns the body identity pool, RIR index,
+/// provider, and request-local overlay; the epoch host reads its own tables
+/// directly.
 ///
 /// Generic over the provider `P`, the pool durable source `S`, and the pool's
 /// durable nominal key `K` and module `M` (rue-compiler binds
@@ -595,7 +421,7 @@ where
         Self::with_identity(provider, identity, rir)
     }
 
-    /// Construct the endpoint facade from the one task-local provider
+    /// Construct the endpoint fact state from the one task-local provider
     /// authority shared with calls, aggregates, and body analysis.
     pub fn with_state(
         provider: &'a P,
@@ -648,7 +474,7 @@ where
     }
 
     /// Register one anonymous method atomically under both lookup preimages in
-    /// the identity context shared with the call facade.
+    /// the identity context shared with call-resolution fact state.
     pub fn register_anonymous_method(
         &self,
         file: FileId,
@@ -974,7 +800,7 @@ where
 
     /// (R) The first free-function RIR declaration for `(source_name, file)`,
     /// answered by [`BodyRirIndex`] over the request-local `Rir` — the exact `InstRef`
-    /// [`EpochFacts::first_free_function`] returns, keyed provider-naturally by
+    /// the epoch host returns, keyed provider-naturally by
     /// the source name string.
     pub fn first_free_function(&self, source_name: &str, file: FileId) -> Option<InstRef> {
         let symbol = self.rir.rir_interner().get(source_name)?;
@@ -999,7 +825,7 @@ where
     }
 
     /// (R) The destructor RIR declaration handle for `(file, type_name)`, the
-    /// exact scan [`EpochFacts::destructor`] performs, answered by
+    /// exact scan the epoch host performs, answered by
     /// [`BodyRirIndex`]. Returns the located declaration `InstRef` (the private
     /// destructor record's public handle); the epoch keys the same record by the
     /// same `(file, type_name)` scan.
@@ -1146,11 +972,11 @@ where
     K: Clone + Eq + Hash,
     M: Clone + Eq + Hash,
 {
-    fn name_symbol(&self, name: &str) -> Option<Spur> {
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
         Some(self.identity.pool().intern_name(name))
     }
 
-    fn definition_endpoint(
+    fn endpoint_definition_endpoint(
         &self,
         token: SemanticDefinitionToken,
     ) -> Option<SemanticDefinitionEndpoint> {
@@ -1165,11 +991,14 @@ where
         })
     }
 
-    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
+    fn endpoint_module_endpoint(
+        &self,
+        token: SemanticModuleToken,
+    ) -> Option<SemanticModuleEndpoint> {
         self.overlay.borrow().module_tokens.get(&token).copied()
     }
 
-    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
         self.overlay
             .borrow()
             .functions_by_file_name
@@ -1177,7 +1006,7 @@ where
             .map(|(symbol, _)| *symbol)
     }
 
-    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
         let key = self
             .overlay
             .borrow()
@@ -1191,7 +1020,7 @@ where
             .as_struct()
     }
 
-    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
         let key = self
             .overlay
             .borrow()
@@ -1205,7 +1034,7 @@ where
             .as_enum()
     }
 
-    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
         let owned = self.identity.pool().resolve_symbol(name).to_owned();
         self.identity
             .pool_mut()?
@@ -1217,10 +1046,10 @@ where
             .and_then(|ty| ty.as_struct())
             // Mirror the epoch's `builtin_structs.or_else(generated_structs)`:
             // a generated slice struct answers here too (RUE-1091 r6a).
-            .or_else(|| self.generated_struct(name))
+            .or_else(|| self.endpoint_generated_struct(name))
     }
 
-    fn generated_struct(&self, name: Spur) -> Option<StructId> {
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
         // The generated slice-struct name, minted and recorded by
         // `register_generated_slice` (RUE-1091 r6a — builtin / slice name
         // facts). A name never seeded fails closed, exactly as the epoch's
@@ -1228,7 +1057,7 @@ where
         self.overlay.borrow().generated_slices.get(&name).copied()
     }
 
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
         let name = self.identity.pool().resolve_symbol(name).to_owned();
         self.identity
             .pool_mut()?
@@ -1240,7 +1069,7 @@ where
             .as_enum()
     }
 
-    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
+    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
         // RUE-1091 r6b: mint the anonymous struct through the pool for a durable
         // key seeded by `register_anonymous_nominal`. An unseeded issued key fails
         // closed (the pool never invents an identity), mirroring the epoch's
@@ -1253,7 +1082,7 @@ where
             .as_struct()
     }
 
-    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
         let durable = self.anon_by_issued.borrow().get(identity).cloned()?;
         self.identity
             .pool_mut()?
@@ -1262,7 +1091,7 @@ where
             .as_enum()
     }
 
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
         let key = self.overlay.borrow().function_keys.get(&name).cloned()?;
         let file = self
             .overlay
@@ -1327,23 +1156,23 @@ where
             .ok()
     }
 
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
         // The shared registry preserves Sema's anonymous-before-named order.
         // Named entries are installed from the exact call fact before analysis
         // consumes the endpoint view; both facades then observe one authority.
         self.method_info(struct_id, name)
     }
 
-    fn source_function_name(&self, name: Spur) -> Spur {
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
         // Identity: the specialization name map is r5.
         name
     }
 
-    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         self.identity.modules().id_for_file(FileId::new(file))
     }
 
-    fn intern_array(&self, element: Type, len: u64) -> Option<Type> {
+    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
         self.identity
             .pool()
             .type_pool()
@@ -1351,7 +1180,7 @@ where
             .ok()
     }
 
-    fn intern_ptr_const(&self, pointee: Type) -> Option<Type> {
+    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type> {
         self.identity
             .pool()
             .type_pool()
@@ -1359,7 +1188,7 @@ where
             .ok()
     }
 
-    fn intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
+    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
         self.identity
             .pool()
             .type_pool()

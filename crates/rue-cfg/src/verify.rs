@@ -920,11 +920,7 @@ impl<'a> Verifier<'a> {
         ) else {
             return false;
         };
-        let is_fixed_str = source_def
-            .name
-            .strip_prefix("Str(")
-            .and_then(|rest| rest.strip_suffix(')'))
-            .is_some_and(|capacity| capacity.parse::<u64>().is_ok());
+        let is_fixed_str = rue_air::fixed_string_capacity(&source_def.name).is_some();
         is_fixed_str
             && &*result_def.name == "str"
             && source_def.fields.len() == result_def.fields.len()
