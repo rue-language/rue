@@ -849,6 +849,8 @@ rue_sh_test(
 rue_sh_test(
     name = "debug-assert-policy-tool-tests",
     test = "scripts/test-debug-assert-policy.py",
+    resources = ["scripts/validate-debug-assert-policy.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
