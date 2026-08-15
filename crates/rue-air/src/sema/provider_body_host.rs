@@ -1108,7 +1108,7 @@ where
                     syntax
                         .parameters
                         .iter()
-                        .map(|ty| self.signature_type_symbol(ty))
+                        .map(|ty| self.signature_type_symbol(syntax, *ty))
                         .collect()
                 })
                 .or_else(|| {
@@ -1129,12 +1129,20 @@ where
         }
     }
 
-    /// Retain the declaration's exact spelling. The owning file is carried
-    /// separately in `durable_signature_files`, so dependent syntax resolves
-    /// against the declaration module without fabricating a user-visible root
-    /// binding.
-    fn signature_type_symbol(&self, syntax: &str) -> Spur {
-        self.interner.get_or_intern(syntax)
+    /// Temporary adapter for the string-keyed body RIR type slots. The
+    /// declaration query and semantic nucleus retain and resolve only the
+    /// structured arena; this canonical rendering disappears when those RIR
+    /// slots carry dense type-syntax references directly.
+    fn signature_type_symbol(
+        &self,
+        syntax: &crate::DurableCallableTypeSyntax,
+        root: rue_rir::RirTypeSyntaxRef,
+    ) -> Spur {
+        let rendered = syntax
+            .syntax
+            .render_type(root)
+            .expect("durable signature roots are validated when projected");
+        self.interner.get_or_intern(&rendered)
     }
 
     fn current_callable_locator(&self) -> Option<(InstRef, InstRef, Span)> {
@@ -1223,7 +1231,7 @@ where
         }
         let exact_type_syntax = function.type_syntax.as_ref();
         let return_type_sym = if let Some(syntax) = exact_type_syntax {
-            self.signature_type_symbol(&syntax.result)
+            self.signature_type_symbol(syntax, syntax.result)
         } else {
             self.durable_signature_type_symbol(&function.result, &function.parameters)?
         };
@@ -1386,7 +1394,7 @@ where
         }
         let exact_type_syntax = function.type_syntax.as_ref();
         let return_type_sym = exact_type_syntax
-            .map(|syntax| self.signature_type_symbol(&syntax.result))
+            .map(|syntax| self.signature_type_symbol(syntax, syntax.result))
             .or_else(|| {
                 self.durable_signature_type_symbol(&function.result, &function.parameters)
             })?;

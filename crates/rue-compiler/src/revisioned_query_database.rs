@@ -405,8 +405,6 @@ pub(crate) struct RevisionedQueryDatabase {
         StableDeclarationClassificationQueryValue,
     >,
     #[cfg(test)]
-    raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
-    #[cfg(test)]
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     warning_body_references:
         QueryFamily<crate::body_query::BodyQueryKey, WarningBodyReferencesValue>,
@@ -2153,24 +2151,6 @@ pub(crate) enum StableDeclarationClassificationFailure {
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RawConstSyntaxQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
-
-#[cfg(test)]
-impl QueryKey for RawConstSyntaxQueryKey {
-    fn stable_identity(&self) -> String {
-        self.0.stable_identity()
-    }
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RawConstSyntaxQueryValue {
-    Available(crate::declaration_candidate::RawConstSyntax),
-    Failure(crate::declaration_candidate::RawConstSyntaxFailure),
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawDeclarationBodyQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 #[cfg(test)]
@@ -2829,8 +2809,6 @@ macro_rules! query_value_charge {
     };
 }
 
-#[cfg(test)]
-query_value_charge!(RawConstSyntaxQueryValue);
 #[cfg(test)]
 query_value_charge!(RawDeclarationBodyQueryValue);
 query_value_charge!(WarningBodySyntaxValue);
@@ -5891,9 +5869,14 @@ fn exact_specialized_callable_types(
         dependencies: BTreeSet::new(),
         deferred_ownership: BTreeSet::new(),
     };
-    let mut resolve = |syntax: &str| {
-        rue_air::resolve_semantic_type_syntax(&mut provider, &declaration.module, syntax)
-            .map_err(semantic_type_query_failure)
+    let mut resolve = |root: rue_rir::RirTypeSyntaxRef| {
+        rue_air::resolve_structured_semantic_type_syntax(
+            &mut provider,
+            &declaration.module,
+            &callable_type_syntax.syntax,
+            root,
+        )
+        .map_err(semantic_type_query_failure)
     };
     let mut runtime_parameters = Vec::new();
     for (parameter, _semantic) in callable_type_syntax
@@ -5902,7 +5885,7 @@ fn exact_specialized_callable_types(
         .zip(signature_parameters)
         .filter(|(_, semantic)| durable_parameter_is_runtime(semantic))
     {
-        match resolve(parameter) {
+        match resolve(*parameter) {
             Ok(ty) => runtime_parameters.push(ty),
             Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
             Err(ResolveSemanticSignatureError::Failure(failure)) => {
@@ -5912,7 +5895,7 @@ fn exact_specialized_callable_types(
             }
         }
     }
-    let result = match resolve(&callable_type_syntax.result) {
+    let result = match resolve(callable_type_syntax.result) {
         Ok(result) => result,
         Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
         Err(ResolveSemanticSignatureError::Failure(failure)) => {
@@ -6834,12 +6817,21 @@ fn comptime_call_for_anonymous_function(
     function: &crate::FunctionInstanceKey,
     shell: &crate::declaration_candidate::DeclarationShellFact,
     signature: &crate::semantic_query_nucleus::ResolvedDeclarationSignature,
-    exact_result_syntax: &str,
+    exact_type_syntax: &rue_air::DurableCallableTypeSyntax,
 ) -> Option<crate::semantic_query_nucleus::ComptimeCallQueryKey> {
     // A dependent runtime result also projects to `ComptimeType` until its
     // arguments are known (for example `[i32; N]`). Only a function whose
     // declared result is literally `type` is an anonymous type constructor.
-    if exact_result_syntax.trim() != "type" {
+    let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) =
+        exact_type_syntax.syntax.node(exact_type_syntax.result)
+    else {
+        return None;
+    };
+    if exact_type_syntax
+        .syntax
+        .symbol(*symbol)
+        .is_none_or(|name| name.as_ref() != "type")
+    {
         return None;
     }
     let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
@@ -9830,85 +9822,6 @@ impl SemanticNucleusTypeProvider<'_> {
         }))
     }
 
-    fn observe_deferred_local_type_references(
-        &mut self,
-        module: &ModuleId,
-        syntax: &str,
-    ) -> Result<
-        (),
-        rue_air::SemanticProviderError<
-            QueryAbort,
-            crate::semantic_query_nucleus::SemanticNucleusFailure,
-        >,
-    > {
-        for name in syntax
-            .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-            .filter(|name| !name.is_empty())
-        {
-            if name.chars().all(|character| character.is_ascii_digit())
-                || self.substitutions.contains_key(name)
-                || self.value_substitutions.contains_key(name)
-                || matches!(
-                    name,
-                    "i8" | "i16"
-                        | "i32"
-                        | "i64"
-                        | "isize"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "usize"
-                        | "bool"
-                        | "type"
-                        | "ptr"
-                        | "const"
-                        | "mut"
-                        | "str"
-                        | "Str"
-                )
-            {
-                continue;
-            }
-            if let Some(fact) = self.alias_fact(module, name)? {
-                self.dependencies.insert(
-                    crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                        source: self.dependency_source.clone(),
-                        kind: self.dependency_kind,
-                        target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
-                            fact.site,
-                        ),
-                    },
-                );
-                <Self as rue_air::SemanticTypeSyntaxProvider<
-                    ModuleId,
-                    ModuleId,
-                    StableDefinitionKey,
-                    StableDefinitionKey,
-                    Arc<str>,
-                    crate::durable_semantics::DurableType,
-                    crate::durable_semantics::DurableConstValue,
-                >>::observe_materialized_type(self, &fact.value)?;
-                continue;
-            }
-            for candidate_kind in [DefinitionKind::Struct, DefinitionKind::Enum] {
-                if let Some(fact) = self.named_fact(module, name, candidate_kind)? {
-                    self.dependencies.insert(
-                        crate::semantic_query_nucleus::SemanticDeclarationDependency {
-                            source: self.dependency_source.clone(),
-                            kind: self.dependency_kind,
-                            target: crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(
-                                fact.site,
-                            ),
-                        },
-                    );
-                    break;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn identity_key_visibility(
         &self,
         key: &StableDefinitionKey,
@@ -10284,17 +10197,24 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
     fn resolve_array_length(
         &mut self,
         scope: &ModuleId,
-        length: &rue_air::ArrayLen,
+        length: rue_air::SemanticValueSyntax<'_>,
     ) -> rue_air::SemanticProviderResult<
         Option<u64>,
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         match length {
-            rue_air::ArrayLen::Literal(value) => Ok(Some(*value)),
-            rue_air::ArrayLen::Named(name) => {
+            rue_air::SemanticValueSyntax::Integer(value) => {
+                u64::try_from(value).map(Some).map_err(|_| {
+                    Self::provider_failure_value(format!(
+                        "array length `{value}` is negative or too large"
+                    ))
+                })
+            }
+            rue_air::SemanticValueSyntax::Name(name)
+            | rue_air::SemanticValueSyntax::Rendered(name) => {
                 if let Some(crate::durable_semantics::DurableConstValue::Integer(value)) =
-                    self.value_substitutions.get(name.as_str())
+                    self.value_substitutions.get(name)
                 {
                     return u64::try_from(*value).map(Some).map_err(|_| {
                         Self::provider_failure_value(format!(
@@ -10302,7 +10222,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         ))
                     });
                 }
-                if let Some(ty) = self.deferred_value_parameters.get(name.as_str()) {
+                if let Some(ty) = self.deferred_value_parameters.get(name) {
                     if matches!(
                         ty,
                         crate::durable_semantics::DurableType::I8
@@ -10327,7 +10247,9 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                         ),
                     );
                 }
-                if let Some((call, arguments)) = rue_air::parse_type_call_syntax(name) {
+                if matches!(length, rue_air::SemanticValueSyntax::Rendered(_))
+                    && let Some((call, arguments)) = rue_air::parse_type_call_syntax(name)
+                {
                     let resolved = rue_air::resolve_semantic_comptime_call(
                         self,
                         scope,
@@ -10382,6 +10304,25 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
                 })
             }
         }
+    }
+
+    fn array_length_from_value(
+        &mut self,
+        _scope: &ModuleId,
+        value: &crate::durable_semantics::DurableConstValue,
+    ) -> rue_air::SemanticProviderResult<
+        Option<u64>,
+        QueryAbort,
+        crate::semantic_query_nucleus::SemanticNucleusFailure,
+    > {
+        let crate::durable_semantics::DurableConstValue::Integer(value) = value else {
+            return Self::provider_failure("array length is not an integer");
+        };
+        u64::try_from(*value).map(Some).map_err(|_| {
+            Self::provider_failure_value(format!(
+                "array length `{value}` is negative or too large"
+            ))
+        })
     }
 
     fn array_type(
@@ -10472,7 +10413,7 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         &mut self,
         _scope: &ModuleId,
         name: &str,
-        arguments: &[String],
+        arguments: &[rue_air::SemanticValueSyntax<'_>],
     ) -> rue_air::SemanticProviderResult<
         Option<crate::durable_semantics::DurableType>,
         QueryAbort,
@@ -10484,9 +10425,14 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         let [capacity] = arguments else {
             return Self::provider_failure("Str expects one capacity argument");
         };
-        let capacity = capacity
-            .parse::<u64>()
-            .map_err(|_| Self::provider_failure_value("Str capacity must be an integer"))?;
+        let capacity = match capacity {
+            rue_air::SemanticValueSyntax::Integer(capacity) => u64::try_from(*capacity)
+                .map_err(|_| Self::provider_failure_value("Str capacity must be an integer"))?,
+            rue_air::SemanticValueSyntax::Name(capacity)
+            | rue_air::SemanticValueSyntax::Rendered(capacity) => capacity
+                .parse::<u64>()
+                .map_err(|_| Self::provider_failure_value("Str capacity must be an integer"))?,
+        };
         self.dependencies.insert(
             crate::semantic_query_nucleus::SemanticDeclarationDependency {
                 source: self.dependency_source.clone(),
@@ -10549,17 +10495,18 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
         parameter_index: usize,
         type_arguments: &[(Arc<str>, crate::durable_semantics::DurableType)],
         value_arguments: &[(Arc<str>, crate::durable_semantics::DurableConstValue)],
-        syntax: &str,
+        syntax: rue_air::SemanticValueSyntax<'_>,
     ) -> rue_air::SemanticProviderResult<
         crate::durable_semantics::DurableConstValue,
         QueryAbort,
         crate::semantic_query_nucleus::SemanticNucleusFailure,
     > {
         use crate::durable_semantics::DurableConstValue as V;
-        let syntax = syntax.trim();
-        if let Ok(value) = syntax.parse::<i128>() {
-            return Ok(V::Integer(value));
-        }
+        let syntax = match syntax {
+            rue_air::SemanticValueSyntax::Integer(value) => return Ok(V::Integer(value)),
+            rue_air::SemanticValueSyntax::Name(syntax)
+            | rue_air::SemanticValueSyntax::Rendered(syntax) => syntax,
+        };
         if syntax == "true" || syntax == "false" {
             return Ok(V::Bool(syntax == "true"));
         }
@@ -10853,25 +10800,16 @@ fn resolve_parsed_semantic_signature(
     };
 
     let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>,
-                   syntax: &str,
+                   syntax: &rue_rir::RirTypeSyntaxArena<Arc<str>>,
+                   root: rue_rir::RirTypeSyntaxRef,
                    kind: rue_air::DeclarationTypeDependencyKind| {
         provider.dependency_kind = kind;
-        let resolved = rue_air::resolve_semantic_type_syntax(provider, module, syntax)
-            .map_err(semantic_type_query_failure)?;
-        provider
-            .observe_deferred_local_type_references(module, syntax)
-            .map_err(|error| match error {
-                rue_air::SemanticProviderError::Abort(abort) => {
-                    ResolveSemanticSignatureError::Abort(abort)
-                }
-                rue_air::SemanticProviderError::Failure(failure) => {
-                    ResolveSemanticSignatureError::failure(failure)
-                }
-            })?;
-        Ok(resolved)
+        rue_air::resolve_structured_semantic_type_syntax(provider, module, syntax, root)
+            .map_err(semantic_type_query_failure)
     };
     match parsed {
         Input::Callable {
+            syntax,
             parameters,
             result,
             has_self,
@@ -10977,9 +10915,9 @@ fn resolve_parsed_semantic_signature(
             }
             let mut generic_index = 0_u32;
             for parameter in parameters.iter() {
-                if parameter.is_comptime && parsed.text(parameter.ty).trim() == "type" {
+                if parameter.is_comptime && parsed.is_type_parameter_syntax(parameter.ty) {
                     provider.substitutions.insert(
-                        Arc::from(parsed.text(parameter.name)),
+                        Arc::from(parsed.symbol(parameter.name)),
                         crate::durable_semantics::DurableType::GenericParameter(generic_index),
                     );
                     generic_index += 1;
@@ -10990,16 +10928,17 @@ fn resolve_parsed_semantic_signature(
                 .map(|parameter| {
                     let ty = resolve(
                         provider,
-                        parsed.text(parameter.ty),
+                        syntax,
+                        parameter.ty,
                         rue_air::DeclarationTypeDependencyKind::Signature,
                     )?;
-                    if parameter.is_comptime && parsed.text(parameter.ty).trim() != "type" {
+                    if parameter.is_comptime && !parsed.is_type_parameter_syntax(parameter.ty) {
                         provider
                             .deferred_value_parameters
-                            .insert(Arc::from(parsed.text(parameter.name)), ty.clone());
+                            .insert(Arc::from(parsed.symbol(parameter.name)), ty.clone());
                     }
                     Ok(DurableSemanticParameter {
-                        name: Arc::from(parsed.text(parameter.name)),
+                        name: Arc::from(parsed.symbol(parameter.name)),
                         ty,
                         mode: match parameter.mode {
                             crate::declaration_candidate::DeclarationParameterMode::Value => {
@@ -11018,7 +10957,8 @@ fn resolve_parsed_semantic_signature(
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
             let result = resolve(
                 provider,
-                parsed.text(*result),
+                syntax,
+                *result,
                 rue_air::DeclarationTypeDependencyKind::Signature,
             )?;
             if contains_slice(&result) {
@@ -11178,6 +11118,7 @@ fn resolve_parsed_semantic_signature(
             })
         }
         Input::Struct {
+            syntax,
             fields,
             is_copy,
             is_linear,
@@ -11193,19 +11134,20 @@ fn resolve_parsed_semantic_signature(
             }
             if let Some(kind) = rue_air::declaration_validation::duplicate_field(
                 provider.dependency_source.name(),
-                fields.iter().map(|field| parsed.text(field.name)),
+                fields.iter().map(|field| parsed.symbol(field.name)),
             ) {
                 return Err(diagnostic(kind));
             }
             let fields = fields
                 .iter()
                 .map(|field| {
-                    let name: Arc<str> = Arc::from(parsed.text(field.name));
+                    let name: Arc<str> = Arc::from(parsed.symbol(field.name));
                     Ok((
                         name,
                         resolve(
                             provider,
-                            parsed.text(field.ty),
+                            syntax,
+                            field.ty,
                             rue_air::DeclarationTypeDependencyKind::Field,
                         )?,
                     ))
@@ -11312,11 +11254,14 @@ fn resolve_parsed_semantic_signature(
             })
         }
         Input::Enum {
-            variants, payloads, ..
+            syntax,
+            variants,
+            payloads,
+            ..
         } => {
             if let Some(kind) = rue_air::declaration_validation::duplicate_variant(
                 provider.dependency_source.name(),
-                variants.iter().map(|variant| parsed.text(variant.name)),
+                variants.iter().map(|variant| parsed.symbol(variant.name)),
             ) {
                 return Err(diagnostic(kind));
             }
@@ -11327,13 +11272,14 @@ fn resolve_parsed_semantic_signature(
                         .get(variant.payload_start as usize..variant.payload_end as usize)
                         .expect("signature payload ranges are validated when projected");
                     Ok((
-                        Arc::from(parsed.text(variant.name)),
+                        Arc::from(parsed.symbol(variant.name)),
                         payload
                             .iter()
-                            .map(|syntax| {
+                            .map(|root| {
                                 resolve(
                                     provider,
-                                    parsed.text(*syntax),
+                                    syntax,
+                                    *root,
                                     rue_air::DeclarationTypeDependencyKind::Payload,
                                 )
                             })
@@ -11835,147 +11781,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the StableDeclarationClassification family has one canonical name");
-        #[cfg(test)]
-        let occurrences_for_raw_const = declaration_occurrence_indexes.clone();
-        #[cfg(test)]
-        let shells_for_raw_const = declaration_shells.clone();
-        #[cfg(test)]
-        let parse_for_raw_const = parse_modules.clone();
-        #[cfg(test)]
-        let raw_const_syntax = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.raw-const-syntax",
-                declaration_memo_retention,
-                |left: &RawConstSyntaxQueryValue, right: &RawConstSyntaxQueryValue| left == right,
-                move |context, _, key: &RawConstSyntaxQueryKey| {
-                    use crate::declaration_candidate::{
-                        DeclarationCandidateCategory, DeclarationOccurrenceCapability,
-                        DeclarationShellFailure, RawConstSyntaxFailure,
-                    };
-
-                    let indexed = context.query_registered(
-                        &occurrences_for_raw_const,
-                        ModuleQueryKey(key.0.module.clone()),
-                    )?;
-                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
-                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
-                    };
-                    let value = match indexed {
-                        DeclarationOccurrenceIndexValue::Failure(failure) => {
-                            RawConstSyntaxQueryValue::Failure(
-                                RawConstSyntaxFailure::OccurrencesUnavailable(failure.clone()),
-                            )
-                        }
-                        DeclarationOccurrenceIndexValue::Available(index) => {
-                            match index.capabilities.get(&key.0) {
-                                None => RawConstSyntaxQueryValue::Failure(
-                                    RawConstSyntaxFailure::Absent(key.0.clone()),
-                                ),
-                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
-                                    RawConstSyntaxQueryValue::Failure(
-                                    RawConstSyntaxFailure::Ambiguous(key.0.clone()),
-                                    )
-                                }
-                                Some(DeclarationOccurrenceCapability::Exact {
-                                    duplicate_multiplicity: 0,
-                                    ..
-                                }) => RawConstSyntaxQueryValue::Failure(
-                                    RawConstSyntaxFailure::ParserCapabilityMismatch(key.0.clone()),
-                                ),
-                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
-                                    let shell = context.query_registered(
-                                        &shells_for_raw_const,
-                                        DeclarationShellQueryKey(key.0.clone()),
-                                    )?;
-                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
-                                    else {
-                                        unreachable!("DeclarationShell publishes typed values")
-                                    };
-                                    match shell {
-                                        DeclarationShellQueryValue::Failure(failure) => {
-                                            let failure = match failure {
-                                                DeclarationShellFailure::OccurrencesUnavailable(
-                                                    failure,
-                                                ) => RawConstSyntaxFailure::OccurrencesUnavailable(
-                                                    failure.clone(),
-                                                ),
-                                                DeclarationShellFailure::Absent(key) => {
-                                                    RawConstSyntaxFailure::Absent(key.clone())
-                                                }
-                                                DeclarationShellFailure::Ambiguous(key) => {
-                                                    RawConstSyntaxFailure::Ambiguous(key.clone())
-                                                }
-                                                DeclarationShellFailure::ParserCapabilityMismatch(
-                                                    key,
-                                                ) => RawConstSyntaxFailure::ParserCapabilityMismatch(
-                                                    key.clone(),
-                                                ),
-                                            };
-                                            RawConstSyntaxQueryValue::Failure(failure)
-                                        }
-                                        DeclarationShellQueryValue::Available(fact)
-                                            if fact.key.category
-                                                != DeclarationCandidateCategory::ConstCandidate =>
-                                        {
-                                            RawConstSyntaxQueryValue::Failure(
-                                                RawConstSyntaxFailure::CategoryMismatch(
-                                                    key.0.clone(),
-                                                ),
-                                            )
-                                        }
-                                        DeclarationShellQueryValue::Available(fact)
-                                            if fact.key != key.0 =>
-                                        {
-                                            RawConstSyntaxQueryValue::Failure(
-                                                RawConstSyntaxFailure::ParserCapabilityMismatch(
-                                                    key.0.clone(),
-                                                ),
-                                            )
-                                        }
-                                        DeclarationShellQueryValue::Available(_) => {
-                                            let parsed = context.query_registered(
-                                                &parse_for_raw_const,
-                                                ModuleQueryKey(key.0.module.clone()),
-                                            )?;
-                                            let rue_query::QueryOutcome::Success(parsed) =
-                                                parsed.outcome()
-                                            else {
-                                                unreachable!("ParseModule publishes typed values")
-                                            };
-                                            match &parsed.result {
-                                                Err(_) => RawConstSyntaxQueryValue::Failure(
-                                                    RawConstSyntaxFailure::OccurrencesUnavailable(
-                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
-                                                            module: key.0.module.clone(),
-                                                        },
-                                                    ),
-                                                ),
-                                                Ok(module) => module
-                                                    .evaluate_raw_const_syntax(&key.0)
-                                                    .map_or_else(
-                                                        || RawConstSyntaxQueryValue::Failure(
-                                                            RawConstSyntaxFailure::ParserCapabilityMismatch(
-                                                                key.0.clone(),
-                                                            ),
-                                                        ),
-                                                        RawConstSyntaxQueryValue::Available,
-                                                    ),
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    let kind = if matches!(value, RawConstSyntaxQueryValue::Available(_)) {
-                        QueryTerminalKind::Success
-                    } else {
-                        QueryTerminalKind::Failure
-                    };
-                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
-                },
-            )
-            .expect("the RawConstSyntax family has one canonical name");
         #[cfg(test)]
         let occurrences_for_raw_body = declaration_occurrence_indexes.clone();
         #[cfg(test)]
@@ -13275,11 +13080,7 @@ impl RevisionedQueryDatabase {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    let Some(exact_result) = signature
-                        .callable_type_syntax
-                        .as_ref()
-                        .map(|syntax| syntax.result.clone())
-                    else {
+                    let Some(exact_type_syntax) = signature.callable_type_syntax.as_ref() else {
                         return Err(QueryAbort::Canceled);
                     };
                     let Some(call) = comptime_call_for_anonymous_function(
@@ -13287,7 +13088,7 @@ impl RevisionedQueryDatabase {
                         &key.instance,
                         shell,
                         signature,
-                        &exact_result,
+                        exact_type_syntax,
                     ) else {
                         let transaction = context
                             .query_registered(&transactions_for_produced_anonymous, key.clone())?;
@@ -13568,7 +13369,7 @@ impl RevisionedQueryDatabase {
                                                 ..
                                             } = &parsed
                                                 && let Some((kind, ordinal)) = rue_air::declaration_validation::duplicate_parameter_with_ordinal(
-                                                    parameters.iter().map(|parameter| parsed.text(parameter.name)),
+                                                    parameters.iter().map(|parameter| parsed.symbol(parameter.name)),
                                                 )
                                             {
                                                 return Ok(QueryOutput::success(Value::Failure(
@@ -16502,8 +16303,6 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             stable_declaration_classifications: stable_declaration_classifications.clone(),
             #[cfg(test)]
-            raw_const_syntax,
-            #[cfg(test)]
             raw_declaration_bodies: raw_declaration_bodies.clone(),
             warning_body_references,
             #[cfg(test)]
@@ -18470,11 +18269,7 @@ impl BodyTransactionEvaluator {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    let Some(exact_result) = signature
-                        .callable_type_syntax
-                        .as_ref()
-                        .map(|syntax| syntax.result.clone())
-                    else {
+                    let Some(exact_type_syntax) = signature.callable_type_syntax.as_ref() else {
                         return Err(QueryAbort::Canceled);
                     };
                     if let Some(call) = comptime_call_for_anonymous_function(
@@ -18482,7 +18277,7 @@ impl BodyTransactionEvaluator {
                         &key.instance,
                         shell,
                         signature,
-                        &exact_result,
+                        exact_type_syntax,
                     ) {
                         let projected = context.query_registered(
                             &self.semantic_nucleus,
@@ -24326,7 +24121,7 @@ impl<'p, 'o, 'db>
     fn resolve_array_length(
         &mut self,
         scope: &ModuleId,
-        length: &rue_air::ArrayLen,
+        length: rue_air::SemanticValueSyntax<'_>,
     ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
         // r5a tripwire flip: a named array length that is an integer literal or a
         // scoped `const` now resolves through the boundary (`SignatureFacts`),
@@ -24335,8 +24130,15 @@ impl<'p, 'o, 'db>
         // constructor resolution and is honestly deferred here (r6) — this arm
         // covers only the literal and scoped-const facts.
         match length {
-            rue_air::ArrayLen::Literal(value) => Ok(Some(*value)),
-            rue_air::ArrayLen::Named(name) => {
+            rue_air::SemanticValueSyntax::Integer(value) => {
+                u64::try_from(value).map(Some).map_err(|_| {
+                    rue_air::SemanticProviderError::Failure(ProviderTypeFactsFailure::Deferred(
+                        "invalid integer array length",
+                    ))
+                })
+            }
+            rue_air::SemanticValueSyntax::Name(name)
+            | rue_air::SemanticValueSyntax::Rendered(name) => {
                 if let Ok(value) = name.parse::<u64>() {
                     return Ok(Some(value));
                 }
@@ -24351,6 +24153,25 @@ impl<'p, 'o, 'db>
                     )),
                 }
             }
+        }
+    }
+
+    fn array_length_from_value(
+        &mut self,
+        _scope: &ModuleId,
+        value: &crate::DurableConstValue,
+    ) -> rue_air::SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure> {
+        match value {
+            crate::DurableConstValue::Integer(value) => {
+                u64::try_from(*value).map(Some).map_err(|_| {
+                    rue_air::SemanticProviderError::Failure(ProviderTypeFactsFailure::Deferred(
+                        "invalid integer array length",
+                    ))
+                })
+            }
+            _ => Err(rue_air::SemanticProviderError::Failure(
+                ProviderTypeFactsFailure::Deferred("non-integer array length"),
+            )),
         }
     }
 
@@ -24409,7 +24230,7 @@ impl<'p, 'o, 'db>
         &mut self,
         _scope: &ModuleId,
         _name: &str,
-        _arguments: &[String],
+        _arguments: &[rue_air::SemanticValueSyntax<'_>],
     ) -> rue_air::SemanticProviderResult<Option<crate::DurableType>, Self::Abort, Self::Failure>
     {
         // `Str(N)` is a builtin fixed-capacity string constructor materialized in
@@ -24478,10 +24299,17 @@ impl<'p, 'o, 'db>
         _parameter_index: usize,
         type_arguments: &[(Arc<str>, crate::DurableType)],
         value_arguments: &[(Arc<str>, crate::DurableConstValue)],
-        syntax: &str,
+        syntax: rue_air::SemanticValueSyntax<'_>,
     ) -> rue_air::SemanticProviderResult<crate::DurableConstValue, Self::Abort, Self::Failure> {
         // r5a tripwire flip: a comptime value argument (literal, a previously
         // bound argument name, or a scoped `const`) resolves through the boundary.
+        let syntax = match syntax {
+            rue_air::SemanticValueSyntax::Integer(value) => {
+                return Ok(crate::DurableConstValue::Integer(value));
+            }
+            rue_air::SemanticValueSyntax::Name(syntax)
+            | rue_air::SemanticValueSyntax::Rendered(syntax) => syntax,
+        };
         SignatureFacts::new(self.provider)
             .value_argument_fact(scope, syntax, type_arguments, value_arguments)
             .ok_or(rue_air::SemanticProviderError::Failure(
@@ -28408,10 +28236,20 @@ fn main() -> i32 {
         assert_eq!(result, T::GenericParameter(0));
         let callable_type_syntax = callable_type_syntax.expect("choose is callable");
         assert_eq!(
-            &*callable_type_syntax.parameters,
-            &[Arc::from("type"), Arc::from("T")]
+            callable_type_syntax
+                .parameters
+                .iter()
+                .map(|root| callable_type_syntax.syntax.render_type(*root).unwrap())
+                .collect::<Vec<_>>(),
+            ["type", "T"]
         );
-        assert_eq!(&*callable_type_syntax.result, "T");
+        assert_eq!(
+            callable_type_syntax
+                .syntax
+                .render_type(callable_type_syntax.result)
+                .unwrap(),
+            "T"
+        );
     }
 
     #[test]
@@ -29169,296 +29007,6 @@ fn main() -> i32 {
         ));
     }
 
-    #[test]
-    fn raw_const_syntax_queries_select_exactly_and_reuse_across_unrelated_edits() {
-        let first = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "const selected: ptr const u8 = @import(\"dep.rue\").value; const other = 1; fn main() {}",
-            )],
-            1,
-        );
-        let edited = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "const selected: ptr const u8 = @import(\"dep.rue\").value; const other = 999; fn main() { let x = 2; }",
-            )],
-            1,
-        );
-        let key = crate::declaration_candidate::DeclarationCandidateKey {
-            module: ModuleId::from_logical_path("main.rue").unwrap(),
-            category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
-            name: Arc::from("selected"),
-            owner: None,
-            duplicate_discriminator: 0,
-        };
-        let mut database = RevisionedQueryDatabase::default();
-        let first_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&first),
-            &first,
-        );
-        let parsed = database.runtime.request_registered(
-            &database.parse_modules,
-            first_revision,
-            ModuleQueryKey(key.module.clone()),
-            CancellationToken::new(),
-        );
-        let parsed_module = match parsed.terminal().unwrap().outcome() {
-            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
-            rue_query::QueryOutcome::Failure(_) => unreachable!(),
-        };
-        assert_eq!(
-            parsed_module.raw_const_syntax_materialization_count(),
-            0,
-            "module indexing must retain only private locators"
-        );
-        let selected = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            first_revision,
-            RawConstSyntaxQueryKey(key.clone()),
-            CancellationToken::new(),
-        );
-        assert_eq!(execution(&selected), RequestExecution::Computed);
-        assert_eq!(
-            selected
-                .dependencies()
-                .iter()
-                .map(|dependency| dependency.node.family())
-                .collect::<Vec<_>>(),
-            vec![
-                "compiler.declaration-occurrence-index",
-                "compiler.declaration-shell",
-                "compiler.parse-module",
-            ]
-        );
-        let terminal = selected.terminal().unwrap();
-        let first_stamp = terminal.stamp();
-        assert_eq!(terminal.kind(), QueryTerminalKind::Success);
-        assert!(terminal.diagnostics().is_empty());
-        assert!(matches!(
-            terminal.outcome(),
-            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
-                if syntax.declared_type.as_deref() == Some("ptr const u8")
-                    && syntax.initializer.as_ref() == "@import(\"dep.rue\").value"
-        ));
-        assert_eq!(
-            parsed_module.raw_const_syntax_materialization_count(),
-            1,
-            "demanding one key must materialize only that constant"
-        );
-
-        let warm = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            first_revision,
-            RawConstSyntaxQueryKey(key.clone()),
-            CancellationToken::new(),
-        );
-        assert_eq!(execution(&warm), RequestExecution::Reused);
-        assert_eq!(parsed_module.raw_const_syntax_materialization_count(), 1);
-
-        let edited_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&edited),
-            &edited,
-        );
-        let revalidated = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            edited_revision,
-            RawConstSyntaxQueryKey(key),
-            CancellationToken::new(),
-        );
-        assert_eq!(
-            revalidated.terminal().unwrap().stamp(),
-            first_stamp,
-            "an unrelated declaration edit must preserve the exact syntax terminal stamp"
-        );
-    }
-
-    #[test]
-    fn raw_const_syntax_duplicate_discriminators_select_distinct_occurrences() {
-        let source = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "const duplicate = 11; const duplicate = 22;",
-            )],
-            1,
-        );
-        let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        for (duplicate_discriminator, expected) in [(0, "11"), (1, "22")] {
-            let key = crate::declaration_candidate::DeclarationCandidateKey {
-                module: module.clone(),
-                category:
-                    crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
-                name: Arc::from("duplicate"),
-                owner: None,
-                duplicate_discriminator,
-            };
-            let requested = database.runtime.request_registered(
-                &database.raw_const_syntax,
-                revision,
-                RawConstSyntaxQueryKey(key),
-                CancellationToken::new(),
-            );
-            assert!(matches!(
-                requested.terminal().unwrap().outcome(),
-                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
-                    if syntax.initializer.as_ref() == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn raw_const_syntax_failures_are_stable_and_position_free() {
-        use crate::declaration_candidate::{
-            DeclarationCandidateCategory as Category, DeclarationOccurrenceFailure,
-            RawConstSyntaxFailure,
-        };
-
-        let source = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "const present = 1; fn callable() {}",
-            )],
-            1,
-        );
-        let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        let key =
-            |category, name: &'static str| crate::declaration_candidate::DeclarationCandidateKey {
-                module: module.clone(),
-                category,
-                name: Arc::from(name),
-                owner: None,
-                duplicate_discriminator: 0,
-            };
-        let absent = key(Category::ConstCandidate, "absent");
-        let non_const = key(Category::Function, "callable");
-        for (requested_key, expected) in [
-            (absent.clone(), RawConstSyntaxFailure::Absent(absent)),
-            (
-                non_const.clone(),
-                RawConstSyntaxFailure::CategoryMismatch(non_const),
-            ),
-        ] {
-            let requested = database.runtime.request_registered(
-                &database.raw_const_syntax,
-                revision,
-                RawConstSyntaxQueryKey(requested_key),
-                CancellationToken::new(),
-            );
-            let terminal = requested.terminal().unwrap();
-            assert_eq!(terminal.kind(), QueryTerminalKind::Failure);
-            assert!(terminal.diagnostics().is_empty());
-            assert!(matches!(
-                terminal.outcome(),
-                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Failure(actual))
-                    if actual == &expected
-            ));
-        }
-
-        let rejected = source_snapshot(&[(1, "/main.rue", "main.rue", "const broken = ;")], 1);
-        let rejected_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&rejected),
-            &rejected,
-        );
-        let rejected_key = key(Category::ConstCandidate, "broken");
-        let requested = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            rejected_revision,
-            RawConstSyntaxQueryKey(rejected_key),
-            CancellationToken::new(),
-        );
-        assert!(matches!(
-            requested.terminal().unwrap().outcome(),
-            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Failure(
-                RawConstSyntaxFailure::OccurrencesUnavailable(
-                    DeclarationOccurrenceFailure::ParseRejected { module: failed_module }
-                )
-            )) if failed_module == &module
-        ));
-    }
-
-    #[test]
-    fn canceled_and_evicted_raw_const_syntax_requests_recover() {
-        let source_text = (0..=MODULE_QUERY_MEMO_RETENTION)
-            .map(|index| format!("const c{index} = {index};"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let source = source_snapshot(&[(1, "/main.rue", "main.rue", &source_text)], 1);
-        let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database =
-            RevisionedQueryDatabase::with_declaration_memo_retention(MODULE_QUERY_MEMO_RETENTION);
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        let key = |index| crate::declaration_candidate::DeclarationCandidateKey {
-            module: module.clone(),
-            category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
-            name: Arc::from(format!("c{index}")),
-            owner: None,
-            duplicate_discriminator: 0,
-        };
-
-        let canceled = CancellationToken::new();
-        canceled.cancel();
-        let aborted = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            revision,
-            RawConstSyntaxQueryKey(key(0)),
-            canceled,
-        );
-        assert_eq!(execution(&aborted), RequestExecution::Aborted);
-        assert!(aborted.terminal().is_none());
-
-        for index in 0..=MODULE_QUERY_MEMO_RETENTION {
-            let requested = database.runtime.request_registered(
-                &database.raw_const_syntax,
-                revision,
-                RawConstSyntaxQueryKey(key(index)),
-                CancellationToken::new(),
-            );
-            assert!(matches!(
-                requested.terminal().unwrap().outcome(),
-                rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(_))
-            ));
-        }
-        assert_eq!(
-            database.raw_const_syntax.retention().terminals,
-            MODULE_QUERY_MEMO_RETENTION
-        );
-        assert!(database.runtime.metrics().evictions >= 2);
-
-        let recovered = database.runtime.request_registered(
-            &database.raw_const_syntax,
-            revision,
-            RawConstSyntaxQueryKey(key(0)),
-            CancellationToken::new(),
-        );
-        assert_eq!(execution(&recovered), RequestExecution::Computed);
-        assert!(matches!(
-            recovered.terminal().unwrap().outcome(),
-            rue_query::QueryOutcome::Success(RawConstSyntaxQueryValue::Available(syntax))
-                if syntax.initializer.as_ref() == "0"
-        ));
-    }
-
     fn project_signature_for_test(
         database: &RevisionedQueryDatabase,
         revision: Revision,
@@ -29557,8 +29105,11 @@ fn main() -> i32 {
             .callable_type_syntax
             .as_ref()
             .expect("callable syntax is retained with the resolved signature");
-        assert_eq!(&*syntax.parameters, [Arc::<str>::from("i32")]);
-        assert_eq!(syntax.result.as_ref(), "i32");
+        assert_eq!(
+            syntax.syntax.render_type(syntax.parameters[0]).unwrap(),
+            "i32"
+        );
+        assert_eq!(syntax.syntax.render_type(syntax.result).unwrap(), "i32");
 
         let warm = request_signature_for_test(
             &database,
@@ -29599,8 +29150,11 @@ fn main() -> i32 {
             .callable_type_syntax
             .as_ref()
             .expect("callable syntax is retained");
-        assert_eq!(&*syntax.parameters, [Arc::<str>::from("i64")]);
-        assert_eq!(syntax.result.as_ref(), "i64");
+        assert_eq!(
+            syntax.syntax.render_type(syntax.parameters[0]).unwrap(),
+            "i64"
+        );
+        assert_eq!(syntax.syntax.render_type(syntax.result).unwrap(), "i64");
         assert_eq!(
             database
                 .declaration_body_plan_astgen_evaluations
@@ -29657,8 +29211,8 @@ fn main() -> i32 {
             panic!("expected compact struct signature, got {structure:?}");
         };
         assert_eq!(fields.len(), 1);
-        assert_eq!(structure.text(fields[0].name), "value");
-        assert_eq!(structure.text(fields[0].ty), "i32");
+        assert_eq!(structure.symbol(fields[0].name), "value");
+        assert_eq!(structure.render_type(fields[0].ty), "i32");
 
         for (candidate, expected_result, expected_self) in [
             (
@@ -29680,7 +29234,7 @@ fn main() -> i32 {
                     has_self,
                     is_extern: false,
                     ..
-                } if signature.text(*result) == expected_result && *has_self == expected_self
+                } if signature.render_type(*result) == expected_result && *has_self == expected_self
             ));
         }
 
@@ -29696,14 +29250,14 @@ fn main() -> i32 {
             panic!("expected compact enum signature, got {enumeration:?}");
         };
         assert_eq!(variants.len(), 2);
-        assert_eq!(enumeration.text(variants[0].name), "Empty");
-        assert_eq!(enumeration.text(variants[1].name), "Value");
+        assert_eq!(enumeration.symbol(variants[0].name), "Empty");
+        assert_eq!(enumeration.symbol(variants[1].name), "Value");
         let payload =
             &payloads[variants[1].payload_start as usize..variants[1].payload_end as usize];
         assert_eq!(
             payload
                 .iter()
-                .map(|value| enumeration.text(*value))
+                .map(|value| enumeration.render_type(*value))
                 .collect::<Vec<_>>(),
             ["i32", "u64"]
         );
@@ -29729,8 +29283,8 @@ fn main() -> i32 {
                 is_extern: true,
                 ..
             } if parameters.len() == 1
-                && foreign.text(parameters[0].ty) == "ptr const u8"
-                && foreign.text(*result) == "i32"
+                && foreign.render_type(parameters[0].ty) == "ptr const u8"
+                && foreign.render_type(*result) == "i32"
         ));
 
         for (duplicate_discriminator, expected) in [(0, "i32"), (1, "i64")] {
@@ -29749,9 +29303,147 @@ fn main() -> i32 {
                 crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
                     parameters,
                     ..
-                } if parameters.len() == 1 && signature.text(parameters[0].ty) == expected
+                } if parameters.len() == 1 && signature.render_type(parameters[0].ty) == expected
             ));
         }
+    }
+
+    #[test]
+    fn parsed_signature_projection_preserves_every_annotation_type_shape() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use rue_rir::RirTypeSyntaxNode as Node;
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn full(\
+                    named: i32, \
+                    qualified: lib.geo.Point, \
+                    unit: (), \
+                    never: !, \
+                    array_literal: [i32; 4], \
+                    array_named: [i32; N], \
+                    array_call: [i32; Width(N, 2)], \
+                    slice: [i32], \
+                    const_pointer: ptr const i32, \
+                    mutable_pointer: ptr mut ptr const u8, \
+                    type_call: Pair(i32, [i32; 2]), \
+                    qualified_call: lib.pair.Pair(i32), \
+                    integer_argument: Buffer(-2), \
+                 ) -> Str(8) { loop {} }",
+            )],
+            1,
+        );
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module: ModuleId::from_logical_path("main.rue").unwrap(),
+            category: Category::Function,
+            name: Arc::from("full"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let signature = project_signature_for_test(&database, revision, &key);
+        let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+            syntax,
+            parameters,
+            result,
+            ..
+        } = &signature
+        else {
+            panic!("expected callable signature, got {signature:?}");
+        };
+
+        assert_eq!(
+            parameters
+                .iter()
+                .map(|parameter| syntax.render_type(parameter.ty).unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "i32",
+                "lib.geo.Point",
+                "()",
+                "!",
+                "[i32; 4]",
+                "[i32; N]",
+                "[i32; Width(N, 2)]",
+                "[i32]",
+                "ptr const i32",
+                "ptr mut ptr const u8",
+                "Pair(i32, [i32; 2])",
+                "lib.pair.Pair(i32)",
+                "Buffer(-2)",
+            ]
+        );
+        assert_eq!(syntax.render_type(*result).as_deref(), Some("Str(8)"));
+
+        let nodes = syntax.nodes();
+        for (name, present) in [
+            (
+                "named",
+                nodes.iter().any(|node| matches!(node, Node::Named(_))),
+            ),
+            (
+                "qualified",
+                nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::Qualified { .. })),
+            ),
+            ("unit", nodes.iter().any(|node| matches!(node, Node::Unit))),
+            (
+                "never",
+                nodes.iter().any(|node| matches!(node, Node::Never)),
+            ),
+            (
+                "array",
+                nodes.iter().any(|node| matches!(node, Node::Array { .. })),
+            ),
+            (
+                "slice",
+                nodes.iter().any(|node| matches!(node, Node::Slice { .. })),
+            ),
+            (
+                "const pointer",
+                nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::PointerConst { .. })),
+            ),
+            (
+                "mutable pointer",
+                nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::PointerMut { .. })),
+            ),
+            (
+                "type call",
+                nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::TypeCall { .. })),
+            ),
+            (
+                "value call",
+                nodes
+                    .iter()
+                    .any(|node| matches!(node, Node::ValueCall { .. })),
+            ),
+            (
+                "integer argument",
+                nodes.iter().any(|node| matches!(node, Node::Integer(_))),
+            ),
+        ] {
+            assert!(present, "signature arena omitted {name}");
+        }
+        assert_eq!(
+            syntax
+                .symbols()
+                .iter()
+                .filter(|symbol| symbol.as_ref() == "i32")
+                .count(),
+            1,
+            "the declaration-local spelling table must deduplicate leaf names"
+        );
     }
 
     #[test]

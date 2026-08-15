@@ -515,9 +515,48 @@ impl<H: TypeSyntaxHost>
     fn resolve_array_length(
         &mut self,
         scope: &FileId,
-        length: &ArrayLen,
+        length: crate::SemanticValueSyntax<'_>,
     ) -> SemaProviderResult<Option<u64>> {
-        provider_failure(self.resolve_array_length_fact(*scope, length)).map(Some)
+        let length = match length {
+            crate::SemanticValueSyntax::Integer(value) => {
+                let value = u64::try_from(value).map_err(|_| {
+                    crate::SemanticProviderError::Failure(CompileError::new(
+                        ErrorKind::InvalidArrayLength {
+                            reason: format!("array length must be non-negative, got {value}"),
+                        },
+                        self.span,
+                    ))
+                })?;
+                ArrayLen::Literal(value)
+            }
+            crate::SemanticValueSyntax::Name(name) | crate::SemanticValueSyntax::Rendered(name) => {
+                ArrayLen::Named(name.to_owned())
+            }
+        };
+        provider_failure(self.resolve_array_length_fact(*scope, &length)).map(Some)
+    }
+
+    fn array_length_from_value(
+        &mut self,
+        _scope: &FileId,
+        value: &ConstValue,
+    ) -> SemaProviderResult<Option<u64>> {
+        match value {
+            ConstValue::Integer(value) => u64::try_from(*value).map(Some).map_err(|_| {
+                crate::SemanticProviderError::Failure(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!("array length must be non-negative, got {value}"),
+                    },
+                    self.span,
+                ))
+            }),
+            _ => provider_failure(Err(CompileError::new(
+                ErrorKind::InvalidArrayLength {
+                    reason: "array length must be an integer".to_string(),
+                },
+                self.span,
+            ))),
+        }
     }
 
     fn array_type(&mut self, element: Type, length: Option<u64>) -> SemaProviderResult<Type> {
@@ -552,16 +591,30 @@ impl<H: TypeSyntaxHost>
         &mut self,
         scope: &FileId,
         name: &str,
-        arguments: &[String],
+        arguments: &[crate::SemanticValueSyntax<'_>],
     ) -> SemaProviderResult<Option<Type>> {
         if name == "Str" {
             let capacity = match arguments {
-                [argument] => provider_failure(
-                    self.resolve_array_length_fact(*scope, &ArrayLen::Named(argument.to_string())),
-                )?,
+                [crate::SemanticValueSyntax::Integer(value)] => {
+                    u64::try_from(*value).map_err(|_| {
+                        crate::SemanticProviderError::Failure(CompileError::new(
+                            ErrorKind::InvalidArrayLength {
+                                reason: format!("array length must be non-negative, got {value}"),
+                            },
+                            self.span,
+                        ))
+                    })?
+                }
+                [crate::SemanticValueSyntax::Name(argument)]
+                | [crate::SemanticValueSyntax::Rendered(argument)] => {
+                    provider_failure(self.resolve_array_length_fact(
+                        *scope,
+                        &ArrayLen::Named((*argument).to_owned()),
+                    ))?
+                }
                 _ => {
                     return provider_failure(Err(CompileError::new(
-                        ErrorKind::UnknownType(format!("{}({})", name, arguments.join(", "))),
+                        ErrorKind::UnknownType(format!("{name}(...)")),
                         self.span,
                     )));
                 }
@@ -610,8 +663,16 @@ impl<H: TypeSyntaxHost>
         _parameter_index: usize,
         _type_arguments: &[(Spur, Type)],
         _value_arguments: &[(Spur, ConstValue)],
-        syntax: &str,
+        syntax: crate::SemanticValueSyntax<'_>,
     ) -> SemaProviderResult<ConstValue> {
+        if let crate::SemanticValueSyntax::Integer(value) = syntax {
+            return Ok(ConstValue::Integer(value));
+        }
+        let syntax = match syntax {
+            crate::SemanticValueSyntax::Name(syntax)
+            | crate::SemanticValueSyntax::Rendered(syntax) => syntax,
+            crate::SemanticValueSyntax::Integer(_) => unreachable!(),
+        };
         match self.resolve_value_argument_fact(*scope, constructor, syntax) {
             Ok(value) => Ok(value),
             Err(error) if self.resolution_context == SemaTypeResolutionContext::ArrayLength => {
@@ -1443,13 +1504,23 @@ impl<H: TypeSyntaxHost>
     fn resolve_array_length(
         &mut self,
         _scope: &FileId,
-        length: &ArrayLen,
+        length: crate::SemanticValueSyntax<'_>,
     ) -> SemaProviderResult<Option<u64>> {
-        if let ArrayLen::Literal(length) = length {
-            return Ok(Some(*length));
-        }
-        let ArrayLen::Named(name) = length else {
-            unreachable!()
+        if let crate::SemanticValueSyntax::Integer(length) = length {
+            return u64::try_from(length).map(Some).map_err(|_| {
+                crate::SemanticProviderError::Failure(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!("array length must be non-negative, got {length}"),
+                    },
+                    self.inner.span,
+                ))
+            });
+        };
+        let name = match length {
+            crate::SemanticValueSyntax::Name(name) | crate::SemanticValueSyntax::Rendered(name) => {
+                name
+            }
+            crate::SemanticValueSyntax::Integer(_) => unreachable!(),
         };
         let value = provider_failure(self.validate_value_position(name, None, None, true))?;
         match value {
@@ -1468,6 +1539,19 @@ impl<H: TypeSyntaxHost>
                 },
                 self.inner.span,
             ))),
+        }
+    }
+
+    fn array_length_from_value(
+        &mut self,
+        scope: &FileId,
+        value: &DeferredValueResolution,
+    ) -> SemaProviderResult<Option<u64>> {
+        match value {
+            DeferredValueResolution::Resolved(value) => {
+                self.inner.array_length_from_value(scope, value)
+            }
+            DeferredValueResolution::Pending => Ok(None),
         }
     }
 
@@ -1534,7 +1618,7 @@ impl<H: TypeSyntaxHost>
         &mut self,
         scope: &FileId,
         name: &str,
-        arguments: &[String],
+        arguments: &[crate::SemanticValueSyntax<'_>],
     ) -> SemaProviderResult<Option<DeferredTypeResolution>> {
         self.inner
             .builtin_type_call(scope, name, arguments)
@@ -1565,7 +1649,7 @@ impl<H: TypeSyntaxHost>
         parameter_index: usize,
         type_arguments: &[(Spur, DeferredTypeResolution)],
         value_arguments: &[(Spur, DeferredValueResolution)],
-        syntax: &str,
+        syntax: crate::SemanticValueSyntax<'_>,
     ) -> SemaProviderResult<DeferredValueResolution> {
         let expected = provider_failure(self.deferred_argument_expected(
             head,
@@ -1577,6 +1661,15 @@ impl<H: TypeSyntaxHost>
             self.inner.host.type_syntax_symbol(constructor),
             head.parameters[parameter_index].name,
         ));
+        let rendered;
+        let syntax = match syntax {
+            crate::SemanticValueSyntax::Integer(value) => {
+                rendered = value.to_string();
+                rendered.as_str()
+            }
+            crate::SemanticValueSyntax::Name(syntax)
+            | crate::SemanticValueSyntax::Rendered(syntax) => syntax,
+        };
         provider_failure(self.validate_value_position(syntax, expected, contract, false)).map(
             |value| match value {
                 Some(value) => DeferredValueResolution::Resolved(value),

@@ -983,16 +983,6 @@ impl RetainedCharge for crate::declaration_candidate::RawAnonymousSite {
 }
 
 #[cfg(test)]
-impl RetainedCharge for crate::declaration_candidate::RawConstSyntax {
-    fn retained_charge(&self) -> u64 {
-        self.declared_type
-            .retained_charge()
-            .saturating_add(self.initializer.retained_charge())
-            .saturating_add(self.anonymous_sites.retained_charge())
-    }
-}
-
-#[cfg(test)]
 macro_rules! candidate_failure_charge {
     ($ty:ty) => {
         impl RetainedCharge for $ty {
@@ -1010,8 +1000,6 @@ macro_rules! candidate_failure_charge {
 }
 
 #[cfg(test)]
-candidate_failure_charge!(crate::declaration_candidate::RawConstSyntaxFailure);
-#[cfg(test)]
 candidate_failure_charge!(crate::declaration_candidate::RawDeclarationBodyFailure);
 
 impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
@@ -1021,32 +1009,63 @@ impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
 }
 
 zero_charge!(
-    crate::semantic_query_nucleus::ParsedSemanticText,
     crate::semantic_query_nucleus::ParsedSemanticField,
     crate::semantic_query_nucleus::ParsedSemanticVariant,
+    rue_rir::RirTypeSyntaxRef,
 );
+
+fn type_syntax_arena_charge(arena: &rue_rir::RirTypeSyntaxArena<Arc<str>>) -> u64 {
+    let slice = |len: usize, element_size: usize| {
+        u64::try_from(len)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(u64::try_from(element_size).unwrap_or(u64::MAX))
+    };
+    slice(
+        arena.nodes().len(),
+        std::mem::size_of::<rue_rir::RirTypeSyntaxNode>(),
+    )
+    .saturating_add(slice(
+        arena.payload_word_count(),
+        std::mem::size_of::<u32>(),
+    ))
+    .saturating_add(slice(
+        arena.symbols().len(),
+        std::mem::size_of::<Arc<str>>(),
+    ))
+    .saturating_add(
+        arena
+            .symbols()
+            .iter()
+            .map(RetainedCharge::retained_charge)
+            .fold(0_u64, u64::saturating_add),
+    )
+}
+
+impl RetainedCharge for rue_air::DurableCallableTypeSyntax {
+    fn retained_charge(&self) -> u64 {
+        type_syntax_arena_charge(&self.syntax).saturating_add(self.parameters.retained_charge())
+    }
+}
 
 impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticSignature {
     fn retained_charge(&self) -> u64 {
         match self {
             Self::Callable {
-                text,
+                syntax,
                 parameters,
                 accessor_cycle,
                 ..
-            } => text
-                .retained_charge()
+            } => type_syntax_arena_charge(syntax)
                 .saturating_add(parameters.retained_charge())
                 .saturating_add(accessor_cycle.retained_charge()),
-            Self::Struct { text, fields, .. } => text
-                .retained_charge()
-                .saturating_add(fields.retained_charge()),
+            Self::Struct { syntax, fields, .. } => {
+                type_syntax_arena_charge(syntax).saturating_add(fields.retained_charge())
+            }
             Self::Enum {
-                text,
+                syntax,
                 variants,
                 payloads,
-            } => text
-                .retained_charge()
+            } => type_syntax_arena_charge(syntax)
                 .saturating_add(variants.retained_charge())
                 .saturating_add(payloads.retained_charge()),
             Self::Destructor => 0,
