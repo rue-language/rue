@@ -281,6 +281,12 @@
           names were lower-cased here until gazette learned to slugify a content
           path, and all three tools now route them where the live site does,
           from the names the repository actually carries.
+          The static passthrough is the <em>committed</em> static tree: the
+          site build derives two files into it — the home page's status board
+          and the performance dashboard's data — and the preparer excludes
+          everything git ignores there, because the input must not vary with
+          whether the website was ever built, and the benchmark's own published
+          output must never ride back in as its input.
         </p>
         <p>
           <strong>This compares a corpus-specialized Rue program against
