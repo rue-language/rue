@@ -1672,9 +1672,23 @@ impl<'a> ConstraintGenerator<'a> {
                     self.add_constraint(Constraint::is_integer(result_ty.clone(), span));
                     result_ty
                 } else if intrinsic_name == "syscall" {
-                    // @syscall: syscall_num and up to 6 args (all u64), returns i64
+                    // @syscall: syscall_num and up to 6 args (all u64), returns i64.
+                    //
+                    // An integer-literal argument sees the declared u64
+                    // parameter type here (RUE-954), so `@syscall(32, 1)`
+                    // works without pre-binding `let fd: u64 = 1`. Only
+                    // literals are constrained: a wrongly-typed non-literal
+                    // argument keeps sema's targeted E0702 (`u64 for argument
+                    // {i}`) instead of a generic unification E0206.
                     for arg_ref in args.iter() {
-                        self.generate(*arg_ref, ctx);
+                        let info = self.generate(*arg_ref, ctx);
+                        if matches!(self.rir.get(*arg_ref).data, InstData::IntConst(_)) {
+                            self.add_constraint(Constraint::equal(
+                                info.ty,
+                                InferType::Concrete(Type::U64),
+                                info.span,
+                            ));
+                        }
                     }
                     InferType::Concrete(Type::I64)
                 } else if intrinsic_name == "ptr_to_int" {
@@ -2217,6 +2231,7 @@ impl<'a> ConstraintGenerator<'a> {
                     self.enter_scope(ctx);
                     if let rue_rir::RirPatternView::Path {
                         module,
+                        ctor_head,
                         type_name,
                         variant,
                         bindings,
@@ -2225,16 +2240,24 @@ impl<'a> ConstraintGenerator<'a> {
                     } = &pattern
                     {
                         if !bindings.is_empty() {
-                            // NOTE: an inline type-constructor pattern head
-                            // (`Result(i32,i32).Ok(v)`, RUE-596) cannot be
-                            // reduced by the inference engine (it has no comptime
-                            // interpreter), so `enum_type_for` is `None` for it
-                            // and the payload bindings are not pre-typed here.
-                            // Sema's `materialize_match_bindings` resolves them
-                            // authoritatively via `try_evaluate_const`.
-                            let enum_ty = module
-                                .and_then(|module_ref| {
-                                    self.enum_type_for_module(module_ref, type_name)
+                            // An inline type-constructor pattern head
+                            // (`Result(i32,i32).Ok(v)`, RUE-596) has no comptime
+                            // interpreter in the inference engine, but sema
+                            // pre-reduced it in `inline_ctor_head_types`
+                            // (RUE-950/RUE-954) — consult that first so the
+                            // payload bindings are pre-typed and a sibling
+                            // arm's literal sees the join's expectation. Sema's
+                            // `materialize_match_bindings` stays authoritative
+                            // via `try_evaluate_const`.
+                            let enum_ty = ctor_head
+                                .and_then(|head| {
+                                    self.inline_ctor_head_types
+                                        .and_then(|heads| heads.get(&head).copied())
+                                })
+                                .or_else(|| {
+                                    module.and_then(|module_ref| {
+                                        self.enum_type_for_module(module_ref, type_name)
+                                    })
                                 })
                                 .or_else(|| self.enum_type_for(type_name, pat_span.file_id));
                             if let Some(payload) = enum_ty
@@ -3408,10 +3431,24 @@ impl<'a> ConstraintGenerator<'a> {
             rue_rir::RirPatternView::Int { .. } => InferType::IntLiteral,
             rue_rir::RirPatternView::Bool(_, _) => InferType::Concrete(Type::BOOL),
             rue_rir::RirPatternView::Path {
-                module, type_name, ..
+                module,
+                ctor_head,
+                type_name,
+                ..
             } => {
-                let enum_ty = module
-                    .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                // An inline type-constructor head (`Opt(u8).Some(b)`, RUE-596)
+                // was pre-reduced by sema in `inline_ctor_head_types`; consult
+                // it first so the pattern contributes the real enum type
+                // instead of poisoning the scrutinee with `<error>` (RUE-954).
+                let enum_ty = ctor_head
+                    .and_then(|head| {
+                        self.inline_ctor_head_types
+                            .and_then(|heads| heads.get(&head).copied())
+                    })
+                    .or_else(|| {
+                        module
+                            .and_then(|module_ref| self.enum_type_for_module(module_ref, type_name))
+                    })
                     .or_else(|| self.enum_type_for(type_name, pattern.span().file_id));
                 if let Some(enum_ty) = enum_ty {
                     InferType::Concrete(enum_ty)

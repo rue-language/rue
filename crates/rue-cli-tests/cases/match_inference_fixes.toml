@@ -168,3 +168,76 @@ fn absurd(n: Never) -> i32 { let y: u8 = 300; let _ = match n {}; 0 }
 fn main() -> i32 { absurd(loop {}) }
 """ }]
 error_contains = ["E0800"]
+
+# ---------------------------------------------------------------------------
+# RUE-954: match arms see the enclosing `let` annotation even when the
+# pattern heads are inline type-constructor calls. Before the fix, the
+# un-reduced head left the payload binding `<error>`-typed, the arm join
+# never saw the annotation, and the sibling arm's literal defaulted to i32
+# (E0206 "expected u8, found i32").
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "inline_ctor_pattern_head_arm_literal_widens"
+description = "RUE-954: `let first: u8 = match x { Opt(u8).Some(b) => b, Opt(u8).None => 0 }` — the None arm's literal is typed u8 by the annotation, not defaulted to i32."
+files = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn main() -> i32 {
+    let x = Opt(u8).Some(116);
+    let first: u8 = match x {
+        Opt(u8).Some(b) => b,
+        Opt(u8).None => 0,
+    };
+    if first == 116 { 0 } else { 1 }
+}
+""" }]
+
+[[case]]
+name = "inline_ctor_pattern_head_wide_payload_runs"
+description = "RUE-954: the widened value flows through the payload binding at runtime — a u64 payload above i32::MAX round-trips through the match."
+files = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn main() -> i32 {
+    let x = Opt(u64).Some(4294967296);
+    let v: u64 = match x {
+        Opt(u64).Some(b) => b,
+        Opt(u64).None => 0,
+    };
+    if v == 4294967296 { 0 } else { 1 }
+}
+""" }]
+
+[[case]]
+name = "inline_ctor_pattern_head_arm_mismatch_still_errors"
+description = "RUE-954 control: genuinely disagreeing arm types under an inline ctor head still report E0206 (the fix threads the expectation, it does not suppress the check)."
+compile_fail = true
+files = [{ path = "main.rue", source = """
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn main() -> i32 {
+    let x = Opt(u8).Some(1);
+    let v = match x {
+        Opt(u8).Some(b) => b,
+        Opt(u8).None => false,
+    };
+    0
+}
+""" }]
+error_contains = ["E0206"]

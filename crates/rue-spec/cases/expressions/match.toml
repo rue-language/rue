@@ -508,6 +508,32 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+# All arms agree at the annotated binding type (4.7:12): an integer-literal
+# arm is typed at the `let` annotation rather than defaulting to i32, even
+# when the pattern heads are inline type-constructor calls whose payload
+# bindings inference cannot reduce locally (RUE-954).
+[[case]]
+name = "arm_literal_typed_by_let_annotation"
+spec = ["4.7:12"]
+source = """
+fn Opt(comptime T: type) -> type {
+    enum {
+        Some(T),
+        None,
+    }
+}
+
+fn main() -> i32 {
+    let x = Opt(u8).Some(116);
+    let first: u8 = match x {
+        Opt(u8).Some(b) => b,
+        Opt(u8).None => 0,
+    };
+    if first == 116 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
 # =============================================================================
 # Pattern Type Must Match Scrutinee
 # =============================================================================
