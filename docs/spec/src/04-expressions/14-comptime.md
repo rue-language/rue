@@ -730,16 +730,18 @@ fn main() -> i32 {
 {{ rule(id="4.14:29", cat="legality-rule") }}
 
 The comptime-evaluable set is exactly the least set closed under rules
-4.14:26 through 4.14:28; **no other expression is comptime-evaluable**. In
-particular, the type-introspection intrinsics `@size_of` and `@align_of`
-(§4.13) are *not* comptime-evaluable in the current language: although their
-results are compile-time constants, an implementation is not required to fold
-them into the comptime-evaluable set, and this one does not. Using such an
-expression where comptime evaluation is required is a compile-time error — in a
+4.14:26 through 4.14:28, plus the integer-bounds intrinsics `@int_max` and
+`@int_min` (4.13:130), whose values depend only on the identity of their type
+argument; **no other expression is comptime-evaluable**. In particular, the
+layout-introspection intrinsics `@size_of` and `@align_of` (§4.13) are *not*
+comptime-evaluable in the current language: although their results are
+compile-time constants, an implementation is not required to fold them into
+the comptime-evaluable set, and this one does not. Using such an expression
+where comptime evaluation is required is a compile-time error — in a
 `comptime` argument position (4.14:6) the diagnostic is `E1201`, and in a
 `const` initializer (Chapter 6) it is `E0434`. A future revision may enlarge
-the set; a program that relies on an expression *not* covered by rules
-4.14:26–4.14:28 being comptime-evaluable is non-portable.
+the set; a program that relies on an expression *not* covered by this rule
+being comptime-evaluable is non-portable.
 
 ```rue
 fn dbl(comptime n: i32) -> i32 { n * 2 }

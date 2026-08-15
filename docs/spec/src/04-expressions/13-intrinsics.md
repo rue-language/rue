@@ -53,6 +53,8 @@ Expression intrinsics (usable in any expression position):
 | `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
+| `@int_max` | Largest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
+| `@int_min` | Smallest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
 | `@bitCast` | Reinterpret an integer's bits at the same width (§4.13:118) | 1 expression (integer) | inferred integer type of the same width |
@@ -270,6 +272,58 @@ fn main() -> i32 {
     @align_of(i32)    // 4 (i32's natural alignment, observed under the compact layout)
 }
 ```
+
+## `@int_max` and `@int_min`
+
+{{ rule(id="4.13:126", cat="normative") }}
+
+The `@int_max` intrinsic returns the largest value representable in an integer
+type, and the `@int_min` intrinsic returns the smallest. The bounds follow the
+two's-complement ranges of §3.1: for an unsigned type of width *w* they are
+`2^w - 1` and `0`; for a signed type they are `2^(w-1) - 1` and `-2^(w-1)`.
+
+{{ rule(id="4.13:127", cat="normative") }}
+
+`@int_max` and `@int_min` each accept exactly one argument, which **MUST** be
+an integer type (§3.1).
+
+{{ rule(id="4.13:128", cat="normative") }}
+
+The result type of `@int_max(T)` and `@int_min(T)` is `T` itself. This is the
+only result type that can represent every bound exactly: `@int_max(u64)`
+exceeds every signed type, and `@int_min(i64)` is below every unsigned type.
+
+{{ rule(id="4.13:129", cat="legality-rule") }}
+
+It is a compile-time error (`E0702`) to apply `@int_max` or `@int_min` to a
+type argument that is not an integer type.
+
+{{ rule(id="4.13:130", cat="normative") }}
+
+The value of `@int_max(T)` and `@int_min(T)` is determined at compile time,
+and — unlike `@size_of` and `@align_of` — the integer-bounds intrinsics are
+**comptime-evaluable** (4.14:29): the bounds depend only on the identity of
+`T`, never on layout, so they may appear in `const` initializers and
+`comptime` argument positions.
+
+{{ rule(id="4.13:131") }}
+
+```rue
+fn main() -> i32 {
+    if @int_max(u8) == 255 && @int_min(i8) == -128 {
+        0
+    } else {
+        1
+    }
+}
+```
+
+{{ rule(id="4.13:132", cat="informative") }}
+
+Because the result is typed at the queried type, the intrinsics compose with
+generic `comptime T` code: overflow predicates such as
+`a > @int_max(T) - b` need no per-type constants, which is the motivating use
+(generic checked/saturating arithmetic, RUE-694).
 
 ## `@offset_of`
 

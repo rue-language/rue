@@ -20,11 +20,17 @@
 /// must be lowered as a `TypeIntrinsic` (like `@size_of`), not an expression
 /// call. `require_trivially_droppable` is the analogous by-copy-read gate
 /// (RUE-651).
+///
+/// `int_max`/`int_min` are the integer-bounds intrinsics (RUE-694): they take
+/// an integer type and evaluate to that type's largest/smallest value, typed
+/// as the queried type itself.
 pub const TYPE_INTRINSICS: &[&str] = &[
     "size_of",
     "align_of",
     "require_droppable",
     "require_trivially_droppable",
+    "int_max",
+    "int_min",
 ];
 
 /// The field-offset intrinsic `@offset_of(T, field)` (RUE-301): its first

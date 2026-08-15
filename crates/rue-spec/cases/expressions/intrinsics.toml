@@ -527,6 +527,125 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# =============================================================================
+# @int_max / @int_min Intrinsics (RUE-694)
+# =============================================================================
+
+[[case]]
+name = "int_max_int_min_all_widths"
+spec = ["4.13:126", "4.13:127"]
+source = """
+fn main() -> i32 {
+    if @int_max(u8) != 255 { return 1; }
+    if @int_min(u8) != 0 { return 2; }
+    if @int_max(i8) != 127 { return 3; }
+    if @int_min(i8) != -128 { return 4; }
+    if @int_max(u16) != 65535 { return 5; }
+    if @int_max(i16) != 32767 { return 6; }
+    if @int_min(i16) != -32768 { return 7; }
+    if @int_max(u32) != 4294967295 { return 8; }
+    if @int_max(i32) != 2147483647 { return 9; }
+    if @int_min(i32) != -2147483647 - 1 { return 10; }
+    if @int_max(u64) != 18446744073709551615 { return 11; }
+    if @int_min(u64) != 0 { return 12; }
+    if @int_max(i64) != 9223372036854775807 { return 13; }
+    if @int_min(i64) != -9223372036854775807 - 1 { return 14; }
+    0
+}
+"""
+exit_code = 0
+
+# The result is typed at the queried type itself (4.13:128): a u8 bound flows
+# into a u8 parameter without a cast, and the extreme u64/i64 bounds — which
+# fit no other integer type — are usable directly.
+[[case]]
+name = "int_bounds_result_typed_at_queried_type"
+spec = ["4.13:128"]
+source = """
+fn takes_u8(x: u8) -> i32 { if x == 255 { 0 } else { 1 } }
+fn main() -> i32 {
+    takes_u8(@int_max(u8))
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "int_bounds_reject_non_integer_type"
+spec = ["4.13:129"]
+source = """
+fn main() -> i32 {
+    @int_max(bool)
+}
+"""
+compile_fail = true
+error_contains = ["E0702", "an integer type", "bool"]
+
+[[case]]
+name = "int_min_reject_struct_type"
+spec = ["4.13:129"]
+source = """
+struct Point { x: i32, y: i32 }
+fn main() -> i32 {
+    let x = @int_min(Point);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0702"]
+
+# The integer-bounds intrinsics are comptime-evaluable (4.13:130): legal in a
+# const initializer and in a comptime argument position, where @size_of is not
+# (4.14:29).
+[[case]]
+name = "int_bounds_const_initializer"
+spec = ["4.13:130"]
+source = """
+const MAX8: u8 = @int_max(u8);
+const MIN64: i64 = @int_min(i64);
+fn main() -> i32 {
+    if MAX8 != 255 { return 1; }
+    if MIN64 != -9223372036854775807 - 1 { return 2; }
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "int_bounds_comptime_argument"
+spec = ["4.13:130"]
+source = """
+fn pick(comptime n: i8) -> i32 {
+    if n == 127 { 0 } else { 1 }
+}
+fn main() -> i32 {
+    pick(@int_max(i8))
+}
+"""
+exit_code = 0
+
+# Generic comptime-typed code composes with the bounds (4.13:132): an overflow
+# predicate over `T` needs no per-type constants (the RUE-694 motivating use).
+[[case]]
+name = "int_bounds_generic_overflow_predicate"
+spec = ["4.13:126", "4.13:128"]
+source = """
+fn would_overflow_add(comptime T: type, a: T, b: T) -> bool {
+    if b > 0 {
+        return a > @int_max(T) - b;
+    }
+    a < @int_min(T) - b
+}
+fn main() -> i32 {
+    if would_overflow_add(u8, 200, 100) == false { return 1; }
+    if would_overflow_add(u8, 100, 100) == true { return 2; }
+    if would_overflow_add(i8, 100, 100) == false { return 3; }
+    if would_overflow_add(i8, -100, -100) == false { return 4; }
+    if would_overflow_add(i64, 1, 1) == true { return 5; }
+    0
+}
+"""
+exit_code = 0
+
 # Each type observes its natural compact alignment (4.13:22): i8 and bool are
 # one byte, i64 is eight, and a struct's alignment is its widest field's (Point
 # is four, from its i32 fields).
