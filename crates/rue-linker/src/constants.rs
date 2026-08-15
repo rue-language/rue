@@ -312,6 +312,10 @@ pub const ARM64_RELOC_BRANCH26: u32 = 2;
 pub const ARM64_RELOC_PAGE21: u32 = 3;
 /// ARM64_RELOC_PAGEOFF12: Page offset
 pub const ARM64_RELOC_PAGEOFF12: u32 = 4;
+/// ARM64_RELOC_GOT_LOAD_PAGE21: ADRP of a GOT entry's page
+pub const ARM64_RELOC_GOT_LOAD_PAGE21: u32 = 5;
+/// ARM64_RELOC_GOT_LOAD_PAGEOFF12: LDR of a GOT entry within its page
+pub const ARM64_RELOC_GOT_LOAD_PAGEOFF12: u32 = 6;
 /// ARM64_RELOC_ADDEND: carries the addend for the *following* relocation
 /// entry (Mach-O ARM64 relocation_info has no addend field of its own)
 pub const ARM64_RELOC_ADDEND: u32 = 10;

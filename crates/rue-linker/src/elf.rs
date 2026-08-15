@@ -14,6 +14,8 @@ use crate::constants::{
     // Mach-O constants
     ARM64_RELOC_ADDEND,
     ARM64_RELOC_BRANCH26,
+    ARM64_RELOC_GOT_LOAD_PAGE21,
+    ARM64_RELOC_GOT_LOAD_PAGEOFF12,
     ARM64_RELOC_PAGE21,
     ARM64_RELOC_PAGEOFF12,
     ARM64_RELOC_UNSIGNED,
@@ -318,6 +320,16 @@ pub enum RelocationType {
     Ldst64Lo12,
     /// R_AARCH64_LDST128_ABS_LO12_NC: 128-bit load/store page offset (imm12 << 4).
     Ldst128Lo12,
+    /// ARM64_RELOC_GOT_LOAD_PAGE21 (Mach-O): ADRP of a GOT entry's page.
+    /// This linker produces fully static executables with no GOT, so the load
+    /// is relaxed to direct addressing (the aarch64 analogue of the x86-64
+    /// GotPcRelX relaxation): the ADRP is retargeted at the symbol itself,
+    /// and the paired GOT_LOAD_PAGEOFF12 LDR becomes an ADD (RUE-707).
+    GotLoadAdrpPage21,
+    /// ARM64_RELOC_GOT_LOAD_PAGEOFF12 (Mach-O): LDR of a GOT entry within its
+    /// page, relaxed to an ADD of the symbol's low 12 bits (see
+    /// [`RelocationType::GotLoadAdrpPage21`]).
+    GotLoadPageOff12,
     /// Unknown relocation type.
     Unknown(u32),
 }
@@ -865,6 +877,8 @@ impl ObjectFile {
                     ARM64_RELOC_BRANCH26 => RelocationType::Call26, // Could be Jump26, but works either way
                     ARM64_RELOC_PAGE21 => RelocationType::AdrpPage21,
                     ARM64_RELOC_PAGEOFF12 => RelocationType::AddLo12,
+                    ARM64_RELOC_GOT_LOAD_PAGE21 => RelocationType::GotLoadAdrpPage21,
+                    ARM64_RELOC_GOT_LOAD_PAGEOFF12 => RelocationType::GotLoadPageOff12,
                     _ => RelocationType::Unknown(r_type),
                 };
 

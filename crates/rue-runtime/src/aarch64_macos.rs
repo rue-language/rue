@@ -402,38 +402,163 @@ pub fn munmap(addr: *mut u8, size: usize) -> i64 {
     if err_flag != 0 { -result } else { result }
 }
 
-/// Install the stack-overflow SIGSEGV handler.
+/// macOS syscall number for sigaction (SYS_sigaction).
+const SYS_SIGACTION: u64 = 46;
+/// macOS syscall number for sigaltstack (SYS_sigaltstack).
+const SYS_SIGALTSTACK: u64 = 53;
+/// Segmentation-fault signal number (same value as Linux).
+const SIGSEGV: u64 = 11;
+/// Run the handler on the alternate signal stack. Darwin's value (0x0001)
+/// differs from Linux's (0x0800_0000).
+const SA_ONSTACK: i32 = 0x0001;
+
+// Darwin's `sigaction(2)` (SYS_sigaction = 46) takes a `struct __sigaction`
+// that, unlike Linux, carries a CALLER-SUPPLIED signal trampoline
+// (`sa_tramp`): on delivery the kernel jumps to `sa_tramp`, not the handler.
+// macOS provides no kernel/vDSO trampoline (libc supplies its own
+// `_sigtramp`), so this freestanding runtime defines one. The kernel's
+// `sendsig` enters it with
+//   x0 = catcher (the registered handler), x1 = infostyle, x2 = sig,
+//   x3 = siginfo*, x4 = ucontext*.
+// Our catcher is `extern "C" fn(i32) -> !` and exits the process, so the
+// trampoline only needs to invoke it with the signal number in `x0`; it never
+// returns, so no `sigreturn` epilogue is required (the same reasoning as the
+// x86-64 Linux restorer, which also never runs because the handler exits).
+core::arch::global_asm!(
+    ".globl _rue_darwin_sigtramp",
+    ".p2align 2",
+    "_rue_darwin_sigtramp:",
+    "mov x9, x0", // x9 = catcher (the real handler)
+    "mov x0, x2", // x0 = sig (the handler's only argument)
+    "blr x9",     // catcher(sig) — never returns (it exits)
+    "brk #0x1",   // trap if control ever returns here
+);
+
+unsafe extern "C" {
+    /// Signal-entry trampoline defined in `global_asm!` above. Address only —
+    /// never called directly from Rust. Referencing it from Rust emits a
+    /// Mach-O GOT_LOAD relocation pair, which the internal linker statically
+    /// relaxes to direct addressing (RUE-707).
+    fn rue_darwin_sigtramp();
+}
+
+/// Darwin `stack_t` layout: `{ void *ss_sp; size_t ss_size; int ss_flags; }`.
+/// Note the field order differs from Linux (size before flags).
+#[repr(C)]
+struct DarwinStackT {
+    ss_sp: *mut u8,
+    ss_size: usize,
+    ss_flags: i32,
+}
+
+/// Darwin `struct __sigaction` — the shape the raw `sigaction` syscall
+/// expects: the handler, then the caller-supplied trampoline, then the mask
+/// and flags (XNU `bsd/sys/signal.h`).
+#[repr(C)]
+struct DarwinSigaction {
+    sa_handler: usize,
+    sa_tramp: usize,
+    sa_mask: u32,
+    sa_flags: i32,
+}
+
+/// Register `nss` as the alternate signal stack (`sigaltstack(2)`).
 ///
-/// # macOS limitation (RUE-707)
+/// # Safety
+/// `nss` must point at a valid `DarwinStackT` describing a live memory region.
+unsafe fn sigaltstack(nss: *const DarwinStackT) -> i64 {
+    let result: i64;
+    let err_flag: u64;
+    // SAFETY: caller guarantees `nss` is valid; the syscall itself follows the
+    // same Darwin convention as every wrapper above (carry flag = error).
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_SIGALTSTACK => _,
+            in("x0") nss,
+            in("x1") 0u64, // oss: NULL
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+    if err_flag != 0 { -result } else { result }
+}
+
+/// Install `nsa` as the disposition for signal `sig` (`sigaction(2)`).
 ///
-/// On Linux this maps an alternate signal stack (`sigaltstack`) and installs a
-/// `SIGSEGV` handler (`rt_sigaction`) with `SA_ONSTACK`, turning a stack
-/// overflow into a clean "stack overflow" abort (exit 101) instead of a raw
-/// SIGSEGV (exit 139).
+/// # Safety
+/// `nsa` must point at a valid `DarwinSigaction` whose `sa_tramp` is a valid
+/// signal-entry trampoline.
+unsafe fn sigaction_syscall(sig: u64, nsa: *const DarwinSigaction) -> i64 {
+    let result: i64;
+    let err_flag: u64;
+    // SAFETY: caller guarantees `nsa` is valid; same syscall convention as the
+    // wrappers above.
+    unsafe {
+        asm!(
+            "svc #0x80",
+            "cset {err}, cs",
+            inlateout("x16") SYS_SIGACTION => _,
+            in("x0") sig,
+            in("x1") nsa,
+            in("x2") 0u64, // osa: NULL
+            lateout("x0") result,
+            err = out(reg) err_flag,
+            out("x17") _,
+        );
+    }
+    if err_flag != 0 { -result } else { result }
+}
+
+/// Install the stack-overflow SIGSEGV handler (RUE-645 / RUE-707).
 ///
-/// Darwin's signal ABI requires a platform-specific implementation, so this is
-/// intentionally a no-op:
+/// Maps a 64 KiB alternate signal stack (comfortably above macOS
+/// `MINSIGSTKSZ`), registers it with `sigaltstack`, and installs a `SIGSEGV`
+/// handler via the raw `sigaction` syscall with `SA_ONSTACK` and our own
+/// `sa_tramp`. A stack overflow then aborts cleanly ("stack overflow", exit
+/// 101) instead of a raw SIGSEGV (exit 139), matching the Linux targets.
 ///
-/// - The BSD `sigaction(2)` syscall (SYS_sigaction = 46) takes a
-///   `struct __sigaction` that, unlike Linux, includes a **caller-supplied
-///   signal trampoline** (`sa_tramp`). macOS provides no kernel/vDSO
-///   trampoline; libc passes its own `_sigtramp`, which saves/restores the
-///   full register + FP/SIMD state and finally issues the `sigreturn` syscall.
-///   A freestanding runtime would have to hand-write and correctly align that
-///   trampoline in assembly.
-/// - The `struct __sigaction` / `stack_t` layouts and flag values differ from
-///   Linux and require Apple Silicon validation.
+/// Every step is best-effort: any syscall failure leaves the default
+/// disposition in place, and a wrong trampoline only affects the (rare)
+/// stack-overflow delivery path — never a normal program — so the worst case
+/// is the prior exit-139 behavior.
 ///
-/// Getting the trampoline subtly wrong re-crashes inside signal delivery, so
-/// the runtime leaves the default SIGSEGV disposition in place (exit 139).
-/// The CLI regression test is marked `known_bug_on = ["aarch64-macos"]` and
-/// RUE-707 tracks the missing trampoline and handler.
-///
-/// The `_handler` argument matches the Linux signature so `entry::_main` can
-/// call this unconditionally.
-pub fn install_stack_overflow_handler(_handler: extern "C" fn(i32) -> !) {
-    // Deliberate no-op until the Darwin trampoline contract is implemented
-    // and validated (RUE-707).
+/// The first attempt at this (PR #1512) made every macOS link fail: the
+/// `rue_darwin_sigtramp as usize` reference emits an
+/// `ARM64_RELOC_GOT_LOAD_PAGE21/PAGEOFF12` pair, which the internal linker
+/// did not support at the time. The linker now statically relaxes those
+/// (LDR from the GOT slot -> ADD of the symbol address), so this reference
+/// links; behavioral verification is CI's macOS leg running the
+/// `stack_overflow.toml` CLI case.
+pub fn install_stack_overflow_handler(handler: extern "C" fn(i32) -> !) {
+    const ALT_STACK_SIZE: usize = 64 * 1024;
+
+    let stack = mmap(ALT_STACK_SIZE);
+    if stack.is_null() {
+        return;
+    }
+
+    let ss = DarwinStackT {
+        ss_sp: stack,
+        ss_size: ALT_STACK_SIZE,
+        ss_flags: 0,
+    };
+    // SAFETY: `ss` describes the region just mmap'd, live for the process.
+    if unsafe { sigaltstack(&ss) } < 0 {
+        return;
+    }
+
+    let act = DarwinSigaction {
+        sa_handler: handler as usize,
+        sa_tramp: rue_darwin_sigtramp as usize,
+        sa_mask: 0,
+        sa_flags: SA_ONSTACK,
+    };
+    // SAFETY: `act` is a valid `__sigaction` with a real trampoline; SIGSEGV
+    // is a valid signal number.
+    let _ = unsafe { sigaction_syscall(SIGSEGV, &act) };
 }
 
 /// Exit the process with the given status code.
@@ -600,10 +725,10 @@ mod tests {
 
     #[test]
     fn stack_overflow_handler_is_installable() {
-        // Reference the installer so the unit-test build type-checks it. On
-        // macOS this is a deliberate no-op (RUE-707); taking its
-        // address keeps the signature in sync with the Linux backends without
-        // executing anything.
+        // Reference the installer so the unit-test build type-checks it.
+        // Taking its address keeps the signature in sync with the Linux
+        // backends without executing anything (installing a real SIGSEGV
+        // disposition inside the libtest harness would be hostile).
         let installer: fn(extern "C" fn(i32) -> !) = install_stack_overflow_handler;
         assert!(installer as usize != 0);
     }

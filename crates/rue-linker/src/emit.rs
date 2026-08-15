@@ -356,6 +356,13 @@ impl ObjectBuilder {
                 RelocationType::Ldst32Lo12 => R_AARCH64_LDST32_ABS_LO12_NC,
                 RelocationType::Ldst64Lo12 => R_AARCH64_LDST64_ABS_LO12_NC,
                 RelocationType::Ldst128Lo12 => R_AARCH64_LDST128_ABS_LO12_NC,
+                // The GOT_LOAD pair exists only as parsed Mach-O input
+                // (statically relaxed at apply time, RUE-707); Rue's own
+                // codegen never creates one, so it cannot reach the ELF
+                // object emitter.
+                RelocationType::GotLoadAdrpPage21 | RelocationType::GotLoadPageOff12 => {
+                    unreachable!("Mach-O GOT_LOAD relocations are never emitted by Rue codegen")
+                }
                 RelocationType::Unknown(t) => t,
             };
             let r_info = ((sym_idx as u64) << 32) | (r_type as u64);

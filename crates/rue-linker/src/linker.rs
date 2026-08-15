@@ -114,6 +114,8 @@ fn relocation_patch_size(rel_type: RelocationType) -> Result<usize, LinkError> {
         | RelocationType::Call26
         | RelocationType::AdrpPage21
         | RelocationType::AddLo12
+        | RelocationType::GotLoadAdrpPage21
+        | RelocationType::GotLoadPageOff12
         | RelocationType::Ldst8Lo12
         | RelocationType::Ldst16Lo12
         | RelocationType::Ldst32Lo12
@@ -460,10 +462,16 @@ fn apply_relocation(
             inst = (inst & 0xFC000000) | ((offset as u32) & 0x03FFFFFF);
             buf[patch_range.clone()].copy_from_slice(&inst.to_le_bytes());
         }
-        RelocationType::AdrpPage21 => {
+        RelocationType::AdrpPage21 | RelocationType::GotLoadAdrpPage21 => {
             // AArch64 ADRP - loads PC-relative page address (21-bit page offset)
             // S + A gives the effective address; we need the page containing that
             // Result is the page containing (S + A) minus page containing PC
+            //
+            // GotLoadAdrpPage21 is the Mach-O GOT-load form relaxed for static
+            // linking: with no GOT, the ADRP addresses the symbol's own page
+            // directly and the paired GotLoadPageOff12 LDR becomes an ADD, so
+            // the register ends up holding the symbol's address exactly as the
+            // GOT slot would have (RUE-707).
             let effective_addr = (target_addr as i64 + addend) as u64;
             let target_page = effective_addr & !0xFFF;
             let pc_page = pc & !0xFFF;
@@ -568,6 +576,32 @@ fn apply_relocation(
             // Load/store imm12 is in bits 10-21, same field position as ADD.
             inst = (inst & 0xFFC003FF) | (imm << 10);
             buf[patch_range].copy_from_slice(&inst.to_le_bytes());
+        }
+        RelocationType::GotLoadPageOff12 => {
+            // Mach-O ARM64_RELOC_GOT_LOAD_PAGEOFF12, statically relaxed
+            // (RUE-707): the compiler emitted `ldr xN, [xM, #gotoff]` to read
+            // the symbol's address out of its GOT slot. This linker builds no
+            // GOT — every symbol is defined in the final image — so rewrite
+            // the LDR into `add xN, xM, #lo12(S + A)`, producing the symbol's
+            // address directly (the paired GOT_LOAD_PAGE21 ADRP was already
+            // pointed at the symbol's page). The aarch64 analogue of the
+            // x86-64 GotPcRelX mov->lea relaxation.
+            let effective_addr = (target_addr as i64 + addend) as u64;
+            let lo12 = (effective_addr & 0xFFF) as u32;
+            let inst = u32::from_le_bytes(buf[patch_range.clone()].try_into().unwrap());
+            // Only the 64-bit LDR (unsigned immediate) form can address a GOT
+            // slot; anything else means an assumption above is wrong, so fail
+            // loudly rather than emit a corrupt instruction.
+            if inst & 0xFFC0_0000 != 0xF940_0000 {
+                return Err(LinkError::UnsupportedRelocation(format!(
+                    "GOT_LOAD_PAGEOFF12 on non-LDR instruction 0x{inst:08x} for symbol {sym_name}"
+                )));
+            }
+            let rn = (inst >> 5) & 0x1F;
+            let rd = inst & 0x1F;
+            // ADD (immediate, 64-bit): sf=1, imm12 in bits 10-21.
+            let add = 0x9100_0000 | (lo12 << 10) | (rn << 5) | rd;
+            buf[patch_range].copy_from_slice(&add.to_le_bytes());
         }
         RelocationType::Unknown(t) => {
             return Err(LinkError::UnsupportedRelocation(format!(
@@ -5023,6 +5057,141 @@ mod tests {
             add,
             0x91000000 | (lo12 << 10),
             "ADD imm12 must be the unscaled byte offset"
+        );
+    }
+
+    /// RUE-707: the Mach-O GOT_LOAD pair is statically relaxed. The ADRP is
+    /// retargeted at the symbol's own page and the LDR that would have read
+    /// the GOT slot becomes an ADD of the symbol's low 12 bits, so the
+    /// register holds the symbol's address with no GOT in the image. This is
+    /// the pattern rustc emits for `extern_symbol as usize` in the macOS
+    /// runtime (the sa_tramp reference), which PR #1512 shipped unsupported —
+    /// every macOS link failed with "unsupported relocation: unknown type 6".
+    #[test]
+    fn test_macho_got_load_pair_relaxes_to_direct_address() {
+        use crate::macho::{PAGE_SIZE, VM_BASE};
+
+        let text = {
+            let mut s = text_section(
+                "__text",
+                vec![
+                    0x09, 0x00, 0x00, 0x90, // adrp x9, gvar@GOTPAGE
+                    0x29, 0x01, 0x40, 0xF9, // ldr x9, [x9, gvar@GOTPAGEOFF]
+                    0xC0, 0x03, 0x5F, 0xD6, // ret
+                ],
+                vec![
+                    Relocation {
+                        offset: 0,
+                        symbol_index: 1,
+                        rel_type: RelocationType::GotLoadAdrpPage21,
+                        addend: 0,
+                    },
+                    Relocation {
+                        offset: 4,
+                        symbol_index: 1,
+                        rel_type: RelocationType::GotLoadPageOff12,
+                        addend: 0,
+                    },
+                ],
+            );
+            s.align = 4;
+            s
+        };
+        let data = Section {
+            name: "__DATA,__data".into(),
+            data: vec![0u8; 16],
+            size: 16,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 8,
+        };
+        let obj = make_obj(
+            crate::elf::ElfMachine::Aarch64,
+            vec![text, data],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                sym("gvar", Some(1), 8, SymbolBinding::Global),
+            ],
+        );
+
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj).unwrap();
+        let macho = linker.link("main").unwrap();
+
+        let code_off = macho_entryoff(&macho) as usize;
+        let segments = macho_segments(&macho);
+        let (_, data_vmaddr, ..) = segments
+            .iter()
+            .find(|(n, ..)| n == "__DATA")
+            .cloned()
+            .expect("__DATA segment");
+        assert_eq!(data_vmaddr % PAGE_SIZE, 0);
+        assert!(data_vmaddr > VM_BASE);
+        let lo12 = ((data_vmaddr + 8) & 0xFFF) as u32;
+        assert_eq!(lo12, 8);
+
+        // The ADRP must still be an ADRP (targeting gvar's page, not a GOT's).
+        let adrp = read_u32_at(&macho, code_off);
+        assert_eq!(
+            adrp & 0x9F00_001F,
+            0x9000_0009,
+            "GOT_LOAD_PAGE21 site must stay an ADRP to x9"
+        );
+        // The LDR must have been rewritten to ADD x9, x9, #lo12(gvar).
+        let add = read_u32_at(&macho, code_off + 4);
+        assert_eq!(
+            add,
+            0x9100_0000 | (lo12 << 10) | (9 << 5) | 9,
+            "GOT_LOAD_PAGEOFF12 LDR must relax to ADD of the symbol's low 12 bits"
+        );
+    }
+
+    /// RUE-707: GOT_LOAD_PAGEOFF12 on anything but the 64-bit LDR
+    /// (unsigned-immediate) form means the relaxation's assumptions are wrong;
+    /// the link must fail loudly rather than emit a corrupt instruction.
+    #[test]
+    fn test_macho_got_load_pageoff12_rejects_non_ldr() {
+        let text = {
+            let mut s = text_section(
+                "__text",
+                vec![
+                    0x29, 0x01, 0x00, 0x91, // add x9, x9, #0 — not an LDR
+                    0xC0, 0x03, 0x5F, 0xD6, // ret
+                ],
+                vec![Relocation {
+                    offset: 0,
+                    symbol_index: 1,
+                    rel_type: RelocationType::GotLoadPageOff12,
+                    addend: 0,
+                }],
+            );
+            s.align = 4;
+            s
+        };
+        let data = Section {
+            name: "__DATA,__data".into(),
+            data: vec![0u8; 16],
+            size: 16,
+            flags: SectionFlags::ALLOC | SectionFlags::WRITE,
+            relocations: vec![],
+            align: 8,
+        };
+        let obj = make_obj(
+            crate::elf::ElfMachine::Aarch64,
+            vec![text, data],
+            vec![
+                sym("main", Some(0), 0, SymbolBinding::Global),
+                sym("gvar", Some(1), 8, SymbolBinding::Global),
+            ],
+        );
+
+        let mut linker = Linker::new(Target::Aarch64Macos);
+        linker.add_object(obj).unwrap();
+        let result = linker.link("main");
+        assert!(
+            matches!(result, Err(LinkError::UnsupportedRelocation(ref s)) if s.contains("non-LDR")),
+            "GOT_LOAD_PAGEOFF12 on a non-LDR must be an UnsupportedRelocation error, got: {:?}",
+            result
         );
     }
 
