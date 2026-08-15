@@ -28,21 +28,11 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import SKIP_DIRECTORIES, prune_names
+
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Build outputs and vendored trees are not ours to police, and `buck-out` in
-# particular makes the scan's cost and result depend on whether a build has run.
-SKIP_DIRECTORIES = {
-    ".buckd",
-    ".git",
-    ".jj",
-    "buck-out",
-    "buck2-bin",
-    "node_modules",
-    "target",
-    "third-party",
-}
 
 SHEBANG = re.compile(r"^#!.*\b(?:ba|da|k|z)?sh\b")
 
@@ -152,18 +142,7 @@ def shell_scripts(root: Path) -> list[Path]:
     # Prune while walking rather than filtering afterwards: `buck-out` alone
     # holds enough build output to dominate the gate's runtime.
     for directory, names, files in os.walk(root):
-        # Nested checkouts are pruned by their own VCS marker as well as by
-        # name: the working agreement puts sibling worktrees under
-        # `.claude/worktrees/`, and reporting a finding there as though it were
-        # a path in THIS tree is worse than not scanning it -- that copy runs
-        # its own gate (RUE-1506).
-        names[:] = sorted(
-            name
-            for name in names
-            if name not in SKIP_DIRECTORIES
-            and not (Path(directory) / name / ".git").exists()
-            and not (Path(directory) / name / ".jj").exists()
-        )
+        names[:] = prune_names(Path(directory), names)
         for name in sorted(files):
             path = Path(directory) / name
             if path.is_symlink() or not path.is_file():
