@@ -11847,10 +11847,8 @@ fn main() -> i32 {
         assert!(
             dependencies
                 .iter()
-                .filter(|node| node.contains("compiler.raw-declaration-signature"))
-                .all(|node| node.contains(":main:")),
-            "the transient body prerequisite resolver observes only its own raw signature; \
-             callee raw syntax stays behind exact semantic-signature queries: \
+                .all(|node| !node.contains("compiler.declaration-signature-projection")),
+            "body analysis must not regain the deleted peer signature family: \
              transaction={main_transaction:?}; dependencies={dependencies:?}"
         );
         assert!(

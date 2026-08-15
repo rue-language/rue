@@ -405,9 +405,6 @@ pub(crate) struct RevisionedQueryDatabase {
     >,
     #[cfg(test)]
     raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
-    #[allow(dead_code)]
-    raw_declaration_signatures:
-        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     #[cfg(test)]
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     warning_body_references:
@@ -2108,21 +2105,6 @@ enum RawConstSyntaxQueryValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RawDeclarationSignatureQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
-
-impl QueryKey for RawDeclarationSignatureQueryKey {
-    fn stable_identity(&self) -> String {
-        self.0.stable_identity()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum RawDeclarationSignatureQueryValue {
-    Available(crate::declaration_candidate::RawDeclarationSignatureSyntax),
-    Failure(crate::declaration_candidate::RawDeclarationSignatureFailure),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawDeclarationBodyQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
 impl QueryKey for RawDeclarationBodyQueryKey {
@@ -2748,7 +2730,6 @@ macro_rules! query_value_charge {
 }
 
 query_value_charge!(RawConstSyntaxQueryValue);
-query_value_charge!(RawDeclarationSignatureQueryValue);
 query_value_charge!(RawDeclarationBodyQueryValue);
 query_value_charge!(WarningBodySyntaxValue);
 query_value_charge!(WarningBodyReferencesValue);
@@ -5924,14 +5905,11 @@ fn exact_specialized_callable_types(
     context: &rue_query::QueryContext,
     semantic_nucleus: &SemanticNucleusFamily,
     declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
-    raw_declaration_signatures: &QueryFamily<
-        RawDeclarationSignatureQueryKey,
-        RawDeclarationSignatureQueryValue,
-    >,
     lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
     declaration: &crate::declaration_candidate::DeclarationCandidateKey,
     definition: &crate::StableDefinitionKey,
     signature_parameters: &[crate::durable_semantics::DurableSemanticParameter],
+    callable_type_syntax: &rue_air::DurableCallableTypeSyntax,
     arguments: &crate::CanonicalArguments,
     configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
 ) -> Result<
@@ -5998,31 +5976,7 @@ fn exact_specialized_callable_types(
         ))));
     }
 
-    let raw = context.query_registered(
-        raw_declaration_signatures,
-        RawDeclarationSignatureQueryKey(declaration.clone()),
-    )?;
-    let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
-        unreachable!("RawDeclarationSignature publishes typed values")
-    };
-    let RawDeclarationSignatureQueryValue::Available(raw) = raw else {
-        return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(format!(
-            "specialized callable syntax is unavailable: {raw:?}"
-        )))));
-    };
-    let parsed = match crate::semantic_query_nucleus::parse_semantic_signature(declaration, raw) {
-        Ok(parsed) => parsed,
-        Err(failure) => return Ok(Err(TypeQueryFailure::Invalid(failure))),
-    };
-    let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
-        parameters, result, ..
-    } = parsed
-    else {
-        return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
-            "specialized definition is not callable",
-        ))));
-    };
-    if parameters.len() != signature_parameters.len() {
+    if callable_type_syntax.parameters.len() != signature_parameters.len() {
         return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
             "specialized callable syntax disagrees with its semantic signature",
         ))));
@@ -6048,12 +6002,13 @@ fn exact_specialized_callable_types(
             .map_err(semantic_type_query_failure)
     };
     let mut runtime_parameters = Vec::new();
-    for (parameter, _semantic) in parameters
+    for (parameter, _semantic) in callable_type_syntax
+        .parameters
         .iter()
         .zip(signature_parameters)
         .filter(|(_, semantic)| durable_parameter_is_runtime(semantic))
     {
-        match resolve(&parameter.ty) {
+        match resolve(parameter) {
             Ok(ty) => runtime_parameters.push(ty),
             Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
             Err(ResolveSemanticSignatureError::Failure(failure)) => {
@@ -6063,7 +6018,7 @@ fn exact_specialized_callable_types(
             }
         }
     }
-    let result = match resolve(&result) {
+    let result = match resolve(&callable_type_syntax.result) {
         Ok(result) => result,
         Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
         Err(ResolveSemanticSignatureError::Failure(failure)) => {
@@ -6079,10 +6034,6 @@ fn query_callable_signature(
     context: &rue_query::QueryContext,
     semantic_nucleus: &SemanticNucleusFamily,
     declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
-    raw_declaration_signatures: &QueryFamily<
-        RawDeclarationSignatureQueryKey,
-        RawDeclarationSignatureQueryValue,
-    >,
     lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
     body_produced_anonymous: &QueryFamily<
         crate::body_query::BodyQueryKey,
@@ -6247,15 +6198,20 @@ fn query_callable_signature(
             }
             let (runtime_types, result) = match callable {
                 crate::FunctionInstanceKey::Specialization { arguments, .. } => {
+                    let Some(callable_type_syntax) = signature.callable_type_syntax.as_ref() else {
+                        return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(
+                            "specialized callable type syntax is unavailable",
+                        ))));
+                    };
                     match exact_specialized_callable_types(
                         context,
                         semantic_nucleus,
                         declaration_shells,
-                        raw_declaration_signatures,
                         lookup_names,
                         declaration,
                         definition,
                         parameters,
+                        callable_type_syntax,
                         arguments,
                         &key.configuration,
                     )? {
@@ -6333,10 +6289,6 @@ fn evaluate_call_abi(
     context: &rue_query::QueryContext,
     semantic_nucleus: &SemanticNucleusFamily,
     declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
-    raw_declaration_signatures: &QueryFamily<
-        RawDeclarationSignatureQueryKey,
-        RawDeclarationSignatureQueryValue,
-    >,
     lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
     body_produced_anonymous: &QueryFamily<
         crate::body_query::BodyQueryKey,
@@ -6354,7 +6306,6 @@ fn evaluate_call_abi(
         context,
         semantic_nucleus,
         declaration_shells,
-        raw_declaration_signatures,
         lookup_names,
         body_produced_anonymous,
         key,
@@ -6982,18 +6933,6 @@ pub(crate) fn durable_value_from_argument(
         V::Unit => D::Unit,
         V::String(value) => D::String(value.clone()),
     })
-}
-
-fn callable_result_type_syntax(
-    declaration: &crate::declaration_candidate::DeclarationCandidateKey,
-    syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
-) -> Option<Arc<str>> {
-    let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable { result, .. } =
-        crate::semantic_query_nucleus::parse_semantic_signature(declaration, syntax).ok()?
-    else {
-        return None;
-    };
-    Some(result)
 }
 
 fn comptime_call_for_anonymous_function(
@@ -11096,13 +11035,14 @@ fn resolve_parsed_semantic_signature(
             is_accessor,
             accessor_body,
             accessor_cycle,
+            ..
         } => {
             if *is_accessor {
-                // 6.6:3-6.6:7 over the reparsed declaration. Which forms are
+                // 6.6:3-6.6:7 over the exact canonical declaration. Which forms are
                 // illegal, in which order, and how each diagnostic reads are
                 // `rue_air::declaration_validation`'s, shared with the RIR
                 // producers (RUE-1232); this seam owns only the lowering of
-                // the reparsed signature into that vocabulary.
+                // the parsed signature projection into that vocabulary.
                 use rue_air::declaration_validation as rules;
                 use rue_air::declaration_validation::{
                     AccessorParameterForm, AccessorReceiverForm,
@@ -11190,9 +11130,9 @@ fn resolve_parsed_semantic_signature(
             }
             let mut generic_index = 0_u32;
             for parameter in parameters.iter() {
-                if parameter.is_comptime && parameter.ty.trim() == "type" {
+                if parameter.is_comptime && parsed.text(parameter.ty).trim() == "type" {
                     provider.substitutions.insert(
-                        parameter.name.clone(),
+                        Arc::from(parsed.text(parameter.name)),
                         crate::durable_semantics::DurableType::GenericParameter(generic_index),
                     );
                     generic_index += 1;
@@ -11203,16 +11143,16 @@ fn resolve_parsed_semantic_signature(
                 .map(|parameter| {
                     let ty = resolve(
                         provider,
-                        &parameter.ty,
+                        parsed.text(parameter.ty),
                         rue_air::DeclarationTypeDependencyKind::Signature,
                     )?;
-                    if parameter.is_comptime && parameter.ty.trim() != "type" {
+                    if parameter.is_comptime && parsed.text(parameter.ty).trim() != "type" {
                         provider
                             .deferred_value_parameters
-                            .insert(parameter.name.clone(), ty.clone());
+                            .insert(Arc::from(parsed.text(parameter.name)), ty.clone());
                     }
                     Ok(DurableSemanticParameter {
-                        name: parameter.name.clone(),
+                        name: Arc::from(parsed.text(parameter.name)),
                         ty,
                         mode: match parameter.mode {
                             crate::declaration_candidate::DeclarationParameterMode::Value => {
@@ -11231,7 +11171,7 @@ fn resolve_parsed_semantic_signature(
                 .collect::<Result<Vec<_>, ResolveSemanticSignatureError>>()?;
             let result = resolve(
                 provider,
-                result,
+                parsed.text(*result),
                 rue_air::DeclarationTypeDependencyKind::Signature,
             )?;
             if contains_slice(&result) {
@@ -11395,6 +11335,7 @@ fn resolve_parsed_semantic_signature(
             is_copy,
             is_linear,
             is_repr_c,
+            ..
         } => {
             if let Some(kind) = rue_air::declaration_validation::linear_copy_struct(
                 provider.dependency_source.name(),
@@ -11405,18 +11346,19 @@ fn resolve_parsed_semantic_signature(
             }
             if let Some(kind) = rue_air::declaration_validation::duplicate_field(
                 provider.dependency_source.name(),
-                fields.iter().map(|(name, _)| name),
+                fields.iter().map(|field| parsed.text(field.name)),
             ) {
                 return Err(diagnostic(kind));
             }
             let fields = fields
                 .iter()
-                .map(|(name, syntax)| {
+                .map(|field| {
+                    let name: Arc<str> = Arc::from(parsed.text(field.name));
                     Ok((
-                        name.clone(),
+                        name,
                         resolve(
                             provider,
-                            syntax,
+                            parsed.text(field.ty),
                             rue_air::DeclarationTypeDependencyKind::Field,
                         )?,
                     ))
@@ -11522,24 +11464,29 @@ fn resolve_parsed_semantic_signature(
                 is_repr_c: *is_repr_c,
             })
         }
-        Input::Enum { variants } => {
+        Input::Enum {
+            variants, payloads, ..
+        } => {
             if let Some(kind) = rue_air::declaration_validation::duplicate_variant(
                 provider.dependency_source.name(),
-                variants.iter().map(|(name, _)| name),
+                variants.iter().map(|variant| parsed.text(variant.name)),
             ) {
                 return Err(diagnostic(kind));
             }
             let variants: Vec<(Arc<str>, Arc<[crate::durable_semantics::DurableType]>)> = variants
                 .iter()
-                .map(|(name, payload)| {
+                .map(|variant| {
+                    let payload = payloads
+                        .get(variant.payload_start as usize..variant.payload_end as usize)
+                        .expect("signature payload ranges are validated when projected");
                     Ok((
-                        name.clone(),
+                        Arc::from(parsed.text(variant.name)),
                         payload
                             .iter()
                             .map(|syntax| {
                                 resolve(
                                     provider,
-                                    syntax,
+                                    parsed.text(*syntax),
                                     rue_air::DeclarationTypeDependencyKind::Payload,
                                 )
                             })
@@ -12178,155 +12125,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the RawConstSyntax family has one canonical name");
-        let occurrences_for_raw_signature = declaration_occurrence_indexes.clone();
-        let shells_for_raw_signature = declaration_shells.clone();
-        let parse_for_raw_signature = parse_modules.clone();
-        let raw_declaration_signatures = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.raw-declaration-signature",
-                declaration_memo_retention,
-                |left: &RawDeclarationSignatureQueryValue,
-                 right: &RawDeclarationSignatureQueryValue| { left == right },
-                move |context, _, key: &RawDeclarationSignatureQueryKey| {
-                    use crate::declaration_candidate::{
-                        DeclarationCandidateCategory, DeclarationOccurrenceCapability,
-                        DeclarationShellFailure, RawDeclarationSignatureFailure,
-                    };
-
-                    let indexed = context.query_registered(
-                        &occurrences_for_raw_signature,
-                        ModuleQueryKey(key.0.module.clone()),
-                    )?;
-                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
-                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
-                    };
-                    let value = match indexed {
-                        DeclarationOccurrenceIndexValue::Failure(failure) => {
-                            RawDeclarationSignatureQueryValue::Failure(
-                                RawDeclarationSignatureFailure::OccurrencesUnavailable(
-                                    failure.clone(),
-                                ),
-                            )
-                        }
-                        DeclarationOccurrenceIndexValue::Available(index) => {
-                            match index.capabilities.get(&key.0) {
-                                None => RawDeclarationSignatureQueryValue::Failure(
-                                    RawDeclarationSignatureFailure::Absent(key.0.clone()),
-                                ),
-                                Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
-                                    RawDeclarationSignatureQueryValue::Failure(
-                                        RawDeclarationSignatureFailure::Ambiguous(key.0.clone()),
-                                    )
-                                }
-                                Some(DeclarationOccurrenceCapability::Exact {
-                                    duplicate_multiplicity: 0,
-                                    ..
-                                }) => RawDeclarationSignatureQueryValue::Failure(
-                                    RawDeclarationSignatureFailure::ParserCapabilityMismatch(
-                                        key.0.clone(),
-                                    ),
-                                ),
-                                Some(DeclarationOccurrenceCapability::Exact { .. }) => {
-                                    let shell = context.query_registered(
-                                        &shells_for_raw_signature,
-                                        DeclarationShellQueryKey(key.0.clone()),
-                                    )?;
-                                    let rue_query::QueryOutcome::Success(shell) = shell.outcome()
-                                    else {
-                                        unreachable!("DeclarationShell publishes typed values")
-                                    };
-                                    match shell {
-                                        DeclarationShellQueryValue::Failure(failure) => {
-                                            let failure = match failure {
-                                                DeclarationShellFailure::OccurrencesUnavailable(
-                                                    failure,
-                                                ) => RawDeclarationSignatureFailure::OccurrencesUnavailable(
-                                                    failure.clone(),
-                                                ),
-                                                DeclarationShellFailure::Absent(key) => {
-                                                    RawDeclarationSignatureFailure::Absent(
-                                                        key.clone(),
-                                                    )
-                                                }
-                                                DeclarationShellFailure::Ambiguous(key) => {
-                                                    RawDeclarationSignatureFailure::Ambiguous(
-                                                        key.clone(),
-                                                    )
-                                                }
-                                                DeclarationShellFailure::ParserCapabilityMismatch(
-                                                    key,
-                                                ) => RawDeclarationSignatureFailure::ParserCapabilityMismatch(
-                                                    key.clone(),
-                                                ),
-                                            };
-                                            RawDeclarationSignatureQueryValue::Failure(failure)
-                                        }
-                                        DeclarationShellQueryValue::Available(fact)
-                                            if fact.key.category
-                                                == DeclarationCandidateCategory::ConstCandidate =>
-                                        {
-                                            RawDeclarationSignatureQueryValue::Failure(
-                                                RawDeclarationSignatureFailure::CategoryMismatch(
-                                                    key.0.clone(),
-                                                ),
-                                            )
-                                        }
-                                        DeclarationShellQueryValue::Available(fact)
-                                            if fact.key != key.0 =>
-                                        {
-                                            RawDeclarationSignatureQueryValue::Failure(
-                                                RawDeclarationSignatureFailure::ParserCapabilityMismatch(
-                                                    key.0.clone(),
-                                                ),
-                                            )
-                                        }
-                                        DeclarationShellQueryValue::Available(_) => {
-                                            let parsed = context.query_registered(
-                                                &parse_for_raw_signature,
-                                                ModuleQueryKey(key.0.module.clone()),
-                                            )?;
-                                            let rue_query::QueryOutcome::Success(parsed) =
-                                                parsed.outcome()
-                                            else {
-                                                unreachable!("ParseModule publishes typed values")
-                                            };
-                                            match &parsed.result {
-                                                Err(_) => RawDeclarationSignatureQueryValue::Failure(
-                                                    RawDeclarationSignatureFailure::OccurrencesUnavailable(
-                                                        crate::declaration_candidate::DeclarationOccurrenceFailure::ParseRejected {
-                                                            module: key.0.module.clone(),
-                                                        },
-                                                    ),
-                                                ),
-                                                Ok(module) => module
-                                                    .evaluate_raw_declaration_signature(&key.0)
-                                                    .map_or_else(
-                                                        || RawDeclarationSignatureQueryValue::Failure(
-                                                            RawDeclarationSignatureFailure::ParserCapabilityMismatch(
-                                                                key.0.clone(),
-                                                            ),
-                                                        ),
-                                                        RawDeclarationSignatureQueryValue::Available,
-                                                    ),
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    let kind = if matches!(
-                        value,
-                        RawDeclarationSignatureQueryValue::Available(_)
-                    ) {
-                        QueryTerminalKind::Success
-                    } else {
-                        QueryTerminalKind::Failure
-                    };
-                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
-                },
-            )
-            .expect("the RawDeclarationSignature family has one canonical name");
         let occurrences_for_raw_body = declaration_occurrence_indexes.clone();
         let shells_for_raw_body = declaration_shells.clone();
         let parse_for_raw_body = parse_modules.clone();
@@ -13073,7 +12871,7 @@ impl RevisionedQueryDatabase {
             .expect("the DeclarationImport family has one canonical name");
         let shells_for_semantic_nucleus = declaration_shells.clone();
         let shells_for_produced_anonymous = declaration_shells.clone();
-        let signatures_for_semantic_nucleus = raw_declaration_signatures.clone();
+        let parse_for_semantic_nucleus = parse_modules.clone();
         let consts_for_semantic_nucleus = raw_const_syntax.clone();
         let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
         let names_for_semantic_nucleus = lookup_names.clone();
@@ -13162,7 +12960,6 @@ impl RevisionedQueryDatabase {
         let body_input_resolver = BodyInputResolver {
             stable_declaration_classifications: stable_declaration_classifications.clone(),
             declaration_shells: declaration_shells.clone(),
-            raw_declaration_signatures: raw_declaration_signatures.clone(),
             declaration_body_plan_artifacts: declaration_body_plan_artifacts.clone(),
             body_source_bases: body_source_bases.clone(),
         };
@@ -13497,7 +13294,6 @@ impl RevisionedQueryDatabase {
             Arc::new(std::sync::OnceLock::<SemanticNucleusFamily>::new());
         let semantic_nucleus_for_produced_anonymous_evaluator =
             semantic_nucleus_for_produced_anonymous.clone();
-        let signatures_for_produced_anonymous = raw_declaration_signatures.clone();
         let body_produced_anonymous = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-produced-anonymous",
@@ -13625,18 +13421,10 @@ impl RevisionedQueryDatabase {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    let exact_signature = context.query_registered(
-                        &signatures_for_produced_anonymous,
-                        RawDeclarationSignatureQueryKey(declaration.clone()),
-                    )?;
-                    let rue_query::QueryOutcome::Success(
-                        RawDeclarationSignatureQueryValue::Available(exact_signature),
-                    ) = exact_signature.outcome()
-                    else {
-                        return Err(QueryAbort::Canceled);
-                    };
-                    let Some(exact_result) =
-                        callable_result_type_syntax(&declaration, exact_signature)
+                    let Some(exact_result) = signature
+                        .callable_type_syntax
+                        .as_ref()
+                        .map(|syntax| syntax.result.clone())
                     else {
                         return Err(QueryAbort::Canceled);
                     };
@@ -13898,31 +13686,35 @@ impl RevisionedQueryDatabase {
                                         .with_terminal_kind(QueryTerminalKind::Failure));
                                 }
                             }
-                            let raw = context.query_registered(
-                                &signatures_for_semantic_nucleus,
-                                RawDeclarationSignatureQueryKey(query.declaration.clone()),
+                            context.check_canceled()?;
+                            let parsed_module = context.query_registered(
+                                &parse_for_semantic_nucleus,
+                                ModuleQueryKey(query.declaration.module.clone()),
                             )?;
-                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
-                                unreachable!("RawDeclarationSignature publishes typed values")
+                            let rue_query::QueryOutcome::Success(parsed_module) =
+                                parsed_module.outcome()
+                            else {
+                                unreachable!("ParseModule publishes typed values")
                             };
-                            match raw {
-                                RawDeclarationSignatureQueryValue::Failure(failure) => {
-                                    Value::Failure(Failure::Syntax(Arc::from(format!(
-                                        "{failure:?}"
-                                    ))))
-                                }
-                                RawDeclarationSignatureQueryValue::Available(raw) => {
-                                    match crate::semantic_query_nucleus::parse_semantic_signature(
-                                        &query.declaration,
-                                        raw,
-                                    ) {
-                                        Ok(parsed) => {
+                            let parsed = match &parsed_module.result {
+                                Ok(module) => crate::semantic_query_nucleus::project_semantic_signature(
+                                    module,
+                                    &query.declaration,
+                                ),
+                                Err(_) => Err(Arc::from(
+                                    "declaration signature module failed to parse",
+                                )),
+                            };
+                            context.check_canceled()?;
+                            match parsed {
+                                Err(failure) => Value::Failure(Failure::Syntax(failure)),
+                                Ok(parsed) => {
                                             if let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
                                                 parameters,
                                                 ..
                                             } = &parsed
                                                 && let Some((kind, ordinal)) = rue_air::declaration_validation::duplicate_parameter_with_ordinal(
-                                                    parameters.iter().map(|parameter| &parameter.name),
+                                                    parameters.iter().map(|parameter| parsed.text(parameter.name)),
                                                 )
                                             {
                                                 return Ok(QueryOutput::success(Value::Failure(
@@ -14033,9 +13825,6 @@ impl RevisionedQueryDatabase {
                                                     Value::Failure(*failure)
                                                 }
                                             }
-                                        }
-                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
-                                    }
                                 }
                             }
                         }
@@ -15052,7 +14841,6 @@ impl RevisionedQueryDatabase {
             .expect("Layout family is installed once");
         let semantic_nucleus_for_call_abi = semantic_nucleus.clone();
         let declaration_shells_for_call_abi = declaration_shells.clone();
-        let raw_signatures_for_call_abi = raw_declaration_signatures.clone();
         let lookup_names_for_call_abi = lookup_names.clone();
         let produced_anonymous_for_call_abi = body_produced_anonymous.clone();
         let layouts_for_call_abi = layouts.clone();
@@ -15067,7 +14855,6 @@ impl RevisionedQueryDatabase {
                         context,
                         &semantic_nucleus_for_call_abi,
                         &declaration_shells_for_call_abi,
-                        &raw_signatures_for_call_abi,
                         &lookup_names_for_call_abi,
                         &produced_anonymous_for_call_abi,
                         &layouts_for_call_abi,
@@ -16695,7 +16482,6 @@ impl RevisionedQueryDatabase {
                 .set(BodyTransactionEvaluator {
                     parse_modules: parse_modules.clone(),
                     module_source_bases: module_source_bases.clone(),
-                    raw_declaration_signatures: raw_declaration_signatures.clone(),
                     body_input: body_input_resolver,
                     body_source_bases: body_source_bases.clone(),
                     body_toolchain_demands: body_toolchain_demands.clone(),
@@ -16748,7 +16534,6 @@ impl RevisionedQueryDatabase {
             stable_declaration_classifications: stable_declaration_classifications.clone(),
             #[cfg(test)]
             raw_const_syntax,
-            raw_declaration_signatures,
             #[cfg(test)]
             raw_declaration_bodies: raw_declaration_bodies.clone(),
             warning_body_references,
@@ -17651,8 +17436,6 @@ struct BodyInputResolver {
         StableDeclarationClassificationQueryValue,
     >,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
-    raw_declaration_signatures:
-        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     declaration_body_plan_artifacts:
         QueryFamily<DeclarationBodyPlanQueryKey, DeclarationBodyPlanArtifactsValue>,
     body_source_bases:
@@ -17722,40 +17505,16 @@ impl BodyInputResolver {
         {
             return Ok(BodyInputValue::Incomplete(Incomplete::Extern));
         }
-        let signature = match context.query_registered(
-            &self.raw_declaration_signatures,
-            RawDeclarationSignatureQueryKey(candidate.clone()),
-        ) {
-            Ok(value) => value,
-            Err(QueryAbort::MissingInput(_)) => {
-                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                    Arc::from("raw declaration signature"),
-                )));
-            }
-            Err(abort) => return Err(abort),
-        };
-        let rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(
-            signature,
-        )) = signature.outcome()
-        else {
-            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                Arc::from("raw declaration signature"),
-            )));
-        };
         if shell.is_generic && matches!(key.instance, crate::FunctionInstanceKey::Definition(_)) {
             use crate::declaration_candidate::DeclarationCandidateCategory as Category;
-            use crate::semantic_query_nucleus::ParsedSemanticSignature;
 
             let named_runtime_value_body = matches!(
                 candidate.category,
                 Category::Method | Category::AssociatedFunction
-            ) && matches!(
-                crate::semantic_query_nucleus::parse_semantic_signature(&candidate, signature),
-                Ok(ParsedSemanticSignature::Callable { parameters, .. })
-                    if parameters.iter().all(|parameter| {
-                        !parameter.is_comptime || parameter.ty.trim() != "type"
-                    })
-            );
+            ) && shell
+                .parameters
+                .iter()
+                .all(|parameter| !parameter.is_comptime || !parameter.is_type_parameter);
             if !named_runtime_value_body {
                 return Ok(BodyInputValue::Incomplete(Incomplete::Generic));
             }
@@ -17802,8 +17561,6 @@ impl BodyInputResolver {
 struct BodyTransactionEvaluator {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
-    raw_declaration_signatures:
-        QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     body_input: BodyInputResolver,
     body_source_bases:
         QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
@@ -18697,18 +18454,10 @@ impl BodyTransactionEvaluator {
                     else {
                         return Err(QueryAbort::Canceled);
                     };
-                    let exact_signature = context.query_registered(
-                        &self.raw_declaration_signatures,
-                        RawDeclarationSignatureQueryKey(candidate.clone()),
-                    )?;
-                    let rue_query::QueryOutcome::Success(
-                        RawDeclarationSignatureQueryValue::Available(exact_signature),
-                    ) = exact_signature.outcome()
-                    else {
-                        return Err(QueryAbort::Canceled);
-                    };
-                    let Some(exact_result) =
-                        callable_result_type_syntax(&candidate, exact_signature)
+                    let Some(exact_result) = signature
+                        .callable_type_syntax
+                        .as_ref()
+                        .map(|syntax| syntax.result.clone())
                     else {
                         return Err(QueryAbort::Canceled);
                     };
@@ -26611,15 +26360,19 @@ fn main() -> i32 {
         };
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let requested = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
+        let (requested, _) = request_semantic_nucleus_observed(
+            &database,
             revision,
-            RawDeclarationSignatureQueryKey(candidate),
-            CancellationToken::new(),
+            crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration: candidate,
+                    configuration: semantic_configuration(),
+                },
+            ),
         );
         assert!(matches!(
-            requested.terminal().unwrap().outcome(),
-            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(_))
+            requested,
+            crate::semantic_query_nucleus::SemanticNucleusValue::Signature(_)
         ));
         assert_eq!(
             database
@@ -27431,7 +27184,6 @@ fn main() -> i32 {
                         "compiler.lookup-name",
                         "compiler.module-index",
                         "compiler.parse-module",
-                        "compiler.raw-declaration-signature",
                         "compiler.semantic-nucleus",
                     ],
                     7,
@@ -27476,7 +27228,7 @@ fn main() -> i32 {
                     &[
                         "compiler.declaration-shell",
                         "compiler.lookup-name",
-                        "compiler.raw-declaration-signature",
+                        "compiler.parse-module",
                     ],
                     &[
                         "compiler.declaration-occurrence-index",
@@ -27484,7 +27236,6 @@ fn main() -> i32 {
                         "compiler.lookup-name",
                         "compiler.module-index",
                         "compiler.parse-module",
-                        "compiler.raw-declaration-signature",
                         "compiler.semantic-nucleus",
                     ],
                     10,
@@ -27495,7 +27246,7 @@ fn main() -> i32 {
                         &signature_attempt,
                         &[
                             "compiler.declaration-shell",
-                            "compiler.raw-declaration-signature",
+                            "compiler.parse-module",
                             "compiler.semantic-nucleus",
                         ],
                         &[
@@ -27504,7 +27255,6 @@ fn main() -> i32 {
                             "compiler.lookup-name",
                             "compiler.module-index",
                             "compiler.parse-module",
-                            "compiler.raw-declaration-signature",
                             "compiler.semantic-nucleus",
                         ],
                         9,
@@ -27513,15 +27263,11 @@ fn main() -> i32 {
                 _ => assert_direct_semantic_observation(
                     "direct signature",
                     &signature_attempt,
-                    &[
-                        "compiler.declaration-shell",
-                        "compiler.raw-declaration-signature",
-                    ],
+                    &["compiler.declaration-shell", "compiler.parse-module"],
                     &[
                         "compiler.declaration-occurrence-index",
                         "compiler.declaration-shell",
                         "compiler.parse-module",
-                        "compiler.raw-declaration-signature",
                     ],
                     4,
                 ),
@@ -27712,7 +27458,6 @@ fn main() -> i32 {
                 "compiler.declaration-shell",
                 "compiler.parse-module",
                 "compiler.raw-declaration-body",
-                "compiler.raw-declaration-signature",
                 "compiler.semantic-nucleus",
             ],
             7,
@@ -27986,7 +27731,6 @@ fn main() -> i32 {
                     "compiler.parse-module",
                     "compiler.raw-const-syntax",
                     "compiler.raw-declaration-body",
-                    "compiler.raw-declaration-signature",
                     "compiler.semantic-nucleus",
                 ],
                 14,
@@ -28027,7 +27771,6 @@ fn main() -> i32 {
                     "compiler.parse-module",
                     "compiler.raw-const-syntax",
                     "compiler.raw-declaration-body",
-                    "compiler.raw-declaration-signature",
                     "compiler.semantic-nucleus",
                 ],
                 18,
@@ -28130,15 +27873,11 @@ fn main() -> i32 {
                 assert_direct_semantic_observation(
                     "deterministic parameter failure",
                     &keyed_attempt,
-                    &[
-                        "compiler.declaration-shell",
-                        "compiler.raw-declaration-signature",
-                    ],
+                    &["compiler.declaration-shell", "compiler.parse-module"],
                     &[
                         "compiler.declaration-occurrence-index",
                         "compiler.declaration-shell",
                         "compiler.parse-module",
-                        "compiler.raw-declaration-signature",
                     ],
                     4,
                 );
@@ -29633,18 +29372,48 @@ fn main() -> i32 {
         ));
     }
 
-    fn raw_signature_text(
-        syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
-    ) -> String {
-        syntax
-            .declaration_fragments
-            .iter()
-            .map(AsRef::as_ref)
-            .collect::<String>()
+    fn project_signature_for_test(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        key: &crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> crate::semantic_query_nucleus::ParsedSemanticSignature {
+        let parsed = database.runtime.request_registered(
+            &database.parse_modules,
+            revision,
+            ModuleQueryKey(key.module.clone()),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(parsed) =
+            parsed.terminal().expect("parse terminal").outcome()
+        else {
+            panic!("parse query publishes typed values")
+        };
+        let module = parsed.result.as_ref().expect("module parses");
+        crate::semantic_query_nucleus::project_semantic_signature(module, key)
+            .expect("exact signature projects")
+    }
+
+    fn request_signature_for_test(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        declaration: crate::declaration_candidate::DeclarationCandidateKey,
+        cancellation: CancellationToken,
+    ) -> QueryRequestAttempt<crate::semantic_query_nucleus::SemanticNucleusValue> {
+        database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                    declaration,
+                    configuration: semantic_configuration(),
+                },
+            ),
+            cancellation,
+        )
     }
 
     #[test]
-    fn raw_declaration_signature_is_exact_lazy_and_red_green() {
+    fn declaration_signature_is_exact_lazy_and_red_green() {
         fn program(selected_type: &str, unrelated_body: u32) -> String {
             let mut source = String::new();
             for index in 0..128 {
@@ -29667,114 +29436,95 @@ fn main() -> i32 {
             source_snapshot(&[(1, "/main.rue", "main.rue", &selected_edit_text)], 1);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let key = crate::declaration_candidate::DeclarationCandidateKey {
-            module: module.clone(),
+            module,
             category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
             name: Arc::from("selected"),
             owner: None,
             duplicate_discriminator: 0,
         };
         let mut database = RevisionedQueryDatabase::default();
-        let first_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&first),
-            &first,
-        );
-        let parsed = database.runtime.request_registered(
-            &database.parse_modules,
-            first_revision,
-            ModuleQueryKey(module),
-            CancellationToken::new(),
-        );
-        let parsed_module = match parsed.terminal().unwrap().outcome() {
-            rue_query::QueryOutcome::Success(value) => value.result.clone().unwrap(),
-            rue_query::QueryOutcome::Failure(_) => unreachable!(),
-        };
-        assert_eq!(
-            parsed_module.raw_declaration_signature_terminal_materialization_count(),
-            0,
-            "indexing 129 declarations must allocate no raw-signature terminal fragments"
-        );
 
-        let first_request = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
+        let first_revision = revision_for(&mut database, &first);
+        let first_request = request_signature_for_test(
+            &database,
             first_revision,
-            RawDeclarationSignatureQueryKey(key.clone()),
+            key.clone(),
             CancellationToken::new(),
         );
         assert_eq!(execution(&first_request), RequestExecution::Computed);
-        assert_eq!(
+        assert!(
             first_request
                 .dependencies()
                 .iter()
-                .map(|dependency| dependency.node.family())
-                .collect::<Vec<_>>(),
-            vec![
-                "compiler.declaration-occurrence-index",
-                "compiler.declaration-shell",
-                "compiler.parse-module",
-            ]
+                .any(|dependency| dependency.node.family() == "compiler.parse-module")
         );
-        let first_terminal = first_request.terminal().unwrap();
+        let first_terminal = first_request.terminal().expect("signature terminal");
         let first_stamp = first_terminal.stamp();
-        assert!(matches!(
-            first_terminal.outcome(),
-            rue_query::QueryOutcome::Success(
-                RawDeclarationSignatureQueryValue::Available(syntax)
-            ) if raw_signature_text(syntax).trim_end() == "fn selected(value: i32) -> i32"
-                && syntax.extern_abi.is_none()
-        ));
-        assert_eq!(
-            parsed_module.raw_declaration_signature_terminal_materialization_count(),
-            1,
-            "one exact cold demand must materialize one raw-signature terminal"
-        );
+        let rue_query::QueryOutcome::Success(
+            crate::semantic_query_nucleus::SemanticNucleusValue::Signature(first_signature),
+        ) = first_terminal.outcome()
+        else {
+            panic!("selected signature resolves")
+        };
+        let syntax = first_signature
+            .callable_type_syntax
+            .as_ref()
+            .expect("callable syntax is retained with the resolved signature");
+        assert_eq!(&*syntax.parameters, [Arc::<str>::from("i32")]);
+        assert_eq!(syntax.result.as_ref(), "i32");
 
-        let warm = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
+        let warm = request_signature_for_test(
+            &database,
             first_revision,
-            RawDeclarationSignatureQueryKey(key.clone()),
+            key.clone(),
             CancellationToken::new(),
         );
         assert_eq!(execution(&warm), RequestExecution::Reused);
-        assert_eq!(
-            parsed_module.raw_declaration_signature_terminal_materialization_count(),
-            1,
-            "warm reuse must not rematerialize raw-signature terminal fragments"
-        );
 
-        let unrelated_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&unrelated_edit),
-            &unrelated_edit,
-        );
-        let unrelated_request = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
+        let unrelated_revision = revision_for(&mut database, &unrelated_edit);
+        let unrelated_request = request_signature_for_test(
+            &database,
             unrelated_revision,
-            RawDeclarationSignatureQueryKey(key.clone()),
+            key.clone(),
             CancellationToken::new(),
         );
-        assert_eq!(unrelated_request.terminal().unwrap().stamp(), first_stamp);
+        assert_eq!(
+            unrelated_request
+                .terminal()
+                .expect("signature terminal")
+                .stamp(),
+            first_stamp,
+            "an unrelated body edit must preserve the authoritative signature stamp"
+        );
 
-        let selected_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&selected_edit),
-            &selected_edit,
-        );
-        let selected_request = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
-            selected_revision,
-            RawDeclarationSignatureQueryKey(key),
-            CancellationToken::new(),
-        );
-        let selected_terminal = selected_request.terminal().unwrap();
+        let selected_revision = revision_for(&mut database, &selected_edit);
+        let selected_request =
+            request_signature_for_test(&database, selected_revision, key, CancellationToken::new());
+        let selected_terminal = selected_request.terminal().expect("signature terminal");
         assert_ne!(selected_terminal.stamp(), first_stamp);
-        assert!(matches!(
-            selected_terminal.outcome(),
-            rue_query::QueryOutcome::Success(
-                RawDeclarationSignatureQueryValue::Available(syntax)
-            ) if raw_signature_text(syntax).trim_end() == "fn selected(value: i64) -> i64"
-        ));
+        let rue_query::QueryOutcome::Success(
+            crate::semantic_query_nucleus::SemanticNucleusValue::Signature(selected_signature),
+        ) = selected_terminal.outcome()
+        else {
+            panic!("edited signature resolves")
+        };
+        let syntax = selected_signature
+            .callable_type_syntax
+            .as_ref()
+            .expect("callable syntax is retained");
+        assert_eq!(&*syntax.parameters, [Arc::<str>::from("i64")]);
+        assert_eq!(syntax.result.as_ref(), "i64");
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "signature evaluation must not lower a body"
+        );
     }
 
     #[test]
-    fn raw_declaration_signatures_cover_categories_without_struct_method_peers() {
+    fn parsed_signature_projection_covers_every_category_and_exact_duplicate() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let source = source_snapshot(
@@ -29782,10 +29532,11 @@ fn main() -> i32 {
                 1,
                 "/main.rue",
                 "main.rue",
-                "@copy linear struct Box { value: i32, fn get(borrow self) -> i32 { self.value } @allow(unused_function) fn make(value: i32) -> Box { Box { value } } }\n\
+                "@copy linear struct Box { value: i32, fn get(borrow self) -> i32 { self.value } fn make(value: i32) -> Box { Box { value } } }\n\
                  enum Choice { Empty, Value(i32, u64) }\n\
                  drop fn Box(self) {}\n\
-                 extern \"C\" { fn foreign(value: ptr const u8) -> i32; }",
+                 extern \"C\" { fn foreign(value: ptr const u8) -> i32; }\n\
+                 fn duplicate(value: i32) {} fn duplicate(value: i64) {}",
             )],
             1,
         );
@@ -29794,114 +29545,130 @@ fn main() -> i32 {
             category: Category::Struct,
             name: Arc::from("Box"),
         };
-        let key = |category, name: &'static str, owner| {
+        let key = |category, name: &'static str, owner, duplicate_discriminator| {
             crate::declaration_candidate::DeclarationCandidateKey {
                 module: module.clone(),
                 category,
                 name: Arc::from(name),
                 owner,
-                duplicate_discriminator: 0,
+                duplicate_discriminator,
             }
         };
         let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        let request = |key| {
-            database.runtime.request_registered(
-                &database.raw_declaration_signatures,
-                revision,
-                RawDeclarationSignatureQueryKey(key),
-                CancellationToken::new(),
-            )
-        };
+        let revision = revision_for(&mut database, &source);
 
-        let structure = request(key(Category::Struct, "Box", None));
-        let structure_terminal = structure.terminal().unwrap();
-        let structure_stamp = structure_terminal.stamp();
-        let structure = match structure_terminal.outcome() {
-            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(
-                syntax,
-            )) => syntax,
-            other => panic!("expected struct signature, got {other:?}"),
+        let structure =
+            project_signature_for_test(&database, revision, &key(Category::Struct, "Box", None, 0));
+        let crate::semantic_query_nucleus::ParsedSemanticSignature::Struct {
+            fields,
+            is_copy: true,
+            is_linear: true,
+            is_repr_c: false,
+            ..
+        } = &structure
+        else {
+            panic!("expected compact struct signature, got {structure:?}");
         };
-        let structure_text = raw_signature_text(structure);
-        assert!(structure_text.contains("@copy linear struct Box"));
-        assert!(structure_text.contains("value: i32"));
-        assert!(!structure_text.contains("fn get"));
-        assert!(!structure_text.contains("fn make"));
-        assert!(structure_text.trim_end().ends_with('}'));
-        assert_eq!(structure.declaration_fragments.len(), 2);
+        assert_eq!(fields.len(), 1);
+        assert_eq!(structure.text(fields[0].name), "value");
+        assert_eq!(structure.text(fields[0].ty), "i32");
 
-        for (candidate, expected) in [
+        for (candidate, expected_result, expected_self) in [
             (
-                key(Category::Method, "get", Some(owner.clone())),
-                "fn get(borrow self) -> i32",
+                key(Category::Method, "get", Some(owner.clone()), 0),
+                "i32",
+                true,
             ),
             (
-                key(Category::AssociatedFunction, "make", Some(owner.clone())),
-                "@allow(unused_function) fn make(value: i32) -> Box",
-            ),
-            (
-                key(Category::Enum, "Choice", None),
-                "enum Choice { Empty, Value(i32, u64) }",
-            ),
-            (
-                key(Category::Destructor, "Box", Some(owner)),
-                "drop fn Box(self)",
+                key(Category::AssociatedFunction, "make", Some(owner.clone()), 0),
+                "Box",
+                false,
             ),
         ] {
-            let requested = request(candidate);
+            let signature = project_signature_for_test(&database, revision, &candidate);
             assert!(matches!(
-                requested.terminal().unwrap().outcome(),
-                rue_query::QueryOutcome::Success(
-                    RawDeclarationSignatureQueryValue::Available(syntax)
-                ) if raw_signature_text(syntax).trim_end() == expected
-                    && syntax.extern_abi.is_none()
+                &signature,
+                crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+                    result,
+                    has_self,
+                    is_extern: false,
+                    ..
+                } if signature.text(*result) == expected_result && *has_self == expected_self
             ));
         }
 
-        let foreign = request(key(Category::ExternFunction, "foreign", None));
+        let enumeration = project_signature_for_test(
+            &database,
+            revision,
+            &key(Category::Enum, "Choice", None, 0),
+        );
+        let crate::semantic_query_nucleus::ParsedSemanticSignature::Enum {
+            variants, payloads, ..
+        } = &enumeration
+        else {
+            panic!("expected compact enum signature, got {enumeration:?}");
+        };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(enumeration.text(variants[0].name), "Empty");
+        assert_eq!(enumeration.text(variants[1].name), "Value");
+        let payload =
+            &payloads[variants[1].payload_start as usize..variants[1].payload_end as usize];
+        assert_eq!(
+            payload
+                .iter()
+                .map(|value| enumeration.text(*value))
+                .collect::<Vec<_>>(),
+            ["i32", "u64"]
+        );
+
         assert!(matches!(
-            foreign.terminal().unwrap().outcome(),
-            rue_query::QueryOutcome::Success(
-                RawDeclarationSignatureQueryValue::Available(syntax)
-            ) if raw_signature_text(syntax) == "fn foreign(value: ptr const u8) -> i32;"
-                && syntax.extern_abi.as_deref() == Some("\"C\"")
+            project_signature_for_test(
+                &database,
+                revision,
+                &key(Category::Destructor, "Box", Some(owner), 0),
+            ),
+            crate::semantic_query_nucleus::ParsedSemanticSignature::Destructor
+        ));
+        let foreign = project_signature_for_test(
+            &database,
+            revision,
+            &key(Category::ExternFunction, "foreign", None, 0),
+        );
+        assert!(matches!(
+            &foreign,
+            crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+                parameters,
+                result,
+                is_extern: true,
+                ..
+            } if parameters.len() == 1
+                && foreign.text(parameters[0].ty) == "ptr const u8"
+                && foreign.text(*result) == "i32"
         ));
 
-        let peer_signature_edit = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "@copy linear struct Box { value: i32, fn get(borrow self) -> u64 { 0 } @allow(unused_function) fn make(value: i32) -> Box { Box { value } } }\n\
-                 enum Choice { Empty, Value(i32, u64) }\n\
-                 drop fn Box(self) {}\n\
-                 extern \"C\" { fn foreign(value: ptr const u8) -> i32; }",
-            )],
-            1,
-        );
-        let peer_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&peer_signature_edit),
-            &peer_signature_edit,
-        );
-        let unchanged_structure = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
-            peer_revision,
-            RawDeclarationSignatureQueryKey(key(Category::Struct, "Box", None)),
-            CancellationToken::new(),
-        );
-        assert_eq!(
-            unchanged_structure.terminal().unwrap().stamp(),
-            structure_stamp,
-            "a peer method signature must not change the struct signature terminal"
-        );
+        for (duplicate_discriminator, expected) in [(0, "i32"), (1, "i64")] {
+            let signature = project_signature_for_test(
+                &database,
+                revision,
+                &key(
+                    Category::Function,
+                    "duplicate",
+                    None,
+                    duplicate_discriminator,
+                ),
+            );
+            assert!(matches!(
+                &signature,
+                crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+                    parameters,
+                    ..
+                } if parameters.len() == 1 && signature.text(parameters[0].ty) == expected
+            ));
+        }
     }
 
     #[test]
-    fn raw_declaration_signature_boundaries_exclude_body_and_method_trivia() {
+    fn parsed_signature_projection_excludes_body_peer_and_absolute_trivia() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let first = source_snapshot(
@@ -29909,267 +29676,143 @@ fn main() -> i32 {
                 1,
                 "/main.rue",
                 "main.rue",
-                "fn free(value: i32) -> i32 // free boundary one\n\
-                     { value }\n\
-                 struct Box { value: i32, // before first method one\n\
-                     fn get(borrow self) -> i32 // method boundary one\n\
-                         { self.value }\n\
-                     // between methods one\n\
-                     fn make(value: i32) -> Box // associated boundary one\n\
-                         { Box { value } }\n\
-                     // after last method one\n\
-                 }\n\
-                 drop fn Box(self) // destructor boundary one\n\
-                     {}",
+                "fn free(value: i32) -> i32 { value }\n\
+                 struct Box { value: i32, fn get(borrow self) -> i32 { self.value } }",
             )],
             1,
         );
-        let trivia_edit = source_snapshot(
+        let relocated = source_snapshot(
             &[(
                 1,
                 "/main.rue",
                 "main.rue",
-                "fn free(value: i32) -> i32         // free boundary two\n\
-\n\
-                 { value }\n\
-                 struct Box { value: i32,             // before first method two\n\
-\n\
-                     fn get(borrow self) -> i32       // method boundary two\n\
-\n\
-                     { self.value }\n\
-                         // between methods two\n\
-                     fn make(value: i32) -> Box       // associated boundary two\n\
-\n\
-                     { Box { value } }\n\
-                         // after last method two\n\
-\n\
-                 }\n\
-                 drop fn Box(self)                    // destructor boundary two\n\
-\n\
-                 {}",
+                "// moved prefix\n\
+                 fn free(value: i32) -> i32 // boundary\n\
+                     { value + 0 }\n\
+                 struct Box { value: i32, fn get(borrow self) -> u64 { 0 } }",
+            )],
+            1,
+        );
+        let signature_edit = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn free(value: i64) -> i32 { 0 }\n\
+                 struct Box { value: i32, fn get(borrow self) -> u64 { 0 } }",
             )],
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let owner = crate::declaration_candidate::DeclarationCandidateOwner {
+        let free = crate::declaration_candidate::DeclarationCandidateKey {
+            module: module.clone(),
+            category: Category::Function,
+            name: Arc::from("free"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let structure = crate::declaration_candidate::DeclarationCandidateKey {
+            module,
             category: Category::Struct,
             name: Arc::from("Box"),
+            owner: None,
+            duplicate_discriminator: 0,
         };
-        let key = |category, name: &'static str, owner| {
-            crate::declaration_candidate::DeclarationCandidateKey {
-                module: module.clone(),
-                category,
-                name: Arc::from(name),
-                owner,
-                duplicate_discriminator: 0,
-            }
-        };
-        let cases = [
-            (
-                key(Category::Function, "free", None),
-                "fn free(value: i32) -> i32",
-            ),
-            (
-                key(Category::Struct, "Box", None),
-                "struct Box { value: i32}",
-            ),
-            (
-                key(Category::Method, "get", Some(owner.clone())),
-                "fn get(borrow self) -> i32",
-            ),
-            (
-                key(Category::AssociatedFunction, "make", Some(owner.clone())),
-                "fn make(value: i32) -> Box",
-            ),
-            (
-                key(Category::Destructor, "Box", Some(owner)),
-                "drop fn Box(self)",
-            ),
-        ];
         let mut database = RevisionedQueryDatabase::default();
-        let first_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&first),
-            &first,
-        );
-        let mut first_terminals = Vec::new();
-        for (candidate, expected) in &cases {
-            let requested = database.runtime.request_registered(
-                &database.raw_declaration_signatures,
-                first_revision,
-                RawDeclarationSignatureQueryKey(candidate.clone()),
-                CancellationToken::new(),
-            );
-            let terminal = requested.terminal().unwrap();
-            assert!(matches!(
-                terminal.outcome(),
-                rue_query::QueryOutcome::Success(
-                    RawDeclarationSignatureQueryValue::Available(syntax)
-                ) if raw_signature_text(syntax) == *expected
-            ));
-            first_terminals.push((candidate.clone(), terminal.stamp()));
-        }
 
-        let edited_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&trivia_edit),
-            &trivia_edit,
+        let first_revision = revision_for(&mut database, &first);
+        let first_free = project_signature_for_test(&database, first_revision, &free);
+        let first_structure = project_signature_for_test(&database, first_revision, &structure);
+
+        let relocated_revision = revision_for(&mut database, &relocated);
+        assert_eq!(
+            project_signature_for_test(&database, relocated_revision, &free),
+            first_free,
+            "body and absolute-trivia motion must not change a signature"
         );
-        for (candidate, first_stamp) in first_terminals {
-            let requested = database.runtime.request_registered(
-                &database.raw_declaration_signatures,
-                edited_revision,
-                RawDeclarationSignatureQueryKey(candidate),
-                CancellationToken::new(),
-            );
-            assert_eq!(
-                requested.terminal().unwrap().stamp(),
-                first_stamp,
-                "body-boundary and method-adjacent trivia must stay outside the signature terminal"
-            );
-        }
+        assert_eq!(
+            project_signature_for_test(&database, relocated_revision, &structure),
+            first_structure,
+            "a peer method signature must not enter the struct signature"
+        );
+
+        let signature_revision = revision_for(&mut database, &signature_edit);
+        assert_ne!(
+            project_signature_for_test(&database, signature_revision, &free),
+            first_free,
+            "an exact parameter-type edit must change the signature"
+        );
     }
 
     #[test]
-    fn raw_declaration_signature_duplicate_discriminators_are_exact() {
-        let source = source_snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "fn duplicate(value: i32) {} fn duplicate(value: i64) {}",
-            )],
-            1,
-        );
-        let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        for (duplicate_discriminator, expected) in [
-            (0, "fn duplicate(value: i32)"),
-            (1, "fn duplicate(value: i64)"),
-        ] {
-            let key = crate::declaration_candidate::DeclarationCandidateKey {
-                module: module.clone(),
-                category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
-                name: Arc::from("duplicate"),
-                owner: None,
-                duplicate_discriminator,
-            };
-            let requested = database.runtime.request_registered(
-                &database.raw_declaration_signatures,
-                revision,
-                RawDeclarationSignatureQueryKey(key),
-                CancellationToken::new(),
-            );
-            assert!(matches!(
-                requested.terminal().unwrap().outcome(),
-                rue_query::QueryOutcome::Success(
-                    RawDeclarationSignatureQueryValue::Available(syntax)
-                ) if raw_signature_text(syntax).trim_end() == expected
-            ));
-        }
-    }
-
-    #[test]
-    fn raw_declaration_signature_failures_cancel_and_recover() {
-        use crate::declaration_candidate::{
-            DeclarationCandidateCategory as Category, DeclarationOccurrenceFailure,
-            RawDeclarationSignatureFailure,
-        };
+    fn parsed_accessor_signature_uses_exact_owner_facts() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use rue_air::declaration_validation::AccessorBodyVerdict;
 
         let source = source_snapshot(
             &[(
                 1,
                 "/main.rue",
                 "main.rue",
-                "const value = 1; fn present() {}",
+                "struct S { field: i32, fn selected(borrow self) -> borrow i32 { yield self.selected(); } }",
             )],
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let key =
-            |category, name: &'static str| crate::declaration_candidate::DeclarationCandidateKey {
-                module: module.clone(),
-                category,
-                name: Arc::from(name),
-                owner: None,
-                duplicate_discriminator: 0,
-            };
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module,
+            category: Category::Method,
+            name: Arc::from("selected"),
+            owner: Some(crate::declaration_candidate::DeclarationCandidateOwner {
+                category: Category::Struct,
+                name: Arc::from("S"),
+            }),
+            duplicate_discriminator: 0,
+        };
         let mut database = RevisionedQueryDatabase::default();
-        let revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&source),
-            &source,
-        );
-        let constant = key(Category::ConstCandidate, "value");
-        let absent = key(Category::Function, "absent");
-        for (candidate, expected) in [
-            (
-                constant.clone(),
-                RawDeclarationSignatureFailure::CategoryMismatch(constant),
-            ),
-            (
-                absent.clone(),
-                RawDeclarationSignatureFailure::Absent(absent),
-            ),
-        ] {
-            let requested = database.runtime.request_registered(
-                &database.raw_declaration_signatures,
-                revision,
-                RawDeclarationSignatureQueryKey(candidate),
-                CancellationToken::new(),
-            );
-            assert!(matches!(
-                requested.terminal().unwrap().outcome(),
-                rue_query::QueryOutcome::Success(
-                    RawDeclarationSignatureQueryValue::Failure(actual)
-                ) if actual == &expected
-            ));
-        }
+        let revision = revision_for(&mut database, &source);
+        let signature = project_signature_for_test(&database, revision, &key);
+        assert!(matches!(
+            signature,
+            crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+                is_accessor: true,
+                accessor_body: AccessorBodyVerdict::WellFormed,
+                accessor_cycle: Some(name),
+                ..
+            } if name.as_ref() == "selected"
+        ));
+    }
 
-        let present = key(Category::Function, "present");
+    #[test]
+    fn authoritative_signature_cancellation_publishes_nothing_and_retries() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+
+        let source = source_snapshot(&[(1, "/main.rue", "main.rue", "fn present() {}")], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::declaration_candidate::DeclarationCandidateKey {
+            module,
+            category: Category::Function,
+            name: Arc::from("present"),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+
         let canceled = CancellationToken::new();
         canceled.cancel();
-        let aborted = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
-            revision,
-            RawDeclarationSignatureQueryKey(present.clone()),
-            canceled,
-        );
+        let aborted = request_signature_for_test(&database, revision, key.clone(), canceled);
         assert_eq!(execution(&aborted), RequestExecution::Aborted);
         assert!(aborted.terminal().is_none());
-        let recovered = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
-            revision,
-            RawDeclarationSignatureQueryKey(present),
-            CancellationToken::new(),
-        );
-        assert!(matches!(
-            recovered.terminal().unwrap().outcome(),
-            rue_query::QueryOutcome::Success(RawDeclarationSignatureQueryValue::Available(_))
-        ));
 
-        let rejected = source_snapshot(&[(1, "/main.rue", "main.rue", "fn broken(")], 1);
-        let rejected_revision = database.source_revision(
-            &super::super::session::ExactSourceInput::new(&rejected),
-            &rejected,
-        );
-        let rejected_key = key(Category::Function, "broken");
-        let requested = database.runtime.request_registered(
-            &database.raw_declaration_signatures,
-            rejected_revision,
-            RawDeclarationSignatureQueryKey(rejected_key),
-            CancellationToken::new(),
-        );
+        let recovered =
+            request_signature_for_test(&database, revision, key, CancellationToken::new());
+        assert_eq!(execution(&recovered), RequestExecution::Computed);
         assert!(matches!(
-            requested.terminal().unwrap().outcome(),
+            recovered.terminal().expect("signature terminal").outcome(),
             rue_query::QueryOutcome::Success(
-                RawDeclarationSignatureQueryValue::Failure(
-                    RawDeclarationSignatureFailure::OccurrencesUnavailable(
-                        DeclarationOccurrenceFailure::ParseRejected { module: failed_module }
-                    )
-                )
-            ) if failed_module == &module
+                crate::semantic_query_nucleus::SemanticNucleusValue::Signature(_)
+            )
         ));
     }
 

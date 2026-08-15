@@ -128,13 +128,15 @@ pub(crate) enum RawConstSyntaxFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
-/// Parser-validated syntax for one declaration signature, detached from its
-/// source epoch and parser symbol universe.
+/// Parser-validated signature syntax retained only for an anonymous member
+/// produced during comptime evaluation, detached from its source epoch and
+/// parser symbol universe.
 ///
 /// Concatenating `declaration_fragments` reconstructs a body-free declaration
-/// for the exact key. Struct fragments omit every method declaration while
-/// retaining the struct header, directives, fields, and closing brace.
-/// `extern_abi` retains the surrounding ABI literal for an extern member.
+/// for that produced member. Named declarations instead project their exact
+/// canonical parsed nodes directly in `compiler.semantic-nucleus`; this
+/// transport remains only until anonymous members publish the same structured
+/// per-declaration artifact.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawDeclarationSignatureSyntax {
     pub(crate) declaration_fragments: Arc<[Arc<str>]>,
@@ -151,7 +153,7 @@ pub(crate) struct RawDeclarationSignatureSyntax {
 pub(crate) struct RawAccessorSignatureSyntax {
     /// The accessor's exact body. Its declaration-shape rules include a
     /// trailing-yield check even when no caller demands body analysis, so this
-    /// one signature query legitimately depends on its own body.
+    /// anonymous-member transport legitimately retains its own body.
     pub(crate) body: Arc<str>,
     /// Every method the accessor's owner declares — its name, whether it is
     /// itself an accessor, and the method names its body calls on its own
@@ -174,16 +176,6 @@ pub(crate) struct RawAccessorSignatureSyntax {
     /// Empty for an accessor with no owning type, or whose owner declares no
     /// other methods.
     pub(crate) owner_methods: Arc<[rue_air::declaration_validation::AccessorOwnerMethod]>,
-}
-
-/// Stable, position-free failure retained by the exact raw-signature family.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RawDeclarationSignatureFailure {
-    OccurrencesUnavailable(DeclarationOccurrenceFailure),
-    Absent(DeclarationCandidateKey),
-    Ambiguous(DeclarationCandidateKey),
-    CategoryMismatch(DeclarationCandidateKey),
-    ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
 /// Parser-validated syntax for one body-bearing declaration, detached from its
@@ -292,6 +284,7 @@ pub(crate) struct DeclarationParameterHeader {
     pub(crate) name: Arc<str>,
     pub(crate) mode: DeclarationParameterMode,
     pub(crate) is_comptime: bool,
+    pub(crate) is_type_parameter: bool,
 }
 
 /// Position-free header fact owned by the keyed declaration-shell family.

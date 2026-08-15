@@ -306,7 +306,7 @@ fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
     );
     for forbidden in [
         "raw_declaration_bodies",
-        "raw_declaration_signatures",
+        "declaration_signature_projections",
         "body_inputs",
         "body_transactions",
         "module_rirs",
@@ -2087,7 +2087,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         ) {
             assert!(
                 !code_identifiers(source).contains(&"RawDeclarationSignature"),
-                "compiler production module {name} escaped the raw-signature authority allowlist"
+                "compiler production module {name} escaped the signature-projection authority allowlist"
             );
         }
         if !matches!(
@@ -2128,21 +2128,21 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         runtime
             .matches(".evaluate_raw_declaration_signature(")
             .count(),
-        1
+        0,
+        "the production signature projection must not reconstruct raw syntax"
+    );
+    assert!(!parsed.contains("fn evaluate_raw_declaration_signature("));
+    assert!(!parsed.contains("RawDeclarationSignatureLocator"));
+    assert!(
+        !runtime.contains("compiler.declaration-signature-projection"),
+        "the semantic nucleus must not retain a peer signature-projection family"
     );
     assert_eq!(
-        parsed
-            .matches("fn evaluate_raw_declaration_signature(")
-            .count(),
-        1
+        runtime.matches("project_semantic_signature(").count(),
+        1,
+        "the signature query must project the exact borrowed parsed declaration"
     );
-    assert_eq!(
-        runtime
-            .matches("\"compiler.raw-declaration-signature\"")
-            .count(),
-        1
-    );
-    assert_eq!(parsed.matches("RawDeclarationSignatureSyntax {").count(), 1);
+    assert!(!runtime.contains("parse_semantic_signature("));
     assert_eq!(
         runtime.matches(".evaluate_raw_declaration_body(").count(),
         1
@@ -2241,7 +2241,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let raw_const_terminal = runtime
         .split("enum RawConstSyntaxQueryValue")
         .nth(1)
-        .and_then(|tail| tail.split("struct RawDeclarationSignatureQueryKey").next())
+        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
         .unwrap();
     for forbidden in [
         "CompileErrors",
@@ -2256,28 +2256,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !raw_const_terminal.contains(forbidden),
             "raw-constant terminal regained positioned/live parser or semantic payload: {forbidden}"
-        );
-    }
-    let raw_signature_terminal = runtime
-        .split("enum RawDeclarationSignatureQueryValue")
-        .nth(1)
-        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
-        .unwrap();
-    for forbidden in [
-        "CompileErrors",
-        "Span",
-        "FileId",
-        "Spur",
-        "Ast",
-        "InstRef",
-        "Rir",
-        "TypeId",
-        "SemanticDefinitionToken",
-        "SemanticModuleToken",
-    ] {
-        assert!(
-            !raw_signature_terminal.contains(forbidden),
-            "raw-signature terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
     let raw_body_terminal = runtime
@@ -2364,7 +2342,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         .split("pub(crate) struct RawDeclarationSignatureSyntax")
         .nth(1)
         .and_then(|tail| {
-            tail.split("pub(crate) enum RawDeclarationSignatureFailure")
+            tail.split("pub(crate) struct RawDeclarationBodySyntax")
                 .next()
         })
         .unwrap();
@@ -2408,26 +2386,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !declaration_import_payload.contains(forbidden),
             "declaration-import payload regained a positioned or live parser/semantic handle: {forbidden}"
-        );
-    }
-    let raw_signature_locator = parsed
-        .split("enum RawDeclarationSignatureLocator")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) struct ParsedDeclarationLocator")
-                .next()
-        })
-        .unwrap();
-    for forbidden in ["Vec<", "Arc<[Span]>", "Box<"] {
-        assert!(
-            !raw_signature_locator.contains(forbidden),
-            "raw-signature parser locator regained per-declaration heap storage: {forbidden}"
-        );
-    }
-    for required in ["Contiguous", "SplitStruct", "Extern"] {
-        assert!(
-            raw_signature_locator.contains(required),
-            "raw-signature parser locator lost bounded inline shape {required}"
         );
     }
     let declaration_import_locator = parsed

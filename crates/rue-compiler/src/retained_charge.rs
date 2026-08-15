@@ -1007,7 +1007,6 @@ macro_rules! candidate_failure_charge {
 }
 
 candidate_failure_charge!(crate::declaration_candidate::RawConstSyntaxFailure);
-candidate_failure_charge!(crate::declaration_candidate::RawDeclarationSignatureFailure);
 candidate_failure_charge!(crate::declaration_candidate::RawDeclarationBodyFailure);
 
 impl RetainedCharge for crate::declaration_candidate::RawDeclarationSignatureSyntax {
@@ -1024,6 +1023,46 @@ impl RetainedCharge for crate::declaration_candidate::RawAccessorSignatureSyntax
         self.body
             .retained_charge()
             .saturating_add(self.owner_methods.retained_charge())
+    }
+}
+
+impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
+
+zero_charge!(
+    crate::semantic_query_nucleus::ParsedSemanticText,
+    crate::semantic_query_nucleus::ParsedSemanticField,
+    crate::semantic_query_nucleus::ParsedSemanticVariant,
+);
+
+impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticSignature {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Callable {
+                text,
+                parameters,
+                accessor_cycle,
+                ..
+            } => text
+                .retained_charge()
+                .saturating_add(parameters.retained_charge())
+                .saturating_add(accessor_cycle.retained_charge()),
+            Self::Struct { text, fields, .. } => text
+                .retained_charge()
+                .saturating_add(fields.retained_charge()),
+            Self::Enum {
+                text,
+                variants,
+                payloads,
+            } => text
+                .retained_charge()
+                .saturating_add(variants.retained_charge())
+                .saturating_add(payloads.retained_charge()),
+            Self::Destructor => 0,
+        }
     }
 }
 

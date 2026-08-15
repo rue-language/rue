@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use lasso::Spur;
 use rue_air::declaration_validation::{
     AccessorBodyVerdict, AccessorExitForm, AccessorYieldRootForm,
 };
@@ -27,17 +28,42 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedSemanticParameter {
-    pub(crate) name: Arc<str>,
+    pub(crate) name: ParsedSemanticText,
     pub(crate) mode: crate::declaration_candidate::DeclarationParameterMode,
     pub(crate) is_comptime: bool,
-    pub(crate) ty: Arc<str>,
+    pub(crate) ty: ParsedSemanticText,
+}
+
+/// One string inside a declaration signature's compact text envelope.
+///
+/// The range is candidate-local and position-independent. It never indexes the
+/// source file: the producer copies only the semantic spellings that consumers
+/// still need until the structured-type tranche removes those spellings too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedSemanticText {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedSemanticField {
+    pub(crate) name: ParsedSemanticText,
+    pub(crate) ty: ParsedSemanticText,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ParsedSemanticVariant {
+    pub(crate) name: ParsedSemanticText,
+    pub(crate) payload_start: u32,
+    pub(crate) payload_end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedSemanticSignature {
     Callable {
+        text: Arc<str>,
         parameters: Arc<[ParsedSemanticParameter]>,
-        result: Arc<str>,
+        result: ParsedSemanticText,
         has_self: bool,
         self_mode: crate::declaration_candidate::DeclarationParameterMode,
         is_unchecked: bool,
@@ -58,18 +84,32 @@ pub(crate) enum ParsedSemanticSignature {
         accessor_cycle: Option<Arc<str>>,
     },
     Struct {
-        fields: Arc<[(Arc<str>, Arc<str>)]>,
+        text: Arc<str>,
+        fields: Arc<[ParsedSemanticField]>,
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
     },
     Enum {
-        variants: Arc<[(Arc<str>, Arc<[Arc<str>]>)]>,
+        text: Arc<str>,
+        variants: Arc<[ParsedSemanticVariant]>,
+        payloads: Arc<[ParsedSemanticText]>,
     },
     Destructor,
 }
 
 impl ParsedSemanticSignature {
+    pub(crate) fn text(&self, value: ParsedSemanticText) -> &str {
+        let text = match self {
+            Self::Callable { text, .. } | Self::Struct { text, .. } | Self::Enum { text, .. } => {
+                text
+            }
+            Self::Destructor => return "",
+        };
+        text.get(value.start as usize..value.end as usize)
+            .expect("signature text ranges are validated when projected")
+    }
+
     pub(crate) fn callable_type_syntax(&self) -> Option<rue_air::DurableCallableTypeSyntax> {
         let Self::Callable {
             parameters, result, ..
@@ -80,66 +120,41 @@ impl ParsedSemanticSignature {
         Some(rue_air::DurableCallableTypeSyntax {
             parameters: parameters
                 .iter()
-                .map(|parameter| parameter.ty.clone())
+                .map(|parameter| Arc::from(self.text(parameter.ty)))
                 .collect(),
-            result: result.clone(),
+            result: Arc::from(self.text(*result)),
         })
     }
 }
 
-/// The body an accessor's signature reparse carries, or the empty stand-in
-/// every ordinary signature reconstructs with.
-fn accessor_body_source(
-    syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
-) -> &str {
-    syntax
-        .accessor
-        .as_ref()
-        .map_or("{}", |accessor| accessor.body.as_ref())
-}
-
-fn signature_source(
-    key: &DeclarationCandidateKey,
-    syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
-) -> String {
-    let fragments = syntax
-        .declaration_fragments
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<&str>>();
-    match key.category {
-        // Split struct terminals already retain the entire declaration except
-        // method declarations. Concatenating the retained prefix and closing
-        // brace reconstructs valid field-only syntax; inserting a bare block
-        // here would itself be parsed as a malformed field.
-        Category::Struct => fragments.concat(),
-        Category::Function | Category::Destructor => {
-            format!("{} {}", fragments.concat(), accessor_body_source(syntax))
-        }
-        Category::Method | Category::AssociatedFunction => format!(
-            "struct {} {{ {} {} }}",
-            key.owner
-                .as_ref()
-                .map(|owner| owner.name.as_ref())
-                .unwrap_or("__missing_owner"),
-            fragments.concat(),
-            accessor_body_source(syntax),
-        ),
-        Category::ExternFunction => format!(
-            "extern {} {{ {} }}",
-            syntax.extern_abi.as_deref().unwrap_or("\"C\""),
-            fragments.concat(),
-        ),
-        Category::Enum => fragments.concat(),
-        Category::ConstCandidate => String::new(),
-    }
-}
-
-fn source_fragment(source: &str, span: rue_span::Span) -> Result<Arc<str>, Arc<str>> {
+fn source_fragment(source: &str, span: rue_span::Span) -> Result<&str, Arc<str>> {
     source
         .get(span.start as usize..span.end as usize)
-        .map(Arc::from)
         .ok_or_else(|| Arc::from("semantic signature contains an invalid local span"))
+}
+
+#[derive(Default)]
+struct ParsedSemanticTextBuilder {
+    text: String,
+}
+
+impl ParsedSemanticTextBuilder {
+    fn push(&mut self, value: &str) -> Result<ParsedSemanticText, Arc<str>> {
+        let start = u32::try_from(self.text.len())
+            .map_err(|_| Arc::from("semantic signature text exceeds the supported size"))?;
+        let end = self
+            .text
+            .len()
+            .checked_add(value.len())
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| Arc::from("semantic signature text exceeds the supported size"))?;
+        self.text.push_str(value);
+        Ok(ParsedSemanticText { start, end })
+    }
+
+    fn finish(self) -> Arc<str> {
+        Arc::from(self.text)
+    }
 }
 
 fn parameter_mode(
@@ -154,9 +169,10 @@ fn parameter_mode(
     }
 }
 
-fn parsed_parameters(
+fn parsed_parameters<'a>(
+    text: &mut ParsedSemanticTextBuilder,
     source: &str,
-    interner: &crate::ThreadedRodeo,
+    resolve: impl Copy + Fn(Spur) -> &'a str,
     parameters: &[rue_parser::ast::Param],
 ) -> Result<Arc<[ParsedSemanticParameter]>, Arc<str>> {
     parameters
@@ -164,10 +180,10 @@ fn parsed_parameters(
         .map(|parameter| {
             let (mode, is_comptime) = parameter_mode(parameter.mode);
             Ok(ParsedSemanticParameter {
-                name: Arc::from(interner.resolve(&parameter.name.name)),
+                name: text.push(resolve(parameter.name.name))?,
                 mode,
                 is_comptime,
-                ty: source_fragment(source, parameter.ty.span())?,
+                ty: text.push(source_fragment(source, parameter.ty.span())?)?,
             })
         })
         .collect::<Result<Vec<_>, Arc<str>>>()
@@ -246,9 +262,9 @@ pub(crate) fn ast_self_call_targets(
 /// calls a method of this accessor's owner, so `owner_methods` names it. A
 /// receiver that is anything else — a chained call, a field, an index — has a
 /// type this query does not resolve, and a callee this query must not guess.
-fn accessor_method_link(
+fn accessor_method_link<'a>(
     call: &rue_parser::ast::MethodCallExpr,
-    interner: &crate::ThreadedRodeo,
+    resolve: impl Copy + Fn(Spur) -> &'a str,
     owner_methods: &[rue_air::declaration_validation::AccessorOwnerMethod],
 ) -> rue_air::declaration_validation::AccessorMethodLink {
     use rue_air::declaration_validation::AccessorMethodLink as Link;
@@ -260,7 +276,7 @@ fn accessor_method_link(
     if !matches!(receiver, Expr::SelfExpr(_)) {
         return Link::Unresolved;
     }
-    let name = interner.resolve(&call.method.name);
+    let name = resolve(call.method.name);
     match owner_methods
         .iter()
         .find(|method| method.name.as_ref() == name)
@@ -297,9 +313,9 @@ fn accessor_method_link(
 /// `self.field.m()` — targets a type this query cannot name, so the walk stays
 /// permissive and leaves the rejection to the demanded path, which has the
 /// receiver's type in hand.
-fn accessor_body_shape(
+fn accessor_body_shape<'a>(
     body: &rue_parser::ast::Expr,
-    interner: &crate::ThreadedRodeo,
+    resolve: impl Copy + Fn(Spur) -> &'a str,
     owner_methods: &[rue_air::declaration_validation::AccessorOwnerMethod],
 ) -> AccessorBodyVerdict {
     use rue_parser::ast::Expr;
@@ -313,8 +329,8 @@ fn accessor_body_shape(
     let mut first_exit: Option<(AccessorExitForm, u32)> = None;
     while let Some(expr) = pending.pop() {
         let exit = match expr {
-            // Occurrences are distinguished by span: the reparsed signature
-            // source holds each `yield` exactly once.
+            // Occurrences are distinguished by span: the canonical parsed
+            // body holds each `yield` exactly once.
             Expr::Yield(exit) if exit.span != trailing.span => AccessorExitForm::SecondYield,
             Expr::Return(_) => AccessorExitForm::Return,
             Expr::Try(_) => AccessorExitForm::Try,
@@ -348,7 +364,7 @@ fn accessor_body_shape(
                 continue;
             }
             Expr::MethodCall(call) => {
-                let link = accessor_method_link(call, interner, owner_methods);
+                let link = accessor_method_link(call, resolve, owner_methods);
                 if rue_air::declaration_validation::accessor_method_link_error(link).is_some() {
                     return AccessorBodyVerdict::YieldNotReceiverRooted(
                         AccessorYieldRootForm::PlainMethod,
@@ -357,56 +373,40 @@ fn accessor_body_shape(
                 current = &call.receiver;
                 continue;
             }
-            Expr::Ident(name) => {
-                AccessorYieldRootForm::Named(Arc::from(interner.resolve(&name.name)))
-            }
+            Expr::Ident(name) => AccessorYieldRootForm::Named(Arc::from(resolve(name.name))),
             _ => AccessorYieldRootForm::Value,
         };
         return AccessorBodyVerdict::YieldNotReceiverRooted(root);
     }
 }
 
-/// Reparse one exact body-free syntax terminal into a value-only shape. This
-/// parser owns no name or type resolution policy; every type fragment is later
-/// routed through `rue_air::resolve_semantic_type_syntax`.
-pub(crate) fn parse_semantic_signature(
+/// Project one exact declaration signature from the canonical parsed module.
+///
+/// This borrows parser state only while building the position-independent
+/// value projection. No parser node, parser interner, FileId, or absolute span
+/// enters the returned value; type fragments remain the existing deferred
+/// semantic-type syntax until the structured-type tranche replaces them.
+pub(crate) fn project_semantic_signature(
+    module: &crate::parsed_modules::ParsedModule,
     key: &DeclarationCandidateKey,
-    syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
 ) -> Result<ParsedSemanticSignature, Arc<str>> {
+    use crate::parsed_modules::ParsedDeclarationAstRef;
+
     if key.category == Category::ConstCandidate {
-        return Err(Arc::from("constant candidates have no signature terminal"));
+        return Err(Arc::from(
+            "constant candidates have no signature projection",
+        ));
     }
-    let _signature_parsing_span =
-        tracing::info_span!("declaration_signature_parsing", phase = "semantic_analysis").entered();
-    let source = signature_source(key, syntax);
-    let parsed = crate::syntax::parse_file(
-        crate::SourceView::new("<semantic-signature>", &source, rue_span::FileId::new(0)),
-        crate::ThreadedRodeo::new(),
-    );
-    let ast = parsed
-        .result
-        .map_err(|errors| Arc::from(errors.to_string()))?;
-    let interner = parsed.interner;
-    let item = ast
-        .items
-        .first()
-        .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
-    let unit: Arc<str> = Arc::from("()");
-    let owner_methods = syntax
-        .accessor
-        .as_ref()
-        .map_or::<&[rue_air::declaration_validation::AccessorOwnerMethod], _>(
-        &[],
-        |accessor| &accessor.owner_methods,
-    );
-    let body_shape =
-        |body: &rue_parser::ast::Expr| accessor_body_shape(body, &interner, owner_methods);
-    // 6.6:14 over the retained owner-method facts (RUE-1282): whether this
-    // declaration reaches itself through its siblings' `self`-receiver
-    // accessor calls. Decided here so the accessor's own signature query
-    // rejects the cycle with no call site anywhere in the program.
+    let declaration = module
+        .declaration_ast(key)
+        .ok_or_else(|| Arc::from("semantic signature has no exact parsed declaration"))?;
+    let source = module.source_text();
+    let resolve = |symbol| module.resolve_raw_symbol(symbol);
+    let owner_methods = module
+        .declaration_accessor_owner_methods(key)
+        .ok_or_else(|| Arc::from("semantic signature has no exact accessor facts"))?;
     let accessor_cycle =
-        rue_air::declaration_validation::accessor_self_call_cycle(&key.name, owner_methods)
+        rue_air::declaration_validation::accessor_self_call_cycle(&key.name, &owner_methods)
             .then(|| key.name.clone());
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
@@ -416,26 +416,37 @@ pub(crate) fn parse_semantic_signature(
                     is_extern,
                     is_c_export,
                     is_accessor,
-                    accessor_body|
+                    body: Option<&rue_parser::ast::Expr>|
      -> Result<ParsedSemanticSignature, Arc<str>> {
+        let mut text = ParsedSemanticTextBuilder::default();
+        let parameters = parsed_parameters(&mut text, source, resolve, parameters)?;
+        let result = text.push(match result {
+            Some(value) => source_fragment(source, value.span())?,
+            None => "()",
+        })?;
         Ok(ParsedSemanticSignature::Callable {
-            parameters: parsed_parameters(&source, &interner, parameters)?,
-            result: result
-                .map(|value| source_fragment(&source, value.span()))
-                .transpose()?
-                .unwrap_or_else(|| unit.clone()),
+            text: text.finish(),
+            parameters,
+            result,
             has_self,
             self_mode,
             is_unchecked,
             is_extern,
             is_c_export,
             is_accessor,
-            accessor_body,
-            accessor_cycle: accessor_cycle.clone(),
+            accessor_body: if is_accessor {
+                body.map_or(AccessorBodyVerdict::MissingTrailingYield, |body| {
+                    accessor_body_shape(body, resolve, &owner_methods)
+                })
+            } else {
+                AccessorBodyVerdict::MissingTrailingYield
+            },
+            accessor_cycle: is_accessor.then(|| accessor_cycle.clone()).flatten(),
         })
     };
-    match (key.category, item) {
-        (Category::Function, rue_parser::ast::Item::Function(function)) => callable(
+
+    match declaration {
+        ParsedDeclarationAstRef::Function(function) => callable(
             &function.params,
             function.return_type.as_ref(),
             false,
@@ -444,102 +455,95 @@ pub(crate) fn parse_semantic_signature(
             false,
             function.export_abi.is_some(),
             function.borrow_return.is_some(),
-            body_shape(&function.body),
+            Some(&function.body),
         ),
-        (Category::ExternFunction, rue_parser::ast::Item::Extern(block)) => {
-            let function = block
-                .fns
-                .first()
-                .ok_or_else(|| Arc::from("semantic extern signature contains no function"))?;
-            callable(
-                &function.params,
-                function.return_type.as_ref(),
-                false,
+        ParsedDeclarationAstRef::ExternFunction { function } => callable(
+            &function.params,
+            function.return_type.as_ref(),
+            false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
+            false,
+            true,
+            false,
+            false,
+            None,
+        ),
+        ParsedDeclarationAstRef::Method { method, .. } => callable(
+            &method.params,
+            method.return_type.as_ref(),
+            method.receiver.is_some(),
+            method.receiver.as_ref().map_or(
                 crate::declaration_candidate::DeclarationParameterMode::Value,
-                false,
-                true,
-                false,
-                false,
-                AccessorBodyVerdict::MissingTrailingYield,
-            )
-        }
-        (Category::Method | Category::AssociatedFunction, rue_parser::ast::Item::Struct(owner)) => {
-            let method = owner
-                .methods
-                .first()
-                .ok_or_else(|| Arc::from("semantic method signature contains no method"))?;
-            callable(
-                &method.params,
-                method.return_type.as_ref(),
-                method.receiver.is_some(),
-                method.receiver.as_ref().map_or(
-                    crate::declaration_candidate::DeclarationParameterMode::Value,
-                    |receiver| parameter_mode(receiver.mode).0,
-                ),
-                false,
-                false,
-                false,
-                method.borrow_return.is_some(),
-                body_shape(&method.body),
-            )
-        }
-        (Category::Struct, rue_parser::ast::Item::Struct(structure)) => {
+                |receiver| parameter_mode(receiver.mode).0,
+            ),
+            false,
+            false,
+            false,
+            method.borrow_return.is_some(),
+            Some(&method.body),
+        ),
+        ParsedDeclarationAstRef::Struct(structure) => {
+            let mut text = ParsedSemanticTextBuilder::default();
             let fields = structure
                 .fields
                 .iter()
                 .map(|field| {
-                    Ok((
-                        Arc::from(interner.resolve(&field.name.name)),
-                        source_fragment(&source, field.ty.span())?,
-                    ))
+                    Ok(ParsedSemanticField {
+                        name: text.push(resolve(field.name.name))?,
+                        ty: text.push(source_fragment(source, field.ty.span())?)?,
+                    })
                 })
                 .collect::<Result<Vec<_>, Arc<str>>>()?;
-            let copy = interner.get("copy");
-            let is_copy = copy.is_some_and(|copy| {
-                structure
+            Ok(ParsedSemanticSignature::Struct {
+                text: text.finish(),
+                fields: fields.into(),
+                is_copy: structure
                     .directives
                     .iter()
-                    .any(|directive| directive.name.name == copy)
-            });
-            Ok(ParsedSemanticSignature::Struct {
-                fields: fields.into(),
-                is_copy,
+                    .any(|directive| resolve(directive.name.name) == "copy"),
                 is_linear: structure.is_linear,
                 is_repr_c: structure.directives.iter().any(|directive| {
-                    interner.resolve(&directive.name.name) == "repr"
+                    resolve(directive.name.name) == "repr"
                         && directive.args.iter().any(|argument| match argument {
                             rue_parser::ast::DirectiveArg::Ident(argument) => {
-                                interner.resolve(&argument.name) == "c"
+                                resolve(argument.name) == "c"
                             }
                         })
                 }),
             })
         }
-        (Category::Enum, rue_parser::ast::Item::Enum(value)) => {
+        ParsedDeclarationAstRef::Enum(value) => {
+            let mut text = ParsedSemanticTextBuilder::default();
+            let mut payloads = Vec::new();
             let variants = value
                 .variants
                 .iter()
                 .map(|variant| {
-                    Ok((
-                        Arc::from(interner.resolve(&variant.name.name)),
-                        variant
-                            .payload
-                            .iter()
-                            .map(|ty| source_fragment(&source, ty.span()))
-                            .collect::<Result<Vec<_>, Arc<str>>>()?
-                            .into(),
-                    ))
+                    let payload_start = u32::try_from(payloads.len()).map_err(|_| {
+                        Arc::from("semantic signature payload exceeds the supported size")
+                    })?;
+                    for ty in &variant.payload {
+                        payloads.push(text.push(source_fragment(source, ty.span())?)?);
+                    }
+                    let payload_end = u32::try_from(payloads.len()).map_err(|_| {
+                        Arc::from("semantic signature payload exceeds the supported size")
+                    })?;
+                    Ok(ParsedSemanticVariant {
+                        name: text.push(resolve(variant.name.name))?,
+                        payload_start,
+                        payload_end,
+                    })
                 })
                 .collect::<Result<Vec<_>, Arc<str>>>()?;
             Ok(ParsedSemanticSignature::Enum {
+                text: text.finish(),
                 variants: variants.into(),
+                payloads: payloads.into(),
             })
         }
-        (Category::Destructor, rue_parser::ast::Item::DropFn(_)) => {
-            Ok(ParsedSemanticSignature::Destructor)
-        }
-        _ => Err(Arc::from(
-            "semantic signature category does not match reparsed declaration",
+        ParsedDeclarationAstRef::Destructor(_) => Ok(ParsedSemanticSignature::Destructor),
+        ParsedDeclarationAstRef::Const(_) => Err(Arc::from(
+            "constant candidates have no signature projection",
         )),
     }
 }
