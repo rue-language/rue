@@ -32,6 +32,26 @@ pub struct Workload {
     /// corpus mass rather than a measurement, and growing the corpus is a new
     /// suite revision precisely so this stays deliberate.
     pub question: String,
+    /// The single axis a scaling probe varies, and where this size sits on it.
+    ///
+    /// Present only on scaling probes (ADR-0067 §10, RUE-1264). Two workloads
+    /// sharing an `axis` are sizes of one probe, and the ratio between their
+    /// medians is the probe's signal — a sustained drift in that ratio is a
+    /// complexity-class change, reportable independently of constant-factor
+    /// movement. Declared here so the size is recoverable from the published
+    /// record rather than only by parsing the workload id.
+    #[serde(default)]
+    pub scaling: Option<ScalingAxis>,
+}
+
+/// A scaling probe's declared axis position (RUE-1264).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScalingAxis {
+    /// The one axis this probe varies, e.g. `module_count`.
+    pub axis: String,
+    /// This workload's size on that axis, in the axis's own unit.
+    pub size: u64,
 }
 
 /// The platform-independent logical contract.
