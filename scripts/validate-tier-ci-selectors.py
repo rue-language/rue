@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-ACTION_ID = r"[A-Za-z_][A-Za-z0-9_-]*"
-JOB_RE = re.compile(rf"^  ({ACTION_ID}):\s*$", re.MULTILINE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import job_blocks
+
 BXL_TIER_RE = re.compile(r'^\s*"(rue_test_tier_[a-z]+)",\s*$', re.MULTILINE)
 DEFS_TIER_RE = re.compile(
     r'^TEST_TIER_[A-Z]+ = "(rue_test_tier_[a-z]+)"$', re.MULTILINE
@@ -91,20 +93,6 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
         ),
     ),
 }
-
-
-def job_blocks(workflow: str) -> dict[str, str]:
-    marker = workflow.find("\njobs:\n")
-    if marker < 0:
-        raise ValueError("workflow has no top-level jobs mapping")
-    body = workflow[marker + len("\njobs:\n") :]
-    matches = list(JOB_RE.finditer(body))
-    return {
-        match.group(1): body[match.start() : matches[index + 1].start()]
-        if index + 1 < len(matches)
-        else body[match.start() :]
-        for index, match in enumerate(matches)
-    }
 
 
 def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]]:
