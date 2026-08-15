@@ -18,7 +18,9 @@ relates: ["RUE-506", "RUE-505", "RUE-504", "RUE-438", "ADR-0063", "ADR-0061", "A
 
 Proposal. Drafted from the RUE-506 design capture, re-grounded against the
 compiler as it exists after ADR-0063 (parallel demand-driven incremental
-compilation, implemented) and ADR-0061 (supported facade, implemented). RUE-506
+compilation, Implemented) and ADR-0061 (supported facade, Accepted — its
+frontmatter carries an `implemented:` date, but its `status:` field and the
+designs index both say Accepted, so that is the citable status). RUE-506
 predates comptime generics, the `@syscall`-based std IO stack, C FFI, and the
 query graph; this ADR replaces its aspirational mechanism sketches with
 mechanisms the compiler now actually has, and sequences an MVP that ships
@@ -277,15 +279,35 @@ test "parse_port rejects out-of-range values" {
   synthesizes a structural printer for the operand's error type — variant
   name and primitive/byte-string payloads, recursion and length bounded by
   the §2 capture budgets — as a synthesized instance in the
-  drop-glue/dispatcher family (§3), monomorphized per site since each
-  operand's type is statically known. `Err(e)` renders the payload; `None`
+  drop-glue/dispatcher family (§3), keyed **by error type, not by site**.
+  The printer's behavior depends only on the type it renders, while the
+  site belongs to the failure record's header, so one printer instance
+  serves every `?` on that type: per-site monomorphization would duplicate
+  identical code and `CodegenUnit`s across repeated sites for nothing.
+  Drop glue is the in-tree precedent for exactly this keying — one
+  synthesized instance per type, shared by every body that destroys it. `Err(e)` renders the payload; `None`
   reports the site alone. A future Display-style trait supersedes the
   synthesized printer without changing the record's shape. The net effect
   is deliberate: this is exactly the `match`-plus-`@assert` ceremony a
   `?`-less body would force at every fallible call — ADR-0038's must-check
   linearity makes the match compulsory, and without a Display trait the
   hand-written `Err` arm degrades to a static message — machine-written,
-  with the payload rendered and the span pinned. Expected-failure
+  with the payload rendered and the span pinned. One consequence is
+  *accepted*, not mitigated: **trapping skips ordinary cleanup.** A
+  propagating `?` lowers to an early return (spec 4.15:7 — the failure arm
+  is literally `return None`/`return Err(e)`), and return paths run drop
+  elaboration for live bindings, so a destructor that flushes a buffer or
+  releases an external resource would run; the trap at the `?` site does
+  not. Trapping is still chosen, because this is the posture every other
+  failure path in this design already takes — `@assert`, `@panic`, and
+  every trap skip destructors identically — so making `?` uniquely run
+  them would be the inconsistency rather than the fix, and a test that
+  fails is a test whose cleanup was already forfeit. The loss is bounded
+  by the abort-only runtime: the process dies at once, the OS reclaims
+  descriptors and memory, and the retained scratch directory preserves
+  on-disk state for post-mortem. What is genuinely given up is a
+  `drop fn`'s own observable work on the failing path. Recorded under
+  Consequences. Expected-failure
   *testing* is unaffected: asserting that a call returns `Err` is still an
   ordinary match on the value; `?` is for the errors a test does not
   expect.
@@ -323,34 +345,61 @@ test "parse_port rejects out-of-range values" {
   files would be a second source-discovery computation over files the
   canonical snapshot never demanded — a peer frontend, with its own
   parse-failure and multi-root complications as the symptoms of that
-  mismatch. The warning is therefore manifest-gated: when
-  `--source-manifest` supplies an explicit candidate inventory, a canonical
-  compiler query over that inventory
-  reports files that contain test items but sit outside the closure, with
-  a parse failure in such a file reported inside the warning itself —
-  never as a compile error of the request. One publication step is
-  honestly new: the manifest's own bytes are a host-visible input today,
-  but loading it canonicalizes entries into permission sets without
-  reading them — an out-of-closure entry's *content* never reaches the
-  snapshot, and a compiler query cannot parse what the host never
-  published. Phase 2 therefore adds a bounded candidate-acquisition step
-  to ADR-0063's host input protocol: for each manifest entry outside the
-  demanded closure, the host reads and publishes the entry's bytes and
-  content fingerprint — or a typed absent/unreadable outcome — as
-  ordinary revisioned inputs, demanded only by test requests, and the
-  orphan check is a parse-only query over those candidates that never
-  turns one into a semantic root. Absent entries stay silent (a manifest
-  grants an operation, not a claim that the candidate exists — the
-  loader's own posture today); unreadable entries are reported inside
-  the warning. Naming the protocol is the point: without it, "canonical
-  query over the inventory" would quietly become a driver-side read and
-  side table — the peer-computation shape this bullet exists to
-  avoid. Without a manifest there is no
-  scan and no warning; the run summary instead carries a one-line notice
-  that orphan-test detection needs `--source-manifest`. The manifest is
-  also the disciplined multi-root story: an inventory belongs to one root,
-  so test-shaped files belonging to *other* roots never produce false
-  warnings.
+  mismatch.
+
+  The inventory must therefore be supplied, and it must be an inventory of
+  files *declared to the build* — which `--source-manifest` is not. The
+  `rue_program` manifest is derived, not declared: `scripts/rue-program-derive-manifest.py`
+  writes the scan's accepted reads (validated to fall within `srcs ∪ std`)
+  unioned with every file of the declared std tree. Declared `srcs` enter
+  only as the gate that *rejects* an out-of-srcs read. So the manifest gets
+  both directions wrong for this purpose: a newly declared but unimported
+  `foo_tests.rue` was never read, is therefore absent from the manifest,
+  and is exactly the orphan this design promises to catch — while every std
+  file is present, so a scan over manifest entries outside the closure would
+  sweep the entire toolchain as root-owned test candidates. Using the
+  generated source manifest as the candidate inventory would deliver a
+  warning that fires on std and stays silent on the one mistake it exists
+  to catch.
+
+  The candidate inventory is the **declared `srcs` set**, passed explicitly
+  — `--test-candidates <list>` (spelling illustrative; the flag is a Phase 2
+  naming call), which the `rue_program` rule feeds from `ctx.attrs.srcs`,
+  the same list it already writes as `srcs.list` for the derive step. The
+  set difference this warning needs is one the build already computes:
+  `scripts/rue-program-srcs-precision.py` reports `srcs` minus the scan's
+  accepted reads as its advisory over-declaration report. Orphan-test
+  detection is that same difference, narrowed to entries that parse as
+  containing test items. Reusing the shape rather than the artifact is
+  deliberate: the precision report is an optional build validation over one
+  target's paths, while this warning is a compiler query over published
+  content.
+
+  Its caveat carries over and is why this stays a warning: sibling roots
+  legitimately share a `srcs` glob, so one root's unread file may be another
+  root's whole tree, and unread-ness alone is not orphan-ness. An inventory
+  belongs to one root; a file declared to this root, containing test items,
+  and outside this root's closure is *reported*, never an error of the
+  request.
+
+  One publication step is honestly new. The compiler cannot parse what the
+  host never published, and an out-of-closure candidate's content never
+  reaches the snapshot today. Phase 2 therefore adds a bounded
+  candidate-acquisition step to ADR-0063's host input protocol: for each
+  declared candidate outside the demanded closure, the host reads and
+  publishes the entry's bytes and content fingerprint — or a typed
+  absent/unreadable outcome — as ordinary revisioned inputs, demanded only
+  by test requests, and the orphan check is a parse-only query over those
+  candidates that never turns one into a semantic root. A parse failure in a
+  candidate is reported inside the warning, never as a compile error of the
+  request. Absent entries stay silent (a declaration is not a claim that the
+  file exists — the loader's own posture today); unreadable entries are
+  reported inside the warning. Naming the protocol is the point: without it,
+  "canonical query over the inventory" would quietly become a driver-side
+  read and side table — the peer-computation shape this bullet exists to
+  avoid. Without a candidate inventory there is no scan and no warning; the
+  run summary instead carries a one-line notice that orphan-test detection
+  needs one.
 - **The warnings interaction is a Phase 1 decision, taken here.** Unused-item
   warnings in executable requests are filtered through a whole-program
   syntactic reference scan today, so the design must pick: include test
@@ -401,7 +450,9 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   or render progress), `test_finished` (stable ID, verdict, duration,
   capability summary, failure structure, captured stdout/stderr, exact
   reproduction argv), `run_finished` (counts, wall time, cache statistics). Verdicts: `pass`, `fail`, `timeout`,
-  `crash` (killed by signal), `compile_error`, `skipped`, `cached_pass`. A
+  `crash` (killed by signal), `compile_error`, `skipped`, `cached_pass` —
+  with `skipped` carrying no producing mechanism in any phase as written,
+  which is an open question below rather than a settled v1 member. A
   failure record is data: failure kind (`assert` / `unhandled_error` /
   `trap:<class>` / `exit` /
   `signal` / `timeout` / `output_overflow` / `ice`), the pinned runtime
@@ -445,9 +496,22 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   the same event stream it would emit under `--format json`, which keeps the
   machine surface honest.
 - **Discovery without execution**: `rue test <root> --list --format json`
-  emits the inventory — IDs, declaration spans, capability summaries, cache
-  status — without running anything, performing semantic analysis of test
-  closures but no codegen, no linking, no execution. The *inverse* query is
+  emits the inventory — IDs, declaration spans, capability summaries, and
+  cache status — without running anything, performing semantic analysis of
+  test closures but no linking and no execution. Cache status is the one
+  field that is not free, and the ADR should not imply it is: a test's
+  cache status is decided by its closure fingerprint, and §5 builds that
+  fingerprint from ADR-0063 *terminal* fingerprints, whose artifact is the
+  per-function `CodegenUnit` (ADR-0063 §11). Reporting cache status
+  therefore requires the closure's codegen artifacts to exist — cheap when
+  the memo database is warm, a full closure codegen when it is cold, and
+  never merely "semantic analysis." So `--list` is specified in two tiers:
+  the default lists identity, spans, and capability summaries and performs
+  no codegen; cache status is requested explicitly (`--list --cache-status`,
+  spelling illustrative), which is honest about materializing the closure's
+  terminal artifacts. Consumers that only want the inventory — the common
+  agent case — pay nothing for the field they did not ask for. The
+  *inverse* query is
   reserved in the same surface: "which tests reach item X" is RUE-506's
   tests-for-function question and the sound, static version of what dynamic
   test-impact tools sell — the per-root reached sets already exist, so
@@ -596,6 +660,28 @@ The MVP mechanism:
   diagnostics attached. The MVP keeps the simpler whole-run-fails behavior;
   the per-test contract is specified now so nothing in Phase 2 bakes in the
   coarser one.
+
+  **Which copy of a diagnostic is authoritative** has to be answered, because
+  this is the one place the design puts the same information on two
+  guaranteed surfaces. §2 keeps compiler diagnostics on stderr exactly as
+  today, and `docs/process/diagnostics.md` guarantees that under
+  `--error-format json` every diagnostic goes to stderr, nothing else does,
+  and batch ordering is deterministic and pinned by CLI cases. Embedding
+  those same diagnostics in a stdout `test_finished` event does not violate
+  that guarantee — stderr stays exactly as specified, and the invariant is
+  about what stderr contains, not about exclusive publication — but it does
+  create a second copy, and a consumer needs to know which to believe. The
+  disposition: **stderr remains the authoritative diagnostic stream**, byte-
+  for-byte unchanged and independently versioned; the copy embedded in a
+  `compile_error` event is an attribution convenience, carrying the same
+  diagnostics already published on stderr so a stream consumer can attribute
+  them to a test without correlating two streams. The event copy is
+  therefore never the only place a diagnostic appears, and any divergence
+  between the two is a bug in the runner rather than a schema question.
+  `diagnostics.md` gains a short test-mode note recording exactly that, as
+  Phase 4 work; whether the event should instead carry only diagnostic
+  *identities* (codes and spans, with the stderr batch as the sole payload)
+  is an open question below.
 - **Future mechanisms behind the same contract** (Phase 5+, gated on the
   batching spike): batching many verified-hermetic tests into one process with
   fork-per-test or rerun-on-abort recovery; comptime evaluation of pure test
@@ -632,29 +718,56 @@ promised to eject rather than absorb. The bit is not `checked` blocks (not
 a lattice input at all), not the raw-pointer family, not allocation.
 
 It also cannot naively be "every `@ptr_to_int` site": today's intrinsic
-conflates true address observation with three deterministic idioms std is
-built on — null testing (`@ptr_to_int(p) == 0` is the spec's own stated
-null test, 9.2), provenance-preserving rebase
-(`@int_to_ptr(@ptr_to_int(p) + off)`, the `StrBuf` byte-copy path), and
-pointee type-punning (documented in `std/rawbuf.rue` as the sanctioned
-cast idiom). Forty-two such sites sit under `StrBuf`, `RawBuf`,
-`ArrayBuf`, `mem.swap`, `sort`, and `binary_heap`; a bit on the bare
-intrinsic would mark nearly every real test `addr` and collapse the
-hermetic set to arithmetic-only. None of those idioms observes an address
-— the integer flows straight back into `@int_to_ptr` or a null comparison;
-the nondeterminism exists only where the integer *escapes* (branched on,
-stored, hashed, printed).
+conflates true address observation with four deterministic idioms std is
+built on. Three are pointer-to-pointer round trips — null testing
+(`@ptr_to_int(p) == 0` is the spec's own stated null test, 9.2),
+provenance-preserving rebase (`@int_to_ptr(@ptr_to_int(p) + off)`, the
+`StrBuf` byte-copy path), and pointee type-punning (documented in
+`std/rawbuf.rue` as the sanctioned cast idiom). The fourth is
+**address-into-`@syscall`-argument**: `std.fs` and `std.net` take the
+address of a buffer purely to pass it as a register argument
+(`let base: u64 = checked { @ptr_to_int(tmp) };` feeding
+`@syscall(_sys_write(), fd, base + off, n)` — `std/fs.rue:685`,
+`std/net.rue:360`).
+
+The census, counted on trunk: **45 sites** in `std` (46 raw matches, one of
+which is prose in `std/rawbuf.rue`'s header comment) — `fs.rue` 22,
+`net.rue` 13, `rawbuf.rue` 4, `strbuf.rue` 3, `mem.rue` 2, `c.rue` 1.
+`arraybuf.rue`, `sort.rue`, and `binary_heap.rue` contain **zero**; they
+reach `RawBuf`'s sites transitively. By idiom: 17 null tests, **21
+syscall-argument**, 7 rebase/type-pun. A bit on the bare intrinsic would
+mark nearly every real test `addr` and collapse the hermetic set to
+arithmetic-only. None of the four idioms observes an address — the integer
+flows back into `@int_to_ptr`, into a null comparison, or into a syscall
+register — and the nondeterminism exists only where the integer *escapes*
+into program-visible control or data flow (branched on, stored, hashed,
+printed).
 
 The recommended disposition makes the distinction syntactic rather than
 inferred, by resolving RUE-967 — the strict-provenance intrinsic split
 already deferred from ADR-0059 — with this ADR as its first forcing
 consumer: dedicated intrinsics for pointee casts and null tests, byte
 offsets on `@ptr_offset` over `ptr u8`, and a mechanical migration of
-std's sites. After the split, a surviving `@ptr_to_int` is rare and means
-exactly "observe the address," and `addr` is the plain syntactic leaf this
-section promises; the split also removes integer-roundtrip provenance
+std's sites. The split also removes integer-roundtrip provenance
 destruction from std ahead of future alias-analysis work, which is why
-Rust made the same move. The fallback, if RUE-967 resolves against the
+Rust made the same move.
+
+The syscall-argument idiom is why "resolve RUE-967" is not by itself
+sufficient, and the census is what shows it. Hermeticity is untouched by
+those 21 sites — the functions holding them are `syscall`-ejected
+regardless, so no cached verdict depends on how they are spelled. What
+they falsify is the *ergonomic* claim this section would otherwise make:
+covering only casts and null tests leaves roughly twenty `@ptr_to_int`
+sites standing in std, so a surviving site would still not mean "observe
+the address," and `addr` would still not be the plain syntactic leaf
+promised here. RUE-967 must therefore give the syscall-argument idiom a
+home as well — a pointer-taking `@syscall` argument form, or an explicit
+address-for-ABI intrinsic distinct from address *observation* — for the
+syntactic reading to hold. That is a scope statement about RUE-967, not a
+new mechanism here, and it is the concrete reason the migration-audit
+spike belongs **before** this disposition is ratified rather than after:
+the spike's output determines whether the split can deliver the syntactic
+leaf at all. The fallback, if RUE-967 resolves against the
 split: an escape-scoped `addr` that joins only when a `@ptr_to_int` result
 flows anywhere other than `@int_to_ptr` operands or null/pointer-equality
 comparisons — computed body-locally, any non-local escape joining
@@ -843,11 +956,19 @@ destruction, not an ordinary call, and the body reference that records
 the destruction names a type. A naive walk over `BodyReferences`
 callables would silently drop destructor effects from the summary of
 every body that can destroy the type; Phase 3 carries the drop-glue
-expansion as an explicit obligation with its own unit coverage. Two accounting notes: the leaf projection
-becomes the first production consumer of the retained canonical-bodies
-family, so Phase 3's measurements must price that retention into the
-test-request budget rather than assuming it free; and compiler-synthesized
-dispatcher code is excluded from test summaries by construction. Family
+expansion as an explicit obligation with its own unit coverage. Two
+accounting notes. The retention question is narrower than "a new
+consumer": the CFG family already holds and charges the canonical body
+today — `CfgBodyInput` owns an `Arc<CanonicalBody>` and its
+`RetainedCharge` adds that body's charge — so for any request that reaches
+codegen, the leaf projection observes bodies the request already retains
+and adds no new retention. The cost is real only for **analysis-only
+request shapes**, `--list` above all, which perform semantic analysis but
+no codegen and would otherwise never pull canonical bodies into retention
+at all; Phase 3's measurements must price that shape specifically rather
+than assuming either that it is free or that it is a whole-new-consumer
+cost. And compiler-synthesized dispatcher code is excluded from test
+summaries by construction. Family
 and key names remain conceptual per ADR-0063 §6; the in-tree reachability
 family is body-reachability over closure keys, and exact Rust names follow
 the implementation.
@@ -938,7 +1059,7 @@ evolution."
   loader-visible inventories
   (§3: argv values, ordered environment entries, stdin policy, the
   loader-visible constants), the pinned
-  allocation budget and stack limit (§4.1), seed policy, **every runner
+  allocation budget and stack limit (§4.1), **every runner
   policy that participates in verdict determination** — today the
   effective per-test timeout (`--timeout-ms`, and any per-test override
   the moment one exists) and the per-stream output limits, whose values
@@ -947,7 +1068,36 @@ evolution."
   (`--link-archive` contents). The dividing line is whether a setting can
   change a verdict, not where it is spelled: presentation-only settings
   stay out of the key, and a pass cached under a ten-second timeout must
-  never replay as `cached_pass` under a one-millisecond one. Two monotone
+  never replay as `cached_pass` under a one-millisecond one.
+
+  Those two classes of input are not stored the same way, and saying "in the
+  key" for both would make the relaxations below unimplementable. A hashed
+  key admits only equality: if the effective timeout were a component of the
+  fingerprint, a lookup under any other timeout would compute a different
+  key and miss, and "valid under any timeout ≥ T" could never fire. So the
+  entry has two parts. **Key components** — closure fingerprints, compiler
+  build identity, target, opt level, the visible inventories, the allocation
+  budget and stack limit, link-relevant inputs — are hashed, and equality is
+  the only question asked of them. **Ordered attributes** — the effective
+  timeout, the per-stream output limits, and the recorded per-stream byte
+  counts — are stored beside the entry and compared *by magnitude* at
+  lookup. A hit requires both: the key matches exactly, and every ordered
+  attribute satisfies its comparison. This is what makes the relaxations
+  sound rather than a special case bolted onto a hash, and it is why the
+  recorded byte *counts* rather than the recording run's limit are what the
+  output relaxation compares against. Phase 4's key audit covers both parts,
+  and the same audit decides which side any future policy lands on: a policy
+  whose effect on a verdict is not monotone belongs in the key. The seed is
+  the worked example of that rule cutting the other way, and is
+  deliberately **out** of the key: in the MVP it feeds only shuffle order
+  and scratch naming (§6), neither of which a hermetic test can observe —
+  execution order cannot matter to a test proven non-interfering, and the
+  scratch directory is always spelled `.`. Keying on it would invalidate
+  every cached verdict on each new seed while proving nothing. The seed
+  enters the key exactly when it starts determining verdicts: if the
+  seedable-`@random_*` call (§6) is taken, the seed becomes a verdict
+  input for `random`-capability tests and joins the key *with* that
+  change, which is the point at which those tests become cacheable at all. Two monotone
   relaxations are permitted because the stored metadata proves them: a
   pass recorded under timeout T is valid under any effective timeout
   ≥ T (`pass` is a semantic verdict; wall clock is machine-relative and
@@ -993,6 +1143,22 @@ evolution."
   guarantees make that report actionable). Rerun-based flake detection
   (`--reruns N`) is offered only for non-hermetic tests, aimed exactly where
   nondeterminism can live.
+
+  What detects that mismatch is worth stating, because the cache is
+  deliberately one-sided. Failures are never cached, so the runner holds no
+  prior *failing* verdict to compare against; the only stored verdict is a
+  pass. The detectable direction is therefore exactly one — a fingerprint
+  with a cached pass that, on re-execution, fails — and it fires only when
+  the test is actually re-executed, which routine cache-hit and
+  `--changed-only` runs by construction do not do. Hermetic-mismatch
+  reporting is consequently a property of runs that bypass or ignore the
+  cache (`--no-cache`, an explicit re-run, CI's periodic full sweep), not a
+  background guarantee of every run. That is still the direction worth
+  catching — it is the one where a stale cached pass would otherwise hide a
+  real defect — but "localized by construction" describes the *blast
+  radius* of nondeterminism, not a claim that every occurrence is observed.
+  Phase 5's hermetic-mismatch reporting item should name the re-execution
+  paths it covers.
 
 ### 6. Determinism defaults
 
@@ -1052,7 +1218,26 @@ promise §2 makes, and it is the natural future carrier for the §3
 epilogue sentinel and §7.2 sub-results. The channel is budgeted
 separately from user output (§2): structured records carry their own
 size cap, so a test that floods its streams cannot truncate its own
-failure record. Two consequences
+failure record.
+
+**The helper's capability class, stated rather than left implicit.** This
+ADR's own standing rule says an unclassified manifest leaf is a soundness
+hole in every cached verdict, and a new ABI helper is exactly such a leaf —
+so it is classified here, not discovered in Phase 3. "Trap is the verdict"
+covers `@assert` but does not cover this channel: §7.2 sub-results are
+writes from a *running, possibly passing* test, which makes it a real
+output channel rather than a terminal one. The classification is
+**hermetic-compatible, on the same grounds as `stdout`**: the descriptor is
+runner-pinned in the §3 exec contract, everything written to it is captured
+by the runner, and its budget joins the §5 cache key alongside the
+per-stream output limits — a record truncated by that cap is a function of
+the test's own behavior and the keyed budget, nothing ambient. It therefore
+introduces no new lattice bit and does not eject a test from caching. The
+sequencing gap this closes is real: the helper ships in Phase 2 while the
+machine-checked manifest capability field lands in Phase 3, so for one
+phase the classification is carried by this paragraph and by the Phase 2
+schema doc; Phase 3's manifest field must record it, and the ABI addition
+is a maintainer call under ADR-0055 rules regardless. Two consequences
 are deliberate: the failure payload is an open, versioned field rather than an
 enum of built-in shapes, and location is carried *in* the record — so a
 library can attribute its caller — rather than derived solely from the test
@@ -1154,10 +1339,11 @@ here per docs/designs/README.md).
       timeout/kill, bounded per-stream capture (the limited-drain
       variant), post-exit group cleanup, and pipes held open until child
       exit
-      (mechanics shared with `rue-test-runner`); the manifest-gated
-      unimported-test-file
-      warning with its bounded candidate-acquisition host-input step
-      (§1); `--list`, `--filter`, `--jobs`, `--shard`,
+      (mechanics shared with `rue-test-runner`); the unimported-test-file
+      warning over a declared candidate inventory (`--test-candidates`,
+      fed from `rue_program`'s `srcs` — explicitly *not* the derived
+      `--source-manifest`, §1) with its bounded candidate-acquisition
+      host-input step; `--list`, `--filter`, `--jobs`, `--shard`,
       `--timeout-ms`, `--seed` (shuffle), exit-code contract; NDJSON event
       stream v1.0 with schema doc (docs/process/test-events.md), including
       the byte-safe output encoding, capture budgets, pass/fail payload
@@ -1194,8 +1380,9 @@ here per docs/designs/README.md).
       edit-scenario measurement (ADR-0068 harness) proving near-zero warm
       cost in test mode — leaf-only and reference-changing edits measured
       separately (the latter pays the §4.2 `EffectGraph` re-derivation),
-      including the retention cost of becoming the
-      canonical-bodies family's first production consumer — and a zero-delta
+      including the canonical-body retention cost on analysis-only
+      (`--list`-shaped) requests, where nothing else pulls those bodies
+      into retention (§4.2) — and a zero-delta
       measurement on executable-request benchmarks (ADR-0067 harness)
       proving the families cost nothing when not demanded (§4.2). No
       scheduling or caching behavior change. Gated on the §4.1
@@ -1208,17 +1395,29 @@ here per docs/designs/README.md).
       (exact visible-inventory values, allocation budget, stack limit,
       effective timeout, and per-stream output limits
       included);
-      `cached_pass`, `--no-cache`, `--changed-only`; the
+      `cached_pass`, `--no-cache`, `--changed-only`; `--list --cache-status`
+      as the opt-in tier that materializes closure terminal artifacts (§2 —
+      the default `--list` from Phase 2 stays codegen-free); the
       inline-pass-capture flag's force-execution semantics (§5);
       hermetic-only gating with
       eject-on-unknown; per-test `compile_error` verdicts (error-tolerant test
       images); cache-soundness audit checklist executed against the spike
       findings, including the image-independence demonstration (§5).
 - [ ] **Phase 5: scheduling and flake policy** - RUE-TBD. Declared serial
-      groups (`@group("name")` directive) honored by the scheduler;
+      groups (`@group(name)` directive — an *identifier* argument, matching
+      `@requires(fs)` and parsing under today's `DirectiveArg::Ident`, which
+      is the sole variant; the string-literal spelling `@group("name")`
+      would carry the same grammar and AST extension the deferred
+      `@timeout(5000)`/`@known_bug("RUE-NN")` directives are priced at, and
+      Phase 5 does not silently absorb that work) honored by the scheduler;
       `--reruns N` for non-hermetic tests with flake reporting;
-      hermetic-mismatch reporting as infrastructure defect; recorded durations
-      feeding `--shard` bin-packing.
+      hermetic-mismatch reporting as infrastructure defect, naming the
+      re-execution paths it covers (§5: the detectable direction is a cached
+      pass that fails on re-execution, so this reports on cache-bypassing
+      runs, not on every run); recorded durations
+      feeding `--shard` bin-packing. Requires Phase 3 for both the
+      `--reruns` hermeticity split and mismatch reporting; the serial-group
+      and duration-packing items do not.
 - [ ] **Phase 6: capability refinement** - RUE-TBD. Syscall-number
       classification at comptime-constant sites splitting `syscall` into
       `fs`/`net`/`clock`/`process` (gated on the spike); `@requires(...)`
@@ -1230,7 +1429,14 @@ here per docs/designs/README.md).
       stream consumers.
 
 Each phase is independently shippable; Phases 3–7 can reorder behind 2 if
-priorities shift, except that 4 requires 3 and 6 requires 3.
+priorities shift, except that **4, 5, and 6 all require 3**. For 4 and 6
+that is obvious. Phase 5 is the easy one to get wrong: two of its four
+items — `--reruns N` *for non-hermetic tests* and hermetic-mismatch
+reporting — are predicated on knowing which tests are verified hermetic,
+which is exactly what Phase 3 produces. Phase 5's other two items (declared
+serial groups, duration-fed shard packing) genuinely do not depend on 3, so
+a Phase 5 scheduled ahead of 3 would have to ship as that subset, and
+should say so rather than discover it mid-phase.
 
 ## Consequences
 
@@ -1286,6 +1492,12 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   configurable, in the cache key, and stated rather than hidden — but it
   is real, and it would join seedable `@random_*` (§6) in the "test mode
   differs from production" column this design otherwise avoids.
+- `?` in a test body skips destructors on the failing path, where a
+  propagating `?` would run them (§1). This is uniform with `@assert`,
+  `@panic`, and every trap rather than a new divergence, and process death
+  plus the retained scratch directory covers resource reclamation — but a
+  `drop fn` whose observable work is a flush or an external release does
+  not perform it when a `?` fails.
 - Future language designs inherit obligations from this ADR — capability
   classification for every new effect or dispatch mechanism, summary-bearing
   metadata for any separate-compilation design, a determinism decision for
@@ -1472,8 +1684,15 @@ unwrap-and-report `?`:
   that walks out of the body reaches the dispatcher as a bare value: the
   report can name the test but not the line, where the trapping form pins
   the `?` site for free. Recovering the span under propagation would
-  require instrumenting test-body `?` lowering anyway — at which point the
-  early return buys nothing over the trap.
+  require instrumenting test-body `?` lowering anyway. What early return
+  does buy, and the trap does not, is **drop elaboration**: the failure arm
+  is an ordinary return (spec 4.15:7), so live bindings' destructors run.
+  That is a real difference, not a wash, and §1 accepts it explicitly
+  rather than claiming it away — every other failure path here already
+  skips destructors, so uniform trap semantics is the coherent choice and
+  the deterministic-cleanup argument is instead an argument for revisiting
+  *all* failing paths if Rue ever gains unwinding ("Failure-model
+  evolution").
 - **Propagation inherits the identical-`E` restriction.** Spec 4.15:4
   requires the enclosing producer's error type to be identical to the
   operand's — Rue has no error conversion until traits — so a
@@ -1543,7 +1762,12 @@ the site, so no future revision wants the rejected shape back.
   strict-provenance intrinsic split plus mechanical std migration
   (recommended) — versus the escape-scoped `addr` recognizer. Gates
   Phase 3; the split carries independent memory-model and optimizer merit
-  beyond testing.
+  beyond testing. The call is on RUE-967's *scope*, not merely its
+  existence: the §4.1 census shows 21 of std's 45 sites are
+  address-into-`@syscall`-argument, which a casts-and-null-tests split
+  leaves standing, so ratifying the syntactic reading means committing to
+  cover that idiom too. Take this call after the migration-audit spike,
+  which exists to price exactly that.
 - **Structured failure channel mechanism** (§7.1): a dedicated inherited
   pipe written through a runtime helper (recommended; touches the ABI
   manifest, so it
@@ -1561,7 +1785,53 @@ the site, so no future revision wants the rejected shape back.
 - **The `scripts/rue test` homonym**: rename the maintainer wrapper subcommand
   (e.g. `scripts/rue suite`), or accept the context distinction and fix docs.
 - **Exit-code contract of `rue test`** (§2): the 0/1/2/3 proposal, in
-  particular empty-selection-as-error.
+  particular empty-selection-as-error. Two sub-questions the proposal does
+  not currently answer. Does a `compile_error` verdict (Phase 4) map to
+  exit `1` (a failing test) or exit `2` (a compilation error)? It is a
+  per-test verdict, which argues for `1`, but `2` is what a whole-run
+  compile failure returns today, so a run that goes from whole-run-fails to
+  per-test verdicts would silently change its exit code. And does a run
+  whose *only* non-passing results are `compile_error` differ from one with
+  a genuine assertion failure? Agents branch on exit codes, so this needs
+  an answer before Phase 4 changes the behavior.
+- **How much of a diagnostic a `compile_error` event carries** (§3). §3
+  makes stderr authoritative and the event copy an attribution
+  convenience; the open half is whether the event should embed the full
+  diagnostic payload (convenient, but two copies of the same bytes on two
+  streams, and a second place for the rendering to drift) or only
+  diagnostic *identities* — codes and spans — leaving the stderr batch as
+  the sole payload (no duplication, but consumers must correlate two
+  streams). Decide with the `diagnostics.md` test-mode note in Phase 4.
+- **Does `--filter` narrow the root set or only the run set?** (§2). As
+  written, filtering selects which tests *run*, while the test request
+  roots every test item in the import closure — so a broken, unselected
+  test's closure still fails the compilation, and a filtered run cannot be
+  used to work around a compile error elsewhere in the module. That may be
+  the right semantics (it keeps a filtered run's verdicts identical to the
+  same tests in a full run, which selection soundness wants), but it is
+  unstated, and the opposite reading — filter narrows the roots, so
+  unselected tests are never analyzed — is what most users will assume from
+  every other runner. Whichever is chosen interacts with per-test
+  `compile_error` verdicts above and should be decided with them.
+- **The `skipped` verdict has no producing mechanism.** §2 lists `skipped`
+  in the verdict taxonomy, but no phase produces one: `@skip` is deferred
+  to the directive-grammar work, filtering removes tests from the selection
+  rather than reporting them, and `cached_pass` is its own verdict. Either
+  a mechanism is named (the natural v1 candidate is platform scoping, which
+  the compiler's own suites already have) or `skipped` should be reserved
+  in the schema without appearing in the v1 taxonomy — an unproducible
+  verdict in a published enum is a consumer trap.
+- **`rue test` implicitly enabling the preview gate** (§1). The ADR has
+  `rue test` enable `test_declarations` implicitly while the feature is in
+  preview. That would be the first flag in the compiler to auto-enable a
+  preview feature: ADR-0005's model is explicit `--preview <feature>`
+  opt-in, with unflagged use producing a diagnostic that names the flag.
+  The convenience is real — every test run would otherwise carry
+  `--preview test_declarations` — but so is the precedent, and the
+  maintainer-calls list previously covered only the flag's *name*, not this
+  behavior. The alternatives are requiring the flag like every other
+  preview feature, or scoping auto-enable to test *requests* specifically
+  and recording it in ADR-0005 as a named exception.
 - **The standing rule as process**: ratify "Constraints on future language
   evolution" as citable policy, and add a capability/determinism/fingerprint
   impact item to the new-feature checklist (alongside AGENTS.md's seven-layer
@@ -1569,18 +1839,29 @@ the site, so no future revision wants the rejected shape back.
   designed rather than rediscovered when its tests misbehave. Cheap, but it
   touches process docs owned outside this ADR.
 - **Naming**: `test_declarations` preview flag; `@group`/`@requires` directive
-  spellings; `docs/process/test-events.md` as the schema doc home.
+  spellings — noting that any literal-argument spelling (`@group("slow")`)
+  pulls the deferred directive-grammar extension into its phase, while the
+  identifier form (`@group(slow)`) parses today; `--test-candidates` as the
+  declared-candidate inventory flag (§1); `docs/process/test-events.md` as
+  the schema doc home.
 
 ### Questions that need a spike before their phase is scheduled
 
 - **Provenance-split migration audit** (before the §4.1 disposition is
-  ratified): enumerate std's 42 `@ptr_to_int` sites by idiom (null test /
-  rebase / type-pun / other), and check the `copy_packed_bytes` comment in
-  `std/strbuf.rue` claiming `@ptr_offset` cannot form byte-offset
-  sub-range pointers — its stride argument does not obviously apply to
-  `ptr u8`, where the slot size is 1; if the restriction is real, the
-  split needs a byte-offset primitive as well. Output: the migration list
-  and the final intrinsic set for RUE-967.
+  ratified — this ordering is load-bearing, not procedural): the §4.1
+  census already classifies std's 45 sites (17 null test / 21
+  syscall-argument / 7 rebase/type-pun), and the syscall-argument class is
+  the one the split as originally scoped does not cover. The spike settles
+  what covers it — a pointer-taking `@syscall` argument form, an
+  address-for-ABI intrinsic, or accepting that `addr` stays an inferred
+  escape rule — and re-runs the census against trunk at spike time, since
+  `fs.rue` grew from 18 sites to 22 during this ADR's review alone. It
+  also checks the `copy_packed_bytes` comment in `std/strbuf.rue` claiming
+  `@ptr_offset` cannot form byte-offset sub-range pointers — its stride
+  argument does not obviously apply to `ptr u8`, where the slot size is 1;
+  if the restriction is real, the split needs a byte-offset primitive as
+  well. Output: the migration list and the final intrinsic set for
+  RUE-967.
 - **Syscall-number classification coverage** (before Phase 6): over
   `std/fs.rue` and `std/net.rue` on all three targets, what fraction of
   `@syscall` sites have comptime-constant numbers under the existing
