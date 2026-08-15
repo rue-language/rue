@@ -42,10 +42,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gatelib import job_blocks
 
-BXL_TIER_RE = re.compile(r'^\s*"(rue_test_tier_[a-z]+)",\s*$', re.MULTILINE)
 DEFS_TIER_RE = re.compile(
     r'^TEST_TIER_[A-Z]+ = "(rue_test_tier_[a-z]+)"$', re.MULTILINE
 )
+
+# test_tiers.bxl loads the vocabulary from test_defs.bzl instead of keeping
+# its own copy (RUE-1523), so agreement is structural. This gate pins the
+# load line itself: without it, reverting the bxl to a local list would
+# silently dissolve that guarantee.
+BXL_LOAD_LINE = 'load("//:test_defs.bzl", "RUE_TEST_TIER_LABELS")'
 
 
 @dataclass(frozen=True)
@@ -96,21 +101,17 @@ TIER_SELECTORS: dict[str, tuple[Selector, ...]] = {
 
 
 def declared_tiers(defs_path: Path, bxl_path: Path) -> tuple[set[str], list[str]]:
-    """Returns the agreed tier vocabulary and any disagreement between sources."""
+    """Returns the tier vocabulary and any break in its single-sourcing."""
     defs_tiers = set(DEFS_TIER_RE.findall(defs_path.read_text()))
-    bxl_tiers = set(BXL_TIER_RE.findall(bxl_path.read_text()))
     errors = []
     if not defs_tiers:
         errors.append(f"{defs_path}: no TEST_TIER_* constants found")
-    if not bxl_tiers:
-        errors.append(f"{bxl_path}: no tier labels found")
-    if defs_tiers and bxl_tiers and defs_tiers != bxl_tiers:
+    if BXL_LOAD_LINE not in bxl_path.read_text():
         errors.append(
-            "tier vocabulary drift: "
-            f"{defs_path.name} declares {', '.join(sorted(defs_tiers))}; "
-            f"{bxl_path.name} selects {', '.join(sorted(bxl_tiers))}"
+            f"{bxl_path.name}: does not load RUE_TEST_TIER_LABELS from "
+            f"{defs_path.name}; the selector and the tier macros can drift"
         )
-    return defs_tiers | bxl_tiers, errors
+    return defs_tiers, errors
 
 
 def validate(defs_path: Path, bxl_path: Path, workflows: dict[str, Path]) -> list[str]:

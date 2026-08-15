@@ -1,10 +1,10 @@
 """Canonical Buck selections and validation for Rue's test execution tiers."""
 
-_TEST_TIER_LABELS = [
-    "rue_test_tier_premerge",
-    "rue_test_tier_slow",
-    "rue_test_tier_stress",
-]
+load("//:test_defs.bzl", "RUE_TEST_TIER_LABELS")
+
+# Loaded from test_defs.bzl so the selector and the tier macros share one
+# vocabulary by construction (RUE-1523).
+_TEST_TIER_LABELS = RUE_TEST_TIER_LABELS
 
 _CLI_SHARD_LABEL = "rue_cli_shard"
 
