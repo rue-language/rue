@@ -2,9 +2,9 @@
 
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
-load(":reindeer_rules.bzl", "rue_rust_library")
+load(":reindeer_rules.bzl", "rue_alias", "rue_rust_library")
 
-alias(
+rue_alias(
     name = "ahash",
     actual = ":ahash-0.8.12",
     visibility = ["PUBLIC"],
@@ -165,7 +165,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "annotate-snippets",
     actual = ":annotate-snippets-0.11.5",
     visibility = ["PUBLIC"],
@@ -323,7 +323,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "anyhow",
     actual = ":anyhow-1.0.100",
     visibility = ["PUBLIC"],
@@ -842,7 +842,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "fixedbitset",
     actual = ":fixedbitset-0.5.7",
     visibility = ["PUBLIC"],
@@ -1099,7 +1099,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "itoa",
     actual = ":itoa-1.0.16",
     visibility = ["PUBLIC"],
@@ -1137,7 +1137,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "lasso",
     actual = ":lasso-0.7.3",
     visibility = ["PUBLIC"],
@@ -1243,7 +1243,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "libc",
     actual = ":libc-0.2.178",
     visibility = ["PUBLIC"],
@@ -1574,7 +1574,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "libmimalloc-sys",
     actual = ":libmimalloc-sys-0.1.49",
     visibility = ["PUBLIC"],
@@ -1666,7 +1666,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "libtest2-mimic",
     actual = ":libtest2-mimic-0.0.4",
     visibility = ["PUBLIC"],
@@ -2130,7 +2130,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "logos",
     actual = ":logos-0.14.4",
     visibility = ["PUBLIC"],
@@ -2281,7 +2281,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "mimalloc",
     actual = ":mimalloc-0.1.52",
     visibility = ["PUBLIC"],
@@ -2368,7 +2368,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "once_cell",
     actual = ":once_cell-1.21.3",
     visibility = ["PUBLIC"],
@@ -2520,7 +2520,7 @@ rue_rust_library(
     deps = [":unicode-ident-1.0.22"],
 )
 
-alias(
+rue_alias(
     name = "proptest",
     actual = ":proptest-1.9.0",
     visibility = ["PUBLIC"],
@@ -2775,7 +2775,7 @@ rue_rust_library(
     deps = [":rand_core-0.9.3"],
 )
 
-alias(
+rue_alias(
     name = "rayon",
     actual = ":rayon-1.11.0",
     visibility = ["PUBLIC"],
@@ -2934,7 +2934,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "regex",
     actual = ":regex-1.12.2",
     visibility = ["PUBLIC"],
@@ -3564,7 +3564,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "serde",
     actual = ":serde-1.0.228",
     visibility = ["PUBLIC"],
@@ -3878,7 +3878,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "serde_json",
     actual = ":serde_json-1.0.147",
     visibility = ["PUBLIC"],
@@ -4085,7 +4085,7 @@ rue_rust_library(
     deps = [":serde-1.0.228"],
 )
 
-alias(
+rue_alias(
     name = "sha2",
     actual = ":sha2-0.10.9",
     visibility = ["PUBLIC"],
@@ -4150,7 +4150,7 @@ rue_rust_library(
     deps = [":lazy_static-1.5.0"],
 )
 
-alias(
+rue_alias(
     name = "smallvec",
     actual = ":smallvec-1.15.1",
     visibility = ["PUBLIC"],
@@ -4251,7 +4251,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "tempfile",
     actual = ":tempfile-3.24.0",
     visibility = ["PUBLIC"],
@@ -4310,7 +4310,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "thiserror",
     actual = ":thiserror-2.0.17",
     visibility = ["PUBLIC"],
@@ -4511,7 +4511,7 @@ rue_rust_library(
     deps = [":cfg-if-1.0.4"],
 )
 
-alias(
+rue_alias(
     name = "toml",
     actual = ":toml-0.8.23",
     visibility = ["PUBLIC"],
@@ -4653,7 +4653,7 @@ rue_rust_library(
     visibility = [],
 )
 
-alias(
+rue_alias(
     name = "tracing",
     actual = ":tracing-0.1.44",
     visibility = ["PUBLIC"],
@@ -4775,7 +4775,7 @@ rue_rust_library(
     ],
 )
 
-alias(
+rue_alias(
     name = "tracing-subscriber",
     actual = ":tracing-subscriber-0.3.22",
     visibility = ["PUBLIC"],

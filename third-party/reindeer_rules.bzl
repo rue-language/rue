@@ -62,6 +62,7 @@ def _mimalloc_native_targets():
             "Cargo.toml": "Cargo.toml",
             "fixups.toml": "fixups/libmimalloc-sys/fixups.toml",
             "mimalloc.h": "vendor/libmimalloc-sys-0.1.49/c_src/mimalloc/v2/include/mimalloc.h",
+            "reindeer.toml": "reindeer.toml",
             "reindeer_rules.bzl": "reindeer_rules.bzl",
         },
         visibility = ["PUBLIC"],
@@ -105,7 +106,22 @@ def _libtest2_scheduler_test():
         ],
     )
 
+def _is_linux_mimalloc_target(name):
+    return name == "libmimalloc-sys" or name == "libmimalloc-sys-0.1.49" or name == "mimalloc" or name == "mimalloc-0.1.52"
+
+def rue_alias(name, **kwargs):
+    # Reindeer emits public aliases in addition to versioned Rust libraries.
+    # Both layers must declare the native archive's platform: a broad `//...`
+    # pattern skips an incompatible target, but an otherwise-compatible alias
+    # is still configured and then fails when its `actual` is Linux-only.
+    if _is_linux_mimalloc_target(name):
+        kwargs["compatible_with"] = ["prelude//os:linux"]
+    native.alias(name = name, **kwargs)
+
 def rue_rust_library(name, **kwargs):
+    # The versioned Rust wrappers are as Linux-specific as their native archive.
+    if _is_linux_mimalloc_target(name):
+        kwargs["compatible_with"] = ["prelude//os:linux"]
     cargo.rust_library(name = name, **kwargs)
     if name == "libmimalloc-sys-0.1.49":
         _mimalloc_native_targets()
