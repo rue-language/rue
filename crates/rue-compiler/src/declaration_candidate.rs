@@ -128,56 +128,6 @@ pub(crate) enum RawConstSyntaxFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
-/// Parser-validated signature syntax retained only for an anonymous member
-/// produced during comptime evaluation, detached from its source epoch and
-/// parser symbol universe.
-///
-/// Concatenating `declaration_fragments` reconstructs a body-free declaration
-/// for that produced member. Named declarations instead project their exact
-/// canonical parsed nodes directly in `compiler.semantic-nucleus`; this
-/// transport remains only until anonymous members publish the same structured
-/// per-declaration artifact.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RawDeclarationSignatureSyntax {
-    pub(crate) declaration_fragments: Arc<[Arc<str>]>,
-    pub(crate) extern_abi: Option<Arc<str>>,
-    /// Present only for a `-> borrow` accessor: the extra syntax its
-    /// declaration rules read (spec 6.6:6, 6.6:7). `None` keeps every ordinary
-    /// signature body-agnostic.
-    pub(crate) accessor: Option<Arc<RawAccessorSignatureSyntax>>,
-}
-
-/// The syntax an accessor declaration's own legality rules read beyond its
-/// signature (spec 6.6:6, 6.6:7).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RawAccessorSignatureSyntax {
-    /// The accessor's exact body. Its declaration-shape rules include a
-    /// trailing-yield check even when no caller demands body analysis, so this
-    /// anonymous-member transport legitimately retains its own body.
-    pub(crate) body: Arc<str>,
-    /// Every method the accessor's owner declares — its name, whether it is
-    /// itself an accessor, and the method names its body calls on its own
-    /// `self` receiver — sorted by name and with ambiguous duplicate names
-    /// dropped.
-    ///
-    /// 6.6:7 admits a method-call link in the yielded chain only when the
-    /// callee is an accessor, and 6.6:14 rejects a cycle of accessor
-    /// expansions (RUE-1282). For a link whose receiver is the accessor's own
-    /// `self`, the callee is a method of this owner, and both deciding facts —
-    /// the sibling's `-> borrow` qualifier and its own `self`-call targets —
-    /// are *parsed* facts of the sibling declaration: no signature or body of
-    /// that sibling is demanded, so there is no query cycle between mutually
-    /// recursive accessors. Retaining the facts here is what records the
-    /// dependency: this terminal is materialized from the module's parse, so
-    /// editing a sibling method's `-> borrow` qualifier or `self`-call set
-    /// changes this value and re-runs every consumer of this accessor's
-    /// signature.
-    ///
-    /// Empty for an accessor with no owning type, or whose owner declares no
-    /// other methods.
-    pub(crate) owner_methods: Arc<[rue_air::declaration_validation::AccessorOwnerMethod]>,
-}
-
 /// Parser-validated syntax for one body-bearing declaration, detached from its
 /// source epoch and parser symbol universe.
 ///

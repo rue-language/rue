@@ -11167,6 +11167,91 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn sibling_only_edit_reuses_anonymous_member_transaction_cfg_and_codegen() {
+        let program = |sibling: &str| {
+            let text = format!(
+                "fn sibling() -> i32 {{ {sibling} }}\n\
+                 const T: type = struct {{\n\
+                     value: i32,\n\
+                     fn get(self) -> i32 {{ self.value }}\n\
+                 }};\n\
+                 fn main() -> i32 {{\n\
+                     let value: T = T {{ value: 5 }};\n\
+                     value.get()\n\
+                 }}"
+            );
+            snapshot(&[(1, "/p/main.rue", "main.rue", text.as_str())], 1)
+        };
+        let options = CompileOptions::default();
+        let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            target: options.target,
+            preview_features: StablePreviewFeatures::new(&options.preview_features),
+        };
+        let observe = |session: &mut CompilerSession| {
+            let semantic = session.rooted_cfg(&options).unwrap();
+            let get = semantic
+                .functions()
+                .iter()
+                .find_map(|function| {
+                    matches!(
+                        &function.function,
+                        crate::FunctionInstanceKey::AnonymousMember { member, .. }
+                            if member.name.as_ref() == "get"
+                    )
+                    .then(|| function.function.clone())
+                })
+                .expect("main reaches the anonymous T.get member");
+            let cfg_execution = session
+                .rooted_cfg_executions()
+                .iter()
+                .find_map(|(function, execution)| (function == &get).then_some(*execution))
+                .expect("rooted CFG records T.get's optimized-CFG request");
+            let transaction_stamp = retained_body_transaction(
+                session,
+                &crate::body_query::BodyQueryKey::new(get.clone(), configuration.clone()),
+            )
+            .0;
+            let units = session
+                .codegen_units(
+                    &semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            let unit = units
+                .iter()
+                .find_map(|unit| (unit.function == get).then(|| unit.unit.clone()))
+                .expect("T.get publishes a codegen unit");
+            let codegen_execution = session
+                .codegen_executions()
+                .iter()
+                .find_map(|(function, execution)| (function == &get).then_some(*execution))
+                .expect("codegen records T.get's request");
+            (
+                get,
+                transaction_stamp,
+                cfg_execution,
+                codegen_execution,
+                unit,
+            )
+        };
+
+        let mut session = CompilerSession::new();
+        session.update(&program("1")).into_result().unwrap();
+        let first = observe(&mut session);
+        assert_eq!(first.2, rue_query::RequestExecution::Computed);
+        assert_eq!(first.3, rue_query::RequestExecution::Computed);
+
+        session.update(&program("123456")).into_result().unwrap();
+        let second = observe(&mut session);
+        assert_eq!(second.0, first.0);
+        assert_eq!(second.1, first.1);
+        assert_eq!(second.2, rue_query::RequestExecution::Reused);
+        assert_eq!(second.3, rue_query::RequestExecution::Reused);
+        assert!(Arc::ptr_eq(&first.4, &second.4));
+    }
+
+    #[test]
     fn cfg_keys_are_constructed_once_and_typed_equality_resolves_memo_hash_collisions() {
         fn hash(key: &crate::cfg_query::CfgQueryKey) -> u64 {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -11232,11 +11317,25 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn owned_codegen_domains_preserve_legacy_backend_bytes_on_both_architectures() {
+    fn owned_codegen_domains_preserve_named_and_anonymous_bytes_on_both_architectures() {
         let source = SourceSnapshot::single(
             "main.rue",
             "fn add(left: i32, right: i32) -> i32 { left + right }\n\
-             fn main() -> i32 { let message = \"owned\"; @dbg(message); add(20, 22) }",
+             fn Box() -> type {\n\
+                 struct {\n\
+                     value: i32,\n\
+                     fn make(value: i32) -> Self { Self { value: value } }\n\
+                     fn get(borrow self) -> i32 { self.value }\n\
+                     drop fn(self) {}\n\
+                 }\n\
+             }\n\
+             fn main() -> i32 {\n\
+                 let message = \"owned\";\n\
+                 @dbg(message);\n\
+                 let B = Box();\n\
+                 let boxed = B.make(add(20, 22));\n\
+                 boxed.get()\n\
+             }",
         )
         .unwrap();
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {

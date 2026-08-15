@@ -393,6 +393,53 @@ fn body_transaction_has_no_complete_declaration_candidate_map() {
 }
 
 #[test]
+fn anonymous_body_transaction_has_one_candidate_artifact_path_and_no_frontend_reentry() {
+    let runtime = include_str!("revisioned_query_database.rs");
+    let transaction = source_between_exact_boundaries(
+        runtime,
+        "struct BodyTransactionEvaluator {",
+        "\nimpl RevisionedQueryDatabase {",
+    );
+    for required in [
+        "resolve_producer_artifact",
+        "materialize_body_rir_bundle_with_declaration",
+        "analyze_provider_anonymous_body",
+    ] {
+        assert!(
+            transaction.contains(required),
+            "anonymous transaction lost its canonical candidate path: {required}",
+        );
+    }
+    for forbidden in [
+        "lower_anonymous_member_body_input",
+        "AnonymousMemberLowering",
+        "parse_source_snapshot_module",
+        "SourceSnapshot",
+        "AstGen",
+        "lower_parsed_declaration_body_plan_with_anonymous_anchors",
+    ] {
+        assert!(
+            !transaction.contains(forbidden),
+            "anonymous transaction regained a frontend/rematerialization path: {forbidden}",
+        );
+    }
+
+    let production = runtime.split("\n#[cfg(test)]\nmod tests {").next().unwrap();
+    for removed in [
+        "lower_anonymous_member_body_input",
+        "AnonymousMemberLowering",
+        "DurableAnonymousMemberBodySyntax",
+        "RawDeclarationSignatureSyntax",
+        "RawAccessorSignatureSyntax",
+    ] {
+        assert!(
+            !production.contains(removed),
+            "deleted anonymous/signature carrier returned to production: {removed}",
+        );
+    }
+}
+
+#[test]
 fn well_known_option_resolution_stays_per_body_exact_and_fail_closed() {
     let runtime = include_str!("revisioned_query_database.rs");
     let method = source_between_exact_boundaries(
@@ -2336,20 +2383,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !raw_const_payload.contains(forbidden),
             "raw-constant payload regained a positioned or live parser handle: {forbidden}"
-        );
-    }
-    let raw_signature_payload = module("declaration_candidate")
-        .split("pub(crate) struct RawDeclarationSignatureSyntax")
-        .nth(1)
-        .and_then(|tail| {
-            tail.split("pub(crate) struct RawDeclarationBodySyntax")
-                .next()
-        })
-        .unwrap();
-    for forbidden in ["Span", "FileId", "Spur", "Ast", "Rir", "InstRef", "TypeId"] {
-        assert!(
-            !raw_signature_payload.contains(forbidden),
-            "raw-signature payload regained a positioned or live parser/semantic handle: {forbidden}"
         );
     }
     let raw_body_payload = module("declaration_candidate")

@@ -383,7 +383,7 @@ impl ParsedDefinitionIndex {
 
     /// Every method one owner declares in this module — its name, whether it
     /// is itself a `-> borrow` accessor, and its `self`-call targets — in the
-    /// normalized form the raw signature terminal retains.
+    /// normalized form the canonical parsed signature projection consumes.
     fn owner_method_accessor_facts(
         &self,
         owner: &crate::declaration_candidate::DeclarationCandidateOwner,

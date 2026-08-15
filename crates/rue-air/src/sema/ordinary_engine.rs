@@ -1484,8 +1484,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     /// Provider-backed body analysis mints those facts while selecting the
     /// current callable. Re-resolving the explicit parameter spellings would
     /// duplicate nominal registration and type construction without adding a
-    /// distinct correctness check; the body input already depends on the exact
-    /// raw signature terminal. The caller still resolves the declared return
+    /// distinct correctness check; the body query already depends on the exact
+    /// canonical parsed signature projection. The caller still resolves the declared return
     /// spelling because a call-site signature may expose a coercion-normalized
     /// type instead of the exact type checked inside the body.
     #[allow(clippy::too_many_arguments)]

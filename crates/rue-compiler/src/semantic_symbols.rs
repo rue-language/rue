@@ -60,10 +60,6 @@ pub struct SemanticSymbolUniverse {
 }
 
 impl SemanticSymbolUniverse {
-    pub(crate) fn into_interner(self) -> Arc<ThreadedRodeo> {
-        self.interner
-    }
-
     /// Start a destination universe for one canonical program traversal.
     #[cfg(test)]
     pub(crate) fn new(program: &ParsedProgram) -> Self {
