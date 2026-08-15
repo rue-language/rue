@@ -1,14 +1,14 @@
 # ADR-0071 Phase 3 frontend phase-integrity ledger
 
 This note records the current production frontend re-entry points and the
-replacement contract for Phase 3. Source and tests remain authoritative. Every
-row below is present at trunk revision `2865800c`.
+replacement contract for Phase 3. Source and tests remain authoritative; rows
+marked complete describe paths already removed by the bounded Phase 3 slices.
 
 ## Deletion ledger
 
 | Re-entry | Production owner and consumers | Displaced work | Required deletion proof |
 | --- | --- | --- | --- |
-| Declaration signatures | `parse_semantic_signature` in `semantic_query_nucleus.rs`; called by the semantic-nucleus signature evaluator and transient named-body prerequisite classification | Reconstructs a declaration string, lexes and parses it, then copies parameter, result, field, variant, directive, receiver, and accessor facts back out | Deferred: no production call or definition of `parse_semantic_signature`; signature evaluation consumes the declaration artifact directly |
+| Declaration signatures | `compiler.semantic-nucleus` owns a request-local projection from the exact canonical parsed declaration; specialization typing and call ABI consume its resolved signature, while cheap named-body classification uses parser-indexed shell facts | Deletes body-free source reconstruction, signature lexing/parsing, and the additive retained `compiler.declaration-signature-projection` family | Complete: no production call or definition of `parse_semantic_signature`, no raw-signature parser locator/materializer or peer query family, and a cold signature request performs no body AstGen work |
 | Runtime and specialized bodies | `lower_owned_body_input` in `revisioned_query_database.rs`; called by both the ordinary-definition and free-function-specialization arms of `BodyTransactionEvaluator` | Concatenates retained signature/body text, builds a synthetic snapshot, lexes, parses, lowers with `AstGen`, builds a body RIR index, and remaps synthetic spans for every body transaction and specialization | Both transaction arms consume the same candidate-keyed structured body plan; no production call or definition of `lower_owned_body_input`; specialization count does not increase parsing or AstGen lowering |
 | Anonymous members | `lower_anonymous_member_body_input` in `revisioned_query_database.rs`; called by the anonymous-member arm of `BodyTransactionEvaluator` | Rewrites destructor spelling, wraps the member in a fake named struct, lexes, parses, lowers, indexes, and remaps it | Anonymous-member transactions consume a producer-published structured member plan; no production call or definition of `lower_anonymous_member_body_input` |
 | Comptime bodies | `parse_semantic_body` in `semantic_query_nucleus.rs`; called by the semantic-nucleus comptime-call evaluator | Wraps exact body text in a fake function, lexes and parses it, rediscovers imports, transports anonymous anchors, then evaluates the cloned AST | Comptime evaluation consumes the same declaration artifact as runtime analysis; no production call or definition of `parse_semantic_body` |
@@ -86,9 +86,11 @@ so internal trivia that moves diagnostic endpoints dirties the artifact:
 - ordered declaration-local import sites and accessor facts needed by semantic
   consumers.
 
-Raw signature, body, and constant projections remain independently comparable
-and independently stamped. Existing signature/body/constant query families
-retain their separate stamps and demand edges. The complete declaration plan's
+The semantic-nucleus signature, raw body, and raw constant projections remain
+independently comparable and independently stamped. Signature projection is
+request-local inside the authoritative semantic-nucleus signature evaluator;
+there is no second retained signature family. Raw-body and raw-constant query
+families retain their separate stamps and demand edges. The complete declaration plan's
 structural equality/digest, however, covers every semantically relevant part of
 the declaration: parameters, result, comptime and parameter modes, directives,
 accessor-only state, body structure, and declaration category. Thus a
@@ -97,8 +99,8 @@ the declaration plan and body transaction that depends on it. Sharing
 storage never couples an unchanged raw projection to a sibling edit.
 
 Those projections are also independently demandable and schedulable. One
-schema/storage owner is not one eager computation node: a cold signature query
-does no body AstGen or instruction work; requesting one member does no sibling
+schema/storage owner is not one eager computation node: a cold semantic-nucleus
+signature request does no body AstGen or instruction work; requesting one member does no sibling
 member work; and cancellation, retained charge, and eviction apply to the exact
 projection constructed. Different declaration candidates share no mutable
 arena or lock while their projections run in parallel.
@@ -183,7 +185,7 @@ deleted entry point, plus behavioral coverage proving:
    lookup, while diagnostics relocate through the current locator;
 7. parameter, result, comptime, parameter-mode, directive, and accessor-only
    edits each invalidate the complete declaration plan and body transaction as
-   appropriate while preserving independent raw signature/body/constant
+   appropriate while preserving independent signature/body/constant
    projection stamps;
 8. an equal-length but differently ordered symbol interner fails closed, while
    the plan-owned spelling table recreates an exact local facade when needed;

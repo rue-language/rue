@@ -1317,13 +1317,13 @@ published compiler-work counter, emitted-output metric, source metric, and
 executable byte remains identical.
 
 RUE-1430 carries exact callable type fragments with the canonical semantic-
-signature projection that already parses them. Body-local materialization
-previously queried the same declaration candidate again and rebuilt a parser
-and interner to recover dependent parameter/result syntax that cannot be
-reconstructed from reduced comptime placeholders. Durable function and method
-facts now transport the canonical fragments directly; raw declaration syntax
-remains an internal dependency of the semantic-signature query instead of a
-peer dependency of every consuming body.
+signature projection. Body-local materialization previously queried the same
+declaration candidate again and rebuilt a parser and interner to recover
+dependent parameter/result syntax that cannot be reconstructed from reduced
+comptime placeholders. Durable function and method facts now transport the
+canonical fragments directly. The semantic-nucleus signature evaluator
+projects those fragments from the exact canonical parsed declaration without
+retaining a raw-signature or peer signature-query terminal.
 
 Cold one-worker Lattice removes 2,738 declaration-identity fact reads, 5,476
 query reuses, and 2,738 redundant signature parser invocations. Sixteen

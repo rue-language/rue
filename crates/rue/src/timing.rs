@@ -1928,21 +1928,16 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "optimized_cfg_collection")
             .unwrap();
-        // The session parses the source module once and the registered
-        // declaration-signature terminal parses its exact durable input.
-        // Named BodyInput now projects the canonical module RIR plan and must
-        // never own a parser invocation.
-        assert_eq!(session_parse_file.invocations, 2);
+        // The session parses the source module once. Declaration signatures
+        // project their exact canonical AST nodes, and named body analysis
+        // consumes the canonical candidate plan; neither owns a parser
+        // invocation.
+        assert_eq!(session_parse_file.invocations, 1);
         assert_eq!(session_parse_file.root_invocations, 0);
-        for expected in [
-            ("parse_program", "parse_file"),
-            ("declaration_signature_parsing", "parse_file"),
-        ] {
-            assert!(
-                session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
-                "the demanded reparse is timed beneath its request: {session_edges:?}"
-            );
-        }
+        assert!(session_edges.contains(&("parse_program".to_owned(), "parse_file".to_owned())));
+        assert!(!session_edges.iter().any(|(parent, child)| {
+            parent == "declaration_signature_parsing" || child == "declaration_signature_parsing"
+        }));
         assert!(
             !session_edges.contains(&("body_input_lowering".to_owned(), "parse_file".to_owned()))
         );
@@ -1967,10 +1962,6 @@ mod tests {
         assert!(session_edges.contains(&(
             "body_closure_collection".to_owned(),
             "body_analysis".to_owned()
-        )));
-        assert!(session_edges.contains(&(
-            "declaration_nucleus".to_owned(),
-            "declaration_signature_parsing".to_owned()
         )));
         assert!(
             session_edges.contains(&("body_analysis".to_owned(), "body_input_lowering".to_owned()))
@@ -2093,7 +2084,7 @@ mod tests {
         // leaves beneath the pipeline aggregate.
         assert_eq!(declaration.invocations, 2);
         assert_eq!(declaration.root_invocations, 0);
-        assert_eq!(declaration.leaf_invocations, 1);
+        assert_eq!(declaration.leaf_invocations, 2);
         for phase in [
             Phase::SemanticAnalysis,
             Phase::CfgAndOptimization,
