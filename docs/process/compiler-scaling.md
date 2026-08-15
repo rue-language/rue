@@ -73,9 +73,9 @@ independently verified native output digest. The report records:
 - dependency-ready item count, summed queue delay, and maximum queue delay;
 - longest query/dependency ancestry;
 - bounded request-wide declaration-graph, body-closure, and rooted-body-graph
-  projection histograms, with nested declaration-nucleus, exact-signature
-  parsing, semantic-prerequisite, body-input lowering, provider analysis,
-  semantic-analysis, CFG-construction, and CFG-optimization distributions;
+  projection histograms, with nested declaration-nucleus, semantic-prerequisite,
+  body-input lowering, provider analysis, semantic-analysis, CFG-construction,
+  and CFG-optimization distributions;
 - the inclusive reached-toolchain acquisition envelope (which contains the
   rooted semantic attempt), joins, declined joins, and permit donations;
 - output binary size.
@@ -106,12 +106,21 @@ declaration interval; body prerequisite and analysis timings are nested inside
 the closure interval. Nested values explain their owner and are never added to
 the enclosing duration.
 
-The semantic-leaf table further attributes exact signature-fragment parsing
-across its semantic query consumers (primarily declaration nuclei), and exact
-body-fragment lowering plus provider-backed analysis inside body analysis. This
-distinguishes repeated syntax preparation from the semantic engine without
-changing the canonical computation path. Because the signature aggregate may
-have more than one semantic parent, it is explanatory rather than additive.
+The semantic-leaf table further attributes exact body-fragment lowering plus
+provider-backed analysis inside body analysis. This separates the cost of
+materializing a body's request-local input from the semantic engine that then
+runs over it, without changing the canonical computation path. Since the
+canonical-plan cutover that lowering interval contains no syntax preparation:
+assembly/snapshot, lex/parse, and body-local RIR lowering are emitted as
+literal zeros, and what it measures is packed decode, current-span projection,
+temporary base-symbol reconstruction, and validation. Nested values explain
+their owner rather than adding to it.
+
+It attributed exact signature-fragment parsing as well until RUE-1510 projected
+signatures from the canonical parsed declaration. There is no signature parse
+left to time, so the column is gone rather than reporting a structural zero;
+the boundary evidence keeps the field and now proves the deletion, refusing a
+process that performs one.
 
 The provider-detail table then separates host setup, canonical expression
 analysis, specialization selection, durable body export, and final result

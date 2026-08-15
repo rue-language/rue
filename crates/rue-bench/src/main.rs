@@ -57,6 +57,19 @@ mod exit {
     /// The run is valid and publishable, but crossed a reviewed performance
     /// ratchet. The raw evidence still belongs in its series.
     pub const REGRESSION: u8 = 4;
+    /// The run is appendable, but a workload did not complete validly.
+    ///
+    /// Distinct from every code above: nothing is wrong with the run object,
+    /// and the evidence belongs in the store. What is wrong is the series,
+    /// which now has a hole where a point should be, and in the all-workloads
+    /// case has no new point at all (RUE-1514).
+    ///
+    /// It exists because ADR-0067 §7's dashboard warning was not enough on its
+    /// own: an incomplete collection exited 0, the workflow went green, and the
+    /// repository-wide stall gate spoke up days later at commits that did not
+    /// cause it. `rue-bench runtime` already answers this question this way;
+    /// the two runners in one binary should not disagree about it.
+    pub const INCOMPLETE: u8 = 5;
 }
 
 struct Options {
@@ -611,13 +624,29 @@ fn run(options: &Options) -> Result<u8, String> {
 
     report(&run, &outcome, &regressions, &options.output);
 
-    Ok(if !outcome.is_appendable() {
+    Ok(collection_exit(&outcome, &regressions))
+}
+
+/// The status a written run object reports to its workflow.
+///
+/// Separate from the run's assembly because it is the whole interface between
+/// a collection and the human who finds out about it: every other signal this
+/// runner produces is a line in a log nobody reads unless something already
+/// told them to.
+///
+/// A regression outranks incompleteness: it is a judgement about the
+/// measurement that did happen, while incompleteness is about the one that did
+/// not, and the ratchet is the louder of the two.
+fn collection_exit(outcome: &ValidationOutcome, regressions: &[ProcessElapsedRegression]) -> u8 {
+    if !outcome.is_appendable() {
         exit::NOT_APPENDABLE
     } else if !regressions.is_empty() {
         exit::REGRESSION
+    } else if !outcome.completeness.publishes_headline() {
+        exit::INCOMPLETE
     } else {
         exit::OK
-    })
+    }
 }
 
 fn report(
@@ -633,6 +662,17 @@ fn report(
 
     for error in &outcome.errors {
         eprintln!("rue-bench: not appendable: {error}");
+    }
+    // Every recorded failure, in the job log rather than only inside the
+    // uploaded run object. A workload that produced no sample records exactly
+    // one of these and nothing else, so this line is the whole explanation of
+    // an empty collection — and reading it should not require downloading an
+    // artifact (RUE-1514).
+    for failure in &run.failures {
+        eprintln!(
+            "rue-bench: {} failure: {failure:?}",
+            failure.workload().unwrap_or("run-level")
+        );
     }
     for sample in &outcome.invalid_samples {
         eprintln!(
@@ -656,6 +696,12 @@ fn report(
                 "rue-bench: partial run; no headline point. Incomplete workloads: {}",
                 missing.join(", ")
             );
+            if run.workloads.is_empty() {
+                eprintln!(
+                    "rue-bench: no workload produced a sample, so this commit adds no point to \
+                     any series"
+                );
+            }
         }
     }
 }
@@ -885,5 +931,39 @@ window = 10
                 missing: vec!["startup".to_string()],
             }
         );
+    }
+
+    #[test]
+    fn an_incomplete_collection_reports_a_status_of_its_own() {
+        // RUE-1514. The run above is appendable and stored, and used to exit 0
+        // for that reason: a fail-closed sample check that was fail-open at the
+        // level of the series it protects. Three platforms published
+        // `workloads: []` for a day with every job green, and what eventually
+        // spoke up was the stall gate — days late, and against every pull
+        // request in the repository rather than this collection.
+        let manifest = Manifest::parse(FIXTURE_MANIFEST).expect("fixture manifest");
+
+        let complete = validate_run(&manifest, &fixture_run());
+        assert_eq!(collection_exit(&complete, &[]), exit::OK);
+
+        let mut empty = fixture_run();
+        empty.workloads.clear();
+        empty.failures.push(FailureRecord::WorkloadCrashed {
+            workload: "startup".to_string(),
+            sample_index: 0,
+            detail: "build-boundary evidence rejected".to_string(),
+        });
+        let outcome = validate_run(&manifest, &empty);
+        assert!(outcome.is_appendable(), "{:?}", outcome.errors);
+        assert_eq!(collection_exit(&outcome, &[]), exit::INCOMPLETE);
+
+        // A run that cannot be stored at all keeps saying so. Both codes fail
+        // the collection job, but they are different facts with different
+        // remedies, and the job's message says which one happened.
+        let mut rejected = fixture_run();
+        rejected.identity.pins.workload_source_hashes.clear();
+        let outcome = validate_run(&manifest, &rejected);
+        assert!(!outcome.is_appendable());
+        assert_eq!(collection_exit(&outcome, &[]), exit::NOT_APPENDABLE);
     }
 }

@@ -390,6 +390,17 @@ pub struct CompilerCriticalPathEvidence {
     #[serde(default)]
     pub semantic_declaration_nuclei: DurationDistribution,
     /// Exact signature-fragment parsing across semantic query consumers.
+    ///
+    /// Permanently absent from a current producer. RUE-1510 replaced signature
+    /// source reconstruction and parser re-entry with a projection from the
+    /// canonical parsed declaration, so no span opens and this stays at its
+    /// default. Unlike the three deleted body-input intervals below, which are
+    /// still entered once per materialization and report zero nanoseconds, the
+    /// count itself is zero. The field is retained because immutable historical
+    /// records carry real values here and `deny_unknown_fields` would refuse
+    /// them without it, and
+    /// [`BuildBoundaryEvidence::validate_current_producer_against`] now proves
+    /// the deletion instead of the work.
     #[serde(default)]
     pub semantic_declaration_signature_parsing: DurationDistribution,
     /// Inclusive rooted body-closure query and immediate work reduction.
@@ -491,6 +502,99 @@ pub struct CompilerCriticalPathEvidence {
     pub declined_joins: u64,
     pub donated_permits: u64,
 }
+
+/// Semantic critical-path counters a current producer must actually report,
+/// each with the schema field name the rejection names.
+///
+/// A table rather than a chain of `||` so the check can say which entry failed.
+/// Every row is evidence that a phase ran at all; a row is removed only when
+/// the work it timed is deleted from the compiler, and then the deletion itself
+/// becomes the assertion rather than the row simply disappearing.
+type SemanticEvidenceRow = (
+    &'static str,
+    fn(&CompilerCriticalPathEvidence) -> &DurationDistribution,
+);
+
+const REQUIRED_SEMANTIC_EVIDENCE: [SemanticEvidenceRow; 26] = [
+    ("semantic_prerequisite_bodies", |critical| {
+        &critical.semantic_prerequisite_bodies
+    }),
+    ("semantic_declaration_graph", |critical| {
+        &critical.semantic_declaration_graph
+    }),
+    ("semantic_declaration_occurrence_indexes", |critical| {
+        &critical.semantic_declaration_occurrence_indexes
+    }),
+    ("semantic_declaration_nuclei", |critical| {
+        &critical.semantic_declaration_nuclei
+    }),
+    ("semantic_body_closure", |critical| {
+        &critical.semantic_body_closure
+    }),
+    ("semantic_body_graph_projection", |critical| {
+        &critical.semantic_body_graph_projection
+    }),
+    ("semantic_body_input_lowering", |critical| {
+        &critical.semantic_body_input_lowering
+    }),
+    ("semantic_body_input_attributed_total", |critical| {
+        &critical.semantic_body_input_attributed_total
+    }),
+    ("semantic_body_input_assembly_snapshot", |critical| {
+        &critical.semantic_body_input_assembly_snapshot
+    }),
+    ("semantic_body_input_lex_parse", |critical| {
+        &critical.semantic_body_input_lex_parse
+    }),
+    ("semantic_body_input_rir_lower", |critical| {
+        &critical.semantic_body_input_rir_lower
+    }),
+    ("semantic_body_input_span_remap_validation", |critical| {
+        &critical.semantic_body_input_span_remap_validation
+    }),
+    ("semantic_body_input_rir_index", |critical| {
+        &critical.semantic_body_input_rir_index
+    }),
+    ("semantic_provider_analysis", |critical| {
+        &critical.semantic_provider_analysis
+    }),
+    ("semantic_provider_host_setup", |critical| {
+        &critical.semantic_provider_host_setup
+    }),
+    ("semantic_provider_expression_engine", |critical| {
+        &critical.semantic_provider_expression_engine
+    }),
+    ("semantic_expression_setup", |critical| {
+        &critical.semantic_expression_setup
+    }),
+    ("semantic_inference_precompute", |critical| {
+        &critical.semantic_inference_precompute
+    }),
+    ("semantic_inference_precompute_structural", |critical| {
+        &critical.semantic_inference_precompute_structural
+    }),
+    ("semantic_inference_precompute_eval_provider", |critical| {
+        &critical.semantic_inference_precompute_eval_provider
+    }),
+    ("semantic_constraint_generation", |critical| {
+        &critical.semantic_constraint_generation
+    }),
+    ("semantic_unification_resolution", |critical| {
+        &critical.semantic_unification_resolution
+    }),
+    ("semantic_air_emission_validation", |critical| {
+        &critical.semantic_air_emission_validation
+    }),
+    ("semantic_provider_specialization_selection", |critical| {
+        &critical.semantic_provider_specialization_selection
+    }),
+    ("semantic_provider_body_export", |critical| {
+        &critical.semantic_provider_body_export
+    }),
+    ("semantic_provider_result_projection", |critical| {
+        &critical.semantic_provider_result_projection
+    }),
+];
 
 /// Complete evidence attached to one fresh compiler process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -726,35 +830,37 @@ impl BuildBoundaryEvidence {
     ) -> Result<(), String> {
         self.validate_against(policy, target)?;
         let critical = &self.critical_path;
-        if critical.semantic_prerequisite_bodies.count == 0
-            || critical.semantic_declaration_graph.count == 0
-            || critical.semantic_declaration_occurrence_indexes.count == 0
-            || critical.semantic_declaration_nuclei.count == 0
-            || critical.semantic_declaration_signature_parsing.count == 0
-            || critical.semantic_body_closure.count == 0
-            || critical.semantic_body_graph_projection.count == 0
-            || critical.semantic_body_input_lowering.count == 0
-            || critical.semantic_body_input_attributed_total.count == 0
-            || critical.semantic_body_input_assembly_snapshot.count == 0
-            || critical.semantic_body_input_lex_parse.count == 0
-            || critical.semantic_body_input_rir_lower.count == 0
-            || critical.semantic_body_input_span_remap_validation.count == 0
-            || critical.semantic_body_input_rir_index.count == 0
-            || critical.semantic_provider_analysis.count == 0
-            || critical.semantic_provider_host_setup.count == 0
-            || critical.semantic_provider_expression_engine.count == 0
-            || critical.semantic_expression_setup.count == 0
-            || critical.semantic_inference_precompute.count == 0
-            || critical.semantic_inference_precompute_structural.count == 0
-            || critical.semantic_inference_precompute_eval_provider.count == 0
-            || critical.semantic_constraint_generation.count == 0
-            || critical.semantic_unification_resolution.count == 0
-            || critical.semantic_air_emission_validation.count == 0
-            || critical.semantic_provider_specialization_selection.count == 0
-            || critical.semantic_provider_body_export.count == 0
-            || critical.semantic_provider_result_projection.count == 0
-        {
-            return Err("compiler omitted semantic critical-path evidence".to_string());
+        // Named, not a boolean chain. One message for every counter says only
+        // that some evidence is absent, which is what a maintainer gets from CI
+        // when this fires; diagnosing RUE-1514 from it took reading this
+        // function and bisecting the published data branch to find which of the
+        // conditions had gone false.
+        let omitted = REQUIRED_SEMANTIC_EVIDENCE
+            .iter()
+            .filter(|(_, select)| select(critical).count == 0)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        if !omitted.is_empty() {
+            return Err(format!(
+                "compiler omitted semantic critical-path evidence: {}",
+                omitted.join(", ")
+            ));
+        }
+        // The one counter deleted rather than omitted, held to the opposite
+        // rule. RUE-1510 replaced signature source reconstruction and parser
+        // re-entry with a projection from the canonical parsed declaration, so
+        // a current producer opens no such span. Requiring it to be non-zero
+        // rejected every process from that commit onward; simply dropping the
+        // entry would leave the boundary with nothing to say about a frontend
+        // path this variant no longer describes. Proving the deletion keeps
+        // the evidence fail-closed in the direction that is still falsifiable.
+        if critical.semantic_declaration_signature_parsing.count != 0 {
+            return Err(format!(
+                "semantic_declaration_signature_parsing reported {} invocations; RUE-1510 deleted \
+                 signature parsing, so a fresh_source_to_native_v1 process performing one is \
+                 running a frontend path this boundary variant does not describe",
+                critical.semantic_declaration_signature_parsing.count
+            ));
         }
         let lowering_counts = [
             critical.semantic_body_input_attributed_total.count,
@@ -961,7 +1067,8 @@ mod tests {
                 semantic_declaration_graph: distribution(),
                 semantic_declaration_occurrence_indexes: distribution(),
                 semantic_declaration_nuclei: distribution(),
-                semantic_declaration_signature_parsing: distribution(),
+                // Zero for a current producer: RUE-1510 deleted the span.
+                semantic_declaration_signature_parsing: DurationDistribution::default(),
                 semantic_body_closure: distribution(),
                 semantic_body_graph_projection: distribution(),
                 semantic_body_input_lowering: distribution(),
@@ -1285,6 +1392,72 @@ mod tests {
                 .unwrap_err(),
             "compiler provider-analysis attribution is incomplete"
         );
+    }
+
+    #[test]
+    fn omitted_semantic_evidence_names_the_missing_counters() {
+        // The rejection a maintainer reads out of CI has to point at the field.
+        // RUE-1514 was one message covering 27 conditions: every published run
+        // for a day said "compiler omitted semantic critical-path evidence" and
+        // nothing more, and finding which counter had gone to zero meant
+        // reading this predicate and bisecting the data branch.
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+
+        let mut one_missing = evidence();
+        one_missing.critical_path.semantic_declaration_nuclei = DurationDistribution::default();
+        assert_eq!(
+            one_missing
+                .validate_current_producer_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler omitted semantic critical-path evidence: semantic_declaration_nuclei"
+        );
+
+        // Every absent counter is named, not just the first: a producer that
+        // stopped reporting a whole phase should say so in one collection.
+        let mut several_missing = evidence();
+        several_missing.critical_path.semantic_declaration_graph = DurationDistribution::default();
+        several_missing
+            .critical_path
+            .semantic_unification_resolution = DurationDistribution::default();
+        assert_eq!(
+            several_missing
+                .validate_current_producer_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler omitted semantic critical-path evidence: semantic_declaration_graph, \
+             semantic_unification_resolution"
+        );
+
+        assert_eq!(REQUIRED_SEMANTIC_EVIDENCE.len(), 26);
+    }
+
+    #[test]
+    fn a_reappearing_signature_parse_fails_closed() {
+        // The inverse rule, and the reason the field is not simply dropped from
+        // the required set. RUE-1510 deleted signature source reconstruction
+        // and parser re-entry, so the current producer reports zero here — the
+        // fixture above. A process that reports one is doing frontend work this
+        // boundary variant does not describe, which is a reviewed schema event
+        // rather than a sample to admit quietly.
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+        evidence()
+            .validate_current_producer_against(&policy, "x86-64-linux")
+            .unwrap();
+
+        let mut reparsed = evidence();
+        reparsed
+            .critical_path
+            .semantic_declaration_signature_parsing = distribution();
+        let error = reparsed
+            .validate_current_producer_against(&policy, "x86-64-linux")
+            .unwrap_err();
+        assert!(
+            error.starts_with("semantic_declaration_signature_parsing reported 1 invocations"),
+            "{error}"
+        );
+
+        // Immutable historical records still carry real values here and must
+        // keep validating; only the current producer is held to the deletion.
+        reparsed.validate_against(&policy, "x86-64-linux").unwrap();
     }
 
     #[test]

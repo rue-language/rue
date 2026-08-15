@@ -319,7 +319,16 @@ discarded. Publication is tiered:
 - a headline point is published only when every suite workload completed
   validly;
 - when the latest run is incomplete, the dashboard shows an explicit
-  collection-health warning naming the failing workloads.
+  collection-health warning naming the failing workloads;
+- an incomplete run also fails its own collection job, with its recorded
+  failures in that job's log. The dashboard warning is where collection health
+  is *read*; it is not what tells anyone to look. A refused run stores nothing
+  and an incomplete one still publishes each workload that completed, but
+  neither advances the headline series, and when no workload completes the two
+  are indistinguishable from outside. Until RUE-1514 the incomplete case did
+  that while every check reported success, leaving the repository-wide stall
+  gate above to notice days later, against pull requests that did not cause
+  it.
 
 Fixed headline membership is preserved without throwing away evidence, and a
 persistently broken workload is visible rather than an unexplained hole.
