@@ -2,6 +2,14 @@
 
 For cross-check against ADR-0066's conversion inventory. Every reference verified in-checkout; behavior claims captured executably in the companion current-behavior artifact.
 
+> **Phase 3 supersession.** This file preserves the RUE-1089 investigation at
+> its named checkout. ADR-0071 Phase 3 later deleted the production raw
+> const/body fragment queries, synthetic reparsers, `TransportedAnonymousSites`,
+> and marker-driven corruption seam. Constant, comptime, runtime, specialized,
+> and anonymous evaluation now consume the same packed candidate artifact and
+> its parser-indexed anchors; the old fragment materializers remain `cfg(test)`
+> deleted-route oracles only.
+
 ## A. Cross-producer structural equality (the assignability engine) — crates/rue-air/src/sema/anon_structs.rs
 
 - `find_or_create_anon_struct` (331–453): structural match search + `min_by anonymous_key_cmp` stable-min representative + alias install (`canonical_anonymous_aliases`, `canonical_anonymous_types`); the `existing`-branch representative swap (353–381) also retracts prior methods. **Delete the structural search + representative/alias logic; keep one producer key → one entity.**

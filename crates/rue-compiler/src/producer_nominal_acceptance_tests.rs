@@ -3,17 +3,17 @@
 //!
 //! This module is the home for the acceptance criteria that cannot be expressed
 //! as spec/CLI TOML cases, because they need programmatic assertions
-//! (warm/fresh/cold parity, symbol-set comparison, execution of the linked ELF)
-//! or a test-only anchor-transport fault-injection hook.
+//! (warm/fresh/cold parity, symbol-set comparison, and execution of the linked
+//! ELF).
 //!
 //! Companion behavioral cases live in
 //! `crates/rue-spec/cases/expressions/producer_nominal_acceptance.toml` and
 //! `crates/rue-cli-tests/cases/producer_nominal_targets.toml`. The full
 //! criterion → test map is in `docs/notes/rue-1089-acceptance-ledger.md`.
 //!
-//! The anchor-transport fix (RUE-1089) has landed: the frontend anonymous-type
-//! anchor is transported exactly into the durable evaluator, so the Wrap payload
-//! shape compiles and executes, and an injected anchor divergence fails closed.
+//! Anonymous-type anchors are now consumed directly from the canonical candidate
+//! artifact, so the Wrap payload shape compiles without a synthetic-source
+//! transport authority.
 
 use crate::*;
 use std::collections::BTreeSet;
@@ -1286,25 +1286,13 @@ fn wrap_payload_executes_on_both_backend_targets() {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion 7 — an artificial anchor-transport disagreement fails closed
+// Criterion 7 — retired source-transport markers have no semantic authority
 // ---------------------------------------------------------------------------
 
-/// Render every error's code and message into one string for substring checks.
-fn rendered_errors(errors: &CompileErrors) -> String {
-    errors
-        .iter()
-        .map(|error| format!("[{}] {}", error.kind.code(), error.kind))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// The Wrap shape (a generic struct producer whose method reaches its
-/// anonymous-enum field), carrying a test-only marker inside the producer whose
-/// durable identity a reached member consumes. The marker rides into the
-/// reparsed fragment source and drives the evaluator's fault-injection hook,
-/// corrupting the transported anchor table for that declaration exactly as a
-/// real transport bug would. This is the shape where the durable identity is
-/// load-bearing, so a fail-closed transport error must sink the whole request.
+/// anonymous-enum field), carrying a comment marker inside the producer whose
+/// durable identity a reached member consumes. The marker used to select the
+/// removed synthetic-source transport fault seam; it is now ordinary trivia.
 fn fault_probe_program(marker: &str) -> String {
     format!(
         r#"
@@ -1329,45 +1317,20 @@ fn main() -> i32 {{
     )
 }
 
-/// A DIVERGENT transported anchor — a wrong-but-present anchor published for the
-/// producer whose durable identity a reached member consumes — reproduces the
-/// exact pre-fix hazard. It must fail closed LOUD: the reached `get_or` member
-/// cannot match its owner terminal, so a typed E9000-class internal diagnostic
-/// surfaces and the request returns `Err`. Never a silent miscompile.
+/// The canonical candidate artifact owns anonymous anchors. A comment carrying
+/// the retired reparse transport marker cannot alter that identity.
 #[test]
-fn divergent_anchor_transport_fails_closed_loud() {
+fn retired_divergent_transport_marker_is_inert() {
     let options = CompileOptions::default();
     let program = fault_probe_program("__RUE1089_FAULT_DIVERGE__");
-    let errors = match fresh_rooted_cfg(&program, &options) {
-        Err(errors) => errors,
-        Ok(_) => {
-            panic!("a divergent transported anchor must fail closed, but the program compiled")
-        }
-    };
-    let rendered = rendered_errors(&errors);
-    assert!(
-        errors
-            .iter()
-            .any(|error| error.kind.code() == rue_error::ErrorCode::INTERNAL_ERROR),
-        "expected a fail-closed E9000 internal diagnostic, got:\n{rendered}",
-    );
+    fresh_rooted_cfg(&program, &options)
+        .expect("a source comment cannot corrupt candidate-artifact anchor identity");
 }
 
-/// HARDENED (RUE-1089 Stage D). The resolve-level corruptions — a missing
-/// locator, a duplicate locator, or a kind mismatch — are each an invariant
-/// violation of the atomic `{source, anonymous_sites}` anchored artifact once
-/// the raw fragment terminal exists. They must fail closed LOUD, exactly like a
-/// divergent anchor: the committed E9000-class internal error is the sole
-/// authority and must NEVER be downgraded to a retryable abort that AIR rescues
-/// by recomputing the identity from RIR.
-///
-/// Previously these three modes were "frontend-recoverable" (the durable
-/// producer's failure was masked by a live AIR mint), which created a second
-/// identity authority and hid transport defects. The reviewer ruled that
-/// unacceptable; every mode now sinks the request with a typed internal
-/// diagnostic and publishes NO rooted CFG output.
+/// None of the retired synthetic-source transport markers has authority over
+/// the packed candidate's indexed anchors.
 #[test]
-fn resolve_level_transport_corruptions_fail_closed_loud() {
+fn retired_resolve_transport_markers_are_inert() {
     let options = CompileOptions::default();
     for marker in [
         "__RUE1089_FAULT_MISSING__",
@@ -1375,22 +1338,8 @@ fn resolve_level_transport_corruptions_fail_closed_loud() {
         "__RUE1089_FAULT_WRONG_KIND__",
     ] {
         let program = fault_probe_program(marker);
-        // Zero publication: the request yields NO `RootedCfgOutput`, so
-        // no nominal/member/alias terminal reached the caller.
-        let errors = match fresh_rooted_cfg(&program, &options) {
-            Err(errors) => errors,
-            Ok(_) => panic!(
-                "corruption mode {marker} must fail closed with no published rooted CFG output, \
-                 but the program compiled",
-            ),
-        };
-        let rendered = rendered_errors(&errors);
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.kind.code() == rue_error::ErrorCode::INTERNAL_ERROR),
-            "corruption mode {marker} must raise a typed E9000 internal diagnostic, got:\n{rendered}",
-        );
+        fresh_rooted_cfg(&program, &options)
+            .unwrap_or_else(|errors| panic!("marker {marker} changed semantics: {errors}"));
     }
 }
 

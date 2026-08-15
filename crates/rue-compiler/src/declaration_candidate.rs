@@ -82,24 +82,13 @@ pub(crate) enum DeclarationShellFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
-/// Parser-validated source syntax for one constant, detached from its source
-/// epoch and parser symbol universe.
-///
-/// Each fragment is the exact UTF-8 source spelling of the corresponding
-/// syntax node, excluding the declaration's `:` / `=` / `;` separators. The
-/// fragments contain no positional or interned handles and can therefore be
-/// reparsed by a later standalone constant evaluator without retaining an AST,
-/// RIR, resolver, or file table.
-/// One value-position anonymous type literal transported from the frontend
-/// (module) coordinate space into a durable declaration fragment.
+/// Test-only record of one anonymous type literal in a retired raw fragment.
 ///
 /// `fragment_start` / `fragment_end` are byte offsets **relative to the start of
-/// the reparsed fragment text** (the constant initializer, or the body block) —
-/// not module offsets and not identity. They only reconnect the reparsed
-/// literal to the anchor `AstGen` already minted for it, once the fragment
-/// evaluator translates them into its own fragment-local coordinate space. The
-/// `anchor` is the durable, definition-relative frontend anchor (position- and
-/// trivia-insensitive by construction); it is the only identity-bearing field.
+/// the constant initializer or body block. Production evaluation consumes the
+/// packed candidate artifact and its indexed anchors directly; this type exists
+/// only so deleted-route selection tests can exercise the old fragment shape.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawAnonymousSite {
     pub(crate) fragment_start: u32,
@@ -108,17 +97,19 @@ pub(crate) struct RawAnonymousSite {
     pub(crate) anchor: rue_rir::RirStructuralAnchor,
 }
 
+/// Test-only parser projection for the retired raw-constant query.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawConstSyntax {
     pub(crate) declared_type: Option<Arc<str>>,
     pub(crate) initializer: Arc<str>,
-    /// Anonymous type literals inside `initializer`, located relative to its
-    /// start, each carrying its frontend anchor. Fail-closed transport for the
-    /// durable comptime evaluator (RUE-1089).
+    /// Anonymous type literals inside `initializer`, retained only for the
+    /// deleted-route oracle.
     pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-constant family.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RawConstSyntaxFailure {
     OccurrencesUnavailable(DeclarationOccurrenceFailure),
@@ -128,25 +119,21 @@ pub(crate) enum RawConstSyntaxFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
-/// Parser-validated syntax for one body-bearing declaration, detached from its
-/// source epoch and parser symbol universe.
+/// Test-only parser projection for the retired raw-body query.
 ///
-/// The fragment is exactly the declaration's body expression, including its
-/// delimiters. It deliberately excludes the signature and trivia between the
-/// signature's last token and the body. This is a syntax input only: runtime
-/// body analysis remains a later query family, while declaration-time
-/// comptime reduction can reparse this exact demanded producer without
-/// requesting a whole-module RIR.
+/// Production runtime and comptime evaluation consume the packed candidate
+/// artifact; this exact fragment remains only as a deletion-regression oracle.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawDeclarationBodySyntax {
     pub(crate) body: Arc<str>,
-    /// Anonymous type literals inside `body`, located relative to its start,
-    /// each carrying its frontend anchor. Fail-closed transport for the durable
-    /// comptime evaluator (RUE-1089).
+    /// Anonymous type literals inside `body`, retained only for the
+    /// deleted-route oracle.
     pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-body family.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RawDeclarationBodyFailure {
     OccurrencesUnavailable(DeclarationOccurrenceFailure),

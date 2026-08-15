@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use ahash::{AHashMap, RandomState};
+use lasso::Key;
 
 #[derive(Debug, Default)]
 struct BodyReachabilityMeter {
@@ -462,8 +463,10 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::semantic_query_nucleus::SemanticNucleusKey,
         crate::semantic_query_nucleus::SemanticNucleusValue,
     >,
-    declaration_semantics_projection:
-        QueryFamily<SemanticNucleusProjectionKey, SemanticNucleusProjectionValue>,
+    declaration_semantics_publications: QueryFamily<
+        SemanticNucleusProjectionKey,
+        Arc<rue_query::QueryTerminal<SemanticNucleusProjectionValue>>,
+    >,
     #[allow(dead_code)]
     type_shapes:
         QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeShapeValue>,
@@ -1316,6 +1319,21 @@ struct PublishedBodyReachabilityRoot {
     lease: Arc<rue_query::RetainedPinSet>,
 }
 
+/// Exact candidate-artifact terminals bridging the session's declaration-root
+/// discovery request to the subsequent body-closure request.
+///
+/// The projection is intentionally requested before the closure because it
+/// determines `main` and the exported roots. Its candidate artifacts use a
+/// small family history, so dropping the first rooted request before starting
+/// the closure would make validation evict and rederive the same const/comptime
+/// artifacts. Pinning only that bounded family avoids cloning the much larger
+/// declaration projection cone. This lease owns only the inter-request gap;
+/// the final body closure cone supersedes it atomically.
+#[derive(Debug, Default)]
+struct PublishedDeclarationSemanticsRoot {
+    lease: Arc<rue_query::RetainedPinSet>,
+}
+
 fn backend_retention_fallbacks(
     backend: &Arc<Mutex<PublishedBackendRoot>>,
     body_closure: &Arc<Mutex<PublishedBodyClosureRoot>>,
@@ -1612,6 +1630,50 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyReachabilityTerminalHandoff
                 .previous
                 .take()
                 .expect("an installed reachability lease retains its predecessor");
+            let mut root = self
+                .root
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let installed = std::mem::replace(&mut *root, previous);
+            self.pending = Some(installed.lease);
+            self.installed = false;
+        } else {
+            drop(self.pending.take());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PublishedDeclarationSemanticsTerminalHandoff {
+    root: Arc<Mutex<PublishedDeclarationSemanticsRoot>>,
+    pending: Option<Arc<rue_query::RetainedPinSet>>,
+    previous: Option<PublishedDeclarationSemanticsRoot>,
+    installed: bool,
+}
+
+impl rue_query::QueryAttemptHandoff for PublishedDeclarationSemanticsTerminalHandoff {
+    fn commit(&mut self) {
+        let pending = self
+            .pending
+            .take()
+            .expect("declaration-semantics terminal handoff commits at most once");
+        let mut root = self
+            .root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.previous = Some(std::mem::replace(
+            &mut *root,
+            PublishedDeclarationSemanticsRoot { lease: pending },
+        ));
+        self.installed = true;
+    }
+
+    fn abort(&mut self) {
+        if self.installed {
+            let previous = self
+                .previous
+                .take()
+                .expect("an installed declaration-semantics lease retains its predecessor");
             let mut root = self
                 .root
                 .lock()
@@ -2089,30 +2151,36 @@ pub(crate) enum StableDeclarationClassificationFailure {
     },
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawConstSyntaxQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
+#[cfg(test)]
 impl QueryKey for RawConstSyntaxQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RawConstSyntaxQueryValue {
     Available(crate::declaration_candidate::RawConstSyntax),
     Failure(crate::declaration_candidate::RawConstSyntaxFailure),
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RawDeclarationBodyQueryKey(crate::declaration_candidate::DeclarationCandidateKey);
 
+#[cfg(test)]
 impl QueryKey for RawDeclarationBodyQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RawDeclarationBodyQueryValue {
     Available(crate::declaration_candidate::RawDeclarationBodySyntax),
@@ -2173,6 +2241,38 @@ fn candidate_rir_artifact_failure_errors(
         failure => crate::CompileErrors::from(import_input_error(format!(
             "candidate RIR artifact failed: {failure:?}"
         ))),
+    }
+}
+
+fn candidate_rir_semantic_failure(
+    failure: &DeclarationBodyPlanFailure,
+) -> crate::semantic_query_nucleus::SemanticNucleusFailure {
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as Failure;
+    match failure {
+        DeclarationBodyPlanFailure::Build(kind) => Failure::Diagnostic(kind.clone()),
+        DeclarationBodyPlanFailure::CandidateRirRejected(errors) => {
+            Failure::Syntax(Arc::from(errors.to_string()))
+        }
+        failure => Failure::Resolution(Arc::from(format!(
+            "candidate RIR artifact failed: {failure:?}"
+        ))),
+    }
+}
+
+fn semantic_materialization_failure(
+    failure: crate::canonical_lower::BodyPlanMaterializationFailure,
+) -> Result<crate::semantic_query_nucleus::SemanticNucleusFailure, QueryAbort> {
+    use crate::canonical_lower::BodyPlanMaterializationFailure as Materialization;
+    use crate::semantic_query_nucleus::SemanticNucleusFailure as Failure;
+    match failure {
+        Materialization::Query(abort) => Err(abort),
+        Materialization::Build(error) => Ok(Failure::Diagnostic(
+            crate::canonical_lower::rir_build_error_kind(
+                "declaration-time candidate materialization",
+                &error,
+            ),
+        )),
+        Materialization::Invalid(detail) => Ok(Failure::Resolution(detail)),
     }
 }
 
@@ -2729,7 +2829,9 @@ macro_rules! query_value_charge {
     };
 }
 
+#[cfg(test)]
 query_value_charge!(RawConstSyntaxQueryValue);
+#[cfg(test)]
 query_value_charge!(RawDeclarationBodyQueryValue);
 query_value_charge!(WarningBodySyntaxValue);
 query_value_charge!(WarningBodyReferencesValue);
@@ -7010,68 +7112,94 @@ fn collect_durable_anonymous_nominal_dependencies(
     }
 }
 
-/// Validate that every anonymous nominal THIS producer minted carries an anchor
-/// the transported table authorizes, BEFORE the producer terminal publishes.
-///
-/// A divergent (wrong-but-present) anchor — the pre-fix hazard where a reached
-/// member could not later match its owner terminal — is failed at the producer
-/// terminal itself here, so no nominal/member/alias/cache entry is ever
-/// published (RUE-1089, Theme 5). Nominals minted by nested producers carry a
-/// different producer id; they are validated at their own terminals and skipped.
-fn validate_transported_anchor_authority(
-    producer: &crate::StableProducerId,
-    nominals: &BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-    sites: &crate::semantic_query_nucleus::TransportedAnonymousSites,
-) -> Result<(), crate::semantic_query_nucleus::SemanticNucleusFailure> {
-    let internal = |message: String| {
-        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-            rue_error::ErrorKind::InternalError(message),
-        )
-    };
-    if let Some(reason) = sites.malformed() {
-        return Err(internal(format!(
-            "anchor transport for producer {producer:?} {reason}"
-        )));
-    }
-    for nominal in nominals.values() {
-        if &nominal.identity.producer != producer {
-            continue;
-        }
-        if !sites.authorizes(&nominal.identity.anchor) {
-            return Err(internal(format!(
-                "producer {producer:?} minted an anonymous nominal at anchor {:?} that the \
-                 transported anchor table does not authorize",
-                nominal.identity.anchor,
-            )));
-        }
-    }
-    Ok(())
-}
-
 struct SemanticConstEvaluator<'a, 'provider> {
     provider: &'provider mut SemanticNucleusTypeProvider<'a>,
     imports: &'a QueryFamily<DeclarationImportQueryKey, DeclarationImportQueryValue>,
     declaration: &'a crate::semantic_query_nucleus::DeclarationSemanticQueryKey,
-    source: &'a str,
-    producer_fragment_start: u32,
-    interner: &'a crate::ThreadedRodeo,
-    import_sites: &'a [crate::ImportDirective],
+    rir: &'a rue_rir::ValidatedRir,
+    symbols: &'a [&'a str],
+    import_occurrences: BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>,
     locals: BTreeMap<Arc<str>, EvaluatedSemanticConst>,
     producer: crate::StableProducerId,
     canonical_arguments: crate::CanonicalArguments,
-    /// Anonymous type literals transported from the frontend, in this fragment's
-    /// synthetic-source coordinate space, each carrying the exact `AstGen`
-    /// anchor, as a validate-once keyed index. The single anchor authority:
-    /// `eval_type_literal` looks each reparsed literal up here (O(log S), no
-    /// revalidation) and fails closed on any locator/kind/anchor disagreement,
-    /// and the producer terminal cross-checks its whole minted set against the
-    /// authorized anchors before publishing (RUE-1089).
-    anonymous_sites: &'a crate::semantic_query_nucleus::TransportedAnonymousSites,
     next_call: u32,
     expected_type: Option<crate::durable_semantics::DurableType>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SemanticBinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    And,
+    Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+fn semantic_candidate_import_occurrences(
+    rir: &rue_rir::ValidatedRir,
+    symbols: &[&str],
+    context: &QueryContext,
+) -> Result<BTreeMap<rue_rir::InstRef, (u32, Arc<str>)>, QueryAbort> {
+    let mut sites = Vec::new();
+    for (instruction_ref, instruction) in rir.iter() {
+        if instruction_ref.as_u32() % 64 == 0 {
+            context.check_canceled()?;
+        }
+        let rue_rir::InstData::Intrinsic { name, args } = &instruction.data else {
+            continue;
+        };
+        if symbols[name.into_usize()] != "import" {
+            continue;
+        }
+        let arguments = rir.intrinsic_args(args);
+        if arguments.len() != 1 {
+            continue;
+        }
+        let argument = arguments
+            .get(0)
+            .expect("validated intrinsic argument index");
+        let rue_rir::InstData::StringConst { content, .. } = &rir.get(argument).data else {
+            continue;
+        };
+        sites.push((
+            instruction.span.start,
+            instruction.span.end,
+            instruction_ref,
+            Arc::<str>::from(symbols[content.into_usize()]),
+        ));
+    }
+    sites.sort_by_key(|(start, end, instruction, _)| (*start, *end, *instruction));
+    Ok(sites
+        .into_iter()
+        .enumerate()
+        .map(|(occurrence, (_, _, instruction, specifier))| {
+            (
+                instruction,
+                (
+                    u32::try_from(occurrence)
+                        .expect("validated RIR instruction count is bounded by u32"),
+                    specifier,
+                ),
+            )
+        })
+        .collect())
+}
+
+fn semantic_candidate_spelling<'a>(symbols: &'a [&'a str], symbol: &lasso::Spur) -> &'a str {
+    symbols[symbol.into_usize()]
 }
 
 thread_local! {
@@ -7149,7 +7277,7 @@ impl SemanticConstEvaluator<'_, '_> {
     }
 
     fn symbol(&self, symbol: &lasso::Spur) -> Arc<str> {
-        Arc::from(self.interner.resolve(symbol))
+        Arc::from(self.symbols[symbol.into_usize()])
     }
 
     fn value(
@@ -7169,17 +7297,19 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn target_intrinsic(
         &self,
-        intrinsic: &rue_parser::ast::IntrinsicCallExpr,
+        name: lasso::Spur,
+        args: &rue_rir::RirIntrinsicArgsRange,
         type_name: &'static str,
         variant: &'static str,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        if !intrinsic.args.is_empty() {
+        let found = self.rir.intrinsic_args(args).len();
+        if found != 0 {
             return Err(Self::domain_failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
                     rue_error::ErrorKind::IntrinsicWrongArgCount {
-                        name: self.symbol(&intrinsic.name.name).to_string(),
+                        name: self.symbol(&name).to_string(),
                         expected: 0,
-                        found: intrinsic.args.len(),
+                        found,
                     },
                 ),
             ));
@@ -7235,7 +7365,7 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn bool_value(
         &mut self,
-        expression: &rue_parser::ast::Expr,
+        expression: rue_rir::InstRef,
     ) -> Result<bool, EvaluateSemanticConstError> {
         let evaluated = self.eval(expression)?;
         match self.value(evaluated)?.value {
@@ -7246,7 +7376,7 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn int_value(
         &mut self,
-        expression: &rue_parser::ast::Expr,
+        expression: rue_rir::InstRef,
     ) -> Result<(i128, Option<crate::durable_semantics::DurableType>), EvaluateSemanticConstError>
     {
         let evaluated = self.eval(expression)?;
@@ -7308,30 +7438,32 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn eval_binary(
         &mut self,
-        expression: &rue_parser::ast::BinaryExpr,
+        op: SemanticBinaryOp,
+        lhs: rue_rir::InstRef,
+        rhs: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         use crate::durable_semantics::DurableConstValue as V;
-        use rue_parser::ast::BinaryOp as O;
-        if expression.op == O::And {
+        use SemanticBinaryOp as O;
+        if op == O::And {
             return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                V::Bool(self.bool_value(&expression.left)? && self.bool_value(&expression.right)?),
+                V::Bool(self.bool_value(lhs)? && self.bool_value(rhs)?),
                 crate::durable_semantics::DurableType::Bool,
             )));
         }
-        if expression.op == O::Or {
+        if op == O::Or {
             return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                V::Bool(self.bool_value(&expression.left)? || self.bool_value(&expression.right)?),
+                V::Bool(self.bool_value(lhs)? || self.bool_value(rhs)?),
                 crate::durable_semantics::DurableType::Bool,
             )));
         }
-        let left = self.eval(&expression.left)?;
-        let right = self.eval(&expression.right)?;
+        let left = self.eval(lhs)?;
+        let right = self.eval(rhs)?;
         if let (
             EvaluatedSemanticConst::TargetEnum(left),
             EvaluatedSemanticConst::TargetEnum(right),
         ) = (&left, &right)
         {
-            let value = match expression.op {
+            let value = match op {
                 O::Eq => left == right,
                 O::Ne => left != right,
                 _ => return Self::failure("target descriptors support only equality comparisons"),
@@ -7349,7 +7481,7 @@ impl SemanticConstEvaluator<'_, '_> {
         let left = self.value(left)?;
         let right = self.value(right)?;
         if let (V::Bool(left), V::Bool(right)) = (&left.value, &right.value) {
-            let value = match expression.op {
+            let value = match op {
                 O::Eq => *left == *right,
                 O::Ne => *left != *right,
                 _ => return Self::failure("boolean values support only equality comparisons"),
@@ -7368,7 +7500,7 @@ impl SemanticConstEvaluator<'_, '_> {
         let operand_ty = self.integer_type(left_ty, right_ty)?;
         Self::require_integer_fits(&operand_ty, left)?;
         Self::require_integer_fits(&operand_ty, right)?;
-        let value = match expression.op {
+        let value = match op {
             O::Add => V::Integer(left.checked_add(right).ok_or_else(|| {
                 Self::comptime_failure_value("integer overflow evaluating addition")
             })?),
@@ -7426,22 +7558,26 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn eval_block(
         &mut self,
-        block: &rue_parser::ast::BlockExpr,
+        instructions: &rue_rir::RirBlockInstsRange,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         let saved = self.locals.clone();
         let saved_types = self.provider.substitutions.clone();
         let saved_values = self.provider.value_substitutions.clone();
-        for statement in &block.statements {
-            match statement {
-                rue_parser::ast::Statement::Let(binding) => {
-                    let mut value = self.eval(&binding.init)?;
-                    if let Some(annotation) = &binding.ty {
-                        let syntax = self
-                            .source
-                            .get(annotation.span().start as usize..annotation.span().end as usize)
-                            .ok_or_else(|| {
-                                Self::failure_value("local type annotation has an invalid span")
-                            })?;
+        let count = self.rir.block_inst_count(instructions);
+        let Some(last) = count.checked_sub(1) else {
+            return Self::failure("comptime block has no result instruction");
+        };
+        for index in 0..last {
+            let statement = self
+                .rir
+                .block_inst(instructions, index)
+                .expect("validated block instruction index");
+            match &self.rir.get(statement).data {
+                rue_rir::InstData::Alloc { name, ty, init, .. } => {
+                    let mut value = self.eval(*init)?;
+                    if let Some(annotation) = ty {
+                        let symbols = self.symbols;
+                        let syntax = semantic_candidate_spelling(symbols, annotation);
                         let expected = rue_air::resolve_semantic_type_syntax(
                             self.provider,
                             &self.declaration.declaration.module,
@@ -7505,8 +7641,8 @@ impl SemanticConstEvaluator<'_, '_> {
                             expected,
                         ));
                     }
-                    if let rue_parser::ast::LetPattern::Ident(name) = &binding.pattern {
-                        let name = self.symbol(&name.name);
+                    if let Some(name) = name {
+                        let name = self.symbol(name);
                         match &value {
                             EvaluatedSemanticConst::Value(value)
                                 if matches!(
@@ -7537,17 +7673,21 @@ impl SemanticConstEvaluator<'_, '_> {
                         self.locals.insert(name, value);
                     }
                 }
-                rue_parser::ast::Statement::Expr(expression) => {
-                    self.eval(expression)?;
-                }
-                rue_parser::ast::Statement::Assign(_) => {
+                rue_rir::InstData::Assign { .. } => {
                     return Self::failure(
                         "assignment is not supported in declaration-time comptime",
                     );
                 }
+                _ => {
+                    self.eval(statement)?;
+                }
             }
         }
-        let value = self.eval(&block.expr);
+        let result = self
+            .rir
+            .block_inst(instructions, last)
+            .expect("validated block result instruction");
+        let value = self.eval(result);
         self.locals = saved;
         self.provider.substitutions = saved_types;
         self.provider.value_substitutions = saved_values;
@@ -7556,21 +7696,17 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn eval_import(
         &self,
-        intrinsic: &rue_parser::ast::IntrinsicCallExpr,
+        instruction: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
-        let index = self
-            .import_sites
-            .binary_search_by_key(&intrinsic.span.start, |site| site.source_offset())
-            .map_err(|_| {
-                Self::failure_value(
-                    "exact const import is absent from its parser-authored site index",
-                )
-            })?;
-        let site = &self.import_sites[index];
+        let Some((occurrence, specifier)) = self.import_occurrences.get(&instruction) else {
+            return Self::failure(
+                "exact const import is absent from its candidate RIR occurrence index",
+            );
+        };
         let key = crate::declaration_candidate::DeclarationImportSiteKey {
             declaration: self.declaration.declaration.clone(),
-            occurrence: index as u32,
-            specifier: Arc::from(site.specifier()),
+            occurrence: *occurrence,
+            specifier: specifier.clone(),
         };
         let terminal = self
             .provider
@@ -7585,11 +7721,11 @@ impl SemanticConstEvaluator<'_, '_> {
                 module,
             )) => Ok(EvaluatedSemanticConst::Module(module.clone())),
             DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Missing) => {
-                Self::failure(format!("cannot find module `{}`", site.specifier()))
+                Self::failure(format!("cannot find module `{specifier}`"))
             }
             DeclarationImportQueryValue::Available(
                 crate::CanonicalImportResolution::Ambiguous { .. },
-            ) => Self::failure(format!("ambiguous module `{}`", site.specifier())),
+            ) => Self::failure(format!("ambiguous module `{specifier}`")),
             DeclarationImportQueryValue::Failure(
                 crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(_),
             ) => Err(EvaluateSemanticConstError::Abort(QueryAbort::MissingInput(
@@ -7714,18 +7850,19 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn eval_call(
         &mut self,
-        call: &rue_parser::ast::CallExpr,
+        name: lasso::Spur,
+        arguments: &rue_rir::RirCallArgsRange,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         let module = self.declaration.declaration.module.clone();
-        let name = self.symbol(&call.name.name);
-        self.eval_named_call(&module, name, &call.args)
+        let name = self.symbol(&name);
+        self.eval_named_call(&module, name, arguments)
     }
 
     fn eval_named_call(
         &mut self,
         module: &ModuleId,
         name: Arc<str>,
-        arguments: &[rue_parser::ast::CallArg],
+        arguments: &rue_rir::RirCallArgsRange,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         use crate::semantic_query_nucleus::{
             ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey,
@@ -7779,12 +7916,18 @@ impl SemanticConstEvaluator<'_, '_> {
         else {
             return Self::failure("comptime call shell became unavailable");
         };
-        if shell.parameters.len() != arguments.len() || parameters.len() != arguments.len() {
+        let argument_count = self.rir.call_args(arguments).len();
+        if shell.parameters.len() != argument_count || parameters.len() != argument_count {
             return Self::failure(format!("comptime call `{name}` has the wrong arity"));
         }
-        for (parameter, argument) in parameters.iter().zip(arguments) {
+        for (index, parameter) in parameters.iter().enumerate() {
             use crate::durable_semantics::DurableParameterMode as ParameterMode;
-            use rue_parser::ast::ArgMode;
+            use rue_rir::RirArgMode as ArgMode;
+            let argument = self
+                .rir
+                .call_args(arguments)
+                .get(index)
+                .expect("validated call argument index");
             let failure = match (parameter.mode, argument.mode) {
                 (ParameterMode::Value, ArgMode::Normal)
                 | (ParameterMode::Borrow, ArgMode::Borrow)
@@ -7823,47 +7966,40 @@ impl SemanticConstEvaluator<'_, '_> {
         }
         let mut type_arguments = Vec::new();
         let mut value_arguments = Vec::new();
-        for ((header, parameter), argument) in shell
-            .parameters
-            .iter()
-            .zip(parameters.iter())
-            .zip(arguments.iter())
+        for (index, (header, parameter)) in
+            shell.parameters.iter().zip(parameters.iter()).enumerate()
         {
+            let argument = self
+                .rir
+                .call_args(arguments)
+                .get(index)
+                .expect("validated call argument index");
             if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
-                if matches!(
-                    argument.expr,
-                    rue_parser::ast::Expr::Int(_)
-                        | rue_parser::ast::Expr::Bool(_)
-                        | rue_parser::ast::Expr::String(_)
-                ) {
-                    return Self::failure(format!(
-                        "argument for comptime parameter `{}` must be a type",
-                        header.name
-                    ));
-                }
-                let syntax = self
-                    .source
-                    .get(argument.expr.span().start as usize..argument.expr.span().end as usize)
-                    .ok_or_else(|| {
-                        Self::failure_value("comptime type argument has an invalid span")
-                    })?;
-                let ty = rue_air::resolve_semantic_type_syntax(
-                    self.provider,
-                    &self.declaration.declaration.module,
-                    syntax,
-                )
-                .map_err(|error| match error {
-                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                        EvaluateSemanticConstError::Abort(abort)
+                let evaluated = self.eval(argument.value)?;
+                let evaluated = self.value(evaluated)?;
+                let ty = match evaluated.value {
+                    crate::durable_semantics::DurableConstValue::Type(ty) => ty,
+                    // `()` is the one surface spelling shared by a unit value
+                    // and the unit type. The parameter's `type` expectation is
+                    // therefore the canonical disambiguating context.
+                    crate::durable_semantics::DurableConstValue::Unit
+                        if matches!(
+                            &self.rir.get(argument.value).data,
+                            rue_rir::InstData::UnitConst
+                        ) =>
+                    {
+                        crate::durable_semantics::DurableType::Unit
                     }
-                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                        EvaluateSemanticConstError::failure(failure)
+                    _ => {
+                        return Self::failure(format!(
+                            "argument for comptime parameter `{}` must be a type",
+                            header.name
+                        ));
                     }
-                    other => Self::failure_value(format!("{other:?}")),
-                })?;
+                };
                 type_arguments.push((header.name.clone(), ty));
             } else {
-                let evaluated = self.eval(&argument.expr)?;
+                let evaluated = self.eval(argument.value)?;
                 let typed = self.value(evaluated)?;
                 let value = typed.value;
                 let concrete_type_arguments = type_arguments
@@ -7978,164 +8114,95 @@ impl SemanticConstEvaluator<'_, '_> {
         }
     }
 
-    /// Fail-closed E9000-class internal diagnostic for an anonymous-anchor
-    /// transport disagreement. Never a panic and never a public error code; it
-    /// is raised before any nominal/member terminal or alias can publish.
-    fn anchor_transport_failure<T>(
-        &self,
-        message: String,
-    ) -> Result<T, EvaluateSemanticConstError> {
-        Err(EvaluateSemanticConstError::failure(
-            crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                rue_error::ErrorKind::InternalError(message),
-            ),
-        ))
-    }
-
-    /// The exact frontend anchor for the anonymous literal at `span`, copied from
-    /// the transported table. There is no fallback: a missing locator, a
-    /// duplicate locator, two frontend sites sharing one anchor under this
-    /// producer, or a kind mismatch each fail closed with the producer and the
-    /// expected/observed anchors named (RUE-1089).
-    fn resolve_anonymous_anchor(
-        &self,
-        span: rue_span::Span,
-        kind: rue_air::AnonymousNominalKind,
-    ) -> Result<rue_rir::RirStructuralAnchor, EvaluateSemanticConstError> {
-        let expected_kind = match kind {
-            rue_air::AnonymousNominalKind::Struct => rue_rir::AnonymousTypeSiteKind::Struct,
-            rue_air::AnonymousNominalKind::Enum => rue_rir::AnonymousTypeSiteKind::Enum,
-        };
-        let sites = self.anonymous_sites;
-        // Whole-producer well-formedness (no duplicate locator, no duplicate
-        // anchor) was validated exactly once when this keyed index was built. A
-        // malformed table is anchor-transport corruption and fails closed before
-        // any lookup can mint an identity (RUE-1089, Theme 5).
-        if let Some(reason) = sites.malformed() {
-            return self.anchor_transport_failure(format!(
-                "anchor transport for producer {:?} {reason}",
-                self.producer,
-            ));
-        }
-        let Some(site) = sites.resolve(span) else {
-            return self.anchor_transport_failure(format!(
-                "anchor transport for producer {:?} has no anchor for the anonymous type at \
-                 {}..{}",
-                self.producer, span.start, span.end,
-            ));
-        };
-        if site.kind != expected_kind {
-            return self.anchor_transport_failure(format!(
-                "anchor transport for producer {:?} disagrees on the kind of the anonymous type at \
-                 {}..{} (expected {expected_kind:?}, transported {:?}) at anchor {:?}",
-                self.producer, span.start, span.end, site.kind, site.anchor,
-            ));
-        }
-        // Test-only divergent-anchor injection (RUE-1089 acceptance criterion 7):
-        // return a WRONG-but-present anchor, reproducing the exact pre-fix hazard
-        // where a reached member cannot match its owner terminal. The transported
-        // table does NOT authorize this anchor, so the producer terminal's
-        // cross-check fails it closed (loud E9000) before any nominal/member/
-        // alias/cache entry publishes — never a silent miscompile.
-        #[cfg(test)]
-        if self.source.contains("__RUE1089_FAULT_DIVERGE__") {
-            let mut segments = site.anchor.segments().to_vec();
-            segments.push(rue_rir::RirStructuralPathSegment::AnonymousType(9999));
-            return Ok(rue_rir::RirStructuralAnchor::new(segments));
-        }
-        Ok(site.anchor.clone())
-    }
-
     fn eval_type_literal(
         &mut self,
-        type_expr: &rue_parser::ast::TypeExpr,
+        expression: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
         use crate::durable_semantics::{
             DurableAnonymousNominal, DurableAnonymousNominalShape, DurableConstValue as V,
             DurableType,
         };
+        let module = &self.declaration.declaration.module;
+        let producer = self.declaration.declaration.clone();
+        let symbols = self.symbols;
+        let rir = self.rir;
+        let provider = &mut *self.provider;
         let resolve = |provider: &mut SemanticNucleusTypeProvider<'_>, syntax: &str| {
-            rue_air::resolve_semantic_type_syntax(
-                provider,
-                &self.declaration.declaration.module,
-                syntax,
-            )
-            .map_err(|error| match error {
-                rue_air::SemanticResolutionError::ProviderAbort(abort) => {
-                    EvaluateSemanticConstError::Abort(abort)
+            rue_air::resolve_semantic_type_syntax(provider, module, syntax).map_err(|error| {
+                match error {
+                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                        EvaluateSemanticConstError::Abort(abort)
+                    }
+                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                        EvaluateSemanticConstError::failure(failure)
+                    }
+                    other => Self::failure_value(format!("{other:?}")),
                 }
-                rue_air::SemanticResolutionError::ProviderFailure(failure) => {
-                    EvaluateSemanticConstError::failure(failure)
-                }
-                other => Self::failure_value(format!("{other:?}")),
             })
         };
-        let fragment = |span: rue_span::Span| {
-            self.source
-                .get(span.start as usize..span.end as usize)
-                .ok_or_else(|| Self::failure_value("type literal span is invalid"))
-        };
-        let (kind, shape) = match type_expr {
-            rue_parser::ast::TypeExpr::AnonymousStruct {
-                fields, methods, ..
+        let instruction = rir.get(expression);
+        let (kind, shape, anchor) = match &instruction.data {
+            rue_rir::InstData::AnonStructType {
+                fields,
+                methods,
+                anchor,
             } => {
-                let fields = fields
+                let fields = rir
+                    .anon_struct_fields(fields)
                     .iter()
                     .map(|field| {
-                        let name = Arc::from(self.interner.resolve(&field.name.name));
-                        let syntax = fragment(field.ty.span())?;
-                        Ok((name, resolve(self.provider, syntax)?))
+                        let (name, ty) = *field;
+                        Ok((
+                            Arc::from(semantic_candidate_spelling(symbols, &name)),
+                            resolve(provider, semantic_candidate_spelling(symbols, &ty))?,
+                        ))
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                let method_type =
-                    |provider: &mut SemanticNucleusTypeProvider<'_>,
-                     ty: &rue_parser::ast::TypeExpr| {
-                        let syntax = fragment(ty.span())?;
-                        Ok(if syntax.trim() == "Self" {
-                            crate::durable_semantics::DurableAnonymousMethodType::SelfType
-                        } else {
-                            crate::durable_semantics::DurableAnonymousMethodType::Concrete(resolve(
-                                provider, syntax,
-                            )?)
-                        })
-                    };
-                let mode = |mode: rue_parser::ast::ParamMode| match mode {
-                    rue_parser::ast::ParamMode::Normal | rue_parser::ast::ParamMode::Comptime => {
+                let method_type = |provider: &mut SemanticNucleusTypeProvider<'_>,
+                                   ty: lasso::Spur| {
+                    let syntax = semantic_candidate_spelling(symbols, &ty);
+                    Ok(if syntax.trim() == "Self" {
+                        crate::durable_semantics::DurableAnonymousMethodType::SelfType
+                    } else {
+                        crate::durable_semantics::DurableAnonymousMethodType::Concrete(resolve(
+                            provider, syntax,
+                        )?)
+                    })
+                };
+                let mode = |mode: rue_rir::RirParamMode| match mode {
+                    rue_rir::RirParamMode::Normal => {
                         crate::durable_semantics::DurableParameterMode::Value
                     }
-                    rue_parser::ast::ParamMode::Borrow => {
+                    rue_rir::RirParamMode::Borrow => {
                         crate::durable_semantics::DurableParameterMode::Borrow
                     }
-                    rue_parser::ast::ParamMode::Inout => {
+                    rue_rir::RirParamMode::Inout => {
                         crate::durable_semantics::DurableParameterMode::Inout
                     }
                 };
-                let methods = methods
+                let methods = rir
+                    .anon_struct_methods(methods)
                     .iter()
-                    .map(|method| {
-                        if method.params.iter().any(|parameter| {
-                            parameter.mode == rue_parser::ast::ParamMode::Comptime
-                                && fragment(parameter.ty.span())
-                                    .is_ok_and(|syntax| syntax.trim() == "type")
+                    .map(|method_ref| {
+                        let method = rir.get(*method_ref);
+                        let rue_rir::InstData::FnDecl {
+                            name,
+                            params,
+                            return_type,
+                            has_self,
+                            self_mode,
+                            ..
+                        } = &method.data
+                        else {
+                            return Self::failure(
+                                "anonymous type carries a non-function method instruction",
+                            );
+                        };
+                        if rir.params(params).iter().any(|parameter| {
+                            parameter.is_comptime
+                                && semantic_candidate_spelling(symbols, &parameter.ty).trim()
+                                    == "type"
                         }) {
-                            let start = method
-                                .span
-                                .start
-                                .checked_sub(self.producer_fragment_start)
-                                .ok_or_else(|| {
-                                    Self::failure_value(
-                                        "anonymous method precedes its producer fragment",
-                                    )
-                                })?;
-                            let end = method
-                                .span
-                                .end
-                                .checked_sub(self.producer_fragment_start)
-                                .ok_or_else(|| {
-                                    Self::failure_value(
-                                        "anonymous method precedes its producer fragment",
-                                    )
-                                })?;
                             return Err(EvaluateSemanticConstError::failure(
                                 crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
                                     kind: rue_error::ErrorKind::ComptimeEvaluationFailed {
@@ -8145,38 +8212,31 @@ impl SemanticConstEvaluator<'_, '_> {
                                              monomorphized over its own type parameter); \
                                              move the type parameter to the enclosing type \
                                              constructor instead",
-                                            self.interner.resolve(&method.name.name)
+                                            semantic_candidate_spelling(symbols, name)
                                         ),
                                     },
-                                    start,
-                                    end,
+                                    producer: producer.clone(),
+                                    start: method.span.start,
+                                    end: method.span.end,
                                 },
                             ));
                         }
-                        let parameters = method
-                            .params
+                        let parameters = rir
+                            .params(params)
                             .iter()
                             .map(|parameter| {
                                 Ok((
-                                    method_type(self.provider, &parameter.ty)?,
+                                    method_type(provider, parameter.ty)?,
                                     mode(parameter.mode),
-                                    parameter.mode == rue_parser::ast::ParamMode::Comptime,
+                                    parameter.is_comptime,
                                 ))
                             })
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                        let result = match &method.return_type {
-                            Some(ty) => method_type(self.provider, ty)?,
-                            None => crate::durable_semantics::DurableAnonymousMethodType::Concrete(
-                                DurableType::Unit,
-                            ),
-                        };
+                        let result = method_type(provider, *return_type)?;
                         Ok(crate::durable_semantics::DurableAnonymousMethodSignature {
-                            name: Arc::from(self.interner.resolve(&method.name.name)),
-                            has_self: method.receiver.is_some(),
-                            self_mode: method.receiver.as_ref().map_or(
-                                crate::durable_semantics::DurableParameterMode::Value,
-                                |receiver| mode(receiver.mode),
-                            ),
+                            name: Arc::from(semantic_candidate_spelling(symbols, name)),
+                            has_self: *has_self,
+                            self_mode: mode(*self_mode),
                             parameters: parameters.into(),
                             result,
                             has_body: true,
@@ -8189,22 +8249,27 @@ impl SemanticConstEvaluator<'_, '_> {
                         fields: fields.into(),
                         methods: methods.into(),
                     },
+                    anchor.clone(),
                 )
             }
-            rue_parser::ast::TypeExpr::AnonymousEnum { variants, .. } => {
-                let variants = variants
+            rue_rir::InstData::AnonEnumType {
+                variants,
+                payloads,
+                anchor,
+            } => {
+                let variants = rir
+                    .anon_enum_variants(variants)
                     .iter()
-                    .map(|variant| {
-                        let name = Arc::from(self.interner.resolve(&variant.name.name));
-                        let payload = variant
-                            .payload
+                    .zip(rir.anon_enum_payloads(payloads, variants))
+                    .map(|(name, payload)| {
+                        let payload = payload
                             .iter()
-                            .map(|ty| {
-                                let syntax = fragment(ty.span())?;
-                                resolve(self.provider, syntax)
-                            })
+                            .map(|ty| resolve(provider, semantic_candidate_spelling(symbols, &ty)))
                             .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
-                        Ok((name, Arc::from(payload)))
+                        Ok((
+                            Arc::from(semantic_candidate_spelling(symbols, &name)),
+                            Arc::from(payload),
+                        ))
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                 (
@@ -8212,17 +8277,20 @@ impl SemanticConstEvaluator<'_, '_> {
                     DurableAnonymousNominalShape::Enum {
                         variants: variants.into(),
                     },
+                    anchor.clone(),
                 )
             }
-            _ => {
-                let syntax = fragment(type_expr.span())?;
+            rue_rir::InstData::TypeConst { type_name } => {
                 return Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                    V::Type(resolve(self.provider, syntax)?),
+                    V::Type(resolve(
+                        provider,
+                        semantic_candidate_spelling(symbols, type_name),
+                    )?),
                     DurableType::ComptimeType,
                 )));
             }
+            _ => return Self::failure("instruction is not a comptime type literal"),
         };
-        let anchor = self.resolve_anonymous_anchor(type_expr.span(), kind)?;
         let identity = crate::AnonymousNominalKey {
             kind,
             producer: self.producer.clone(),
@@ -8258,72 +8326,95 @@ impl SemanticConstEvaluator<'_, '_> {
 
     fn eval(
         &mut self,
-        expression: &rue_parser::ast::Expr,
+        expression: rue_rir::InstRef,
     ) -> Result<EvaluatedSemanticConst, EvaluateSemanticConstError> {
+        self.provider
+            .context
+            .check_canceled()
+            .map_err(Self::abort)?;
         use crate::durable_semantics::DurableConstValue as V;
-        use rue_parser::ast::Expr as E;
-        match expression {
-            E::Int(value) => Ok(EvaluatedSemanticConst::Value(
-                TypedSemanticConst::integer_literal(value.value as i128),
+        use rue_rir::InstData as E;
+        let instruction = self.rir.get(expression);
+        match &instruction.data {
+            E::IntConst(value) => Ok(EvaluatedSemanticConst::Value(
+                TypedSemanticConst::integer_literal(*value as i128),
             )),
-            E::String(value) => Ok(EvaluatedSemanticConst::Value(Arc::new(
+            E::StringConst { content, .. } => Ok(EvaluatedSemanticConst::Value(Arc::new(
                 TypedSemanticConst {
-                    value: V::String(self.symbol(&value.value)),
+                    value: V::String(self.symbol(content)),
                     ty: None,
                 },
             ))),
-            E::Bool(value) => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                V::Bool(value.value),
+            E::BoolConst(value) => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(*value),
                 crate::durable_semantics::DurableType::Bool,
             ))),
-            E::Unit(_) => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+            E::UnitConst => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                 V::Unit,
                 crate::durable_semantics::DurableType::Unit,
             ))),
-            E::Ident(name) => self.eval_identifier(self.symbol(&name.name)),
-            E::Call(call) => self.eval_call(call),
-            E::MethodCall(call) => {
-                let EvaluatedSemanticConst::Module(module) = self.eval(&call.receiver)? else {
+            E::VarRef { name, .. } => self.eval_identifier(self.symbol(name)),
+            E::Call { name, args } => self.eval_call(*name, args),
+            E::MethodCall {
+                receiver,
+                method,
+                args,
+            } => {
+                let EvaluatedSemanticConst::Module(module) = self.eval(*receiver)? else {
                     return Self::failure(
                         "method call in declaration-time comptime requires a module receiver",
                     );
                 };
-                self.eval_named_call(&module, self.symbol(&call.method.name), &call.args)
+                self.eval_named_call(&module, self.symbol(method), args)
             }
-            E::Binary(binary) => self.eval_binary(binary),
-            E::Unary(unary) => match unary.op {
-                rue_parser::ast::UnaryOp::Not => {
-                    Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                        V::Bool(!self.bool_value(&unary.operand)?),
-                        crate::durable_semantics::DurableType::Bool,
-                    )))
-                }
-                op => {
-                    let (operand, ty) = self.int_value(&unary.operand)?;
-                    let ty = self.integer_type(ty, None)?;
-                    let result = match op {
-                        rue_parser::ast::UnaryOp::Neg => {
-                            operand.checked_neg().ok_or_else(|| {
-                                Self::comptime_failure_value("integer overflow evaluating negation")
-                            })?
-                        }
-                        rue_parser::ast::UnaryOp::BitNot => !operand,
-                        rue_parser::ast::UnaryOp::Not => unreachable!(),
-                    };
-                    Self::require_integer_fits(&ty, result)?;
-                    Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
-                        V::Integer(result),
-                        ty,
-                    )))
-                }
-            },
-            E::Paren(value) => self.eval(&value.inner),
-            E::Block(block) => self.eval_block(block),
-            E::If(value) => {
-                if self.bool_value(&value.cond)? {
-                    self.eval_block(&value.then_block)
-                } else if let Some(block) = &value.else_block {
-                    self.eval_block(block)
+            E::Add { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Add, *lhs, *rhs),
+            E::Sub { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Sub, *lhs, *rhs),
+            E::Mul { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Mul, *lhs, *rhs),
+            E::Div { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Div, *lhs, *rhs),
+            E::Mod { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Mod, *lhs, *rhs),
+            E::Eq { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Eq, *lhs, *rhs),
+            E::Ne { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Ne, *lhs, *rhs),
+            E::Lt { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Lt, *lhs, *rhs),
+            E::Gt { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Gt, *lhs, *rhs),
+            E::Le { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Le, *lhs, *rhs),
+            E::Ge { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Ge, *lhs, *rhs),
+            E::And { lhs, rhs } => self.eval_binary(SemanticBinaryOp::And, *lhs, *rhs),
+            E::Or { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Or, *lhs, *rhs),
+            E::BitAnd { lhs, rhs } => self.eval_binary(SemanticBinaryOp::BitAnd, *lhs, *rhs),
+            E::BitOr { lhs, rhs } => self.eval_binary(SemanticBinaryOp::BitOr, *lhs, *rhs),
+            E::BitXor { lhs, rhs } => self.eval_binary(SemanticBinaryOp::BitXor, *lhs, *rhs),
+            E::Shl { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Shl, *lhs, *rhs),
+            E::Shr { lhs, rhs } => self.eval_binary(SemanticBinaryOp::Shr, *lhs, *rhs),
+            E::Not { operand } => Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                V::Bool(!self.bool_value(*operand)?),
+                crate::durable_semantics::DurableType::Bool,
+            ))),
+            E::Neg { operand } | E::BitNot { operand } => {
+                let (operand_value, ty) = self.int_value(*operand)?;
+                let ty = self.integer_type(ty, None)?;
+                let result = if matches!(&instruction.data, E::Neg { .. }) {
+                    operand_value.checked_neg().ok_or_else(|| {
+                        Self::comptime_failure_value("integer overflow evaluating negation")
+                    })?
+                } else {
+                    !operand_value
+                };
+                Self::require_integer_fits(&ty, result)?;
+                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    V::Integer(result),
+                    ty,
+                )))
+            }
+            E::Block { instructions } => self.eval_block(instructions),
+            E::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                if self.bool_value(*cond)? {
+                    self.eval(*then_block)
+                } else if let Some(block) = else_block {
+                    self.eval(*block)
                 } else {
                     Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
                         V::Unit,
@@ -8331,110 +8422,166 @@ impl SemanticConstEvaluator<'_, '_> {
                     )))
                 }
             }
-            E::Match(value) => {
-                let evaluated = self.eval(&value.scrutinee)?;
-                for arm in &value.arms {
-                    let matches = match (&arm.pattern, &evaluated) {
-                        (rue_parser::ast::Pattern::Wildcard(_), _) => true,
+            E::Match { scrutinee, arms } => {
+                let evaluated = self.eval(*scrutinee)?;
+                for (pattern, body) in self.rir.match_arms(arms).iter() {
+                    let matches = match (&pattern, &evaluated) {
+                        (rue_rir::RirPatternView::Wildcard(_), _) => true,
                         (
-                            rue_parser::ast::Pattern::Int(pattern),
+                            rue_rir::RirPatternView::Int {
+                                value: pattern,
+                                negative: false,
+                                ..
+                            },
                             EvaluatedSemanticConst::Value(value),
                         ) => {
-                            matches!(&value.value, V::Integer(value) if *value == pattern.value as i128)
+                            matches!(&value.value, V::Integer(value) if *value == *pattern as i128)
                         }
                         (
-                            rue_parser::ast::Pattern::NegInt(pattern),
+                            rue_rir::RirPatternView::Int {
+                                value: pattern,
+                                negative: true,
+                                ..
+                            },
                             EvaluatedSemanticConst::Value(value),
                         ) => {
-                            matches!(&value.value, V::Integer(value) if *value == -(pattern.value as i128))
+                            matches!(&value.value, V::Integer(value) if *value == -(*pattern as i128))
                         }
                         (
-                            rue_parser::ast::Pattern::Bool(pattern),
+                            rue_rir::RirPatternView::Bool(pattern, _),
                             EvaluatedSemanticConst::Value(value),
                         ) => {
-                            matches!(&value.value, V::Bool(value) if *value == pattern.value)
+                            matches!(&value.value, V::Bool(value) if *value == *pattern)
                         }
                         (
-                            rue_parser::ast::Pattern::Path(pattern),
+                            rue_rir::RirPatternView::Path {
+                                module: None,
+                                ctor_head: None,
+                                type_name,
+                                variant,
+                                bindings,
+                                ..
+                            },
                             EvaluatedSemanticConst::TargetEnum(target),
-                        ) if pattern.base.is_none() && pattern.bindings.is_empty() => {
-                            self.interner.resolve(&pattern.type_name.name) == target.type_name
-                                && self.interner.resolve(&pattern.variant.name) == target.variant
+                        ) if bindings.is_empty() => {
+                            semantic_candidate_spelling(self.symbols, type_name) == target.type_name
+                                && semantic_candidate_spelling(self.symbols, variant)
+                                    == target.variant
                         }
                         _ => false,
                     };
                     if matches {
-                        return self.eval(&arm.body);
+                        return self.eval(body);
                     }
                 }
                 Self::failure("comptime match has no selected arm")
             }
-            E::Comptime(value) => self.eval(&value.expr),
-            E::Checked(value) => self.eval(&value.expr),
-            E::TypeLit(value) => self.eval_type_literal(&value.type_expr),
-            E::IntrinsicCall(intrinsic)
-                if self.symbol(&intrinsic.name.name).as_ref() == "import" =>
-            {
-                self.eval_import(intrinsic)
+            E::Comptime { expr } | E::Checked { expr } => self.eval(*expr),
+            E::TypeConst { .. } | E::AnonStructType { .. } | E::AnonEnumType { .. } => {
+                self.eval_type_literal(expression)
             }
-            E::IntrinsicCall(intrinsic)
-                if self.symbol(&intrinsic.name.name).as_ref() == "target_arch" =>
-            {
+            // `[T; N]` is syntactically an array-repeat expression even when it
+            // denotes the array type used as a comptime value. Preserve the
+            // canonical evaluator's distinction: only a repeat whose element
+            // evaluates to `type` becomes a type; ordinary aggregate values
+            // remain unsupported in const context.
+            E::ArrayRepeat { value, count } => {
+                let evaluated = self.eval(*value)?;
+                let typed = self.value(evaluated)?;
+                let V::Type(element) = typed.value else {
+                    return Err(Self::domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::ConstExprNotSupported {
+                                expr_kind: "aggregate expression".to_owned(),
+                            },
+                        ),
+                    ));
+                };
+                let len = match count {
+                    rue_rir::RepeatCount::Literal(value) => *value,
+                    rue_rir::RepeatCount::Named(name) => {
+                        let name = self.symbol(name);
+                        let evaluated = self.eval_identifier(name.clone())?;
+                        let typed = self.value(evaluated)?;
+                        let V::Integer(value) = typed.value else {
+                            return Err(EvaluateSemanticConstError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                                    rue_error::ErrorKind::InvalidArrayLength {
+                                        reason: format!(
+                                            "array length expression '{name}' is not an integer"
+                                        ),
+                                    },
+                                ),
+                            ));
+                        };
+                        u64::try_from(value).map_err(|_| {
+                            EvaluateSemanticConstError::failure(
+                                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                                    rue_error::ErrorKind::InvalidArrayLength {
+                                        reason: format!(
+                                            "array length expression '{name}' is negative or too large"
+                                        ),
+                                    },
+                                ),
+                            )
+                        })?
+                    }
+                };
+                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    V::Type(crate::durable_semantics::DurableType::Array {
+                        element: Box::new(element),
+                        len,
+                    }),
+                    crate::durable_semantics::DurableType::ComptimeType,
+                )))
+            }
+            E::Intrinsic { name, .. } if self.symbol(name).as_ref() == "import" => {
+                self.eval_import(expression)
+            }
+            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_arch" => {
                 let variant = match self.declaration.configuration.target.arch() {
                     rue_target::Arch::X86_64 => "X86_64",
                     rue_target::Arch::Aarch64 => "Aarch64",
                 };
-                self.target_intrinsic(intrinsic, "Arch", variant)
+                self.target_intrinsic(*name, args, "Arch", variant)
             }
-            E::IntrinsicCall(intrinsic)
-                if self.symbol(&intrinsic.name.name).as_ref() == "target_os" =>
-            {
+            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_os" => {
                 let variant = match self.declaration.configuration.target.os() {
                     rue_target::Os::Linux => "Linux",
                     rue_target::Os::Macos => "Macos",
                 };
-                self.target_intrinsic(intrinsic, "Os", variant)
+                self.target_intrinsic(*name, args, "Os", variant)
             }
-            E::IntrinsicCall(intrinsic)
-                if self.symbol(&intrinsic.name.name).as_ref() == "target_data_model" =>
-            {
+            E::Intrinsic { name, args } if self.symbol(name).as_ref() == "target_data_model" => {
                 let variant = match self.declaration.configuration.target.data_model() {
                     rue_target::DataModel::Ilp32 => "Ilp32",
                     rue_target::DataModel::Lp64 => "Lp64",
                     rue_target::DataModel::Llp64 => "Llp64",
                 };
-                self.target_intrinsic(intrinsic, "DataModel", variant)
+                self.target_intrinsic(*name, args, "DataModel", variant)
             }
-            E::IntrinsicCall(intrinsic)
+            E::TypeIntrinsic { name, type_arg }
                 if matches!(
-                    self.symbol(&intrinsic.name.name).as_ref(),
+                    self.symbol(name).as_ref(),
                     "require_droppable" | "require_trivially_droppable"
                 ) =>
             {
-                let intrinsic_name = self.symbol(&intrinsic.name.name);
-                let [rue_parser::ast::IntrinsicArg::Type(ty)] = intrinsic.args.as_slice() else {
-                    return Self::failure(format!("@{intrinsic_name} expects one type argument"));
-                };
-                let evaluated = self.eval_type_literal(ty)?;
-                let crate::durable_semantics::DurableConstValue::Type(ty) =
-                    self.value(evaluated)?.value
-                else {
-                    return Self::failure(format!("@{intrinsic_name} argument is not a type"));
-                };
-                let start = intrinsic
-                    .span
-                    .start
-                    .checked_sub(self.producer_fragment_start)
-                    .ok_or_else(|| {
-                        Self::failure_value("ownership gate precedes its producer fragment")
-                    })?;
-                let end = intrinsic
-                    .span
-                    .end
-                    .checked_sub(self.producer_fragment_start)
-                    .ok_or_else(|| {
-                        Self::failure_value("ownership gate precedes its producer fragment")
-                    })?;
+                let intrinsic_name = self.symbol(name);
+                let symbols = self.symbols;
+                let ty = rue_air::resolve_semantic_type_syntax(
+                    self.provider,
+                    &self.declaration.declaration.module,
+                    semantic_candidate_spelling(symbols, type_arg),
+                )
+                .map_err(|error| match error {
+                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                        EvaluateSemanticConstError::Abort(abort)
+                    }
+                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                        EvaluateSemanticConstError::failure(failure)
+                    }
+                    other => Self::failure_value(format!("{other:?}")),
+                })?;
                 // Ownership is a post-signature well-formedness fact. Publishing
                 // the gate instead of inspecting nominal signatures here lets a
                 // recursive but indirect type graph finish before the keyed
@@ -8450,8 +8597,8 @@ impl SemanticConstEvaluator<'_, '_> {
                         source: Arc::new(
                             crate::semantic_query_nucleus::DeferredOwnershipGateSource {
                                 declaration: self.declaration.declaration.clone(),
-                                start,
-                                end,
+                                start: instruction.span.start,
+                                end: instruction.span.end,
                             },
                         ),
                         application: None,
@@ -8462,28 +8609,35 @@ impl SemanticConstEvaluator<'_, '_> {
                     crate::durable_semantics::DurableType::Unit,
                 )))
             }
-            E::Path(path) if path.base.is_none() => {
-                let type_name = self.interner.resolve(&path.type_name.name);
+            E::EnumVariant {
+                module: None,
+                type_name,
+                variant,
+            } => {
+                let type_name = semantic_candidate_spelling(self.symbols, type_name);
                 if matches!(type_name, "Arch" | "Os" | "DataModel") {
-                    self.target_enum_variant(type_name, self.interner.resolve(&path.variant.name))
+                    self.target_enum_variant(
+                        type_name,
+                        semantic_candidate_spelling(self.symbols, variant),
+                    )
                 } else {
                     Self::failure("path expression is not supported in declaration-time comptime")
                 }
             }
-            E::Field(field) => {
-                if let E::Ident(base) = field.base.as_ref() {
-                    let type_name = self.interner.resolve(&base.name);
+            E::FieldGet { base, field } => {
+                if let E::VarRef { name, .. } = &self.rir.get(*base).data {
+                    let type_name = semantic_candidate_spelling(self.symbols, name);
                     if matches!(type_name, "Arch" | "Os" | "DataModel") {
                         return self.target_enum_variant(
                             type_name,
-                            self.interner.resolve(&field.field.name),
+                            semantic_candidate_spelling(self.symbols, field),
                         );
                     }
                 }
-                let EvaluatedSemanticConst::Module(module) = self.eval(&field.base)? else {
+                let EvaluatedSemanticConst::Module(module) = self.eval(*base)? else {
                     return Self::failure("member access on a non-module const value");
                 };
-                let name = self.symbol(&field.field.name);
+                let name = self.symbol(field);
                 if let Some(candidate) = self
                     .provider
                     .candidate(&module, &name, DefinitionKind::Const)
@@ -8571,19 +8725,19 @@ impl SemanticConstEvaluator<'_, '_> {
                     ),
                 ))
             }
-            E::StructLit(_) | E::ArrayLit(_) => Err(Self::domain_failure(
+            E::StructInit { .. } | E::ArrayInit { .. } => Err(Self::domain_failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
                     rue_error::ErrorKind::ConstExprNotSupported {
                         expr_kind: "aggregate expression".to_owned(),
                     },
                 ),
             )),
-            E::IntrinsicCall(intrinsic) => Err(Self::domain_failure(
+            E::Intrinsic { name, .. } | E::TypeIntrinsic { name, .. } => Err(Self::domain_failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
                     rue_error::ErrorKind::ConstExprNotSupported {
                         expr_kind: format!(
                             "intrinsic `@{}`",
-                            self.interner.resolve(&intrinsic.name.name)
+                            semantic_candidate_spelling(self.symbols, name)
                         ),
                     },
                 ),
@@ -11681,9 +11835,13 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the StableDeclarationClassification family has one canonical name");
+        #[cfg(test)]
         let occurrences_for_raw_const = declaration_occurrence_indexes.clone();
+        #[cfg(test)]
         let shells_for_raw_const = declaration_shells.clone();
+        #[cfg(test)]
         let parse_for_raw_const = parse_modules.clone();
+        #[cfg(test)]
         let raw_const_syntax = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-const-syntax",
@@ -11818,9 +11976,13 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the RawConstSyntax family has one canonical name");
+        #[cfg(test)]
         let occurrences_for_raw_body = declaration_occurrence_indexes.clone();
+        #[cfg(test)]
         let shells_for_raw_body = declaration_shells.clone();
+        #[cfg(test)]
         let parse_for_raw_body = parse_modules.clone();
+        #[cfg(test)]
         let raw_declaration_bodies = runtime
             .family_with_equality_and_evaluator(
                 "compiler.raw-declaration-body",
@@ -12565,8 +12727,7 @@ impl RevisionedQueryDatabase {
         let shells_for_semantic_nucleus = declaration_shells.clone();
         let shells_for_produced_anonymous = declaration_shells.clone();
         let parse_for_semantic_nucleus = parse_modules.clone();
-        let consts_for_semantic_nucleus = raw_const_syntax.clone();
-        let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
+        let artifacts_for_semantic_nucleus = declaration_body_plan_artifacts.clone();
         let names_for_semantic_nucleus = lookup_names.clone();
         let imports_for_semantic_nucleus = declaration_imports.clone();
         let classifications_for_body_source_bases = stable_declaration_classifications.clone();
@@ -13714,26 +13875,40 @@ impl RevisionedQueryDatabase {
                                 return Ok(QueryOutput::success(value)
                                     .with_terminal_kind(QueryTerminalKind::Failure));
                             }
-                            let raw = context.query_registered(
-                                &consts_for_semantic_nucleus,
-                                RawConstSyntaxQueryKey(query.declaration.clone()),
+                            let artifact = context.query_registered(
+                                &artifacts_for_semantic_nucleus,
+                                DeclarationBodyPlanQueryKey(query.declaration.clone()),
                             )?;
-                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
-                                unreachable!("RawConstSyntax publishes typed values")
+                            let rue_query::QueryOutcome::Success(artifact) = artifact.outcome()
+                            else {
+                                unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
                             };
-                            match raw {
-                                RawConstSyntaxQueryValue::Failure(failure) => {
-                                    Value::Failure(Failure::Syntax(Arc::from(format!(
-                                        "{failure:?}"
-                                    ))))
+                            match artifact {
+                                DeclarationBodyPlanArtifactsValue::Failure(failure) => {
+                                    Value::Failure(candidate_rir_semantic_failure(failure))
                                 }
-                                RawConstSyntaxQueryValue::Available(raw) => {
-                                    match crate::semantic_query_nucleus::parse_semantic_const(
-                                        &query.declaration,
-                                        raw,
-                                    ) {
-                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
-                                        Ok(parsed) => {
+                                DeclarationBodyPlanArtifactsValue::Available(artifact) => {
+                                    match artifact.plan.materialize_semantic_candidate_rir(|| {
+                                        context.check_canceled()
+                                    }) {
+                                        Err(failure) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => Value::Failure(failure),
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Ok((rir, symbols, declaration)) => {
+                                            let rue_rir::InstData::ConstDecl {
+                                                ty: declared_type,
+                                                init,
+                                                ..
+                                            } = &rir.get(declaration).data
+                                            else {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Resolution(Arc::from(
+                                                        "constant candidate artifact has a non-constant root",
+                                                    )),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            };
                                             let const_identity = crate::semantic_query_nucleus::classified_const_identity(shell, false);
                                             let mut provider = SemanticNucleusTypeProvider {
                                                 context,
@@ -13750,12 +13925,12 @@ impl RevisionedQueryDatabase {
                                                 dependencies: BTreeSet::new(),
                                                 deferred_ownership: BTreeSet::new(),
                                             };
-                                            let expected_type = raw.declared_type.as_deref().and_then(
-                                                |syntax| {
+                                            let expected_type = declared_type.as_ref().and_then(
+                                                |symbol| {
                                                     rue_air::resolve_semantic_type_syntax(
                                                         &mut provider,
                                                         &query.declaration.module,
-                                                        syntax,
+                                                        symbols[symbol.into_usize()],
                                                     )
                                                     .ok()
                                                 },
@@ -13775,42 +13950,32 @@ impl RevisionedQueryDatabase {
                                                 crate::StableProducerId::Definition(
                                                     const_identity.key.clone(),
                                                 );
+                                            let import_occurrences =
+                                                semantic_candidate_import_occurrences(
+                                                    &rir,
+                                                    &symbols,
+                                                    context,
+                                                )?;
                                             let result = {
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     provider: &mut provider,
                                                     imports: &imports_for_semantic_nucleus,
                                                     declaration: query,
-                                                    source: &parsed.source,
-                                                    producer_fragment_start: parsed.fragment_start,
-                                                    interner: &parsed.interner,
-                                                    import_sites: &parsed.import_sites,
+                                                    rir: &rir,
+                                                    symbols: &symbols,
+                                                    import_occurrences,
                                                     locals: BTreeMap::new(),
                                                     producer: const_producer.clone(),
                                                     canonical_arguments:
                                                         crate::CanonicalArguments::default(),
-                                                    anonymous_sites: &parsed.anonymous_sites,
                                                     next_call: 0,
                                                     expected_type,
                                                 };
-                                                evaluator.eval(&parsed.declaration.init)
+                                                evaluator.eval(*init)
                                             };
-                                            // RUE-1089 Theme 5: fail the const
-                                            // producer terminal BEFORE it publishes
-                                            // if any anonymous nominal it minted
-                                            // diverges from the transported anchor
-                                            // table.
-                                            let result = result.and_then(|value| {
-                                                validate_transported_anchor_authority(
-                                                    &const_producer,
-                                                    &provider.anonymous_nominals,
-                                                    &parsed.anonymous_sites,
-                                                )
-                                                .map_err(EvaluateSemanticConstError::failure)?;
-                                                Ok(value)
-                                            });
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Module(target)) => {
-                                                    if parsed.declaration.ty.is_some() {
+                                                    if declared_type.is_some() {
                                                         Value::Failure(Failure::Resolution(
                                                             Arc::from(
                                                                 "module binding cannot have a type annotation",
@@ -13829,11 +13994,11 @@ impl RevisionedQueryDatabase {
                                                 Ok(EvaluatedSemanticConst::Value(typed)) => {
                                                     let typed = Arc::unwrap_or_clone(typed);
                                                     let value = typed.value;
-                                                    let resolved_type = match raw.declared_type.as_deref() {
-                                                        Some(type_syntax) => rue_air::resolve_semantic_type_syntax(
+                                                    let resolved_type = match declared_type.as_ref() {
+                                                        Some(type_symbol) => rue_air::resolve_semantic_type_syntax(
                                                             &mut provider,
                                                             &query.declaration.module,
-                                                            type_syntax,
+                                                            symbols[type_symbol.into_usize()],
                                                         ),
                                                         None if matches!(
                                                             value,
@@ -14065,28 +14230,39 @@ impl RevisionedQueryDatabase {
                             }
                         }
                         Key::ComptimeCall(call) => {
-                            let raw = context.query_registered(
-                                &bodies_for_semantic_nucleus,
-                                RawDeclarationBodyQueryKey(
+                            let artifact = context.query_registered(
+                                &artifacts_for_semantic_nucleus,
+                                DeclarationBodyPlanQueryKey(
                                     call.declaration.declaration.clone(),
                                 ),
                             )?;
-                            let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
-                                unreachable!("RawDeclarationBody publishes typed values")
+                            let rue_query::QueryOutcome::Success(artifact) = artifact.outcome()
+                            else {
+                                unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
                             };
-                            match raw {
-                                RawDeclarationBodyQueryValue::Failure(failure) => {
-                                    Value::Failure(Failure::Syntax(Arc::from(format!(
-                                        "{failure:?}"
-                                    ))))
+                            match artifact {
+                                DeclarationBodyPlanArtifactsValue::Failure(failure) => {
+                                    Value::Failure(candidate_rir_semantic_failure(failure))
                                 }
-                                RawDeclarationBodyQueryValue::Available(raw) => {
-                                    match crate::semantic_query_nucleus::parse_semantic_body(
-                                        &call.declaration.declaration,
-                                        raw,
-                                    ) {
-                                        Err(failure) => Value::Failure(Failure::Syntax(failure)),
-                                        Ok(parsed) => {
+                                DeclarationBodyPlanArtifactsValue::Available(artifact) => {
+                                    match artifact.plan.materialize_semantic_candidate_rir(|| {
+                                        context.check_canceled()
+                                    }) {
+                                        Err(failure) => match semantic_materialization_failure(failure) {
+                                            Ok(failure) => Value::Failure(failure),
+                                            Err(abort) => return Err(abort),
+                                        },
+                                        Ok((rir, symbols, declaration)) => {
+                                            let rue_rir::InstData::FnDecl { body, .. } =
+                                                &rir.get(declaration).data
+                                            else {
+                                                return Ok(QueryOutput::success(Value::Failure(
+                                                    Failure::Resolution(Arc::from(
+                                                        "comptime candidate artifact has a non-function root",
+                                                    )),
+                                                ))
+                                                .with_terminal_kind(QueryTerminalKind::Failure));
+                                            };
                                             let signature = context.query_registered(
                                                 family,
                                                 Key::Signature(call.declaration.clone()),
@@ -14285,39 +14461,28 @@ impl RevisionedQueryDatabase {
                                                     )
                                                 },
                                             ));
+                                            let import_occurrences =
+                                                semantic_candidate_import_occurrences(
+                                                    &rir,
+                                                    &symbols,
+                                                    context,
+                                                )?;
                                             let result = {
                                                 let mut evaluator = SemanticConstEvaluator {
                                                     provider: &mut provider,
                                                     imports: &imports_for_semantic_nucleus,
                                                     declaration: &call.declaration,
-                                                    source: &parsed.source,
-                                                    producer_fragment_start: parsed.fragment_start,
-                                                    interner: &parsed.interner,
-                                                    import_sites: &parsed.import_sites,
+                                                    rir: &rir,
+                                                    symbols: &symbols,
+                                                    import_occurrences,
                                                     locals,
                                                     producer: producer.clone(),
                                                     canonical_arguments,
-                                                    anonymous_sites: &parsed.anonymous_sites,
                                                     next_call: 0,
                                                     expected_type: Some(expected_type),
                                                 };
-                                                evaluator.eval(&parsed.expression)
+                                                evaluator.eval(*body)
                                             };
-                                            // RUE-1089 Theme 5: fail the producer
-                                            // terminal BEFORE it publishes if any
-                                            // anonymous nominal it minted diverges
-                                            // from the transported anchor table, so
-                                            // no nominal/member/alias/cache entry is
-                                            // published from a corrupt table.
-                                            let result = result.and_then(|value| {
-                                                validate_transported_anchor_authority(
-                                                    &producer,
-                                                    &provider.anonymous_nominals,
-                                                    &parsed.anonymous_sites,
-                                                )
-                                                .map_err(EvaluateSemanticConstError::failure)?;
-                                                Ok(value)
-                                            });
                                             match result {
                                                 Ok(EvaluatedSemanticConst::Value(value))
                                                     if matches!(value.value, crate::durable_semantics::DurableConstValue::Type(_)) =>
@@ -14418,6 +14583,16 @@ impl RevisionedQueryDatabase {
                 .is_ok(),
             "SemanticNucleus producer projection is installed once"
         );
+        // These roots form one staged semantic publication. Declaration
+        // discovery must finish before `main` and C-export roots are known; the
+        // temporary declaration root keeps only its observed candidate
+        // artifacts alive until body closure atomically replaces that bridge
+        // with the complete rooted body graph. They are initialized here so
+        // both publication evaluators share the same handoff authority.
+        let declaration_semantics_root =
+            Arc::new(Mutex::new(PublishedDeclarationSemanticsRoot::default()));
+        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
+        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let occurrences_for_declaration_projection = declaration_occurrence_indexes.clone();
         let orders_for_declaration_projection = declaration_orders.clone();
         let nucleus_for_declaration_projection = semantic_nucleus.clone();
@@ -14456,6 +14631,80 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the DeclarationSemanticsProjection family has one canonical name");
+        let projection_for_declaration_publication = declaration_semantics_projection.clone();
+        let artifacts_for_declaration_publication = declaration_body_plan_artifacts.clone();
+        let root_for_declaration_publication = declaration_semantics_root.clone();
+        let closure_root_for_declaration_publication = body_closure_root.clone();
+        let reachability_root_for_declaration_publication = body_reachability_root.clone();
+        let declaration_semantics_publications = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.declaration-semantics-publication",
+                0,
+                |left: &Arc<rue_query::QueryTerminal<SemanticNucleusProjectionValue>>,
+                 right: &Arc<rue_query::QueryTerminal<SemanticNucleusProjectionValue>>| {
+                    match (left.outcome(), right.outcome()) {
+                        (
+                            rue_query::QueryOutcome::Success(left),
+                            rue_query::QueryOutcome::Success(right),
+                        ) => left == right,
+                        (
+                            rue_query::QueryOutcome::Failure(left),
+                            rue_query::QueryOutcome::Failure(right),
+                        ) => left == right,
+                        _ => false,
+                    }
+                },
+                move |context, _, key: &SemanticNucleusProjectionKey| {
+                    // The preceding successful body graph already retains this
+                    // projection's exact dependency cone. Borrow it while
+                    // discovering the next root set, then retain only the
+                    // observed candidate artifacts for the gap before body
+                    // closure starts.
+                    let declaration_fallback = root_for_declaration_publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let closure_fallback = closure_root_for_declaration_publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let reachability_fallback = reachability_root_for_declaration_publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let validation_fallbacks = [
+                        declaration_fallback,
+                        closure_fallback,
+                        reachability_fallback,
+                    ];
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&validation_fallbacks)
+                        .expect("semantic publication roots belong to this query runtime");
+                    let projection = context.query_registered(
+                        &projection_for_declaration_publication,
+                        key.clone(),
+                    )?;
+                    let pending = context
+                        .retain_observed_family(&artifacts_for_declaration_publication)
+                        .expect("candidate artifacts belong to this query runtime");
+                    context.register_attempt_handoff(
+                        PublishedDeclarationSemanticsTerminalHandoff {
+                            root: root_for_declaration_publication.clone(),
+                            pending: Some(Arc::new(pending)),
+                            previous: None,
+                            installed: false,
+                        },
+                    );
+                    Ok(
+                        QueryOutput::success(projection.clone())
+                            .with_terminal_kind(projection.kind()),
+                    )
+                },
+            )
+            .expect("the DeclarationSemanticsPublication family has one canonical name");
         let semantic_nucleus_for_type_shape = semantic_nucleus.clone();
         let produced_anonymous_for_type_shape = body_produced_anonymous.clone();
         let type_shapes = runtime
@@ -14610,8 +14859,6 @@ impl RevisionedQueryDatabase {
         // Backend terminals extend the already-published semantic/body graph.
         // Keep those independent roots available as retention fallbacks while
         // each backend batch promotes its exact transitive cone.
-        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
-        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let optimized_cfgs_for_batch = optimized_cfgs.clone();
         let backend_root_for_optimized_cfg_batch = backend_root.clone();
         let body_closure_root_for_optimized_cfg_batch = body_closure_root.clone();
@@ -15991,6 +16238,7 @@ impl RevisionedQueryDatabase {
         let lease_for_closure_publication = lookup_root_lease.clone();
         let terminal_root_for_closure_publication = body_closure_root.clone();
         let terminal_root_for_reachability_publication = body_reachability_root.clone();
+        let terminal_root_for_declaration_publication = declaration_semantics_root.clone();
         let runtime_for_closure_publication = runtime.clone();
         let body_closure_publications =
             runtime
@@ -16033,8 +16281,16 @@ impl RevisionedQueryDatabase {
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .lease
                             .clone();
-                        let validation_fallbacks =
-                            [closure_fallback.clone(), reachability_fallback.clone()];
+                        let declaration_fallback = terminal_root_for_declaration_publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lease
+                            .clone();
+                        let validation_fallbacks = [
+                            closure_fallback.clone(),
+                            reachability_fallback.clone(),
+                            declaration_fallback.clone(),
+                        ];
                         let _validated_registered = context
                             .endorse_registered_validations_from(&validation_fallbacks)
                             .expect("body retention roots belong to this query runtime");
@@ -16076,6 +16332,19 @@ impl RevisionedQueryDatabase {
                             context.register_attempt_handoff(
                                 PublishedBodyReachabilityTerminalHandoff {
                                     root: terminal_root_for_reachability_publication.clone(),
+                                    pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
+                                    previous: None,
+                                    installed: false,
+                                },
+                            );
+                            // The complete closure cone now owns every
+                            // declaration dependency. Release the temporary
+                            // discovery bridge only after that replacement has
+                            // been installed, mirroring the reachability
+                            // handoff above.
+                            context.register_attempt_handoff(
+                                PublishedDeclarationSemanticsTerminalHandoff {
+                                    root: terminal_root_for_declaration_publication.clone(),
                                     pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
                                     previous: None,
                                     installed: false,
@@ -16158,6 +16427,14 @@ impl RevisionedQueryDatabase {
                                                 "registered reachability validation retains its exact dependency cone",
                                             )
                                     })),
+                                    previous: None,
+                                    installed: false,
+                                },
+                            );
+                            context.register_attempt_handoff(
+                                PublishedDeclarationSemanticsTerminalHandoff {
+                                    root: terminal_root_for_declaration_publication.clone(),
+                                    pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
                                     previous: None,
                                     installed: false,
                                 },
@@ -16249,7 +16526,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             declaration_imports,
             semantic_nucleus,
-            declaration_semantics_projection,
+            declaration_semantics_publications,
             type_shapes,
             type_facts,
             layouts,
@@ -19214,16 +19491,19 @@ impl RevisionedQueryDatabase {
                 preview_features: crate::StablePreviewFeatures::new(preview_features),
             },
         };
-        let terminal = self
+        let publication = self
             .runtime
             .request_registered(
-                &self.declaration_semantics_projection,
+                &self.declaration_semantics_publications,
                 revision,
                 key,
                 cancellation,
             )
             .into_result()
             .map_err(SemanticNucleusBatchFailure::Query)?;
+        let rue_query::QueryOutcome::Success(terminal) = publication.outcome() else {
+            unreachable!("DeclarationSemanticsPublication publishes typed values")
+        };
         let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("DeclarationSemanticsProjection publishes typed values")
         };
@@ -22123,13 +22403,12 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
                 crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtProducerRange {
                     kind,
+                    producer,
                     start,
                     end,
                 },
             ) => {
-                let span =
-                    self.provider
-                        .producer_relative_span(&declaration.declaration, start, end);
+                let span = self.provider.producer_relative_span(&producer, start, end);
                 return rue_air::DurableComptimeCallOutcome::Diagnostic(
                     rue_air::DurableComptimeDiagnostic { kind, span },
                 );
@@ -22884,15 +23163,10 @@ impl<'a> CompilerBodyFactProvider<'a> {
         else {
             return None;
         };
-        let (_, producer) = parsed.body_source_spans(candidate).or_else(|| {
-            Some((
-                parsed
-                    .definitions()
-                    .declaration_locator(candidate)?
-                    .declaration_span,
-                parsed.definitions().producer_fragment_span(candidate)?,
-            ))
-        })?;
+        let producer = parsed
+            .definitions()
+            .declaration_locator(candidate)?
+            .declaration_span;
         let absolute_start = producer.start.checked_add(start)?;
         let absolute_end = producer.start.checked_add(end)?;
         (absolute_start <= absolute_end && absolute_end <= producer.end)
@@ -26101,7 +26375,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn rooted_runtime_avoids_raw_body_until_explicit_comptime_demand() {
+    fn rooted_runtime_and_comptime_avoid_raw_body_reconstruction() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::durable_semantics::DurableType;
         use crate::semantic_query_nucleus::{
@@ -26163,10 +26437,10 @@ fn main() -> i32 {
                 value_arguments: Arc::from([]),
             }),
         );
-        assert_eq!(database.raw_declaration_bodies.retention().terminals, 1);
+        assert_eq!(database.raw_declaration_bodies.retention().terminals, 0);
         assert_eq!(
             parsed.raw_declaration_body_terminal_materialization_count(),
-            1
+            0
         );
     }
 
@@ -27177,17 +27451,17 @@ fn main() -> i32 {
             "const evaluation",
             &keyed_attempt,
             &[
+                "compiler.declaration-body-plan-artifacts",
                 "compiler.declaration-shell",
                 "compiler.lookup-name",
-                "compiler.raw-const-syntax",
             ],
             &[
+                "compiler.declaration-body-plan-artifacts",
                 "compiler.declaration-occurrence-index",
                 "compiler.declaration-shell",
                 "compiler.lookup-name",
                 "compiler.module-index",
                 "compiler.parse-module",
-                "compiler.raw-const-syntax",
             ],
             6,
         );
@@ -27280,15 +27554,15 @@ fn main() -> i32 {
             "target-selected comptime call",
             &keyed_attempt,
             &[
+                "compiler.declaration-body-plan-artifacts",
                 "compiler.declaration-shell",
-                "compiler.raw-declaration-body",
                 "compiler.semantic-nucleus",
             ],
             &[
+                "compiler.declaration-body-plan-artifacts",
                 "compiler.declaration-occurrence-index",
                 "compiler.declaration-shell",
                 "compiler.parse-module",
-                "compiler.raw-declaration-body",
                 "compiler.semantic-nucleus",
             ],
             7,
@@ -27429,28 +27703,17 @@ fn main() -> i32 {
         );
     }
 
-    /// RUE-1089 Theme 5 (fail-before-terminal). A divergent (wrong-but-present)
-    /// transported anchor must fail the PRODUCER terminal itself — the direct
-    /// `ComptimeCall` reduction of `Wrap(i32)` — with a typed E9000-class internal
-    /// diagnostic, and that terminal must publish NO anonymous nominal.
-    ///
-    /// Before the fix the divergent anchor rode through the producer terminal as a
-    /// successful `ComptimeCall` projection carrying the (divergent) Wrap nominal,
-    /// and only outer materialization noticed the mismatch. Asserting the terminal
-    /// value directly gives this test teeth against that pre-fix ordering: a
-    /// `ComptimeCall` projection here (rather than a `Failure`) is exactly the
-    /// transiently-wrong terminal the cut forbids.
+    /// Anonymous identity comes from the canonical candidate artifact. A source
+    /// comment that used to activate the retired reparse-transport fault seam is
+    /// now inert and cannot alter the producer's structural anchor.
     #[test]
-    fn divergent_anchor_fails_the_producer_comptime_terminal_directly() {
+    fn comptime_anchor_identity_comes_from_the_candidate_artifact() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{
-            ComptimeCallQueryKey, SemanticNucleusFailure as Failure, SemanticNucleusKey as Key,
+            ComptimeCallQueryKey, ComptimeCallResultProjection, SemanticNucleusKey as Key,
             SemanticNucleusValue as V,
         };
 
-        // The Wrap repro carrying the divergence marker inside the producer body,
-        // so the reparsed `Wrap` fragment drives the resolve-time divergent-anchor
-        // injection (see `resolve_anonymous_anchor`).
         let program = "fn Option(comptime T: type) -> type { enum { Some(T), None } }\n\
              fn Wrap(comptime T: type) -> type {\n\
                  // __RUE1089_FAULT_DIVERGE__\n\
@@ -27491,20 +27754,15 @@ fn main() -> i32 {
                 value_arguments: Arc::from([]),
             }),
         );
-        // The producer terminal IS the typed E9000-class internal diagnostic — not
-        // a `ComptimeCall` projection (which would necessarily carry the divergent
-        // published nominal). A `Failure` value carries no anonymous nominals, so
-        // this is also the zero-publication assertion.
         match value {
-            V::Failure(Failure::Diagnostic(rue_error::ErrorKind::InternalError(_))) => {}
-            V::ComptimeCall(_) => panic!(
-                "divergent anchor published a ComptimeCall producer terminal — the transiently \
-                 wrong terminal the fail-before-terminal cut forbids"
-            ),
-            other => panic!(
-                "divergent anchor must fail the Wrap producer terminal with an E9000 internal \
-                 diagnostic, got: {other:?}"
-            ),
+            V::ComptimeCall(projection) => {
+                assert!(matches!(
+                    projection.result,
+                    ComptimeCallResultProjection::Type(_)
+                ));
+                assert!(!projection.anonymous_nominals.is_empty());
+            }
+            other => panic!("candidate-artifact anchor evaluation failed: {other:?}"),
         }
     }
 
@@ -27549,19 +27807,18 @@ fn main() -> i32 {
                 "ownership-gated const producer",
                 &resolution_attempt,
                 &[
+                    "compiler.declaration-body-plan-artifacts",
                     "compiler.declaration-shell",
                     "compiler.lookup-name",
-                    "compiler.raw-const-syntax",
                     "compiler.semantic-nucleus",
                 ],
                 &[
+                    "compiler.declaration-body-plan-artifacts",
                     "compiler.declaration-occurrence-index",
                     "compiler.declaration-shell",
                     "compiler.lookup-name",
                     "compiler.module-index",
                     "compiler.parse-module",
-                    "compiler.raw-const-syntax",
-                    "compiler.raw-declaration-body",
                     "compiler.semantic-nucleus",
                 ],
                 14,
@@ -27595,13 +27852,12 @@ fn main() -> i32 {
                     "compiler.semantic-nucleus",
                 ],
                 &[
+                    "compiler.declaration-body-plan-artifacts",
                     "compiler.declaration-occurrence-index",
                     "compiler.declaration-shell",
                     "compiler.lookup-name",
                     "compiler.module-index",
                     "compiler.parse-module",
-                    "compiler.raw-const-syntax",
-                    "compiler.raw-declaration-body",
                     "compiler.semantic-nucleus",
                 ],
                 18,
@@ -34571,12 +34827,10 @@ fn main() -> i32 {
         // `Nth` additionally binds a comptime VALUE argument — a literal and a
         // scoped const — so `resolve_value_argument`/`const_value_fact` are on the
         // passing path. Each is declared as `const C: type = <call>`, so the
-        // production const value is the independent cross-path truth. `Buffer` (an
-        // array-CONSTRUCTING type ctor) is reduced only by the body-level epoch
-        // (`reduce_type_ctor_body`); the nucleus comptime-call op the boundary
-        // drives evaluates the ctor in a const context where `[i32; n]` is an
-        // unsupported aggregate, so it does NOT reduce — an honest r5a boundary,
-        // asserted below.
+        // production const value is the independent cross-path truth. `Buffer`
+        // additionally proves that the candidate-RIR evaluator preserves the
+        // expression/type disambiguation for `[T; n]`: an array repeat whose
+        // element is a comptime type constructs the array type.
         let source = "pub struct Point { x: i32 }\n\
                       fn Id(comptime T: type) -> type { T }\n\
                       fn Nth(comptime T: type, comptime k: i32) -> type { T }\n\
@@ -34586,6 +34840,7 @@ fn main() -> i32 {
                       const IdI32: type = Id(i32);\n\
                       const NthP2: type = Nth(Point, 2);\n\
                       const NthPN: type = Nth(Point, N);\n\
+                      const Buffer2: type = Buffer(2);\n\
                       fn main() -> i32 { 0 }\n";
         let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
         let scope = ModuleId::from_logical_path("m.rue").unwrap();
@@ -34644,15 +34899,22 @@ fn main() -> i32 {
             crate::DurableConstValue::Type(point_type),
         );
 
-        // `Buffer(2)` — array-CONSTRUCTING type ctor: the nucleus comptime-call op
-        // does not reduce it (const-context aggregate), so it stays `None`. This
-        // is the honest r5a boundary between the passthrough/value reductions the
-        // op covers and the body-level `reduce_type_ctor_body` a later slice wires.
+        // `Buffer(2)` — an array-constructing type ctor reduces through the same
+        // candidate artifact, including its comptime value parameter.
         let (resolved, _m, _d) =
             resolve_type_via_provider(&database, revision, &scope, "Buffer(2)", None);
+        let buffer_type = T::Array {
+            element: Box::new(T::I32),
+            len: 2,
+        };
         assert_eq!(
-            resolved, None,
-            "an array-constructing comptime type ctor is not reduced by the nucleus op (r6)"
+            resolved,
+            Some(buffer_type.clone()),
+            "an array-constructing comptime type ctor reduces through the candidate artifact"
+        );
+        assert_eq!(
+            production_const_value(&decls, "Buffer2"),
+            crate::DurableConstValue::Type(buffer_type),
         );
     }
 
@@ -39813,8 +40075,8 @@ fn main() -> i32 {
             .declaration_body_plan_astgen_evaluations
             .load(std::sync::atomic::Ordering::Relaxed);
         assert_eq!(
-            after_outer, 0,
-            "discovering Outer does not demand a runtime body artifact",
+            after_outer, 1,
+            "discovering Outer evaluates its canonical candidate artifact exactly once",
         );
 
         let inner = database.runtime.request_registered(
@@ -39950,7 +40212,68 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn anonymous_member_preserves_its_producer_artifact_failure() {
+    fn declaration_root_handoff_prevents_const_and_comptime_artifact_rederivation() {
+        let source = source_snapshot(
+            &[((
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected(comptime seed: i32) -> i32 { seed + 2 }\n\
+                 const VALUE: i32 = selected(40);\n\
+                 fn main() -> i32 { VALUE }",
+            ))],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let configuration = semantic_configuration();
+        let preview_features = crate::PreviewFeatures::default();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+
+        database
+            .projected_declaration_semantics_for_modules(
+                revision,
+                [module.clone()],
+                configuration.target,
+                &preview_features,
+                CancellationToken::new(),
+            )
+            .expect("declaration discovery succeeds");
+        let after_declarations = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            after_declarations, 2,
+            "the const and its comptime callee each lower once during declaration discovery",
+        );
+
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration,
+                },
+                CancellationToken::new(),
+            )
+            .expect("rooted body closure succeeds");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            panic!("rooted body closure publishes a typed value")
+        };
+        assert!(output.fatal.is_none());
+        assert!(output.scheduling_errors.is_empty());
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            after_declarations + 1,
+            "body closure lowers only main; the exact artifact leases carry the const and comptime candidates across the root boundary",
+        );
+    }
+
+    #[test]
+    fn anonymous_producer_preserves_its_candidate_artifact_failure_before_member_publication() {
         let source = source_snapshot(
             &[(
                 1,
@@ -39961,10 +40284,6 @@ fn main() -> i32 {
             1,
         );
         let module = ModuleId::from_logical_path("main.rue").unwrap();
-        let producer = crate::FunctionInstanceKey::Specialization {
-            base: Box::new(free_function_instance(&module, "Box")),
-            arguments: crate::CanonicalArguments::default(),
-        };
         let crate::FunctionInstanceKey::Definition(definition) =
             free_function_instance(&module, "Box")
         else {
@@ -39978,56 +40297,33 @@ fn main() -> i32 {
         let mut database = RevisionedQueryDatabase::default();
         database.inject_declaration_body_plan_failure_for_test(&definition, errors.clone());
         let revision = revision_for(&mut database, &source);
-        let produced = database.runtime.request_registered(
-            &database.body_produced_anonymous,
+        let value = request_semantic_nucleus(
+            &database,
             revision,
-            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
-            CancellationToken::new(),
-        );
-        let terminal = produced.terminal().unwrap();
-        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
-            produced,
-        )) = terminal.outcome()
-        else {
-            panic!("Box publishes its anonymous type before runtime body analysis")
-        };
-        let owner = produced
-            .0
-            .iter()
-            .find(|nominal| {
-                matches!(
-                    &nominal.shape,
-                    crate::durable_semantics::DurableAnonymousNominalShape::Struct {
-                        methods,
-                        ..
-                    } if methods.iter().any(|method| method.name.as_ref() == "get")
-                )
-            })
-            .expect("Box publishes get's owner");
-        let get = crate::body_query::BodyQueryKey::new(
-            crate::FunctionInstanceKey::AnonymousMember {
-                owner: Box::new(crate::TypeInstanceKey::Nominal(
-                    crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
-                )),
-                member: crate::AnonymousMemberKey {
-                    kind: crate::AnonymousMemberKind::Method,
-                    name: Arc::from("get"),
+            crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
+                crate::semantic_query_nucleus::ComptimeCallQueryKey {
+                    declaration: crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: declaration_candidate(
+                            &database,
+                            revision,
+                            &module,
+                            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                            "Box",
+                        ),
+                        configuration: semantic_configuration(),
+                    },
+                    type_arguments: Arc::from([]),
+                    value_arguments: Arc::from([]),
                 },
-            },
-            semantic_configuration(),
+            ),
         );
-        let transaction = database
-            .body_transaction(revision, get, CancellationToken::new())
-            .expect("artifact failure publishes a deterministic anonymous transaction");
-        let rue_query::QueryOutcome::Success(
-            crate::body_query::BodyTransaction::DeterministicFailure {
-                errors: published, ..
-            },
-        ) = transaction.outcome()
+        let crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
+            crate::semantic_query_nucleus::SemanticNucleusFailure::Syntax(published),
+        ) = value
         else {
-            panic!("anonymous artifact failure was downgraded or canceled")
+            panic!("candidate artifact failure was downgraded or published an owner: {value:?}")
         };
-        assert_eq!(published, &errors);
+        assert_eq!(published.as_ref(), errors.to_string());
     }
 
     #[test]

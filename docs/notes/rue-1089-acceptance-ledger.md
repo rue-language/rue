@@ -46,9 +46,9 @@ returned `Err(CompileErrors)` (a controlled diagnostic, not a Rust panic).
 | **2** — nested anon decls in different positions | `c2_nested_anon_different_statements`, `…_different_if_branches`, `…_different_match_branches`, `…_different_operands`, `…_different_methods`, `c2_nongeneric_wrap_matches_anon_enum_field`, `c2_generic_free_fn_matches_anon_enum`, `c2_generic_method_nested_anon_struct`, `c2_generic_wrap_field_untouched` → spec TOML | PASS. **Empirically: all nested positions compile and run today** (exit 42, or 7 for the field-untouched case). The generic free-fn match and the generic method with a nested anon *struct* both pass; only the generic-struct-method-over-anon-*enum*-field shape (criterion 5) fails — isolated separately. | Unchanged (still PASS). |
 | **3** — identity stable under unrelated edits (method reorder, added decls) | `c3_identity_stable_baseline_order`, `c3_identity_stable_reordered_with_unrelated_decl` → spec TOML; `producer_nominal_identity_is_stable_under_unrelated_edits` → unit | PASS. Reordering sibling methods and adding an unrelated top-level fn leaves behavior unchanged (exit 42) and leaves the anonymous-identity count and named-symbol surface unchanged. | Unchanged (still PASS). |
 | **4** — warm/fresh/cold produce identical semantic bodies/layouts/symbols | `producer_nominal_semantic_output_is_deterministic_across_cold_compiles`, `producer_nominal_warm_and_fresh_semantic_output_agree` → unit | PASS. Two cold compiles are byte-identical in `unstable_parity_snapshot` (bodies, layouts, type pool, dependencies) and emit an identical symbol set; a warm incremental compile equals a fresh one on the same projection. Reuses the scaling-harness parity oracle (`CanonicalSemanticOutput::unstable_parity_snapshot`) test-side. Symbols compared between two independent cold compiles via `struct_symbol_name`/`enum_symbol_name` + function `machine_name`. | Unchanged (still PASS). |
-| **5** — Wrap single-nominal-identity, exit 42 | `wrap_single_nominal_identity_executes_to_the_payload` → unit; `c5_wrap_single_nominal_identity` → spec TOML | **FLIPPED, PASS.** The anchor is transported exactly into the durable evaluator, so the generic `Wrap` whose `get_or` method matches its anonymous-enum field `Option(T)` compiles and executes to **exit 42**. The receiver field type, the `Option(T)` in the match, the match enum key, the payload op, and the enum layout resolve to ONE Option identity — observable as exactly one anonymous enum in the type pool. |
+| **5** — Wrap single-nominal-identity, exit 42 | `wrap_single_nominal_identity_executes_to_the_payload` → unit; `c5_wrap_single_nominal_identity` → spec TOML | **FLIPPED, PASS.** The canonical candidate artifact carries the parser-indexed anchor directly into the durable evaluator, so the generic `Wrap` whose `get_or` method matches its anonymous-enum field `Option(T)` compiles and executes to **exit 42**. The receiver field type, the `Option(T)` in the match, the match enum key, the payload op, and the enum layout resolve to ONE Option identity — observable as exactly one anonymous enum in the type pool. |
 | **6** — both backends execute the Wrap payload regression | `wrap_payload_executes_on_both_backend_targets` → unit | **FLIPPED, PASS.** Both `x86-64-linux` and `aarch64-linux` compile and link; the native x86-64 ELF executes → exit 42; aarch64 is a structural cross-compile check off its native host (mirrors `cli.abi_conformance`). |
-| **7** — artificial anchor disagreement fails closed | `divergent_anchor_transport_fails_closed_loud`, `resolve_level_transport_corruptions_fail_closed_loud`, `fault_probe_compiles_and_runs_cleanly_without_a_marker` → unit | **PASS (HARDENED, Stage D).** All FOUR corruption modes now fail closed identically: a test-only fault-injection hook in `SemanticConstEvaluator::resolve_anonymous_anchor` (fragment-marker keyed, race-free) corrupts the transported table; each mode commits the typed E9000-class internal diagnostic and the request returns `Err` with **zero published semantic output**. Previously missing/duplicate/kind were "frontend-recoverable" — the committed producer failure was downgraded to a retryable `Canceled` abort and masked by a live AIR mint (a second identity authority). The reviewer ruled that unacceptable; `body_produced_anonymous` no longer downgrades a committed internal error, so the transported anchor is the sole identity authority and no RIR/AIR recomputation rescues a corrupt table. Genuine unavailability still retries; unused table entries stay legal (`selected_branch_consumes_a_subset_of_the_transported_table`). |
+| **7** — no secondary anchor-transport authority | `retired_divergent_transport_marker_is_inert`, `retired_resolve_transport_markers_are_inert`, `fault_probe_compiles_and_runs_cleanly_without_a_marker` → unit; packed-artifact anchor corruption tests in `rue-rir` | **PASS (SUPERSEDED BY ADR-0071 PHASE 3).** Constant and comptime evaluation no longer reparses a fragment or transports anchors through a second table. The historical marker strings are ordinary comments and cannot alter semantics. The one packed candidate artifact contains the indexed anchors; malformed anchor tags/ranges and producer mismatches fail typed validation before publication, with no fallback identity mint. |
 
 ## Commands used
 
@@ -87,10 +87,11 @@ Compiled and executed with the worktree compiler (debug binary snapshot at
 
 ## Empirically-characterized E9000 frontier (HISTORICAL — pre-anchor-fix)
 
-This table records the pre-anchor-fix frontier. After anchor-transport landed,
+This table records the pre-anchor-fix frontier. After the canonical candidate
+artifact replaced fragment reparsing and anchor transport,
 the last shape (Wrap) compiles and executes to exit 42 (criteria 5/6, FLIPPED),
-so there is **no remaining E9000 frontier** in correct programs — an E9000 now
-appears only when the transported table is genuinely corrupt (criterion 7).
+so there is **no remaining E9000 frontier** in correct programs. Malformed
+packed anchor data now fails at the artifact boundary (criterion 7).
 
 | Shape | Result pre-fix | Result now |
 | --- | --- | --- |
@@ -141,6 +142,11 @@ Wrap→42 execution), `scripts/rue spec` (2173), clippy clean for `rue-air` and
 `rue-compiler`.
 
 ## Deep-review themes (second revision)
+
+The transport-specific implementation below is retained as historical review
+context. ADR-0071 Phase 3 subsequently deleted `TransportedAnonymousSites`,
+`parse_semantic_body`, and `parse_semantic_const`; the canonical packed
+candidate artifact is now the sole production anchor authority.
 
 This revision lands the three deep review themes in the safest-to-riskiest
 order 5 → 1, stops the riskiest (3) at the escape hatch, and folds in the

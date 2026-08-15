@@ -975,12 +975,14 @@ impl RetainedCharge for crate::declaration_candidate::DeclarationShellFailure {
     }
 }
 
+#[cfg(test)]
 impl RetainedCharge for crate::declaration_candidate::RawAnonymousSite {
     fn retained_charge(&self) -> u64 {
         0
     }
 }
 
+#[cfg(test)]
 impl RetainedCharge for crate::declaration_candidate::RawConstSyntax {
     fn retained_charge(&self) -> u64 {
         self.declared_type
@@ -990,6 +992,7 @@ impl RetainedCharge for crate::declaration_candidate::RawConstSyntax {
     }
 }
 
+#[cfg(test)]
 macro_rules! candidate_failure_charge {
     ($ty:ty) => {
         impl RetainedCharge for $ty {
@@ -1006,7 +1009,9 @@ macro_rules! candidate_failure_charge {
     };
 }
 
+#[cfg(test)]
 candidate_failure_charge!(crate::declaration_candidate::RawConstSyntaxFailure);
+#[cfg(test)]
 candidate_failure_charge!(crate::declaration_candidate::RawDeclarationBodyFailure);
 
 impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
@@ -1058,6 +1063,7 @@ impl RetainedCharge for rue_air::declaration_validation::AccessorOwnerMethod {
     }
 }
 
+#[cfg(test)]
 impl RetainedCharge for crate::declaration_candidate::RawDeclarationBodySyntax {
     fn retained_charge(&self) -> u64 {
         self.body

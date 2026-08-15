@@ -27,10 +27,12 @@ use crate::{
     declaration_candidate::{
         DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
         DeclarationOccurrenceCapability, DeclarationParameterHeader, DeclarationParameterMode,
-        DeclarationShellFact, DeclarationShellFailure, RawAnonymousSite, RawConstSyntax,
-        RawDeclarationBodySyntax,
+        DeclarationShellFact, DeclarationShellFailure,
     },
 };
+
+#[cfg(test)]
+use crate::declaration_candidate::{RawAnonymousSite, RawConstSyntax, RawDeclarationBodySyntax};
 
 /// Slice the module-relative anonymous type sites that fall inside `fragment`
 /// into locators relative to `fragment`'s start. The frontend anchor rides
@@ -40,6 +42,7 @@ use crate::{
 /// A site straddling or preceding the fragment is dropped rather than clamped:
 /// the durable evaluator then fails closed on the corresponding reparsed literal
 /// (a loud missing-locator diagnostic) instead of adopting a truncated locator.
+#[cfg(test)]
 fn fragment_anonymous_sites(
     sites: &[rue_rir::AnonymousTypeSite],
     fragment: Span,
@@ -337,11 +340,13 @@ impl ParsedDefinitionIndex {
         })
     }
 
-    /// Select the parser-owned raw syntax for exactly one constant key.
+    /// Select the retired raw-syntax oracle for exactly one constant key.
     ///
     /// The declaration table is constructed once with the module. This lookup
-    /// must remain an exact `declaration_by_key` lookup so a demand for one
-    /// constant never projects or scans unrelated declarations.
+    /// remains an exact `declaration_by_key` lookup so the test proves the old
+    /// projection never scanned unrelated declarations. Production constant
+    /// evaluation consumes the packed candidate artifact instead.
+    #[cfg(test)]
     fn materialize_raw_const_syntax(
         &self,
         key: &DeclarationCandidateKey,
@@ -406,9 +411,10 @@ impl ParsedDefinitionIndex {
         )
     }
 
-    /// Materialize the syntax for exactly one body-bearing declaration key.
-    /// The current-epoch span stays parser-private; only owned source text may
-    /// cross the revisioned query boundary.
+    /// Materialize the retired raw-body oracle for one exact declaration key.
+    /// Production runtime and comptime evaluation consume the packed candidate
+    /// artifact instead.
+    #[cfg(test)]
     fn materialize_raw_declaration_body(
         &self,
         key: &DeclarationCandidateKey,
@@ -756,6 +762,7 @@ impl ParsedModule {
             .saturating_add(invalid_imports)
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate_raw_const_syntax(
         &self,
         key: &DeclarationCandidateKey,
@@ -769,6 +776,7 @@ impl ParsedModule {
         self.definitions.raw_const_syntax_materialization_count()
     }
 
+    #[cfg(test)]
     pub(crate) fn evaluate_raw_declaration_body(
         &self,
         key: &DeclarationCandidateKey,
@@ -1808,14 +1816,6 @@ fn collect_imports(
         .invalid
         .sort_by_key(|site| (site.span.file_id.index(), site.span.start));
     Ok(imports)
-}
-
-pub(crate) fn exact_syntax_import_sites(
-    ast: &Ast,
-    module: &ModuleId,
-    resolver: &ThreadedRodeo,
-) -> CompileResult<Vec<ImportDirective>> {
-    Ok(collect_imports(ast, module, resolver)?.valid)
 }
 
 fn walk_signature(

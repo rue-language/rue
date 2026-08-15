@@ -925,6 +925,73 @@ mod registered_batch_tests {
     }
 
     #[test]
+    fn retained_family_handoff_pins_only_that_family_and_rejects_foreign_runtime() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let selected = runtime
+            .family_with_evaluator::<Slot, u64, _>("retained-family-selected", 0, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let unrelated = runtime
+            .family_with_evaluator::<Slot, u64, _>("retained-family-unrelated", 0, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let foreign_runtime = QueryRuntime::new(1);
+        publish_empty(&foreign_runtime, [revision(1)]);
+        let foreign = foreign_runtime
+            .family_with_evaluator::<Slot, u64, _>("retained-family-foreign", 0, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let committed = Arc::new(Mutex::new(None));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let selected_for_publication = selected.clone();
+        let unrelated_for_publication = unrelated.clone();
+        let foreign_for_publication = foreign.clone();
+        let committed_for_publication = committed.clone();
+        let events_for_publication = events.clone();
+        let publication = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "retained-family-publication",
+                0,
+                move |context, _, _| {
+                    context.query_registered_batch(&selected_for_publication, (0..3).map(Slot))?;
+                    context.query_registered_batch(&unrelated_for_publication, (0..2).map(Slot))?;
+                    assert!(matches!(
+                        context.retain_observed_family(&foreign_for_publication),
+                        Err(RetainTerminalConeError::ForeignRuntime)
+                    ));
+                    context.register_attempt_handoff(PinSetHandoff {
+                        pins: Some(
+                            context
+                                .retain_observed_family(&selected_for_publication)
+                                .expect("the selected family belongs to this runtime"),
+                        ),
+                        committed: committed_for_publication.clone(),
+                        events: events_for_publication.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let attempt = runtime.request_registered(
+            &publication,
+            revision(1),
+            Key("publish"),
+            CancellationToken::new(),
+        );
+        assert!(attempt.terminal().is_some());
+        assert_eq!(lock(&committed).as_ref().map(RetainedPinSet::len), Some(3));
+        assert_eq!(selected.retention().terminals, 3);
+        assert_eq!(unrelated.retention().terminals, 0);
+        drop(lock(&committed).take());
+        assert_eq!(selected.retention().terminals, 0);
+    }
+
+    #[test]
     fn registered_batch_transfers_one_encapsulating_handoff_lifecycle_per_child() {
         let runtime = QueryRuntime::new(2);
         publish_empty(&runtime, [revision(1)]);
@@ -7945,6 +8012,32 @@ impl QueryContext {
         retain_task_observations(&self.task)
     }
 
+    /// Duplicates only the live terminals observed from one exact registered
+    /// family in this rooted task.
+    ///
+    /// Staged compiler publications use this narrower bridge when a small
+    /// family history would otherwise evict producer payloads between two
+    /// top-level requests. Unlike retaining a terminal cone, this does not walk
+    /// or pin unrelated ancestors and siblings; a later registered validation
+    /// may borrow the selected terminals as ordinary fallback authority and
+    /// must still prove every other edge itself.
+    pub fn retain_observed_family<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+    ) -> Result<RetainedPinSet, RetainTerminalConeError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            return Err(RetainTerminalConeError::ForeignRuntime);
+        }
+        Ok(retain_task_family_observations(
+            &self.task,
+            family.inner.token,
+        ))
+    }
+
     /// Duplicates only the observed terminals reachable from one exact root.
     ///
     /// Validation can temporarily observe terminals from a superseded
@@ -8142,6 +8235,17 @@ fn retain_task_observations(task: &Task) -> RetainedPinSet {
     let mut retained = RetainedPinSet::new();
     for lease in &leases.held {
         retained.lease_erased(lease.duplicate());
+    }
+    retained
+}
+
+fn retain_task_family_observations(task: &Task, family: FamilyToken) -> RetainedPinSet {
+    let leases = lock(&task.leases);
+    let mut retained = RetainedPinSet::new();
+    for lease in &leases.held {
+        if lease.family_token() == family {
+            retained.lease_erased(lease.duplicate());
+        }
     }
     retained
 }
@@ -8850,6 +8954,7 @@ impl Drop for RetainedPinSet {
 trait ObservedLease: Send + Sync {
     fn metrics(&self) -> &Metrics;
     fn runtime_identity(&self) -> u64;
+    fn family_token(&self) -> FamilyToken;
     fn identity(&self) -> (u64, u64, Revision);
 
     fn dependencies(&self) -> &[Observation];
@@ -8877,6 +8982,10 @@ where
 
     fn runtime_identity(&self) -> u64 {
         self.family.core.identity
+    }
+
+    fn family_token(&self) -> FamilyToken {
+        self.family.inner.token
     }
 
     fn identity(&self) -> (u64, u64, Revision) {
