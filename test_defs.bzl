@@ -4,6 +4,15 @@ TEST_TIER_PREMERGE = "rue_test_tier_premerge"
 TEST_TIER_SLOW = "rue_test_tier_slow"
 TEST_TIER_STRESS = "rue_test_tier_stress"
 
+# The one declaration of the tier vocabulary. test_tiers.bxl loads this list
+# instead of keeping its own, so the selector and the macros cannot disagree;
+# scripts/validate-tier-ci-selectors.py reads it from this file only.
+RUE_TEST_TIER_LABELS = [
+    TEST_TIER_PREMERGE,
+    TEST_TIER_SLOW,
+    TEST_TIER_STRESS,
+]
+
 _TEST_TIER_LABELS = {
     "premerge": TEST_TIER_PREMERGE,
     "slow": TEST_TIER_SLOW,

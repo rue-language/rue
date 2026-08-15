@@ -63,9 +63,12 @@ def defs_source(tiers: tuple[str, ...]) -> str:
     )
 
 
-def bxl_source(tiers: tuple[str, ...]) -> str:
-    body = "".join(f'    "rue_test_tier_{tier}",\n' for tier in tiers)
-    return f"_TEST_TIER_LABELS = [\n{body}]\n"
+def bxl_source(tiers: tuple[str, ...] = ()) -> str:
+    del tiers  # the vocabulary is loaded, not spelled, since RUE-1523
+    return (
+        'load("//:test_defs.bzl", "RUE_TEST_TIER_LABELS")\n'
+        "_TEST_TIER_LABELS = RUE_TEST_TIER_LABELS\n"
+    )
 
 
 class TierCiSelectorTests(unittest.TestCase):
@@ -187,10 +190,11 @@ class TierCiSelectorTests(unittest.TestCase):
             errors,
         )
 
-    def test_tier_vocabulary_drift_fails(self) -> None:
-        errors = self.validate(bxl=bxl_source(("premerge", "slow")))
+    def test_bxl_dropping_the_vocabulary_load_fails(self) -> None:
+        local_list = '_TEST_TIER_LABELS = [\n    "rue_test_tier_premerge",\n]\n'
+        errors = self.validate(bxl=local_list)
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("tier vocabulary drift", errors[0])
+        self.assertIn("does not load RUE_TEST_TIER_LABELS", errors[0])
 
     def test_missing_workflow_fails_closed(self) -> None:
         errors = self.validate(omit_release=True)
