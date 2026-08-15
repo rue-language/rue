@@ -229,6 +229,14 @@ of the supported API.
 | Move internal/direct owner | `DiscoverySourceAssembler` | Source aggregation belongs to the post-RUE-861 loader, not the compiler facade. |
 | Remove | `IMPORT_DISCOVERY_POLICY_VERSION` | Query policy version participates internally in request keys; it is not a host compatibility knob. |
 
+Post-decision note (RUE-1479): the six host-protocol observation records above
+(`AcceptedImportSource`, `ImportDiscoveryPlan`, `ImportDiscoveryRequest`,
+`ImportObservation`, `ImportObservationLedger`, `ImportObservationStatus`) were
+later moved off the stable root and are re-exported only from
+`rue_compiler::unstable`, next to the begin/frontier/publish/close protocol
+that consumes them. The dependency-artifact records in the Keep rows are
+unchanged.
+
 #### Stable immutable artifacts and diagnostics
 
 | Disposition | Exact current exports | Final class / reason |

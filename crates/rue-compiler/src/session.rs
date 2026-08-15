@@ -153,9 +153,6 @@ trait SessionQueryMetricsFamily {
     fn projection(work: &mut CompilerSessionWork) -> &mut FrontendQueryWork;
 }
 
-#[derive(Debug)]
-struct ImportsMetricsQuery;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct AttemptId(pub(crate) u64);
 
@@ -235,7 +232,7 @@ fn project_lifecycle(work: &mut FrontendQueryWork, attempt: &dyn AttemptView) {
     work.calls += 1;
     match attempt.execution() {
         QueryAttemptExecution::Computed => work.executions += 1,
-        QueryAttemptExecution::Reused | QueryAttemptExecution::Adopted => work.reuses += 1,
+        QueryAttemptExecution::Reused => work.reuses += 1,
         QueryAttemptExecution::Rejected => {}
     }
 }
@@ -1402,7 +1399,6 @@ macro_rules! session_query_metrics_family {
     };
 }
 
-session_query_metrics_family!(ImportsMetricsQuery, "imports", imports);
 session_query_metrics_family!(
     ImportDiagnosticQuery,
     "import-diagnostics",
@@ -1646,8 +1642,7 @@ impl CompilerSession {
         payload: Box<dyn std::any::Any + Send>,
     ) -> ! {
         match guard.family {
-            "import-diagnostics" | "merge" | "rir" | "semantic" | "definitions" | "imports"
-            | "parse" => {}
+            "import-diagnostics" | "merge" | "rir" | "semantic" | "definitions" | "parse" => {}
             family => unreachable!("unknown query guard family {family}"),
         }
         self.metrics.synchronize();
@@ -4084,89 +4079,6 @@ impl CompilerSession {
                 diagnostics,
             },
         }
-    }
-
-    /// Return the graph adopted by import discovery.
-    ///
-    /// Import-free direct sessions synthesize the uniquely valid empty graph;
-    /// import-bearing sessions never reconstruct resolution from loaded paths.
-    pub fn import_graph(
-        &mut self,
-        std_dir: Option<&str>,
-    ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
-        let mut guard = self.metrics.begin::<ImportsMetricsQuery>();
-        let mut execution = QueryAttemptExecution::Rejected;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.import_graph_attempt(std_dir, &mut guard, &mut execution)
-        }));
-        let result = match result {
-            Ok(result) => result,
-            Err(payload) => self.resume_canceled_query(&mut guard, payload),
-        };
-        if execution == QueryAttemptExecution::Reused {
-            execution = QueryAttemptExecution::Adopted;
-        }
-        guard.finish(execution, None, &result, QueryStructuralWork::None);
-        self.metrics.synchronize();
-        result
-    }
-
-    fn import_graph_attempt(
-        &mut self,
-        std_dir: Option<&str>,
-        guard: &mut QueryComputationGuard,
-        execution: &mut QueryAttemptExecution,
-    ) -> Result<Arc<CanonicalImportGraphOutput>, CompileErrors> {
-        self.require_closed_discovery()?;
-        if let Some(committed) = self.committed_import_discovery_artifact() {
-            let graph = committed
-                .graph()
-                .expect("closed-valid discovery revisions retain their canonical graph");
-            if graph.input().std_dir.as_deref() != std_dir {
-                return Err(CompileErrors::from(CompileError::without_span(
-                    ErrorKind::InvalidCompilerInput(
-                        "the requested standard-library context differs from the committed import discovery revision"
-                            .into(),
-                    ),
-                )));
-            }
-            *execution = QueryAttemptExecution::Reused;
-            return Ok(graph.clone());
-        }
-        let parsed = self.published.clone().ok_or_else(no_published_program)?;
-        if !parsed.import_directives().is_empty() {
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput(
-                    "import-bearing revisions require a committed discovery graph".into(),
-                ),
-            )));
-        }
-        let resolution = ModuleResolutionInputs::new(
-            parsed.root().clone(),
-            parsed
-                .modules()
-                .iter()
-                .map(|module| crate::ModuleResolutionInput {
-                    module: module.module_id().clone(),
-                    physical_path: Arc::from(module.physical_path()),
-                })
-                .collect(),
-        )
-        .expect("published parsed modules have validated resolution inputs");
-        let input = ImportGraphInputDescriptor {
-            sources: parsed.source_revision().clone(),
-            resolution,
-            std_dir: std_dir.map(Arc::from),
-        };
-        *execution = QueryAttemptExecution::Computed;
-        guard.started();
-        let graph = crate::import_graph::import_free_canonical_graph(parsed.as_ref())?;
-        let validation = validate_canonical_import_graph(&graph, &input.resolution);
-        Ok(Arc::new(CanonicalImportGraphOutput {
-            input,
-            graph,
-            validation,
-        }))
     }
 
     pub(crate) fn merge(&mut self) -> Result<Arc<CanonicalMergedProgram>, CompileErrors> {
@@ -9847,13 +9759,12 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         session.update(&source).into_result().unwrap();
-        let error = session.import_graph(None).unwrap_err();
+        let error = session.committed_import_graph().unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("require a committed discovery graph")
+                .contains("no closed-valid import discovery revision is committed")
         );
-        assert_eq!(session.work().imports.executions, 0);
     }
 
     #[test]
@@ -9872,8 +9783,7 @@ fn main() -> i32 { 0 }
         );
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &source);
-        assert!(session.import_graph(None).is_ok());
-        assert_eq!(session.work().imports.executions, 0);
+        assert!(session.committed_import_graph().is_ok());
     }
 
     #[test]
@@ -9881,8 +9791,11 @@ fn main() -> i32 { 0 }
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<CanonicalImportGraphOutput>();
         let mut session = CompilerSession::new();
-        session.update(&base()).into_result().unwrap();
-        let graph = session.import_graph(None).unwrap();
+        crate::test_support::TestDiscoveryHost::new(&base())
+            .unwrap()
+            .drive(&mut session)
+            .unwrap();
+        let graph = session.committed_import_graph().unwrap();
         assert!(graph.graph().records().is_empty());
         std::thread::spawn(move || assert!(graph.validation().is_valid()))
             .join()

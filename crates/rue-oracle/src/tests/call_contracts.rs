@@ -1159,13 +1159,12 @@ fn query_cfg_state_with_trusted_std(
     std_modules: &[(u32, &str, &str)],
 ) -> Result<CompileState, CompileErrors> {
     use rue_compiler::unstable::{
-        DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-        close_import_input_request, import_demand_frontier_for_roots, import_observation_ledger,
-        publish_import_observation_batch, stage_import_input_request,
+        AcceptedImportSource, DiscoverySourceAssembler, ImportDemandMode, ImportObservation,
+        begin_import_input_request, close_import_input_request, import_demand_frontier_for_roots,
+        import_observation_ledger, publish_import_observation_batch, stage_import_input_request,
     };
     use rue_compiler::{
-        AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
-        ImportObservation, PhysicalFileIdentity,
+        CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext, PhysicalFileIdentity,
     };
     use std::sync::Arc;
 

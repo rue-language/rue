@@ -1228,12 +1228,6 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             _ => panic!("unclassified dependency facade export: {symbol}"),
         },
         "import_discovery" => match symbol {
-            "AcceptedImportSource"
-            | "ImportDiscoveryPlan"
-            | "ImportDiscoveryRequest"
-            | "ImportObservation"
-            | "ImportObservationLedger"
-            | "ImportObservationStatus" => ("compatibility-boundary", "legacy-embedders"),
             "AcceptedReadManifest"
             | "AcceptedReadManifestEntry"
             | "FileMetadataFingerprint"
@@ -1241,6 +1235,10 @@ fn root_export_metadata(owner: &str, symbol: &str) -> (&'static str, &'static st
             | "ImportDiscoveryContext"
             | "ImportOccurrenceKey"
             | "PhysicalFileIdentity" => ("dependency-artifact", "source-loaders+embedders"),
+            // The host discovery-protocol records (AcceptedImportSource,
+            // ImportDiscoveryPlan/Request, ImportObservation*) live under
+            // `unstable` with the protocol functions that consume them. Any
+            // return to the stable root is unclassified and fails here.
             _ => panic!("unclassified import-discovery facade export: {symbol}"),
         },
         "import_graph" => match symbol {
@@ -1367,13 +1365,9 @@ fn session_method_metadata(
     } else {
         match symbol {
             "new" | "update" => "session-operation",
-            "import_discovery_plan" | "stage_import_discovery" | "close_import_discovery" => {
-                return ("stable", "compatibility-boundary", "legacy-embedders");
-            }
             "published"
             | "committed_import_graph"
             | "import_diagnostics"
-            | "import_graph"
             | "rir"
             | "semantic"
             | "executable" => "artifact-query",
@@ -1627,6 +1621,22 @@ fn semantic_api_inventory_matches_every_root_export_and_session_signature() {
          classify the owner, stability, category, and approved consumer in \
          supported_api_inventory.rs\n\nactual inventory:\n{actual}"
     );
+}
+
+#[test]
+fn stable_facade_carries_no_compatibility_boundary_classifications() {
+    // RUE-1479 removed the import-discovery compatibility facade. The
+    // classifiers no longer produce these classes, so any reintroduction —
+    // through a classifier arm or an approved-inventory line — fails here.
+    let actual = render_semantic_api_inventory(include_str!("lib.rs"), PRODUCTION_MODULES);
+    for inventory in [actual.as_str(), crate::supported_api_inventory::APPROVED] {
+        for forbidden in ["compatibility-boundary", "legacy-embedders"] {
+            assert!(
+                !inventory.contains(forbidden),
+                "a stable compatibility classification returned to the facade inventory: {forbidden}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1956,10 +1966,10 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
-            "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
+            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
             "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,TrustedSuccessorDelta,};",
         ],
-        "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, and host discovery-protocol records"
     );
 
     let facade = include_str!("lib.rs");

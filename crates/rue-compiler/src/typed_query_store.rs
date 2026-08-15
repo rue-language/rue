@@ -37,7 +37,6 @@ pub(crate) trait TypedQueryFamily: std::fmt::Debug + Send + Sync {
 pub(crate) enum AttemptExecution {
     Computed,
     Reused,
-    Adopted,
     Rejected,
 }
 
