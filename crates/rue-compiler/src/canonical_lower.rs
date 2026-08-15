@@ -10,8 +10,8 @@ use lasso::Key;
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
 use rue_rir::{
-    AstGen, InstRef, PackedRirMetadata, PackedRirMethodOwner, PackedValidatedRir, Rir, RirEditor,
-    RirPayloadBuildError, RirValidationContext, ValidatedRir,
+    AstGen, InstRef, PackedRirMetadata, PackedRirMethodOwner, PackedRirProjection,
+    PackedValidatedRir, Rir, RirEditor, RirPayloadBuildError, RirValidationContext, ValidatedRir,
 };
 use rue_span::FileId;
 
@@ -273,7 +273,7 @@ impl DeclarationBodyPlan {
                 // as deleted parsing or RIR lowering.
                 span_remap_validation_ns: validation_finished_ns,
                 base_symbol_rebuild_ns: symbol_finished_ns,
-                base_symbols_rebuilt: self.packed.symbols().len() as u64,
+                base_symbols_rebuilt: self.packed.symbol_count() as u64,
                 index,
                 rir_instructions,
                 rir_payload_words,
@@ -330,33 +330,16 @@ impl DeclarationBodyPlan {
         }
 
         let symbol_count = symbols.len();
-        let mut editor = RirEditor::new();
-        let appended = self
+        let (rir, metadata) = self
             .packed
-            .try_append_remapped(
-                &mut editor,
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count,
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: u32::MAX,
+                },
                 || checkpoint().map_err(BodyPlanMaterializationFailure::Query),
-                |ordinal| {
-                    let ordinal = ordinal as usize;
-                    if ordinal >= symbol_count {
-                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "packed semantic candidate symbol ordinal is absent",
-                        )));
-                    }
-                    lasso::Spur::try_from_usize(ordinal).ok_or_else(|| {
-                        BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "packed semantic candidate symbol ordinal is not representable",
-                        ))
-                    })
-                },
-                |_slot, (start, end)| {
-                    if start > end {
-                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "packed semantic candidate span is inverted",
-                        )));
-                    }
-                    Ok(rue_span::Span::with_file(FileId::DEFAULT, start, end))
-                },
             )
             .map_err(|error| match error {
                 rue_rir::PackedRirAppendError::Checkpoint(failure)
@@ -371,20 +354,8 @@ impl DeclarationBodyPlan {
                     )))
                 }
             })?;
-        let rir = ValidatedRir::finish(
-            editor,
-            &RirValidationContext {
-                symbol_count,
-                source_lengths: &[(FileId::DEFAULT, u32::MAX)],
-            },
-        )
-        .map_err(|error| {
-            BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
-                "projected semantic candidate RIR is invalid: {error}"
-            )))
-        })?;
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
-        Ok((rir, symbols, appended.metadata.declaration))
+        Ok((rir, symbols, metadata.declaration))
     }
 
     fn materialize_candidate_rir_internal(
@@ -407,8 +378,8 @@ impl DeclarationBodyPlan {
             })
         };
         let symbols = lasso::ThreadedRodeo::new();
-        let mut ordinal_symbols = Vec::with_capacity(self.packed.symbols().len());
-        for (ordinal, spelling) in self.packed.symbols().enumerate() {
+        let packed_symbols = self.packed.symbols();
+        for (ordinal, spelling) in packed_symbols.enumerate() {
             if ordinal & 63 == 0 {
                 checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
             }
@@ -418,91 +389,44 @@ impl DeclarationBodyPlan {
                     "body-plan symbol universe did not preserve stable ordinals",
                 )));
             }
-            ordinal_symbols.push(symbol);
         }
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let symbol_finished_ns = elapsed();
-        let mut editor = RirEditor::new();
-        let appended = self
-            .packed
-            .try_append_remapped(
-                &mut editor,
-                || checkpoint().map_err(BodyPlanMaterializationFailure::Query),
-                |ordinal| {
-                    ordinal_symbols
-                        .get(ordinal as usize)
-                        .copied()
-                        .ok_or_else(|| {
-                            BodyPlanMaterializationFailure::Invalid(Arc::from(
-                                "packed body-plan symbol ordinal is absent",
-                            ))
-                        })
-                },
-                |_slot, (relative_start, relative_end)| {
-                    let Some(start) = declaration_start.checked_add(relative_start) else {
-                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "projected body-plan span start overflows current source",
-                        )));
-                    };
-                    let Some(end) = declaration_start.checked_add(relative_end) else {
-                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "projected body-plan span end overflows current source",
-                        )));
-                    };
-                    if start > end || end > source_length {
-                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
-                            "projected body-plan span is outside current source",
-                        )));
-                    }
-                    Ok(rue_span::Span::with_file(file_id, start, end))
-                },
-            )
-            .map_err(|error| match error {
-                rue_rir::PackedRirAppendError::Checkpoint(failure)
-                | rue_rir::PackedRirAppendError::SymbolRemap(failure)
-                | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
-                rue_rir::PackedRirAppendError::Build(error) => {
-                    BodyPlanMaterializationFailure::Build(error)
-                }
-                rue_rir::PackedRirAppendError::Decode(error) => {
-                    BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
-                        "private packed body plan is invalid: {error}"
-                    )))
-                }
-            })?;
-        if include_method_owner && let Some(owner) = appended.metadata.method_owner {
-            let span = editor.get(owner.declaration).span;
-            editor
-                .add_struct_decl(
-                    &[],
-                    owner.is_public,
-                    owner.is_linear,
-                    owner.name,
-                    &[],
-                    &[owner.declaration],
-                    span,
-                )
-                .map_err(BodyPlanMaterializationFailure::Build)?;
+        let symbol_count = symbols.len();
+        let projection = PackedRirProjection {
+            symbol_count,
+            file_id,
+            declaration_start,
+            source_length,
+        };
+        let checkpoint_decode = || checkpoint().map_err(BodyPlanMaterializationFailure::Query);
+        let (rir, metadata) = if include_method_owner {
+            self.packed
+                .try_decode_validated_with_method_owner(projection, checkpoint_decode)
+        } else {
+            self.packed
+                .try_decode_validated(projection, checkpoint_decode)
         }
-        let remap_finished_ns = elapsed();
-        let rir = ValidatedRir::finish(
-            editor,
-            &RirValidationContext {
-                symbol_count: symbols.len(),
-                source_lengths: &[(file_id, source_length)],
-            },
-        )
-        .map_err(|error| {
-            BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
-                "projected body-plan RIR is invalid: {error}"
-            )))
+        .map_err(|error| match error {
+            rue_rir::PackedRirAppendError::Checkpoint(failure)
+            | rue_rir::PackedRirAppendError::SymbolRemap(failure)
+            | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
+            rue_rir::PackedRirAppendError::Build(error) => {
+                BodyPlanMaterializationFailure::Build(error)
+            }
+            rue_rir::PackedRirAppendError::Decode(error) => {
+                BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                    "private packed body plan is invalid: {error}"
+                )))
+            }
         })?;
+        let remap_finished_ns = elapsed();
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let validation_finished_ns = elapsed();
         Ok((
             rir,
             symbols,
-            appended.metadata.declaration,
+            metadata.declaration,
             remap_finished_ns,
             symbol_finished_ns,
             validation_finished_ns,

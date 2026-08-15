@@ -555,6 +555,11 @@ fn local_semantic_materialization_owns_complete_cfg_inputs_without_a_peer_cache(
     assert!(import.contains("NominalInstanceKey::Anonymous"));
     assert!(import.contains("SemanticImportFailure::BuiltinNominalShadow"));
     assert!(import.contains("specialization_key(specialization)"));
+    assert!(import.contains("self.type_pool.complete_type_handles()"));
+    assert!(
+        !import.contains("self.type_pool.clone().freeze()"),
+        "local materialization must not deep-clone the semantic type universe before publication"
+    );
     for provider in ["ProviderSpecializedBody", "ProviderAnonymousBody"] {
         let body = providers
             .split(&format!("pub struct {provider}"))
