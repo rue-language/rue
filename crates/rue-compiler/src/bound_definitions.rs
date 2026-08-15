@@ -335,7 +335,6 @@ mod legacy_snapshot_oracle {
         occurrence: Option<DefinitionOccurrenceId>,
         declaration_span: Span,
         visibility: Option<Visibility>,
-        input_partition: BoundDefinitionInputPartition,
     }
 
     /// Parser-authored boundaries for hashing a declaration without treating its
@@ -620,34 +619,11 @@ mod legacy_snapshot_oracle {
     }
 
     impl BoundDefinitionSet {
-        #[allow(dead_code)]
-        pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
-            self.source_revision == other.source_revision
-                && self.manifest_work == other.manifest_work
-                && self.definitions.len() == other.definitions.len()
-                && self
-                    .definitions
-                    .iter()
-                    .zip(other.definitions.iter())
-                    .all(|(left, right)| {
-                        left.stable_key() == right.stable_key()
-                            && left.occurrence == right.occurrence
-                            && left.declaration_span == right.declaration_span
-                            && left.visibility == right.visibility
-                            && left.input_partition == right.input_partition
-                    })
-        }
-
         pub fn source_revision(&self) -> &SourceRevision {
             &self.source_revision
         }
         pub fn definitions(&self) -> &[BoundDefinitionRecord] {
             &self.definitions
-        }
-        #[cfg(test)]
-        #[allow(dead_code)]
-        pub fn manifest_work(&self) -> SemanticBindingManifestWork {
-            self.manifest_work
         }
         pub fn work(&self) -> BoundDefinitionWork {
             self.work
@@ -1225,7 +1201,10 @@ mod legacy_snapshot_oracle {
                 (Some(winner.id()), winner.visibility())
             };
             work.syntax_partition_lookups += 1;
-            let input_partition = partition_by_file
+            // Still resolved for its validation: partition_for rejects a
+            // binding whose syntax occurrence cannot be partitioned, even
+            // though the partition itself is no longer retained.
+            partition_by_file
                 .get(&binding.file_id)
                 .expect("syntax partition index covers every canonical module")
                 .partition_for(binding)?;
@@ -1237,7 +1216,6 @@ mod legacy_snapshot_oracle {
                 occurrence,
                 declaration_span: binding.declaration_span,
                 visibility,
-                input_partition,
             });
         }
         records.sort_by(|left, right| left.stable_key().cmp(right.stable_key()));

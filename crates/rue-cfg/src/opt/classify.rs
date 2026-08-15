@@ -130,11 +130,6 @@ pub(crate) fn has_observable_side_effect(cfg: &Cfg, value: CfgValue) -> bool {
 /// ```text
 /// is_speculatable(v)  ==  !may_trap(v) && !has_observable_side_effect(v)
 /// ```
-// Exercised by this module's tests today; its release-build consumers are LICM
-// (RUE-927, the hoist predicate) and unrolling (RUE-928), still pending — so it
-// opts out of dead-code denial here rather than being pruned, exactly as the
-// shared `dominators` module does for its pending loop consumers.
-#[allow(dead_code)]
 pub(crate) fn is_speculatable(cfg: &Cfg, value: CfgValue) -> bool {
     !may_trap(cfg, value) && !has_observable_side_effect(cfg, value)
 }

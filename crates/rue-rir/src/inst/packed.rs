@@ -161,12 +161,6 @@ impl PackedValidatedRir {
             .symbols as usize
     }
 
-    pub fn type_node_count(&self) -> usize {
-        Header::parse(&self.0)
-            .expect("privately constructed packed RIR is valid")
-            .types as usize
-    }
-
     /// Complete dense spelling table transported with the owner, including
     /// empty and unreferenced ordinals.
     pub fn symbols(&self) -> PackedRirSymbols<'_> {

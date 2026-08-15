@@ -3546,27 +3546,6 @@ impl TypeInternPool {
             .expect("array interning returns an array Type")
     }
 
-    /// Fallible category-ID adapter for durable or reconstructed input.
-    pub fn try_intern_array_from_type(
-        &self,
-        element_type: Type,
-        len: u64,
-    ) -> Result<ArrayTypeId, TypeValidationError> {
-        Ok(self
-            .try_intern_array(element_type, len)?
-            .as_array()
-            .expect("array interning returns an array Type"))
-    }
-
-    /// Look up an array type by Type element and length.
-    ///
-    /// Returns None if no such array exists in the pool.
-    pub fn get_array_by_type(&self, element_type: Type, len: u64) -> Option<ArrayTypeId> {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.validate_structural_child(element_type).ok()?;
-        inner.array_map.get(&(element_type, len))?.as_array()
-    }
-
     /// Intern a ptr const type from a Type pointee.
     ///
     /// # Panics
@@ -3579,16 +3558,6 @@ impl TypeInternPool {
             .expect("const-pointer interning returns a const-pointer Type")
     }
 
-    pub fn try_intern_ptr_const_from_type(
-        &self,
-        pointee_type: Type,
-    ) -> Result<PtrConstTypeId, TypeValidationError> {
-        Ok(self
-            .try_intern_ptr_const(pointee_type)?
-            .as_ptr_const()
-            .expect("const-pointer interning returns a const-pointer Type"))
-    }
-
     /// Intern a ptr mut type from a Type pointee.
     ///
     /// # Panics
@@ -3599,16 +3568,6 @@ impl TypeInternPool {
             .expect("pointer child must be representable in this type pool")
             .as_ptr_mut()
             .expect("mutable-pointer interning returns a mutable-pointer Type")
-    }
-
-    pub fn try_intern_ptr_mut_from_type(
-        &self,
-        pointee_type: Type,
-    ) -> Result<PtrMutTypeId, TypeValidationError> {
-        Ok(self
-            .try_intern_ptr_mut(pointee_type)?
-            .as_ptr_mut()
-            .expect("mutable-pointer interning returns a mutable-pointer Type"))
     }
 
     /// Get ptr const pointee type if this is a ptr const type.

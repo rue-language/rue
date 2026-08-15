@@ -455,12 +455,6 @@ impl EnumDef {
             .unwrap_or(&[])
     }
 
-    /// Whether any variant of this enum carries a payload (i.e. this is a
-    /// sum type with data rather than a C-like discriminant-only enum).
-    pub fn has_payloads(&self) -> bool {
-        self.variant_payloads.iter().any(|p| !p.is_empty())
-    }
-
     /// Get the discriminant type for this enum.
     /// Returns the smallest unsigned integer type that can hold all variant indices.
     pub fn discriminant_type(&self) -> Type {

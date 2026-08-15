@@ -395,12 +395,6 @@ impl ParamArena {
         &store.comptime[start..end]
     }
 
-    /// Parameters this arena allocated itself — the ones a body-local overlay
-    /// actually paid for, excluding everything it shares with its base.
-    pub fn local_params(&self) -> usize {
-        self.local.types.len()
-    }
-
     /// Parameters this arena reads from a shared immutable base without copying.
     pub fn shared_params(&self) -> usize {
         self.base_len

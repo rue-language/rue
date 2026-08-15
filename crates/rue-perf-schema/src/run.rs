@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BuildBoundaryEvidence, RUN_SCHEMA_VERSION};
+use crate::BuildBoundaryEvidence;
 
 /// A published wall-clock phase.
 ///
@@ -464,11 +464,6 @@ pub struct RunObject {
 }
 
 impl RunObject {
-    /// Whether this object's schema version is the one this crate implements.
-    pub fn is_current_schema(&self) -> bool {
-        self.schema_version == RUN_SCHEMA_VERSION
-    }
-
     /// The observation for one workload, if the run recorded it.
     pub fn observation(&self, workload: &str) -> Option<&WorkloadObservation> {
         self.workloads

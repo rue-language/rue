@@ -226,29 +226,6 @@ impl CompilerSession {
     }
 }
 
-/// Drive this session's rooted query graph through the pre-link boundary: body
-/// reachability, per-body CFG/codegen terminals, and object-file creation — but
-/// NOT linking. Returns the total number of generated object bytes so a caller
-/// can keep the result alive without depending on link availability.
-///
-/// This is the exact pre-link interval the RUE-1086 scaling-bench runner times
-/// (the ~45 ms Caldera target is a pre-link number). It shares the RIR and
-/// codegen terminals with [`compile_with_session`].
-pub(crate) fn pre_link_object_bytes_with_session(
-    session: &mut CompilerSession,
-    options: &CompileOptions,
-) -> MultiErrorResult<usize> {
-    let _span = info_span!("compile_pipeline_pre_link").entered();
-    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
-    let image = crate::program_image_plan::ProgramImage::from_rooted(
-        rooted.objects,
-        rooted.exports,
-        options,
-    )?;
-    let objects = image.fresh_objects(options)?;
-    Ok(objects.iter().map(|object| object.len()).sum())
-}
-
 fn compile_snapshot_impl(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
