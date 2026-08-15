@@ -308,6 +308,20 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &[],
     ),
+    // RUE-954: the literal-threading regression cases invoke a real dup(2)
+    // syscall, which the oracle does not model.
+    Entry::new(
+        "cli.intrinsic_args",
+        "syscall_integer_literal_args_typed_u64",
+        external(ExternalDependencyKind::SystemCall),
+        &["x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.intrinsic_args",
+        "syscall_mixed_literal_and_var_args",
+        external(ExternalDependencyKind::SystemCall),
+        &["x86-64-linux"],
+    ),
     // RUE-682: only the std.hash cases that route bytes through StrBuf or
     // ArrayBuf(u8) hit the `@byte_copy` gap. The three that hash `str` views
     // directly — including `hash_known_answer_vectors`, which carries the
