@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatelib import SKIP_DIRECTORIES, prune_names
+from gatelib import SKIP_DIRECTORIES, prune_names, run_gate
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -190,15 +190,11 @@ def main() -> int:
     parser.add_argument("root", nargs="?", type=Path, default=ROOT)
     args = parser.parse_args()
 
-    findings = validate(args.root)
-    if findings:
-        for finding in findings:
-            print(f"error: {finding}", file=sys.stderr)
-        return 1
-
     scanned = len(shell_scripts(args.root))
-    print(f"pipefail pipeline policy valid: {scanned} shell script(s) scanned")
-    return 0
+    return run_gate(
+        lambda: [str(finding) for finding in validate(args.root)],
+        f"pipefail pipeline policy valid: {scanned} shell script(s) scanned",
+    )
 
 
 if __name__ == "__main__":
