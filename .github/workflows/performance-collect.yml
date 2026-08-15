@@ -194,6 +194,33 @@ jobs:
                  "the reviewed fresh-process non-regression ratchet in performance/manifest.toml."
             exit 1
           fi
+          # RUE-1514. An appendable run that measured no complete workload
+          # publishes no headline point, so the series stops advancing exactly
+          # as it does on exit 3 — but every check reported success. Three
+          # platforms collected nothing for a day behind that green, and the
+          # first signal was the stall gate, which fires days later and fails
+          # every pull request in the repository rather than this job at the
+          # commit that broke it. The runner's own log lines above name the
+          # failing workloads and why each one failed.
+          if [ "$status" -eq 5 ]; then
+            echo "::error::the run is appendable but a workload did not complete validly," \
+                 "so no headline point enters this platform's series at this commit."
+            exit 1
+          fi
+          # Everything else nonzero, including a status no branch above names.
+          # The file records whatever the runner exited with, so without this a
+          # panic (101), a signal death, or an exit code added to the runner
+          # later falls straight through: the step succeeds, the job is green,
+          # and `publish` reports "no records were produced; nothing to publish"
+          # and succeeds too. That is RUE-1514's failure mode reached through a
+          # different door, and the same argument applies to it — a guard
+          # against a silent failure is worth nothing if failing past it is
+          # itself silent.
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the runner exited with unhandled status $status;" \
+                 "no collection happened at this commit."
+            exit 1
+          fi
 
   # Runtime performance of compiled Rue programs (ADR-0072 Phase 1, RUE-1046).
   #
@@ -324,6 +351,14 @@ jobs:
           if [ "$status" -eq 5 ]; then
             echo "::error::the runtime report is appendable but a workload did" \
                  "not complete; the series has a hole at this commit."
+            exit 1
+          fi
+          # The same catch-all the compile-time leg above states its reasons
+          # for: the file holds whatever the runner exited with, and an
+          # unhandled status must not pass for a healthy collection.
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the runtime runner exited with unhandled status" \
+                 "$status; no runtime collection happened at this commit."
             exit 1
           fi
 
@@ -462,6 +497,14 @@ jobs:
           if [ "$status" -eq 5 ]; then
             echo "::error::the runtime report is appendable but a workload did" \
                  "not complete; the series has a hole at this commit."
+            exit 1
+          fi
+          # The same catch-all the compile-time leg above states its reasons
+          # for: the file holds whatever the runner exited with, and an
+          # unhandled status must not pass for a healthy collection.
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the runtime runner exited with unhandled status" \
+                 "$status; no runtime collection happened at this commit."
             exit 1
           fi
 

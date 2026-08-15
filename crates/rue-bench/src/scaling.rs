@@ -572,9 +572,9 @@ fn render(report: &ScalingReport) -> String {
     }
 
     out.push_str("\n### Semantic leaf attribution\n\n");
-    out.push_str("Signature parsing is the nested aggregate across every semantic query consumer of an exact signature terminal; declaration nuclei are its primary owner, but specialized and body-input consumers may also contribute. Body input lowering and provider analysis are nested inside body analysis. These leaf intervals are explanatory and must not be added to their enclosing intervals.\n\n");
-    out.push_str("| workload / workers | signature parsing total/max ms | body input lowering total/max ms | provider analysis total/max ms |\n");
-    out.push_str("| --- | ---: | ---: | ---: |\n");
+    out.push_str("Body input lowering and provider analysis are nested inside body analysis. These leaf intervals are explanatory and must not be added to their enclosing intervals. Signature parsing had a column here until RUE-1510 projected signatures from the canonical parsed declaration; there is no signature parse left to time, so the column is gone rather than reporting a structural zero.\n\n");
+    out.push_str("| workload / workers | body input lowering total/max ms | provider analysis total/max ms |\n");
+    out.push_str("| --- | ---: | ---: |\n");
     for observation in &report.workloads {
         let evidence = observation.samples.iter().map(|sample| {
             sample
@@ -589,14 +589,11 @@ fn render(report: &ScalingReport) -> String {
                 summarize(evidence.clone().map(|value| select(&value).max_ns)),
             )
         };
-        let signature = pair(|value| &value.semantic_declaration_signature_parsing);
         let lowering = pair(|value| &value.semantic_body_input_lowering);
         let provider = pair(|value| &value.semantic_provider_analysis);
         out.push_str(&format!(
-            "| {} | {:.2}/{:.2} | {:.2}/{:.2} | {:.2}/{:.2} |\n",
+            "| {} | {:.2}/{:.2} | {:.2}/{:.2} |\n",
             observation_label(observation),
-            signature.0.median as f64 / 1_000_000.0,
-            signature.1.median as f64 / 1_000_000.0,
             lowering.0.median as f64 / 1_000_000.0,
             lowering.1.median as f64 / 1_000_000.0,
             provider.0.median as f64 / 1_000_000.0,

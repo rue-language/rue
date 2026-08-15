@@ -31,6 +31,12 @@ COLLECTION_BOUNDARY_SNIPPETS = (
     'RUE="$(scripts/rue-bin --target-platforms //platforms:release)"',
     "--manifest performance/manifest.toml",
     'if [ "$status" -eq 4 ]',
+    # RUE-1514: the compile-time incomplete-collection branch. Pinned for the
+    # reason the ratchet branch above is — a guard against a silent failure is
+    # worth nothing if deleting it is itself silent — and pinned by the error
+    # text inside the branch rather than by its `-eq 5` test, which the two
+    # pre-existing runtime legs in this same file would satisfy on their own.
+    "no headline point enters this platform",
 )
 SCALING_BOUNDARY_SNIPPETS = (
     "schema_version = 3",
