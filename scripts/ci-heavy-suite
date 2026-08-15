@@ -15,9 +15,9 @@ target="$1"
 # deciding what Buck already decides:
 #
 #   * a `buck2 uquery` of the rue_heavy_suite label, grepped to confirm the
-#     argument was a heavy suite. Membership now comes from
-#     //test_tiers.bxl:heavy_suites, which is what produces this argument in the
-#     first place, and an argument naming no target fails in buck2 below.
+#     argument was a heavy suite. The CI matrix names each labeled corpus
+#     directly and scripts/validate-ci-gate.py fails when a labeled corpus is
+#     missing from it, and an argument naming no target fails in buck2 below.
 #   * a grep of the run's output for a `<Status>: root<target>` line, to catch a
 #     suite that silently never ran. Every corpus is a build action whose stamp
 #     its test asserts, so buck2 exiting 0 for a named target means that corpus

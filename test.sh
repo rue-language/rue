@@ -43,12 +43,12 @@ set -euo pipefail
 # that by tee'ing every invocation into a log and grepping for a result line per
 # entry in a hand-maintained required-corpus list.
 #
-# That defense is now structural instead. Heavy suites come from
-# `//test_tiers.bxl:heavy_suites`, which computes membership from the same
-# labels that define the tiers, so the list cannot go stale against BUCK. Each
-# one is then run as a NAMED target: a misspelled or deleted target is a Buck
-# error rather than a quietly missing log line, and a `//...` pattern can no
-# longer narrow underneath the run. And since RUE-1118/RUE-1163 every corpus is
+# That defense is now structural instead. Heavy suites are the targets labeled
+# `rue_heavy_suite` in BUCK, and scripts/validate-ci-gate.py fails when a
+# labeled corpus is missing from the CI platform-corpus matrix, so the list
+# cannot go stale against BUCK. Each one is then run as a NAMED target: a
+# misspelled or deleted target is a Buck error rather than a quietly missing
+# log line, and a `//...` pattern can no longer narrow underneath the run. And since RUE-1118/RUE-1163 every corpus is
 # a build action whose stamp its test asserts, so buck2 exiting 0 for a named
 # corpus means that corpus passed — in this run or in a cached one over the same
 # inputs. Nothing here parses output to decide what really ran.

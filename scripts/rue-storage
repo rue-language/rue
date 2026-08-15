@@ -212,8 +212,9 @@ hard_pressure() {
 remediation_notice() {
     cat >&2 <<EOF
 To reclaim space safely: remove worktrees whose work is finished
-('git worktree remove <path>' or 'scripts/worktree-gc'), or reset a specific
-registered root's Buck outputs with 'scripts/rue storage reset <root>'.
+('git worktree remove <path>'), reclaim stale Buck outputs host-wide with
+'scripts/rue storage clean', or reset a specific registered root's Buck
+outputs with 'scripts/rue storage reset <root>'.
 Do not edit or bypass this guard; it protects every worktree on the host.
 EOF
 }

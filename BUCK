@@ -87,14 +87,23 @@ sh_binary(
 # manifest derivation script that owns the declared-boundary check, the two
 # advisory precision reports, and the scenario runner. rue_rules.bzl reaches
 # them by default attr, so they are PUBLIC.
+sh_binary(
+    name = "rue-program-scan",
+    main = "scripts/rue-program-scan",
+    visibility = ["PUBLIC"],
+)
+
+# The Python tools run inside cacheable actions that upload their results
+# (`allow_cache_upload` in rue_rules.bzl), so the interpreter is a
+# toolchain-level decision rather than an undeclared `$PATH` lookup inside a
+# cache-keyed action.
 [
-    sh_binary(
+    python_bootstrap_binary(
         name = _tool,
         main = "scripts/{}".format(_main),
         visibility = ["PUBLIC"],
     )
     for _tool, _main in [
-        ("rue-program-scan", "rue-program-scan"),
         ("rue-program-derive-manifest", "rue-program-derive-manifest.py"),
         ("rue-program-srcs-precision", "rue-program-srcs-precision.py"),
         ("rue-program-family-report", "rue-program-family-report.py"),
@@ -911,6 +920,21 @@ rue_sh_test(
     },
 )
 
+# Same drift contract for the Caldera capacity corpus: the committed
+# examples/caldera is generator output, the generator writes in place, and
+# nothing else compares the two (RUE-1521 found a 782-file divergence that
+# had accrued silently).
+rue_sh_test(
+    name = "caldera-generator-check",
+    test = "scripts/test-caldera-generator.py",
+    resources = ["scripts/generate-caldera.py"] + glob([
+        "examples/caldera/**",
+    ]),
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # The root BUCK file, so the CLI-shard coverage gate can read CLI_TEST_SHARD_COUNT
 # and the generated shard targets as a declared input.
 filegroup(
@@ -1354,7 +1378,6 @@ filegroup(
     srcs = [
         "scripts/jj-tidy",
         "scripts/rue-storage",
-        "scripts/worktree-gc",
     ],
 )
 
@@ -1382,6 +1405,7 @@ filegroup(
     srcs = {
         "crates/clippy-gate.sh": "//crates:clippy-gate",
         "fmt.sh": "fmt.sh",
+        "quick-test.sh": "quick-test.sh",
         "scripts/ci-corpus-inventory": "scripts/ci-corpus-inventory",
         "scripts/ci-heavy-suite": "scripts/ci-heavy-suite",
         "scripts/cli-timeout-policy.py": "scripts/cli-timeout-policy.py",
