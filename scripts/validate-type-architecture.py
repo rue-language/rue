@@ -8,6 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import parse_crate_sources
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CONSUMER_CRATES = (
@@ -267,12 +270,11 @@ def main() -> int:
     args = parser.parse_args()
 
     root = args.root.resolve()
-    sources = []
-    for item in args.source:
-        crate, separator, path = item.partition("=")
-        if not separator or crate not in CONSUMER_CRATES:
-            parser.error(f"invalid --source {item!r}")
-        sources.append((crate, Path(path).resolve()))
+    try:
+        parsed = parse_crate_sources(args.source, CONSUMER_CRATES)
+    except ValueError as error:
+        parser.error(str(error))
+    sources = [(crate, path.resolve()) for crate, path in parsed]
 
     errors = validate(root, sources or None)
     if errors:
