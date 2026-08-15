@@ -892,6 +892,25 @@ rue_sh_test(
     },
 )
 
+# RUE-1264: the scaling probes' committed sources are generator output, and
+# their single-axis property lives in the generators. This gate re-runs each
+# generator's `--check` so a hand edit to one size fails the pull request
+# rather than silently turning a between-sizes ratio into a comparison of two
+# different programs. The probe sources are declared inputs so a source edit
+# can never be served a cached pass.
+rue_sh_test(
+    name = "scale-probe-generator-check",
+    test = "scripts/test-scale-probe-generators.py",
+    resources = glob([
+        "performance/workloads/scale_modules/**",
+        "performance/workloads/scale_functions/**",
+        "performance/workloads/scale_instantiations/**",
+    ]),
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # The root BUCK file, so the CLI-shard coverage gate can read CLI_TEST_SHARD_COUNT
 # and the generated shard targets as a declared input.
 filegroup(

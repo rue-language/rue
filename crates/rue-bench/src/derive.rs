@@ -324,6 +324,18 @@ pub struct SummaryData {
 pub struct WorkloadDescription {
     pub id: String,
     pub question: String,
+    /// The scaling probe's declared axis and size, when the workload is one
+    /// (RUE-1264). Published so the ratio between two sizes of a probe is
+    /// recoverable from this record rather than by parsing workload ids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scaling: Option<ScalingDescription>,
+}
+
+/// A scaling probe's axis position, as published to the dashboard.
+#[derive(Debug, Serialize)]
+pub struct ScalingDescription {
+    pub axis: String,
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -525,6 +537,10 @@ pub fn derive(manifest: &Manifest, runs: &[StoredRun]) -> SiteData {
                 workloads.push(WorkloadDescription {
                     id: workload.id.clone(),
                     question: workload.question.clone(),
+                    scaling: workload.scaling.as_ref().map(|scaling| ScalingDescription {
+                        axis: scaling.axis.clone(),
+                        size: scaling.size,
+                    }),
                 });
             }
         }
