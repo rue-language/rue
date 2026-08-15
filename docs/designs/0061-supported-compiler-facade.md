@@ -68,7 +68,7 @@ Current consumers establish real requirements:
 | `crates/rue` | project/import loading, compilation, diagnostics, and `--emit` presentation | stable requests/session/views; source-loading owner; unstable textual presentation |
 | `crates/rue-compiler/tests` | public contract, differential reuse, payload schemas | public views for black-box tests; crate-private test support for engine invariants |
 | `crates/rue-fuzz`, `crates/rue-oracle`, `crates/rue-oracle-diff` | semantic checking, executable generation, ICE classification, differential generation | stable session/results; direct owner dependencies only for models that intentionally inspect CFG/AIR |
-| `crates/rue-air-profile` and future profiling clients | work, retention, invalidation, and storage measurements | explicitly unstable metrics snapshots, never query records |
+| future profiling clients | work, retention, invalidation, and storage measurements | explicitly unstable metrics snapshots, never query records |
 | future LSP | incremental compile/check, structured diagnostics, syntax/definition/navigation queries | stable session requests and immutable views with opaque stable IDs; no query, invalidation, or durable internals |
 | future RUE-439 MCP | compile/check, structured diagnostics, error/spec metadata | versioned machine-readable tooling schema over stable views |
 | future RUE-749 C ABI | token and diagnostic buffers | versioned owned FFI DTOs over the same syntax/diagnostic views; no Rust layout crosses the ABI |
