@@ -1857,7 +1857,7 @@ mod accessor_graph_tests {
             .split_once("pub(crate) fn callable_for_symbol(")
             .unwrap()
             .1
-            .split_once("pub(crate) fn same_live_domain")
+            .split_once("pub(crate) fn stable_types(")
             .unwrap()
             .0;
         assert!(lookup.contains(".partition_point("));

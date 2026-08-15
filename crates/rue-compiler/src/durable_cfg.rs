@@ -481,23 +481,6 @@ pub(crate) enum CfgDomainFailure {
     Edit(rue_cfg::CfgEditError),
 }
 
-impl CfgDomainFailure {
-    /// Classify a domain-relocation failure for the user.
-    ///
-    /// Rebuilding an owner-bound payload during relocation can outgrow the
-    /// compact `u32` payload representation, which is an implementation-limit
-    /// rejection (`E1401` naming the limit, spec C.1:2) rather than a compiler
-    /// bug. Every other relocation failure is a producer invariant.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn error_kind(&self, context: &str) -> ErrorKind {
-        match self {
-            Self::Edit(error) => error.error_kind(context),
-            other => ErrorKind::InternalError(format!("{context}: {other:?}")),
-        }
-    }
-}
-
 impl CfgDomainProjection {
     pub(crate) fn stable_debug_snapshot(&self, air: &rue_air::ValidatedAir) -> String {
         let instruction_kinds = air
@@ -530,37 +513,6 @@ impl CfgDomainProjection {
         )
     }
 
-    /// Admit stable symbols already owned by a surrounding semantic output.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn admit_stable_symbols(
-        &mut self,
-        old: &Self,
-        old_interner: &lasso::ThreadedRodeo,
-        new_interner: &lasso::ThreadedRodeo,
-    ) -> Result<(), CfgDomainFailure> {
-        let mut stable_symbols = self
-            .symbols
-            .iter()
-            .map(|(_, stable)| stable.clone())
-            .collect::<std::collections::HashSet<_>>();
-        for (old_symbol, stable) in &old.symbols {
-            if !stable_symbols.insert(stable.clone()) {
-                continue;
-            }
-            let symbol = new_interner.get_or_intern(old_interner.resolve(old_symbol));
-            self.symbols.push((symbol, stable.clone()));
-        }
-        self.symbols.sort_by(|left, right| {
-            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
-        });
-        self.symbols.dedup();
-        if self.symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(CfgDomainFailure::Shape);
-        }
-        Ok(())
-    }
-
     /// Admit stable types already owned by a surrounding semantic output.
     #[cfg(test)]
     pub(crate) fn admit_stable_types(
@@ -583,35 +535,6 @@ impl CfgDomainProjection {
             self.types.push((current, stable.clone()));
         }
         self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
-        Ok(())
-    }
-
-    /// Admit stable strings already owned by a surrounding semantic output.
-    ///
-    /// Optimized accessor splicing can add callee literals to a caller CFG.
-    /// The one-shot semantic adapter owns the merged program string table, so
-    /// relocation maps those stable literals to that table before importing
-    /// the optimized terminal.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn admit_stable_strings(
-        &mut self,
-        old: &Self,
-        strings: &[String],
-    ) -> Result<(), CfgDomainFailure> {
-        let indices = first_string_indices(strings)?;
-        for (_, stable) in &old.strings {
-            let index = indices
-                .get(stable.as_ref())
-                .copied()
-                .ok_or(CfgDomainFailure::MissingString)?;
-            self.strings.push((index, stable.clone()));
-        }
-        self.strings.sort_by_key(|(index, _)| *index);
-        self.strings.dedup();
-        if self.strings.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(CfgDomainFailure::Shape);
-        }
         Ok(())
     }
 
@@ -744,144 +667,6 @@ impl CfgDomainProjection {
             }
             StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
         }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn same_live_domain(&self, other: &Self) -> bool {
-        let complete_or_same_epoch = match (&self.incomplete_epoch, &other.incomplete_epoch) {
-            (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        };
-        complete_or_same_epoch
-            && self.body_span == other.body_span
-            && self.types == other.types
-            && self.strings == other.strings
-            && self.atoms == other.atoms
-            && self.spans == other.spans
-            && self.symbols == other.symbols
-    }
-
-    /// Build the relocation domain for one canonical analyzed function without
-    /// consulting a program-wide CFG cache. Every live type, symbol, string,
-    /// local atom, and span is paired with its stable record-local identity.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn from_canonical_function(
-        function: &AnalyzedFunction,
-        stable_identity: &crate::FunctionInstanceKey,
-        body_span: Span,
-        strings: &[String],
-        interner: &lasso::ThreadedRodeo,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure> + Copy,
-        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
-    ) -> Result<Self, CfgDomainFailure> {
-        let mut types = vec![
-            (
-                function.air.return_type(),
-                stable_type(function.air.return_type())?,
-            ),
-            (Type::UNIT, CanonicalType::Unit),
-        ];
-        let mut stable_strings = Vec::new();
-        let mut spans = Vec::new();
-        let mut symbols = Vec::new();
-        let mut atoms = Vec::with_capacity(function.local_atoms.len());
-        for atom in &function.local_atoms {
-            if atom.identity.producer != function.identity
-                || strings.get(atom.dense_id as usize).map(String::as_str)
-                    != Some(atom.content.as_ref())
-            {
-                return Err(CfgDomainFailure::Shape);
-            }
-            atoms.push(rue_air::SemanticBodyLocalAtom {
-                identity: crate::LocalAtomId {
-                    producer: stable_identity.clone(),
-                    kind: atom.identity.kind,
-                    anchor: atom.identity.anchor.clone(),
-                },
-                content: atom.content.clone(),
-            });
-        }
-        for (_, instruction) in function.air.iter() {
-            types.push((instruction.ty, stable_type(instruction.ty)?));
-            spans.push((
-                instruction.span,
-                StableCfgSpan::new(instruction.span, body_span),
-            ));
-            match &instruction.data {
-                AirInstData::StringConst(index) => {
-                    stable_strings.push((
-                        *index,
-                        strings
-                            .get(*index as usize)
-                            .ok_or(CfgDomainFailure::Shape)?
-                            .as_str()
-                            .into(),
-                    ));
-                }
-                AirInstData::IntCast { from_ty, .. } => {
-                    types.push((*from_ty, stable_type(*from_ty)?));
-                }
-                AirInstData::Call { name, .. } | AirInstData::AccessorCall { name, .. } => {
-                    let symbol = stable_callable(*name)
-                        .map(StableCfgSymbol::Callable)
-                        .unwrap_or_else(|| {
-                            StableCfgSymbol::Intrinsic(Arc::from(interner.resolve(name)))
-                        });
-                    symbols.push((*name, symbol));
-                }
-                AirInstData::Intrinsic { name, .. } => {
-                    symbols.push((
-                        *name,
-                        StableCfgSymbol::Intrinsic(Arc::from(interner.resolve(name))),
-                    ));
-                }
-                _ => {}
-            }
-        }
-        for place in function.air.places() {
-            types.push((place.base_type, stable_type(place.base_type)?));
-            for projection in function.air.get_place_projections(place) {
-                match projection {
-                    rue_air::AirProjection::Field { struct_id, .. } => {
-                        let ty = Type::new_struct(*struct_id);
-                        types.push((ty, stable_type(ty)?));
-                    }
-                    rue_air::AirProjection::Index { array_type, .. } => {
-                        types.push((*array_type, stable_type(*array_type)?));
-                    }
-                }
-            }
-        }
-        for (_, ty) in function.air.param_drops() {
-            types.push((*ty, stable_type(*ty)?));
-        }
-        let types = deduplicate_type_mappings(types)?;
-        stable_strings.sort_by_key(|(index, _)| *index);
-        stable_strings.dedup();
-        spans.sort_by_key(|(span, _)| (span.file_id.index(), span.start, span.end));
-        spans.dedup();
-        symbols.sort_by(|left, right| {
-            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
-        });
-        symbols.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
-        if symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(CfgDomainFailure::Shape);
-        }
-        atoms.sort_by(|left, right| {
-            (&left.identity, &left.content).cmp(&(&right.identity, &right.content))
-        });
-        Ok(Self {
-            body_span,
-            types,
-            strings: stable_strings,
-            atoms,
-            spans,
-            symbols,
-            incomplete_epoch: None,
-        })
     }
 
     pub(crate) fn stable_types(&self) -> impl Iterator<Item = &CanonicalType> {
@@ -1081,57 +866,6 @@ impl CfgDomainProjection {
             symbol_mappings: Arc::new(symbol_mappings),
             foreign_symbols: Arc::new(foreign_symbols),
         })
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn remap_span(
-        old: &Self,
-        new: &Self,
-        span: Span,
-        new_body_span: Span,
-    ) -> Result<Span, CfgDomainFailure> {
-        let anchor = old
-            .spans
-            .iter()
-            .find(|(candidate, _)| *candidate == span)
-            .map(|(_, anchor)| anchor)
-            .ok_or(CfgDomainFailure::Missing)?;
-        if !new.spans.iter().any(|(_, candidate)| candidate == anchor) {
-            return Err(CfgDomainFailure::Missing);
-        }
-        anchor.relocate(new_body_span)
-    }
-
-    #[allow(dead_code)]
-    pub fn validate_cfg(&self, cfg: &rue_cfg::Cfg, span: Span) -> Result<(), CfgDomainFailure> {
-        Self::import_cfg(self, self, cfg, span).map(|_| ())
-    }
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn from_body(
-        function: &AnalyzedFunction,
-        stable_function: &crate::FunctionInstanceKey,
-        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
-        body_span: Span,
-        strings: &[String],
-        type_pool: &rue_air::FrozenTypeInternPool,
-        interner: &lasso::ThreadedRodeo,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
-        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
-    ) -> Result<Self, CfgDomainFailure> {
-        Self::from_body_parts(
-            &function.air,
-            &function.identity,
-            &function.local_atoms,
-            stable_function,
-            body,
-            body_span,
-            strings,
-            type_pool,
-            interner,
-            stable_type,
-            stable_callable,
-        )
     }
 
     pub fn from_local_body(
@@ -1659,7 +1393,7 @@ mod tests {
         );
         let source = include_str!("durable_cfg.rs");
         let relocation = source
-            .split_once("pub(crate) fn admit_stable_strings(")
+            .split_once("pub(crate) fn import_accessor_cfg(")
             .unwrap()
             .1
             .split_once("pub(crate) fn callable_for_symbol")
@@ -1723,13 +1457,6 @@ mod tests {
         );
 
         let source = include_str!("durable_cfg.rs");
-        let admission = source
-            .split_once("pub(crate) fn admit_stable_symbols(")
-            .unwrap()
-            .1
-            .split_once("pub(crate) fn admit_stable_types(")
-            .unwrap()
-            .0;
         let relocation = source
             .split_once("pub(crate) fn import_accessor_cfg(")
             .unwrap()
@@ -1737,8 +1464,8 @@ mod tests {
             .split_once("pub(crate) fn callable_for_symbol")
             .unwrap()
             .0;
-        for method in [admission, relocation] {
-            let compact = method
+        {
+            let compact = relocation
                 .chars()
                 .filter(|character| !character.is_whitespace())
                 .collect::<String>();
@@ -1770,7 +1497,7 @@ mod tests {
             .split_once("pub(crate) fn admit_stable_types(")
             .unwrap()
             .1
-            .split_once("pub(crate) fn admit_stable_strings(")
+            .split_once("pub(crate) fn import_accessor_cfg(")
             .unwrap()
             .0
             .chars()

@@ -763,6 +763,17 @@ preserve Rue's attempt history, diagnostic provenance, current/last-good roots,
 host import protocol, cancellation, red/green semantics, and differential
 oracle.
 
+RUE-1022 resolved the selection: the substrate is the dependency-free in-house
+`rue-query` crate. Salsa is not vendored in Rue, and introducing it would have
+created a second database beside `CompilerSession` before proving how Rue's
+attempted and last-good terminals, round-based import revisions,
+semantic/presentation diagnostic split, shared-work cancellation, red/green
+equality, and protected bounded retention map onto it. The focused in-house
+crate was the smaller integration surface. This was a substrate decision, not
+authorization to preserve two query authorities: production families move to
+`rue-query`, and their superseded selected-state execution machinery is
+removed.
+
 ## Implementation Phases
 
 Tracked in Linear under the RUE-648 epic. The dependency order is:

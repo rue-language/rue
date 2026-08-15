@@ -1123,7 +1123,7 @@ def collect(buck: Buck, script: Path = AFFECTED_TARGETS) -> tuple[list[Scheduled
                 identities = frozenset({f"target:{unit}\t<whole target>"})
             if not identities:
                 # A well-formed listing of zero tests: the binary exists, runs,
-                # and owns nothing to compare (`rue-air-profile-test` is one).
+                # and owns nothing to compare.
                 # It is still a unit of work, so it counts as one — dropping it
                 # from the schedule, as the first revision did, is how two whole
                 # suites left the comparison without anything saying so.

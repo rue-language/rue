@@ -73,8 +73,6 @@
 //!   Transitive linearity / needs-drop stays unavailable until the caller runs
 //!   `finalize_containment_metadata` at the same point production freezes.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -719,17 +717,6 @@ where
         }
     }
 
-    pub fn from_identity(mut identity: ProviderIdentityContext<K, M, S>) -> Self {
-        // Entering the explicit state seam opts an older context into the
-        // append-only protocol without changing the legacy facade behavior.
-        identity.allow_post_seal_overlay = true;
-        let type_pool = identity.type_pool();
-        Self {
-            identity,
-            type_pool,
-        }
-    }
-
     pub fn identity_context(&self) -> ProviderIdentityContext<K, M, S> {
         self.identity.clone()
     }
@@ -994,24 +981,6 @@ where
     /// symbol space, never the shared whole-program interner's.
     pub(in crate::sema) fn intern_name(&self, name: &str) -> Spur {
         self.interner.get_or_intern(name)
-    }
-
-    /// Record the concrete [`Type`] an anonymous nominal was issued, so a later
-    /// consult of its key resolves by lookup. Mirrors the epoch's
-    /// `anon_struct_identities` / `anon_enum_identities` maps that
-    /// `resolve_instance_type` consults for the anonymous arm.
-    pub(in crate::sema) fn register_issued_anonymous(
-        &mut self,
-        key: AnonymousNominalKey<K, M>,
-        ty: Type,
-    ) where
-        M: Clone,
-    {
-        debug_assert!(
-            !self.anonymous_poisoned.contains_key(&key),
-            "a poisoned anonymous identity cannot be registered as successful"
-        );
-        self.record_anonymous_identity(key, ty);
     }
 
     fn record_struct_identity(&mut self, key: K, id: StructId) {
@@ -2356,25 +2325,6 @@ where
         })
     }
 
-    pub(in crate::sema) fn resolve_function_call(
-        &mut self,
-        key: &K,
-        returns_type: bool,
-        file_id: FileId,
-    ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
-        let signature = self.function_signature(key)?;
-        Ok(super::info::FunctionCallInfo {
-            params: signature.params,
-            return_type: signature.return_type,
-            returns_type,
-            is_generic: signature.is_generic,
-            is_pub: signature.is_pub,
-            is_unchecked: signature.is_unchecked,
-            is_extern: signature.is_extern,
-            file_id,
-        })
-    }
-
     /// Assemble call information from a durable signature the caller already
     /// read from this pool's source. Provider body hosts need that payload for
     /// request-local metadata as well, so accepting it here avoids querying and
@@ -2887,17 +2837,6 @@ impl BodyRirBundle {
             .map(|(_, instruction)| instruction.span.file_id);
         let file = files.next()?;
         files.all(|candidate| candidate == file).then_some(file)
-    }
-
-    pub fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
-        self.rir
-            .iter()
-            .filter_map(|(_, instruction)| match &instruction.data {
-                rue_rir::InstData::AnonStructType { anchor, .. }
-                | rue_rir::InstData::AnonEnumType { anchor, .. } => Some(anchor.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     /// Borrow the one local RIR/index/interner authority for provider fact
