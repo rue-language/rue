@@ -114,3 +114,53 @@ fn main() -> i32 {
 ]
 stdout = "0\n"
 exit_code = 0
+
+# ---------------------------------------------------------------------------
+# RUE-954: integer literals in @syscall argument positions see the declared
+# u64 parameter type. Before the fix every literal defaulted to i32 and had
+# to be pre-bound (`let fd: u64 = 1;`) to satisfy E0702.
+# ---------------------------------------------------------------------------
+
+# dup(1) — both the syscall number and the fd are bare literals.
+[[case]]
+name = "syscall_integer_literal_args_typed_u64"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let r = checked { @syscall(32, 1) };
+    if r >= 0 { 0 } else { 1 }
+}
+""" },
+]
+only_on = ["x86-64-linux"]
+
+# Mixed literal and variable arguments: the literal is typed u64 in place,
+# the variable keeps its own (correct) type.
+[[case]]
+name = "syscall_mixed_literal_and_var_args"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let n: u64 = 32;
+    let r = checked { @syscall(n, 1) };
+    if r >= 0 { 0 } else { 1 }
+}
+""" },
+]
+only_on = ["x86-64-linux"]
+
+# Control: a wrongly-typed non-literal argument still reports the targeted
+# E0702 (the literal threading must not widen a real i32 variable).
+[[case]]
+name = "syscall_non_literal_wrong_type_still_e0702"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let fd: i32 = 1;
+    let r = checked { @syscall(32, fd) };
+    0
+}
+""" },
+]
+compile_fail = true
+error_contains = ["E0702", "u64 for argument 1", "found i32"]

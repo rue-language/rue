@@ -2707,6 +2707,26 @@ fn inline_ctor_head_candidates_with_work(
                     work.raw_candidates += 1;
                 }
             }
+            // An inline type-constructor pattern head (`Opt(u8).Some(b)`,
+            // RUE-596) carries the head instruction on the pattern itself.
+            // Collecting it lets inference pre-type the arm's payload
+            // bindings and the pattern's scrutinee contract, so an arm
+            // literal in a sibling arm sees the enclosing expectation
+            // instead of defaulting to i32 (RUE-954).
+            InstData::Match { ref arms, .. } => {
+                for (pattern, _) in rir.match_arms(arms).iter() {
+                    if let rue_rir::RirPatternView::Path {
+                        ctor_head: Some(head),
+                        ..
+                    } = pattern
+                    {
+                        candidates.push(head);
+                        if attribution_enabled {
+                            work.raw_candidates += 1;
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
