@@ -1332,6 +1332,7 @@ rue_sh_test(
 rue_sh_test(
     name = "type-architecture-inventory-validation",
     test = "scripts/validate-type-architecture.py",
+    resources = glob(["scripts/gatelib/*.py"]),
     args = [
         "--source", "rue-air=$(location //crates/rue-air:type-architecture-inventory-sources)",
         "--source", "rue-cfg=$(location //crates/rue-cfg:type-architecture-inventory-sources)",
@@ -1344,7 +1345,8 @@ rue_sh_test(
 rue_sh_test(
     name = "type-architecture-inventory-tool-tests",
     test = "scripts/test-type-architecture.py",
-    resources = ["scripts/validate-type-architecture.py"],
+    resources = ["scripts/validate-type-architecture.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
