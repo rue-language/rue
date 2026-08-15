@@ -127,6 +127,14 @@ mod tests {
     const TYPE_INFERENCE_SOURCE: &str = include_str!("analysis/type_inference.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
     const TYPECK_SOURCE: &str = include_str!("typeck.rs");
+    const FACT_MODE_SOURCE: &str = include_str!("fact_mode.rs");
+    const AGGREGATE_RESOLUTION_SOURCE: &str = include_str!("aggregate_resolution.rs");
+    const CALL_RESOLUTION_SOURCE: &str = include_str!("call_resolution.rs");
+    const BODY_ENDPOINT_SOURCE: &str = include_str!("body_endpoint.rs");
+    const PROVIDER_BODY_HOST_SOURCE: &str = include_str!("provider_body_host.rs");
+    const SEMANTIC_TYPE_RESOLUTION_SOURCE: &str = include_str!("../semantic_type_resolution.rs");
+    const TYPES_SOURCE: &str = include_str!("../types.rs");
+    const AIR_LIB_SOURCE: &str = include_str!("../lib.rs");
     const VISIBILITY_SOURCE: &str = include_str!("visibility.rs");
     const BINDING_MANIFEST_SOURCE: &str = include_str!("binding_manifest.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
@@ -1024,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn type_syntax_evaluator_is_generic_and_has_one_explicit_host() {
+    fn structured_type_syntax_has_one_policy_and_two_fact_hosts() {
         fn item<'source>(source: &'source str, header: &str) -> &'source str {
             let start = source.find(header).expect("item header is present");
             let rest = &source[start..];
@@ -1062,9 +1070,18 @@ mod tests {
             );
         }
         assert_eq!(
-            TYPECK_SOURCE.matches("TypeSyntaxHost for Sema<").count(),
+            TYPECK_SOURCE
+                .matches("impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<")
+                .count(),
             1,
-            "only the production epoch implements the type-syntax host"
+            "the epoch implements the shared fact host exactly once"
+        );
+        assert_eq!(
+            PROVIDER_BODY_HOST_SOURCE
+                .matches("impl<P, S, K, M> TypeSyntaxHost for ProviderBodyHost<")
+                .count(),
+            1,
+            "the query-backed body host implements the shared fact host exactly once"
         );
         assert!(TYPECK_SOURCE.contains("pub(super) trait TypeSyntaxHost"));
         assert!(TYPECK_SOURCE.contains("pub(super) struct TypeSyntaxProvider"));
@@ -1098,15 +1115,15 @@ mod tests {
             ),
             item(
                 TYPECK_SOURCE,
-                "impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for DeferredTypeSyntaxProvider",
+                "impl<H: DeferredTypeSyntaxHost>\n    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for DeferredTypeSyntaxProvider",
             ),
             item(
                 TYPECK_SOURCE,
-                "impl<H: TypeSyntaxHost>\n    crate::SemanticTypeSyntaxProvider<\n        FileId,\n        crate::types::ModuleId,\n        FileId,\n        Spur,\n        Spur,\n        DeferredTypeResolution,\n        DeferredValueResolution,\n    > for DeferredTypeSyntaxProvider",
+                "impl<H: DeferredTypeSyntaxHost>\n    crate::SemanticTypeSyntaxProvider<\n        FileId,\n        crate::types::ModuleId,\n        FileId,\n        Spur,\n        Spur,\n        DeferredTypeResolution,\n        DeferredValueResolution,\n    > for DeferredTypeSyntaxProvider",
             ),
             item(
                 TYPECK_SOURCE,
-                "impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
+                "impl<'s, 'c, 'p, H: DeferredTypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
             ),
         ] {
             for forbidden in [
@@ -1119,6 +1136,8 @@ mod tests {
                 "DeferredSemaTypeSyntaxProvider",
                 "type_syntax_deferred_array_length",
                 "type_syntax_deferred_value_argument",
+                ".parse::<",
+                ".trim(",
             ] {
                 assert!(
                     !evaluator.contains(forbidden),
@@ -1129,15 +1148,13 @@ mod tests {
 
         let deferred = item(
             TYPECK_SOURCE,
-            "impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
+            "impl<'s, 'c, 'p, H: DeferredTypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
         );
         for required in [
             "fn deferred_argument_expected(",
             "fn validate_value_position(",
-            "resolve_semantic_comptime_call(",
             "type_syntax_signature_substitutions_are_ready(",
             "type_syntax_resolve_substituted_parameter_type(",
-            "type_syntax_resolve_substituted_return_type(",
             "type_syntax_validate_deferred_value(",
         ] {
             assert!(
@@ -1148,7 +1165,7 @@ mod tests {
 
         for (method, provider) in [
             (
-                "resolve_type_syntax_with_epoch_facts",
+                "resolve_structured_type_syntax_with_epoch_facts",
                 "TypeSyntaxProvider::new",
             ),
             (
@@ -1160,7 +1177,7 @@ mod tests {
                 "TypeSyntaxProvider::new",
             ),
             (
-                "validate_deferred_type_position_with_epoch_facts",
+                "validate_deferred_rir_type",
                 "DeferredTypeSyntaxProvider::new",
             ),
         ] {
@@ -1173,9 +1190,207 @@ mod tests {
         }
         let bare_value = deferred;
         assert!(bare_value.contains("TypeSyntaxProvider::new"));
-        assert!(bare_value.contains("DeferredTypeSyntaxProvider::new"));
         assert!(!TYPECK_SOURCE.contains("SemaTypeSyntaxProvider"));
         assert!(!TYPECK_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
+        assert_eq!(
+            SEMANTIC_TYPE_RESOLUTION_SOURCE
+                .matches("pub fn resolve_structured_semantic_type_syntax_with<")
+                .count(),
+            1,
+            "all storage hosts share one recursive structured policy"
+        );
+        for forbidden in [
+            "pub fn resolve_semantic_type_syntax",
+            "pub fn resolve_semantic_comptime_call",
+            "SemanticValueSyntax::Rendered",
+            "parse_array_type_syntax(",
+            "parse_pointer_type_syntax(",
+            "parse_type_call_syntax(",
+        ] {
+            assert!(
+                !SEMANTIC_TYPE_RESOLUTION_SOURCE.contains(forbidden),
+                "the canonical resolver has no rendered-string peer: {forbidden}"
+            );
+        }
+        for forbidden in [
+            "parse_array_type_syntax",
+            "parse_pointer_type_syntax",
+            "parse_type_call_syntax",
+        ] {
+            assert!(
+                !TYPES_SOURCE.contains(forbidden),
+                "rue-air must not retain a rendered type-syntax parser: {forbidden}"
+            );
+            assert!(
+                !AIR_LIB_SOURCE.contains(forbidden),
+                "rue-air must not export a rendered type-syntax parser: {forbidden}"
+            );
+            assert!(
+                !GENERATE_SOURCE.contains(forbidden),
+                "inference must consume structured type syntax: {forbidden}"
+            );
+        }
+        let provider_type_facts = item(
+            PROVIDER_BODY_HOST_SOURCE,
+            "impl<P, S, K, M> TypeSyntaxHost for ProviderBodyHost<",
+        );
+        for forbidden in [
+            "fn resolve_rir_type_syntax",
+            "fn resolve_type_name_in_file",
+            "parse_array_type_syntax(",
+            "parse_pointer_type_syntax(",
+            "parse_type_call_syntax(",
+            "RirTypeSyntaxNode::",
+        ] {
+            assert!(
+                !provider_type_facts.contains(forbidden),
+                "the query-backed host supplies facts but owns no peer policy: {forbidden}"
+            );
+        }
+
+        let inference_hint = item(GENERATE_SOURCE, "fn infer_type_hint(");
+        for required in [
+            "RirTypeSyntaxNode::Qualified { .. }",
+            "RirTypeSyntaxNode::TypeCall { .. }",
+            "RirTypeSyntaxNode::ValueCall { .. }",
+            "=> None",
+        ] {
+            assert!(
+                inference_hint.contains(required),
+                "constraint generation must defer fact-bearing syntax to semantic resolution: {required}"
+            );
+        }
+        for forbidden in ["render_type", ".parse::<", "parse_type_syntax"] {
+            assert!(
+                !inference_hint.contains(forbidden),
+                "constraint hints must consume structured syntax without becoming a peer resolver: {forbidden}"
+            );
+        }
+
+        let provider_host = item(
+            PROVIDER_BODY_HOST_SOURCE,
+            "impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<",
+        );
+        for required in [
+            "resolve_structured_semantic_type_syntax_with(",
+            "resolve_semantic_module_path(",
+            "resolve_array_length_fact(",
+            "Some(definition.file_id)",
+        ] {
+            assert!(
+                provider_host.contains(required),
+                "the query-backed host lost the shared type policy: {required}"
+            );
+        }
+        for forbidden in [
+            "fn resolve_array_length_in_file(",
+            "for segment in request.segments",
+            "Some(resolved.site)",
+        ] {
+            assert!(
+                !PROVIDER_BODY_HOST_SOURCE.contains(forbidden),
+                "the query-backed host regained handwritten type policy: {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn body_fact_contracts_have_no_forwarding_object_layer() {
+        let fact_sources = concat!(
+            include_str!("fact_mode.rs"),
+            include_str!("aggregate_resolution.rs"),
+            include_str!("call_resolution.rs"),
+            include_str!("body_endpoint.rs"),
+            include_str!("ordinary_engine.rs"),
+            include_str!("mod.rs"),
+            include_str!("provider_body_host.rs"),
+        );
+        for forbidden in [
+            "struct EpochFacts",
+            "AggregateFactSource",
+            "CallResolutionFactSource",
+            "BodyEndpointFactSource",
+            "BodyEndpointReadView",
+            "trait BodyAnalysisHost",
+        ] {
+            assert!(
+                !fact_sources.contains(forbidden),
+                "body analysis must not regain a pass-through fact layer: {forbidden}"
+            );
+        }
+
+        assert_eq!(
+            AGGREGATE_RESOLUTION_SOURCE
+                .matches("AggregateFacts for Sema<'_, D>")
+                .count(),
+            1
+        );
+        assert_eq!(
+            CALL_RESOLUTION_SOURCE
+                .matches("CallResolutionFacts for Sema<'_, D>")
+                .count(),
+            1
+        );
+        assert_eq!(
+            BODY_ENDPOINT_SOURCE
+                .matches("BodyEndpointProvider for Sema<'_, D>")
+                .count(),
+            1
+        );
+        for contract in [
+            "BodyEndpointProvider for ProviderBodyHost<",
+            "CallResolutionFacts for ProviderBodyHost<",
+            "AggregateFactsTrait for ProviderBodyHost<",
+        ] {
+            assert_eq!(
+                PROVIDER_BODY_HOST_SOURCE.matches(contract).count(),
+                1,
+                "the query-backed host implements {contract} directly exactly once"
+            );
+        }
+        assert!(FACT_MODE_SOURCE.contains(
+            "BodyEndpointProvider + CallResolutionFacts + AggregateFacts + InferenceFactSource"
+        ));
+    }
+
+    #[test]
+    fn synthetic_type_names_have_one_identity_policy() {
+        let consumers = [
+            ("inference/generate.rs", GENERATE_SOURCE),
+            ("semantic_import.rs", include_str!("../semantic_import.rs")),
+            ("analysis.rs", ANALYSIS_ROOT_SOURCE),
+            ("binding_manifest.rs", BINDING_MANIFEST_SOURCE),
+            ("body_identity.rs", include_str!("body_identity.rs")),
+            ("ordinary_engine.rs", ORDINARY_ENGINE_SOURCE),
+            (
+                "semantic_body_export.rs",
+                include_str!("semantic_body_export.rs"),
+            ),
+            ("typeck.rs", TYPECK_SOURCE),
+        ];
+        for (name, source) in consumers {
+            for peer in [
+                ".strip_prefix(\"Str(\")",
+                ".starts_with(\"Str(\")",
+                ".starts_with('[')",
+            ] {
+                assert!(
+                    !source.contains(peer),
+                    "{name} regained handwritten synthetic-type identity policy: {peer}"
+                );
+            }
+        }
+        for helper in [
+            "pub fn fixed_string_capacity(",
+            "pub fn is_slice_struct_name(",
+            "pub fn is_string_view_struct_name(",
+        ] {
+            assert_eq!(
+                TYPES_SOURCE.matches(helper).count(),
+                1,
+                "synthetic type identity must have one owner: {helper}"
+            );
+        }
     }
 
     /// Every source-name resolution carries an explicit lexical scope.
@@ -1232,19 +1447,19 @@ mod tests {
             }
         }
 
-        // `TypeRootAuthority` stays a single-field newtype, private to the
-        // type-syntax module, reachable only through `in_file`.
+        // `TypeRootAuthority` stays a single-field request-state newtype owned
+        // by typeck. The two fact hosts may construct it only through `in_file`.
         assert!(
             TYPECK_SOURCE.contains("pub(super) struct TypeRootAuthority {\n    file: FileId,\n}")
         );
         assert!(TYPECK_SOURCE.contains("pub(super) fn in_file(file: FileId) -> Self {"));
         for (file, source) in RESOLVER_SOURCES {
-            if *file == "typeck.rs" {
+            if matches!(*file, "typeck.rs" | "provider_body_host.rs") {
                 continue;
             }
             assert!(
                 !source.contains("TypeRootAuthority"),
-                "{file} names the root authority; it is private to typeck.rs"
+                "{file} names request-state authority outside the two fact hosts"
             );
         }
         for construction in TYPECK_SOURCE.match_indices("TypeRootAuthority::") {

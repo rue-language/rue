@@ -15,8 +15,6 @@ use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::{FileId, Span};
 
-#[cfg(test)]
-use super::context::AnalysisContext;
 use super::{DeclarationPhase, Sema};
 
 /// Frame-displacement budget a single object's slots must address: `i32::MAX`
@@ -36,10 +34,7 @@ pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
 use super::info::FunctionInfo;
 use crate::inference::InferType;
 use crate::sema::ConstValue;
-use crate::types::{
-    ArrayLen, ArrayTypeId, StructId, Type, TypeKind, parse_array_type_syntax,
-    parse_type_call_syntax,
-};
+use crate::types::{ArrayLen, ArrayTypeId, StructId, Type, TypeKind};
 
 const COMPTIME_PARAMETER_INDEX_THRESHOLD: usize = 8;
 
@@ -142,9 +137,14 @@ pub(super) trait TypeSyntaxHost {
         kind: TypeSyntaxNamedKind,
     ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>>;
     fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type>;
-    fn type_syntax_make_array(&mut self, element: Type, length: u64) -> Type;
-    fn type_syntax_make_ptr_const(&mut self, pointee: Type) -> Type;
-    fn type_syntax_make_ptr_mut(&mut self, pointee: Type) -> Type;
+    fn type_syntax_make_array(
+        &mut self,
+        element: Type,
+        length: u64,
+        span: Span,
+    ) -> CompileResult<Type>;
+    fn type_syntax_make_ptr_const(&mut self, pointee: Type, span: Span) -> CompileResult<Type>;
+    fn type_syntax_make_ptr_mut(&mut self, pointee: Type, span: Span) -> CompileResult<Type>;
     fn type_syntax_require_slices(&mut self, span: Span) -> CompileResult<()>;
     fn type_syntax_make_slice(
         &mut self,
@@ -163,8 +163,8 @@ pub(super) trait TypeSyntaxHost {
     fn type_syntax_reduce_constructor(
         &mut self,
         head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
-        type_arguments: &HashMap<Spur, Type>,
-        value_arguments: &HashMap<Spur, ConstValue>,
+        type_arguments: &[(Spur, Type)],
+        value_arguments: &[(Spur, ConstValue)],
         span: Span,
     ) -> CompileResult<Option<ConstValue>>;
     fn type_syntax_value_const(&self, file: FileId, name: Spur) -> Option<super::info::ConstInfo>;
@@ -185,11 +185,14 @@ pub(super) trait TypeSyntaxHost {
         name: String,
         kind: super::DeclarationTypeDependencyTargetKind,
     );
-    fn type_syntax_failure_compile_error(
-        &self,
-        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
-        span: Span,
-    ) -> CompileError;
+}
+
+/// Additional host capabilities used only while validating a declaration type
+/// whose generic substitutions are not available yet. Keeping these off the
+/// ordinary resolver contract lets every body-analysis host share the one
+/// structured resolver without implementing declaration-epoch machinery it
+/// cannot use.
+pub(super) trait DeferredTypeSyntaxHost: TypeSyntaxHost {
     fn type_syntax_comptime_value_failure(
         &self,
         failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
@@ -216,12 +219,6 @@ pub(super) trait TypeSyntaxHost {
         function: &FunctionInfo,
         index: usize,
         declared_type: Type,
-        type_substitutions: &HashMap<Spur, Type>,
-        value_substitutions: &HashMap<Spur, ConstValue>,
-    ) -> CompileResult<Type>;
-    fn type_syntax_resolve_substituted_return_type(
-        &mut self,
-        function: &FunctionInfo,
         type_substitutions: &HashMap<Spur, Type>,
         value_substitutions: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<Type>;
@@ -535,9 +532,7 @@ impl<H: TypeSyntaxHost>
                 })?;
                 ArrayLen::Literal(value)
             }
-            crate::SemanticValueSyntax::Name(name) | crate::SemanticValueSyntax::Rendered(name) => {
-                ArrayLen::Named(name.to_owned())
-            }
+            crate::SemanticValueSyntax::Name(name) => ArrayLen::Named(name.to_owned()),
         };
         provider_failure(self.resolve_array_length_fact(*scope, &length)).map(Some)
     }
@@ -566,18 +561,19 @@ impl<H: TypeSyntaxHost>
     }
 
     fn array_type(&mut self, element: Type, length: Option<u64>) -> SemaProviderResult<Type> {
-        Ok(self.host.type_syntax_make_array(
+        provider_failure(self.host.type_syntax_make_array(
             element,
             length.expect("concrete type resolution always resolves array lengths"),
+            self.span,
         ))
     }
 
     fn ptr_const_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
-        Ok(self.host.type_syntax_make_ptr_const(pointee))
+        provider_failure(self.host.type_syntax_make_ptr_const(pointee, self.span))
     }
 
     fn ptr_mut_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
-        Ok(self.host.type_syntax_make_ptr_mut(pointee))
+        provider_failure(self.host.type_syntax_make_ptr_mut(pointee, self.span))
     }
 
     fn preflight_slice(&mut self, _scope: &FileId, _syntax: &str) -> SemaProviderResult<()> {
@@ -611,8 +607,7 @@ impl<H: TypeSyntaxHost>
                         ))
                     })?
                 }
-                [crate::SemanticValueSyntax::Name(argument)]
-                | [crate::SemanticValueSyntax::Rendered(argument)] => {
+                [crate::SemanticValueSyntax::Name(argument)] => {
                     provider_failure(self.resolve_array_length_fact(
                         *scope,
                         &ArrayLen::Named((*argument).to_owned()),
@@ -674,20 +669,14 @@ impl<H: TypeSyntaxHost>
         if let crate::SemanticValueSyntax::Integer(value) = syntax {
             return Ok(ConstValue::Integer(value));
         }
-        let syntax = match syntax {
-            crate::SemanticValueSyntax::Name(syntax)
-            | crate::SemanticValueSyntax::Rendered(syntax) => syntax,
-            crate::SemanticValueSyntax::Integer(_) => unreachable!(),
-        };
         match self.resolve_value_argument_fact(*scope, constructor, syntax) {
             Ok(value) => Ok(value),
             Err(error) if self.resolution_context == SemaTypeResolutionContext::ArrayLength => {
-                let length = syntax
-                    .parse::<u64>()
-                    .map(ArrayLen::Literal)
-                    .unwrap_or_else(|_| ArrayLen::Named(syntax.to_string()));
+                let crate::SemanticValueSyntax::Name(name) = syntax else {
+                    return provider_failure(Err(error));
+                };
                 provider_failure(
-                    self.resolve_array_length_fact(*scope, &length)
+                    self.resolve_array_length_fact(*scope, &ArrayLen::Named(name.to_owned()))
                         .map(|value| ConstValue::Integer(value as i128)),
                 )
             }
@@ -701,11 +690,9 @@ impl<H: TypeSyntaxHost>
         type_arguments: &[(Spur, Type)],
         value_arguments: &[(Spur, ConstValue)],
     ) -> SemaProviderResult<Option<crate::SemanticComptimeCallResult<Type, ConstValue>>> {
-        let type_arguments = type_arguments.iter().copied().collect::<HashMap<_, _>>();
-        let value_arguments = value_arguments.iter().copied().collect::<HashMap<_, _>>();
         provider_failure(
             self.host
-                .type_syntax_reduce_constructor(head, &type_arguments, &value_arguments, self.span)
+                .type_syntax_reduce_constructor(head, type_arguments, value_arguments, self.span)
                 .map(|result| match (head.returns_type, result) {
                     (_, None) => None,
                     (true, Some(ConstValue::Type(ty))) => {
@@ -753,7 +740,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
 
     fn resolve_array_length_fact_inner(
         &mut self,
-        scope: FileId,
+        _scope: FileId,
         length: &ArrayLen,
     ) -> CompileResult<u64> {
         let ArrayLen::Named(name) = length else {
@@ -762,13 +749,6 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             };
             return Ok(*value);
         };
-        if let Ok(value) = name.parse::<u64>() {
-            return Ok(value);
-        }
-        if let Some((callee, arguments)) = parse_type_call_syntax(name) {
-            return self.resolve_array_length_call_fact(scope, &callee, &arguments);
-        }
-
         let symbol = self.host.type_syntax_symbol(name);
         let root_file = self.root_authority.file();
         let value = if let Some(value) = self
@@ -804,82 +784,6 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             None => {
                 Err(self.invalid_array_length(format!("array length '{name}' is not an integer")))
             }
-        }
-    }
-
-    fn resolve_array_length_call_fact(
-        &mut self,
-        scope: FileId,
-        callee: &str,
-        arguments: &[String],
-    ) -> CompileResult<u64> {
-        let call = crate::resolve_semantic_comptime_call(
-            self,
-            &scope,
-            callee,
-            arguments,
-            crate::SemanticComptimeCallExpectation::Value,
-        )
-        .map_err(|failure| self.array_length_call_failure(callee, failure))?;
-        match call.result {
-            crate::SemanticComptimeCallResult::Value(ConstValue::Integer(value)) if value >= 0 => {
-                u64::try_from(value).map_err(|_| {
-                    self.invalid_array_length(format!(
-                        "array length '{callee}(...)' ({value}) is too large"
-                    ))
-                })
-            }
-            crate::SemanticComptimeCallResult::Value(ConstValue::Integer(value)) => Err(self
-                .invalid_array_length(format!(
-                    "array length '{callee}(...)' is negative ({value})"
-                ))),
-            crate::SemanticComptimeCallResult::Value(_) => Err(self.invalid_array_length(format!(
-                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
-            ))),
-            crate::SemanticComptimeCallResult::Type(_) => {
-                unreachable!("value call expectation rejects type-returning callees")
-            }
-        }
-    }
-
-    fn array_length_call_failure(
-        &self,
-        callee: &str,
-        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
-    ) -> CompileError {
-        use crate::SemanticResolutionError as E;
-        use crate::SemanticTypeSyntaxFailure as F;
-
-        match failure {
-            E::ProviderAbort(error) => match error {},
-            E::ProviderFailure(error) => error,
-            E::Semantic(F::TypeWhereValueExpected { .. }) => self.invalid_array_length(format!(
-                "array length call '{callee}(...)' must return a value, not a type"
-            )),
-            E::Semantic(F::InvalidConstructorArity { .. })
-            | E::Semantic(F::RuntimeConstructorParameter { .. }) => self.invalid_array_length(
-                format!(
-                    "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
-                ),
-            ),
-            E::Semantic(F::ConstructorDidNotReduce { .. }) => self.invalid_array_length(format!(
-                "array length call '{callee}(...)' did not evaluate to a compile-time integer"
-            )),
-            E::ComptimeCallTypeArgument { error, .. } => {
-                self.host.type_syntax_failure_compile_error(*error, self.span)
-            }
-            E::Semantic(F::Path(_))
-            | E::Semantic(F::UnknownType { .. })
-            | E::Semantic(F::UnknownModuleMember { .. })
-            | E::Semantic(F::PrivateItem { .. })
-            | E::Semantic(F::AmbiguousItem { .. })
-            | E::Semantic(F::NotTypeConstructor { .. }) => self.invalid_array_length(format!(
-                "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
-            )),
-            E::Semantic(F::ValueWhereTypeExpected { argument, .. }) => self
-                .invalid_array_length(format!(
-                    "array length call '{callee}(...)' has non-type argument '{argument}' for a `type` parameter"
-                )),
         }
     }
 
@@ -930,12 +834,14 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         &mut self,
         _scope: FileId,
         constructor: &str,
-        syntax: &str,
+        syntax: crate::SemanticValueSyntax<'_>,
     ) -> CompileResult<ConstValue> {
-        let text = syntax.trim();
-        if let Ok(value) = text.parse::<i128>() {
+        let crate::SemanticValueSyntax::Name(text) = syntax else {
+            let crate::SemanticValueSyntax::Integer(value) = syntax else {
+                unreachable!()
+            };
             return Ok(ConstValue::Integer(value));
-        }
+        };
         if text == "true" {
             return Ok(ConstValue::Bool(true));
         }
@@ -983,12 +889,12 @@ pub(super) enum DeferredValueResolution {
     Pending,
 }
 
-pub(super) struct DeferredTypeSyntaxProvider<'s, 'c, 'p, H: TypeSyntaxHost> {
+pub(super) struct DeferredTypeSyntaxProvider<'s, 'c, 'p, H: DeferredTypeSyntaxHost> {
     inner: TypeSyntaxProvider<'s, 'c, H>,
     parameters: &'p DeferredParameterFacts<'c>,
 }
 
-impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
+impl<'s, 'c, 'p, H: DeferredTypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
     pub(super) fn new(
         host: &'s mut H,
         span: Span,
@@ -1087,13 +993,22 @@ impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
 
     fn validate_value_position(
         &mut self,
-        value_name: &str,
+        syntax: crate::SemanticValueSyntax<'_>,
         expected: Option<Type>,
         contract: Option<(Spur, Spur)>,
         require_integer: bool,
     ) -> CompileResult<Option<ConstValue>> {
-        let value_name = value_name.trim();
-        if let Some(symbol) = self.inner.host.existing_type_syntax_symbol(value_name) {
+        let rendered;
+        let value_name = match syntax {
+            crate::SemanticValueSyntax::Integer(value) => {
+                rendered = value.to_string();
+                rendered.as_str()
+            }
+            crate::SemanticValueSyntax::Name(name) => name,
+        };
+        if let crate::SemanticValueSyntax::Name(value_name) = syntax
+            && let Some(symbol) = self.inner.host.existing_type_syntax_symbol(value_name)
+        {
             if self.parameters.contains_type(symbol) {
                 if expected != Some(Type::COMPTIME_TYPE) && (expected.is_some() || require_integer)
                 {
@@ -1154,106 +1069,12 @@ impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
             }
         }
 
-        if let Some((call_name, arguments)) = parse_type_call_syntax(value_name) {
-            let call = {
-                let root_file = self.inner.span.file_id;
-                let mut provider = DeferredTypeSyntaxProvider::new(
-                    self.inner.host,
-                    self.inner.span,
-                    self.parameters,
-                );
-                let call = crate::resolve_semantic_comptime_call(
-                    &mut provider,
-                    &root_file,
-                    &call_name,
-                    &arguments,
-                    crate::SemanticComptimeCallExpectation::Value,
-                );
-                provider.flush_observed_type_dependencies();
-                call
-            }
-            .map_err(|failure| {
-                self.inner
-                    .host
-                    .type_syntax_comptime_value_failure(failure, self.inner.span)
-            })?;
-            let function = self.inner.host.type_syntax_function_info(call.head.key);
-            let type_substitutions = call
-                .type_arguments
-                .iter()
-                .filter_map(|(name, value)| match value {
-                    DeferredTypeResolution::Resolved(value) => Some((*name, *value)),
-                    DeferredTypeResolution::Pending => None,
-                })
-                .collect::<HashMap<_, _>>();
-            let value_substitutions = call
-                .value_arguments
-                .iter()
-                .filter_map(|(name, value)| match value {
-                    DeferredValueResolution::Resolved(value) => Some((*name, *value)),
-                    DeferredValueResolution::Pending => None,
-                })
-                .collect::<HashMap<_, _>>();
-            let concrete = match call.result {
-                crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Resolved(ty)) => {
-                    Some(ConstValue::Type(ty))
-                }
-                crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Resolved(
-                    value,
-                )) => Some(value),
-                crate::SemanticComptimeCallResult::Type(DeferredTypeResolution::Pending)
-                | crate::SemanticComptimeCallResult::Value(DeferredValueResolution::Pending) => {
-                    None
-                }
+        let value = if let crate::SemanticValueSyntax::Integer(value) = syntax {
+            ConstValue::Integer(value)
+        } else {
+            let crate::SemanticValueSyntax::Name(value_name) = syntax else {
+                unreachable!()
             };
-            let found = if call.head.returns_type {
-                Some(Type::COMPTIME_TYPE)
-            } else if function.return_type != Type::COMPTIME_TYPE {
-                Some(function.return_type)
-            } else {
-                let type_params = call
-                    .head
-                    .parameters
-                    .iter()
-                    .filter_map(|parameter| parameter.is_type.then_some(parameter.name))
-                    .collect::<Vec<_>>();
-                let value_params = call
-                    .head
-                    .parameters
-                    .iter()
-                    .filter_map(|parameter| (!parameter.is_type).then_some(parameter.name))
-                    .collect::<Vec<_>>();
-                self.inner
-                    .host
-                    .type_syntax_signature_substitutions_are_ready(
-                        function.return_type_syntax,
-                        &type_params,
-                        &value_params,
-                        &type_substitutions,
-                        &value_substitutions,
-                    )
-                    .then(|| {
-                        self.inner.host.type_syntax_resolve_substituted_return_type(
-                            &function,
-                            &type_substitutions,
-                            &value_substitutions,
-                        )
-                    })
-                    .transpose()?
-            };
-            self.inner.host.type_syntax_validate_deferred_value(
-                concrete,
-                found,
-                expected,
-                contract,
-                require_integer,
-                value_name,
-                self.inner.span,
-            )?;
-            return Ok(concrete);
-        }
-
-        let value = {
             let mut provider = TypeSyntaxProvider::new(
                 self.inner.host,
                 self.inner.span,
@@ -1265,23 +1086,20 @@ impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
             let value = match provider.resolve_value_argument_fact(
                 provider.span.file_id,
                 "compile-time call",
-                value_name,
+                syntax,
             ) {
                 Ok(value) => Ok(value),
-                Err(_) if require_integer => {
-                    let length = value_name
-                        .parse::<u64>()
-                        .map(ArrayLen::Literal)
-                        .unwrap_or_else(|_| ArrayLen::Named(value_name.to_string()));
-                    provider
-                        .resolve_array_length_fact(provider.span.file_id, &length)
-                        .map(|length| ConstValue::Integer(length as i128))
-                }
+                Err(_) if require_integer => provider
+                    .resolve_array_length_fact(
+                        provider.span.file_id,
+                        &ArrayLen::Named(value_name.to_owned()),
+                    )
+                    .map(|length| ConstValue::Integer(length as i128)),
                 Err(error) => Err(error),
             };
             provider.flush_observed_type_dependencies();
-            value
-        }?;
+            value?
+        };
         self.inner.host.type_syntax_validate_deferred_value(
             Some(value),
             Some(value.get_type()),
@@ -1295,7 +1113,8 @@ impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
     }
 }
 
-impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+impl<H: DeferredTypeSyntaxHost>
+    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
     for DeferredTypeSyntaxProvider<'_, '_, '_, H>
 {
     type Abort = Infallible;
@@ -1328,7 +1147,7 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
     }
 }
 
-impl<H: TypeSyntaxHost>
+impl<H: DeferredTypeSyntaxHost>
     crate::SemanticTypeSyntaxProvider<
         FileId,
         crate::types::ModuleId,
@@ -1529,12 +1348,15 @@ impl<H: TypeSyntaxHost>
             });
         };
         let name = match length {
-            crate::SemanticValueSyntax::Name(name) | crate::SemanticValueSyntax::Rendered(name) => {
-                name
-            }
+            crate::SemanticValueSyntax::Name(name) => name,
             crate::SemanticValueSyntax::Integer(_) => unreachable!(),
         };
-        let value = provider_failure(self.validate_value_position(name, None, None, true))?;
+        let value = provider_failure(self.validate_value_position(
+            crate::SemanticValueSyntax::Name(name),
+            None,
+            None,
+            true,
+        ))?;
         match value {
             None => Ok(None),
             Some(ConstValue::Integer(value)) => u64::try_from(value).map(Some).map_err(|_| {
@@ -1673,15 +1495,6 @@ impl<H: TypeSyntaxHost>
             self.inner.host.type_syntax_symbol(constructor),
             head.parameters[parameter_index].name,
         ));
-        let rendered;
-        let syntax = match syntax {
-            crate::SemanticValueSyntax::Integer(value) => {
-                rendered = value.to_string();
-                rendered.as_str()
-            }
-            crate::SemanticValueSyntax::Name(syntax)
-            | crate::SemanticValueSyntax::Rendered(syntax) => syntax,
-        };
         provider_failure(self.validate_value_position(syntax, expected, contract, false)).map(
             |value| match value {
                 Some(value) => DeferredValueResolution::Resolved(value),
@@ -1772,7 +1585,7 @@ fn module_path_compile_error(
     }
 }
 
-fn module_path_resolution_compile_error(
+pub(super) fn module_path_resolution_compile_error(
     failure: crate::SemanticResolutionError<
         Infallible,
         CompileError,
@@ -1826,11 +1639,23 @@ pub(super) fn semantic_type_syntax_compile_error(
         E::ProviderFailure(error) => error,
         E::Semantic(F::Path(failure)) => module_path_compile_error(failure, span),
         E::Semantic(F::UnknownType { syntax }) => {
-            let display = parse_type_call_syntax(&syntax)
-                .map(|(call, _)| format!("{call}(...)"))
-                .unwrap_or_else(|| syntax.to_string());
-            CompileError::new(ErrorKind::UnknownType(display), span)
+            CompileError::new(ErrorKind::UnknownType(syntax.to_string()), span)
         }
+        E::Semantic(F::UnknownConstructor {
+            constructor,
+            expectation: crate::SemanticComptimeCallExpectation::Type,
+        }) => CompileError::new(ErrorKind::UnknownType(format!("{constructor}(...)")), span),
+        E::Semantic(F::UnknownConstructor {
+            constructor,
+            expectation: crate::SemanticComptimeCallExpectation::Value,
+        }) => CompileError::new(
+            ErrorKind::InvalidArrayLength {
+                reason: format!(
+                    "'{constructor}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
+                ),
+            },
+            span,
+        ),
         E::Semantic(F::UnknownModuleMember { module, member, .. }) => CompileError::new(
             ErrorKind::UnknownModuleMember {
                 module_name: module.to_string(),
@@ -1873,18 +1698,37 @@ pub(super) fn semantic_type_syntax_compile_error(
             constructor,
             expected,
             found,
+            expectation: crate::SemanticComptimeCallExpectation::Type,
             ..
         })
         | E::Semantic(F::RuntimeConstructorParameter {
             constructor,
             expected,
             found,
+            expectation: crate::SemanticComptimeCallExpectation::Type,
             ..
         }) => CompileError::new(
             ErrorKind::ComptimeEvaluationFailed {
                 reason: format!(
                     "type constructor '{}' expects {} comptime type argument(s), but {} were provided",
                     constructor, expected, found
+                ),
+            },
+            span,
+        ),
+        E::Semantic(F::InvalidConstructorArity {
+            constructor,
+            expectation: crate::SemanticComptimeCallExpectation::Value,
+            ..
+        })
+        | E::Semantic(F::RuntimeConstructorParameter {
+            constructor,
+            expectation: crate::SemanticComptimeCallExpectation::Value,
+            ..
+        }) => CompileError::new(
+            ErrorKind::InvalidArrayLength {
+                reason: format!(
+                    "array length call '{constructor}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
                 ),
             },
             span,
@@ -2059,14 +1903,25 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
     fn type_syntax_make_str(&mut self, span: Span) -> CompileResult<Type> {
         self.get_or_create_str_struct(span)
     }
-    fn type_syntax_make_array(&mut self, element: Type, length: u64) -> Type {
-        Type::new_array(self.get_or_create_array_type(element, length))
+    fn type_syntax_make_array(
+        &mut self,
+        element: Type,
+        length: u64,
+        _span: Span,
+    ) -> CompileResult<Type> {
+        Ok(Type::new_array(
+            self.get_or_create_array_type(element, length),
+        ))
     }
-    fn type_syntax_make_ptr_const(&mut self, pointee: Type) -> Type {
-        Type::new_ptr_const(self.type_pool.intern_ptr_const_from_type(pointee))
+    fn type_syntax_make_ptr_const(&mut self, pointee: Type, _span: Span) -> CompileResult<Type> {
+        Ok(Type::new_ptr_const(
+            self.type_pool.intern_ptr_const_from_type(pointee),
+        ))
     }
-    fn type_syntax_make_ptr_mut(&mut self, pointee: Type) -> Type {
-        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(pointee))
+    fn type_syntax_make_ptr_mut(&mut self, pointee: Type, _span: Span) -> CompileResult<Type> {
+        Ok(Type::new_ptr_mut(
+            self.type_pool.intern_ptr_mut_from_type(pointee),
+        ))
     }
     fn type_syntax_require_slices(&mut self, span: Span) -> CompileResult<()> {
         self.require_preview(PreviewFeature::Slices, "the slice type `[T]`", span)
@@ -2157,11 +2012,13 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
     fn type_syntax_reduce_constructor(
         &mut self,
         head: &crate::SemanticTypeConstructorHead<Spur, Spur, FileId>,
-        type_arguments: &HashMap<Spur, Type>,
-        value_arguments: &HashMap<Spur, ConstValue>,
+        type_arguments: &[(Spur, Type)],
+        value_arguments: &[(Spur, ConstValue)],
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        self.reduce_type_ctor_body(head.key, type_arguments, value_arguments, span)
+        let type_arguments = type_arguments.iter().copied().collect::<HashMap<_, _>>();
+        let value_arguments = value_arguments.iter().copied().collect::<HashMap<_, _>>();
+        self.reduce_type_ctor_body(head.key, &type_arguments, &value_arguments, span)
             .map_err(|error| Self::label_ctor_instantiation_site(error, span))
     }
 
@@ -2251,14 +2108,9 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
     ) {
         self.record_resolved_declaration_type_target(file, name, kind);
     }
-    fn type_syntax_failure_compile_error(
-        &self,
-        failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
-        span: Span,
-    ) -> CompileError {
-        self.type_syntax_compile_error(failure, span)
-    }
+}
 
+impl<'source, D: DeclarationPhase> DeferredTypeSyntaxHost for Sema<'source, D> {
     fn type_syntax_comptime_value_failure(
         &self,
         failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
@@ -2360,15 +2212,6 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             type_substitutions,
             value_substitutions,
         )
-    }
-
-    fn type_syntax_resolve_substituted_return_type(
-        &mut self,
-        function: &FunctionInfo,
-        type_substitutions: &HashMap<Spur, Type>,
-        value_substitutions: &HashMap<Spur, ConstValue>,
-    ) -> CompileResult<Type> {
-        self.resolve_substituted_return_type(function, type_substitutions, value_substitutions)
     }
 
     fn type_syntax_type_mentions_type_param(
@@ -2774,8 +2617,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn str_fixed_capacity(&self, ty: Type) -> Option<u64> {
         if let TypeKind::Struct(struct_id) = ty.kind() {
             let name = &self.body_type_pool().struct_def(struct_id).name;
-            let digits = name.strip_prefix("Str(")?.strip_suffix(')')?;
-            digits.parse::<u64>().ok()
+            crate::types::fixed_string_capacity(name)
         } else {
             None
         }
@@ -2794,23 +2636,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// If `ty` is a synthetic slice struct `[T]` (ADR-0043, RUE-322), return its
-    /// element type `T`; otherwise `None`. Detected by the struct name being
-    /// slice syntax (`[..]` that is not a fixed-array `[T; N]`), the same naming
-    /// trick used for anonymous structs.
+    /// element type `T`; otherwise `None`. Fixed arrays have their own
+    /// [`TypeKind::Array`] identity, so any struct with the synthetic bracketed
+    /// name is a slice.
     pub(crate) fn slice_element_type(&self, ty: Type) -> Option<Type> {
         if let TypeKind::Struct(struct_id) = ty.kind() {
             let def = self.type_pool.struct_def(struct_id);
             // A `[T]` slice, or the `str` string type which is `[u8]` + UTF-8
             // (ADR-0043 Phase 3, RUE-324): both are `{ptr: ptr const E, len}`
             // fat pointers, so `.len()` and `s[i]` reuse one path.
-            let is_slice = def.name.starts_with('[')
-                && def.name.ends_with(']')
-                && parse_array_type_syntax(&def.name).is_none();
-            // A fixed-capacity `Str(N)` (ADR-0043 Phase 5, RUE-326) is `[u8; N]`
-            // + UTF-8 and shares the `{ptr, len}` shape, so `.len()` and byte
-            // indexing route through the same slice/str path as `str`.
-            let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
-            if is_slice || &*def.name == "str" || is_str_fixed {
+            if crate::types::is_slice_struct_name(&def.name)
+                || crate::types::is_string_view_struct_name(&def.name)
+            {
                 // Field 0 is `ptr const T`; recover T from its pointee.
                 if let TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                     return Some(self.type_pool.ptr_const_def(ptr_id));
@@ -2908,75 +2745,66 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     #[cfg(test)]
-    fn resolve_type_syntax_in_scope(
+    pub(crate) fn resolve_structured_type_syntax_for_testing(
         &mut self,
-        syntax: &str,
-        root_file: FileId,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: rue_rir::RirTypeSyntaxRef,
         span: Span,
-        context: Option<&AnalysisContext>,
     ) -> CompileResult<Type> {
-        let (type_substitutions, value_substitutions) = context
-            .map(|context| (&context.comptime_type_vars, &context.comptime_value_vars))
-            .unzip();
-        self.resolve_type_syntax_with_substitutions(
+        self.resolve_structured_type_syntax_with_epoch_facts(
+            arena,
             syntax,
-            root_file,
+            span.file_id,
             span,
-            type_substitutions,
-            value_substitutions,
+            None,
+            None,
         )
         .map_err(|failure| self.type_syntax_compile_error(failure, span))
     }
 
     #[cfg(test)]
-    pub(crate) fn resolve_type_syntax_for_testing(
+    pub(crate) fn validate_deferred_structured_type_for_testing(
         &mut self,
-        syntax: &str,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        type_params: &[Spur],
         span: Span,
-    ) -> CompileResult<Type> {
-        self.resolve_type_syntax_in_scope(syntax, span.file_id, span, None)
-    }
+    ) -> CompileResult<Option<Type>> {
+        fn contains_value_call(
+            arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+            syntax: rue_rir::RirTypeSyntaxRef,
+        ) -> bool {
+            if matches!(
+                arena.node(syntax),
+                Some(rue_rir::RirTypeSyntaxNode::ValueCall { .. })
+            ) {
+                return true;
+            }
+            let mut found = false;
+            arena.visit_child_references(syntax, |child| {
+                found |= contains_value_call(arena, child);
+            }) && found
+        }
 
-    #[cfg(test)]
-    fn resolve_type_syntax_with_substitutions(
-        &mut self,
-        syntax: &str,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
-        super::BodyAnalysisHost::resolve_type_syntax(
-            self,
-            super::fact_mode::TypeSyntaxRequest {
-                syntax,
-                root_file,
-                span,
-                type_substitutions,
-                value_substitutions,
-            },
-        )
-    }
-
-    pub(crate) fn resolve_type_syntax_with_epoch_facts(
-        &mut self,
-        syntax: &str,
-        root_file: FileId,
-        span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
-        let mut provider = TypeSyntaxProvider::new(
-            self,
-            span,
-            TypeRootAuthority::in_file(root_file),
-            SemaTypeResolutionContext::Type,
-            type_substitutions,
-            value_substitutions,
+        let parameters = DeferredParameterFacts::new(type_params, &[], &[]);
+        let interner = self.interner;
+        let mut provider = DeferredTypeSyntaxProvider::new(self, span, &parameters);
+        let result = crate::resolve_structured_semantic_type_syntax_with(
+            &mut provider,
+            &span.file_id,
+            arena,
+            syntax,
+            |symbol| interner.resolve(symbol),
         );
-        let result = crate::resolve_semantic_type_syntax(&mut provider, &root_file, syntax);
         provider.flush_observed_type_dependencies();
-        result
+        match result {
+            Ok(DeferredTypeResolution::Resolved(ty)) => Ok(Some(ty)),
+            Ok(DeferredTypeResolution::Pending) => Ok(None),
+            Err(failure) if contains_value_call(arena, syntax) => Err(
+                DeferredTypeSyntaxHost::type_syntax_comptime_value_failure(self, failure, span),
+            ),
+            Err(failure) => Err(self.type_syntax_compile_error(failure, span)),
+        }
     }
 
     fn type_syntax_compile_error(
@@ -3334,9 +3162,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         provider.flush_observed_type_dependencies();
         match result {
             Ok(DeferredTypeResolution::Resolved(_) | DeferredTypeResolution::Pending) => Ok(()),
-            Err(failure) if value_call => Err(TypeSyntaxHost::type_syntax_comptime_value_failure(
-                self, failure, span,
-            )),
+            Err(failure) if value_call => Err(
+                DeferredTypeSyntaxHost::type_syntax_comptime_value_failure(self, failure, span),
+            ),
             Err(failure) => Err(semantic_type_syntax_compile_error(interner, failure, span)),
         }
     }
@@ -3396,44 +3224,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Validate a source fragment used in type position. The optional result
     /// is the concrete type when the fragment is independent of the enclosing
     /// generic parameters; `None` means specialization must finish it.
-    #[cfg(test)]
-    fn validate_deferred_type_position(
-        &mut self,
-        type_name: String,
-        parameters: &DeferredParameterFacts<'_>,
-        span: Span,
-    ) -> CompileResult<Option<Type>> {
-        self.validate_deferred_type_position_with_epoch_facts(type_name, parameters, span)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn validate_deferred_type_position_with_epoch_facts(
-        &mut self,
-        type_name: String,
-        parameters: &DeferredParameterFacts<'_>,
-        span: Span,
-    ) -> CompileResult<Option<Type>> {
-        let mut provider = DeferredTypeSyntaxProvider::new(self, span, parameters);
-        let result = crate::resolve_semantic_type_syntax(&mut provider, &span.file_id, &type_name);
-        provider.flush_observed_type_dependencies();
-        match result {
-            Ok(DeferredTypeResolution::Resolved(ty)) => Ok(Some(ty)),
-            Ok(DeferredTypeResolution::Pending) => Ok(None),
-            Err(failure) => Err(self.type_syntax_compile_error(failure, span)),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn validate_deferred_type_position_for_testing(
-        &mut self,
-        type_name: &str,
-        type_params: &[Spur],
-        span: Span,
-    ) -> CompileResult<Option<Type>> {
-        let parameters = DeferredParameterFacts::new(type_params, &[], &[]);
-        self.validate_deferred_type_position(type_name.to_string(), &parameters, span)
-    }
-
     fn deferred_rir_signature_substitutions_are_ready(
         &self,
         syntax: rue_rir::RirTypeSyntaxRef,

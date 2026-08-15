@@ -925,7 +925,7 @@ impl BodySema<'_> {
                     // its identity (ADR-0066).
                     SemanticImportType::AnonymousNominal(identity.clone())
                 } else if let Some(element) = self.slice_element_type(ty)
-                    && def.name.starts_with('[')
+                    && crate::types::is_slice_struct_name(&def.name)
                 {
                     SemanticImportType::Slice {
                         element: Box::new(self.export_body_type(element)?),

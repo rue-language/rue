@@ -9,7 +9,6 @@
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::NamedConstDependencyTargetEvent;
-use crate::sema::call_resolution::CallResolutionFacts;
 use crate::sema::info::FunctionCallInfo;
 
 fn module_display_name(path: &str) -> &str {
@@ -236,7 +235,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .and_then(|ty| ty.as_struct())
                     && self
                         .call_facts()
-                        .method_info(struct_id, *method)
+                        .call_method_info(struct_id, *method)
                         .is_some_and(|info| info.returns_borrow)
                 {
                     return self.analyze_accessor_call_value(
@@ -273,7 +272,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut resolved_alias = false;
         let const_info = self
             .call_facts()
-            .resolve_const_info_in_file(name, span.file_id);
+            .call_resolve_const_info_in_file(name, span.file_id);
         if let Some(const_info) = const_info
             && let Some(callee) = const_info.value.as_function()
         {
@@ -296,7 +295,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let local_name = (!resolved_alias)
             .then(|| {
                 self.call_facts()
-                    .resolve_function_name_local(name, span.file_id)
+                    .call_resolve_function_name_local(name, span.file_id)
             })
             .flatten();
         if let Some(local_name) = local_name {
@@ -325,11 +324,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Look up the function
-        let source_name = self.call_facts().source_function_name(name);
+        let source_name = self.call_facts().call_source_function_name(name);
         let fn_name_str = self.body_interner().resolve(&source_name).to_string();
         let fn_info = self
             .call_facts()
-            .function_info(name)
+            .call_function_info(name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
         self.analyze_resolved_function_call(air, name, fn_info, args_range, span, ctx, true)
@@ -356,7 +355,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
         check_unqualified_visibility: bool,
     ) -> CompileResult<AnalysisResult> {
-        let source_name = self.call_facts().source_function_name(name);
+        let source_name = self.call_facts().call_source_function_name(name);
         let fn_name_str = self.body_interner().resolve(&source_name).to_string();
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
@@ -910,7 +909,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
 
-                let info = self.call_facts().method_info(struct_id, method)?;
+                let info = self.call_facts().call_method_info(struct_id, method)?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })
         };
@@ -1005,7 +1004,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let method_key = (struct_id, method);
         let method_info = self
             .call_facts()
-            .method_info(struct_id, method)
+            .call_method_info(struct_id, method)
             .ok_or_compile_error(
                 ErrorKind::UndefinedMethod {
                     type_name: struct_name_str.clone(),
@@ -1241,11 +1240,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let fn_name_str = self.body_interner().resolve(&function_name).to_string();
-        let module_def = self.call_facts().module_def(module_id);
+        let module_def = self.call_facts().call_module_def(module_id);
         let module_file_id = Some(module_def.file_id);
         let mut function_key = module_file_id.and_then(|file_id| {
             self.call_facts()
-                .resolve_function_name_local(function_name, file_id)
+                .call_resolve_function_name_local(function_name, file_id)
         });
 
         // Fallback: a re-exported function member — `pub const f = @import("x").f;`
@@ -1261,7 +1260,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             let reexport = self
                 .call_facts()
-                .value_const(mfile, function_name)
+                .call_value_const(mfile, function_name)
                 .and_then(|info| match info.value {
                     ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
                     _ => None,
@@ -1297,7 +1296,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         })?;
         let fn_info = self
             .call_facts()
-            .function_info(function_key)
+            .call_function_info(function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
                     module_name: module_display_name(&module_def.import_path).to_string(),
@@ -1418,7 +1417,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         } else if let Some(info) = self
             .call_facts()
-            .value_const(ctx.current_file_id, type_name)
+            .call_value_const(ctx.current_file_id, type_name)
             && let ConstValue::Type(ty) = info.value
         {
             // Module-level `const C = Counter(i32); C.zero()` (RUE-595): the
@@ -1468,7 +1467,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let method_key = (struct_id, function);
         let method_info = self
             .call_facts()
-            .method_info(struct_id, function)
+            .call_method_info(struct_id, function)
             .ok_or_compile_error(
                 ErrorKind::UndefinedAssocFn {
                     type_name: type_name_str.clone(),

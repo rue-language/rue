@@ -38,41 +38,41 @@ use crate::types::{ModuleDef, ModuleId, StructId};
 pub(crate) trait CallResolutionFacts {
     /// The signature/binding info for an internal free-function symbol.
     /// Mirrors `Sema::function_info` (`functions.get`).
-    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
+    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
 
     /// Whether an internal free-function symbol is declared. Mirrors
     /// `functions.contains_key`.
-    fn function_contains(&self, name: Spur) -> bool;
+    fn call_function_contains(&self, name: Spur) -> bool;
 
     /// The source name a specialized/internal function name derives from.
     /// Mirrors `Sema::source_function_name` (identity when unmapped).
-    fn source_function_name(&self, name: Spur) -> Spur;
+    fn call_source_function_name(&self, name: Spur) -> Spur;
 
     /// The internal free-function symbol a source name resolves to inside its
     /// own file. Mirrors `Sema::resolve_function_name_local`.
-    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
+    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
 
     /// The value-constant info declared as `(file, name)`. Mirrors
     /// `Sema::resolve_const_info_in_file` (a file-scoped `value_const`).
-    fn resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
+    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
 
     /// The value-constant info declared as `(file, name)`. Mirrors
-    /// `value_const`; distinct from [`Self::resolve_const_info_in_file`] only in
+    /// `value_const`; distinct from [`Self::call_resolve_const_info_in_file`] only in
     /// how the key is spelled at the call site.
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
 
     /// The module-binding const declared as `(file, name)`. Mirrors
     /// `module_binding`.
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
 
     /// The method/associated-function info for `(struct, name)`, preferring the
     /// anonymous table then the named table. Mirrors `Sema::method_info`.
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
 
     /// The named-method RIR declaration for the durable-available
     /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
     /// `structs_by_file_name.get` followed by `named_method_declarations.get`.
-    fn named_method_declaration(
+    fn call_named_method_declaration(
         &self,
         owner_file: FileId,
         owner_type_name: Spur,
@@ -81,33 +81,12 @@ pub(crate) trait CallResolutionFacts {
 
     /// The module definition for a module id. Mirrors
     /// `module_registry.get_def`.
-    fn module_def(&self, module_id: ModuleId) -> ModuleDef;
+    fn call_module_def(&self, module_id: ModuleId) -> ModuleDef;
 }
 
-/// Raw immutable call-resolution reads supplied by a body-analysis host.
-pub(super) trait CallResolutionFactSource {
-    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
-    fn call_function_contains(&self, name: Spur) -> bool;
-    fn call_source_function_name(&self, name: Spur) -> Spur;
-    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
-    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
-    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
-    fn call_named_method_declaration(
-        &self,
-        file: FileId,
-        ty: Spur,
-        method: Spur,
-    ) -> Option<InstRef>;
-    fn call_module_def(&self, module: ModuleId) -> ModuleDef;
-}
-
-/// Direct epoch reads for the current host. The generic adapter below owns the
-/// read-only abstraction; this impl is only the production source of facts.
-impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
+impl<D: DeclarationPhase> CallResolutionFacts for Sema<'_, D> {
     fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
-        self.function_info(name)
+        Sema::function_info(self, name)
             .copied()
             .map(FunctionCallInfo::from_body)
     }
@@ -117,27 +96,27 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
     }
 
     fn call_source_function_name(&self, name: Spur) -> Spur {
-        self.source_function_name(name)
+        Sema::source_function_name(self, name)
     }
 
     fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        self.resolve_function_name_local(name, file)
+        Sema::resolve_function_name_local(self, name, file)
     }
 
     fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
-        self.resolve_const_info_in_file(name, file).cloned()
+        Sema::resolve_const_info_in_file(self, name, file).cloned()
     }
 
     fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.value_const(&(file, name)).cloned()
+        self.declarations.value_const(&(file, name)).cloned()
     }
 
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.module_binding(&(file, name)).cloned()
+        self.declarations.module_binding(&(file, name)).cloned()
     }
 
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
-        self.method_info((struct_id, name))
+        Sema::method_info(self, (struct_id, name))
             .copied()
             .map(MethodCallInfo::from_body)
     }
@@ -161,50 +140,6 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
     }
 }
 
-/// Read-only call-resolution adapter used by the canonical body engine.
-pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost> {
-    host: &'host H,
-}
-
-impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
-    pub(in crate::sema) fn new(host: &'host H) -> Self {
-        Self { host }
-    }
-}
-
-impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFacts<'_, H> {
-    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
-        self.host.call_function_info(name)
-    }
-    fn function_contains(&self, name: Spur) -> bool {
-        self.host.call_function_contains(name)
-    }
-    fn source_function_name(&self, name: Spur) -> Spur {
-        self.host.call_source_function_name(name)
-    }
-    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        self.host.call_resolve_function_name_local(name, file)
-    }
-    fn resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
-        self.host.call_resolve_const_info_in_file(name, file)
-    }
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.host.call_value_const(file, name)
-    }
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.host.call_module_binding(file, name)
-    }
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
-        self.host.call_method_info(struct_id, name)
-    }
-    fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
-        self.host.call_named_method_declaration(file, ty, method)
-    }
-    fn module_def(&self, module_id: ModuleId) -> ModuleDef {
-        self.host.call_module_def(module_id)
-    }
-}
-
 /// Resolve a statically discovered call name to the free-function symbol it
 /// references for reachability. The provider-generic form of the inline
 /// resolution in `collect_static_function_references`, replaying `analyze_call`'s
@@ -220,17 +155,17 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 ) -> Option<Spur> {
     let mut target = name;
     let mut resolved_alias = false;
-    if let Some(const_info) = facts.resolve_const_info_in_file(name, file)
+    if let Some(const_info) = facts.call_resolve_const_info_in_file(name, file)
         && let Some(callee) = const_info.value.as_function()
     {
         target = callee;
         resolved_alias = true;
     }
 
-    if resolved_alias && facts.function_contains(target) {
+    if resolved_alias && facts.call_function_contains(target) {
         Some(target)
     } else {
-        facts.resolve_function_name_local(target, file)
+        facts.call_resolve_function_name_local(target, file)
     }
 }
 
@@ -248,9 +183,9 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 // provider-generic free function above).
 // ---------------------------------------------------------------------------
 
-/// The call-resolution ProviderFacts driver: answers the family-1C facts from a
-/// [`BodyFactProvider`] + the body-scoped identity pool, instead of the epoch
-/// `Sema` tables [`EpochFacts`] reads.
+/// Query-backed call-resolution fact state. It owns the body-scoped identity
+/// pool, request RIR view, and consulted overlays; the epoch host reads its own
+/// tables directly.
 ///
 /// Generic over the provider `P`, the pool durable source `S`, and the pool's
 /// durable nominal/callable key `K` and module `M` (rue-compiler binds
@@ -284,7 +219,7 @@ where
         Self::with_identity(provider, identity, rir)
     }
 
-    /// Construct the call facade from the one task-local provider authority.
+    /// Construct the call fact state from the one task-local provider authority.
     pub fn with_state(
         provider: &'a P,
         state: &super::ProviderBodyAnalysisState<K, M, S>,
@@ -477,7 +412,7 @@ where
     }
 
     /// Install one anonymous method atomically under its compact and
-    /// durable-owner lookup preimages. Endpoint and call facades cloned from
+    /// durable-owner lookup preimages. Endpoint and call fact state cloned from
     /// this context therefore observe the same anonymous-first result.
     pub fn register_anonymous_method(
         &self,

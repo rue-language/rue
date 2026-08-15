@@ -975,33 +975,6 @@ impl RetainedCharge for crate::declaration_candidate::DeclarationShellFailure {
     }
 }
 
-#[cfg(test)]
-impl RetainedCharge for crate::declaration_candidate::RawAnonymousSite {
-    fn retained_charge(&self) -> u64 {
-        0
-    }
-}
-
-#[cfg(test)]
-macro_rules! candidate_failure_charge {
-    ($ty:ty) => {
-        impl RetainedCharge for $ty {
-            fn retained_charge(&self) -> u64 {
-                match self {
-                    Self::OccurrencesUnavailable(value) => value.retained_charge(),
-                    Self::Absent(key)
-                    | Self::Ambiguous(key)
-                    | Self::CategoryMismatch(key)
-                    | Self::ParserCapabilityMismatch(key) => key.retained_charge(),
-                }
-            }
-        }
-    };
-}
-
-#[cfg(test)]
-candidate_failure_charge!(crate::declaration_candidate::RawDeclarationBodyFailure);
-
 impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
     fn retained_charge(&self) -> u64 {
         0
@@ -1079,15 +1052,6 @@ impl RetainedCharge for rue_air::declaration_validation::AccessorOwnerMethod {
             .retained_charge()
             .saturating_add(self.is_accessor.retained_charge())
             .saturating_add(self.self_call_targets.retained_charge())
-    }
-}
-
-#[cfg(test)]
-impl RetainedCharge for crate::declaration_candidate::RawDeclarationBodySyntax {
-    fn retained_charge(&self) -> u64 {
-        self.body
-            .retained_charge()
-            .saturating_add(self.anonymous_sites.retained_charge())
     }
 }
 

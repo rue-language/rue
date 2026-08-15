@@ -8,6 +8,21 @@
 use super::*;
 use rue_compiler::PreviewFeature;
 
+#[test]
+fn oracle_uses_air_synthetic_type_identity_policy() {
+    let source = include_str!("lib.rs");
+    for peer in [
+        ".strip_prefix(\"Str(\")",
+        ".starts_with(\"Str(\")",
+        ".starts_with('[')",
+    ] {
+        assert!(
+            !source.contains(peer),
+            "oracle regained handwritten synthetic-type identity policy: {peer}"
+        );
+    }
+}
+
 mod call_contracts;
 mod place_contracts;
 

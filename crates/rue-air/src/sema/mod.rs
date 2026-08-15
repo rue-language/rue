@@ -73,7 +73,6 @@ pub use binding_manifest::{
 };
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
-pub(crate) use fact_mode::BodyAnalysisHost;
 pub(crate) use fact_mode::StructuredTypeSyntax;
 pub(crate) use inference_ctx::HostInferenceFacts;
 pub use inference_ctx::InferenceContext;
@@ -1102,10 +1101,8 @@ impl BodySema<'_> {
 }
 
 impl<D: DeclarationPhase> Sema<'_, D> {
-    pub(in crate::sema) fn aggregate_facts(
-        &self,
-    ) -> <Self as BodyAnalysisHost>::AggregateFacts<'_> {
-        BodyAnalysisHost::aggregate_facts(self)
+    pub(in crate::sema) fn aggregate_facts(&self) -> &Self {
+        self
     }
 
     pub(crate) fn body_owner_token(
@@ -1131,12 +1128,12 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 }
 
 impl BodySema<'_> {
-    pub(in crate::sema) fn endpoint_facts(&self) -> <Self as BodyAnalysisHost>::EndpointFacts<'_> {
-        BodyAnalysisHost::endpoint_facts(self)
+    pub(in crate::sema) fn endpoint_facts(&self) -> &Self {
+        self
     }
 
-    pub(in crate::sema) fn call_facts(&self) -> <Self as BodyAnalysisHost>::CallFacts<'_> {
-        BodyAnalysisHost::call_facts(self)
+    pub(in crate::sema) fn call_facts(&self) -> &Self {
+        self
     }
 }
 

@@ -63,7 +63,7 @@
 //! - **Deeply-nested `inout` field writes** (non-zero inner offset).
 
 use lasso::ThreadedRodeo;
-use rue_air::{FrozenTypeInternPool, RuntimeCallKind, Type, TypeKind, parse_array_type_syntax};
+use rue_air::{FrozenTypeInternPool, RuntimeCallKind, Type, TypeKind};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator};
 use rue_compiler::{
     CompileErrors, CompileOptions, CompilerSession, PreviewFeatures, SourceSnapshot,
@@ -1014,7 +1014,7 @@ impl<'a> Interp<'a> {
 
     fn is_str_like_struct(&self, struct_id: rue_air::StructId) -> bool {
         let name: &str = &self.type_pool().struct_def(struct_id).name;
-        name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
+        rue_air::is_string_view_struct_name(name)
     }
 
     fn text_struct_slots(&self, struct_id: rue_air::StructId) -> Option<usize> {
@@ -1286,9 +1286,7 @@ impl<'a> Interp<'a> {
                     return false;
                 };
                 let def = self.type_pool().struct_def(*struct_id);
-                let is_slice = def.name.starts_with('[')
-                    && def.name.ends_with(']')
-                    && parse_array_type_syntax(&def.name).is_none();
+                let is_slice = rue_air::is_slice_struct_name(&def.name);
                 if !is_slice
                     || def.fields.len() != 2
                     || def.fields[0].ty != pointer_ty

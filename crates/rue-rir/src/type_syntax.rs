@@ -875,6 +875,17 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
         self.push_node(RirTypeSyntaxNode::Named(symbol))
     }
 
+    /// Construct one qualified type path from already-tokenized symbol
+    /// segments. Expression paths interpreted in type position use this
+    /// directly; no dotted spelling is reconstructed or reparsed.
+    pub fn push_qualified_type(
+        &mut self,
+        segments: impl IntoIterator<Item = S>,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        let path = self.symbol_path(segments)?;
+        self.push_node(RirTypeSyntaxNode::Qualified { path })
+    }
+
     pub fn push_integer(
         &mut self,
         value: i128,

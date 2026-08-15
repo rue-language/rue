@@ -82,45 +82,6 @@ pub(crate) enum DeclarationShellFailure {
     ParserCapabilityMismatch(DeclarationCandidateKey),
 }
 
-/// Test-only record of one anonymous type literal in a retired raw fragment.
-///
-/// `fragment_start` / `fragment_end` are byte offsets **relative to the start of
-/// the constant initializer or body block. Production evaluation consumes the
-/// packed candidate artifact and its indexed anchors directly; this type exists
-/// only so deleted-route selection tests can exercise the old fragment shape.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RawAnonymousSite {
-    pub(crate) fragment_start: u32,
-    pub(crate) fragment_end: u32,
-    pub(crate) kind: rue_rir::AnonymousTypeSiteKind,
-    pub(crate) anchor: rue_rir::RirStructuralAnchor,
-}
-
-/// Test-only parser projection for the retired raw-body query.
-///
-/// Production runtime and comptime evaluation consume the packed candidate
-/// artifact; this exact fragment remains only as a deletion-regression oracle.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RawDeclarationBodySyntax {
-    pub(crate) body: Arc<str>,
-    /// Anonymous type literals inside `body`, retained only for the
-    /// deleted-route oracle.
-    pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
-}
-
-/// Stable, position-free failure retained by the exact raw-body family.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RawDeclarationBodyFailure {
-    OccurrencesUnavailable(DeclarationOccurrenceFailure),
-    Absent(DeclarationCandidateKey),
-    Ambiguous(DeclarationCandidateKey),
-    CategoryMismatch(DeclarationCandidateKey),
-    ParserCapabilityMismatch(DeclarationCandidateKey),
-}
-
 /// Position-independent identity of one valid `@import` occurrence inside an
 /// exact declaration.
 ///

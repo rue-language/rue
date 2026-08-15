@@ -28,35 +28,6 @@ use crate::{
     },
 };
 
-#[cfg(test)]
-use crate::declaration_candidate::{RawAnonymousSite, RawDeclarationBodySyntax};
-
-/// Slice the module-relative anonymous type sites that fall inside `fragment`
-/// into locators relative to `fragment`'s start. The frontend anchor rides
-/// along unchanged; the relative offsets let the durable evaluator reconnect
-/// each reparsed literal to it without a module-space lookup (RUE-1089).
-///
-/// A site straddling or preceding the fragment is dropped rather than clamped:
-/// the durable evaluator then fails closed on the corresponding reparsed literal
-/// (a loud missing-locator diagnostic) instead of adopting a truncated locator.
-#[cfg(test)]
-fn fragment_anonymous_sites(
-    sites: &[rue_rir::AnonymousTypeSite],
-    fragment: Span,
-) -> Arc<[RawAnonymousSite]> {
-    sites
-        .iter()
-        .filter(|site| site.span.start >= fragment.start && site.span.end <= fragment.end)
-        .map(|site| RawAnonymousSite {
-            fragment_start: site.span.start - fragment.start,
-            fragment_end: site.span.end - fragment.start,
-            kind: site.kind,
-            anchor: site.anchor.clone(),
-        })
-        .collect::<Vec<_>>()
-        .into()
-}
-
 #[derive(Debug)]
 struct SymbolProvenance;
 
@@ -176,8 +147,6 @@ pub struct ParsedDefinitionIndex {
     declaration_by_key: HashMap<DeclarationCandidateKey, usize>,
     rir_recipes: Arc<[ParsedRirRecipe]>,
     declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
-    #[cfg(test)]
-    raw_declaration_body_terminal_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
     declaration_import_locator_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
@@ -376,42 +345,11 @@ impl ParsedDefinitionIndex {
         )
     }
 
-    /// Materialize the retired raw-body oracle for one exact declaration key.
-    /// Production runtime and comptime evaluation consume the packed candidate
-    /// artifact instead.
-    #[cfg(test)]
-    fn materialize_raw_declaration_body(
-        &self,
-        key: &DeclarationCandidateKey,
-        source_text: &str,
-    ) -> Option<RawDeclarationBodySyntax> {
-        let index = self.declaration_by_key.get(key).copied()?;
-        let candidate = self.declarations.get(index)?;
-        if candidate.fact.key != *key {
-            return None;
-        }
-        let body = candidate.raw_body_span?;
-        let syntax = RawDeclarationBodySyntax {
-            body: Arc::from(source_text.get(body.start as usize..body.end as usize)?),
-            anonymous_sites: fragment_anonymous_sites(&candidate.anonymous_sites, body),
-        };
-        #[cfg(test)]
-        self.raw_declaration_body_terminal_materializations
-            .fetch_add(1, Ordering::Relaxed);
-        Some(syntax)
-    }
-
     fn body_source_spans(&self, key: &DeclarationCandidateKey) -> Option<(Span, Span)> {
         let index = self.declaration_by_key.get(key).copied()?;
         let candidate = self.declarations.get(index)?;
         (candidate.fact.key == *key)
             .then_some((candidate.declaration_span, candidate.raw_body_span?))
-    }
-
-    #[cfg(test)]
-    fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
-        self.raw_declaration_body_terminal_materializations
-            .load(Ordering::Relaxed)
     }
 
     fn declaration_import_range(
@@ -776,15 +714,6 @@ impl ParsedModule {
             .saturating_add(invalid_imports)
     }
 
-    #[cfg(test)]
-    pub(crate) fn evaluate_raw_declaration_body(
-        &self,
-        key: &DeclarationCandidateKey,
-    ) -> Option<RawDeclarationBodySyntax> {
-        self.definitions
-            .materialize_raw_declaration_body(key, self.source_text())
-    }
-
     pub(crate) fn body_source_spans(&self, key: &DeclarationCandidateKey) -> Option<(Span, Span)> {
         self.definitions.body_source_spans(key)
     }
@@ -963,12 +892,6 @@ impl ParsedModule {
             }
             _ => None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raw_declaration_body_terminal_materialization_count(&self) -> usize {
-        self.definitions
-            .raw_declaration_body_terminal_materialization_count()
     }
 
     pub(crate) fn declaration_import(
@@ -1702,11 +1625,6 @@ fn bind_payload(
         declaration_by_key: payload.definitions.declaration_by_key.clone(),
         rir_recipes: payload.definitions.rir_recipes.clone(),
         declaration_capabilities: payload.definitions.declaration_capabilities.clone(),
-        #[cfg(test)]
-        raw_declaration_body_terminal_materializations: payload
-            .definitions
-            .raw_declaration_body_terminal_materializations
-            .clone(),
         #[cfg(test)]
         declaration_import_locator_materializations: payload
             .definitions
@@ -3108,8 +3026,6 @@ fn build_definition_index(
         declaration_by_key,
         rir_recipes: rir_recipes.into(),
         declaration_capabilities: declaration_capabilities.into(),
-        #[cfg(test)]
-        raw_declaration_body_terminal_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         declaration_import_locator_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]

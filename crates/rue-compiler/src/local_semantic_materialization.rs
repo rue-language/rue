@@ -950,11 +950,7 @@ pub(crate) fn select_materialization_facts(
             // exact fact request here.
             if name.as_ref() == "str"
                 || rue_builtins::get_builtin_enum(name).is_some()
-                || name
-                    .strip_prefix("Str(")
-                    .and_then(|name| name.strip_suffix(')'))
-                    .and_then(|capacity| capacity.parse::<u64>().ok())
-                    .is_some()
+                || rue_air::fixed_string_capacity(name).is_some()
             {
                 return;
             }

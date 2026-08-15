@@ -5,7 +5,6 @@
 //! them. It extends the canonical [`BodySema`] rather than introducing peer
 //! analysis state.
 
-use super::super::call_resolution::CallResolutionFacts;
 use super::super::context::{LocalVar, VariableMoveState};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
@@ -484,7 +483,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         || ctx.comptime_value_vars.contains_key(name)
                         || self
                             .call_facts()
-                            .value_const(self.body_rir_ref().get(operand).span.file_id, *name)
+                            .call_value_const(self.body_rir_ref().get(operand).span.file_id, *name)
                             .is_some())
             }
             _ => false,
@@ -501,7 +500,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     && !ctx.has_param(*name)
                     && self
                         .call_facts()
-                        .value_const(self.body_rir_ref().get(operand).span.file_id, *name)
+                        .call_value_const(self.body_rir_ref().get(operand).span.file_id, *name)
                         .is_some_and(|info| matches!(info.value, ConstValue::String(_)))
             }
             _ => false,
@@ -645,7 +644,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let len_method = self.body_interner().get_or_intern("len");
         let Some(ptr_ty) = self
             .call_facts()
-            .method_info(struct_id, ptr_method)
+            .call_method_info(struct_id, ptr_method)
             .map(|m| m.return_type)
         else {
             return Err(CompileError::new(
@@ -657,7 +656,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let Some(len_ty) = self
             .call_facts()
-            .method_info(struct_id, len_method)
+            .call_method_info(struct_id, len_method)
             .map(|m| m.return_type)
         else {
             return Err(CompileError::new(
@@ -1119,7 +1118,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         else {
             return Ok(None);
         };
-        let Some(info) = self.call_facts().method_info(struct_id, method) else {
+        let Some(info) = self.call_facts().call_method_info(struct_id, method) else {
             return Ok(None);
         };
         if !info.returns_borrow {
@@ -1156,7 +1155,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<PlaceTrace> {
         let info = self
             .call_facts()
-            .method_info(struct_id, method)
+            .call_method_info(struct_id, method)
             .expect("accessor expansion follows a successful method lookup");
         let method_name_str = self.body_interner().resolve(&method).to_string();
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
@@ -1305,7 +1304,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } => {
                 let base_ty = self.peek_place_type(*receiver, ctx)?;
                 let base_struct = base_ty.as_struct()?;
-                let info = self.call_facts().method_info(base_struct, *method)?;
+                let info = self.call_facts().call_method_info(base_struct, *method)?;
                 if !info.returns_borrow {
                     return None;
                 }
@@ -1988,7 +1987,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // @import("math")`). Module bindings are per-file scoped (RUE-113),
         // so the lookup is keyed by the reference's own file and takes
         // precedence over file-local value constants.
-        let module_binding = self.call_facts().module_binding(span.file_id, name);
+        let module_binding = self.call_facts().call_module_binding(span.file_id, name);
         if let Some(binding) = module_binding {
             self.record_body_named_dependency(
                 super::super::NamedConstDependencyTargetEvent::ModuleBinding {
@@ -2013,7 +2012,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // never re-analyzed at use sites.
         let const_info = self
             .call_facts()
-            .resolve_const_info_in_file(name, span.file_id);
+            .call_resolve_const_info_in_file(name, span.file_id);
         if let Some(const_info) = const_info {
             // Apply the uniform privacy rule even though ordinary unqualified
             // lookup resolves in the reference file (spec 10.3:1, 10.3:7).
@@ -3249,7 +3248,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         };
         let method = self.body_interner().get_or_intern("byte_at_borrowed");
-        if self.call_facts().method_info(struct_id, method).is_none() {
+        if self
+            .call_facts()
+            .call_method_info(struct_id, method)
+            .is_none()
+        {
             return Err(CompileError::new(
                 ErrorKind::InternalError(
                     "trusted std StrBuf is missing its source `byte_at_borrowed` method"

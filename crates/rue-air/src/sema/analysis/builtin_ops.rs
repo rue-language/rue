@@ -3,7 +3,6 @@
 //! This category owns builtin operations within the canonical semantic-analysis
 //! implementation.
 
-use super::super::call_resolution::CallResolutionFacts;
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 
@@ -100,7 +99,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             span,
         )?;
         let method = self.body_interner().get_or_intern("concat_borrowed");
-        if self.call_facts().method_info(struct_id, method).is_none() {
+        if self
+            .call_facts()
+            .call_method_info(struct_id, method)
+            .is_none()
+        {
             return Err(CompileError::new(
                 ErrorKind::InternalError("canonical StrBuf is missing concat_borrowed".to_string()),
                 span,
@@ -490,7 +493,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             } => {
                 let base_ty = self.peek_place_type(*receiver, ctx)?;
                 let struct_id = base_ty.as_struct()?;
-                let info = self.call_facts().method_info(struct_id, *method)?;
+                let info = self.call_facts().call_method_info(struct_id, *method)?;
                 info.returns_borrow.then_some(info.return_type)
             }
             InstData::FieldGet { base, field } => {

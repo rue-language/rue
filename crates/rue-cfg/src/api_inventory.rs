@@ -69,3 +69,22 @@ fn production_cfg_does_not_call_frozen_declaration_test_adapters() {
         );
     }
 }
+
+#[test]
+fn cfg_uses_air_synthetic_type_identity_policy() {
+    for (name, source) in [
+        ("build.rs", include_str!("build.rs")),
+        ("verify.rs", include_str!("verify.rs")),
+    ] {
+        for peer in [
+            ".strip_prefix(\"Str(\")",
+            ".starts_with(\"Str(\")",
+            ".starts_with('[')",
+        ] {
+            assert!(
+                !source.contains(peer),
+                "{name} regained handwritten synthetic-type identity policy: {peer}"
+            );
+        }
+    }
+}

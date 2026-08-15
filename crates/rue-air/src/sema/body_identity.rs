@@ -62,7 +62,7 @@
 //!   [`BodyIdentityPool::find_or_create_anon`] (r6b) mints the producer-nominal
 //!   anonymous struct / enum from its durable identity + shape, and
 //!   [`ProviderIdentityContext::register_anonymous_method`] supplies the
-//!   request-local dispatch entry shared by endpoint and call facades. The
+//!   request-local dispatch entry shared by endpoint and call fact state. The
 //!   method body itself remains a local RIR concern; an issued anonymous key
 //!   with no registered durable identity still resolves by lookup only
 //!   ([`BodyIdentityPool::register_issued_anonymous`]);
@@ -563,7 +563,7 @@ where
         }
     }
 
-    /// Return the interner authority shared by all provider facades in this
+    /// Return the interner authority shared by all provider fact state in this
     /// identity context.
     pub fn interner(&self) -> Rc<ThreadedRodeo> {
         Rc::clone(&self.pool.borrow().interner)
@@ -682,7 +682,7 @@ where
 
 /// The rue-air-owned type and parameter authority for one provider body.
 ///
-/// Provider fact facades clone the identity context from this state; they do
+/// Provider fact stores clone the identity context from this state; they do
 /// not create peer pools or interners. `finalize_containment_metadata` seals
 /// the exact prerequisite facts and rebases the authority onto append-only
 /// type/parameter overlays, so lazy body-local materialization remains valid.
@@ -1113,11 +1113,7 @@ where
             S::Never => Type::NEVER,
             S::ComptimeType => Type::COMPTIME_TYPE,
             S::BuiltinNominal { name, kind } => {
-                if let Some(capacity) = name
-                    .strip_prefix("Str(")
-                    .and_then(|name| name.strip_suffix(')'))
-                    .and_then(|capacity| capacity.parse::<u64>().ok())
-                {
+                if let Some(capacity) = crate::types::fixed_string_capacity(name) {
                     if *kind != SemanticImportNominalKind::Struct {
                         return Err(IdentityMintError::BuiltinNominalKindMismatch);
                     }
@@ -2752,8 +2748,8 @@ where
 /// [`RirDeclarationIndex`] is already body-independent — `RirDeclarationIndex::
 /// new(rir)` is built from the shared `Rir` alone, its `InstRef`s locate that
 /// arena, and it already answers `first_free_function` and `destructors`
-/// verbatim (they are the tables [`super::body_endpoint::EpochFacts`] delegates
-/// to). So this index **re-uses it wholesale** for those two ops rather than
+/// verbatim (they are the tables the epoch host consults directly). So this
+/// index **re-uses it wholesale** for those two ops rather than
 /// duplicating the arena walk.
 ///
 /// The one op the production index does not expose as a keyed point lookup is
@@ -2840,7 +2836,7 @@ impl BodyRirBundle {
         )
     }
 
-    /// The one interner authority for this body RIR and its provider facades.
+    /// The one interner authority for this body RIR and its provider fact state.
     pub fn shared_interner(&self) -> Rc<ThreadedRodeo> {
         Rc::clone(&self.rir_interner)
     }
@@ -2997,7 +2993,7 @@ impl BodyRirIndex {
     }
 
     /// The first free-function RIR declaration for `(source, file)`. The exact
-    /// answer [`super::body_endpoint::EpochFacts::first_free_function`] returns.
+    /// answer the epoch host's direct fact implementation returns.
     pub(in crate::sema) fn first_free_function(
         &self,
         source: Spur,
@@ -3009,7 +3005,7 @@ impl BodyRirIndex {
     /// The named-method RIR declaration for a named struct owner, keyed by the
     /// durable-available `(owner_file, owner_type_name, method_name)` preimage of
     /// the epoch's `(StructId, method_name)` key. Equal to
-    /// [`super::body_endpoint::EpochFacts::named_method_declaration`] under the
+    /// the epoch host's direct fact implementation under the
     /// `struct_by_file_name` bijection.
     pub(in crate::sema) fn named_method_declaration(
         &self,
@@ -3035,7 +3031,7 @@ impl BodyRirIndex {
     }
 
     /// The destructor declaration record for `(file, type_name)`. The exact
-    /// scan [`super::body_endpoint::EpochFacts::destructor`] performs.
+    /// scan the epoch host performs.
     pub(in crate::sema) fn destructor(
         &self,
         file: u32,
@@ -6053,7 +6049,7 @@ mod tests {
     // Twin-parity for the endpoint seam ops. Each test builds a real
     // program's `Rir` through the production lex/parse/astgen path, binds its
     // declarations through the epoch, and compares the pool-side `BodyRirIndex`
-    // answers against the epoch's `EpochFacts` over the SAME `Rir` — then the
+    // answers against the epoch host over the SAME `Rir` — then the
     // capstone assembles a complete `FunctionInfo` / `MethodInfo` from the index
     // (2c) + a durable signature (2b, resolving types through 2a) and proves it
     // equals production's populated info struct field-for-field.
@@ -6079,7 +6075,7 @@ mod tests {
 
     /// Bind declarations through the epoch so `functions`, `methods`,
     /// `named_method_declarations`, and the `type_pool` are populated — the
-    /// state the `EpochFacts` twin reads.
+    /// state the epoch-side twin reads.
     fn bind<'a>(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
@@ -6235,7 +6231,9 @@ mod tests {
 
         // Production's populated FunctionInfo for `make`.
         let make_src = interner.get("make").unwrap();
-        let internal = facts.function_by_file_name(file, make_src).unwrap();
+        let internal = facts
+            .endpoint_function_by_file_name(file, make_src)
+            .unwrap();
         let prod = facts.function_info(internal).unwrap();
 
         // 2c: the RIR index locates the declaration; fill the request/RIR handle.
@@ -6333,8 +6331,8 @@ mod tests {
 
         let widget = interner.get("Widget").unwrap();
         let bump = interner.get("bump").unwrap();
-        let struct_id = facts.struct_by_file_name(file, widget).unwrap();
-        let prod = facts.method_info(struct_id, bump).unwrap();
+        let struct_id = facts.endpoint_struct_by_file_name(file, widget).unwrap();
+        let prod = facts.endpoint_method_info(struct_id, bump).unwrap();
 
         // 2c: the RIR index locates the method declaration; fill the handle.
         let declaration = index.named_method_declaration(file, widget, bump).unwrap();

@@ -12,10 +12,9 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
 use super::aggregate_resolution::{
-    AggregateFacts, ModuleTypeMember, QualifiedType, StructLiteralHead,
-    resolve_aggregate_module_ref, resolve_enum_type_name, resolve_struct_type_name,
-    select_module_type_member, select_qualified_enum, select_qualified_type,
-    select_struct_literal_head,
+    ModuleTypeMember, QualifiedType, StructLiteralHead, resolve_aggregate_module_ref,
+    resolve_enum_type_name, resolve_struct_type_name, select_module_type_member,
+    select_qualified_enum, select_qualified_type, select_struct_literal_head,
 };
 use super::analysis::FirstClassStrSite;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue};
@@ -38,7 +37,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<(crate::types::EnumId, bool)> {
         let facts = self.aggregate_facts();
         resolve_enum_type_name(
-            &facts,
+            facts,
             ctx.comptime_type_vars.get(&type_name).copied(),
             ctx.current_file_id,
             type_name,
@@ -64,7 +63,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<(crate::types::StructId, bool)> {
         let facts = self.aggregate_facts();
         resolve_struct_type_name(
-            &facts,
+            facts,
             ctx.comptime_type_vars.get(&type_name).copied(),
             ctx.current_file_id,
             type_name,
@@ -370,7 +369,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             let struct_id = {
                 let facts = self.aggregate_facts();
-                facts.struct_in_file(facts.module(module_id).file, type_name)
+                facts.aggregate_struct_in_file(facts.aggregate_module(module_id).file, type_name)
             }
             .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
             // Module-qualified visibility is E0706 (RUE-525), uniform with
@@ -391,7 +390,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let head = {
                 let facts = self.aggregate_facts();
                 select_struct_literal_head(
-                    &facts,
+                    facts,
                     ctx.comptime_type_vars.get(&type_name).copied(),
                     span.file_id,
                     type_name,
@@ -628,10 +627,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Resolve the module to its canonical request-local file identity, so
         // equivalent path spellings select the same visibility domain.
-        let module_fact = self.aggregate_facts().module(module_id);
+        let module_fact = self.aggregate_facts().aggregate_module(module_id);
         let member = {
             let facts = self.aggregate_facts();
-            select_module_type_member(&facts, module_fact.file, member_name)
+            select_module_type_member(facts, module_fact.file, member_name)
         };
 
         // First, try to find a struct with this name defined by the module's
@@ -870,7 +869,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> Option<crate::types::ModuleId> {
         let facts = self.aggregate_facts();
         resolve_aggregate_module_ref(
-            &facts,
+            facts,
             self.body_rir_ref(),
             inst_ref,
             span.file_id,
@@ -903,8 +902,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let selected = {
             let facts = self.aggregate_facts();
-            let file = facts.module(module_id).file;
-            select_qualified_type(&facts, file, type_name)
+            let file = facts.aggregate_module(module_id).file;
+            select_qualified_type(facts, file, type_name)
         };
 
         // Enum member: `module.Enum.Variant(payload)` is tuple-variant
@@ -999,8 +998,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         let Some(enum_id) = ({
             let facts = self.aggregate_facts();
-            let file = facts.module(module_id).file;
-            select_qualified_enum(&facts, file, type_name)
+            let file = facts.aggregate_module(module_id).file;
+            select_qualified_enum(facts, file, type_name)
         }) else {
             // `type_name` is not an enum in this module: this is const/field
             // access through the module, not a variant path. Fall through.
