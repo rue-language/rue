@@ -13,6 +13,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import mask_rust_non_code
+
 
 ROOT = Path(__file__).resolve().parent.parent
 CONSUMER_CRATES = (
@@ -26,7 +29,6 @@ CONSUMER_CRATES = (
 )
 LITERAL = re.compile(r'"(__rue_[A-Za-z0-9_$]*)"')
 TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*mod\s+[A-Za-z0-9_]+\s*\{", re.MULTILINE)
-RAW_STRING_START = re.compile(r'(?:br|r)(?P<hashes>#{0,255})"')
 
 # These are namespace or generated-symbol boundaries, not runtime-helper
 # identities. Keep this list about categories rather than individual helpers.
@@ -39,83 +41,6 @@ ALLOWED_PRODUCTION = (
     "__rue_for_",  # internal desugaring temporaries
     "__rue_invalid_local_symbol",  # unreachable canonicalization sentinel
 )
-
-
-def mask_rust_non_code(source: str) -> tuple[str, list[tuple[int, int]]]:
-    """Mask comments and literals while preserving byte offsets and newlines."""
-    masked = list(source)
-    comments: list[tuple[int, int]] = []
-
-    def hide(start: int, end: int) -> None:
-        for index in range(start, end):
-            if masked[index] != "\n":
-                masked[index] = " "
-
-    index = 0
-    while index < len(source):
-        if source.startswith("//", index):
-            end = source.find("\n", index + 2)
-            end = len(source) if end < 0 else end
-            comments.append((index, end))
-            hide(index, end)
-            index = end
-            continue
-        if source.startswith("/*", index):
-            start = index
-            depth = 1
-            index += 2
-            while index < len(source) and depth:
-                if source.startswith("/*", index):
-                    depth += 1
-                    index += 2
-                elif source.startswith("*/", index):
-                    depth -= 1
-                    index += 2
-                else:
-                    index += 1
-            comments.append((start, index))
-            hide(start, index)
-            continue
-
-        raw = RAW_STRING_START.match(source, index)
-        if raw:
-            hashes = raw.group("hashes")
-            terminator = '"' + hashes
-            end = source.find(terminator, raw.end())
-            end = len(source) if end < 0 else end + len(terminator)
-            hide(index, end)
-            index = end
-            continue
-
-        quote_start = index + 1 if source.startswith('b"', index) else index
-        if quote_start < len(source) and source[quote_start] == '"':
-            end = quote_start + 1
-            while end < len(source):
-                if source[end] == "\\":
-                    end += 2
-                elif source[end] == '"':
-                    end += 1
-                    break
-                else:
-                    end += 1
-            hide(index, min(end, len(source)))
-            index = end
-            continue
-
-        # Mask a character literal, but do not mistake a Rust lifetime for one.
-        if source[index] == "'":
-            end = index + 1
-            if end < len(source) and source[end] == "\\":
-                end += 2
-            else:
-                end += 1
-            if end < len(source) and source[end] == "'":
-                end += 1
-                hide(index, end)
-                index = end
-                continue
-        index += 1
-    return "".join(masked), comments
 
 
 def test_module_spans(masked_source: str) -> list[tuple[int, int]]:

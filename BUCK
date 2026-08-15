@@ -1301,6 +1301,7 @@ rue_sh_test(
 rue_sh_test(
     name = "runtime-abi-inventory-validation",
     test = "scripts/validate-runtime-abi-inventory.py",
+    resources = glob(["scripts/gatelib/*.py"]),
     args = [
         "--source", "rue-air=$(location //crates/rue-air:runtime-abi-inventory-sources)",
         "--source", "rue-builtins=$(location //crates/rue-builtins:runtime-abi-inventory-sources)",
@@ -1315,7 +1316,8 @@ rue_sh_test(
 rue_sh_test(
     name = "runtime-abi-inventory-tool-tests",
     test = "scripts/test-runtime-abi-inventory.py",
-    resources = ["scripts/validate-runtime-abi-inventory.py"],
+    resources = ["scripts/validate-runtime-abi-inventory.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
