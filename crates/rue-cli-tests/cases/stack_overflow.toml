@@ -15,15 +15,15 @@
 # stack overflow: safe Rue has no other way to segfault (bounds-checked, no null
 # derefs, arithmetic traps). See crates/rue-runtime/src/entry.rs.
 #
-# Platform scope (`only_on` the two Linux targets): the handler is implemented
-# for x86-64 Linux and aarch64 Linux. macOS is a documented TODO — Darwin's
-# `sigaction(2)` requires a caller-supplied signal trampoline that cannot be
-# verified on a Linux host, so its `install_stack_overflow_handler` is a no-op
-# there (a macOS stack overflow still exits 139). We use `only_on` rather than
-# `known_bug_on = ["aarch64-macos"]` because a program that dies by signal is a
-# FATAL failure the harness cannot mask with a known_bug marker, so the case is
-# simply not run on macOS. See the macOS stub in
-# crates/rue-runtime/src/aarch64_macos.rs.
+# Platform scope (`only_on` all three targets): the handler is implemented for
+# x86-64 Linux, aarch64 Linux, and aarch64 macOS (RUE-707). The macOS path uses
+# the raw Darwin `sigaction(2)` with a hand-written `sa_tramp` trampoline; the
+# linking of that trampoline reference is verified on any host (the internal
+# linker statically relaxes its GOT_LOAD relocations), while delivery behavior
+# is verified by CI's macOS leg running this very case. If it regresses there,
+# this case fails loudly — a signal-death is a FATAL failure `known_bug` can't
+# absorb, which is why the scope stays `only_on`. See
+# crates/rue-runtime/src/aarch64_macos.rs::install_stack_overflow_handler.
 
 [section]
 id = "cli.stack_overflow"
@@ -37,7 +37,7 @@ description = "Deep recursion aborts with 'stack overflow' + exit 101, not a raw
 [[case]]
 name = "deep_recursion_aborts_cleanly"
 description = "depth(10_000_000) overflows the stack and aborts with 'stack overflow' + exit 101 (not SIGSEGV/139)."
-only_on = ["x86-64-linux", "aarch64-linux"]
+only_on = ["x86-64-linux", "aarch64-linux", "aarch64-macos"]
 files = [{ path = "prog.rue", source = """
 fn depth(n: i64) -> i64 { if n == 0 { 0 } else { 1 + depth(n - 1) } }
 fn main() -> i32 { @dbg(depth(10000000)); 0 }
