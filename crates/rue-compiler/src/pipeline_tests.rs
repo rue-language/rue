@@ -1413,7 +1413,7 @@ mod tests {
             .unwrap()
             .drive(&mut fresh)
             .unwrap();
-        let oracle = fresh.executable(&options).unwrap();
+        let oracle = fresh.executable_in_compile_scope(&options).unwrap();
         assert_eq!(retained.elf, oracle.elf);
         assert_eq!(retained.warnings, oracle.warnings);
     }

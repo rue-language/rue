@@ -10,7 +10,7 @@
 //! ```
 //! use std::{collections::HashMap, sync::Arc};
 //! use rue_compiler::{
-//!     CompileOptions, CompilerSession, FileId, SourceMetadata, SourceSnapshot,
+//!     CompileOptions, CompilerSession, FileId, SourceMetadata, SourceSnapshot, compile_snapshot,
 //! };
 //!
 //! let root = FileId::new(7);
@@ -21,14 +21,15 @@
 //!     vec![(root, Arc::new("fn main() -> i32 { 0 }".to_owned()))],
 //! )?;
 //! let mut session = CompilerSession::new();
-//! session.update(&snapshot).into_result()?;
-//! let executable = session.executable(&CompileOptions::default())?;
+//! let syntax = session.update(&snapshot).into_result()?;
+//! assert!(syntax.modules().next().is_some());
+//! let executable = compile_snapshot(&snapshot, &CompileOptions::default())?;
 //! assert!(!executable.elf.is_empty());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! Callers that only need a final executable may use [`compile_snapshot`], the
-//! sole one-shot adapter. Filesystem discovery remains the caller's job.
+//! Callers that need a final executable use [`compile_snapshot`], the sole
+//! one-shot stable adapter. Filesystem discovery remains the caller's job.
 //! Stable additions are reviewed against the semantic facade inventory. Debug
 //! presentation, instrumentation, and in-tree driver adapters live under
 //! [`unstable`] and carry no compatibility promise.

@@ -648,9 +648,6 @@ impl CompilerSessionUpdate {
     pub(crate) fn invalidation(&self) -> &ParseInvalidationSummary {
         &self.invalidation
     }
-    pub fn downstream_invalidated(&self) -> bool {
-        self.downstream_invalidated
-    }
     pub fn diagnostics(&self) -> &Arc<FrontendDiagnosticSnapshot> {
         &self.diagnostics
     }
@@ -3112,21 +3109,11 @@ impl CompilerSession {
         self.queries.revisioned.module_source_stamp_for_test(source)
     }
     /// Diagnostic snapshot from the most recently attempted query, whether it
-    /// succeeded or failed.
-    pub fn latest_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+    /// succeeded or failed. In-tree warm/fresh parity oracles compare this
+    /// retained selection; it is not part of the stable facade.
+    #[cfg(test)]
+    pub(crate) fn latest_diagnostics_for_test(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.diagnostics.latest()
-    }
-    /// Most recently queried diagnostic snapshot with no errors.
-    pub fn latest_successful_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.diagnostics.latest_successful()
-    }
-    /// Most recent successful semantic diagnostic snapshot.
-    ///
-    /// Syntax or semantic failures never replace this last-good semantic
-    /// baseline. A caller may clone the returned `Arc` to pin it independently
-    /// of later session eviction.
-    pub fn last_good_semantic_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.diagnostics.last_good_semantic()
     }
 
     /// Look up the currently selected, or otherwise most recently indexed,
@@ -9151,7 +9138,8 @@ mod tests {
             format!("{:?}", fresh.warnings())
         );
         let diagnostics = session
-            .latest_diagnostics()
+            .diagnostics
+            .latest()
             .expect("semantic query publishes diagnostics");
         assert!(diagnostics.is_success());
         assert_eq!(
@@ -9194,8 +9182,8 @@ mod tests {
     }
 
     fn assert_diagnostic_parity(actual: &CompilerSession, fresh: &CompilerSession) {
-        let actual = actual.latest_diagnostics().unwrap();
-        let fresh = fresh.latest_diagnostics().unwrap();
+        let actual = actual.diagnostics.latest().unwrap();
+        let fresh = fresh.diagnostics.latest().unwrap();
         assert_eq!(
             format!("{:?}", actual.stage()),
             format!("{:?}", fresh.stage())
@@ -9208,6 +9196,85 @@ mod tests {
             format!("{:?}", actual.warnings()),
             format!("{:?}", fresh.warnings())
         );
+    }
+
+    #[test]
+    fn semantic_failure_preserves_the_last_good_semantic_diagnostic_baseline() {
+        let good = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let broken = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { missing }")],
+            1,
+        );
+        let recovered = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&good).into_result().unwrap();
+        session.rooted_cfg(&options).unwrap();
+        let baseline = session
+            .diagnostics
+            .last_good_semantic()
+            .cloned()
+            .expect("successful semantic query publishes a last-good baseline");
+        assert!(baseline.is_success());
+
+        session.update(&broken).into_result().unwrap();
+        session.rooted_cfg(&options).unwrap_err();
+        let retained = session
+            .diagnostics
+            .last_good_semantic()
+            .cloned()
+            .expect("semantic failure retains the last-good baseline");
+        assert!(
+            Arc::ptr_eq(&retained, &baseline),
+            "a semantic failure must never replace the last-good semantic baseline"
+        );
+
+        session.update(&recovered).into_result().unwrap();
+        session.rooted_cfg(&options).unwrap();
+        let updated = session
+            .diagnostics
+            .last_good_semantic()
+            .cloned()
+            .expect("recovery publishes a new last-good baseline");
+        assert!(updated.is_success());
+        assert!(
+            !Arc::ptr_eq(&updated, &baseline),
+            "recovery must advance the last-good semantic baseline"
+        );
+    }
+
+    #[test]
+    fn injected_diagnostic_oracle_fault_diverges_from_a_fresh_session() {
+        let source = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut warm = CompilerSession::new();
+        warm.update(&source).into_result().unwrap();
+        warm.rooted_cfg(&options).unwrap();
+        let mut fresh = CompilerSession::new();
+        fresh.update(&source).into_result().unwrap();
+        fresh.rooted_cfg(&options).unwrap();
+        assert_diagnostic_parity(&warm, &fresh);
+
+        assert!(
+            warm.inject_stale_query_for_oracle(
+                crate::unstable::DifferentialOracleFault::Diagnostic
+            )
+        );
+        let corrupted = warm.diagnostics.latest().unwrap();
+        assert!(
+            !corrupted.is_success(),
+            "the injected fault selects a distinct failing canonical attempt"
+        );
+        assert!(fresh.diagnostics.latest().unwrap().is_success());
     }
 
     #[test]
@@ -9469,23 +9536,23 @@ mod tests {
         session.canonical_rir().unwrap();
 
         let root = session.update(&root_only);
-        assert!(root.downstream_invalidated());
+        assert!(root.downstream_invalidated);
         assert_eq!(root.work().modules_reused, 2);
         root.into_result().unwrap();
         session.canonical_rir().unwrap();
         let moved = session.update(&relocated);
-        assert!(moved.downstream_invalidated());
+        assert!(moved.downstream_invalidated);
         assert_eq!(moved.work().modules_rebound, 2);
         moved.into_result().unwrap();
         session.canonical_rir().unwrap();
         let ids = session.update(&reassigned);
-        assert!(ids.downstream_invalidated());
+        assert!(ids.downstream_invalidated);
         assert_eq!(ids.work().modules_reparsed, 0);
         assert_eq!(ids.work().modules_rebound, 2);
         ids.into_result().unwrap();
         session.canonical_rir().unwrap();
         let rename = session.update(&renamed);
-        assert!(rename.downstream_invalidated());
+        assert!(rename.downstream_invalidated);
         assert_eq!(rename.invalidation().added.len(), 1);
         assert_eq!(rename.invalidation().removed.len(), 1);
         // ParseModule is keyed by stable logical module identity. A logical

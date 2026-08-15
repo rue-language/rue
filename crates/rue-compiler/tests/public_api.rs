@@ -23,13 +23,13 @@ fn curated_facade_compiles_for_an_external_consumer() {
     let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
     let mut session = CompilerSession::new();
     let update: CompilerSessionUpdate = session.update(&snapshot);
+    let diagnostics: Arc<FrontendDiagnosticSnapshot> = update.diagnostics().clone();
     update.into_result().unwrap();
 
     let syntax = session.published().unwrap();
     let rir: Arc<RirView> = session.rir().unwrap();
     let rooted = rooted_cfg(&mut session, &CompileOptions::default()).unwrap();
     let work: MetricsSnapshot = session.unstable_metrics();
-    let diagnostics: Option<&Arc<FrontendDiagnosticSnapshot>> = session.latest_diagnostics();
     let views: Vec<SourceView<'_>> = snapshot.files().collect();
     assert_eq!(views[0].file_id, FileId::DEFAULT);
     assert!(!rir.is_empty());
@@ -66,8 +66,8 @@ fn curated_facade_compiles_for_an_external_consumer() {
         "FN"
     );
     assert_eq!(work.updates(), 1);
-    assert!(diagnostics.is_some());
-    assert_eq!(diagnostics.unwrap().stage(), DiagnosticStage::Semantic);
+    assert!(diagnostics.is_success());
+    assert_eq!(diagnostics.stage(), DiagnosticStage::Syntax);
     for debug in [format!("{rir:?}")] {
         assert!(!debug.contains("CanonicalRirOutput"));
         assert!(!debug.contains("CanonicalSemanticOutput"));

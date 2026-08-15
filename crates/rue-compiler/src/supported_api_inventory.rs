@@ -6,19 +6,14 @@
 //! source-size budget or adding another forbidden-name exception.
 
 pub(crate) const APPROVED: &str = r#"stable|CompilerSession|artifact-query|embedders|committed_import_graph|pub fn committed_import_graph(&self)->Result<Arc<CanonicalImportGraphOutput>,CompileErrors>
-stable|CompilerSession|artifact-query|embedders|executable|pub fn executable(&mut self,options:&CompileOptions)->MultiErrorResult<CompileOutput>
 stable|CompilerSession|artifact-query|embedders|import_diagnostics|pub fn import_diagnostics(&mut self)->Result<Arc<FrontendDiagnosticSnapshot>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
-stable|CompilerSession|diagnostic-query|embedders|last_good_semantic_diagnostics|pub fn last_good_semantic_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
-stable|CompilerSession|diagnostic-query|embedders|latest_diagnostics|pub fn latest_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
-stable|CompilerSession|diagnostic-query|embedders|latest_successful_diagnostics|pub fn latest_successful_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|session-operation|embedders|new|pub fn new()->Self
 stable|CompilerSession|session-operation|embedders|update|pub fn update(&mut self,snapshot:&SourceSnapshot)->CompilerSessionUpdate
 stable|CompilerSessionUpdate|artifact-result|embedders|diagnostics|pub fn diagnostics(&self)->&Arc<FrontendDiagnosticSnapshot>
 stable|CompilerSessionUpdate|artifact-result|embedders|into_result|pub fn into_result(self)->Result<crate::SyntaxView,CompileErrors>
 stable|CompilerSessionUpdate|artifact-result|embedders|result|pub fn result(&self)->Result<crate::SyntaxView,&CompileErrors>
-stable|CompilerSessionUpdate|session-status|embedders|downstream_invalidated|pub fn downstream_invalidated(&self)->bool
 stable|artifact_views|artifact-view|embedders+tooling|ImportDiscoveryStatus|pub use artifact_views::ImportDiscoveryStatus
 stable|artifact_views|artifact-view|embedders+tooling|ImportDiscoveryView|pub use artifact_views::ImportDiscoveryView
 stable|artifact_views|artifact-view|embedders+tooling|RirInstructionView|pub use artifact_views::RirInstructionView

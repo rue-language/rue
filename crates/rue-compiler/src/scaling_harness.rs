@@ -508,8 +508,8 @@ fn assert_warm_fresh_parity(
                 "{label}: ordered semantic warnings diverged"
             );
             assert_eq!(
-                format!("{:?}", warm_session.latest_diagnostics()),
-                format!("{:?}", fresh_session.latest_diagnostics()),
+                format!("{:?}", warm_session.latest_diagnostics_for_test()),
+                format!("{:?}", fresh_session.latest_diagnostics_for_test()),
                 "{label}: ordered diagnostic snapshots diverged"
             );
 
@@ -546,8 +546,8 @@ fn assert_warm_fresh_parity(
                 "{label}: warm/fresh failure diagnostics diverged"
             );
             assert_eq!(
-                format!("{:?}", warm_session.latest_diagnostics()),
-                format!("{:?}", fresh_session.latest_diagnostics()),
+                format!("{:?}", warm_session.latest_diagnostics_for_test()),
+                format!("{:?}", fresh_session.latest_diagnostics_for_test()),
                 "{label}: ordered failure diagnostic snapshots diverged"
             );
             // A failed rooted body/CFG query may stop before unchanged helper

@@ -208,11 +208,18 @@ impl DiagnosticAttemptStore {
         self.selected(self.latest)
     }
 
-    pub fn latest_successful(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+    /// Test observer for the latest-successful selector. The selector itself
+    /// stays production state: it protects its entry from eviction.
+    #[cfg(test)]
+    pub(crate) fn latest_successful(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.selected(self.latest_successful)
     }
 
-    pub fn last_good_semantic(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
+    /// Test observer for the last-good-semantic selector. Syntax or semantic
+    /// failures never replace this baseline, and the selector protects its
+    /// entry from eviction.
+    #[cfg(test)]
+    pub(crate) fn last_good_semantic(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.selected(self.last_good_semantic)
     }
 

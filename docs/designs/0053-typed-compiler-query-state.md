@@ -442,6 +442,10 @@ RUE-813 through RUE-818. `CompilerSession::executable` and
    executable request,
    returning its success or failure directly without session memoization.
 
+Post-decision note (RUE-1518): `CompilerSession::executable` was later deleted
+from the stable facade (no production caller). The adapter contract above is
+carried by `compile_snapshot` and the crate-private compile-scope adapters.
+
 `LinkInputDescriptor::from_compile_options` is the canonical stable description
 of the request's source/resolution/target/features/optimization/linker option
 identity (`CodegenInputDescriptor` plus `StableLinkerInput`). The current
