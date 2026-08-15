@@ -64,7 +64,7 @@ CORE: dict[str, str] = {
         }
 
         pub fn observe(inout value: Metric, sample: u64, weight: u64) {
-            value.observations = value.observations + 1;
+            value.observations += 1;
             value.total = @wrapping_add(value.total, @wrapping_mul(sample, weight));
             if sample < value.minimum { value.minimum = sample; }
             if sample > value.maximum { value.maximum = sample; }
@@ -74,7 +74,7 @@ CORE: dict[str, str] = {
 
         pub fn warn(inout value: Metric, condition: bool) {
             if condition {
-                value.warnings = value.warnings + 1;
+                value.warnings += 1;
                 value.digest = mix(value.digest, 18446744073709551557);
             }
         }
@@ -116,14 +116,14 @@ CORE: dict[str, str] = {
 
         pub fn append_literal(inout out: StrBuf, value: str) {
             let mut i: u64 = 0;
-            while i < value.len() { out.push(value[i]); i = i + 1; }
+            while i < value.len() { out.push(value[i]); i += 1; }
         }
 
         pub fn append_string(inout out: StrBuf, borrow value: StrBuf) {
             let mut i: u64 = 0;
             while i < value.len() {
                 out.push(StrBuf.byte_at_borrowed(borrow value, i));
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -158,9 +158,9 @@ CORE: dict[str, str] = {
             let mut hash: u64 = 14695981039346656037;
             let mut i: u64 = 0;
             while i < value.len() {
-                hash = hash ^ @intCast(StrBuf.byte_at_borrowed(borrow value, i));
+                hash ^= @intCast(StrBuf.byte_at_borrowed(borrow value, i));
                 hash = @wrapping_mul(hash, 1099511628211);
-                i = i + 1;
+                i += 1;
             }
             hash
         }
@@ -335,7 +335,7 @@ CORE: dict[str, str] = {
             let mut i: u64 = 0;
             while i < world.entities.len() {
                 if world.entities.get_or(i, empty_entity()).id == id { return i; }
-                i = i + 1;
+                i += 1;
             }
             NONE()
         }
@@ -344,8 +344,8 @@ CORE: dict[str, str] = {
             let mut count: u64 = 0;
             let mut i: u64 = 0;
             while i < world.entities.len() {
-                if world.entities.get_or(i, empty_entity()).alive { count = count + 1; }
-                i = i + 1;
+                if world.entities.get_or(i, empty_entity()).alive { count += 1; }
+                i += 1;
             }
             count
         }
@@ -362,7 +362,7 @@ CORE: dict[str, str] = {
             target: u64, value: u64) {
             world.events.push(Event { tick: world.tick, kind: kind, actor: actor,
                 target: target, value: value, sequence: world.next_sequence });
-            world.next_sequence = world.next_sequence + 1;
+            world.next_sequence += 1;
         }
 
         pub fn add_diagnostic(inout world: World, code: u64, subject: u64, detail: u64) {
@@ -438,7 +438,7 @@ CORE: dict[str, str] = {
             let mut i: u64 = 0;
             while i < value.len() {
                 if upper(source.get_or(start + i, 0)) != value[i] { return false; }
-                i = i + 1;
+                i += 1;
             }
             true
         }
@@ -467,30 +467,30 @@ CORE: dict[str, str] = {
             while i < source.len() {
                 let byte = source.get_or(i, 0);
                 if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
-                    i = i + 1;
+                    i += 1;
                 } else if byte == 35 {
-                    while i < source.len() && source.get_or(i, 0) != 10 { i = i + 1; }
+                    while i < source.len() && source.get_or(i, 0) != 10 { i += 1; }
                 } else if byte == 59 {
                     out.tokens.push(token.Token { kind: token.SEMI(), number: 0, offset: i });
-                    i = i + 1;
+                    i += 1;
                 } else if digit(byte) {
                     let start = i;
                     let mut number: u64 = 0;
                     while i < source.len() && digit(source.get_or(i, 0)) {
                         number = number * 10 + @intCast(source.get_or(i, 0) - 48);
-                        i = i + 1;
+                        i += 1;
                     }
                     out.tokens.push(token.Token { kind: token.NUMBER(), number: number, offset: start });
                 } else if alpha(byte) {
                     let start = i;
-                    while i < source.len() && alpha(source.get_or(i, 0)) { i = i + 1; }
+                    while i < source.len() && alpha(source.get_or(i, 0)) { i += 1; }
                     let kind = word_kind(borrow source, start, i);
-                    if kind == token.INVALID() { out.errors = out.errors + 1; }
+                    if kind == token.INVALID() { out.errors += 1; }
                     out.tokens.push(token.Token { kind: kind, number: 0, offset: start });
                 } else {
-                    out.errors = out.errors + 1;
+                    out.errors += 1;
                     out.tokens.push(token.Token { kind: token.INVALID(), number: 0, offset: i });
-                    i = i + 1;
+                    i += 1;
                 }
             }
             out.tokens.push(token.Token { kind: token.EOF(), number: 0, offset: source.len() });
@@ -510,12 +510,12 @@ CORE: dict[str, str] = {
         }
         fn advance(inout state: State) -> token.Token {
             let value = peek(borrow state);
-            if state.cursor < state.tokens.len() { state.cursor = state.cursor + 1; }
+            if state.cursor < state.tokens.len() { state.cursor += 1; }
             value
         }
         fn take(inout state: State, kind: u64) -> token.Token {
             let value = advance(inout state);
-            if value.kind != kind { state.errors = state.errors + 1; }
+            if value.kind != kind { state.errors += 1; }
             value
         }
         fn entity_kind(kind: u64) -> u64 {
@@ -549,7 +549,7 @@ CORE: dict[str, str] = {
                     let y = take(inout state, token.NUMBER()).number;
                     let _ = take(inout state, token.SEMI());
                     let kind = entity_kind(kind_token.kind);
-                    if kind == 0 { state.errors = state.errors + 1; }
+                    if kind == 0 { state.errors += 1; }
                     out.entities.push(scenario.EntitySpec { kind: kind, faction: faction, x: x, y: y });
                 } else if statement.kind == token.TILE() {
                     let x = take(inout state, token.NUMBER()).number;
@@ -557,7 +557,7 @@ CORE: dict[str, str] = {
                     let terrain_token = advance(inout state);
                     let _ = take(inout state, token.SEMI());
                     let terrain = terrain_kind(terrain_token.kind);
-                    if terrain == 0 { state.errors = state.errors + 1; }
+                    if terrain == 0 { state.errors += 1; }
                     out.tiles.push(scenario.TileSpec { x: x, y: y, terrain: terrain });
                 } else if statement.kind == token.TICK() {
                     out.ticks = take(inout state, token.NUMBER()).number;
@@ -567,7 +567,7 @@ CORE: dict[str, str] = {
                     out.expected_entities = take(inout state, token.NUMBER()).number;
                     let _ = take(inout state, token.SEMI());
                 } else {
-                    state.errors = state.errors + 1;
+                    state.errors += 1;
                     while peek(borrow state).kind != token.SEMI() &&
                         peek(borrow state).kind != token.EOF() { let _ = advance(inout state); }
                     if peek(borrow state).kind == token.SEMI() { let _ = advance(inout state); }
@@ -604,16 +604,16 @@ CORE: dict[str, str] = {
                         occupant: model.NONE(), region: (x / 4) + (y / 4) * 8,
                         walkable: kind != model.WATER() && kind != model.WALL(),
                         visible: false });
-                    x = x + 1;
+                    x += 1;
                 }
-                y = y + 1;
+                y += 1;
             }
         }
 
         pub fn add_entity(inout world: model.World, kind: u64, faction: u64,
             x: u64, y: u64) -> u64 {
             let id = world.next_entity;
-            world.next_entity = world.next_entity + 1;
+            world.next_entity += 1;
             world.entities.push(model.Entity { id: id, kind: kind, faction: faction,
                 x: @intCast(x), y: @intCast(y), previous_x: @intCast(x), previous_y: @intCast(y),
                 velocity_x: 0, velocity_y: 0, health: 100, energy: 100,
@@ -642,7 +642,7 @@ CORE: dict[str, str] = {
                 let x = 1 + (i * 3) % (size - 2);
                 let y = 1 + (i * 5) % (size - 2);
                 let _ = add_entity(inout world, kind, faction, x, y);
-                i = i + 1;
+                i += 1;
             }
             world.resources = 400 * scale;
             world.treasury = 250 * scale;
@@ -665,7 +665,7 @@ CORE: dict[str, str] = {
                         walkable: spec.terrain != model.WALL() && spec.terrain != model.WATER(),
                         visible: old.visible });
                 }
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < input.entities.len() {
@@ -675,7 +675,7 @@ CORE: dict[str, str] = {
                 } else {
                     let _ = add_entity(inout world, spec.kind, spec.faction, spec.x, spec.y);
                 }
-                i = i + 1;
+                i += 1;
             }
             world.resources = input.entities.len() * 50;
             world.treasury = input.entities.len() * 25;
@@ -716,7 +716,7 @@ CORE.update({
                 hash = metric.mix(hash, entity.credits);
                 hash = metric.mix(hash, entity.experience);
                 hash = metric.mix(hash, if entity.alive { 1 } else { 0 });
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < value.tiles.len() {
@@ -728,7 +728,7 @@ CORE.update({
                 hash = metric.mix(hash, tile.resource);
                 hash = metric.mix(hash, tile.region);
                 hash = metric.mix(hash, if tile.walkable { 1 } else { 0 });
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < value.events.len() {
@@ -739,7 +739,7 @@ CORE.update({
                 hash = metric.mix(hash, event.target);
                 hash = metric.mix(hash, event.value);
                 hash = metric.mix(hash, event.sequence);
-                i = i + 1;
+                i += 1;
             }
             hash
         }
@@ -781,14 +781,14 @@ CORE.update({
             let mut i: u64 = 0;
             while i < world.entities.len() {
                 let entity = world.entities.get_or(i, model.empty_entity());
-                out.candidates = out.candidates + 1;
+                out.candidates += 1;
                 let dx = if entity.x > x { entity.x - x } else { x - entity.x };
                 let dy = if entity.y > y { entity.y - y } else { y - entity.y };
                 if entity.alive && @intCast(dx + dy) <= radius {
-                    out.matches = out.matches + 1;
+                    out.matches += 1;
                     out.digest = metric.mix(out.digest, entity.id);
                 }
-                i = i + 1;
+                i += 1;
             }
             out.valid = out.matches <= out.candidates;
             out
@@ -807,7 +807,7 @@ CORE.update({
                     (current == distance && entity.id < best)) {
                     best = entity.id; distance = current;
                 }
-                i = i + 1;
+                i += 1;
             }
             best
         }
@@ -827,20 +827,20 @@ CORE.update({
             while i < world.entities.len() {
                 let entity = world.entities.get_or(i, model.empty_entity());
                 if entity.alive && !model.walkable(borrow world, entity.x, entity.y) {
-                    out.tile_hits = out.tile_hits + 1;
+                    out.tile_hits += 1;
                     out.digest = metric.mix(out.digest, entity.id);
                 }
                 let mut j = i + 1;
                 while j < world.entities.len() {
                     let other = world.entities.get_or(j, model.empty_entity());
-                    out.pairs = out.pairs + 1;
+                    out.pairs += 1;
                     if entity.alive && other.alive && entity.x == other.x && entity.y == other.y {
-                        out.entity_hits = out.entity_hits + 1;
+                        out.entity_hits += 1;
                         out.digest = metric.mix(out.digest, entity.id ^ other.id);
                     }
-                    j = j + 1;
+                    j += 1;
                 }
-                i = i + 1;
+                i += 1;
             }
             out.valid = out.pairs == (world.entities.len() *
                 (if world.entities.len() == 0 { 0 } else { world.entities.len() - 1 })) / 2;
@@ -870,8 +870,8 @@ CORE.update({
             let mut count: u64 = 0;
             let mut i: u64 = 0;
             while i < world.commands.len() {
-                if world.commands.get_or(i, model.empty_command()).accepted { count = count + 1; }
-                i = i + 1;
+                if world.commands.get_or(i, model.empty_command()).accepted { count += 1; }
+                i += 1;
             }
             count
         }
@@ -894,7 +894,7 @@ CORE.update({
                 out.digest = metric.mix(out.digest, event.sequence);
                 out.digest = metric.mix(out.digest, event.kind);
                 out.digest = metric.mix(out.digest, event.actor);
-                i = i + 1;
+                i += 1;
             }
             out.valid = out.monotonic && (out.events == 0 || previous < world.next_sequence);
             out
@@ -924,7 +924,7 @@ CORE.update({
                         experience: entity.experience, born_tick: entity.born_tick,
                         updated_tick: world.tick, alive: entity.alive });
                 }
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -939,7 +939,7 @@ CORE.update({
                     let allowed = model.walkable(borrow world, nx, ny);
                     let next_x = if allowed { nx } else { entity.x };
                     let next_y = if allowed { ny } else { entity.y };
-                    if next_x != entity.x || next_y != entity.y { moved = moved + 1; }
+                    if next_x != entity.x || next_y != entity.y { moved += 1; }
                     if !allowed { model.add_event(inout world, 2, entity.id, model.NONE(), 1); }
                     world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                         faction: entity.faction, x: next_x, y: next_y,
@@ -950,7 +950,7 @@ CORE.update({
                         credits: entity.credits, experience: entity.experience + if allowed { 1 } else { 0 },
                         born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
                 }
-                i = i + 1;
+                i += 1;
             }
             moved
         }
@@ -989,15 +989,15 @@ CORE.update({
             if start == model.NONE() || goal == model.NONE() { return out; }
             let mut distances = model.U64s.new();
             let mut i: u64 = 0;
-            while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+            while i < world.tiles.len() { distances.push(model.NONE()); i += 1; }
             let mut queue = model.U64s.new();
             distances.set(start, 0); queue.push(start);
             let mut head: u64 = 0;
             while head < queue.len() {
-                let index = queue.get_or(head, model.NONE()); head = head + 1;
+                let index = queue.get_or(head, model.NONE()); head += 1;
                 let tile = world.tiles.get_or(index, model.empty_tile());
                 let distance = distances.get_or(index, model.NONE());
-                out.visited = out.visited + 1;
+                out.visited += 1;
                 out.digest = metric.mix(out.digest, index);
                 if index == goal { out.reached = true; out.distance = distance; break; }
                 visit(borrow world, inout queue, inout distances,
@@ -1038,7 +1038,7 @@ CORE.update({
             if start == model.NONE() || goal == model.NONE() { return model.NONE(); }
             let mut distances = model.U64s.new();
             let mut i: u64 = 0;
-            while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+            while i < world.tiles.len() { distances.push(model.NONE()); i += 1; }
             distances.set(start, 0);
             let mut pass: u64 = 0;
             while pass < world.tiles.len() {
@@ -1050,10 +1050,10 @@ CORE.update({
                     if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) + 1) { changed = true; }
                     if relax(borrow world, inout distances, i, @intCast(tile.x) - 1, @intCast(tile.y)) { changed = true; }
                     if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) - 1) { changed = true; }
-                    i = i + 1;
+                    i += 1;
                 }
                 if !changed { break; }
-                pass = pass + 1;
+                pass += 1;
             }
             distances.get_or(goal, model.NONE())
         }
@@ -1283,8 +1283,8 @@ CORE.update({
         }
 
         fn check(inout out: Result, condition: bool, fingerprint: u64) {
-            out.checks = out.checks + 1; out.digest = metric.mix(out.digest, fingerprint);
-            if !condition { out.failures = out.failures + 1; }
+            out.checks += 1; out.digest = metric.mix(out.digest, fingerprint);
+            if !condition { out.failures += 1; }
         }
 
         pub fn run() -> Result {
@@ -1323,7 +1323,7 @@ CORE.update({
             check(inout out, run_result.valid && world.tick == 4, run_result.checksum);
             let replayed = replay.run(borrow baseline, 4);
             let replay_ok = replay_oracle.agrees(borrow baseline, 4, borrow replayed);
-            if !replay_ok { out.oracle_mismatches = out.oracle_mismatches + 1; }
+            if !replay_ok { out.oracle_mismatches += 1; }
             check(inout out, replay_ok && replayed.final_checksum == checksum.world(borrow world), replayed.timeline_digest);
             check(inout out, rollback.agrees(borrow baseline, 4, checksum.world(borrow world)), replayed.final_checksum);
             let synchronized = lockstep.run(borrow baseline, 4);
@@ -1488,7 +1488,7 @@ CORE.update({
         pub const Bytes = std.arraybuf.ArrayBuf(u8);
         pub fn bytes(value: str) -> Bytes {
             let mut out = Bytes.new(); let mut i: u64 = 0;
-            while i < value.len() { out.push(value[i]); i = i + 1; }
+            while i < value.len() { out.push(value[i]); i += 1; }
             out
         }
         pub fn demo() -> Bytes {
@@ -1580,7 +1580,7 @@ CORE.update({
                 text.append_literal(inout out, "caldera[world] code="); text.append_u64(inout out, item.code);
                 text.append_literal(inout out, " subject="); text.append_u64(inout out, item.subject);
                 text.append_literal(inout out, " detail="); text.append_u64(inout out, item.detail); out.push(10);
-                i = i + 1;
+                i += 1;
             }
             out
         }
@@ -1625,9 +1625,9 @@ CORE.update({
                 energy: 0, digest: metric.mix(14695981039346656037, system), valid: false }
         }
         pub fn record(inout out: Result, eligible: bool, command: bool, value: u64) {
-            out.inspected = out.inspected + 1;
-            if eligible { out.eligible = out.eligible + 1; }
-            if command { out.commands = out.commands + 1; }
+            out.inspected += 1;
+            if eligible { out.eligible += 1; }
+            if command { out.commands += 1; }
             out.energy = @wrapping_add(out.energy, value);
             out.digest = metric.mix(out.digest, value + out.inspected * 17);
         }
@@ -1647,9 +1647,9 @@ CORE.update({
                 transitions: 0, digest: metric.mix(14695981039346656037, behavior), valid: false }
         }
         pub fn record(inout out: Result, selected: bool, utility: u64, transition: bool) {
-            out.agents = out.agents + 1;
-            if selected { out.selected = out.selected + 1; }
-            if transition { out.transitions = out.transitions + 1; }
+            out.agents += 1;
+            if selected { out.selected += 1; }
+            if transition { out.transitions += 1; }
             out.utility = @wrapping_add(out.utility, utility);
             out.digest = metric.mix(out.digest, utility + out.agents * 31);
         }
@@ -1669,9 +1669,9 @@ CORE.update({
                 benefit: 0, digest: metric.mix(14695981039346656037, rule), valid: false }
         }
         pub fn record(inout out: Result, matched: bool, acted: bool, benefit: u64) {
-            out.inspected = out.inspected + 1;
-            if matched { out.matches = out.matches + 1; }
-            if acted { out.actions = out.actions + 1; }
+            out.inspected += 1;
+            if matched { out.matches += 1; }
+            if acted { out.actions += 1; }
             out.benefit = @wrapping_add(out.benefit, benefit);
             out.digest = metric.mix(out.digest, benefit + out.inspected * 43);
         }
@@ -1802,7 +1802,7 @@ def emit_audits() -> None:
                 metric.observe(inout out, entity_projection(borrow world, i), (i % 11) + 1);
                 metric.warn(inout out, item.alive && (item.x < 0 || item.y < 0 ||
                     @intCast(item.x) >= world.width || @intCast(item.y) >= world.height));
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -1812,7 +1812,7 @@ def emit_audits() -> None:
                 let item = world.tiles.get_or(i, model.empty_tile());
                 metric.observe(inout out, tile_projection(borrow world, i), (i % 13) + 1);
                 metric.warn(inout out, item.x >= world.width || item.y >= world.height);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -1821,18 +1821,18 @@ def emit_audits() -> None:
             while i < world.events.len() {
                 metric.observe(inout out, event_projection(borrow world, i), (i % 5) + 1);
                 metric.warn(inout out, world.events.get_or(i, model.empty_event()).tick > world.tick);
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < world.commands.len() {
                 metric.observe(inout out, command_projection(borrow world, i), (i % 7) + 1);
                 metric.warn(inout out, world.commands.get_or(i, model.empty_command()).tick > world.tick);
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < world.snapshots.len() {
                 metric.observe(inout out, snapshot_projection(borrow world, i), i + 1);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -1847,9 +1847,9 @@ def emit_audits() -> None:
                     let dy = if left.y > right.y { left.y - right.y } else { right.y - left.y };
                     metric.observe(inout out, @intCast(dx + dy) +
                         left.faction * 3 + right.faction * 5 + MODE(), i + j + 1);
-                    j = j + 1;
+                    j += 1;
                 }
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -1864,17 +1864,17 @@ def emit_audits() -> None:
                 while i < world.entities.len() {
                     let entity = world.entities.get_or(i, model.empty_entity());
                     if entity.faction == faction && entity.alive {
-                        agents = agents + 1;
-                        health = health + entity.health;
-                        energy = energy + entity.energy;
-                        inventory = inventory + entity.inventory;
+                        agents += 1;
+                        health += entity.health;
+                        energy += entity.energy;
+                        inventory += entity.inventory;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 let projection = agents * (MODE() % 11 + 1) + health * 3 +
                     energy * 5 + inventory * 7 + faction;
                 metric.observe(inout out, projection, faction + MODE() % 5 + 1);
-                faction = faction + 1;
+                faction += 1;
             }
         }
 
@@ -1889,17 +1889,17 @@ def emit_audits() -> None:
                 while i < world.tiles.len() {
                     let tile = world.tiles.get_or(i, model.empty_tile());
                     if tile.region == region {
-                        tiles = tiles + 1;
-                        if tile.walkable { walkable = walkable + 1; }
-                        resources = resources + tile.resource;
-                        elevation = elevation + tile.height;
+                        tiles += 1;
+                        if tile.walkable { walkable += 1; }
+                        resources += tile.resource;
+                        elevation += tile.height;
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 let projection = tiles * (MODE() % 13 + 1) + walkable * 3 +
                     resources * 5 + elevation * 7 + region;
                 metric.observe(inout out, projection, region % 7 + 1);
-                region = region + 1;
+                region += 1;
             }
         }
 
@@ -1989,7 +1989,7 @@ def emit_systems() -> None:
                 let eligible = eligible_entity(borrow world, borrow entity);
                 let command = eligible && (entity.id + FOCUS() + world.tick) % 2 == 0;
                 result.record(inout out, eligible, command, entity_value(borrow world, borrow entity));
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2001,7 +2001,7 @@ def emit_systems() -> None:
                 let command = eligible && tile.resource > FOCUS() % 17;
                 result.record(inout out, eligible, command,
                     tile.height + tile.resource + tile.terrain * 11 + i % 97);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2012,7 +2012,7 @@ def emit_systems() -> None:
                 let eligible = (event.kind + FOCUS()) % 4 == 0;
                 result.record(inout out, eligible, eligible && event.value > 0,
                     event.sequence + event.actor % 257 + event.value);
-                i = i + 1;
+                i += 1;
             }
             i = 0;
             while i < world.commands.len() {
@@ -2020,7 +2020,7 @@ def emit_systems() -> None:
                 let eligible = command.accepted && (command.kind + FOCUS()) % 3 == 0;
                 result.record(inout out, eligible, eligible,
                     command.tick + command.actor % 251 + command.value);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2032,13 +2032,13 @@ def emit_systems() -> None:
                 let mut i: u64 = 0;
                 while i < world.tiles.len() {
                     let tile = world.tiles.get_or(i, model.empty_tile());
-                    if tile.region == region { tiles = tiles + 1; resources = resources + tile.resource; }
-                    i = i + 1;
+                    if tile.region == region { tiles += 1; resources += tile.resource; }
+                    i += 1;
                 }
                 let eligible = tiles > 0 && (region + FOCUS()) % 4 == 0;
                 result.record(inout out, eligible, eligible && resources > tiles,
                     resources + tiles * 13 + region);
-                region = region + 1;
+                region += 1;
             }
         }
 
@@ -2136,13 +2136,13 @@ def emit_behaviors() -> None:
                     score >= (PROFILE() % 13) + entity.kind;
                 result.record(inout out, selected, score,
                     selected && transition(borrow world, borrow entity, score));
-                i = i + 1;
+                i += 1;
             }
             let mut faction: u64 = 1;
             while faction <= 3 {
                 let proxy = world.resources / faction + world.treasury / (faction + 1) + PROFILE();
                 result.record(inout out, proxy % 2 == 0, proxy, proxy % 5 == 0);
-                faction = faction + 1;
+                faction += 1;
             }
             result.finish(inout out); out
         }
@@ -2204,7 +2204,7 @@ def emit_rules() -> None:
                 let matched = entity_match(borrow world, borrow entity);
                 let benefit = entity_benefit(borrow world, borrow entity);
                 result.record(inout out, matched, matched && benefit > POLICY() % 40, benefit);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2218,7 +2218,7 @@ def emit_rules() -> None:
                     else { tile.resource > POLICY() % 29 };
                 let benefit = tile.resource + tile.height * 3 + tile.region + POLICY();
                 result.record(inout out, matched, matched && benefit % 3 != 0, benefit);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2229,7 +2229,7 @@ def emit_rules() -> None:
                 let matched = (event.kind + POLICY()) % 5 == 0;
                 let benefit = event.value + event.sequence + event.actor % 211 + POLICY();
                 result.record(inout out, matched, matched && event.tick <= world.tick, benefit);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2241,7 +2241,7 @@ def emit_rules() -> None:
                 let benefit = item.entity_count * 7 + item.event_count * 5 +
                     item.command_count * 3 + item.checksum % 4093;
                 result.record(inout out, matched, matched && item.checksum != 0, benefit);
-                i = i + 1;
+                i += 1;
             }
         }
 
@@ -2329,7 +2329,7 @@ def emit_reports() -> None:
                 text.append_i64(inout out, entity.y); separator(inout out);
                 text.append_u64(inout out, entity.health); separator(inout out);
                 text.append_u64(inout out, entity.state); out.push(10);
-                i = i + 1;
+                i += 1;
             }
             field(inout out, "world_checksum", checksum.world(borrow world));
             field(inout out, "suite_digest", suite_digest);
@@ -2359,10 +2359,10 @@ def emit_suites() -> None:
         "    deterministic_mismatches: u64, digest: u64, valid: bool }",
         "",
         "fn include(inout out: Summary, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {",
-        "    out.passes = out.passes + 1; out.observations = out.observations + first.observations;",
-        "    out.warnings = out.warnings + first.warnings;",
+        "    out.passes += 1; out.observations += first.observations;",
+        "    out.warnings += first.warnings;",
         "    if first.digest != second.digest || first.total != second.total || !verified {",
-        "        out.deterministic_mismatches = out.deterministic_mismatches + 1;",
+        "        out.deterministic_mismatches += 1;",
         "    }",
         "    out.digest = metric.mix(out.digest, first.digest);",
         "}",
@@ -2398,10 +2398,10 @@ def emit_suites() -> None:
         "pub struct Summary { systems: u64, inspected: u64, eligible: u64, commands: u64,",
         "    deterministic_mismatches: u64, digest: u64, valid: bool }",
         "fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {",
-        "    out.systems = out.systems + 1; out.inspected = out.inspected + first.inspected;",
-        "    out.eligible = out.eligible + first.eligible; out.commands = out.commands + first.commands;",
+        "    out.systems += 1; out.inspected += first.inspected;",
+        "    out.eligible += first.eligible; out.commands += first.commands;",
         "    if first.digest != second.digest || first.energy != second.energy || !verified {",
-        "        out.deterministic_mismatches = out.deterministic_mismatches + 1;",
+        "        out.deterministic_mismatches += 1;",
         "    }",
         "    out.digest = metric.mix(out.digest, first.digest);",
         "}",
@@ -2434,10 +2434,10 @@ def emit_suites() -> None:
         "pub struct Summary { behaviors: u64, agents: u64, selected: u64, transitions: u64,",
         "    deterministic_mismatches: u64, digest: u64, valid: bool }",
         "fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {",
-        "    out.behaviors = out.behaviors + 1; out.agents = out.agents + first.agents;",
-        "    out.selected = out.selected + first.selected; out.transitions = out.transitions + first.transitions;",
+        "    out.behaviors += 1; out.agents += first.agents;",
+        "    out.selected += first.selected; out.transitions += first.transitions;",
         "    if first.digest != second.digest || first.utility != second.utility || !verified {",
-        "        out.deterministic_mismatches = out.deterministic_mismatches + 1;",
+        "        out.deterministic_mismatches += 1;",
         "    }",
         "    out.digest = metric.mix(out.digest, first.digest);",
         "}",
@@ -2470,10 +2470,10 @@ def emit_suites() -> None:
         "pub struct Summary { rules: u64, inspected: u64, matches: u64, actions: u64,",
         "    deterministic_mismatches: u64, digest: u64, valid: bool }",
         "fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {",
-        "    out.rules = out.rules + 1; out.inspected = out.inspected + first.inspected;",
-        "    out.matches = out.matches + first.matches; out.actions = out.actions + first.actions;",
+        "    out.rules += 1; out.inspected += first.inspected;",
+        "    out.matches += first.matches; out.actions += first.actions;",
         "    if first.digest != second.digest || first.benefit != second.benefit || !verified {",
-        "        out.deterministic_mismatches = out.deterministic_mismatches + 1;",
+        "        out.deterministic_mismatches += 1;",
         "    }",
         "    out.digest = metric.mix(out.digest, first.digest);",
         "}",
@@ -2508,10 +2508,10 @@ def emit_suites() -> None:
         "pub struct Summary { documents: u64, bytes: u64, deterministic_mismatches: u64,",
         "    failures: u64, digest: u64, valid: bool }",
         "fn include(inout out: Summary, borrow first: StrBuf, borrow second: StrBuf, verified: bool) {",
-        "    out.documents = out.documents + 1; out.bytes = out.bytes + first.len();",
+        "    out.documents += 1; out.bytes += first.len();",
         "    let a = text.fnv1a(borrow first); let b = text.fnv1a(borrow second);",
-        "    if a != b { out.deterministic_mismatches = out.deterministic_mismatches + 1; }",
-        "    if !verified { out.failures = out.failures + 1; }",
+        "    if a != b { out.deterministic_mismatches += 1; }",
+        "    if !verified { out.failures += 1; }",
         "    out.digest = metric.mix(out.digest, a);",
         "}",
         "pub fn run(borrow world: model.World, suite_digest: u64) -> Summary {",
@@ -2544,11 +2544,11 @@ CORE.update({
             produced: u64, events: u64, checksum: u64, valid: bool }
 
         pub fn step(inout world: model.World) -> Result {
-            world.tick = world.tick + 1;
+            world.tick += 1;
             let ai_changes = ai.update(inout world);
             let moved = physics.step(inout world);
             let ledger = economy.step(inout world);
-            if world.tick % 3 == 0 { world.quests_completed = world.quests_completed + 1; }
+            if world.tick % 3 == 0 { world.quests_completed += 1; }
             let captured = snapshot.capture(inout world);
             Result { tick: world.tick, ai_changes: ai_changes, moved: moved,
                 produced: ledger.produced, events: world.events.len(),
@@ -2574,11 +2574,11 @@ CORE.update({
             let mut i: u64 = 0;
             while i < count {
                 let value = tick.step(inout world);
-                out.ticks = out.ticks + 1; out.moved = out.moved + value.moved;
-                out.ai_changes = out.ai_changes + value.ai_changes;
-                out.produced = out.produced + value.produced;
+                out.ticks += 1; out.moved += value.moved;
+                out.ai_changes += value.ai_changes;
+                out.produced += value.produced;
                 if !value.valid { out.valid = false; }
-                i = i + 1;
+                i += 1;
             }
             let collision_audit = collision.audit(borrow world);
             let event_audit = events.audit(borrow world);
@@ -2602,7 +2602,7 @@ CORE.update({
 
         pub fn restore(borrow baseline: model.World, target_tick: u64) -> Result {
             let mut world = world_clone.clone(borrow baseline);
-            world.rollback_count = world.rollback_count + 1;
+            world.rollback_count += 1;
             let count = if target_tick > world.tick { target_tick - world.tick } else { 0 };
             let run = simulation.run(inout world, count);
             Result { target_tick: target_tick, resimulated: count,
@@ -2634,10 +2634,10 @@ CORE.update({
             let mut i: u64 = 0;
             while i < count {
                 let result = tick.step(inout world);
-                out.ticks = out.ticks + 1;
+                out.ticks += 1;
                 out.timeline_digest = metric.mix(out.timeline_digest, result.checksum);
                 if !result.valid { out.valid = false; }
-                i = i + 1;
+                i += 1;
             }
             out.final_checksum = checksum.world(borrow world);
             out.valid = out.valid && out.ticks == count; out
@@ -2673,8 +2673,8 @@ CORE.update({
             let mut i: u64 = 0;
             while i < count {
                 let a = tick.step(inout left); let b = tick.step(inout right);
-                if a.checksum != b.checksum { out.mismatches = out.mismatches + 1; }
-                out.ticks = out.ticks + 1; i = i + 1;
+                if a.checksum != b.checksum { out.mismatches += 1; }
+                out.ticks += 1; i += 1;
             }
             out.checksum = checksum.world(borrow left);
             out.valid = out.mismatches == 0 && out.checksum == checksum.world(borrow right);
@@ -2708,7 +2708,7 @@ CORE.update({
                 let x = a.entities.get_or(i, model.empty_entity());
                 let y = b.entities.get_or(i, model.empty_entity());
                 if first == model.NONE() && (x.x != y.x || x.y != y.y || x.health != y.health) { first = i; }
-                i = i + 1;
+                i += 1;
             }
             Audit { left: left, right: right, mismatch: left != right,
                 first_entity: first, digest: metric.mix(left, right),
@@ -2731,19 +2731,19 @@ CORE.update({
             out.next_entity = source.next_entity; out.next_sequence = source.next_sequence;
             out.valid = source.valid;
             let mut i: u64 = 0;
-            while i < source.entities.len() { out.entities.push(source.entities.get_or(i, model.empty_entity())); i = i + 1; }
+            while i < source.entities.len() { out.entities.push(source.entities.get_or(i, model.empty_entity())); i += 1; }
             i = 0;
-            while i < source.tiles.len() { out.tiles.push(source.tiles.get_or(i, model.empty_tile())); i = i + 1; }
+            while i < source.tiles.len() { out.tiles.push(source.tiles.get_or(i, model.empty_tile())); i += 1; }
             i = 0;
-            while i < source.events.len() { out.events.push(source.events.get_or(i, model.empty_event())); i = i + 1; }
+            while i < source.events.len() { out.events.push(source.events.get_or(i, model.empty_event())); i += 1; }
             i = 0;
-            while i < source.commands.len() { out.commands.push(source.commands.get_or(i, model.empty_command())); i = i + 1; }
+            while i < source.commands.len() { out.commands.push(source.commands.get_or(i, model.empty_command())); i += 1; }
             i = 0;
-            while i < source.snapshots.len() { out.snapshots.push(source.snapshots.get_or(i, model.empty_snapshot())); i = i + 1; }
+            while i < source.snapshots.len() { out.snapshots.push(source.snapshots.get_or(i, model.empty_snapshot())); i += 1; }
             i = 0;
             while i < source.diagnostics.len() {
                 let item = source.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
-                out.diagnostics.push(item); i = i + 1;
+                out.diagnostics.push(item); i += 1;
             }
             out
         }
@@ -2774,7 +2774,7 @@ CORE.update({
                 if i > 0 && item.tick <= previous { out.monotonic = false; }
                 previous = item.tick;
                 out.digest = metric.mix(out.digest, item.checksum);
-                i = i + 1;
+                i += 1;
             }
             out.valid = out.monotonic && out.snapshots <= world.tick + 1; out
         }
@@ -2795,8 +2795,8 @@ CORE.update({
                 let left = a.entities.get_or(i, model.empty_entity());
                 let right = b.entities.get_or(i, model.empty_entity());
                 if left.x != right.x || left.y != right.y || left.health != right.health ||
-                    left.inventory != right.inventory || left.state != right.state { entities = entities + 1; }
-                i = i + 1;
+                    left.inventory != right.inventory || left.state != right.state { entities += 1; }
+                i += 1;
             }
             entities = entities + if a.entities.len() > b.entities.len() {
                 a.entities.len() - b.entities.len() } else { b.entities.len() - a.entities.len() };
@@ -2846,7 +2846,7 @@ CORE.update({
                 out.ops.push(bytecode.Op { kind: bytecode.ADD(), operand: 0 });
                 out.ops.push(bytecode.Op { kind: bytecode.PUSH(), operand: item.x + item.y });
                 out.ops.push(bytecode.Op { kind: bytecode.MIX(), operand: 0 });
-                out.entities = out.entities + 1; i = i + 1;
+                out.entities += 1; i += 1;
             }
             out.ops.push(bytecode.Op { kind: bytecode.PUSH(), operand: input.ticks });
             out.ops.push(bytecode.Op { kind: bytecode.MIX(), operand: 0 });
@@ -2870,7 +2870,7 @@ CORE.update({
             let mut pc: u64 = 0;
             while pc < program.ops.len() {
                 let op = program.ops.get_or(pc, bytecode.empty());
-                out.steps = out.steps + 1;
+                out.steps += 1;
                 out.digest = metric.mix(out.digest, op.kind * 257 + op.operand);
                 if op.kind == bytecode.PUSH() { stack.push(op.operand); }
                 else if op.kind == bytecode.ADD() || op.kind == bytecode.MUL() || op.kind == bytecode.MIX() {
@@ -2882,7 +2882,7 @@ CORE.update({
                 } else if op.kind == bytecode.HALT() { break; }
                 else { out.valid = false; break; }
                 if stack.len() > out.maximum_stack { out.maximum_stack = stack.len(); }
-                pc = pc + 1;
+                pc += 1;
             }
             if stack.len() != 1 { out.valid = false; }
             out.value = stack.get_or(0, 0); out
@@ -2900,9 +2900,9 @@ CORE.update({
             let mut i: u64 = 0;
             while i < input.entities.len() {
                 let item = input.entities.get_or(i, scenario.empty_entity());
-                value = value + item.kind * item.faction;
+                value += item.kind * item.faction;
                 value = metric.mix(value, item.x + item.y);
-                i = i + 1;
+                i += 1;
             }
             value = metric.mix(value, input.ticks);
             Result { value: value, entities: input.entities.len(), valid: input.valid }
@@ -2940,7 +2940,7 @@ CORE.update({
                 else if op.kind == bytecode.MUL() { text.append_literal(inout out, "MUL"); }
                 else if op.kind == bytecode.MIX() { text.append_literal(inout out, "MIX"); }
                 else { text.append_literal(inout out, "HALT"); }
-                out.push(10); i = i + 1;
+                out.push(10); i += 1;
             }
             out
         }
@@ -2966,7 +2966,7 @@ CORE.update({
             let mut i: u64 = 0;
             while i < world.entities.len() {
                 if world.entities.get_or(i, model.empty_entity()).alive { out.order.push(i); }
-                i = i + 1;
+                i += 1;
             }
             i = 1;
             while i < out.order.len() {
@@ -2980,9 +2980,9 @@ CORE.update({
                     let previous_priority = priority(borrow previous_entity);
                     if previous_priority < key_priority ||
                         (previous_priority == key_priority && previous < key) { break; }
-                    out.order.set(j, previous); j = j - 1;
+                    out.order.set(j, previous); j -= 1;
                 }
-                out.order.set(j, key); i = i + 1;
+                out.order.set(j, key); i += 1;
             }
             i = 0;
             let mut last: u64 = 0;
@@ -2992,7 +2992,7 @@ CORE.update({
                 let current = priority(borrow current_entity);
                 if i > 0 && current < last { out.valid = false; return out; }
                 last = current; out.digest = metric.mix(out.digest, index);
-                i = i + 1;
+                i += 1;
             }
             out.valid = out.order.len() == model.alive_count(borrow world);
             out
@@ -3006,7 +3006,7 @@ CORE.update({
         pub fn build(borrow world: model.World) -> model.U64s {
             let mut used = model.Bools.new();
             let mut i: u64 = 0;
-            while i < world.entities.len() { used.push(false); i = i + 1; }
+            while i < world.entities.len() { used.push(false); i += 1; }
             let mut order = model.U64s.new();
             while order.len() < model.alive_count(borrow world) {
                 let mut best = model.NONE();
@@ -3021,7 +3021,7 @@ CORE.update({
                             best = i; best_priority = current;
                         }
                     }
-                    i = i + 1;
+                    i += 1;
                 }
                 if best == model.NONE() { break; }
                 used.set(best, true); order.push(best);
@@ -3035,7 +3035,7 @@ CORE.update({
             let mut i: u64 = 0;
             while i < expected.len() {
                 if expected.get_or(i, model.NONE()) != actual.order.get_or(i, model.NONE()) { return false; }
-                i = i + 1;
+                i += 1;
             }
             true
         }
@@ -3062,7 +3062,7 @@ CORE.update({
                 let entity = world.entities.get_or(i, model.empty_entity());
                 let decision = choose(borrow world, borrow entity);
                 if entity.alive && decision != entity.state {
-                    changed = changed + 1;
+                    changed += 1;
                     world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                         faction: entity.faction, x: entity.x, y: entity.y,
                         previous_x: entity.previous_x, previous_y: entity.previous_y,
@@ -3075,7 +3075,7 @@ CORE.update({
                         updated_tick: world.tick, alive: entity.alive });
                     model.add_event(inout world, 10 + decision, entity.id, entity.goal, decision);
                 }
-                i = i + 1;
+                i += 1;
             }
             changed
         }
@@ -3103,7 +3103,7 @@ CORE.update({
                 if ai.choose(borrow world, borrow entity) != expected(borrow world, borrow entity) {
                     return false;
                 }
-                i = i + 1;
+                i += 1;
             }
             true
         }
@@ -3127,18 +3127,18 @@ CORE.update({
                     let produced = if entity.kind == model.WORKER() { 3 }
                         else if entity.kind == model.BUILDER() { 1 } else { 0 };
                     let consumed = if entity.kind == model.GUARD() { 2 } else { 1 };
-                    out.produced = out.produced + produced;
-                    out.consumed = out.consumed + consumed;
+                    out.produced += produced;
+                    out.consumed += consumed;
                     let next_inventory = entity.inventory + produced;
                     let transfer = if next_inventory >= 8 { 4 } else { 0 };
-                    out.transfers = out.transfers + transfer;
-                    world.resources = world.resources + produced;
+                    out.transfers += transfer;
+                    world.resources += produced;
                     if world.resources >= consumed + transfer {
                         world.resources = world.resources - consumed - transfer;
-                        world.treasury = world.treasury + transfer;
+                        world.treasury += transfer;
                     }
                     let credit = transfer / 2;
-                    out.credits = out.credits + credit;
+                    out.credits += credit;
                     world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                         faction: entity.faction, x: entity.x, y: entity.y,
                         previous_x: entity.previous_x, previous_y: entity.previous_y,
@@ -3149,7 +3149,7 @@ CORE.update({
                         born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
                     out.digest = metric.mix(out.digest, entity.id + produced * 17 + transfer * 31);
                 }
-                i = i + 1;
+                i += 1;
             }
             out.valid = world.resources + world.treasury + out.consumed + out.credits >= before;
             out
@@ -3166,7 +3166,7 @@ CORE.update({
                 let entity = world.entities.get_or(i, model.empty_entity());
                 metric.observe(inout out, entity.inventory, entity.kind + 1);
                 metric.warn(inout out, entity.inventory > 1000000);
-                i = i + 1;
+                i += 1;
             }
             metric.finish(inout out); out
         }
@@ -3182,10 +3182,10 @@ CORE.update({
             let mut recipe: u64 = 0;
             while recipe < out.recipes {
                 let cost = 2 + recipe * 3;
-                out.cost = out.cost + cost;
-                if world.resources >= cost { out.craftable = out.craftable + 1; }
+                out.cost += cost;
+                if world.resources >= cost { out.craftable += 1; }
                 out.digest = metric.mix(out.digest, cost + world.seed % 97);
-                recipe = recipe + 1;
+                recipe += 1;
             }
             out.valid = out.craftable <= out.recipes; out
         }
@@ -3202,7 +3202,7 @@ CORE.update({
             while i < world.entities.len() {
                 let value = world.entities.get_or(i, model.empty_entity()).faction;
                 if value > max_faction { max_faction = value; }
-                i = i + 1;
+                i += 1;
             }
             let mut out = Relations { factions: max_faction, allied: 0, hostile: 0,
                 neutral: 0, digest: 14695981039346656037, valid: false };
@@ -3211,13 +3211,13 @@ CORE.update({
                 let mut b = a;
                 while b <= max_faction {
                     let relation = if a == b { 1 } else if (a + b + world.tick) % 3 == 0 { 2 } else { 3 };
-                    if relation == 1 { out.allied = out.allied + 1; }
-                    else if relation == 2 { out.hostile = out.hostile + 1; }
-                    else { out.neutral = out.neutral + 1; }
+                    if relation == 1 { out.allied += 1; }
+                    else if relation == 2 { out.hostile += 1; }
+                    else { out.neutral += 1; }
                     out.digest = metric.mix(out.digest, a * 101 + b * 17 + relation);
-                    b = b + 1;
+                    b += 1;
                 }
-                a = a + 1;
+                a += 1;
             }
             out.valid = out.allied + out.hostile + out.neutral ==
                 (max_faction * (max_faction + 1)) / 2;

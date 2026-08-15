@@ -66,9 +66,9 @@ in the same hot lane go in consecutive cycles, not the same one.
   dangling changes (safe: git protects checked-out branches; only unbookmarked
   non-`@` heads are abandoned). Without it, `jj log` fills with dozens of dead
   heads within a session.
-- For disk pressure, run **`scripts/worktree-gc`** (threshold-gated, only removes
-  worktrees git no longer lists as live) — never blanket `rm -rf .claude/worktrees`,
-  which races running workers.
+- For disk pressure, run **`scripts/rue storage clean`** (guard-gated, reclaims
+  stale Buck outputs host-wide; it never deletes worktrees or source files) —
+  never blanket `rm -rf .claude/worktrees`, which races running workers.
 
 ## Worker-prompt invariants this protocol assumes
 

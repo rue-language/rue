@@ -372,6 +372,50 @@ EOF
   rm -rf "$sb"
 }
 
+# `scripts/rue quick` is the fast loop the repository instructions tell every
+# contributor to run during implementation, so its delegation must not break
+# silently: the dispatcher names the selection, quick-test.sh owns the policy,
+# and arguments pass through unchanged.
+test_rue_quick_delegates_to_quick_testsh() {
+  local sb; sb="$(make_rue_sandbox)"
+  cat >"$sb/quick-test.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'ran\n' >>"$QUICK_CALLS"
+printf '%s\n' "$@" >"$QUICK_ARGS"
+EOF
+  chmod +x "$sb/quick-test.sh"
+
+  local rc=0
+  (cd "$sb/work" && QUICK_CALLS="$sb/quick.calls" QUICK_ARGS="$sb/quick.args" \
+    "$sb/scripts/rue" quick forwarded-arg) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue quick: delegates to quick-test.sh" \
+    "$([ "$rc" -eq 0 ] && [ "$(wc -l <"$sb/quick.calls" 2>/dev/null | tr -d ' ')" = 1 ] && echo 0 || echo 1)"
+  check "scripts/rue quick: forwards arguments unchanged" \
+    "$(grep -Fxq 'forwarded-arg' "$sb/quick.args" 2>/dev/null && echo 0 || echo 1)"
+
+  rc=0
+  cat >"$sb/quick-test.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 9
+EOF
+  chmod +x "$sb/quick-test.sh"
+  (cd "$sb/work" && "$sb/scripts/rue" quick) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue quick: propagates a failing quick suite" \
+    "$([ "$rc" -eq 9 ] && echo 0 || echo 1)"
+
+  # Pin the real quick policy: premerge tier minus the not-quick and
+  # dedicated-suite exclusions, scoped to first-party crates. A silently
+  # narrowed or widened quick run breaks the fast-loop contract.
+  check "quick-test.sh: selects the premerge tier" \
+    "$(grep -Fq -- '--include rue_test_tier_premerge' "$SRC_ROOT/quick-test.sh" && echo 0 || echo 1)"
+  check "quick-test.sh: keeps the not-quick and dedicated-suite exclusions" \
+    "$(grep -Fq -- '--exclude rue_not_quick' "$SRC_ROOT/quick-test.sh" \
+      && grep -Fq -- '--exclude rue_dedicated_suite' "$SRC_ROOT/quick-test.sh" && echo 0 || echo 1)"
+  check "quick-test.sh: scopes to first-party crates" \
+    "$(grep -Fq -- 'test //crates/...' "$SRC_ROOT/quick-test.sh" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # Filtered `test.sh` reaches the same CLI path after its unit/spec/UI steps. Its
 # absolute path must survive the cwd change, and its sentinel must agree with
 # the propagated harness status.
@@ -1446,6 +1490,7 @@ test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
 test_clippy_gate_reads_diagnostics_and_fails_closed
 test_rue_named_test_tiers_delegate_to_testsh
+test_rue_quick_delegates_to_quick_testsh
 test_testsh_cli_examples_survive_case_chdir
 test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud

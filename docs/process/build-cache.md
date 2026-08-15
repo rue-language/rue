@@ -91,8 +91,7 @@ the 20% target. `reset` is the migration escape hatch for an older worktree whos
 artifacts predate persisted materializer state; it validates every named path as
 a registered Rue worktree before it resets any of them. Neither command removes
 source files or worktrees. `scripts/rue gc` remains a compatibility alias for
-the host-wide one-week stale cleanup, and the older `scripts/worktree-gc` entry
-point now performs the same safe cleanup without deleting directories.
+the host-wide one-week stale cleanup.
 
 The default setup is for the shared **action cache**. Normal commands stay on
 `--prefer-local`; add `--prefer-remote` explicitly when remote execution is the
