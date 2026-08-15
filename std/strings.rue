@@ -124,9 +124,9 @@ pub fn parse_int(s: StrBuf) -> option.Option(i64) {
             return O.None;
         }
         let dg: i64 = @intCast(byte - 48);
-        match math.checked_mul(acc, ten) {
+        match math.checked_mul(i64, acc, ten) {
             O.Some(m) => {
-                match math.checked_add(m, dg) {
+                match math.checked_add(i64, m, dg) {
                     O.Some(sum) => {
                         acc = sum;
                     },

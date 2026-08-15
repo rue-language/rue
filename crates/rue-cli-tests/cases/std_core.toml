@@ -15,7 +15,7 @@ description = "std.cmp, std.math, std.mem, std.tuple, std.fmt exercised end-to-e
 
 [[case]]
 name = "std_core_m1_smoke"
-description = "cmp/math/mem/tuple/fmt all produce correct results (14 checks → exit 42)."
+description = "cmp/math/mem/tuple/fmt all produce correct results (18 checks → exit 42)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 42
@@ -49,13 +49,25 @@ fn main() -> i32 {
     let n97: i64 = 97;
     if std.math.is_prime(i64, n97) { score = score + 1; }
 
-    // std.math (i64 checked_*)
+    // std.math (generic checked_*, RUE-694)
     let O = std.option.Option(i64);
-    let big: i64 = 9223372036854775807;
+    let big: i64 = @int_max(i64);
     let one: i64 = 1;
-    match std.math.checked_add(big, one) { O.Some(v) => {}, O.None => { score = score + 1; } }
+    match std.math.checked_add(i64, big, one) { O.Some(v) => {}, O.None => { score = score + 1; } }
     let six: i64 = 6;
-    match std.math.checked_mul(six, seven) { O.Some(v) => { if v == 42 { score = score + 1; } }, O.None => {} }
+    match std.math.checked_mul(i64, six, seven) { O.Some(v) => { if v == 42 { score = score + 1; } }, O.None => {} }
+    let OU = std.option.Option(u8);
+    let u200: u8 = 200;
+    let u100: u8 = 100;
+    match std.math.checked_add(u8, u200, u100) { OU.Some(v) => {}, OU.None => { score = score + 1; } }
+    match std.math.checked_mul(u8, u200, u100) { OU.Some(v) => {}, OU.None => { score = score + 1; } }
+    let OI8 = std.option.Option(i8);
+    let n100: i8 = -100;
+    let p100: i8 = 100;
+    let minus1: i8 = -1;
+    let i8min: i8 = @int_min(i8);
+    match std.math.checked_sub(i8, n100, p100) { OI8.Some(v) => {}, OI8.None => { score = score + 1; } }
+    match std.math.checked_mul(i8, i8min, minus1) { OI8.Some(v) => {}, OI8.None => { score = score + 1; } }
 
     // std.mem
     let mut x: i64 = 1;
@@ -74,7 +86,7 @@ fn main() -> i32 {
     if std.fmt.to_hex(n255).len() == 2 { score = score + 1; }
     if std.fmt.bool_to_string(true).len() == 4 { score = score + 1; }
 
-    if score == 14 { 42 } else { @intCast(score) }
+    if score == 18 { 42 } else { @intCast(score) }
 }
 """ }]
 
