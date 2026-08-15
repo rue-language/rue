@@ -16,11 +16,12 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import mask_rust_non_code
+
 
 ROOT = Path(__file__).resolve().parent.parent
 DEBUG_ASSERT = re.compile(r"\bdebug_assert(?:_eq|_ne)?!\s*\(")
-RAW_STRING_START = re.compile(r"(?:br|r)(?P<hashes>#{0,255})\"")
-CHARACTER_LITERAL_START = re.compile(r"'(?:\\.|[^'\\\n])+'")
 
 
 class Allowance(NamedTuple):
@@ -72,137 +73,8 @@ ALLOWANCES = {
 }
 
 
-def strip_non_code(source: str) -> str:
-    """Replace Rust comments and string/character contents with whitespace."""
-
-    result = list(source)
-    index = 0
-    block_depth = 0
-    state = "code"
-    raw_hashes = 0
-
-    def blank(position: int) -> None:
-        if result[position] != "\n":
-            result[position] = " "
-
-    while index < len(source):
-        if state == "line_comment":
-            if source[index] == "\n":
-                state = "code"
-            else:
-                blank(index)
-            index += 1
-            continue
-
-        if state == "block_comment":
-            if source.startswith("/*", index):
-                blank(index)
-                blank(index + 1)
-                block_depth += 1
-                index += 2
-            elif source.startswith("*/", index):
-                blank(index)
-                blank(index + 1)
-                block_depth -= 1
-                index += 2
-                if block_depth == 0:
-                    state = "code"
-            else:
-                blank(index)
-                index += 1
-            continue
-
-        if state == "quoted":
-            if source[index] == "\\":
-                blank(index)
-                if index + 1 < len(source):
-                    blank(index + 1)
-                index += 2
-            else:
-                character = source[index]
-                blank(index)
-                index += 1
-                if character == '"':
-                    state = "code"
-            continue
-
-        if state == "character":
-            if source[index] == "\\":
-                blank(index)
-                if index + 1 < len(source):
-                    blank(index + 1)
-                index += 2
-            else:
-                character = source[index]
-                blank(index)
-                index += 1
-                if character == "'":
-                    state = "code"
-            continue
-
-        if state == "raw":
-            terminator = '"' + ("#" * raw_hashes)
-            if source.startswith(terminator, index):
-                for offset in range(len(terminator)):
-                    blank(index + offset)
-                index += len(terminator)
-                state = "code"
-            else:
-                blank(index)
-                index += 1
-            continue
-
-        if source.startswith("//", index):
-            blank(index)
-            blank(index + 1)
-            index += 2
-            state = "line_comment"
-            continue
-        if source.startswith("/*", index):
-            blank(index)
-            blank(index + 1)
-            index += 2
-            block_depth = 1
-            state = "block_comment"
-            continue
-
-        raw_match = RAW_STRING_START.match(source, index)
-        if raw_match:
-            token = raw_match.group(0)
-            raw_hashes = len(raw_match.group("hashes"))
-            for offset in range(len(token)):
-                blank(index + offset)
-            index += len(token)
-            state = "raw"
-            continue
-
-        if source.startswith('b"', index):
-            blank(index)
-            blank(index + 1)
-            index += 2
-            state = "quoted"
-            continue
-        if source[index] == '"':
-            blank(index)
-            index += 1
-            state = "quoted"
-            continue
-
-        # Treat a quote as a character literal only when it has a closing quote
-        # on this line; this avoids mistaking Rust lifetimes for literals.
-        if source[index] == "'" and CHARACTER_LITERAL_START.match(source, index):
-            blank(index)
-            index += 1
-            state = "character"
-            continue
-
-        index += 1
-
-    return "".join(result)
-
-
 def count_debug_asserts(path: Path) -> int:
-    return len(DEBUG_ASSERT.findall(strip_non_code(path.read_text())))
+    return len(DEBUG_ASSERT.findall(mask_rust_non_code(path.read_text())[0]))
 
 
 def validate(root: Path, allowances: dict[str, Allowance] = ALLOWANCES) -> list[str]:
