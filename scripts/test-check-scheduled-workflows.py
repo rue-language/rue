@@ -15,7 +15,6 @@ the same code CI runs.
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import os
 import sys
@@ -25,16 +24,10 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-SPEC = importlib.util.spec_from_file_location(
-    "check_scheduled_workflows", HERE / "check-scheduled-workflows.py"
-)
-assert SPEC and SPEC.loader
-csw = importlib.util.module_from_spec(SPEC)
-# `@dataclass` resolves its own module through `sys.modules`, and fails outright
-# when it is missing (see scripts/test-fuzz-report-failure.py, same idiom).
-sys.modules[SPEC.name] = csw
-SPEC.loader.exec_module(csw)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+csw = load_script("check-scheduled-workflows.py", __file__)
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 DAILY = "0 6 * * *"

@@ -3,19 +3,18 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
 SCRIPT = Path(__file__).with_name("validate-shell-pipefail-pipelines.py")
-SPEC = importlib.util.spec_from_file_location("pipefail_pipelines", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-policy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(policy)
+policy = load_script("validate-shell-pipefail-pipelines.py", __file__)
 
 
 class ScanTests(unittest.TestCase):

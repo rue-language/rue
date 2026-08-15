@@ -3,16 +3,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "generate_site_status",
-    Path(__file__).resolve().parent / "generate-site-status.py",
-)
-gen = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gen)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+gen = load_script("generate-site-status.py", __file__)
 
 
 def traceability(covered: int = 798, total: int = 801, **overrides) -> dict:

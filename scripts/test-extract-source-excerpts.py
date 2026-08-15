@@ -13,16 +13,13 @@ against fixtures.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "extract_source_excerpts",
-    Path(__file__).resolve().parent / "extract-source-excerpts.py",
-)
-ex = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(ex)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+ex = load_script("extract-source-excerpts.py", __file__)
 
 REPO = Path(__file__).resolve().parent.parent
 

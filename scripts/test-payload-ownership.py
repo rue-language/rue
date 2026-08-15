@@ -3,16 +3,14 @@
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-payload-ownership.py")
-SPEC = importlib.util.spec_from_file_location("payload_inventory", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+MODULE = load_script("validate-payload-ownership.py", __file__)
 
 
 def roots(base: Path) -> list[tuple[str, Path]]:

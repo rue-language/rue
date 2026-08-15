@@ -19,7 +19,6 @@ that decide whether a crash is reported once, twice, or not at all:
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import re
 import subprocess
@@ -35,20 +34,10 @@ SCRIPT = SCRIPTS / "fuzz-report-failure.py"
 #: directory; a direct run falls back to the repository checkout.
 ROOT = Path(os.environ.get("RUE_FUZZ_REPORT_ROOT", SCRIPTS.parent))
 
+sys.path.insert(0, str(SCRIPTS))
+from gatelib import load_script
 
-def _load_module():
-    """Import the hyphenated script as a module."""
-    spec = importlib.util.spec_from_file_location("fuzz_report_failure", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Registered before execution: `dataclasses` resolves a class's module
-    # through `sys.modules`, and fails outright when it is missing.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-fr = _load_module()
+fr = load_script("fuzz-report-failure.py", __file__)
 
 
 class MockTransport(fr.Transport):

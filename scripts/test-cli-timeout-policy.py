@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import importlib.util
 import json
 import os
 import platform
@@ -22,10 +21,10 @@ if sys.version_info < (3, 11):
 
 import tomllib
 
-SCRIPT = Path(__file__).with_name("cli-timeout-policy.py")
-SPEC = importlib.util.spec_from_file_location("cli_timeout_policy", SCRIPT)
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+MODULE = load_script("cli-timeout-policy.py", __file__)
 
 
 class TimeoutPolicyTests(unittest.TestCase):

@@ -3,17 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-release-configuration.py")
-SPEC = importlib.util.spec_from_file_location("release_configuration", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-release_configuration = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(release_configuration)
+release_configuration = load_script("validate-release-configuration.py", __file__)
 
 
 def payload(platform: str, command: str) -> str:

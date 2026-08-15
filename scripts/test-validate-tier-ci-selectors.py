@@ -3,21 +3,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("validate-tier-ci-selectors.py")
-SPEC = importlib.util.spec_from_file_location("tier_ci_selectors", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-selectors = importlib.util.module_from_spec(SPEC)
-# `@dataclass` resolves annotations through `sys.modules[cls.__module__]`, so a
-# file loaded by spec alone must be registered before it executes.
-sys.modules[SPEC.name] = selectors
-SPEC.loader.exec_module(selectors)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+selectors = load_script("validate-tier-ci-selectors.py", __file__)
 
 TIERS = ("premerge", "slow", "stress")
 

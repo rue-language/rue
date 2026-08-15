@@ -3,17 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-runtime-abi-inventory.py")
-SPEC = importlib.util.spec_from_file_location("runtime_abi_inventory", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-inventory = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(inventory)
+inventory = load_script("validate-runtime-abi-inventory.py", __file__)
 
 
 class InventoryTests(unittest.TestCase):

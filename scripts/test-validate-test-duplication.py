@@ -9,19 +9,17 @@ is proven to fail on it rather than asserted to.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
 SCRIPT = Path(__file__).with_name("validate-test-duplication.py")
-SPEC = importlib.util.spec_from_file_location("validate_test_duplication", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-GATE = importlib.util.module_from_spec(SPEC)
-sys.modules["validate_test_duplication"] = GATE
-SPEC.loader.exec_module(GATE)
+GATE = load_script("validate-test-duplication.py", __file__)
 
 COMPILER = "//crates/rue-compiler:rue-compiler-test"
 SCALING = "//crates/rue-compiler:scaling-matrix-test"

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import platform
 import subprocess
@@ -15,11 +14,11 @@ import unittest.mock
 from pathlib import Path
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
 SCRIPT = Path(__file__).with_name("validate-shell-bash-baseline.py")
-SPEC = importlib.util.spec_from_file_location("bash_baseline", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-policy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(policy)
+policy = load_script("validate-shell-bash-baseline.py", __file__)
 
 BASELINE_BASH = "/bin/bash"
 

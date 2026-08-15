@@ -3,16 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("validate-cli-shard-coverage.py")
-SPEC = importlib.util.spec_from_file_location("cli_shard_coverage", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-coverage = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(coverage)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+coverage = load_script("validate-cli-shard-coverage.py", __file__)
 
 
 def buck(count: int, shard_targets: list[int]) -> str:

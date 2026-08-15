@@ -840,7 +840,8 @@ rue_sh_test(
 rue_sh_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
-    resources = ["scripts/validate-required-ci-container-pins.py"],
+    resources = ["scripts/validate-required-ci-container-pins.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -900,6 +901,8 @@ rue_sh_test(
 rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
+    resources = ["scripts/validate-release-configuration.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -979,7 +982,8 @@ rue_sh_test(
 rue_sh_test(
     name = "cli-shard-coverage-tool-tests",
     test = "scripts/test-cli-shard-coverage.py",
-    resources = ["scripts/validate-cli-shard-coverage.py"],
+    resources = ["scripts/validate-cli-shard-coverage.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1001,7 +1005,7 @@ rue_sh_test(
     resources = [
         "scripts/affected-targets",
         "scripts/validate-test-duplication.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1055,7 +1059,8 @@ rue_sh_test(
 rue_sh_test(
     name = "ci-required-results-tool-tests",
     test = "scripts/test-ci-required-results.py",
-    resources = ["scripts/ci-required-results.py"],
+    resources = ["scripts/ci-required-results.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1097,7 +1102,7 @@ rue_sh_test(
     test = "scripts/test-validate-performance-stall.py",
     resources = [
         "scripts/validate-performance-stall.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1113,7 +1118,7 @@ rue_sh_test(
     test = "scripts/test-generate-site-status.py",
     resources = [
         "scripts/generate-site-status.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1130,7 +1135,7 @@ rue_sh_test(
     test = "scripts/test-extract-source-excerpts.py",
     resources = [
         "scripts/extract-source-excerpts.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1146,7 +1151,7 @@ rue_sh_test(
     test = "scripts/test-annotate-performance-commits.py",
     resources = [
         "scripts/annotate-performance-commits.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1182,7 +1187,8 @@ rue_sh_test(
 rue_sh_test(
     name = "cli-shard-weight-tool-tests",
     test = "scripts/test-cli-shard-weights.py",
-    resources = ["scripts/generate-cli-shard-weights.py"],
+    resources = ["scripts/generate-cli-shard-weights.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1209,7 +1215,8 @@ rue_sh_test(
 rue_sh_test(
     name = "cli-timeout-policy-tool-tests",
     test = "scripts/test-cli-timeout-policy.py",
-    resources = ["scripts/cli-timeout-policy.py"],
+    resources = ["scripts/cli-timeout-policy.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
@@ -1259,7 +1266,8 @@ rue_sh_test(
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
     },
-    resources = ["scripts/fuzz-report-failure.py"],
+    resources = ["scripts/fuzz-report-failure.py"] +
+        glob(["scripts/gatelib/*.py"]),
 )
 
 # RUE-1507: the health check that notices a scheduled workflow which has never
@@ -1285,7 +1293,8 @@ rue_sh_test(
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_SCHEDULED_WORKFLOWS_ROOT": "$(location :scheduled-workflow-test-inputs)",
     },
-    resources = ["scripts/check-scheduled-workflows.py"],
+    resources = ["scripts/check-scheduled-workflows.py"] +
+        glob(["scripts/gatelib/*.py"]),
 )
 
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-

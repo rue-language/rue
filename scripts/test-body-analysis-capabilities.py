@@ -3,19 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-body-analysis-capabilities.py")
-SPEC = importlib.util.spec_from_file_location("body_analysis_capabilities", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-inventory = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = inventory
-SPEC.loader.exec_module(inventory)
+inventory = load_script("validate-body-analysis-capabilities.py", __file__)
 
 
 class CapabilityInventoryTests(unittest.TestCase):
