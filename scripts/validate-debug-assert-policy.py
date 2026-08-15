@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatelib import mask_rust_non_code
+from gatelib import mask_rust_non_code, run_gate
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -106,18 +106,12 @@ def main() -> int:
     parser.add_argument("root", nargs="?", type=Path, default=ROOT)
     args = parser.parse_args()
 
-    errors = validate(args.root)
-    if errors:
-        for error in errors:
-            print(f"error: {error}", file=sys.stderr)
-        return 1
-
     total = sum(allowance.count for allowance in ALLOWANCES.values())
-    print(
+    return run_gate(
+        lambda: validate(args.root),
         "debug-assertion policy valid: "
-        f"{total} reviewed debug-only assertion(s), none in CFG/codegen/linker"
+        f"{total} reviewed debug-only assertion(s), none in CFG/codegen/linker",
     )
-    return 0
 
 
 if __name__ == "__main__":
