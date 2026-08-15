@@ -15,6 +15,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import mask_rust_non_code
+
 
 INVENTORY_FILES = {
     ("rue-air", Path("sema/provider.rs")),
@@ -62,72 +65,6 @@ class Hit:
         )
 
 
-def mask_rust_non_code(source: str) -> str:
-    """Mask comments and literals while preserving offsets and newlines."""
-    masked = list(source)
-
-    def hide(start: int, end: int) -> None:
-        for index in range(start, end):
-            if masked[index] != "\n":
-                masked[index] = " "
-
-    index = 0
-    while index < len(source):
-        if source.startswith("//", index):
-            end = source.find("\n", index + 2)
-            end = len(source) if end < 0 else end
-            hide(index, end)
-            index = end
-            continue
-        if source.startswith("/*", index):
-            depth = 1
-            end = index + 2
-            while end < len(source) and depth:
-                if source.startswith("/*", end):
-                    depth += 1
-                    end += 2
-                elif source.startswith("*/", end):
-                    depth -= 1
-                    end += 2
-                else:
-                    end += 1
-            hide(index, end)
-            index = end
-            continue
-        raw = re.match(r'(?:br|r)(?P<hashes>#{0,255})"', source[index:])
-        if raw:
-            terminator = '"' + raw.group("hashes")
-            end = source.find(terminator, index + raw.end())
-            end = len(source) if end < 0 else end + len(terminator)
-            hide(index, end)
-            index = end
-            continue
-        quote = index + 1 if source.startswith('b"', index) else index
-        if quote < len(source) and source[quote] == '"':
-            end = quote + 1
-            while end < len(source):
-                if source[end] == "\\":
-                    end += 2
-                elif source[end] == '"':
-                    end += 1
-                    break
-                else:
-                    end += 1
-            hide(index, min(end, len(source)))
-            index = end
-            continue
-        if source[index] == "'":
-            end = index + 2
-            if end < len(source) and source[index + 1] == "\\":
-                end += 1
-            if end < len(source) and source[end] == "'":
-                hide(index, end + 1)
-                index = end + 1
-                continue
-        index += 1
-    return "".join(masked)
-
-
 def normalize_relative(path: Path, source_root: Path) -> Path:
     relative = path.relative_to(source_root)
     if relative.parts and relative.parts[0] == "src":
@@ -153,7 +90,7 @@ def classify(sources: list[tuple[str, Path]]) -> list[Hit]:
             hits.append(Hit(crate, relative, 0, "missing required provider source"))
             continue
         source = path.read_text()
-        masked = mask_rust_non_code(source)
+        masked = mask_rust_non_code(source)[0]
         for pattern, label in (
             (TYPE_ACCESS, "whole-program type"),
             (TABLE_ACCESS, "declaration-universe table"),

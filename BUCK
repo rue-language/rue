@@ -1367,6 +1367,7 @@ rue_sh_test(
 rue_sh_test(
     name = "body-analysis-capability-inventory-validation",
     test = "scripts/validate-body-analysis-capabilities.py",
+    resources = glob(["scripts/gatelib/*.py"]),
     args = [
         "--source", "rue-air=$(location //crates/rue-air:body-analysis-capability-inventory-sources)",
         "--source", "rue-compiler=$(location //crates/rue-compiler:body-analysis-capability-inventory-sources)",
@@ -1376,7 +1377,8 @@ rue_sh_test(
 rue_sh_test(
     name = "body-analysis-capability-inventory-tool-tests",
     test = "scripts/test-body-analysis-capabilities.py",
-    resources = ["scripts/validate-body-analysis-capabilities.py"],
+    resources = ["scripts/validate-body-analysis-capabilities.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
