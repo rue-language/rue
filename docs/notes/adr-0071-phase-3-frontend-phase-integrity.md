@@ -359,6 +359,44 @@ outputs were 1,662,976 bytes with SHA-256
 Measurement artifacts are in
 `/private/tmp/rue-phase-warning-paired.gsJc0W` on the measuring host.
 
+## Implementation checkpoint: direct body-transaction projections
+
+Body reachability already requests and inspects each exact `BodyTransaction`.
+It now reads that transaction's immutable `BodyReferences` directly instead of
+requesting a registered `compiler.body-references` projection which queried the
+same transaction and cloned the same Arc. The rooted closure's existing
+`compiler.body-analysis-bundle` continues to own the transaction/producer
+lifecycle boundary, but it no longer requests a registered
+`compiler.canonical-body` projection solely to recover the `CanonicalBody` Arc
+already stored in its transaction. Inventory tests forbid both deleted family
+names.
+
+The expected critical-path effect is bounded but real: every one of Lattice's
+1,263 reached bodies avoids two memo claims, two dependency validations, and
+two terminal envelopes. The replacement work is an immutable field read in
+reachability and the existing closure-bundle transaction clone; body analysis,
+producer scheduling, bundle invalidation, diagnostics, and CFG input assembly
+are unchanged.
+
+The exact-parent gate used one warmup followed by twelve order-balanced
+release-thin-LTO x86-64 pairs with one query worker. The interactive host was
+heavily loaded, so wall time was not statistically distinguishable: the paired
+median moved -6.925 ms with a 230.962 ms paired MAD and 6 of 12 prototype runs
+were faster. That is recorded as no measured wall-time speedup. The displaced
+CPU work was stable: 11 of 12 prototype runs retired fewer instructions, with
+a paired median reduction of 75,605,727 instructions and a 19,344,008 paired
+MAD.
+
+Query claims and memo nodes each fell by exactly 2,526, from 36,433 to 33,907
+and 35,720 to 33,194. Memo display-identity storage fell from 8,969,675 to
+8,035,081 bytes (-934,594). External peak RSS had a paired median reduction of
+1,302,528 bytes (8 of 12 pairs lower), while compiler-reported peak RSS fell by
+a paired median 1,245,184 bytes (9 of 12 lower). All 24 native outputs were
+1,662,976 bytes with SHA-256
+`45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`.
+Measurement artifacts are in
+`/private/tmp/rue-body-two-projection-paired.kZHG3f` on the measuring host.
+
 ## Retained declaration artifact contract
 
 The canonical parse/index boundary publishes compact candidate projections, and

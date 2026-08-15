@@ -6634,7 +6634,7 @@ mod tests {
     fn retained_body_query_stamps(
         session: &CompilerSession,
         key: &crate::body_query::BodyQueryKey,
-    ) -> (u64, u64, u64, u64) {
+    ) -> (u64, u64) {
         let revision = session
             .queries
             .revisioned
@@ -6646,27 +6646,12 @@ mod tests {
             .revisioned
             .body_transaction(revision, key.clone(), cancellation.clone())
             .unwrap();
-        let body = session
-            .queries
-            .revisioned
-            .canonical_body_projection(revision, key.clone(), cancellation.clone())
-            .unwrap();
-        let references = session
-            .queries
-            .revisioned
-            .body_references_projection(revision, key.clone(), cancellation.clone())
-            .unwrap();
         let produced_anonymous = session
             .queries
             .revisioned
             .body_produced_anonymous_projection(revision, key.clone(), cancellation)
             .unwrap();
-        (
-            transaction.stamp(),
-            body.stamp(),
-            references.stamp(),
-            produced_anonymous.stamp(),
-        )
+        (transaction.stamp(), produced_anonymous.stamp())
     }
 
     fn retained_body_transaction(
@@ -9681,11 +9666,11 @@ mod tests {
 
         assert_eq!(
             shifted_body_stamps, first_body_stamps,
-            "position-only edits keep the body transaction and its semantic projections green",
+            "position-only edits keep the body transaction and anonymous-production projection green",
         );
         assert_eq!(
             shifted_closure_stamps, first_closure_stamps,
-            "the aggregate body-analysis bundle and body closure stay green",
+            "the body transaction retained by the body closure stays green",
         );
         assert_eq!(
             shifted_locator_stamp, first_locator_stamp,
@@ -10655,10 +10640,6 @@ fn main() -> i32 {
             warm.queries.revisioned.any_body_transaction_terminal(),
             "typed body-control classification must be published atomically"
         );
-        assert!(
-            !warm.queries.revisioned.any_body_reference_terminal(),
-            "the malformed attempt must not publish a body-reference projection"
-        );
         publish_with_test_imports(&mut warm, &repaired);
         let warm_repaired = warm
             .rooted_cfg(&options)
@@ -10972,12 +10953,11 @@ fn main() -> i32 {
 
         assert_eq!(
             before.0, after.0,
-            "the body transaction, canonical body, reference, and produced-anonymous \
-             terminals must all keep their stamps"
+            "the body transaction and produced-anonymous terminal must keep their stamps"
         );
         assert_eq!(
             before.1, after.1,
-            "the body closure and its bundle must keep their stamps"
+            "the body closure and its retained transaction must keep their stamps"
         );
         assert_eq!(before.2, after.2, "the dependency set must be unchanged");
         assert_eq!(
@@ -11070,9 +11050,7 @@ fn main() -> i32 {
             "callee bodies are not caller inputs"
         );
         assert_ne!(first_helper.0, second_helper.0);
-        assert_ne!(first_helper.1, second_helper.1);
-        assert_eq!(first_helper.2, second_helper.2);
-        assert_eq!(first_helper.3, second_helper.3);
+        assert_eq!(first_helper.1, second_helper.1);
     }
 
     #[test]
@@ -11443,7 +11421,7 @@ fn main() -> i32 {
         let warm = session.rooted_cfg(&options).unwrap();
         let second_make_stamps = retained_body_query_stamps(&session, &make);
         let second_size_stamps = retained_body_query_stamps(&session, &size);
-        assert_ne!(first_make_stamps.3, second_make_stamps.3);
+        assert_ne!(first_make_stamps.1, second_make_stamps.1);
         assert_ne!(first_size_stamps.0, second_size_stamps.0);
 
         let mut fresh = CompilerSession::new();
@@ -11643,7 +11621,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn canonical_body_projections_share_one_immutable_artifact() {
+    fn body_closure_bundle_reuses_the_transaction_canonical_body_arc() {
         let source = SourceSnapshot::single(
             "main.rue",
             "fn helper() -> i32 { 40 } fn main() -> i32 { helper() + 2 }",
@@ -11666,39 +11644,45 @@ fn main() -> i32 {
             .revisioned
             .body_transaction(revision, key.clone(), cancellation.clone())
             .unwrap();
-        let projection = session
+        let closure = session
             .queries
             .revisioned
-            .canonical_body_projection(revision, key.clone(), cancellation.clone())
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([crate::ModuleId::from_logical_path("main.rue").unwrap()]),
+                    roots: Arc::from([key.instance.clone()]),
+                    configuration: key.configuration.clone(),
+                },
+                cancellation,
+            )
             .unwrap();
-        let bundle = session
-            .queries
-            .revisioned
-            .body_analysis_bundle(revision, key, cancellation)
-            .unwrap();
-
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            panic!("body closure must publish a value");
+        };
+        let retained = output
+            .bodies
+            .iter()
+            .find(|body| body.key == key)
+            .expect("body closure retains its root transaction");
+        let rue_query::QueryOutcome::Success(retained) = retained.bundle.outcome() else {
+            panic!("body-analysis bundle must publish a value")
+        };
         let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
             body: transaction_body,
             ..
         }) = transaction.outcome()
         else {
-            panic!("body transaction must publish a canonical body");
-        };
-        let rue_query::QueryOutcome::Success(projection_body) = projection.outcome() else {
-            panic!("canonical-body projection must publish a value");
-        };
-        let rue_query::QueryOutcome::Success(bundle) = bundle.outcome() else {
-            panic!("body-analysis bundle must publish a value");
+            panic!("body transaction must publish a canonical body")
         };
         let crate::body_query::BodyTransaction::Success {
-            body: bundle_body, ..
-        } = &bundle.transaction
+            body: retained_body,
+            ..
+        } = &retained.transaction
         else {
-            panic!("body-analysis bundle must retain the successful transaction");
+            panic!("body closure must retain the successful transaction value")
         };
-
-        assert!(Arc::ptr_eq(transaction_body, projection_body));
-        assert!(Arc::ptr_eq(transaction_body, bundle_body));
+        assert!(Arc::ptr_eq(transaction_body, retained_body));
     }
 
     #[test]

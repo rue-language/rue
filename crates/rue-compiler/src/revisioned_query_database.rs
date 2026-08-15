@@ -426,9 +426,6 @@ pub(crate) struct RevisionedQueryDatabase {
         QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
     body_transactions:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    canonical_bodies:
-        QueryFamily<crate::body_query::BodyQueryKey, Arc<crate::body_query::CanonicalBody>>,
     #[allow(dead_code)]
     body_analysis_bundles:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyAnalysisBundle>,
@@ -445,9 +442,6 @@ pub(crate) struct RevisionedQueryDatabase {
         Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
     >,
     body_reachability_meter: Arc<BodyReachabilityMeter>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    body_references:
-        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyReferences>,
     body_produced_anonymous:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::ProducedAnonymous>,
     declaration_body_plan_artifacts:
@@ -12282,26 +12276,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the BodyTransaction family has one canonical name");
-        let transactions_for_canonical_bodies = body_transactions.clone();
-        let canonical_bodies = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.canonical-body",
-                BODY_QUERY_MEMO_RETENTION,
-                |left: &Arc<crate::body_query::CanonicalBody>,
-                 right: &Arc<crate::body_query::CanonicalBody>| left == right,
-                move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    let transaction = context
-                        .query_registered(&transactions_for_canonical_bodies, key.clone())?;
-                    let rue_query::QueryOutcome::Success(
-                        crate::body_query::BodyTransaction::Success { body, .. },
-                    ) = transaction.outcome()
-                    else {
-                        return Err(QueryAbort::Canceled);
-                    };
-                    Ok(QueryOutput::success(body.clone()))
-                },
-            )
-            .expect("the CanonicalBody family has one canonical name");
         // The registered `body-toolchain-demands` node (RUE-1112). Its only
         // semantic input is the exact candidate artifact, whose canonical pack
         // traversal derives the typed fallible-intrinsic set. It performs no
@@ -14389,7 +14363,6 @@ impl RevisionedQueryDatabase {
             Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
-        let canonical_for_analysis_bundle = canonical_bodies.clone();
         let body_analysis_bundles = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-analysis-bundle",
@@ -14410,13 +14383,6 @@ impl RevisionedQueryDatabase {
                             else {
                                 unreachable!("BodyProducedAnonymous publishes typed values")
                             };
-                            let canonical = context
-                                .query_registered(&canonical_for_analysis_bundle, key.clone())?;
-                            let rue_query::QueryOutcome::Success(canonical) = canonical.outcome()
-                            else {
-                                unreachable!("CanonicalBody publishes typed values")
-                            };
-                            let _ = canonical;
                             Some(produced.clone())
                         }
                         crate::body_query::BodyTransaction::DeterministicFailure { .. }
@@ -14438,27 +14404,8 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the BodyAnalysisBundle family has one canonical name");
-        let transactions_for_body_references = body_transactions.clone();
-        let body_references = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.body-references",
-                BODY_QUERY_MEMO_RETENTION,
-                |left: &crate::body_query::BodyReferences,
-                 right: &crate::body_query::BodyReferences| left == right,
-                move |context, _, key: &crate::body_query::BodyQueryKey| {
-                    let transaction =
-                        context.query_registered(&transactions_for_body_references, key.clone())?;
-                    let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
-                    else {
-                        unreachable!("BodyTransaction publishes typed values")
-                    };
-                    Ok(QueryOutput::success(transaction.references().clone()))
-                },
-            )
-            .expect("the BodyReferences family has one canonical name");
         let toolchain_for_body_closure = body_toolchain_demands.clone();
         let transactions_for_body_reachability = body_transactions.clone();
-        let references_for_body_closure = body_references.clone();
         let produced_for_body_reachability = body_produced_anonymous.clone();
         let input_for_body_closure = body_input_resolver.clone();
         let declarations_for_body_closure = declaration_semantics_projection.clone();
@@ -15063,15 +15010,13 @@ impl RevisionedQueryDatabase {
                         }
                         blocked_on_anonymous.remove(&instance);
 
-                        let references_terminal = context.query_registered(
-                            &references_for_body_closure,
-                            body_key.clone(),
-                        )?;
-                        let rue_query::QueryOutcome::Success(references) =
-                            references_terminal.outcome()
-                        else {
-                            unreachable!("BodyReferences publishes typed values")
-                        };
+                        // The scheduler has already requested and inspected
+                        // this exact transaction. Its immutable reference Arc
+                        // is the canonical reachability input; routing it
+                        // through a second registered projection would repeat
+                        // one memo claim and dependency validation per reached
+                        // body without adding an independent invalidation edge.
+                        let references = transaction.references();
                         reached_body_keys.push(body_key.clone());
                         // A deterministic body diagnostic is terminal for this
                         // body's dependents. Keep scheduling references that
@@ -15368,11 +15313,10 @@ impl RevisionedQueryDatabase {
                         })
                         .collect::<Vec<_>>();
                     // Reachability has already produced these deep registered
-                    // cones through BodyReferences/BodyTransaction. Consume
-                    // the final bundles in this one endorsed task so validation
-                    // certificates are shared across bodies; a second batch
-                    // would isolate each proof and recursively revalidate the
-                    // same semantic cone N times.
+                    // cones through BodyTransaction. Consume the final bundles
+                    // in this one endorsed task so validation certificates are
+                    // shared across bodies; a second batch would isolate each
+                    // proof and recursively revalidate the same semantic cone.
                     let mut bodies = Vec::with_capacity(body_keys.len());
                     let mut has_deterministic_failure = false;
                     let mut fatal = reachability.fatal.clone();
@@ -15726,13 +15670,11 @@ impl RevisionedQueryDatabase {
             body_source_bases,
             body_toolchain_demands,
             body_transactions,
-            canonical_bodies,
             body_analysis_bundles,
             body_reachability,
             body_closures,
             body_closure_publications,
             body_reachability_meter,
-            body_references,
             body_produced_anonymous,
             declaration_body_plan_artifacts,
             #[cfg(test)]
@@ -18279,70 +18221,6 @@ impl RevisionedQueryDatabase {
         }
     }
 
-    /// Request the rooted per-body analysis bundle. The bundle keeps the
-    /// canonical transaction, anonymous-production projection, and canonical
-    /// body projection in one task, so their dependency validation and attempt
-    /// handoffs are committed by one top-level request.
-    #[allow(dead_code)]
-    pub(crate) fn body_analysis_bundle(
-        &self,
-        revision: Revision,
-        key: crate::body_query::BodyQueryKey,
-        cancellation: CancellationToken,
-    ) -> Result<
-        Arc<rue_query::QueryTerminal<crate::body_query::BodyAnalysisBundle>>,
-        BodyTransactionRequestFailure,
-    > {
-        let attempt = self.runtime.request_registered(
-            &self.body_analysis_bundles,
-            revision,
-            key.clone(),
-            cancellation.clone(),
-        );
-        match attempt.into_result() {
-            Ok(terminal) => match terminal.outcome() {
-                rue_query::QueryOutcome::Failure(_) => Ok(terminal),
-                rue_query::QueryOutcome::Success(bundle) => match &bundle.transaction {
-                    crate::body_query::BodyTransaction::Control(
-                        crate::body_query::BodyTransactionControl::DeferredAnonymousProducers(
-                            producers,
-                        ),
-                    ) => Err(BodyTransactionRequestFailure::DeferredAnonymousProducers(
-                        producers.clone(),
-                    )),
-                    crate::body_query::BodyTransaction::Control(
-                        crate::body_query::BodyTransactionControl::ProducerFailed(failure),
-                    ) => Err(BodyTransactionRequestFailure::ProducerFailed(
-                        failure.clone(),
-                    )),
-                    crate::body_query::BodyTransaction::Control(
-                        crate::body_query::BodyTransactionControl::WellKnownOptionResolution(
-                            failure,
-                        ),
-                    ) => Err(BodyTransactionRequestFailure::WellKnownOptionResolution(
-                        failure.clone(),
-                    )),
-                    transaction => {
-                        if let Some(observations) = transaction.lookup_observations() {
-                            self.refresh_published_body_lookup_root(
-                                revision,
-                                &key,
-                                observations,
-                                cancellation.clone(),
-                            )
-                            .map_err(BodyTransactionRequestFailure::Query)?;
-                        }
-                        Ok(terminal)
-                    }
-                },
-            },
-            Err(abort) if cancellation.is_canceled() => {
-                Err(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))
-            }
-            Err(abort) => Err(BodyTransactionRequestFailure::Query(abort)),
-        }
-    }
-
     pub(crate) fn body_closure(
         &self,
         revision: Revision,
@@ -18441,19 +18319,6 @@ impl RevisionedQueryDatabase {
             .len()
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn canonical_body_projection(
-        &self,
-        revision: Revision,
-        key: crate::body_query::BodyQueryKey,
-        cancellation: CancellationToken,
-    ) -> Result<Arc<rue_query::QueryTerminal<Arc<crate::body_query::CanonicalBody>>>, QueryAbort>
-    {
-        self.runtime
-            .request_registered(&self.canonical_bodies, revision, key, cancellation)
-            .into_result()
-    }
-
     /// Request the current presentation locator for one body independently of
     /// its retained semantic transaction and aggregate body closure.
     pub(crate) fn body_source_basis_projection(
@@ -18492,18 +18357,6 @@ impl RevisionedQueryDatabase {
             unreachable!("WarningBodyReferences publishes typed values")
         };
         Ok((execution, value.clone()))
-    }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn body_references_projection(
-        &self,
-        revision: Revision,
-        key: crate::body_query::BodyQueryKey,
-        cancellation: CancellationToken,
-    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::BodyReferences>>, QueryAbort> {
-        self.runtime
-            .request_registered(&self.body_references, revision, key, cancellation)
-            .into_result()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -18554,12 +18407,6 @@ impl RevisionedQueryDatabase {
     #[cfg(test)]
     pub(crate) fn any_body_transaction_terminal(&self) -> bool {
         self.body_transactions.any_retained_key(|_| true)
-    }
-
-    /// Whether the body-reference projection has published any terminal.
-    #[cfg(test)]
-    pub(crate) fn any_body_reference_terminal(&self) -> bool {
-        self.body_references.any_retained_key(|_| true)
     }
 
     /// Whether the exact body key already has a retained memo node.
@@ -25396,7 +25243,6 @@ fn main() -> i32 {
         ));
         assert!(database.has_retained_body_key(&key));
         assert!(database.any_body_transaction_terminal());
-        assert!(!database.any_body_reference_terminal());
     }
 
     #[test]
@@ -25426,7 +25272,6 @@ fn main() -> i32 {
         ));
         assert!(database.has_retained_body_key(&key));
         assert!(database.any_body_transaction_terminal());
-        assert!(!database.any_body_reference_terminal());
     }
 
     #[test]
@@ -26038,7 +25883,6 @@ fn main() -> i32 {
         ));
         assert!(database.has_retained_body_key(&key));
         assert!(database.any_body_transaction_terminal());
-        assert!(!database.any_body_reference_terminal());
     }
 
     #[test]
@@ -26066,7 +25910,6 @@ fn main() -> i32 {
         ));
         assert!(database.has_retained_body_key(&key));
         assert!(database.any_body_transaction_terminal());
-        assert!(!database.any_body_reference_terminal());
     }
 
     #[test]
@@ -40627,17 +40470,6 @@ fn main() -> i32 {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([first_key.stable_identity(), second_key.stable_identity()])
         );
-        assert_eq!(
-            output
-                .bodies
-                .iter()
-                .map(|body| body.bundle.origin_request_id())
-                .collect::<BTreeSet<_>>()
-                .len(),
-            2,
-            "each producer must retain a distinct registered bundle terminal"
-        );
-
         let warm = database
             .body_closure(revision, closure_key.clone(), CancellationToken::new())
             .expect("warm body closure reuses the typed forced-collision failure");

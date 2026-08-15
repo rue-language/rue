@@ -1593,14 +1593,14 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
     assert!(!transaction.contains("NonTerminal"));
 
     let runtime = include_str!("revisioned_query_database.rs");
-    for family in [
-        "compiler.body-transaction",
-        "compiler.canonical-body",
-        "compiler.body-references",
+    assert!(runtime.contains("compiler.body-transaction"));
+    for redundant_projection in [
+        "\"compiler.body-references\"",
+        "\"compiler.canonical-body\"",
     ] {
         assert!(
-            runtime.contains(family),
-            "missing independent family {family}"
+            !runtime.contains(redundant_projection),
+            "rooted consumers must retain the already-observed BodyTransaction directly: {redundant_projection}"
         );
     }
     let session = include_str!("session.rs");
@@ -2721,14 +2721,18 @@ fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
     assert!(!anonymous_branch.contains("Key::ComptimeCall("));
     for family in [
         "compiler.body-transaction",
-        "compiler.canonical-body",
-        "compiler.body-references",
         "compiler.body-produced-anonymous",
     ] {
         assert!(
             database.contains(family),
             "missing RUE-1027 family: {family}"
         );
+    }
+    for redundant_projection in [
+        "\"compiler.body-references\"",
+        "\"compiler.canonical-body\"",
+    ] {
+        assert!(!database.contains(redundant_projection));
     }
     assert!(body_query.contains("pub(crate) struct BodyQueryKey"));
     assert!(body_query.contains("pub(crate) struct BodyProducedAnonymousNominals"));
