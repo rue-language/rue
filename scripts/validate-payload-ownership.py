@@ -8,6 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import parse_crate_sources
+
 
 OWNER_PATHS = {
     # `inst/packed.rs` is a private submodule of the RIR owner. Its decoder
@@ -153,13 +156,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    sources: list[tuple[str, Path]] = []
-    for item in args.source:
-        crate, separator, directory = item.partition("=")
-        if not separator or crate not in OWNER_PATHS:
-            print(f"invalid --source {item!r}", file=sys.stderr)
-            return 2
-        sources.append((crate, Path(directory)))
+    try:
+        sources = parse_crate_sources(args.source, OWNER_PATHS)
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 2
     errors = validate(sources)
     if errors:
         print("typed payload ownership inventory failed:", file=sys.stderr)

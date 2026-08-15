@@ -1353,6 +1353,7 @@ rue_sh_test(
 rue_sh_test(
     name = "payload-ownership-inventory-validation",
     test = "scripts/validate-payload-ownership.py",
+    resources = glob(["scripts/gatelib/*.py"]),
     args = [
         "--source", "rue-rir=$(location //crates/rue-rir:payload-ownership-inventory-sources)",
         "--source", "rue-air=$(location //crates/rue-air:payload-ownership-inventory-sources)",
@@ -1364,7 +1365,8 @@ rue_sh_test(
 rue_sh_test(
     name = "payload-ownership-inventory-tool-tests",
     test = "scripts/test-payload-ownership.py",
-    resources = ["scripts/validate-payload-ownership.py"],
+    resources = ["scripts/validate-payload-ownership.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
