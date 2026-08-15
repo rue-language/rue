@@ -1083,7 +1083,7 @@ rue_sh_test(
         # cannot disagree about which `scripts/rue cli` steps the native lanes
         # run.
         "scripts/validate-test-duplication.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
 )
 
 # RUE-1258: the staleness rule, exercised without a repository or a data
@@ -1158,7 +1158,7 @@ rue_sh_test(
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
         "scripts/validate-test-duplication.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",

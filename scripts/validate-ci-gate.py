@@ -10,6 +10,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import job_blocks
+
 RESULTS_SCRIPT = Path(__file__).with_name("ci-required-results.py")
 NATIVE_RUNNER_SCRIPT = Path(__file__).with_name("run-native-platform-corpus.sh")
 TEST_RUNNER_SOURCE = (
@@ -96,21 +99,6 @@ sys.modules["validate_test_duplication"] = DUPLICATION
 _DUP_SPEC.loader.exec_module(DUPLICATION)
 
 ACTION_ID = r"[A-Za-z_][A-Za-z0-9_-]*"
-JOB_RE = re.compile(rf"^  ({ACTION_ID}):\s*$", re.MULTILINE)
-
-
-def job_blocks(workflow: str) -> dict[str, str]:
-    jobs_marker = workflow.find("\njobs:\n")
-    if jobs_marker < 0:
-        raise ValueError("workflow has no top-level jobs mapping")
-    body = workflow[jobs_marker + len("\njobs:\n") :]
-    matches = list(JOB_RE.finditer(body))
-    return {
-        match.group(1): body[match.start() : matches[index + 1].start()]
-        if index + 1 < len(matches)
-        else body[match.start() :]
-        for index, match in enumerate(matches)
-    }
 
 
 def list_needs(block: str) -> set[str]:
