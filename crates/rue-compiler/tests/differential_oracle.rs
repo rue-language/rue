@@ -20,9 +20,8 @@ use rue_compiler::unstable::{
     publish_import_observation_batch, rooted_cfg, stage_import_input_request,
 };
 use rue_compiler::{
-    CompileOptions, CompilerSession, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
-    ImportDiscoveryContext, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata,
-    SourceSnapshot,
+    CompileOptions, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
+    PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;
@@ -45,7 +44,6 @@ struct DiscoveryInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Observation {
     update: String,
-    diagnostics: String,
     syntax: String,
     rir: String,
     semantic: String,
@@ -116,20 +114,6 @@ fn import_step(name: &'static str, epoch: u64, value: i32) -> Step {
             accepted_reads: assembler.accepted_read_manifest(),
         }),
     }
-}
-
-fn normalize_diagnostics(snapshot: Option<&Arc<FrontendDiagnosticSnapshot>>) -> String {
-    snapshot.map_or_else(
-        || "none".to_owned(),
-        |diagnostics| {
-            format!(
-                "stage={:?};errors={:?};warnings={:?}",
-                diagnostics.stage(),
-                diagnostics.errors(),
-                diagnostics.warnings()
-            )
-        },
-    )
 }
 
 fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
@@ -342,13 +326,6 @@ fn observe_with_fault(
             format!("source={:?}", step.snapshot.source_revision()),
         ),
     };
-    if fault == Some(DifferentialOracleFault::Diagnostic) {
-        assert!(inject_stale_query_for_oracle(
-            session,
-            DifferentialOracleFault::Diagnostic
-        ));
-    }
-    let diagnostics = normalize_diagnostics(session.latest_diagnostics());
     if fault == Some(DifferentialOracleFault::Import) {
         assert!(inject_stale_query_for_oracle(
             session,
@@ -358,7 +335,6 @@ fn observe_with_fault(
     }
     Observation {
         update,
-        diagnostics,
         syntax,
         rir,
         semantic,
@@ -376,7 +352,6 @@ fn observe(session: &mut CompilerSession, step: &Step) -> Observation {
 fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str> {
     [
         (left.update != right.update, "update"),
-        (left.diagnostics != right.diagnostics, "diagnostics"),
         (left.syntax != right.syntax, "syntax"),
         (left.rir != right.rir, "rir"),
         (left.semantic != right.semantic, "semantic"),
@@ -401,9 +376,7 @@ fn first_mismatch(
     fault: Option<DifferentialOracleFault>,
 ) -> Option<(usize, String)> {
     let mut reused = CompilerSession::new();
-    let mut last_good = None;
     for (index, step) in steps.iter().enumerate() {
-        let before_failure = last_good.clone();
         let injected = (index + 1 == steps.len() && index > 0)
             .then_some(fault)
             .flatten();
@@ -419,25 +392,6 @@ fn first_mismatch(
             )
             .unwrap();
             return Some((index, difference));
-        }
-
-        let current = reused.last_good_semantic_diagnostics().cloned();
-        if warm.semantic.starts_with("error:") {
-            assert_eq!(
-                current.as_ref().map(|value| format!("{:?}", value.stage())),
-                before_failure
-                    .as_ref()
-                    .map(|value: &Arc<FrontendDiagnosticSnapshot>| format!("{:?}", value.stage())),
-                "{} replaced last-good diagnostics on failure",
-                step.name
-            );
-        } else {
-            assert!(
-                current.is_some(),
-                "{} did not publish last-good diagnostics",
-                step.name
-            );
-            last_good = current;
         }
     }
     None
@@ -717,18 +671,13 @@ fn failure_recovery_and_bounded_eviction_match_fresh_sessions() {
 }
 
 #[test]
-fn fault_injection_proves_semantic_diagnostic_and_import_cache_detection() {
+fn fault_injection_proves_semantic_and_import_cache_detection() {
     let corpus = corpus();
     for (steps, fault, affected) in [
         (
             &corpus[1..3],
             DifferentialOracleFault::Semantic,
             "affected fields: semantic, emitted-assembly-hash, executable-hash, stable-identities",
-        ),
-        (
-            &corpus[9..11],
-            DifferentialOracleFault::Diagnostic,
-            "affected fields: diagnostics",
         ),
         (
             &corpus[corpus.len() - 2..],

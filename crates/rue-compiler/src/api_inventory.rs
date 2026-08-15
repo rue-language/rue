@@ -1359,21 +1359,14 @@ fn session_method_metadata(
     let class = if owner == "CompilerSessionUpdate" {
         match symbol {
             "result" | "into_result" | "diagnostics" => "artifact-result",
-            "downstream_invalidated" => "session-status",
             _ => panic!("unclassified stable CompilerSessionUpdate method: {symbol}"),
         }
     } else {
         match symbol {
             "new" | "update" => "session-operation",
-            "published"
-            | "committed_import_graph"
-            | "import_diagnostics"
-            | "rir"
-            | "semantic"
-            | "executable" => "artifact-query",
-            "latest_diagnostics"
-            | "latest_successful_diagnostics"
-            | "last_good_semantic_diagnostics" => "diagnostic-query",
+            "published" | "committed_import_graph" | "import_diagnostics" | "rir" | "semantic" => {
+                "artifact-query"
+            }
             _ => panic!("unclassified stable CompilerSession method: {symbol}"),
         }
     };

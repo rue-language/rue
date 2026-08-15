@@ -305,6 +305,16 @@ unstable metrics or become private. Public methods on every type classified
 “move internal” cease to be reachable through the stable facade with their
 owner; they are not individually compatibility commitments.
 
+Post-decision note (RUE-1518): three capabilities in the tables above were
+later deleted from the stable facade because no production caller existed:
+`CompilerSession::executable` (a Keep row above; `compile_snapshot` is the
+sole stable one-shot executable entry, and the CLI keeps the unstable
+compile-scope adapters), the retained-diagnostics queries `latest_diagnostics`,
+`latest_successful_diagnostics`, and `last_good_semantic_diagnostics` (a
+View-wrap row above; the retention selectors remain session-internal and are
+observed by in-tree parity tests only), and
+`CompilerSessionUpdate::downstream_invalidated`.
+
 ### 6. Compatibility and version policy
 
 The follow-ups are an intentional pre-1.0 narrowing, but removals are still

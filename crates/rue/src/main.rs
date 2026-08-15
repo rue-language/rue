@@ -1579,9 +1579,10 @@ fn main() {
     // discovery epoch. Every compiler plan and identity decision receives this
     // immutable value; no discovery iteration rereads the environment.
     // One root spans the disjoint intervals that perform canonical compiler
-    // work. RUE-890 made discovery's exact parse publishable, so leaving this
-    // boundary inside `CompilerSession::executable` would incorrectly report
-    // the discovery parse as a second timing root.
+    // work. RUE-890 made discovery's exact parse publishable, so a
+    // compiler-owned `compile` span (as `compile_snapshot` opens) would
+    // incorrectly report the discovery parse as a second timing root; the
+    // driver owns the root and compiles through the compile-scope adapter.
     let compile_span = tracing::info_span!("compile", target = %options.target);
     let captured_std_root = env::var_os("RUE_STD_PATH").map(PathBuf::from);
     #[cfg(rue_benchmark_allocations)]

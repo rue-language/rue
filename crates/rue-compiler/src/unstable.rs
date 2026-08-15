@@ -499,7 +499,7 @@ pub fn import_discovery_observation_ledger_debug(view: &crate::ImportDiscoveryVi
 }
 
 /// Run the fresh backend tail used by the cold-versus-reused differential
-/// oracle. Stable callers use `CompilerSession::executable`.
+/// oracle. Stable callers use `compile_snapshot`.
 pub fn oracle_executable(
     session: &mut crate::CompilerSession,
     snapshot: &crate::SourceSnapshot,
@@ -509,8 +509,8 @@ pub fn oracle_executable(
 }
 
 /// Produce an executable inside a compile span owned by the filesystem
-/// driver. Stable callers use `CompilerSession::executable`, which owns its
-/// tracing root.
+/// driver. Stable callers use `compile_snapshot`, which owns its tracing
+/// root.
 pub fn executable_in_compile_scope(
     session: &mut crate::CompilerSession,
     options: &crate::CompileOptions,
