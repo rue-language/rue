@@ -301,6 +301,92 @@ impl DeclarationBodyPlan {
         .map(|(rir, symbols, _, _, _, _)| (rir, symbols))
     }
 
+    /// Decode this candidate for declaration-time constant/comptime
+    /// evaluation. Coordinates remain declaration-relative: the semantic
+    /// nucleus retains producer-relative diagnostic ranges and projects them
+    /// through the current source basis only when diagnostics are presented.
+    ///
+    /// This is the canonical replacement for rebuilding a fake declaration
+    /// source and reparsing it. It performs no lexer, parser, or AstGen work.
+    pub(crate) fn materialize_semantic_candidate_rir(
+        &self,
+        mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<(ValidatedRir, Vec<&str>, InstRef), BodyPlanMaterializationFailure> {
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        let packed_symbols = self.packed.symbols();
+        let mut symbols = Vec::new();
+        symbols
+            .try_reserve_exact(packed_symbols.len())
+            .map_err(|_| {
+                BodyPlanMaterializationFailure::Build(RirPayloadBuildError::CapacityFailure {
+                    family: "semantic candidate symbol view",
+                })
+            })?;
+        for (ordinal, spelling) in packed_symbols.enumerate() {
+            if ordinal & 63 == 0 {
+                checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+            }
+            symbols.push(spelling);
+        }
+
+        let symbol_count = symbols.len();
+        let mut editor = RirEditor::new();
+        let appended = self
+            .packed
+            .try_append_remapped(
+                &mut editor,
+                || checkpoint().map_err(BodyPlanMaterializationFailure::Query),
+                |ordinal| {
+                    let ordinal = ordinal as usize;
+                    if ordinal >= symbol_count {
+                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "packed semantic candidate symbol ordinal is absent",
+                        )));
+                    }
+                    lasso::Spur::try_from_usize(ordinal).ok_or_else(|| {
+                        BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "packed semantic candidate symbol ordinal is not representable",
+                        ))
+                    })
+                },
+                |_slot, (start, end)| {
+                    if start > end {
+                        return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
+                            "packed semantic candidate span is inverted",
+                        )));
+                    }
+                    Ok(rue_span::Span::with_file(FileId::DEFAULT, start, end))
+                },
+            )
+            .map_err(|error| match error {
+                rue_rir::PackedRirAppendError::Checkpoint(failure)
+                | rue_rir::PackedRirAppendError::SymbolRemap(failure)
+                | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
+                rue_rir::PackedRirAppendError::Build(error) => {
+                    BodyPlanMaterializationFailure::Build(error)
+                }
+                rue_rir::PackedRirAppendError::Decode(error) => {
+                    BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                        "private packed semantic candidate is invalid: {error}"
+                    )))
+                }
+            })?;
+        let rir = ValidatedRir::finish(
+            editor,
+            &RirValidationContext {
+                symbol_count,
+                source_lengths: &[(FileId::DEFAULT, u32::MAX)],
+            },
+        )
+        .map_err(|error| {
+            BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                "projected semantic candidate RIR is invalid: {error}"
+            )))
+        })?;
+        checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
+        Ok((rir, symbols, appended.metadata.declaration))
+    }
+
     fn materialize_candidate_rir_internal(
         &self,
         file_id: FileId,

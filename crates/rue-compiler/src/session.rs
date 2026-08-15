@@ -6162,12 +6162,17 @@ fn semantic_nucleus_failure_diagnostics(
             first_span,
         ));
     }
-    if let (Some(declaration), F::DiagnosticAtProducerRange { kind, start, end }) =
-        (declaration, failure)
+    if let F::DiagnosticAtProducerRange {
+        kind,
+        producer: producer_key,
+        start,
+        end,
+    } = failure
         && let Some(producer) = modules
             .iter()
-            .find(|module| module.module_id() == &declaration.module)
-            .and_then(|module| module.definitions().producer_fragment_span(declaration))
+            .find(|module| module.module_id() == &producer_key.module)
+            .and_then(|module| module.definitions().declaration_locator(producer_key))
+            .map(|locator| locator.declaration_span)
         && let (Some(start), Some(end)) = (
             producer.start.checked_add(*start),
             producer.start.checked_add(*end),
@@ -6846,7 +6851,10 @@ mod tests {
         }
         assert_eq!(
             revisioned
-                .matches("\"compiler.declaration-body-plan-artifacts\",\n")
+                .matches(
+                    "family_with_equality_and_evaluator_and_retained_charge(\n                \
+                     \"compiler.declaration-body-plan-artifacts\","
+                )
                 .count(),
             1,
             "candidate lowering must have one registered artifact family"

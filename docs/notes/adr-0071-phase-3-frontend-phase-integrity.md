@@ -11,8 +11,8 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 | Declaration signatures | `compiler.semantic-nucleus` owns a request-local projection from the exact canonical parsed declaration; specialization typing and call ABI consume its resolved signature, while cheap named-body classification uses parser-indexed shell facts | Deletes body-free source reconstruction, signature lexing/parsing, and the additive retained `compiler.declaration-signature-projection` family | Complete: no production call or definition of `parse_semantic_signature`, no raw-signature parser locator/materializer or peer query family, and a cold signature request performs no body AstGen work |
 | Runtime and specialized bodies | `compiler.declaration-body-plan-artifacts` owns one packed candidate artifact; the ordinary-definition and free-function-specialization arms of `BodyTransactionEvaluator` consume it through the transient resolver | Deletes concatenated signature/body text, synthetic snapshots, body-local lex/parse/AstGen, synthetic span remapping, and specialization-multiplied frontend work | Complete: both transaction arms consume the same candidate-keyed structured body plan; no production call or definition of `lower_owned_body_input`; specialization count does not increase parsing or AstGen lowering |
 | Anonymous members | `compiler.declaration-body-plan-artifacts` owns the ultimate named/constant producer candidate; the anonymous-member arm recursively selects the exact nested declaration by producer chain, indexed owner anchor, name, and member kind | Deletes destructor spelling rewrites, fake named owners, synthetic source assembly, lex/parse/AstGen, and the second RIR remap/index path | Complete: no production call or definition of `lower_anonymous_member_body_input` or its explicit-anchor lowering seam; nested and constant-produced members directly observe the producer candidate artifact, and member demand adds no candidate AstGen work |
-| Comptime bodies | `parse_semantic_body` in `semantic_query_nucleus.rs`; called by the semantic-nucleus comptime-call evaluator | Wraps exact body text in a fake function, lexes and parses it, rediscovers imports, transports anonymous anchors, then evaluates the cloned AST | Comptime evaluation consumes the same declaration artifact as runtime analysis; no production call or definition of `parse_semantic_body` |
-| Constants | `parse_semantic_const` in `semantic_query_nucleus.rs`; called by the semantic-nucleus const evaluator | Reconstructs a fake const declaration, lexes and parses it, rediscovers imports, transports anonymous anchors, then evaluates the cloned AST | Constant evaluation consumes the declaration artifact directly; no production call or definition of `parse_semantic_const` |
+| Comptime bodies | The semantic-nucleus comptime-call evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-function source assembly, body lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: comptime evaluation consumes the same candidate artifact as runtime analysis; no production call or definition of `parse_semantic_body`, and declaration discovery hands the exact artifact terminals to body closure without a second AstGen pass |
+| Constants | The semantic-nucleus const evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-const source reconstruction, lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: constant evaluation consumes the declaration artifact directly; no production call or definition of `parse_semantic_const`, and the evaluator resolves packed ordinal spellings without reconstructing an interner |
 | Well-known option body scan | `PackedValidatedRir::fallible_intrinsics`; consumed by `compiler.body-toolchain-demands` through `DeclarationBodyPlanArtifacts` | Derives the typed five-kind set during the one canonical packed-RIR traversal; production performs no second lexer pass over retained body text | Complete: the packed header owns the stable typed set and the old lexical scanner remains only as an independent `cfg(test)` oracle |
 | Structured type syntax | `AstGen::intern_type` in `rue-rir/src/astgen.rs` renders arrays, pointers, calls, qualified paths, and integer arguments into interned text; `rue-air` and compiler consumers then use parse helpers, prefix/slice tests, qualified-name splitting, and literal `"type"` comparisons to recover structure | Turns parser structure into a peer string grammar and repeatedly reconstructs it during inference, semantic type resolution, binding-manifest construction, provider analysis, and comptime classification | RIR carries dense structured type-syntax references; semantic consumers traverse them; no production code parses, splits, trims, or prefix-tests rendered compound type text. Leaf-name lookup and presentation-only formatting remain allowed; the parser-to-RIR-to-sema conformance round-trip test is removed |
 | Semantic-nucleus type tokenization | `SemanticNucleusTypeProvider` in `crates/rue-compiler/src/revisioned_query_database.rs`, including the handwritten split/decomposition route around lines 10054–10129 and the `parse_type_call_syntax` route beginning around line 10551 | A second handwritten type grammar reconstructs declaration types while binding semantic signatures and constants | The provider consumes the artifact's dense type-syntax nodes; neither the handwritten tokenizer nor a production call to `parse_type_call_syntax` remains in the provider |
@@ -120,6 +120,51 @@ because an anonymous transaction now decodes its ultimate producer fragment;
 that remaining work is the explicitly deferred borrowed/projected AIR-view
 slice rather than a hidden frontend fallback.
 
+## Implementation checkpoint: constant and comptime frontend cutover
+
+Constant and comptime semantic-nucleus evaluation now decodes the same packed
+candidate artifact used by runtime bodies. The evaluator receives a borrowed
+dense spelling view keyed by packed ordinals, so it neither reconstructs a
+`ThreadedRodeo` nor parses a synthetic const/function. The old raw-constant and
+raw-body query families, fragment materializers, and cloned-AST evaluators are
+test-only deleted-route oracles; they are not registered in production.
+
+Declaration discovery and body closure are separate rooted requests. The
+candidate artifact family deliberately keeps only a small unrooted history, so
+dropping the declaration request previously let validation evict and lower the
+same const/comptime candidate again before body closure consumed it. The
+declaration publication now hands off leases for exactly the candidate-artifact
+family observed by that request. It does not retain or walk the much larger
+declaration dependency cone. Body closure validates its other dependencies
+normally and atomically replaces this temporary bridge with the published
+closure root. A query-runtime regression proves the family filter excludes
+unrelated observed terminals, and the real compiler regression proves one
+AstGen evaluation per reached candidate rather than one per root or
+specialization.
+
+The expected wall-time effect is therefore causal rather than inferred from a
+smaller query count: synthetic lex/parse/AstGen and mutable-interner rebuilds
+leave the one-worker declaration critical path, and the narrow handoff avoids
+paying those costs again in body closure without adding a full-cone validation
+walk.
+
+The frozen Lattice workload was measured against the exact parent with release
+thin-LTO x86-64 compilers in twelve alternating one-worker pairs after warming
+both binaries. All 24 outputs were 1,413,120 bytes with SHA-256
+`b893e76cfabed737b149d0e8c4d8527077dedd17da78418db20a28a7d30885e5`.
+Absolute median compiler-root time fell from 670.637 ms to 663.632 ms
+(-7.005 ms); the noisier paired median delta was -2.507 ms and 7 of 12 pairs
+were faster. The narrower declaration-graph phase, where the duplicate work
+was removed, fell from 37.594 ms to 35.881 ms; its paired median delta was
+-1.893 ms and 11 of 12 pairs improved. Median external peak RSS fell from
+376,365,056 to 374,661,120 bytes (-1,703,936 bytes), while the benchmark's
+internal peak fell from 376,143,872 to 374,407,168 bytes (-1,736,704 bytes).
+The paired median external and internal RSS deltas were -1,687,552 and
+-1,769,472 bytes. Query claims and memo nodes each fell by three; the
+consistent local-phase reduction and smaller, noisier root reduction match the
+expected effect of removing duplicate producer work from one part of the full
+compile rather than deleting a large bookkeeping-node population.
+
 ## Retained declaration artifact contract
 
 The canonical parse/index boundary publishes compact candidate projections, and
@@ -152,17 +197,19 @@ so internal trivia that moves diagnostic endpoints dirties the artifact:
 - ordered declaration-local import sites and accessor facts needed by semantic
   consumers.
 
-The semantic-nucleus signature, raw body, and raw constant projections remain
-independently comparable and independently stamped. Signature projection is
-request-local inside the authoritative semantic-nucleus signature evaluator;
-there is no second retained signature family. Raw-body and raw-constant query
-families retain their separate stamps and demand edges. The complete declaration plan's
-structural equality/digest, however, covers every semantically relevant part of
-the declaration: parameters, result, comptime and parameter modes, directives,
-accessor-only state, body structure, and declaration category. Thus a
-signature-only edit may keep the raw-body stamp stable while correctly changing
-the declaration plan and body transaction that depends on it. Sharing
-storage never couples an unchanged raw projection to a sibling edit.
+Signature projection remains independently demandable inside the authoritative
+semantic-nucleus evaluator; there is no second retained signature family.
+Raw-body and raw-constant query families and source-fragment materializers are
+`cfg(test)` deleted-route oracles only. Production constant, comptime, runtime,
+specialized, and anonymous evaluation all consume the candidate artifact. The
+complete declaration plan's structural equality covers every semantically
+relevant part of the declaration: parameters, result, comptime and parameter
+modes, directives, accessor-only state, body structure, declaration category,
+and declaration-relative diagnostic basis. A signature-only edit can therefore
+leave unrelated body terminals green while correctly changing the candidate
+artifact and every transaction or semantic-nucleus projection that observes
+that signature. Shared storage never couples an unchanged candidate to a
+sibling edit.
 
 Those projections are also independently demandable and schedulable. One
 schema/storage owner is not one eager computation node: a cold semantic-nucleus
@@ -250,9 +297,9 @@ deleted entry point, plus behavioral coverage proving:
    same plan and declaration-relative index, including method and constant
    lookup, while diagnostics relocate through the current locator;
 7. parameter, result, comptime, parameter-mode, directive, and accessor-only
-   edits each invalidate the complete declaration plan and body transaction as
-   appropriate while preserving independent signature/body/constant
-   projection stamps;
+   edits each invalidate the complete declaration plan, body transaction, and
+   const/comptime semantic projection as appropriate while preserving
+   independent unrelated signature and body stamps;
 8. an equal-length but differently ordered symbol interner fails closed, while
    the plan-owned spelling table recreates an exact local facade when needed;
 9. an index-heavy artifact is fully charged, can be evicted under budget, and
