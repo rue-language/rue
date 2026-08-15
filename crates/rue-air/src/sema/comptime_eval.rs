@@ -1373,7 +1373,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // container runs each live element's drop glue before freeing its
             // buffer (RUE-646). It reduces to unit so the surrounding block
             // body still yields the `struct { .. }` tail. `@size_of`/`@align_of`
-            // are not comptime-foldable here and stay non-evaluable.
+            // are not comptime-foldable here and stay non-evaluable (spec
+            // 4.14:29); `@int_max`/`@int_min` depend only on the type identity,
+            // not layout, so they evaluate to their integer bound (RUE-694).
             InstData::TypeIntrinsic { name, type_arg } => {
                 let (name, type_arg) = (*name, *type_arg);
                 let gate = self.body_interner().resolve(&name);
@@ -1384,6 +1386,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // not comptime-foldable here.
                 let is_droppable_gate = gate == "require_droppable";
                 let is_trivial_gate = gate == "require_trivially_droppable";
+                let is_int_bound = gate == "int_max" || gate == "int_min";
+                if is_int_bound {
+                    let is_max = gate == "int_max";
+                    // A still-unresolved type parameter makes the intrinsic
+                    // non-evaluable here; it folds at a concrete instantiation.
+                    let Some(int_ty) = self
+                        .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                            type_arg,
+                            env.type_subst,
+                            env.value_subst,
+                            span,
+                        )
+                    else {
+                        return Ok(None);
+                    };
+                    let bound = if is_max {
+                        int_ty.int_max()
+                    } else {
+                        int_ty.int_min()
+                    };
+                    // A non-integer argument is diagnosed by runtime analysis
+                    // (`analyze_type_intrinsic`, E0702); stay non-evaluable
+                    // rather than duplicating the diagnostic.
+                    return Ok(bound.map(ConstValue::Integer));
+                }
                 if !is_droppable_gate && !is_trivial_gate {
                     return Ok(None);
                 }

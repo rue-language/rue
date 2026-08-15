@@ -1,0 +1,39 @@
+[section]
+id = "diagnostics.int-bounds-non-integer"
+name = "@int_max/@int_min on a non-integer type is E0702 in every context (RUE-694)"
+description = """
+The integer-bounds intrinsics are defined only for integer types (spec
+4.13:129). A non-integer type argument reports E0702 naming the intrinsic, the
+expectation, and the found type — in runtime expression position and in a
+const initializer alike, so the const-context path does not degrade to the
+generic E0434 unsupported-expression diagnostic.
+"""
+
+[[case]]
+name = "int_max_bool_expression_position"
+description = "Runtime expression position names the intrinsic and the found type."
+source = """
+fn main() -> i32 {
+    let x = @int_max(bool);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0702",
+    "intrinsic '@int_max' expects an integer type, found bool",
+]
+
+[[case]]
+name = "int_min_bool_const_position"
+description = "A const initializer reports the same E0702, not E0434."
+source = """
+const X: i32 = @int_min(bool);
+
+fn main() -> i32 { X }
+"""
+compile_fail = true
+error_contains = [
+    "E0702",
+    "expects an integer type",
+]

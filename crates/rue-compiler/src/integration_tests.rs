@@ -1278,6 +1278,25 @@ drop fn StrBuf(self) { }
             let src = "fn main() -> i32 { @align_of(i64) }";
             assert!(test_air(src).is_ok());
         }
+
+        #[test]
+        fn int_bounds_intrinsics() {
+            // @int_max(T)/@int_min(T) are typed at T itself (RUE-694), so the
+            // u8 bound flows into a u8 annotation and the i64 bound into i64.
+            let src = "fn main() -> i32 {
+                let a: u8 = @int_max(u8);
+                let b: i64 = @int_min(i64);
+                if a == 255 && b < 0 { 0 } else { 1 }
+            }";
+            assert!(test_air(src).is_ok());
+        }
+
+        #[test]
+        fn int_bounds_reject_non_integer() {
+            // A non-integer type argument is E0702, not a successful fold.
+            let src = "fn main() -> i32 { let x = @int_max(bool); 0 }";
+            assert!(test_air(src).is_err());
+        }
     }
 
     // ========================================================================

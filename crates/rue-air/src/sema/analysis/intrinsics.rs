@@ -109,6 +109,44 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::new(air_ref, Type::UNIT));
         }
 
+        // `@int_max(T)` / `@int_min(T)` (RUE-694): the largest/smallest value
+        // representable in integer type `T`, typed as `T` itself — the only
+        // result type that never truncates (`u64::MAX` doesn't fit any signed
+        // type; `i64::MIN` doesn't fit `u64`). The value folds to a `Const`
+        // here like `@size_of`; the u64 payload carries narrow signed minima
+        // sign-extended, matching how negative literals are emitted.
+        if intrinsic_name == "int_max" || intrinsic_name == "int_min" {
+            if ty.is_error() {
+                let air_ref = air.add_inst(AirInst {
+                    data: AirInstData::Const(0),
+                    ty: Type::ERROR,
+                    span,
+                });
+                return Ok(AnalysisResult::new(air_ref, Type::ERROR));
+            }
+            let bound = if intrinsic_name == "int_max" {
+                ty.int_max()
+            } else {
+                ty.int_min()
+            };
+            let Some(bound) = bound else {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: intrinsic_name,
+                        expected: "an integer type".to_string(),
+                        found: self.format_type_name(ty),
+                    })),
+                    span,
+                ));
+            };
+            let air_ref = air.add_inst(AirInst {
+                data: AirInstData::Const(bound as u64),
+                ty,
+                span,
+            });
+            return Ok(AnalysisResult::new(air_ref, ty));
+        }
+
         // Calculate the value through the checked layout query. Oversized
         // types produce E0906 rather than overflowing or truncating the slot
         // count (RUE-561).

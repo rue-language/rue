@@ -1979,13 +1979,24 @@ impl<'a> ConstraintGenerator<'a> {
                 }
             }
 
-            // Type intrinsic (@size_of, @align_of)
-            InstData::TypeIntrinsic {
-                name: _,
-                type_arg: _,
-            } => {
-                // Type intrinsics return i32 (the size or alignment value)
-                InferType::Concrete(Type::I32)
+            // Type intrinsic (@size_of, @align_of, @int_max, @int_min)
+            InstData::TypeIntrinsic { name, type_arg } => {
+                match self.interner.resolve(name) {
+                    // The integer-bounds intrinsics evaluate to a value of the
+                    // queried type itself (RUE-694): `@int_max(u8): u8`. When
+                    // the type argument doesn't resolve here (a generic `T`
+                    // before substitution) — or resolves to a non-integer,
+                    // which sema rejects as E0702 — leave a fresh variable so
+                    // sema stays authoritative for both the type and the
+                    // diagnostic.
+                    "int_max" | "int_min" => self
+                        .resolve_rir_type(*type_arg, span.file_id)
+                        .filter(|ty| matches!(ty, InferType::Concrete(ty) if ty.is_integer()))
+                        .unwrap_or_else(|| InferType::Var(self.fresh_var())),
+                    // The remaining type intrinsics return i32 (the size or
+                    // alignment value).
+                    _ => InferType::Concrete(Type::I32),
+                }
             }
 
             // Field-offset intrinsic (@offset_of) — the compile-time byte

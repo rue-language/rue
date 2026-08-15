@@ -8040,6 +8040,71 @@ impl SemanticConstEvaluator<'_, '_> {
                     crate::durable_semantics::DurableType::Unit,
                 )))
             }
+            E::TypeIntrinsic { name, type_arg }
+                if matches!(self.symbol(name).as_ref(), "int_max" | "int_min") =>
+            {
+                // `@int_max(T)` / `@int_min(T)` (RUE-694) fold in const context
+                // too: unlike `@size_of`, they depend only on the type identity,
+                // never on layout. The numeric authority stays `Type::int_max`/
+                // `Type::int_min`; this arm only maps the durable scalar back.
+                let is_max = self.symbol(name).as_ref() == "int_max";
+                let ty = resolve_semantic_candidate_type(
+                    self.provider,
+                    &self.declaration.declaration.module,
+                    self.rir,
+                    self.symbols,
+                    *type_arg,
+                )
+                .map_err(|error| match error {
+                    rue_air::SemanticResolutionError::ProviderAbort(abort) => {
+                        EvaluateSemanticConstError::Abort(abort)
+                    }
+                    rue_air::SemanticResolutionError::ProviderFailure(failure) => {
+                        EvaluateSemanticConstError::failure(failure)
+                    }
+                    other => Self::failure_value(format!("{other:?}")),
+                })?;
+                use crate::durable_semantics::DurableType as T;
+                let scalar = match ty {
+                    T::I8 => Some(rue_air::Type::I8),
+                    T::I16 => Some(rue_air::Type::I16),
+                    T::I32 => Some(rue_air::Type::I32),
+                    T::I64 => Some(rue_air::Type::I64),
+                    T::U8 => Some(rue_air::Type::U8),
+                    T::U16 => Some(rue_air::Type::U16),
+                    T::U32 => Some(rue_air::Type::U32),
+                    T::U64 => Some(rue_air::Type::U64),
+                    _ => None,
+                };
+                let bound = scalar.and_then(|scalar| {
+                    if is_max {
+                        scalar.int_max()
+                    } else {
+                        scalar.int_min()
+                    }
+                });
+                let Some(bound) = bound else {
+                    return Err(Self::domain_failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
+                            rue_error::ErrorKind::IntrinsicTypeMismatch(Box::new(
+                                rue_error::IntrinsicTypeMismatchError {
+                                    name: if is_max {
+                                        "int_max".to_string()
+                                    } else {
+                                        "int_min".to_string()
+                                    },
+                                    expected: "an integer type".to_string(),
+                                    found: ty.kind().display_name().to_string(),
+                                },
+                            )),
+                        ),
+                    ));
+                };
+                Ok(EvaluatedSemanticConst::Value(TypedSemanticConst::typed(
+                    V::Integer(bound),
+                    ty,
+                )))
+            }
             E::EnumVariant {
                 module: None,
                 type_name,

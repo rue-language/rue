@@ -472,6 +472,8 @@ mod tests {
                 "align_of",
                 "require_droppable",
                 "require_trivially_droppable",
+                "int_max",
+                "int_min",
             ] {
                 let source = format!("fn f() -> i32 {{ @{intrinsic}({spelling}) }}");
                 let args = intrinsic_args(&source);
@@ -515,6 +517,8 @@ mod tests {
             "fn f() -> i32 { @size_of(Point { x: 1 }) }",
             "fn f() -> i32 { @align_of(!x) }",
             "fn f() -> i32 { @require_droppable(!true) }",
+            "fn f() -> i32 { @int_max(1 + 2) }",
+            "fn f() -> i32 { @int_min(\"s\") }",
             "fn f() -> i32 { @offset_of(1 + 2, x) }",
         ] {
             let errors = parse_source(source).unwrap_err();
