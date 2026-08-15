@@ -3,9 +3,9 @@
 // The legacy `abs`/`min`/`max`/`clamp` remain `i32` for backward compatibility;
 // the GENERIC (comptime-`T`) min/max/clamp live in `std.cmp`. The extended
 // functions below are generic over a comptime integer type `T` (verified:
-// `+ - * / % < &` all work on a type parameter). `checked_*` are `i64`-concrete:
-// portable generic overflow checks need an integer-bounds intrinsic
-// (`@int_max(T)`/`@int_min(T)`) that does not exist yet (RUE-694).
+// `+ - * / % < &` all work on a type parameter), including `checked_*`, whose
+// overflow pre-checks use the integer-bounds intrinsics `@int_max(T)`/
+// `@int_min(T)` (RUE-694).
 //
 // NOTE: calling a generic (`comptime T`) helper here from another module with a
 // bare integer literal currently fails to coerce the literal (RUE-693); bind a
@@ -137,83 +137,93 @@ pub fn is_prime(comptime T: type, n: T) -> bool {
     true
 }
 
-// --- i64 checked arithmetic (None on overflow, no trap) ---
+// --- checked arithmetic (None on overflow, no trap) ---
+//
+// Generic over a comptime integer type `T` (RUE-694): the overflow pre-checks
+// are written against `@int_max(T)`/`@int_min(T)`, so signed and unsigned
+// types alike work. The signed-only corners (`MIN / -1`) live behind an
+// `@int_min(T) == 0` signedness test whose signed arm is unreachable for
+// unsigned instantiations and avoids negative literals so it still
+// type-checks at unsigned `T`.
 
-// `i64::MAX` / `i64::MIN` written without overflowing the literal parser.
-fn i64_max() -> i64 {
-    9223372036854775807
-}
-fn i64_min() -> i64 {
-    -9223372036854775807 - 1
-}
-
-// `a + b`, or `None` if it would overflow `i64`.
-pub fn checked_add(a: i64, b: i64) -> option.Option(i64) {
-    let O = option.Option(i64);
+// `a + b`, or `None` if it would overflow `T`.
+pub fn checked_add(comptime T: type, a: T, b: T) -> option.Option(T) {
+    let O = option.Option(T);
     if b > 0 {
-        if a > i64_max() - b {
+        if a > @int_max(T) - b {
             return O.None;
         }
     } else {
-        if a < i64_min() - b {
+        if a < @int_min(T) - b {
             return O.None;
         }
     }
     O.Some(a + b)
 }
 
-// `a - b`, or `None` if it would overflow `i64`.
-pub fn checked_sub(a: i64, b: i64) -> option.Option(i64) {
-    let O = option.Option(i64);
+// `a - b`, or `None` if it would overflow `T`.
+pub fn checked_sub(comptime T: type, a: T, b: T) -> option.Option(T) {
+    let O = option.Option(T);
     if b < 0 {
-        if a > i64_max() + b {
+        if a > @int_max(T) + b {
             return O.None;
         }
     } else {
-        if a < i64_min() + b {
+        if a < @int_min(T) + b {
             return O.None;
         }
     }
     O.Some(a - b)
 }
 
-// `a * b`, or `None` if it would overflow `i64`. Pre-checks via division so the
+// `a * b`, or `None` if it would overflow `T`. Pre-checks via division so the
 // multiply itself never traps.
-pub fn checked_mul(a: i64, b: i64) -> option.Option(i64) {
-    let O = option.Option(i64);
+pub fn checked_mul(comptime T: type, a: T, b: T) -> option.Option(T) {
+    let O = option.Option(T);
     if a == 0 || b == 0 {
         return O.Some(0);
     }
-    // The MIN/-1 corner traps under the division pre-check, so handle it first.
-    if a == -1 {
-        if b == i64_min() {
+    if @int_min(T) == 0 {
+        // Unsigned: a single division pre-check covers every case.
+        if a > @int_max(T) / b {
             return O.None;
         }
         return O.Some(a * b);
     }
-    if b == -1 {
-        if a == i64_min() {
+    // Signed. The MIN/-1 corners trap under the division pre-check, so handle
+    // them first; `minus_one` is computed rather than written as a literal so
+    // this (unreachable-for-unsigned) path type-checks at unsigned `T`.
+    let zero: T = 0;
+    let minus_one: T = zero - 1;
+    if a == minus_one {
+        if b == @int_min(T) {
+            return O.None;
+        }
+        return O.Some(a * b);
+    }
+    if b == minus_one {
+        if a == @int_min(T) {
             return O.None;
         }
         return O.Some(a * b);
     }
     if a > 0 {
         if b > 0 {
-            if a > i64_max() / b {
+            if a > @int_max(T) / b {
                 return O.None;
             }
         } else {
-            if b < i64_min() / a {
+            if b < @int_min(T) / a {
                 return O.None;
             }
         }
     } else {
         if b > 0 {
-            if a < i64_min() / b {
+            if a < @int_min(T) / b {
                 return O.None;
             }
         } else {
-            if a < i64_max() / b {
+            if a < @int_max(T) / b {
                 return O.None;
             }
         }
