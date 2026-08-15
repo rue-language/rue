@@ -859,7 +859,8 @@ rue_sh_test(
 rue_sh_test(
     name = "shell-pipefail-pipeline-tool-tests",
     test = "scripts/test-validate-shell-pipefail-pipelines.py",
-    resources = ["scripts/validate-shell-pipefail-pipelines.py"],
+    resources = ["scripts/validate-shell-pipefail-pipelines.py"] +
+        glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
