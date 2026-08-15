@@ -920,6 +920,21 @@ rue_sh_test(
     },
 )
 
+# Shared plumbing for the validate-* gates (RUE-1522): the Rust masker,
+# walker prune policy, workflow job splitter, gate skeleton, and the tool
+# tests' script loader. The masker tests are the single place the
+# lifetime-vs-char-literal contract is pinned.
+rue_sh_test(
+    name = "gatelib-tests",
+    test = "scripts/test-gatelib.py",
+    resources = glob(["scripts/gatelib/*.py"]) + [
+        "scripts/validate-adrs.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # Same drift contract for the Caldera capacity corpus: the committed
 # examples/caldera is generator output, the generator writes in place, and
 # nothing else compares the two (RUE-1521 found a 782-file divergence that
