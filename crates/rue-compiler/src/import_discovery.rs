@@ -2778,12 +2778,6 @@ mod tests {
                 .expect("closed-valid revision retains graph"),
             &session.committed_import_graph().unwrap()
         ));
-        assert!(Arc::ptr_eq(
-            committed
-                .graph()
-                .expect("closed-valid revision retains graph"),
-            &session.import_graph(Some("/sdk")).unwrap()
-        ));
         let last_good = session
             .last_good_discovery()
             .unwrap()

@@ -12,8 +12,9 @@ pub use crate::diagnostic::{
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
 };
 pub use crate::import_discovery::{
-    DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode, ImportDemandRoots,
-    ImportInputRevision,
+    AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
+    ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportInputRevision,
+    ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
 
 /// Begin a fresh external-input observation generation.

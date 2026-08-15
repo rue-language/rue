@@ -8,7 +8,6 @@
 pub(crate) const APPROVED: &str = r#"stable|CompilerSession|artifact-query|embedders|committed_import_graph|pub fn committed_import_graph(&self)->Result<Arc<CanonicalImportGraphOutput>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|executable|pub fn executable(&mut self,options:&CompileOptions)->MultiErrorResult<CompileOutput>
 stable|CompilerSession|artifact-query|embedders|import_diagnostics|pub fn import_diagnostics(&mut self)->Result<Arc<FrontendDiagnosticSnapshot>,CompileErrors>
-stable|CompilerSession|artifact-query|embedders|import_graph|pub fn import_graph(&mut self,std_dir:Option<&str>,)->Result<Arc<CanonicalImportGraphOutput>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
 stable|CompilerSession|diagnostic-query|embedders|last_good_semantic_diagnostics|pub fn last_good_semantic_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
@@ -38,12 +37,6 @@ stable|dependency_envelope|dependency-artifact|source-loaders+embedders|Dependen
 stable|dependency_envelope|dependency-artifact|source-loaders+embedders|DependencyTopologyRecord|pub use dependency_envelope::DependencyTopologyRecord
 stable|diagnostic_attempt_store|diagnostic|cli+embedders|DiagnosticStage|pub use diagnostic_attempt_store::DiagnosticStage
 stable|diagnostic_attempt_store|diagnostic|cli+embedders|FrontendDiagnosticSnapshot|pub use diagnostic_attempt_store::FrontendDiagnosticSnapshot
-stable|import_discovery|compatibility-boundary|legacy-embedders|AcceptedImportSource|pub use import_discovery::AcceptedImportSource
-stable|import_discovery|compatibility-boundary|legacy-embedders|ImportDiscoveryPlan|pub use import_discovery::ImportDiscoveryPlan
-stable|import_discovery|compatibility-boundary|legacy-embedders|ImportDiscoveryRequest|pub use import_discovery::ImportDiscoveryRequest
-stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservation|pub use import_discovery::ImportObservation
-stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationLedger|pub use import_discovery::ImportObservationLedger
-stable|import_discovery|compatibility-boundary|legacy-embedders|ImportObservationStatus|pub use import_discovery::ImportObservationStatus
 stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedReadManifest|pub use import_discovery::AcceptedReadManifest
 stable|import_discovery|dependency-artifact|source-loaders+embedders|AcceptedReadManifestEntry|pub use import_discovery::AcceptedReadManifestEntry
 stable|import_discovery|dependency-artifact|source-loaders+embedders|FileMetadataFingerprint|pub use import_discovery::FileMetadataFingerprint

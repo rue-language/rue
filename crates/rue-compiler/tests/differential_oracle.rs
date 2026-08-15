@@ -12,17 +12,17 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
-    DifferentialOracleFault, DiscoverySourceAssembler, ImportDemandMode, PresentationRequest,
-    PresentationStage, begin_import_input_request, close_import_input_request, discovery_attempt,
-    import_demand_frontier_for_roots, import_discovery_accepted_reads_debug,
-    import_discovery_graph_input_debug, import_discovery_observation_ledger_debug,
-    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch, rooted_cfg,
-    stage_import_input_request,
+    AcceptedImportSource, DifferentialOracleFault, DiscoverySourceAssembler, ImportDemandMode,
+    ImportObservation, PresentationRequest, PresentationStage, begin_import_input_request,
+    close_import_input_request, discovery_attempt, import_demand_frontier_for_roots,
+    import_discovery_accepted_reads_debug, import_discovery_graph_input_debug,
+    import_discovery_observation_ledger_debug, inject_stale_query_for_oracle, oracle_executable,
+    publish_import_observation_batch, rooted_cfg, stage_import_input_request,
 };
 use rue_compiler::{
-    AcceptedImportSource, CompileOptions, CompilerSession, FileMetadataFingerprint,
-    FrontendDiagnosticSnapshot, ImportDiscoveryContext, ImportObservation, PhysicalFileIdentity,
-    PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
+    CompileOptions, CompilerSession, FileMetadataFingerprint, FrontendDiagnosticSnapshot,
+    ImportDiscoveryContext, PhysicalFileIdentity, PreviewFeature, PreviewFeatures, SourceMetadata,
+    SourceSnapshot,
 };
 use rue_span::FileId;
 use rue_target::Target;

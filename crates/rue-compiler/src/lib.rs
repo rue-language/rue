@@ -110,13 +110,17 @@ pub use dependency_envelope::{
 pub(crate) use diagnostic_attempt_store::FrontendDiagnosticIdentity;
 pub use diagnostic_attempt_store::{DiagnosticStage, FrontendDiagnosticSnapshot};
 pub use import_discovery::{
-    AcceptedImportSource, AcceptedReadManifest, AcceptedReadManifestEntry, FileMetadataFingerprint,
-    ImportCandidateRole, ImportDiscoveryContext, ImportDiscoveryPlan, ImportDiscoveryRequest,
-    ImportObservation, ImportObservationLedger, ImportObservationStatus, ImportOccurrenceKey,
-    PhysicalFileIdentity,
+    AcceptedReadManifest, AcceptedReadManifestEntry, FileMetadataFingerprint, ImportCandidateRole,
+    ImportDiscoveryContext, ImportOccurrenceKey, PhysicalFileIdentity,
 };
+// Host discovery-protocol records are published through `unstable` only; the
+// crate-local paths keep the session and its tests on one spelling.
+#[cfg(test)]
+pub(crate) use import_discovery::AcceptedImportSource;
 pub(crate) use import_discovery::{
-    ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportInputRevision,
+    ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportDiscoveryPlan,
+    ImportDiscoveryRequest, ImportInputRevision, ImportObservation, ImportObservationLedger,
+    ImportObservationStatus,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,

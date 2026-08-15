@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use rue_compiler::unstable::{
-    DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode, ImportInputRevision,
+    AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
+    ImportDiscoveryRequest, ImportInputRevision, ImportObservation, ImportObservationStatus,
     RootedParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
     close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
     discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
@@ -26,10 +27,9 @@ use rue_compiler::unstable::{
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
 use rue_compiler::{
-    AcceptedImportSource, AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession,
-    DependencyEnvelope, FileId, FileMetadataFingerprint, ImportDiscoveryContext,
-    ImportDiscoveryRequest, ImportDiscoveryStatus, ImportDiscoveryView, ImportObservation,
-    ImportObservationStatus, PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
+    AcceptedReadManifest, CompileErrors, CompileOptions, CompilerSession, DependencyEnvelope,
+    FileId, FileMetadataFingerprint, ImportDiscoveryContext, ImportDiscoveryStatus,
+    ImportDiscoveryView, PhysicalFileIdentity, SourceMetadata, SourceSnapshot,
     TrustedToolchainModuleDemand,
 };
 
