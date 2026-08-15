@@ -104,7 +104,18 @@ elif [[ -r /proc/sys/kernel/random/uuid ]]; then
     buck_trace_id="$(cat /proc/sys/kernel/random/uuid)"
 fi
 
-BUCK_WRAPPER_UUID="$buck_trace_id" ./buck2 test "${test_args[@]}"
+# The report is a diagnostic; the corpus run is the job. So a host with no uuid
+# source must lose the report and nothing else — which means NOT exporting the
+# variable at all, rather than exporting it empty. buck2 parses
+# BUCK_WRAPPER_UUID before it parses a single argument and rejects a set-but-empty
+# value outright (exit 2, `invalid length: found 0`), so the empty-string spelling
+# turns a missing `uuidgen` into a dead corpus lane. Every current CI image has
+# one, but the fallback chain above exists because some Linux hosts do not.
+if [[ -n "$buck_trace_id" ]]; then
+    BUCK_WRAPPER_UUID="$buck_trace_id" ./buck2 test "${test_args[@]}"
+else
+    ./buck2 test "${test_args[@]}"
+fi
 status=$?
 
 # `what-ran` reports one tab-delimited row per command behind a header line that

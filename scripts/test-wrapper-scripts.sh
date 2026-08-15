@@ -885,6 +885,15 @@ EOF
   chmod +x "$sb/scripts/cli-timeout-policy.py"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
+# The invocation id is read from the environment at startup, before any argument
+# is parsed and for every subcommand. A set-but-empty value is not "absent" — it
+# is a malformed uuid, and the real binary dies on it. Unset is the only way to
+# say "pick one for me". The fake used to accept the empty spelling, which is why
+# a wrapper that exported one could not be caught here.
+if [ -n "${BUCK_WRAPPER_UUID+set}" ] && [ -z "$BUCK_WRAPPER_UUID" ]; then
+  printf 'Error: Parsing buck2 invocation id from env variable BUCK_WRAPPER_UUID\n\nCaused by:\n    invalid length: found 0\n' >&2
+  exit 2
+fi
 if [ "$1" = "uquery" ]; then
   printf 'root%s\n' "${FAKE_LABELED_TARGET:-//:cli-tests}"
   exit 0
@@ -1160,6 +1169,36 @@ EOF
   check "ci-heavy-suite: an invocation that logged nothing reports nothing" \
     "$([ "$rc" -eq 3 ] && ! grep -Fq 'served from cache' <<<"$out" && ! grep -Fq 'executed action' <<<"$out" && echo 0 || echo 1)"
 
+  # The empty invocation id, which the real binary refuses before it parses an
+  # argument. Asserted against the fake directly, the way the `--env` guard above
+  # is: the wrapper test below is only meaningful if this divergence is visible.
+  rc=0
+  out="$(cd "$sb" && BUCK_WRAPPER_UUID="" ./buck2 test //:cli-tests 2>&1)" || rc=$?
+  check "fake buck2: refuses an empty BUCK_WRAPPER_UUID as the real binary does" \
+    "$([ "$rc" -eq 2 ] && grep -Fq 'invalid length: found 0' <<<"$out" && echo 0 || echo 1)"
+
+  # ...so a host with no usable uuid source must lose the report and keep the
+  # run. Exporting the variable empty made that branch fatal instead.
+  #
+  # The shim stands in for both arms of the fallback chain failing: what the code
+  # under test sees either way is an empty trace id, and a shim is the only
+  # spelling of that which reproduces on Linux, where the
+  # /proc/sys/kernel/random/uuid fallback would otherwise succeed.
+  mkdir -p "$sb/nouuid"
+  cat >"$sb/nouuid/uuidgen" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+  chmod +x "$sb/nouuid/uuidgen"
+  : >"$sb/calls.log"
+  rc=0
+  out="$(cd "$sb" && PATH="$sb/nouuid:$PATH" FAKE_CALL_LOG="$sb/calls.log" \
+    ./ci-heavy-suite //:cli-tests 2>&1)" || rc=$?
+  check "ci-heavy-suite: no uuid source costs the what-ran report, not the run" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '//:cli-tests' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: and it claims nothing about caching it cannot know" \
+    "$(! grep -Fq 'served from cache' <<<"$out" && ! grep -Fq 'executed action' <<<"$out" && echo 0 || echo 1)"
+
   rm -rf "$sb"
 }
 
@@ -1186,7 +1225,8 @@ if [ "$1" = "uquery" ]; then
     exit "$FAKE_QUERY_EXIT"
   fi
   # RUE-1222: the inventory cross-checks the corpus-action set against the
-  # rue_heavy_suite label set, so the fake must answer the two queries apart.
+  # rue_heavy_suite label set and resolves --exclude-label through the graph as
+  # well, so the fake must answer all three queries apart.
   case "$2" in
     *rue_heavy_suite*)
       if [ "${FAKE_HEAVY_QUERY_EXIT:-0}" != 0 ]; then exit "$FAKE_HEAVY_QUERY_EXIT"; fi
@@ -1198,12 +1238,26 @@ if [ "$1" = "uquery" ]; then
       if [ "${FAKE_UNCONVERTED_HEAVY:-0}" = 1 ]; then printf 'root//:tutorial-snippet-tests\n'; fi
       exit 0
       ;;
+    *rue_cli_shard*)
+      if [ "${FAKE_LABEL_QUERY_EXIT:-0}" != 0 ]; then exit "$FAKE_LABEL_QUERY_EXIT"; fi
+      printf 'root//:cli-tests-shard-0\n'
+      printf 'root//:cli-tests-shard-1\n'
+      exit 0
+      ;;
+    *rue_no_such_label*)
+      exit 0
+      ;;
   esac
   if [ "${FAKE_EMPTY:-0}" = 1 ]; then exit 0; fi
   if [ "${FAKE_BAD_LABEL:-0}" = 1 ]; then printf 'root//:not-a-corpus\n'; exit 0; fi
   printf 'root//:cli-tests-action\n'
   printf 'root//:cli-tests-shard-0-action\n'
   printf 'root//:cli-tests-shard-1-action\n'
+  # A corpus named like a shard but not labeled one. It stands for the way a
+  # prefix exclusion loses a corpus: `//:cli-tests-shard-*` would swallow it
+  # after the completeness cross-check had already passed, so it would leave the
+  # sweep with nothing anywhere reporting an error.
+  printf 'root//:cli-tests-shard-weights-smoke-action\n'
   printf 'root//:spec-tests-action\n'
   printf 'root//crates/rue-oracle-diff:oracle-diff-test-action\n'
   exit 0
@@ -1218,13 +1272,43 @@ EOF
     "$([ "$rc" -eq 0 ] && [ "$out" = '//:cli-tests
 //:cli-tests-shard-0
 //:cli-tests-shard-1
+//:cli-tests-shard-weights-smoke
 //:spec-tests
 //crates/rue-oracle-diff:oracle-diff-test' ] && echo 0 || echo 1)"
 
   rc=0
-  out="$(cd "$sb" && scripts/ci-corpus-inventory --json --exclude '//:cli-tests-shard-*' 2>&1)" || rc=$?
+  out="$(cd "$sb" && scripts/ci-corpus-inventory --json \
+    --exclude '//:cli-tests' --exclude-label rue_cli_shard 2>&1)" || rc=$?
   check "ci-corpus-inventory: --json emits a matrix-ready array with exclusions applied" \
-    "$([ "$rc" -eq 0 ] && [ "$out" = '["//:cli-tests","//:spec-tests","//crates/rue-oracle-diff:oracle-diff-test"]' ] && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && [ "$out" = '["//:cli-tests-shard-weights-smoke","//:spec-tests","//crates/rue-oracle-diff:oracle-diff-test"]' ] && echo 0 || echo 1)"
+
+  # The finding this replaced a glob to fix. `//:cli-tests-shard-*` matched the
+  # decoy too, and it was applied AFTER the heavy-suite cross-check, so the
+  # corpus left the sweep with every check still green. Resolving the real
+  # shards through their label keeps a look-alike in.
+  check "ci-corpus-inventory: a corpus merely named like a shard stays in the sweep" \
+    "$(grep -Fq 'cli-tests-shard-weights-smoke' <<<"$out" && echo 0 || echo 1)"
+
+  # ...and the spelling that could reintroduce it is refused outright rather
+  # than silently matching one literal target.
+  rc=0
+  out="$(cd "$sb" && scripts/ci-corpus-inventory --exclude '//:cli-tests-shard-*' 2>&1)" || rc=$?
+  check "ci-corpus-inventory: a glob exclusion is rejected, not honored" \
+    "$([ "$rc" -eq 2 ] && grep -Fq 'exact target label' <<<"$out" && echo 0 || echo 1)"
+
+  # A label naming nothing excludes nothing: over-sweeping is safe, and failing
+  # here would make removing a label break an unrelated workflow.
+  rc=0
+  out="$(cd "$sb" && scripts/ci-corpus-inventory --exclude-label rue_no_such_label 2>&1)" || rc=$?
+  check "ci-corpus-inventory: a label that resolves to nothing sweeps everything" \
+    "$([ "$rc" -eq 0 ] && [ "$(wc -l <<<"$out" | tr -d ' ')" = 6 ] && echo 0 || echo 1)"
+
+  # But a label set that cannot be READ is the under-sweeping direction again.
+  rc=0
+  out="$(cd "$sb" && FAKE_LABEL_QUERY_EXIT=5 scripts/ci-corpus-inventory \
+    --exclude-label rue_cli_shard 2>&1)" || rc=$?
+  check "ci-corpus-inventory: an unreadable exclusion label fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq "resolve an exclusion" <<<"$out" && echo 0 || echo 1)"
 
   rc=0
   out="$(cd "$sb" && FAKE_QUERY_EXIT=3 scripts/ci-corpus-inventory 2>&1)" || rc=$?
@@ -1236,10 +1320,18 @@ EOF
   check "ci-corpus-inventory: an empty inventory fails instead of sweeping nothing" \
     "$([ "$rc" -ne 0 ] && grep -Fq 'refusing to report a vacuous sweep' <<<"$out" && echo 0 || echo 1)"
 
+  # Excluding the whole graph one target at a time is still a vacuous sweep, and
+  # has to fail for the same reason an unreadable one does. Spelled out in full
+  # now that there is no wildcard to say it in one argument.
   rc=0
-  out="$(cd "$sb" && FAKE_EMPTY=1 scripts/ci-corpus-inventory --exclude '//:*' 2>&1)" || rc=$?
+  out="$(cd "$sb" && scripts/ci-corpus-inventory \
+    --exclude '//:cli-tests' \
+    --exclude '//:cli-tests-shard-weights-smoke' \
+    --exclude '//:spec-tests' \
+    --exclude '//crates/rue-oracle-diff:oracle-diff-test' \
+    --exclude-label rue_cli_shard 2>&1)" || rc=$?
   check "ci-corpus-inventory: excluding everything is an empty inventory too" \
-    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+    "$([ "$rc" -ne 0 ] && grep -Fq 'refusing to report a vacuous sweep' <<<"$out" && echo 0 || echo 1)"
 
   rc=0
   out="$(cd "$sb" && FAKE_BAD_LABEL=1 scripts/ci-corpus-inventory 2>&1)" || rc=$?
