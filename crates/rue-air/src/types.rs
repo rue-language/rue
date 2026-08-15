@@ -2111,40 +2111,33 @@ mod tests {
         assert_eq!(Type::UNIT.int_max(), None);
     }
 
-    /// The shape a declared type has once the intake helpers above have taken
-    /// it apart again, expressed independently of the text that carried it.
     #[derive(Debug, PartialEq, Eq)]
-    enum Decomposed {
-        /// A leaf the intake helpers do not decompose: a primitive, a
-        /// user-defined name, a dotted path, `()`, `!`, or a slice.
-        Leaf(String),
-        Array(Box<Decomposed>, ArrayLen),
-        Ptr(Box<Decomposed>, PtrMutability),
-        Call(String, Vec<Decomposed>),
+    enum StructuredType {
+        Named(String),
+        Qualified(Vec<String>),
+        Unit,
+        Never,
+        Array(Box<StructuredType>, Box<StructuredType>),
+        Slice(Box<StructuredType>),
+        PointerConst(Box<StructuredType>),
+        PointerMut(Box<StructuredType>),
+        TypeCall(Vec<String>, Vec<StructuredType>),
+        ValueCall(String, Vec<StructuredType>),
+        Integer(i128),
     }
 
-    /// Take a declared type apart with the intake helpers, in the order
-    /// `resolve_semantic_type_syntax` applies them (array, pointer, type call).
-    fn decompose(syntax: &str) -> Decomposed {
-        if let Some((element, length)) = parse_array_type_syntax(syntax) {
-            return Decomposed::Array(Box::new(decompose(&element)), length);
-        }
-        if let Some((pointee, mutability)) = parse_pointer_type_syntax(syntax) {
-            return Decomposed::Ptr(Box::new(decompose(&pointee)), mutability);
-        }
-        if let Some((callee, arguments)) = parse_type_call_syntax(syntax) {
-            return Decomposed::Call(callee, arguments.iter().map(|a| decompose(a)).collect());
-        }
-        Decomposed::Leaf(syntax.to_owned())
-    }
-
-    fn leaf(name: &str) -> Decomposed {
-        Decomposed::Leaf(name.to_owned())
-    }
-
-    /// The type RIR carries for `f`'s single parameter, exactly as semantic
-    /// analysis receives it.
-    fn declared_parameter_type(annotation: &str) -> String {
+    /// The parser-structured type RIR carries for `f`'s single parameter.
+    ///
+    /// Tests intentionally keep this in its structured form. Rendering it and
+    /// feeding the resulting text back through the semantic grammar would
+    /// recreate the production peer path this artifact replaces.
+    fn declared_parameter_type(
+        annotation: &str,
+    ) -> (
+        rue_rir::RirTypeSyntaxArena<lasso::Spur>,
+        rue_rir::RirTypeSyntaxRef,
+        lasso::ThreadedRodeo,
+    ) {
         let source = format!("fn f(p: {annotation}) -> i32 {{ 0 }}");
         let (tokens, interner) = rue_lexer::Lexer::new(&source).tokenize().unwrap();
         let (ast, interner) = rue_parser::Parser::new(tokens, interner).parse().unwrap();
@@ -2160,169 +2153,188 @@ mod tests {
             .expect("lowered function declaration");
         let params = rir.params(&params);
         assert_eq!(params.len(), 1, "one declared parameter for {annotation}");
-        interner.resolve(&params.get(0).unwrap().ty).to_owned()
+        (
+            rir.type_syntax().clone(),
+            params.get(0).unwrap().ty,
+            interner,
+        )
     }
 
-    /// RUE-791: parser `TypeExpr` -> RIR text -> semantic intake is a peer
-    /// grammar with two independent halves, so every declarable type shape is
-    /// pinned end to end here: the exact text `AstGen` renders, and the exact
-    /// structure this module's helpers recover from it. A renderer change that
-    /// the intake cannot take apart again (or that silently reassociates
-    /// nesting) fails here rather than in whichever later phase first misreads
-    /// the type. Anonymous `struct`/`enum` types are absent by construction:
-    /// they are rejected in type-annotation position and reach RIR as their own
-    /// instructions, never as declared type text.
+    fn symbols(
+        arena: &rue_rir::RirTypeSyntaxArena<lasso::Spur>,
+        interner: &lasso::ThreadedRodeo,
+        range: rue_rir::RirTypeSyntaxRange,
+    ) -> Vec<String> {
+        arena
+            .words(range)
+            .expect("valid symbol range")
+            .iter()
+            .map(|word| {
+                interner
+                    .resolve(
+                        arena
+                            .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
+                            .expect("valid symbol ordinal"),
+                    )
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn structured_type(
+        arena: &rue_rir::RirTypeSyntaxArena<lasso::Spur>,
+        interner: &lasso::ThreadedRodeo,
+        reference: rue_rir::RirTypeSyntaxRef,
+    ) -> StructuredType {
+        use rue_rir::RirTypeSyntaxNode as Node;
+
+        let child = |reference| structured_type(arena, interner, reference);
+        match arena
+            .node(reference)
+            .expect("valid structured type reference")
+        {
+            Node::Named(symbol) => StructuredType::Named(
+                interner
+                    .resolve(arena.symbol(*symbol).expect("valid named symbol"))
+                    .to_owned(),
+            ),
+            Node::Qualified { path } => StructuredType::Qualified(symbols(arena, interner, *path)),
+            Node::Unit => StructuredType::Unit,
+            Node::Never => StructuredType::Never,
+            Node::Array { element, length } => {
+                StructuredType::Array(Box::new(child(*element)), Box::new(child(*length)))
+            }
+            Node::Slice { element } => StructuredType::Slice(Box::new(child(*element))),
+            Node::PointerConst { pointee } => {
+                StructuredType::PointerConst(Box::new(child(*pointee)))
+            }
+            Node::PointerMut { pointee } => StructuredType::PointerMut(Box::new(child(*pointee))),
+            Node::TypeCall { path, arguments } => StructuredType::TypeCall(
+                symbols(arena, interner, *path),
+                arena
+                    .words(*arguments)
+                    .expect("valid type-call arguments")
+                    .iter()
+                    .map(|word| child(rue_rir::RirTypeSyntaxRef::from_u32(*word)))
+                    .collect(),
+            ),
+            Node::ValueCall { name, arguments } => StructuredType::ValueCall(
+                interner
+                    .resolve(arena.symbol(*name).expect("valid value-call name"))
+                    .to_owned(),
+                arena
+                    .words(*arguments)
+                    .expect("valid value-call arguments")
+                    .iter()
+                    .map(|word| child(rue_rir::RirTypeSyntaxRef::from_u32(*word)))
+                    .collect(),
+            ),
+            Node::Integer(value) => StructuredType::Integer(*value),
+            Node::AnonymousStruct { .. } | Node::AnonymousEnum { .. } => {
+                panic!("anonymous types are not accepted in declared annotation position")
+            }
+        }
+    }
+
+    fn named(name: &str) -> StructuredType {
+        StructuredType::Named(name.to_owned())
+    }
+
+    /// Parser `TypeExpr` structure is retained exactly in the declaration RIR
+    /// and consumed directly by semantic analysis. Every declarable shape is
+    /// pinned here without rendering or reparsing a second type grammar.
     #[test]
-    fn declared_type_syntax_round_trips_through_the_semantic_intake() {
-        let cases: Vec<(&str, &str, Decomposed)> = vec![
-            // TypeExpr::Named
-            ("i32", "i32", leaf("i32")),
-            ("MyType", "MyType", leaf("MyType")),
-            // TypeExpr::Qualified
-            ("shapes.Point", "shapes.Point", leaf("shapes.Point")),
-            // TypeExpr::Unit / TypeExpr::Never
-            ("()", "()", leaf("()")),
-            ("!", "!", leaf("!")),
-            // TypeExpr::Array, with each ArrayLength form
+    fn declared_type_syntax_stays_structured_through_rir_intake() {
+        use StructuredType as T;
+
+        let cases = [
+            ("i32", named("i32")),
+            ("MyType", named("MyType")),
+            (
+                "shapes.Point",
+                T::Qualified(vec!["shapes".to_owned(), "Point".to_owned()]),
+            ),
+            ("()", T::Unit),
+            ("!", T::Never),
             (
                 "[i32; 4]",
-                "[i32; 4]",
-                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Literal(4)),
+                T::Array(Box::new(named("i32")), Box::new(T::Integer(4))),
             ),
             (
                 "[i32; N]",
-                "[i32; N]",
-                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Named("N".to_owned())),
+                T::Array(Box::new(named("i32")), Box::new(named("N"))),
             ),
             (
                 "[i32; fact(4)]",
-                "[i32; fact(4)]",
-                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Named("fact(4)".to_owned())),
-            ),
-            // Nested arrays keep their nesting: the outer length is the trailing
-            // one, and the inner array stays the element.
-            (
-                "[[u8; 2]; 3]",
-                "[[u8; 2]; 3]",
-                Decomposed::Array(
-                    Box::new(Decomposed::Array(
-                        Box::new(leaf("u8")),
-                        ArrayLen::Literal(2),
-                    )),
-                    ArrayLen::Literal(3),
+                T::Array(
+                    Box::new(named("i32")),
+                    Box::new(T::ValueCall("fact".to_owned(), vec![T::Integer(4)])),
                 ),
             ),
-            // TypeExpr::Slice — a leaf for the helpers above; slice resolution
-            // has its own dispatch.
-            ("[i32]", "[i32]", leaf("[i32]")),
-            // TypeExpr::PointerConst / TypeExpr::PointerMut, including a
-            // pointer to a compound type and an array of pointers.
             (
-                "ptr const i32",
-                "ptr const i32",
-                Decomposed::Ptr(Box::new(leaf("i32")), PtrMutability::Const),
-            ),
-            (
-                "ptr mut i32",
-                "ptr mut i32",
-                Decomposed::Ptr(Box::new(leaf("i32")), PtrMutability::Mut),
-            ),
-            (
-                "ptr const [i32; 4]",
-                "ptr const [i32; 4]",
-                Decomposed::Ptr(
-                    Box::new(Decomposed::Array(
-                        Box::new(leaf("i32")),
-                        ArrayLen::Literal(4),
-                    )),
-                    PtrMutability::Const,
+                "[[u8; 2]; 3]",
+                T::Array(
+                    Box::new(T::Array(Box::new(named("u8")), Box::new(T::Integer(2)))),
+                    Box::new(T::Integer(3)),
                 ),
+            ),
+            ("[i32]", T::Slice(Box::new(named("i32")))),
+            (
+                "ptr const [i32; 4]",
+                T::PointerConst(Box::new(T::Array(
+                    Box::new(named("i32")),
+                    Box::new(T::Integer(4)),
+                ))),
             ),
             (
                 "[ptr mut u8; 2]",
-                "[ptr mut u8; 2]",
-                Decomposed::Array(
-                    Box::new(Decomposed::Ptr(Box::new(leaf("u8")), PtrMutability::Mut)),
-                    ArrayLen::Literal(2),
+                T::Array(
+                    Box::new(T::PointerMut(Box::new(named("u8")))),
+                    Box::new(T::Integer(2)),
                 ),
             ),
-            // TypeExpr::TypeCall, nested, and with a TypeExpr::IntArg argument.
-            (
-                "Result(i32, bool)",
-                "Result(i32, bool)",
-                Decomposed::Call("Result".to_owned(), vec![leaf("i32"), leaf("bool")]),
-            ),
             (
                 "Result(Option(i32), bool)",
-                "Result(Option(i32), bool)",
-                Decomposed::Call(
-                    "Result".to_owned(),
+                T::TypeCall(
+                    vec!["Result".to_owned()],
                     vec![
-                        Decomposed::Call("Option".to_owned(), vec![leaf("i32")]),
-                        leaf("bool"),
+                        T::TypeCall(vec!["Option".to_owned()], vec![named("i32")]),
+                        named("bool"),
                     ],
                 ),
             ),
             (
                 "Vector(i32, 3)",
-                "Vector(i32, 3)",
-                Decomposed::Call("Vector".to_owned(), vec![leaf("i32"), leaf("3")]),
+                T::TypeCall(vec!["Vector".to_owned()], vec![named("i32"), T::Integer(3)]),
             ),
-            // A comma inside an argument must not split the argument list.
-            (
-                "Holder(Result(i32, bool))",
-                "Holder(Result(i32, bool))",
-                Decomposed::Call(
-                    "Holder".to_owned(),
-                    vec![Decomposed::Call(
-                        "Result".to_owned(),
-                        vec![leaf("i32"), leaf("bool")],
-                    )],
-                ),
-            ),
-            // An array argument carries a `;` and brackets through the split.
-            (
-                "Holder([i32; 4])",
-                "Holder([i32; 4])",
-                Decomposed::Call(
-                    "Holder".to_owned(),
-                    vec![Decomposed::Array(
-                        Box::new(leaf("i32")),
-                        ArrayLen::Literal(4),
-                    )],
-                ),
-            ),
-            // TypeExpr::QualifiedTypeCall
             (
                 "shapes.Pair(i32)",
-                "shapes.Pair(i32)",
-                Decomposed::Call("shapes.Pair".to_owned(), vec![leaf("i32")]),
+                T::TypeCall(
+                    vec!["shapes".to_owned(), "Pair".to_owned()],
+                    vec![named("i32")],
+                ),
             ),
-            // TypeExpr::StrFixed renders as the same `Name(N)` text the
-            // const-capacity spelling produces, so both reduce identically.
-            (
-                "Str(8)",
-                "Str(8)",
-                Decomposed::Call("Str".to_owned(), vec![leaf("8")]),
-            ),
-            // A fixed-capacity string as an array element keeps both shapes.
             (
                 "[Str(8); 2]",
-                "[Str(8); 2]",
-                Decomposed::Array(
-                    Box::new(Decomposed::Call("Str".to_owned(), vec![leaf("8")])),
-                    ArrayLen::Literal(2),
+                T::Array(
+                    Box::new(T::TypeCall(vec!["Str".to_owned()], vec![T::Integer(8)])),
+                    Box::new(T::Integer(2)),
                 ),
             ),
         ];
 
-        for (annotation, rendered, expected) in cases {
-            let declared = declared_parameter_type(annotation);
-            assert_eq!(declared, rendered, "rendering of `{annotation}`");
+        for (annotation, expected) in cases {
+            let (arena, root, interner) = declared_parameter_type(annotation);
+            for (owner, _) in arena.nodes().iter().enumerate() {
+                assert!(arena.visit_child_references(
+                    rue_rir::RirTypeSyntaxRef::from_u32(owner as u32),
+                    |child| assert!(child.index() < owner, "postorder child for `{annotation}`"),
+                ));
+            }
             assert_eq!(
-                decompose(&declared),
+                structured_type(&arena, &interner, root),
                 expected,
-                "semantic intake of `{annotation}`"
+                "structured declaration type for `{annotation}`"
             );
         }
     }

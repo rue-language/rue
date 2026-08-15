@@ -68,12 +68,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         air: &mut Air,
         name: Spur,
-        type_arg: Spur,
+        type_arg: rue_rir::RirTypeSyntaxRef,
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let intrinsic_name = self.body_interner().resolve(&name).to_string();
-        let ty = self.resolve_type_with_ctx(type_arg, span, ctx)?;
+        let ty = self.resolve_rir_type_with_ctx(type_arg, span, ctx)?;
 
         // `@require_droppable(T)` is the owning-container well-formedness gate
         // (RUE-388): it has no runtime value and evaluates to unit. It is
@@ -153,11 +153,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn analyze_offset_of(
         &mut self,
         air: &mut Air,
-        type_arg: Spur,
+        type_arg: rue_rir::RirTypeSyntaxRef,
         field: Spur,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
-        let ty = self.resolve_type(type_arg, span)?;
+        let ty = self.resolve_rir_type(type_arg, span)?;
 
         // `@offset_of` is only meaningful for a struct type: only structs have
         // named fields. A non-struct operand is the same error class as `.f`

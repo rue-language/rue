@@ -1764,7 +1764,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 debug_assert_eq!(name, source_name);
                 debug_assert!(!has_self);
                 debug_assert_eq!(params, fn_info.rir_params(sema.rir));
-                debug_assert_eq!(return_type, fn_info.return_type_sym);
+                debug_assert_eq!(return_type, fn_info.return_type_syntax);
                 debug_assert_eq!(body, fn_info.body);
                 debug_assert_eq!(span, fn_info.span);
                 debug_assert_eq!(span.file_id, fn_info.file_id);

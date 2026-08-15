@@ -14,7 +14,7 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 | Comptime bodies | The semantic-nucleus comptime-call evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-function source assembly, body lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: comptime evaluation consumes the same candidate artifact as runtime analysis; no production call or definition of `parse_semantic_body`, and declaration discovery hands the exact artifact terminals to body closure without a second AstGen pass |
 | Constants | The semantic-nucleus const evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-const source reconstruction, lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: constant evaluation consumes the declaration artifact directly; no production call or definition of `parse_semantic_const`, and the evaluator resolves packed ordinal spellings without reconstructing an interner |
 | Well-known option body scan | `PackedValidatedRir::fallible_intrinsics`; consumed by `compiler.body-toolchain-demands` through `DeclarationBodyPlanArtifacts` | Derives the typed five-kind set during the one canonical packed-RIR traversal; production performs no second lexer pass over retained body text | Complete: the packed header owns the stable typed set and the old lexical scanner remains only as an independent `cfg(test)` oracle |
-| Structured type syntax | `AstGen::intern_type` in `rue-rir/src/astgen.rs` renders arrays, pointers, calls, qualified paths, and integer arguments into interned text; `rue-air` and compiler consumers then use parse helpers, prefix/slice tests, qualified-name splitting, and literal `"type"` comparisons to recover structure | Turns parser structure into a peer string grammar and repeatedly reconstructs it during inference, semantic type resolution, binding-manifest construction, provider analysis, and comptime classification | RIR carries dense structured type-syntax references; semantic consumers traverse them; no production code parses, splits, trims, or prefix-tests rendered compound type text. Leaf-name lookup and presentation-only formatting remain allowed; the parser-to-RIR-to-sema conformance round-trip test is removed |
+| Structured type syntax | Candidate RIR owns one declaration-local `RirTypeSyntaxArena<Spur>` projected directly from parser `TypeExpr`; the canonical packed declaration artifact stores that arena in its versioned type section, and ordinary, specialized, anonymous, constant, comptime, and canonical-RIR consumers decode the same nodes | Deletes `AstGen` compound-type rendering/interning and the RIR-to-sema string grammar for arrays, pointers, calls, qualified paths, anonymous aggregates, and integer/value arguments | Complete for every RIR type operand: instruction and payload schemas carry `RirTypeSyntaxRef`, packed encode/decode is exhaustive and fail-closed, semantic consumers traverse structured nodes, and source inventory forbids a rendered-type adapter at the RIR intake. Simple leaf-name lookup plus diagnostic or `--emit rir` formatting remain presentation policy rather than a semantic transport |
 | Semantic-nucleus type tokenization | `SemanticNucleusTypeProvider` in `crates/rue-compiler/src/revisioned_query_database.rs`, including the handwritten split/decomposition route around lines 10054–10129 and the `parse_type_call_syntax` route beginning around line 10551 | A second handwritten type grammar reconstructs declaration types while binding semantic signatures and constants | The provider consumes the artifact's dense type-syntax nodes; neither the handwritten tokenizer nor a production call to `parse_type_call_syntax` remains in the provider |
 | Warning-only static-call discovery | `warning_static_call_heads` and `WarningStaticCallCollector` in `revisioned_query_database.rs` independently walk canonical AST bodies, implement lexical scopes and static aliases/import paths, and discover value/type call heads for warning reachability | Maintains a peer body-discovery and partial name-resolution path even though it does not reparse text | The canonical candidate/artifact boundary publishes one structured body-reference projection; warning reachability is a thin consumer and the peer collector/scoping resolver is deleted |
 
@@ -56,6 +56,64 @@ were positive and the memory result is therefore treated as a non-regression,
 not a precise allocation attribution. Every warm and measured executable was
 1,662,976 bytes with SHA-256
 `45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`.
+
+## Implementation checkpoint: RIR structured type-syntax cutover
+
+Candidate lowering now projects every parser type expression directly into the
+RIR owner's dense `RirTypeSyntaxArena`. Declaration signatures, struct fields,
+enum payloads, body type constants, casts, and anonymous aggregate syntax carry
+checked `RirTypeSyntaxRef` operands instead of interned compound spellings. The
+candidate's single packed envelope owns a versioned structured-type section;
+ordinary, specialized, anonymous, constant, comptime, and canonical-RIR
+consumers decode those same nodes and remap only their declaration-local symbol
+indexes. No consumer on that route renders a type merely to split or parse it
+again. Rendering remains available only for diagnostics, tests, and human RIR
+presentation, while simple identifier lookup remains ordinary name resolution.
+
+The packed codec covers every structured node and variable-width payload,
+rejects invalid tags, ranges, symbols, forward references, truncation, and
+trailing bytes, checkpoints large owners, and rolls back atomically on failure
+or cancellation. Its retained charge includes the structured section in the
+same `Arc<[u8]>` pointee as the instruction, payload, spelling, anchor, and span
+basis data. Parser-to-RIR intake tests cover named and qualified paths,
+unit/never, arrays with literal/name/call lengths, slices, pointers, type/value
+calls, fixed strings, integers, and anonymous struct/enum declarations. The
+specialization tests additionally prove that both type-parameter and
+value-parameter dependent annotations retain exact syntax: `[i32; N]` resolves
+to `[i32; 3]` rather than leaking the semantic `type` placeholder.
+
+This replaces duplicate text rendering and parsing on the critical path, but it
+also introduces structured-node packing and request-local decoding. The first
+prototype therefore retired about 38.9 million more instructions on frozen
+Lattice and was 2.9 ms slower by absolute medians. Before accepting the slice,
+the producer stopped remapping exact signature syntax for concrete callables,
+successful semantic lookup stopped eagerly rendering diagnostics, packed
+encoding stopped revalidating an already validated type arena, and named types
+began resolving by their existing `Spur` rather than allocating and reinterning
+a string. Small declaration-local type grammars now avoid allocating a symbol
+hash table, while qualified paths resolve their existing symbols directly
+instead of copying every segment into a fresh string. Those changes recovered
+most of the replacement work without adding another cache or compiler route.
+
+The final exact-parent gate used one warmup and six alternating release-thin-LTO
+x86-64 pairs with one query worker. Median process time was 660.438 ms for the
+parent and 667.037 ms for the prototype; the paired median was +2.693 ms with a
+5.013 ms median absolute deviation. That result is inside host noise and is
+recorded as no measurable wall-time change, not a speedup. The paired median
+instruction delta was +12,834,157 (about +0.10%), down from the first
+prototype's +38.9 million and identifying the remaining structured
+encode/decode work without showing a stable elapsed-time regression. External
+peak RSS changed by +958,464 bytes by absolute medians and +2,048,000 bytes by
+paired medians, below the 3,555,328-byte paired median absolute deviation; two
+prototype samples entered a roughly 18 MiB allocator high-water mode. This is
+recorded as no measurable RSS change. A rejected experiment that batched codec
+checkpoints produced a stable +15.4 MiB paired RSS increase, so the accepted
+implementation retains per-node bounded cancellation checks. All twelve native
+outputs were 1,662,976 bytes with SHA-256
+`45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`.
+Measurement artifacts are in
+`/private/tmp/rue-phase-rir-types-optimized-paired.sLUgdn` on the measuring
+host.
 
 ## Implementation checkpoint: named-body frontend cutover
 

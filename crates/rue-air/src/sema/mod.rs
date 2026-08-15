@@ -74,6 +74,7 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_index::RirDeclarationIndexWork;
 pub(crate) use fact_mode::BodyAnalysisHost;
+pub(crate) use fact_mode::StructuredTypeSyntax;
 pub(crate) use inference_ctx::HostInferenceFacts;
 pub use inference_ctx::InferenceContext;
 use info::ConstResolution;

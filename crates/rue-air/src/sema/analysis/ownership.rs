@@ -1456,7 +1456,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         directives: &rue_rir::RirDirectivesRange,
         name: Option<Spur>,
         is_mut: bool,
-        ty: Option<Spur>,
+        ty: Option<rue_rir::RirTypeSyntaxRef>,
         init: InstRef,
         iter_elem: bool,
         span: Span,
@@ -1478,7 +1478,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // `let s: [i32] = ...` binding would let the view escape its
             // argument scope (E0489).
             self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
-            Some(self.resolve_type_with_ctx(ty_sym, span, ctx)?)
+            Some(self.resolve_rir_type_with_ctx(ty_sym, span, ctx)?)
         } else {
             None
         };

@@ -750,14 +750,14 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             else {
                 unreachable!()
             };
-            let payload_symbols: Vec<Vec<Spur>> = self
+            let payload_types: Vec<Vec<rue_rir::RirTypeSyntaxRef>> = self
                 .rir
                 .enum_payloads(payloads, variants)
                 .map(|payload| payload.to_vec())
                 .collect();
             let source_name = self.interner.resolve(&name).to_string();
             self.declaration_type_observer =
-                (payload_symbols.iter().any(|payload| !payload.is_empty())
+                (payload_types.iter().any(|payload| !payload.is_empty())
                     && !source_name.starts_with("__anon_enum_"))
                 .then_some((
                     span.file_id,
@@ -768,14 +768,14 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 ));
             // Decode per-variant payload type symbols.
             let mut variant_payloads: Vec<Vec<Type>> = Vec::new();
-            for symbols in payload_symbols {
-                let mut payload = Vec::with_capacity(symbols.len());
-                for ty_sym in symbols {
+            for type_syntax in payload_types {
+                let mut payload = Vec::with_capacity(type_syntax.len());
+                for ty_syntax in type_syntax {
                     // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
                     // RUE-322): an enum payload is aggregate storage, so it
                     // cannot hold a fat-pointer view (E0488).
-                    self.reject_slice_escape(ty_sym, span, ErrorKind::SliceInAggregateField)?;
-                    let ty = self.resolve_type(ty_sym, span)?;
+                    self.reject_slice_escape(ty_syntax, span, ErrorKind::SliceInAggregateField)?;
+                    let ty = self.resolve_rir_type(ty_syntax, span)?;
                     // A payload of type `type` cannot exist at runtime
                     // (spec 4.14:6); reject it like struct fields do.
                     if ty.is_comptime_type() {
@@ -875,7 +875,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                         inst.span,
                         ErrorKind::SliceInAggregateField,
                     )?;
-                    let field_ty = self.resolve_type(field_type, inst.span)?;
+                    let field_ty = self.resolve_rir_type(field_type, inst.span)?;
                     // spec 4.14:6 — type values cannot exist at runtime. A
                     // struct field of type `type` is a runtime storage slot for
                     // a type value, which is forbidden; reject it at the
@@ -1438,7 +1438,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         &mut self,
         declaration: InstRef,
         name: Spur,
-        return_type_sym: Spur,
+        return_type_syntax: rue_rir::RirTypeSyntaxRef,
         body: InstRef,
         span: Span,
         is_pub: bool,
@@ -1495,13 +1495,12 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // - `comptime T: type` -> type parameter (specialized per type)
         // - `comptime n: i32` -> value parameter (specialized per value, so
         //   the body sees `n` as a compile-time constant)
-        let type_sym = self.interner.get_or_intern("type");
         let is_generic = params.iter().any(|p| p.is_comptime);
 
         // Collect type parameter names (comptime parameters whose type is `type`)
         let type_param_names: Vec<Spur> = params
             .iter()
-            .filter(|p| p.is_comptime && p.ty == type_sym)
+            .filter(|p| p.is_comptime && self.rir_type_is_named(p.ty, "type"))
             .map(|p| p.name)
             .collect();
 
@@ -1511,18 +1510,18 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // specialization, when N's concrete value is known (RUE-16).
         let value_param_names: Vec<Spur> = params
             .iter()
-            .filter(|p| p.is_comptime && p.ty != type_sym)
+            .filter(|p| p.is_comptime && !self.rir_type_is_named(p.ty, "type"))
             .map(|p| p.name)
             .collect();
-        let value_param_type_syms: Vec<(Spur, Spur)> = params
+        let value_param_type_syntax: Vec<(Spur, rue_rir::RirTypeSyntaxRef)> = params
             .iter()
-            .filter(|p| p.is_comptime && p.ty != type_sym)
+            .filter(|p| p.is_comptime && !self.rir_type_is_named(p.ty, "type"))
             .map(|p| (p.name, p.ty))
             .collect();
         let deferred_parameter_facts = DeferredParameterFacts::new(
             &type_param_names,
             &value_param_names,
-            &value_param_type_syms,
+            &value_param_type_syntax,
         );
 
         // For generic functions, we defer type resolution of type parameters until specialization.
@@ -1530,12 +1529,14 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         let param_types: Vec<Type> = params
             .iter()
             .map(|p| {
-                if p.is_comptime && p.ty == type_sym {
+                if p.is_comptime && self.rir_type_is_named(p.ty, "type") {
                     // For comptime TYPE parameters (comptime T: type), the type is `type`
                     Ok(Type::COMPTIME_TYPE)
-                } else if self.type_mentions_type_param(p.ty, &deferred_parameter_facts)
-                    || self.type_mentions_comptime_value_param(p.ty, &deferred_parameter_facts)
-                {
+                } else if self.rir_type_mentions_parameter(p.ty, |symbol| {
+                    deferred_parameter_facts.contains_type(symbol)
+                }) || self.rir_type_mentions_parameter(p.ty, |symbol| {
+                    deferred_parameter_facts.contains_value(symbol)
+                }) {
                     // This parameter's type is a type parameter (`x: T`) or a
                     // composite mentioning one (`a: [T; 3]`, `p: ptr const T`;
                     // RUE-172), or an array whose length names a comptime value
@@ -1547,15 +1548,11 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                     // for array lengths that do *not* depend on specialization:
                     // `[T; A]` with an undefined `A` should be E0481 here, not
                     // an ICE when the function is later instantiated (RUE-381).
-                    self.validate_deferred_signature_type_lengths(
-                        p.ty,
-                        &deferred_parameter_facts,
-                        span,
-                    )?;
+                    self.validate_deferred_rir_type(p.ty, &deferred_parameter_facts, span)?;
                     Ok(Type::COMPTIME_TYPE)
                 } else {
                     // Regular params OR comptime VALUE params (comptime n: i32)
-                    self.resolve_type(p.ty, span)
+                    self.resolve_rir_type(p.ty, span)
                 }
             })
             .collect::<CompileResult<Vec<_>>>()?;
@@ -1564,24 +1561,22 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // For generic functions, we can't resolve the return type yet if it references
         // a type parameter - either directly (`-> T`) or inside a composite
         // (`-> [T; 3]`, RUE-172).
-        let ret_type = if self.type_mentions_type_param(return_type_sym, &deferred_parameter_facts)
-            || self.type_mentions_comptime_value_param(return_type_sym, &deferred_parameter_facts)
-        {
+        let ret_type = if self.rir_type_mentions_parameter(return_type_syntax, |symbol| {
+            deferred_parameter_facts.contains_type(symbol)
+        }) || self.rir_type_mentions_parameter(return_type_syntax, |symbol| {
+            deferred_parameter_facts.contains_value(symbol)
+        }) {
             // Return type references a type parameter (`-> T`, `-> [T; 3]`) or
             // an array length naming a comptime value parameter (`-> [i32; N]`,
             // RUE-16) - use placeholder, resolved at specialization.
-            self.validate_deferred_signature_type_lengths(
-                return_type_sym,
-                &deferred_parameter_facts,
-                span,
-            )?;
+            self.validate_deferred_rir_type(return_type_syntax, &deferred_parameter_facts, span)?;
             Type::COMPTIME_TYPE
         } else {
             // A slice type `[T]` is second-class (ADR-0037, ADR-0043,
             // RUE-322): it is a fat-pointer view valid only in argument
             // position and may not be returned (E0487).
-            self.reject_slice_escape(return_type_sym, span, ErrorKind::SliceReturnNotAllowed)?;
-            self.resolve_type(return_type_sym, span)?
+            self.reject_slice_escape(return_type_syntax, span, ErrorKind::SliceReturnNotAllowed)?;
+            self.resolve_rir_type(return_type_syntax, span)?
         };
 
         // Foreign `extern "C"` declarations are gated behind the `c_ffi` preview
@@ -1693,7 +1688,8 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         let info = FunctionInfo {
             params: params_range,
             return_type: ret_type,
-            return_type_sym,
+            return_type_syntax,
+            returns_type: self.rir_type_is_named(return_type_syntax, "type"),
             body,
             declaration,
             span,
@@ -1905,7 +1901,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // `const_type_for_value` where it did before.
         let declared_ty = p
             .ty_sym
-            .and_then(|sym| self.resolve_type(sym, p.span).ok())
+            .and_then(|syntax| self.resolve_rir_type(syntax, p.span).ok())
             .filter(Type::is_integer);
 
         self.const_resolution_in_progress.push(key);
@@ -1919,7 +1915,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 if let Some(ty_sym) = p.ty_sym {
                     // No type annotation can name a module type, so an
                     // annotated module binding is always a mismatch.
-                    let declared = self.resolve_type(ty_sym, p.span)?;
+                    let declared = self.resolve_rir_type(ty_sym, p.span)?;
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: declared.safe_name_with_pool(Some(&self.type_pool)),
@@ -3108,7 +3104,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
     fn const_type_for_value(
         &mut self,
         value: ConstValue,
-        ty_sym: Option<Spur>,
+        ty_sym: Option<rue_rir::RirTypeSyntaxRef>,
         init: InstRef,
         span: Span,
         name: &str,
@@ -3161,7 +3157,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // `const` is a top-level binding, never an argument, so it cannot name
         // a slice (E0489).
         self.reject_slice_escape(ty_sym, span, ErrorKind::SliceEscapesScope)?;
-        let declared = self.resolve_type(ty_sym, span)?;
+        let declared = self.resolve_rir_type(ty_sym, span)?;
 
         // An integer value adopts any integer annotation it fits in.
         if let ConstValue::Integer(v) = value {
@@ -3609,7 +3605,7 @@ pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> Comp
 #[derive(Clone, Copy)]
 struct PendingConst {
     is_pub: bool,
-    ty_sym: Option<Spur>,
+    ty_sym: Option<rue_rir::RirTypeSyntaxRef>,
     init: InstRef,
     span: Span,
 }

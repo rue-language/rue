@@ -269,13 +269,26 @@ impl<D: DeclarationPhase> InferenceFactSource for Sema<'_, D> {
             param_comptime: self.param_arena.comptime(info.params).to_vec(),
             param_comptime_type: self.comptime_type_param_flags(info),
             param_names: self.param_arena.names(info.params).to_vec(),
-            param_type_syms: self
+            param_type_syntax: self
                 .rir
                 .params(info.rir_params(self.rir))
                 .iter()
-                .map(|param| param.ty)
+                .map(|param| {
+                    Some(super::StructuredTypeSyntax {
+                        arena: self.rir.type_syntax().clone(),
+                        root: param.ty,
+                    })
+                })
                 .collect(),
-            return_type_sym: info.return_type_sym,
+            return_type_syntax: match &self.rir.get(info.declaration).data {
+                rue_rir::InstData::FnDecl { return_type, .. } => {
+                    Some(super::StructuredTypeSyntax {
+                        arena: self.rir.type_syntax().clone(),
+                        root: *return_type,
+                    })
+                }
+                _ => None,
+            },
         })
     }
 

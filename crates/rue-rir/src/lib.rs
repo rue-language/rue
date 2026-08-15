@@ -49,6 +49,7 @@ pub use inst::{
     ValidatedRir,
 };
 pub use type_syntax::{
-    RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder, RirTypeSyntaxNode,
-    RirTypeSyntaxRange, RirTypeSyntaxRef, RirTypeSyntaxSymbol,
+    RirTypeSyntaxAppendError, RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder,
+    RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxRef, RirTypeSyntaxSymbol,
+    RirTypeSyntaxValidationError,
 };

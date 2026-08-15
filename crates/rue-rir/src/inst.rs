@@ -9,6 +9,8 @@ use std::marker::PhantomData;
 use lasso::{Key, Spur};
 use rue_span::{FileId, Span};
 
+use crate::type_syntax::{RirTypeSyntaxArena, RirTypeSyntaxBuilder, RirTypeSyntaxRef};
+
 mod packed;
 mod payload_support;
 
@@ -357,7 +359,7 @@ pub struct RirParam {
     /// Parameter name
     pub name: Spur,
     /// Parameter type
-    pub ty: Spur,
+    pub ty: RirTypeSyntaxRef,
     /// Parameter passing mode
     pub mode: RirParamMode,
     /// Whether this parameter is evaluated at compile time (declared with
@@ -689,6 +691,7 @@ impl<T> Iterator for RirSliceIter<'_, T> {
 impl<T> ExactSizeIterator for RirSliceIter<'_, T> {}
 
 pub type RirSymbols<'a> = RirSlice<'a, Spur>;
+pub type RirTypeSyntaxRefs<'a> = RirSlice<'a, RirTypeSyntaxRef>;
 
 /// Stable tag for a span-bearing field inside one RIR instruction.
 ///
@@ -756,6 +759,7 @@ pub enum RirSpanTraversalError<E> {
 #[derive(Debug)]
 pub enum RirSpanRemapError<E> {
     MalformedPayload(RirPayloadError),
+    MalformedTypeSyntax(crate::RirTypeSyntaxValidationError),
     DuplicateSlot(RirSpanSlot),
     MissingSlot(RirSpanSlot),
     UnexpectedSlot {
@@ -780,6 +784,15 @@ impl<E> From<RirPayloadBuildError> for RirSpanRemapError<E> {
     fn from(error: RirPayloadBuildError) -> Self {
         Self::Build(error)
     }
+}
+
+fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> RirPayloadBuildError {
+    let family = match error {
+        crate::RirTypeSyntaxBuildError::TooManyNodes => "type syntax nodes",
+        crate::RirTypeSyntaxBuildError::TooManySymbols => "type syntax symbols",
+        crate::RirTypeSyntaxBuildError::TooMuchPayload => "type syntax payload",
+    };
+    RirPayloadBuildError::ResourceLimitExceeded { family }
 }
 
 /// One typed step in a definition-relative structural path. Indices are local
@@ -863,7 +876,7 @@ const CALL_ARG_MODE: usize = 1;
 /// `[name, ty, mode, is_comptime, span.file, span.start, span.end]`.
 const PARAM_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
     width: 7,
-    symbol_offsets: &[PARAM_NAME, PARAM_TYPE],
+    symbol_offsets: &[PARAM_NAME],
 };
 const PARAM_NAME: usize = 0;
 const PARAM_TYPE: usize = 1;
@@ -933,7 +946,7 @@ const FIELD_INIT_VALUE: usize = 1;
 /// Layout: [field_name: u32, field_type: u32] = 2 u32s per field
 const FIELD_DECL_SCHEMA: FixedPayloadSchema = FixedPayloadSchema {
     width: 2,
-    symbol_offsets: &[FIELD_DECL_NAME, FIELD_DECL_TYPE],
+    symbol_offsets: &[FIELD_DECL_NAME],
 };
 const FIELD_DECL_NAME: usize = 0;
 const FIELD_DECL_TYPE: usize = 1;
@@ -994,7 +1007,7 @@ fn enum_payload_record(words: &[u32], position: usize) -> Option<(usize, usize)>
     (end <= words.len()).then_some((start, end))
 }
 
-fn encoded_enum_payload_record_extent(payload: &[Spur]) -> Option<usize> {
+fn encoded_enum_payload_record_extent<T>(payload: &[T]) -> Option<usize> {
     1usize.checked_add(payload.len())
 }
 
@@ -1102,6 +1115,11 @@ pub struct Rir {
     instructions: Vec<Inst>,
     /// Extra data for variable-length instruction payloads.
     extra: Vec<u32>,
+    /// Declaration-local structured type syntax referenced by type-bearing
+    /// instruction and payload slots. Leaf spellings use the same candidate
+    /// symbol universe as the instruction graph; compound syntax is never
+    /// rendered into that universe.
+    type_syntax: RirTypeSyntaxArena<Spur>,
     /// Set once `add_inst` is asked for an instruction beyond the published
     /// `u32` instruction ceiling (spec Appendix C.6:1). `add_inst` is called
     /// from hundreds of infallible lowering sites, so the ceiling is recorded
@@ -1157,6 +1175,7 @@ pub struct Rir {
 #[derive(Debug, Default)]
 pub struct RirEditor {
     rir: Rir,
+    type_syntax: RirTypeSyntaxBuilder<Spur>,
 }
 
 /// The destination ranges occupied by one RIR owner after a typed append.
@@ -1188,8 +1207,48 @@ impl RirEditor {
         Self::default()
     }
 
+    /// Project one parser type directly into this RIR owner's dense structured
+    /// type arena. The supplied resolver transports parser-local spellings into
+    /// the instruction graph's candidate-local symbol universe.
+    pub fn add_parser_type(
+        &mut self,
+        ty: &rue_parser::ast::TypeExpr,
+        resolve: impl Copy + Fn(Spur) -> Spur,
+    ) -> Result<crate::RirTypeSyntaxRef, crate::RirTypeSyntaxBuildError> {
+        self.type_syntax.push_parser_type(ty, resolve)
+    }
+
+    pub fn add_unit_type(
+        &mut self,
+    ) -> Result<crate::RirTypeSyntaxRef, crate::RirTypeSyntaxBuildError> {
+        self.type_syntax.push_unit_type()
+    }
+
+    pub fn add_named_type(
+        &mut self,
+        symbol: Spur,
+    ) -> Result<RirTypeSyntaxRef, crate::RirTypeSyntaxBuildError> {
+        self.type_syntax.push_named_type(symbol)
+    }
+
     pub(crate) fn into_unvalidated(self) -> Rir {
-        self.rir
+        let Self {
+            mut rir,
+            type_syntax,
+        } = self;
+        rir.type_syntax = type_syntax.finish();
+        rir
+    }
+
+    /// Finish the owner-mediated editor without contextual validation.
+    ///
+    /// This is the post-construction counterpart to [`AstGen::finish`], used
+    /// by controlled synthesis that must make one final editor-only
+    /// replacement before exposing the immutable RIR. Production publication
+    /// should prefer [`ValidatedRir::finish`].
+    #[doc(hidden)]
+    pub fn finish(self) -> Rir {
+        self.into_unvalidated()
     }
 
     fn atomic<T>(
@@ -1328,7 +1387,7 @@ impl RirEditor {
         is_c_export: bool,
         name: Spur,
         params: &[RirParam],
-        return_type: Spur,
+        return_type: RirTypeSyntaxRef,
         body: InstRef,
         has_self: bool,
         self_mode: RirParamMode,
@@ -1365,7 +1424,7 @@ impl RirEditor {
         directives: &[RirDirective],
         is_pub: bool,
         name: Spur,
-        ty: Option<Spur>,
+        ty: Option<RirTypeSyntaxRef>,
         init: InstRef,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
@@ -1390,7 +1449,7 @@ impl RirEditor {
         directives: &[RirDirective],
         name: Option<Spur>,
         is_mut: bool,
-        ty: Option<Spur>,
+        ty: Option<RirTypeSyntaxRef>,
         init: InstRef,
         iter_elem: bool,
         span: Span,
@@ -1418,7 +1477,7 @@ impl RirEditor {
         is_pub: bool,
         is_linear: bool,
         name: Spur,
-        fields: &[(Spur, Spur)],
+        fields: &[(Spur, RirTypeSyntaxRef)],
         methods: &[InstRef],
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
@@ -1469,7 +1528,7 @@ impl RirEditor {
         is_pub: bool,
         name: Spur,
         variants: &[Spur],
-        payloads: &[Vec<Spur>],
+        payloads: &[Vec<RirTypeSyntaxRef>],
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -1509,7 +1568,7 @@ impl RirEditor {
 
     pub fn add_anon_struct_type(
         &mut self,
-        fields: &[(Spur, Spur)],
+        fields: &[(Spur, RirTypeSyntaxRef)],
         methods: &[InstRef],
         anchor: RirStructuralAnchor,
         span: Span,
@@ -1531,7 +1590,7 @@ impl RirEditor {
     pub fn add_anon_enum_type(
         &mut self,
         variants: &[Spur],
-        payloads: &[Vec<Spur>],
+        payloads: &[Vec<RirTypeSyntaxRef>],
         anchor: RirStructuralAnchor,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
@@ -1587,6 +1646,7 @@ impl RirEditor {
             Err(RirSpanRemapError::Build(error)) => Err(error),
             Err(
                 RirSpanRemapError::MalformedPayload(_)
+                | RirSpanRemapError::MalformedTypeSyntax(_)
                 | RirSpanRemapError::DuplicateSlot(_)
                 | RirSpanRemapError::MissingSlot(_)
                 | RirSpanRemapError::UnexpectedSlot { .. }
@@ -1811,6 +1871,29 @@ impl RirEditor {
         )?;
         let remap_ref =
             |value: InstRef| InstRef::from_raw(instruction_start + (value.as_u32() - source_start));
+        let type_snapshot = self.type_syntax.snapshot();
+        let type_map = match self.type_syntax.append_remapped(
+            source.type_syntax(),
+            |source_symbol| symbol(*source_symbol),
+            || checkpoint(),
+        ) {
+            Ok(type_map) => type_map,
+            Err(crate::RirTypeSyntaxAppendError::Malformed(error)) => {
+                return Err(RirSpanRemapError::MalformedTypeSyntax(error));
+            }
+            Err(crate::RirTypeSyntaxAppendError::Checkpoint(error)) => {
+                return Err(RirSpanRemapError::Checkpoint(error));
+            }
+            Err(crate::RirTypeSyntaxAppendError::Build(error)) => {
+                return Err(RirSpanRemapError::Build(type_syntax_build_error(error)));
+            }
+        };
+        let remap_type = |reference: RirTypeSyntaxRef| {
+            type_map
+                .get(reference.index())
+                .copied()
+                .expect("validated type-syntax reference has a destination")
+        };
         let result = (|| {
             for ordinal in source_start..source_end {
                 let source_instruction = InstRef::from_raw(ordinal);
@@ -2042,7 +2125,7 @@ impl RirEditor {
                             .map(|(parameter, param)| {
                                 Ok(RirParam {
                                     name: symbol(param.name),
-                                    ty: symbol(param.ty),
+                                    ty: remap_type(param.ty),
                                     span: take_span(RirSpanField::FunctionParameter {
                                         parameter: u32::try_from(parameter)
                                             .expect("validated parameter count is encoded as u32"),
@@ -2059,7 +2142,7 @@ impl RirEditor {
                             *is_c_export,
                             symbol(*name),
                             &params,
-                            symbol(*return_type),
+                            remap_type(*return_type),
                             remap_ref(*body),
                             *has_self,
                             *self_mode,
@@ -2094,7 +2177,7 @@ impl RirEditor {
                             &directives,
                             *is_pub,
                             symbol(*name),
-                            ty.map(&mut symbol),
+                            ty.map(remap_type),
                             remap_ref(*init),
                             span,
                         )?
@@ -2122,12 +2205,12 @@ impl RirEditor {
                     InstData::TypeIntrinsic { name, type_arg } => {
                         self.add_inst(payload_free(InstData::TypeIntrinsic {
                             name: symbol(*name),
-                            type_arg: symbol(*type_arg),
+                            type_arg: remap_type(*type_arg),
                         }))
                     }
                     InstData::OffsetOf { type_arg, field } => {
                         self.add_inst(payload_free(InstData::OffsetOf {
-                            type_arg: symbol(*type_arg),
+                            type_arg: remap_type(*type_arg),
                             field: symbol(*field),
                         }))
                     }
@@ -2172,7 +2255,7 @@ impl RirEditor {
                             &directives,
                             name.map(&mut symbol),
                             *is_mut,
-                            ty.map(&mut symbol),
+                            ty.map(remap_type),
                             remap_ref(*init),
                             *iter_elem,
                             span,
@@ -2216,7 +2299,7 @@ impl RirEditor {
                         let fields = source
                             .struct_fields(fields)
                             .values()
-                            .map(|(name, ty)| (symbol(name), symbol(ty)))
+                            .map(|(name, ty)| (symbol(name), remap_type(ty)))
                             .collect::<Vec<_>>();
                         let methods = struct_methods_override
                             .as_ref()
@@ -2290,7 +2373,7 @@ impl RirEditor {
                             .collect::<Vec<_>>();
                         let payloads = source
                             .enum_payloads(payloads, variant_range)
-                            .map(|payload| payload.values().map(&mut symbol).collect())
+                            .map(|payload| payload.values().map(remap_type).collect())
                             .collect::<Vec<Vec<_>>>();
                         self.add_enum_decl(*is_pub, symbol(*name), &variants, &payloads, span)?
                     }
@@ -2357,7 +2440,7 @@ impl RirEditor {
                     })),
                     InstData::TypeConst { type_name } => {
                         self.add_inst(payload_free(InstData::TypeConst {
-                            type_name: symbol(*type_name),
+                            type_name: remap_type(*type_name),
                         }))
                     }
                     InstData::AnonStructType {
@@ -2368,7 +2451,7 @@ impl RirEditor {
                         let fields = source
                             .anon_struct_fields(fields)
                             .values()
-                            .map(|(name, ty)| (symbol(name), symbol(ty)))
+                            .map(|(name, ty)| (symbol(name), remap_type(ty)))
                             .collect::<Vec<_>>();
                         let methods = source
                             .anon_struct_methods(methods)
@@ -2389,7 +2472,7 @@ impl RirEditor {
                             .collect::<Vec<_>>();
                         let payloads = source
                             .anon_enum_payloads(payloads, variant_range)
-                            .map(|payload| payload.values().map(&mut symbol).collect())
+                            .map(|payload| payload.values().map(remap_type).collect())
                             .collect::<Vec<Vec<_>>>();
                         self.add_anon_enum_type(&variants, &payloads, anchor.clone(), span)?
                     }
@@ -2419,6 +2502,7 @@ impl RirEditor {
         if result.is_err() {
             self.rir.instructions.truncate(instruction_start as usize);
             self.rir.extra.truncate(extra_start as usize);
+            self.type_syntax.rollback(type_snapshot);
         }
         result
     }
@@ -2486,9 +2570,13 @@ impl ValidatedRir {
         editor: RirEditor,
         context: &RirValidationContext<'_>,
     ) -> Result<Self, RirPayloadError> {
-        editor.validate_payloads()?;
-        editor.validate_context(context)?;
-        Ok(Self(editor.into_unvalidated()))
+        // Structured type syntax is constructed in the editor-owned builder
+        // and installed into the immutable RIR only at publication. Validate
+        // the published owner, not the editor's still-empty frozen field.
+        let rir = editor.into_unvalidated();
+        rir.validate_payloads()?;
+        rir.validate_context(context)?;
+        Ok(Self(rir))
     }
 
     /// Visit every span-bearing RIR slot through the canonical schema.
@@ -2619,8 +2707,11 @@ impl ValidatedRir {
     pub fn retained_allocation_charge(&self) -> u64 {
         let instructions = self.len().saturating_mul(std::mem::size_of::<Inst>()) as u64;
         let payload = self.extra_len().saturating_mul(std::mem::size_of::<u32>()) as u64;
+        let type_syntax = self.type_syntax().retained_allocation_charge();
         self.iter().fold(
-            instructions.saturating_add(payload),
+            instructions
+                .saturating_add(payload)
+                .saturating_add(type_syntax),
             |charge, (_, instruction)| {
                 let anchors = match &instruction.data {
                     InstData::StringConst { anchor, .. }
@@ -2649,6 +2740,11 @@ impl std::ops::Deref for ValidatedRir {
 }
 
 impl Rir {
+    /// Structured type syntax owned by this exact RIR graph.
+    pub fn type_syntax(&self) -> &RirTypeSyntaxArena<Spur> {
+        &self.type_syntax
+    }
+
     fn symbol_word(family: &'static str, symbol: Spur) -> Result<u32, RirPayloadBuildError> {
         u32::try_from(symbol.into_usize()).map_err(|_| RirPayloadBuildError::InvalidBuilderInput {
             family,
@@ -3507,6 +3603,15 @@ impl Rir {
             }
         };
 
+        self.type_syntax
+            .validate_with_symbol(|symbol| symbol.into_usize() < context.symbol_count)
+            .map_err(|failure| {
+                error(
+                    failure.node.map_or(u32::MAX, RirTypeSyntaxRef::as_u32),
+                    failure.reason,
+                )
+            })?;
+
         for (instruction, inst) in self.iter() {
             let index = instruction.as_u32();
             check_span(index, inst.span)?;
@@ -3515,6 +3620,13 @@ impl Rir {
             }
             macro_rules! symbols {
                 ($($symbol:expr),* $(,)?) => {{ $(check_symbol(index, $symbol)?;)* }};
+            }
+            macro_rules! types {
+                ($($reference:expr),* $(,)?) => {{
+                    $(if $reference.index() >= self.type_syntax.nodes().len() {
+                        return Err(error(index, "type-syntax reference is outside the owner"));
+                    })*
+                }};
             }
             match &inst.data {
                 InstData::IntConst(_)
@@ -3525,8 +3637,8 @@ impl Rir {
                     content: symbol, ..
                 }
                 | InstData::FloatConst { text: symbol }
-                | InstData::VarRef { name: symbol, .. }
-                | InstData::TypeConst { type_name: symbol } => symbols!(*symbol),
+                | InstData::VarRef { name: symbol, .. } => symbols!(*symbol),
+                InstData::TypeConst { type_name } => types!(*type_name),
                 InstData::Add { lhs, rhs }
                 | InstData::Sub { lhs, rhs }
                 | InstData::Mul { lhs, rhs }
@@ -3609,7 +3721,8 @@ impl Rir {
                     body,
                     ..
                 } => {
-                    symbols!(*name, *return_type);
+                    symbols!(*name);
+                    types!(*return_type);
                     refs!(*body);
                     for directive in self.directives(directives).iter() {
                         symbols!(directive.name);
@@ -3619,7 +3732,8 @@ impl Rir {
                         }
                     }
                     for param in self.params(params) {
-                        symbols!(param.name, param.ty);
+                        symbols!(param.name);
+                        types!(param.ty);
                         check_span(index, param.span)?;
                     }
                 }
@@ -3632,7 +3746,7 @@ impl Rir {
                 } => {
                     symbols!(*name);
                     if let Some(symbol) = ty {
-                        symbols!(*symbol);
+                        types!(*symbol);
                     }
                     refs!(*init);
                     for directive in self.directives(directives).iter() {
@@ -3660,8 +3774,14 @@ impl Rir {
                         refs!(reference);
                     }
                 }
-                InstData::TypeIntrinsic { name, type_arg } => symbols!(*name, *type_arg),
-                InstData::OffsetOf { type_arg, field } => symbols!(*type_arg, *field),
+                InstData::TypeIntrinsic { name, type_arg } => {
+                    symbols!(*name);
+                    types!(*type_arg);
+                }
+                InstData::OffsetOf { type_arg, field } => {
+                    types!(*type_arg);
+                    symbols!(*field);
+                }
                 InstData::Block { instructions } => {
                     for reference in self.block_insts(instructions) {
                         refs!(reference);
@@ -3678,7 +3798,7 @@ impl Rir {
                         symbols!(*symbol);
                     }
                     if let Some(symbol) = ty {
-                        symbols!(*symbol);
+                        types!(*symbol);
                     }
                     refs!(*init);
                     for directive in self.directives(directives).iter() {
@@ -3702,7 +3822,8 @@ impl Rir {
                 } => {
                     symbols!(*name);
                     for (field, ty) in self.struct_fields(fields) {
-                        symbols!(field, ty);
+                        symbols!(field);
+                        types!(ty);
                     }
                     for reference in self.struct_methods(methods) {
                         refs!(reference);
@@ -3757,7 +3878,7 @@ impl Rir {
                     }
                     for payload in self.enum_payloads(payloads, variants) {
                         for ty in payload {
-                            symbols!(ty);
+                            types!(ty);
                         }
                     }
                 }
@@ -3810,7 +3931,8 @@ impl Rir {
                     fields, methods, ..
                 } => {
                     for (field, ty) in self.anon_struct_fields(fields) {
-                        symbols!(field, ty);
+                        symbols!(field);
+                        types!(ty);
                     }
                     for reference in self.anon_struct_methods(methods) {
                         refs!(reference);
@@ -3824,7 +3946,7 @@ impl Rir {
                     }
                     for payload in self.anon_enum_payloads(payloads, variants) {
                         for ty in payload {
-                            symbols!(ty);
+                            types!(ty);
                         }
                     }
                 }
@@ -4056,20 +4178,10 @@ impl Rir {
                     reason: "variant payload record is truncated",
                 });
             };
-            if words[payload_start..end]
-                .iter()
-                .any(|word| decode_symbol_word(*word).is_none())
-            {
-                return Err(rir_payload_error! {
-                    family,
-                    start,
-                    extent,
-                    record: Some(record as u32),
-                    expected: record_width,
-                    actual: record_width,
-                    reason: "symbol word is not representable",
-                });
-            }
+            // Payload words are declaration-local structured type references.
+            // Their owner bounds are checked by `validate_context` after the
+            // variable-width envelope has been proven complete here.
+            let _ = payload_start;
             pos = end;
         }
         if pos != words.len() {
@@ -4315,14 +4427,13 @@ impl Rir {
         )?;
         for param in params {
             Self::symbol_word(RirParamsRange::FAMILY, param.name)?;
-            Self::symbol_word(RirParamsRange::FAMILY, param.ty)?;
         }
         let (start, extent) =
             self.append_payload_direct(RirParamsRange::FAMILY, words, |data| {
                 for param in params {
                     data.extend([
                         u32::try_from(param.name.into_usize()).expect("prevalidated symbol"),
-                        u32::try_from(param.ty.into_usize()).expect("prevalidated symbol"),
+                        param.ty.as_u32(),
                         param.mode.as_u32(),
                         param.is_comptime as u32,
                         param.span.file_id.index(),
@@ -4341,7 +4452,7 @@ impl Rir {
             .expect("validated RIR range");
         RirSlice::new(data, PARAM_SCHEMA.width, |chunk| RirParam {
             name: validated_symbol_word(chunk[PARAM_NAME]),
-            ty: validated_symbol_word(chunk[PARAM_TYPE]),
+            ty: RirTypeSyntaxRef::from_u32(chunk[PARAM_TYPE]),
             mode: RirParamMode::from_u32(chunk[PARAM_MODE]),
             is_comptime: chunk[PARAM_COMPTIME] != 0,
             span: Span::with_file(
@@ -4550,22 +4661,21 @@ impl Rir {
     fn add_field_decl_words<R>(
         &mut self,
         family: &'static str,
-        fields: &[(Spur, Spur)],
+        fields: &[(Spur, RirTypeSyntaxRef)],
         make: impl FnOnce(u32, u32) -> R,
     ) -> Result<R, RirPayloadBuildError> {
         let words = fields
             .len()
             .checked_mul(FIELD_DECL_SCHEMA.width)
             .ok_or(RirPayloadBuildError::ResourceLimitExceeded { family })?;
-        for (name, ty) in fields {
+        for (name, _) in fields {
             Self::symbol_word(family, *name)?;
-            Self::symbol_word(family, *ty)?;
         }
         let (start, extent) = self.append_payload_direct(family, words, |data| {
             for (name, ty) in fields {
                 data.extend([
                     u32::try_from(name.into_usize()).expect("prevalidated symbol"),
-                    u32::try_from(ty.into_usize()).expect("prevalidated symbol"),
+                    ty.as_u32(),
                 ]);
             }
         })?;
@@ -4573,7 +4683,7 @@ impl Rir {
     }
     pub(crate) fn add_struct_fields(
         &mut self,
-        fields: &[(Spur, Spur)],
+        fields: &[(Spur, RirTypeSyntaxRef)],
     ) -> Result<RirStructFieldsRange, RirPayloadBuildError> {
         self.add_field_decl_words(
             RirStructFieldsRange::FAMILY,
@@ -4583,7 +4693,7 @@ impl Rir {
     }
     pub(crate) fn add_anon_struct_fields(
         &mut self,
-        fields: &[(Spur, Spur)],
+        fields: &[(Spur, RirTypeSyntaxRef)],
     ) -> Result<RirAnonStructFieldsRange, RirPayloadBuildError> {
         self.add_field_decl_words(
             RirAnonStructFieldsRange::FAMILY,
@@ -4597,18 +4707,21 @@ impl Rir {
         &self,
         range: &R,
         parts: impl FnOnce(&R) -> (u32, u32, &'static str),
-    ) -> RirSlice<'_, (Spur, Spur)> {
+    ) -> RirSlice<'_, (Spur, RirTypeSyntaxRef)> {
         let data = self
             .payload_words(range, parts)
             .expect("validated RIR range");
         RirSlice::new(data, FIELD_DECL_SCHEMA.width, |chunk| {
             (
                 validated_symbol_word(chunk[FIELD_DECL_NAME]),
-                validated_symbol_word(chunk[FIELD_DECL_TYPE]),
+                RirTypeSyntaxRef::from_u32(chunk[FIELD_DECL_TYPE]),
             )
         })
     }
-    pub fn struct_fields(&self, range: &RirStructFieldsRange) -> RirSlice<'_, (Spur, Spur)> {
+    pub fn struct_fields(
+        &self,
+        range: &RirStructFieldsRange,
+    ) -> RirSlice<'_, (Spur, RirTypeSyntaxRef)> {
         self.field_decl_view(range, |r| {
             (r.start(), r.extent(), RirStructFieldsRange::FAMILY)
         })
@@ -4616,7 +4729,7 @@ impl Rir {
     pub fn anon_struct_fields(
         &self,
         range: &RirAnonStructFieldsRange,
-    ) -> RirSlice<'_, (Spur, Spur)> {
+    ) -> RirSlice<'_, (Spur, RirTypeSyntaxRef)> {
         self.field_decl_view(range, |r| {
             (r.start(), r.extent(), RirAnonStructFieldsRange::FAMILY)
         })
@@ -4771,7 +4884,7 @@ impl Rir {
     fn add_enum_payload_words<R>(
         &mut self,
         family: &'static str,
-        payloads: &[Vec<Spur>],
+        payloads: &[Vec<RirTypeSyntaxRef>],
         make: impl FnOnce(u32, u32) -> R,
     ) -> Result<R, RirPayloadBuildError> {
         if payloads.iter().all(Vec::is_empty) {
@@ -4794,8 +4907,8 @@ impl Rir {
                 u32::try_from(payload.len())
                     .map_err(|_| RirPayloadBuildError::ResourceLimitExceeded { family })?,
             );
-            for symbol in payload {
-                staged.push(Self::symbol_word(family, *symbol)?);
+            for ty in payload {
+                staged.push(ty.as_u32());
             }
         }
         let (start, extent) = self.append_payload(family, staged)?;
@@ -4803,7 +4916,7 @@ impl Rir {
     }
     pub(crate) fn add_enum_payloads(
         &mut self,
-        payloads: &[Vec<Spur>],
+        payloads: &[Vec<RirTypeSyntaxRef>],
     ) -> Result<RirEnumPayloadsRange, RirPayloadBuildError> {
         self.add_enum_payload_words(
             RirEnumPayloadsRange::FAMILY,
@@ -4813,7 +4926,7 @@ impl Rir {
     }
     pub(crate) fn add_anon_enum_payloads(
         &mut self,
-        payloads: &[Vec<Spur>],
+        payloads: &[Vec<RirTypeSyntaxRef>],
     ) -> Result<RirAnonEnumPayloadsRange, RirPayloadBuildError> {
         self.add_enum_payload_words(
             RirAnonEnumPayloadsRange::FAMILY,
@@ -4866,7 +4979,7 @@ pub struct RirEnumPayloads<'a> {
 }
 
 impl<'a> Iterator for RirEnumPayloads<'a> {
-    type Item = RirSymbols<'a>;
+    type Item = RirTypeSyntaxRefs<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -4882,7 +4995,7 @@ impl<'a> Iterator for RirEnumPayloads<'a> {
         Some(RirSlice::new(
             &self.words[start..end],
             SYMBOL_SCHEMA.width,
-            |record| validated_symbol_word(record[0]),
+            |record| RirTypeSyntaxRef::from_u32(record[0]),
         ))
     }
 
@@ -5238,7 +5351,7 @@ pub enum InstData {
         name: Spur,
         /// Index into extra data where params start
         params: RirParamsRange,
-        return_type: Spur,
+        return_type: RirTypeSyntaxRef,
         body: InstRef,
         /// Whether this function/method takes `self` as a receiver.
         /// Only true for methods in impl blocks that have a self parameter.
@@ -5272,8 +5385,8 @@ pub enum InstData {
         is_pub: bool,
         /// Constant name
         name: Spur,
-        /// Optional type annotation (interned string, None if inferred)
-        ty: Option<Spur>,
+        /// Optional structured type annotation (`None` when inferred).
+        ty: Option<RirTypeSyntaxRef>,
         /// Initializer expression
         init: InstRef,
     },
@@ -5308,8 +5421,8 @@ pub enum InstData {
     TypeIntrinsic {
         /// Intrinsic name (without @)
         name: Spur,
-        /// Type argument (as an interned string, e.g., "i32", "Point", "[i32; 4]")
-        type_arg: Spur,
+        /// Structured type argument.
+        type_arg: RirTypeSyntaxRef,
     },
 
     /// `@offset_of(T, field)` — the compile-time byte offset of `field` within
@@ -5317,8 +5430,8 @@ pub enum InstData {
     /// string, exactly like [`InstData::TypeIntrinsic`]) and the field name;
     /// neither is an `InstRef`, so this variant has no operands to renumber.
     OffsetOf {
-        /// Type argument (as an interned string, e.g., "Point").
-        type_arg: Spur,
+        /// Structured type argument.
+        type_arg: RirTypeSyntaxRef,
         /// Field name whose offset is requested.
         field: Spur,
     },
@@ -5350,7 +5463,7 @@ pub enum InstData {
         /// Whether the variable is mutable
         is_mut: bool,
         /// Optional type annotation
-        ty: Option<Spur>,
+        ty: Option<RirTypeSyntaxRef>,
         /// Initial value instruction
         init: InstRef,
         /// True when this binding is a `for`-loop element binding, which reads
@@ -5542,11 +5655,8 @@ pub enum InstData {
     },
 
     /// Type constant: a type used as a value expression (e.g., `i32` in `identity(i32, 42)`)
-    /// The type_name is the symbol for the type (e.g., "i32", "bool").
-    TypeConst {
-        /// The type name symbol
-        type_name: Spur,
-    },
+    /// Carries the exact structured parser-owned syntax.
+    TypeConst { type_name: RirTypeSyntaxRef },
 
     /// Anonymous struct type: a struct type used as a value expression
     /// (e.g., `struct { first: T, second: T, fn method(self) -> T { ... } }` in comptime type construction)
@@ -5603,6 +5713,12 @@ pub struct RirPrinter<'a, 'b> {
 }
 
 impl<'a, 'b> RirPrinter<'a, 'b> {
+    fn format_type(&self, reference: RirTypeSyntaxRef) -> String {
+        self.rir
+            .type_syntax()
+            .render_type_with(reference, |symbol| self.interner.resolve(symbol))
+            .unwrap_or_else(|| "<invalid-type>".to_owned())
+    }
     /// Create a new RIR printer.
     pub fn new(rir: &'a Rir, interner: &'b lasso::ThreadedRodeo) -> Self {
         Self {
@@ -6029,7 +6145,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         ""
                     };
                     let name_str = self.interner.resolve(&*name);
-                    let ret_str = self.interner.resolve(&*return_type);
+                    let ret_str = self.format_type(*return_type);
                     let self_str = if *has_self {
                         match self_mode {
                             RirParamMode::Inout => "inout self, ",
@@ -6055,7 +6171,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                                 comptime_prefix,
                                 mode_prefix,
                                 self.interner.resolve(&p.name),
-                                self.interner.resolve(&p.ty)
+                                self.format_type(p.ty)
                             )
                         })
                         .collect();
@@ -6088,7 +6204,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     let pub_str = if *is_pub { "pub " } else { "" };
                     let name_str = self.interner.resolve(&*name);
                     let ty_str = ty
-                        .map(|t| format!(": {}", self.interner.resolve(&t)))
+                        .map(|t| format!(": {}", self.format_type(t)))
                         .unwrap_or_default();
                     writeln!(
                         out,
@@ -6141,11 +6257,11 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                 }
                 InstData::TypeIntrinsic { name, type_arg } => {
                     let name_str = self.interner.resolve(&*name);
-                    let type_str = self.interner.resolve(&*type_arg);
+                    let type_str = self.format_type(*type_arg);
                     writeln!(out, "type_intrinsic @{}({})", name_str, type_str).unwrap();
                 }
                 InstData::OffsetOf { type_arg, field } => {
-                    let type_str = self.interner.resolve(&*type_arg);
+                    let type_str = self.format_type(*type_arg);
                     let field_str = self.interner.resolve(&*field);
                     writeln!(out, "offset_of @offset_of({}, {})", type_str, field_str).unwrap();
                 }
@@ -6168,7 +6284,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         .unwrap_or_else(|| "_".to_string());
                     let mut_str = if *is_mut { "mut " } else { "" };
                     let ty_str = ty
-                        .map(|t| format!(": {}", self.interner.resolve(&t)))
+                        .map(|t| format!(": {}", self.format_type(t)))
                         .unwrap_or_default();
                     let iter_str = if *iter_elem { " [iter_elem]" } else { "" };
                     writeln!(
@@ -6214,7 +6330,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             format!(
                                 "{}: {}",
                                 self.interner.resolve(&fname),
-                                self.interner.resolve(&ftype)
+                                self.format_type(ftype)
                             )
                         })
                         .collect();
@@ -6434,7 +6550,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 
                 // Type constant
                 InstData::TypeConst { type_name } => {
-                    let name = self.interner.resolve(type_name);
+                    let name = self.format_type(*type_name);
                     writeln!(out, "type {}", name).unwrap();
                 }
 
@@ -6449,7 +6565,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                             write!(out, ", ").unwrap();
                         }
                         let name_str = self.interner.resolve(&name);
-                        let ty_str = self.interner.resolve(&ty);
+                        let ty_str = self.format_type(ty);
                         write!(out, "{}: {}", name_str, ty_str).unwrap();
                     }
                     // Print methods if any
@@ -6620,6 +6736,16 @@ mod typed_payload_tests {
         Span::with_file(FileId::new(7), 3, 9)
     }
 
+    fn install_named_types(rir: &mut Rir, symbols: &[Spur]) -> Vec<RirTypeSyntaxRef> {
+        let mut builder = RirTypeSyntaxBuilder::default();
+        let references = symbols
+            .iter()
+            .map(|symbol| builder.push_named_type(*symbol).unwrap())
+            .collect();
+        rir.type_syntax = builder.finish();
+        references
+    }
+
     #[test]
     fn every_payload_family_round_trips() {
         let interner = ThreadedRodeo::new();
@@ -6628,6 +6754,8 @@ mod typed_payload_tests {
         let r0 = InstRef::from_raw(0);
         let r1 = InstRef::from_raw(1);
         let mut rir = Rir::new();
+        let types = install_named_types(&mut rir, &[a, b]);
+        let (type_a, type_b) = (types[0], types[1]);
 
         let intrinsic = rir.add_intrinsic_args(&[r0, r1]).unwrap();
         let internal = rir.add_internal_intrinsic_args(&[r1]).unwrap();
@@ -6678,7 +6806,7 @@ mod typed_payload_tests {
         let params = rir
             .add_params(&[RirParam {
                 name: a,
-                ty: b,
+                ty: type_b,
                 mode: RirParamMode::Borrow,
                 is_comptime: true,
                 span: span(),
@@ -6691,10 +6819,13 @@ mod typed_payload_tests {
         assert_eq!(rir.match_arms(&arms).get(0).unwrap().1, r0);
         let inits = rir.add_field_inits(&[(a, r1)]).unwrap();
         assert_eq!(rir.field_inits(&inits).get(0).unwrap(), (a, r1));
-        let fields = rir.add_struct_fields(&[(a, b)]).unwrap();
-        let anon_fields = rir.add_anon_struct_fields(&[(b, a)]).unwrap();
-        assert_eq!(rir.struct_fields(&fields).get(0).unwrap(), (a, b));
-        assert_eq!(rir.anon_struct_fields(&anon_fields).get(0).unwrap(), (b, a));
+        let fields = rir.add_struct_fields(&[(a, type_b)]).unwrap();
+        let anon_fields = rir.add_anon_struct_fields(&[(b, type_a)]).unwrap();
+        assert_eq!(rir.struct_fields(&fields).get(0).unwrap(), (a, type_b));
+        assert_eq!(
+            rir.anon_struct_fields(&anon_fields).get(0).unwrap(),
+            (b, type_a)
+        );
         let directives = rir
             .add_directives(&[RirDirective {
                 name: a,
@@ -6707,19 +6838,19 @@ mod typed_payload_tests {
         let anon_variants = rir.add_anon_enum_variants(&[b]).unwrap();
         assert_eq!(rir.enum_variants(&variants).to_vec(), [a, b]);
         assert_eq!(rir.anon_enum_variants(&anon_variants).to_vec(), [b]);
-        let payloads = rir.add_enum_payloads(&[vec![a], vec![]]).unwrap();
-        let anon_payloads = rir.add_anon_enum_payloads(&[vec![b]]).unwrap();
+        let payloads = rir.add_enum_payloads(&[vec![type_a], vec![]]).unwrap();
+        let anon_payloads = rir.add_anon_enum_payloads(&[vec![type_b]]).unwrap();
         assert_eq!(
             rir.enum_payloads(&payloads, &variants)
                 .map(|payload| payload.to_vec())
                 .collect::<Vec<_>>(),
-            [vec![a], vec![]]
+            [vec![type_a], vec![]]
         );
         assert_eq!(
             rir.anon_enum_payloads(&anon_payloads, &anon_variants)
                 .map(|payload| payload.to_vec())
                 .collect::<Vec<_>>(),
-            [vec![b]]
+            [vec![type_b]]
         );
     }
 
@@ -6728,6 +6859,8 @@ mod typed_payload_tests {
         let a = interner.get_or_intern("a");
         let b = interner.get_or_intern("b");
         let mut editor = RirEditor::new();
+        let type_a = editor.add_named_type(a).unwrap();
+        let type_b = editor.add_named_type(b).unwrap();
         let value = editor.add_inst(Inst {
             data: InstData::UnitConst,
             span: span(),
@@ -6748,12 +6881,12 @@ mod typed_payload_tests {
                 a,
                 &[RirParam {
                     name: a,
-                    ty: b,
+                    ty: type_b,
                     mode: RirParamMode::Borrow,
                     is_comptime: false,
                     span: span(),
                 }],
-                b,
+                type_b,
                 block,
                 false,
                 RirParamMode::Normal,
@@ -6789,7 +6922,15 @@ mod typed_payload_tests {
             .add_internal_intrinsic(InternalIntrinsic::IterLen, &[value], span())
             .unwrap();
         editor
-            .add_struct_decl(&directives, true, false, a, &[(a, b)], &[function], span())
+            .add_struct_decl(
+                &directives,
+                true,
+                false,
+                a,
+                &[(a, type_b)],
+                &[function],
+                span(),
+            )
             .unwrap();
         editor
             .add_struct_init(
@@ -6802,12 +6943,12 @@ mod typed_payload_tests {
             )
             .unwrap();
         editor
-            .add_enum_decl(true, a, &[a, b], &[vec![b], vec![]], span())
+            .add_enum_decl(true, a, &[a, b], &[vec![type_b], vec![]], span())
             .unwrap();
         editor.add_array_init(&[value, block], span()).unwrap();
         editor
             .add_anon_struct_type(
-                &[(b, a)],
+                &[(b, type_a)],
                 &[function],
                 RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0)]),
                 span(),
@@ -6816,7 +6957,7 @@ mod typed_payload_tests {
         editor
             .add_anon_enum_type(
                 &[b],
-                &[vec![a]],
+                &[vec![type_a]],
                 RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(1)]),
                 span(),
             )
@@ -6844,6 +6985,7 @@ mod typed_payload_tests {
         };
 
         let mut editor = RirEditor::new();
+        let type_b = editor.add_named_type(b).unwrap();
         let value = editor.add_inst(Inst {
             data: InstData::UnitConst,
             span: at(0),
@@ -6858,12 +7000,12 @@ mod typed_payload_tests {
                 a,
                 &[RirParam {
                     name: a,
-                    ty: b,
+                    ty: type_b,
                     mode: RirParamMode::Normal,
                     is_comptime: false,
                     span: at(3),
                 }],
-                b,
+                type_b,
                 value,
                 false,
                 RirParamMode::Normal,
@@ -6902,21 +7044,29 @@ mod typed_payload_tests {
             )
             .unwrap();
         editor
-            .add_const_decl(&[directive(10)], false, a, Some(b), value, at(9))
+            .add_const_decl(&[directive(10)], false, a, Some(type_b), value, at(9))
             .unwrap();
         editor
             .add_alloc(
                 &[directive(12)],
                 Some(a),
                 false,
-                Some(b),
+                Some(type_b),
                 value,
                 false,
                 at(11),
             )
             .unwrap();
         editor
-            .add_struct_decl(&[directive(14)], false, false, a, &[(a, b)], &[], at(13))
+            .add_struct_decl(
+                &[directive(14)],
+                false,
+                false,
+                a,
+                &[(a, type_b)],
+                &[],
+                at(13),
+            )
             .unwrap();
         editor
             .add_struct_init(
@@ -6930,7 +7080,7 @@ mod typed_payload_tests {
             .unwrap();
         editor
             .add_anon_struct_type(
-                &[(a, b)],
+                &[(a, type_b)],
                 &[],
                 RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(7)]),
                 at(17),
@@ -7236,6 +7386,13 @@ mod typed_payload_tests {
         let anchor_pointee = std::mem::size_of_val(anchor.segments()) as u64;
         let span = Span::with_file(FileId::new(7), 0, 1);
         let mut editor = RirEditor::new();
+        let named_type = editor.add_named_type(name).unwrap();
+        editor.add_inst(Inst {
+            data: InstData::TypeConst {
+                type_name: named_type,
+            },
+            span,
+        });
         editor.add_inst(Inst {
             data: InstData::StringConst {
                 content: name,
@@ -7264,7 +7421,8 @@ mod typed_payload_tests {
         .unwrap();
 
         let dense = (rir.len() * std::mem::size_of::<Inst>()) as u64
-            + (rir.extra_len() * std::mem::size_of::<u32>()) as u64;
+            + (rir.extra_len() * std::mem::size_of::<u32>()) as u64
+            + rir.type_syntax().retained_allocation_charge();
         assert_eq!(
             rir.retained_allocation_charge(),
             dense + 4 * anchor_pointee,
@@ -7276,8 +7434,8 @@ mod typed_payload_tests {
     fn declaration_interval_projection_is_candidate_local_and_rejects_open_owner_edges() {
         let interner = ThreadedRodeo::new();
         let name = interner.get_or_intern("f");
-        let unit = interner.get_or_intern("()");
         let mut source = RirEditor::new();
+        let unit = source.add_unit_type().unwrap();
         let mut method_roots = Vec::new();
         for _ in 0..3 {
             let body = source.add_inst(Inst {
@@ -7362,6 +7520,7 @@ mod typed_payload_tests {
         let source_directive = source_symbols.get_or_intern("derive");
         let source_arg = source_symbols.get_or_intern("copy");
         let mut source = RirEditor::new();
+        let source_ty = source.add_named_type(source_ty).unwrap();
         let source_root = source
             .add_struct_decl(
                 &[RirDirective {
@@ -7388,8 +7547,8 @@ mod typed_payload_tests {
 
         let destination_symbols = ThreadedRodeo::new();
         let method_name = destination_symbols.get_or_intern("method");
-        let unit = destination_symbols.get_or_intern("()");
         let mut destination = RirEditor::new();
+        let unit = destination.add_unit_type().unwrap();
         let mut methods = Vec::new();
         for _ in 0..2 {
             let body = destination.add_inst(Inst {
@@ -7468,10 +7627,13 @@ mod typed_payload_tests {
                 .values()
                 .map(|(name, ty)| (
                     destination_symbols.resolve(&name),
-                    destination_symbols.resolve(&ty),
+                    destination
+                        .type_syntax()
+                        .render_type_with(ty, |symbol| destination_symbols.resolve(symbol))
+                        .unwrap(),
                 ))
                 .collect::<Vec<_>>(),
-            [("value", "i32")]
+            [("value", "i32".to_owned())]
         );
         assert_eq!(
             destination
@@ -7508,7 +7670,6 @@ mod typed_payload_tests {
     fn struct_shell_composition_rejects_invalid_sources_atomically() {
         let symbols = ThreadedRodeo::new();
         let name = symbols.get_or_intern("S");
-        let unit = symbols.get_or_intern("()");
         let validation = RirValidationContext {
             symbol_count: symbols.len(),
             source_lengths: &[(FileId::new(7), 100)],
@@ -7522,6 +7683,7 @@ mod typed_payload_tests {
         let non_struct = ValidatedRir::finish(non_struct, &validation).unwrap();
 
         let mut with_method = RirEditor::new();
+        let unit = with_method.add_unit_type().unwrap();
         let body = with_method.add_inst(Inst {
             data: InstData::UnitConst,
             span: span(),
@@ -8341,6 +8503,7 @@ mod typed_payload_tests {
         let interner = ThreadedRodeo::new();
         let a = interner.get_or_intern("a");
         let mut rir = Rir::new();
+        let type_a = install_named_types(&mut rir, &[a])[0];
         let refs = rir
             .add_block_insts(&[InstRef::from_raw(0), InstRef::from_raw(1)])
             .unwrap();
@@ -8372,19 +8535,19 @@ mod typed_payload_tests {
         let params = rir
             .add_params(&[RirParam {
                 name: a,
-                ty: a,
+                ty: type_a,
                 mode: RirParamMode::Normal,
                 is_comptime: false,
                 span: span(),
             }])
             .unwrap();
         let inits = rir.add_field_inits(&[(a, InstRef::from_raw(0))]).unwrap();
-        let fields = rir.add_struct_fields(&[(a, a)]).unwrap();
-        let anon_fields = rir.add_anon_struct_fields(&[(a, a)]).unwrap();
+        let fields = rir.add_struct_fields(&[(a, type_a)]).unwrap();
+        let anon_fields = rir.add_anon_struct_fields(&[(a, type_a)]).unwrap();
         let variants = rir.add_enum_variants(&[a]).unwrap();
         let anon_variants = rir.add_anon_enum_variants(&[a]).unwrap();
-        let payloads = rir.add_enum_payloads(&[vec![a]]).unwrap();
-        let anon_payloads = rir.add_anon_enum_payloads(&[vec![a]]).unwrap();
+        let payloads = rir.add_enum_payloads(&[vec![type_a]]).unwrap();
+        let anon_payloads = rir.add_anon_enum_payloads(&[vec![type_a]]).unwrap();
         assert_eq!(
             allocations_during(|| {
                 std::hint::black_box(rir.block_insts(&refs).values().count());
@@ -8429,10 +8592,11 @@ mod typed_payload_tests {
         };
 
         let mut rir = Rir::new();
+        let type_a = install_named_types(&mut rir, &[a])[0];
         let params = rir
             .add_params(&[RirParam {
                 name: a,
-                ty: a,
+                ty: type_a,
                 mode: RirParamMode::Normal,
                 is_comptime: false,
                 span: span(),
@@ -8449,7 +8613,7 @@ mod typed_payload_tests {
                 is_c_export: false,
                 name: a,
                 params,
-                return_type: a,
+                return_type: type_a,
                 body: reference,
                 has_self: false,
                 self_mode: RirParamMode::Normal,
@@ -8504,6 +8668,7 @@ mod typed_payload_tests {
         macro_rules! fixed_symbol_case {
             ($builder:expr, $data:expr) => {{
                 let mut rir = Rir::new();
+                let _ = install_named_types(&mut rir, &[a]);
                 let range = ($builder)(&mut rir);
                 assert_rejected(rir, 0, ($data)(range));
             }};
@@ -8519,7 +8684,7 @@ mod typed_payload_tests {
             }
         );
         fixed_symbol_case!(
-            |rir: &mut Rir| rir.add_struct_fields(&[(a, a)]).unwrap(),
+            |rir: &mut Rir| rir.add_struct_fields(&[(a, type_a)]).unwrap(),
             |fields| InstData::StructDecl {
                 directives: RirDirectivesRange::payload_fallback(),
                 is_pub: false,
@@ -8530,7 +8695,7 @@ mod typed_payload_tests {
             }
         );
         fixed_symbol_case!(
-            |rir: &mut Rir| rir.add_anon_struct_fields(&[(a, a)]).unwrap(),
+            |rir: &mut Rir| rir.add_anon_struct_fields(&[(a, type_a)]).unwrap(),
             |fields| InstData::AnonStructType {
                 fields,
                 methods: RirAnonStructMethodsRange::payload_fallback(),
@@ -8554,30 +8719,6 @@ mod typed_payload_tests {
                 anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0),]),
             }
         );
-
-        let mut rir = Rir::new();
-        let payloads = rir.add_enum_payloads(&[vec![a]]).unwrap();
-        assert_rejected(
-            rir,
-            1,
-            InstData::EnumDecl {
-                is_pub: false,
-                name: a,
-                variants: RirEnumVariantsRange::from_parts(0, 1),
-                payloads,
-            },
-        );
-        let mut rir = Rir::new();
-        let payloads = rir.add_anon_enum_payloads(&[vec![a]]).unwrap();
-        assert_rejected(
-            rir,
-            1,
-            InstData::AnonEnumType {
-                variants: RirAnonEnumVariantsRange::from_parts(0, 1),
-                payloads,
-                anchor: RirStructuralAnchor::new(vec![RirStructuralPathSegment::AnonymousType(0)]),
-            },
-        );
     }
 
     #[test]
@@ -8585,6 +8726,8 @@ mod typed_payload_tests {
         let interner = ThreadedRodeo::new();
         let a = interner.get_or_intern("a");
         let b = interner.get_or_intern("b");
+        let type_a = RirTypeSyntaxRef::from_u32(0);
+        let type_b = RirTypeSyntaxRef::from_u32(1);
         let r0 = InstRef::from_raw(0);
         let r1 = InstRef::from_raw(1);
         let directives = [RirDirective {
@@ -8594,7 +8737,7 @@ mod typed_payload_tests {
         }];
         let params = [RirParam {
             name: a,
-            ty: b,
+            ty: type_b,
             mode: RirParamMode::Borrow,
             is_comptime: true,
             span: span(),
@@ -8603,8 +8746,8 @@ mod typed_payload_tests {
             value: r0,
             mode: RirArgMode::Inout,
         }];
-        let enum_payloads = [vec![a], vec![]];
-        let anon_payloads = [vec![b]];
+        let enum_payloads = [vec![type_a], vec![]];
+        let anon_payloads = [vec![type_b]];
         #[derive(Debug)]
         struct Evidence {
             family: &'static str,
@@ -8622,6 +8765,8 @@ mod typed_payload_tests {
         macro_rules! evidence {
             ($family:expr, $build:expr, $consume:expr) => {{
                 let mut rir = Rir::new();
+                let installed = install_named_types(&mut rir, &[a, b]);
+                assert_eq!(installed, [type_a, type_b]);
                 let mut range = None;
                 let build_started = std::time::Instant::now();
                 let (allocation_calls, allocated_bytes) = allocation_evidence(|| {
@@ -8724,12 +8869,12 @@ mod typed_payload_tests {
             ),
             evidence!(
                 RirStructFieldsRange::FAMILY,
-                |rir: &mut Rir| { rir.add_struct_fields(&[(a, b)]).unwrap() },
+                |rir: &mut Rir| { rir.add_struct_fields(&[(a, type_b)]).unwrap() },
                 |rir: &Rir, range| rir.struct_fields(range).len()
             ),
             evidence!(
                 RirAnonStructFieldsRange::FAMILY,
-                |rir: &mut Rir| { rir.add_anon_struct_fields(&[(a, b)]).unwrap() },
+                |rir: &mut Rir| { rir.add_anon_struct_fields(&[(a, type_b)]).unwrap() },
                 |rir: &Rir, range| rir.anon_struct_fields(range).len()
             ),
             evidence!(

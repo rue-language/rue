@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
-use rue_rir::{InstRef, Rir, RirParam, RirParamMode};
+use rue_rir::{InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 
 use super::aggregate_resolution::{AggregateFacts, is_accessible as aggregate_is_accessible};
@@ -24,7 +24,7 @@ use super::anon_structs::{
 };
 use super::call_resolution::CallResolutionFacts;
 use super::context::{AnalysisContext, ParamIndex, ParamInfo};
-use super::fact_mode::BodyAnalysisHost;
+use super::fact_mode::{BodyAnalysisHost, StructuredTypeSyntax, StructuredTypeSyntaxRequest};
 use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
@@ -158,11 +158,15 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
         symbol: Spur,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
     fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool>;
-    fn function_param_type_symbol(
+    fn function_param_type_syntax(
         &self,
         function: &FunctionCallInfo,
         param_index: usize,
-    ) -> Option<Spur>;
+    ) -> Option<StructuredTypeSyntax>;
+    fn function_return_type_syntax(
+        &self,
+        function: &FunctionCallInfo,
+    ) -> Option<StructuredTypeSyntax>;
     /// File whose declaration namespace owns the callable's retained type
     /// syntax. Provider-backed foreign callables override this; request-local
     /// callables use the body's span file.
@@ -184,7 +188,14 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     }
     fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String;
     fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String;
-    fn resolve_body_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type>;
+    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type>;
+    fn resolve_body_type_with_substitutions(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type>;
     fn replace_active_anonymous_producer(
         &mut self,
         producer: Option<(IssuedStableProducerId, IssuedCanonicalArguments)>,
@@ -419,14 +430,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {
         self.storage.comptime_type_param_flags(function)
     }
-    pub(crate) fn function_param_type_symbol(
-        &self,
-        function: &FunctionCallInfo,
-        param_index: usize,
-    ) -> Option<Spur> {
-        self.storage
-            .function_param_type_symbol(function, param_index)
-    }
     pub(crate) fn reduce_external_comptime_call(
         &mut self,
         name: Spur,
@@ -453,17 +456,65 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             Some(&ctx.comptime_value_vars),
         )
     }
-    pub(crate) fn resolve_type_for_comptime_with_subst_and_values_at_span(
+
+    pub(crate) fn rir_type_is_named(&self, syntax: RirTypeSyntaxRef, name: &str) -> bool {
+        let arena = self.body_rir_ref().type_syntax();
+        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(syntax) else {
+            return false;
+        };
+        arena
+            .symbol(*symbol)
+            .is_some_and(|symbol| self.body_interner().resolve(symbol) == name)
+    }
+
+    pub(crate) fn rir_type_named_symbol(&self, syntax: RirTypeSyntaxRef) -> Option<Spur> {
+        let arena = self.body_rir_ref().type_syntax();
+        let rue_rir::RirTypeSyntaxNode::Named(symbol) = arena.node(syntax)? else {
+            return None;
+        };
+        arena.symbol(*symbol).copied()
+    }
+
+    pub(crate) fn render_rir_type(&self, syntax: RirTypeSyntaxRef) -> String {
+        self.body_rir_ref()
+            .type_syntax()
+            .render_type_with(syntax, |symbol| self.body_interner().resolve(symbol))
+            .unwrap_or_else(|| "<invalid structured type syntax>".to_owned())
+    }
+
+    pub(crate) fn resolve_rir_type(
         &mut self,
-        type_sym: Spur,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+    ) -> CompileResult<Type> {
+        self.storage.resolve_body_type(syntax, span)
+    }
+
+    pub(crate) fn resolve_rir_type_with_ctx(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<Type> {
+        self.storage.resolve_body_type_with_substitutions(
+            syntax,
+            span,
+            Some(&ctx.comptime_type_vars),
+            Some(&ctx.comptime_value_vars),
+        )
+    }
+
+    pub(crate) fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<Type> {
-        self.resolve_type_with_substitutions(type_sym, span, Some(type_subst), Some(value_subst))
+        self.storage
+            .resolve_body_type_with_substitutions(syntax, span, Some(type_subst), Some(value_subst))
             .ok()
     }
-
     pub(crate) fn extract_anon_method_sigs(
         &mut self,
         methods: &rue_rir::RirAnonStructMethodsRange,
@@ -472,57 +523,26 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) -> Vec<super::AnonMethodSig> {
         fn resolve<H: OrdinaryBodyAnalysisHost>(
             engine: &mut OrdinaryBodyEngine<'_, H>,
-            symbol: Spur,
+            syntax: RirTypeSyntaxRef,
             type_subst: &HashMap<Spur, Type>,
             value_subst: &HashMap<Spur, ConstValue>,
             span: Span,
         ) -> super::AnonMethodType {
             use super::AnonMethodType as T;
-            let spelling = engine.body_interner().resolve(&symbol).to_owned();
-            if spelling == "Self" {
+            if engine.rir_type_is_named(syntax, "Self") {
                 return T::SelfType;
             }
-            if let Some((element, len)) = crate::types::parse_array_type_syntax(&spelling) {
-                let element = engine.body_interner().get_or_intern(&element);
-                let len = engine
-                    .resolve_array_length(&len, span, Some(value_subst))
-                    .ok();
-                return len.map_or_else(
-                    || T::Syntax(spelling.into()),
-                    |len| T::Array {
-                        element: Box::new(resolve(engine, element, type_subst, value_subst, span)),
-                        len,
-                    },
-                );
-            }
-            if let Some(pointee) = spelling.strip_prefix("ptr const ") {
-                let pointee = engine.body_interner().get_or_intern(pointee);
-                return T::PtrConst(Box::new(resolve(
-                    engine,
-                    pointee,
-                    type_subst,
-                    value_subst,
-                    span,
-                )));
-            }
-            if let Some(pointee) = spelling.strip_prefix("ptr mut ") {
-                let pointee = engine.body_interner().get_or_intern(pointee);
-                return T::PtrMut(Box::new(resolve(
-                    engine,
-                    pointee,
-                    type_subst,
-                    value_subst,
-                    span,
-                )));
-            }
             engine
-                .resolve_type_for_comptime_with_subst_and_values_at_span(
-                    symbol,
+                .resolve_rir_type_for_comptime_with_subst_and_values_at_span(
+                    syntax,
                     type_subst,
                     value_subst,
                     span,
                 )
-                .map_or_else(|| T::Syntax(spelling.into()), T::Concrete)
+                .map_or_else(
+                    || T::Syntax(engine.render_rir_type(syntax).into()),
+                    T::Concrete,
+                )
         }
 
         let method_refs = self.body_rir_ref().anon_struct_methods(methods).to_vec();
@@ -584,7 +604,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             } = &method_inst.data
             {
                 for param in self.body_rir_ref().params(params) {
-                    if param.is_comptime && self.body_interner().resolve(&param.ty) == "type" {
+                    if param.is_comptime && self.rir_type_is_named(param.ty, "type") {
                         return Some((
                             method_inst.span,
                             self.body_interner().resolve(method_name).to_owned(),
@@ -638,10 +658,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             let parameters = self.body_rir_ref().params(&params).to_vec();
             let mut parameter_types = Vec::with_capacity(parameters.len());
             for parameter in &parameters {
-                let resolved = if self.body_interner().resolve(&parameter.ty) == "Self" {
+                let resolved = if self.rir_type_is_named(parameter.ty, "Self") {
                     Ok(struct_type)
                 } else {
-                    self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                    self.resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                         parameter.ty,
                         type_subst,
                         value_subst,
@@ -651,10 +671,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 };
                 parameter_types.push(resolved.ok()?);
             }
-            let return_ty = if self.body_interner().resolve(&return_type) == "Self" {
+            let return_ty = if self.rir_type_is_named(return_type, "Self") {
                 struct_type
             } else {
-                self.resolve_type_for_comptime_with_subst_and_values_at_span(
+                self.resolve_rir_type_for_comptime_with_subst_and_values_at_span(
                     return_type,
                     type_subst,
                     value_subst,
@@ -824,27 +844,37 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         if declared != Type::COMPTIME_TYPE {
             return Ok(declared);
         }
-        let type_symbol = self
-            .function_param_type_symbol(function, param_index)
-            .ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::InternalError(
-                        "generic parameter index is missing from its RIR declaration".to_owned(),
-                    ),
-                    span,
-                )
-            })?;
         let root_file = self
             .storage
             .function_signature_root_file(function)
             .unwrap_or(span.file_id);
-        self.resolve_type_with_substitutions_in_file(
-            type_symbol,
-            root_file,
+        if let Some(syntax) = self
+            .storage
+            .function_param_type_syntax(function, param_index)
+        {
+            return self
+                .storage
+                .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
+                    syntax: &syntax,
+                    root_file,
+                    span,
+                    type_substitutions: Some(type_subst),
+                    value_substitutions: Some(value_subst),
+                })
+                .map_err(|failure| {
+                    super::typeck::semantic_type_syntax_compile_error(
+                        self.body_interner(),
+                        failure,
+                        span,
+                    )
+                });
+        }
+        Err(CompileError::new(
+            ErrorKind::InternalError(
+                "generic parameter type is missing its structured declaration syntax".to_owned(),
+            ),
             span,
-            Some(type_subst),
-            Some(value_subst),
-        )
+        ))
     }
     pub(crate) fn resolve_substituted_return_type(
         &mut self,
@@ -860,13 +890,30 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .storage
             .function_signature_root_file(function)
             .unwrap_or(span.file_id);
-        self.resolve_type_with_substitutions_in_file(
-            function.return_type_sym,
-            root_file,
+        if let Some(syntax) = self.storage.function_return_type_syntax(function) {
+            return self
+                .storage
+                .resolve_structured_type_syntax(StructuredTypeSyntaxRequest {
+                    syntax: &syntax,
+                    root_file,
+                    span,
+                    type_substitutions: Some(type_subst),
+                    value_substitutions: Some(value_subst),
+                })
+                .map_err(|failure| {
+                    super::typeck::semantic_type_syntax_compile_error(
+                        self.body_interner(),
+                        failure,
+                        span,
+                    )
+                });
+        }
+        Err(CompileError::new(
+            ErrorKind::InternalError(
+                "generic return type is missing its structured declaration syntax".to_owned(),
+            ),
             span,
-            Some(type_subst),
-            Some(value_subst),
-        )
+        ))
     }
     pub(crate) fn resolve_array_length(
         &mut self,
@@ -1164,15 +1211,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn reject_slice_escape(
         &self,
-        type_sym: Spur,
+        syntax: RirTypeSyntaxRef,
         span: Span,
         kind: ErrorKind,
     ) -> CompileResult<()> {
-        let name = self.body_interner().resolve(&type_sym);
-        if name.starts_with('[')
-            && name.ends_with(']')
-            && crate::types::parse_array_type_syntax(name).is_none()
-        {
+        if matches!(
+            self.body_rir_ref().type_syntax().node(syntax),
+            Some(rue_rir::RirTypeSyntaxNode::Slice { .. })
+        ) {
             self.require_preview(
                 rue_error::PreviewFeature::Slices,
                 "the slice type `[T]`",
@@ -1319,7 +1365,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         found.is_never() || found.is_error() || self.types_equivalent(found, expected)
     }
     pub(crate) fn function_returns_type(&self, function: &FunctionCallInfo) -> bool {
-        self.body_interner().get("type") == Some(function.return_type_sym)
+        function.returns_type
     }
     pub(crate) fn is_non_internable_element(ty: Type) -> bool {
         matches!(
@@ -1442,7 +1488,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         &mut self,
         infer_ctx: &InferenceContext,
         fn_name: &str,
-        return_type: Spur,
+        return_type: RirTypeSyntaxRef,
         params: P,
         body: InstRef,
         span: Span,
@@ -1626,115 +1672,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         )
     }
 
-    pub(crate) fn analyze_method_with_identity<P>(
-        &mut self,
-        infer_ctx: &InferenceContext,
-        identity: crate::FunctionInstanceKey<
-            crate::SemanticDefinitionToken,
-            crate::SemanticModuleToken,
-        >,
-        full_name: &str,
-        return_type: Spur,
-        params: P,
-        body: InstRef,
-        span: Span,
-        struct_type: Type,
-        has_self: bool,
-        self_mode: RirParamMode,
-        self_is_mut: bool,
-    ) -> CompileResult<(
-        AnalyzedFunction,
-        Vec<CompileWarning>,
-        Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
-    )>
-    where
-        P: ExactSizeIterator<Item = RirParam> + Clone,
-    {
-        self.analyze_method_with_identity_kind(
-            infer_ctx,
-            identity,
-            full_name,
-            return_type,
-            params,
-            body,
-            span,
-            struct_type,
-            has_self,
-            self_mode,
-            self_is_mut,
-            false,
-            false,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    fn analyze_method_with_identity_kind<P>(
-        &mut self,
-        infer_ctx: &InferenceContext,
-        identity: crate::FunctionInstanceKey<
-            crate::SemanticDefinitionToken,
-            crate::SemanticModuleToken,
-        >,
-        full_name: &str,
-        return_type: Spur,
-        params: P,
-        body: InstRef,
-        span: Span,
-        struct_type: Type,
-        has_self: bool,
-        self_mode: RirParamMode,
-        self_is_mut: bool,
-        is_destructor: bool,
-        is_accessor: bool,
-    ) -> CompileResult<(
-        AnalyzedFunction,
-        Vec<CompileWarning>,
-        Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
-    )>
-    where
-        P: ExactSizeIterator<Item = RirParam> + Clone,
-    {
-        let return_type = if self.storage.body_interner().resolve(&return_type) == "Self" {
-            struct_type
-        } else {
-            self.storage.resolve_body_type(return_type, span)?
-        };
-        let self_name = self.storage.body_interner().get_or_intern("self");
-        let self_type_name = self.storage.body_interner().get_or_intern("Self");
-        let mut resolved_params = Vec::new();
-        if has_self {
-            resolved_params.push((self_name, struct_type, self_mode, false));
-        }
-        for parameter in params {
-            let ty = if parameter.ty == self_type_name {
-                struct_type
-            } else {
-                self.storage.resolve_body_type(parameter.ty, span)?
-            };
-            reject_runtime_type_value(ty, parameter.is_comptime, span)?;
-            resolved_params.push((parameter.name, ty, parameter.mode, parameter.is_comptime));
-        }
-        self.analyze_method_with_identity_kind_resolved(
-            infer_ctx,
-            identity,
-            full_name,
-            return_type,
-            resolved_params,
-            body,
-            span,
-            struct_type,
-            self_is_mut,
-            is_destructor,
-            is_accessor,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn analyze_method_with_identity_kind_resolved(
+    pub(crate) fn analyze_method_with_identity_kind_resolved(
         &mut self,
         infer_ctx: &InferenceContext,
         identity: crate::FunctionInstanceKey<
@@ -1832,48 +1771,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             referenced_functions,
             referenced_methods,
         ))
-    }
-
-    pub(crate) fn analyze_anonymous_destructor<P>(
-        &mut self,
-        infer_ctx: &InferenceContext,
-        identity: crate::FunctionInstanceKey<
-            crate::SemanticDefinitionToken,
-            crate::SemanticModuleToken,
-        >,
-        full_name: &str,
-        return_type: Spur,
-        params: P,
-        body: InstRef,
-        span: Span,
-        struct_type: Type,
-        self_mode: RirParamMode,
-        self_is_mut: bool,
-    ) -> CompileResult<(
-        AnalyzedFunction,
-        Vec<CompileWarning>,
-        Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
-    )>
-    where
-        P: ExactSizeIterator<Item = RirParam> + Clone,
-    {
-        self.analyze_method_with_identity_kind(
-            infer_ctx,
-            identity,
-            full_name,
-            return_type,
-            params,
-            body,
-            span,
-            struct_type,
-            true,
-            self_mode,
-            self_is_mut,
-            true,
-            false,
-        )
     }
 
     pub(crate) fn analyze_named_destructor(
@@ -2578,19 +2475,41 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
             .map(|ty| *ty == Type::COMPTIME_TYPE)
             .collect()
     }
-    fn function_param_type_symbol(
+    fn function_param_type_syntax(
         &self,
         function: &FunctionCallInfo,
         param_index: usize,
-    ) -> Option<Spur> {
+    ) -> Option<StructuredTypeSyntax> {
         let function = self
             .functions
             .values()
             .find(|candidate| candidate.params == function.params)?;
-        self.rir
+        let root = self
+            .rir
             .params(function.rir_params(self.rir))
-            .get(param_index)
-            .map(|param| param.ty)
+            .get(param_index)?
+            .ty;
+        Some(StructuredTypeSyntax {
+            arena: self.rir.type_syntax().clone(),
+            root,
+        })
+    }
+    fn function_return_type_syntax(
+        &self,
+        function: &FunctionCallInfo,
+    ) -> Option<StructuredTypeSyntax> {
+        let function = self
+            .functions
+            .values()
+            .find(|candidate| candidate.params == function.params)?;
+        let rue_rir::InstData::FnDecl { return_type, .. } = self.rir.get(function.declaration).data
+        else {
+            return None;
+        };
+        Some(StructuredTypeSyntax {
+            arena: self.rir.type_syntax().clone(),
+            root: return_type,
+        })
     }
     fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String {
         super::Sema::<D>::stable_definition_symbol_component(self, token)
@@ -2599,8 +2518,23 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
         super::Sema::<D>::stable_module_symbol_component(self, token)
     }
 
-    fn resolve_body_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        self.resolve_type(type_sym, span)
+    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
+        self.resolve_rir_type(syntax, span)
+    }
+
+    fn resolve_body_type_with_substitutions(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        self.resolve_rir_type_with_substitutions(
+            syntax,
+            span,
+            type_substitutions,
+            value_substitutions,
+        )
     }
 
     fn replace_active_anonymous_producer(

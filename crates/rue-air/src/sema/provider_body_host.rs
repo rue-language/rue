@@ -14,7 +14,9 @@ use std::time::Instant;
 use ahash::{AHashMap, AHashSet};
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, PreviewFeatures};
-use rue_rir::{InstData, InstRef, Rir, RirParam, RirParamMode};
+use rue_rir::{
+    InstData, InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxBuilder, RirTypeSyntaxRef,
+};
 use rue_span::{FileId, Span};
 use rue_target::Target;
 
@@ -26,7 +28,7 @@ use super::body_endpoint::{
 };
 use super::call_resolution::{CallResolutionFactSource, EpochFacts as CallFacts};
 use super::fact_mode::{
-    ArrayLengthRequest, BodyAnalysisHost, DeferredTypeRequest, ModulePrefixRequest,
+    ArrayLengthRequest, BodyAnalysisHost, ModulePrefixRequest, StructuredTypeSyntaxRequest,
     TypeSyntaxRequest,
 };
 use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
@@ -792,6 +794,13 @@ enum ImportNominalRegistration {
     Complete,
 }
 
+#[derive(Clone)]
+struct ProviderCallableTypeSyntax {
+    arena: rue_rir::RirTypeSyntaxArena<Spur>,
+    parameters: Arc<[RirTypeSyntaxRef]>,
+    result: RirTypeSyntaxRef,
+}
+
 struct ProviderBodyHost<'a, P, S, K, M> {
     endpoint: ProviderEndpointFacts<'a, P, S, K, M>,
     calls: ProviderCallFacts<'a, P, S, K, M>,
@@ -831,7 +840,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     anonymous_function_identities:
         RefCell<AHashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
     durable_comptime_type_flags: RefCell<AHashMap<ParamRange, Vec<bool>>>,
-    durable_param_type_symbols: RefCell<AHashMap<ParamRange, Vec<Spur>>>,
+    durable_callable_type_syntax: RefCell<AHashMap<ParamRange, ProviderCallableTypeSyntax>>,
     durable_signature_files: RefCell<AHashMap<ParamRange, FileId>>,
     named_method_infos: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
     const_infos: RefCell<AHashMap<(FileId, Spur), ConstInfo>>,
@@ -979,7 +988,7 @@ where
             observed_comptime_producers: RefCell::new(AHashSet::new()),
             anonymous_function_identities: RefCell::new(AHashMap::new()),
             durable_comptime_type_flags: RefCell::new(AHashMap::new()),
-            durable_param_type_symbols: RefCell::new(AHashMap::new()),
+            durable_callable_type_syntax: RefCell::new(AHashMap::new()),
             durable_signature_files: RefCell::new(AHashMap::new()),
             named_method_infos: RefCell::new(AHashMap::new()),
             const_infos: RefCell::new(AHashMap::new()),
@@ -1020,63 +1029,138 @@ where
         Some(host)
     }
 
-    fn durable_signature_type_syntax(
+    fn push_durable_type_syntax(
         &self,
+        builder: &mut RirTypeSyntaxBuilder<Spur>,
         ty: &crate::SemanticImportType<K, M>,
         parameters: &[crate::DurableSignatureParameter<K, M>],
-    ) -> Option<String> {
+    ) -> Option<RirTypeSyntaxRef> {
         use crate::SemanticImportType as T;
-        Some(match ty {
-            T::I8 => "i8".to_owned(),
-            T::I16 => "i16".to_owned(),
-            T::I32 => "i32".to_owned(),
-            T::I64 => "i64".to_owned(),
-            T::U8 => "u8".to_owned(),
-            T::U16 => "u16".to_owned(),
-            T::U32 => "u32".to_owned(),
-            T::U64 => "u64".to_owned(),
-            T::Bool => "bool".to_owned(),
-            T::Unit => "()".to_owned(),
-            T::Never => "!".to_owned(),
-            T::ComptimeType => "type".to_owned(),
-            T::BuiltinNominal { name, .. } => name.to_string(),
-            T::Nominal(definition) => self.source.definition_name(definition)?.to_string(),
-            T::AnonymousNominal(_) => return None,
-            T::Array { element, len } => format!(
-                "[{}; {len}]",
-                self.durable_signature_type_syntax(element, parameters)?
-            ),
-            T::PtrConst(pointee) => format!(
-                "*const {}",
-                self.durable_signature_type_syntax(pointee, parameters)?
-            ),
-            T::PtrMut(pointee) => format!(
-                "*mut {}",
-                self.durable_signature_type_syntax(pointee, parameters)?
-            ),
-            T::Slice { name, .. } => name.to_string(),
-            T::Module(module) => self.source.module_path(module),
-            T::GenericParameter(index) => parameters.get(*index as usize)?.name.to_string(),
+        let named = |builder: &mut RirTypeSyntaxBuilder<Spur>, name: &str| {
+            builder
+                .push_named_type(self.interner.get_or_intern(name))
+                .ok()
+        };
+        match ty {
+            T::I8 => named(builder, "i8"),
+            T::I16 => named(builder, "i16"),
+            T::I32 => named(builder, "i32"),
+            T::I64 => named(builder, "i64"),
+            T::U8 => named(builder, "u8"),
+            T::U16 => named(builder, "u16"),
+            T::U32 => named(builder, "u32"),
+            T::U64 => named(builder, "u64"),
+            T::Bool => named(builder, "bool"),
+            T::Unit => builder.push_unit_type().ok(),
+            T::Never => builder.push_never_type().ok(),
+            T::ComptimeType => named(builder, "type"),
+            T::BuiltinNominal { name, .. } => named(builder, name),
+            T::Nominal(definition) => named(builder, &self.source.definition_name(definition)?),
+            T::AnonymousNominal(_) => {
+                let resolved = self
+                    .state
+                    .identity_context()
+                    .pool_mut()?
+                    .resolve_provider_type(ty)
+                    .ok()?;
+                named(
+                    builder,
+                    &resolved.safe_name_with_pool(Some(&self.type_pool)),
+                )
+            }
+            T::Array { element, len } => {
+                let element = self.push_durable_type_syntax(builder, element, parameters)?;
+                let length = builder.push_integer(i128::from(*len)).ok()?;
+                builder.push_array_type(element, length).ok()
+            }
+            T::PtrConst(pointee) => {
+                let pointee = self.push_durable_type_syntax(builder, pointee, parameters)?;
+                builder.push_pointer_const_type(pointee).ok()
+            }
+            T::PtrMut(pointee) => {
+                let pointee = self.push_durable_type_syntax(builder, pointee, parameters)?;
+                builder.push_pointer_mut_type(pointee).ok()
+            }
+            T::Slice { element, .. } => {
+                let element = self.push_durable_type_syntax(builder, element, parameters)?;
+                builder.push_slice_type(element).ok()
+            }
+            T::Module(module) => {
+                let path = self.source.module_path(module);
+                named(builder, &path)
+            }
+            T::GenericParameter(index) => {
+                named(builder, parameters.get(*index as usize)?.name.as_ref())
+            }
+        }
+    }
+
+    fn build_durable_callable_type_syntax(
+        &self,
+        function: &crate::DurableFunction<K, M>,
+    ) -> Option<ProviderCallableTypeSyntax> {
+        let mut builder = RirTypeSyntaxBuilder::default();
+        let parameters = function
+            .parameters
+            .iter()
+            .map(|parameter| {
+                self.push_durable_type_syntax(&mut builder, &parameter.ty, &function.parameters)
+            })
+            .collect::<Option<Arc<[_]>>>()?;
+        let result =
+            self.push_durable_type_syntax(&mut builder, &function.result, &function.parameters)?;
+        Some(ProviderCallableTypeSyntax {
+            arena: builder.finish(),
+            parameters,
+            result,
         })
     }
 
-    fn durable_signature_type_symbol(
+    fn remap_callable_type_syntax(
         &self,
-        ty: &crate::SemanticImportType<K, M>,
-        parameters: &[crate::DurableSignatureParameter<K, M>],
-    ) -> Option<Spur> {
-        if let Some(syntax) = self.durable_signature_type_syntax(ty, parameters) {
-            return Some(self.interner.get_or_intern(&syntax));
-        }
-        let resolved = self
-            .state
-            .identity_context()
-            .pool_mut()?
-            .resolve_provider_type(ty)
+        syntax: &crate::DurableCallableTypeSyntax,
+    ) -> Option<ProviderCallableTypeSyntax> {
+        let mut builder = RirTypeSyntaxBuilder::default();
+        let mapped = builder
+            .append_remapped(
+                &syntax.syntax,
+                |symbol| self.interner.get_or_intern(symbol.as_ref()),
+                || Ok::<_, std::convert::Infallible>(()),
+            )
             .ok()?;
-        Some(
-            self.interner
-                .get_or_intern(&resolved.safe_name_with_pool(Some(&self.type_pool))),
+        let map = |reference: RirTypeSyntaxRef| mapped.get(reference.index()).copied();
+        let parameters = syntax
+            .parameters
+            .iter()
+            .copied()
+            .map(map)
+            .collect::<Option<Arc<[_]>>>()?;
+        let result = map(syntax.result)?;
+        Some(ProviderCallableTypeSyntax {
+            arena: builder.finish(),
+            parameters,
+            result,
+        })
+    }
+
+    fn callable_returns_type(
+        &self,
+        function: &crate::DurableFunction<K, M>,
+        exact_type_syntax: Option<&crate::DurableCallableTypeSyntax>,
+    ) -> bool {
+        exact_type_syntax.map_or_else(
+            || matches!(function.result, crate::SemanticImportType::ComptimeType),
+            |syntax| {
+                let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) =
+                    syntax.syntax.node(syntax.result)
+                else {
+                    return false;
+                };
+                syntax
+                    .syntax
+                    .symbol(*symbol)
+                    .is_some_and(|symbol| symbol.as_ref() == "type")
+            },
         )
     }
 
@@ -1103,46 +1187,31 @@ where
             self.durable_signature_files
                 .borrow_mut()
                 .insert(info.params, signature_file);
-            let symbols = exact_type_syntax
-                .map(|syntax| {
-                    syntax
-                        .parameters
-                        .iter()
-                        .map(|ty| self.signature_type_symbol(syntax, *ty))
-                        .collect()
-                })
-                .or_else(|| {
-                    function
-                        .parameters
-                        .iter()
-                        .map(|parameter| {
-                            self.durable_signature_type_syntax(&parameter.ty, &function.parameters)
-                                .map(|syntax| self.interner.get_or_intern(&syntax))
-                        })
-                        .collect::<Option<Vec<_>>>()
-                });
-            if let Some(symbols) = symbols {
-                self.durable_param_type_symbols
-                    .borrow_mut()
-                    .insert(info.params, symbols);
+            let requires_deferred_syntax = |ty: &crate::SemanticImportType<K, M>| {
+                // The semantic nucleus uses `ComptimeType` as the placeholder
+                // for both type-parameter and value-parameter dependent
+                // annotations (for example `[i32; N]`). Preserve exact syntax
+                // for either form so specialization can substitute the
+                // declaration instead of treating the placeholder as a type.
+                matches!(ty, crate::SemanticImportType::ComptimeType)
+                    || super::body_identity::semantic_import_type_mentions_generic_parameter(ty)
+            };
+            let has_deferred_type = function
+                .parameters
+                .iter()
+                .any(|parameter| requires_deferred_syntax(&parameter.ty))
+                || requires_deferred_syntax(&function.result);
+            if has_deferred_type {
+                if let Some(syntax) = exact_type_syntax
+                    .and_then(|syntax| self.remap_callable_type_syntax(syntax))
+                    .or_else(|| self.build_durable_callable_type_syntax(function))
+                {
+                    self.durable_callable_type_syntax
+                        .borrow_mut()
+                        .insert(info.params, syntax);
+                }
             }
         }
-    }
-
-    /// Temporary adapter for the string-keyed body RIR type slots. The
-    /// declaration query and semantic nucleus retain and resolve only the
-    /// structured arena; this canonical rendering disappears when those RIR
-    /// slots carry dense type-syntax references directly.
-    fn signature_type_symbol(
-        &self,
-        syntax: &crate::DurableCallableTypeSyntax,
-        root: rue_rir::RirTypeSyntaxRef,
-    ) -> Spur {
-        let rendered = syntax
-            .syntax
-            .render_type(root)
-            .expect("durable signature roots are validated when projected");
-        self.interner.get_or_intern(&rendered)
     }
 
     fn current_callable_locator(&self) -> Option<(InstRef, InstRef, Span)> {
@@ -1230,16 +1299,12 @@ where
                 .ok()?;
         }
         let exact_type_syntax = function.type_syntax.as_ref();
-        let return_type_sym = if let Some(syntax) = exact_type_syntax {
-            self.signature_type_symbol(syntax, syntax.result)
-        } else {
-            self.durable_signature_type_symbol(&function.result, &function.parameters)?
-        };
+        let returns_type = self.callable_returns_type(&function, exact_type_syntax);
         let info = self
             .state
             .identity_context()
             .pool_mut()?
-            .resolve_function_call_from(&key, &function, return_type_sym, file)
+            .resolve_function_call_from(&key, &function, returns_type, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, &name);
@@ -1393,16 +1458,12 @@ where
                 .ok()?;
         }
         let exact_type_syntax = function.type_syntax.as_ref();
-        let return_type_sym = exact_type_syntax
-            .map(|syntax| self.signature_type_symbol(syntax, syntax.result))
-            .or_else(|| {
-                self.durable_signature_type_symbol(&function.result, &function.parameters)
-            })?;
+        let returns_type = self.callable_returns_type(&function, exact_type_syntax);
         let info = self
             .state
             .identity_context()
             .pool_mut()?
-            .resolve_function_call_from(&key, &function, return_type_sym, file)
+            .resolve_function_call_from(&key, &function, returns_type, file)
             .ok()?;
         self.install_durable_callable_metadata(info, &function, false, exact_type_syntax, file);
         let token = self.endpoint.register_function(key.clone(), file, name);
@@ -2298,16 +2359,6 @@ where
                         crate::NominalInstanceKey::Anonymous(owner.clone()),
                     ),
                     super::AnonMethodType::Concrete(ty) => host.canonical_type_instance(*ty)?,
-                    super::AnonMethodType::Array { element, len } => TypeInstanceKey::Array {
-                        element: Box::new(concrete(host, element, owner)?),
-                        len: *len,
-                    },
-                    super::AnonMethodType::PtrConst(pointee) => {
-                        TypeInstanceKey::PtrConst(Box::new(concrete(host, pointee, owner)?))
-                    }
-                    super::AnonMethodType::PtrMut(pointee) => {
-                        TypeInstanceKey::PtrMut(Box::new(concrete(host, pointee, owner)?))
-                    }
                     super::AnonMethodType::Syntax(_) => {
                         return Err(crate::SemanticBodyExportFailure::UnsupportedType);
                     }
@@ -2972,19 +3023,13 @@ where
     fn uncached_function_sig(&self, name: Spur) -> Option<FunctionSig> {
         let info = self.function_info_for_symbol(name)?;
         let params = self.state.param_data(info.params);
-        let param_type_syms =
-            if let Some(symbols) = self.durable_param_type_symbols.borrow().get(&info.params) {
-                symbols.clone()
-            } else {
-                params
-                    .types()
-                    .iter()
-                    .map(|ty| {
-                        self.interner
-                            .get_or_intern(&ty.safe_name_with_pool(Some(&self.type_pool)))
-                    })
-                    .collect()
-            };
+        let param_type_syntax = (0..params.types().len())
+            .map(|index| {
+                <Self as OrdinaryBodyAnalysisHost>::function_param_type_syntax(self, &info, index)
+            })
+            .collect();
+        let return_type_syntax =
+            <Self as OrdinaryBodyAnalysisHost>::function_return_type_syntax(self, &info);
         let param_comptime_type = self
             .durable_comptime_type_flags
             .borrow()
@@ -3009,8 +3054,8 @@ where
             param_comptime: params.comptime().to_vec(),
             param_comptime_type,
             param_names: params.names().to_vec(),
-            param_type_syms,
-            return_type_sym: info.return_type_sym,
+            param_type_syntax,
+            return_type_syntax,
         })
     }
     fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
@@ -3221,6 +3266,23 @@ where
         )
         .map_err(crate::SemanticResolutionError::ProviderFailure)
     }
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> Result<
+        Type,
+        crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
+    > {
+        self.resolve_rir_type_syntax_in_arena(
+            &request.syntax.arena,
+            request.syntax.root,
+            request.root_file,
+            request.span,
+            request.type_substitutions,
+            request.value_substitutions,
+        )
+        .map_err(crate::SemanticResolutionError::ProviderFailure)
+    }
     fn resolve_type_module_prefix(
         &mut self,
         request: ModulePrefixRequest<'_>,
@@ -3265,12 +3327,6 @@ where
             request.span,
             request.value_substitutions,
         )
-    }
-    fn validate_deferred_type(
-        &mut self,
-        _request: DeferredTypeRequest<'_>,
-    ) -> CompileResult<Option<Type>> {
-        Ok(None)
     }
 }
 
@@ -3406,8 +3462,202 @@ where
         }
     }
 
-    fn resolve_type_name(&mut self, name: &str, span: Span) -> CompileResult<Type> {
-        self.resolve_type_name_in_file(name, span.file_id, span)
+    fn resolve_rir_type_syntax(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        let arena = self.rir.rir().type_syntax().clone();
+        self.resolve_rir_type_syntax_in_arena(
+            &arena,
+            syntax,
+            span.file_id,
+            span,
+            type_substitutions,
+            value_substitutions,
+        )
+    }
+
+    fn resolve_rir_type_syntax_in_arena(
+        &mut self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        use rue_rir::RirTypeSyntaxNode as N;
+
+        // Successful structured resolution must not reconstruct the spelling it
+        // replaced. Besides being unnecessary, rendering here made a nested
+        // type render each of its subtrees again during recursive resolution.
+        // Keep spelling reconstruction on the diagnostic path only.
+        let Some(node) = arena.node(syntax).cloned() else {
+            return Err(self.rir_type_unknown_error(arena, syntax, span));
+        };
+        match node {
+            N::Named(symbol) => {
+                let Some(symbol) = arena.symbol(symbol).copied() else {
+                    return Err(self.rir_type_unknown_error(arena, syntax, span));
+                };
+                if let Some(ty) = type_substitutions.and_then(|values| values.get(&symbol)) {
+                    return Ok(*ty);
+                }
+                self.resolve_named_type_symbol_in_file(symbol, root_file, span)
+            }
+            N::Qualified { path } => {
+                let Some(words) = arena.words(path) else {
+                    return Err(self.rir_type_unknown_error(arena, syntax, span));
+                };
+                let mut segments = Vec::with_capacity(words.len());
+                for word in words {
+                    let Some(symbol) = arena.symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
+                    else {
+                        return Err(self.rir_type_unknown_error(arena, syntax, span));
+                    };
+                    segments.push(*symbol);
+                }
+                self.resolve_qualified_rir_type(&segments, root_file)
+                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))
+            }
+            N::Unit => Ok(Type::UNIT),
+            N::Never => Ok(Type::NEVER),
+            N::Array { element, length } => {
+                let element = self.resolve_rir_type_syntax_in_arena(
+                    arena,
+                    element,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                let length = self.resolve_rir_array_length(
+                    arena,
+                    length,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                self.type_pool
+                    .try_intern_array(element, length)
+                    .map_err(|failure| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(format!(
+                                "{}: {failure:?}",
+                                self.rir_type_display(arena, syntax)
+                            )),
+                            span,
+                        )
+                    })
+            }
+            N::Slice { element } => {
+                self.require_preview(
+                    rue_error::PreviewFeature::Slices,
+                    "the slice type `[T]`",
+                    span,
+                )?;
+                let element = self.resolve_rir_type_syntax_in_arena(
+                    arena,
+                    element,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                let durable = self
+                    .durable_type_from_concrete(element)
+                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
+                let spelling = self.rir_type_display(arena, syntax);
+                let id = self
+                    .endpoint
+                    .register_generated_slice(&durable, &spelling)
+                    .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
+                Ok(Type::new_struct(id))
+            }
+            N::PointerConst { pointee } | N::PointerMut { pointee } => {
+                let is_mut = matches!(arena.node(syntax), Some(N::PointerMut { .. }));
+                let pointee = self.resolve_rir_type_syntax_in_arena(
+                    arena,
+                    pointee,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                if is_mut {
+                    self.type_pool.try_intern_ptr_mut(pointee)
+                } else {
+                    self.type_pool.try_intern_ptr_const(pointee)
+                }
+                .map_err(|failure| {
+                    CompileError::new(
+                        rue_error::ErrorKind::UnknownType(format!(
+                            "{}: {failure:?}",
+                            self.rir_type_display(arena, syntax)
+                        )),
+                        span,
+                    )
+                })
+            }
+            N::TypeCall { path, arguments } => self.resolve_rir_type_constructor_call(
+                arena,
+                syntax,
+                path,
+                arguments,
+                root_file,
+                span,
+                type_substitutions,
+                value_substitutions,
+            ),
+            N::AnonymousStruct { .. }
+            | N::AnonymousEnum { .. }
+            | N::ValueCall { .. }
+            | N::Integer(_) => Err(self.rir_type_unknown_error(arena, syntax, span)),
+        }
+    }
+
+    fn rir_type_display(
+        &self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+    ) -> String {
+        arena
+            .render_type_with(syntax, |symbol| self.interner.resolve(symbol))
+            .unwrap_or_else(|| "<invalid structured type syntax>".to_owned())
+    }
+
+    fn rir_type_unknown_error(
+        &self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+    ) -> CompileError {
+        CompileError::new(
+            rue_error::ErrorKind::UnknownType(self.rir_type_display(arena, syntax)),
+            span,
+        )
+    }
+
+    fn resolve_qualified_rir_type(&mut self, segments: &[Spur], root_file: FileId) -> Option<Type> {
+        let (leaf, prefix) = segments.split_last()?;
+        let mut file = root_file;
+        for segment in prefix {
+            let binding = self.module_binding_for_symbol(file, *segment)?;
+            let module = binding.ty.as_module()?;
+            file = self.calls.module_def(module)?.file_id;
+        }
+        let ty = self.nominal_type_for_symbol(file, *leaf).or_else(|| {
+            self.const_info_for_symbol(file, *leaf)
+                .and_then(|info| match info.value {
+                    ConstValue::Type(ty) => Some(ty),
+                    _ => None,
+                })
+        });
+        ty
     }
 
     fn resolve_type_name_in_file(
@@ -3581,6 +3831,33 @@ where
         Ok(ty)
     }
 
+    /// Resolve a parser-proven simple type name without reconstructing its
+    /// spelling or interning it again. Compound source spellings never reach
+    /// this boundary: arrays, pointers, calls, paths, unit, and never each have
+    /// their own structured RIR node.
+    fn resolve_named_type_symbol_in_file(
+        &mut self,
+        symbol: Spur,
+        root_file: FileId,
+        span: Span,
+    ) -> CompileResult<Type> {
+        if let Some(ty) = Type::from_primitive_name(self.interner.resolve(&symbol)) {
+            return Ok(ty);
+        }
+        if let Some(ty) = self.nominal_type_for_symbol(root_file, symbol) {
+            return Ok(ty);
+        }
+        if let Some(info) = self.const_info_for_symbol(root_file, symbol)
+            && let ConstValue::Type(ty) = info.value
+        {
+            return Ok(ty);
+        }
+        Err(CompileError::new(
+            rue_error::ErrorKind::UnknownType(self.interner.resolve(&symbol).to_owned()),
+            span,
+        ))
+    }
+
     fn resolve_type_constructor_call(
         &mut self,
         callee: &str,
@@ -3644,6 +3921,261 @@ where
             self.install_provider_anonymous_methods(identity, resolved)
                 .ok_or_else(|| {
                     CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+        }
+        Ok(resolved)
+    }
+
+    fn rir_type_path(
+        &self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        path: rue_rir::RirTypeSyntaxRange,
+    ) -> Option<Vec<String>> {
+        arena
+            .words(path)?
+            .iter()
+            .map(|word| {
+                arena
+                    .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
+                    .map(|symbol| self.interner.resolve(symbol).to_owned())
+            })
+            .collect()
+    }
+
+    fn rir_type_references(
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        range: rue_rir::RirTypeSyntaxRange,
+    ) -> Option<Vec<RirTypeSyntaxRef>> {
+        Some(
+            arena
+                .words(range)?
+                .iter()
+                .copied()
+                .map(RirTypeSyntaxRef::from_u32)
+                .collect(),
+        )
+    }
+
+    fn resolve_rir_array_length(
+        &mut self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
+        use rue_rir::RirTypeSyntaxNode as N;
+        let Some(node) = arena.node(syntax) else {
+            return Err(self.rir_array_length_error(arena, syntax, span));
+        };
+        let invalid =
+            |reason| CompileError::new(rue_error::ErrorKind::InvalidArrayLength { reason }, span);
+        match node {
+            N::Integer(value) if *value >= 0 => u64::try_from(*value).map_err(|_| {
+                invalid(format!(
+                    "array length '{}' ({value}) is too large",
+                    self.rir_type_display(arena, syntax)
+                ))
+            }),
+            N::Integer(value) => Err(invalid(format!(
+                "array length '{}' is negative ({value})",
+                self.rir_type_display(arena, syntax)
+            ))),
+            N::Named(name) => {
+                let Some(symbol) = arena.symbol(*name).copied() else {
+                    return Err(self.rir_array_length_error(arena, syntax, span));
+                };
+                let name = self.interner.resolve(&symbol).to_owned();
+                let value = value_substitutions
+                    .and_then(|values| values.get(&symbol))
+                    .copied()
+                    .or_else(|| {
+                        self.call_value_const(root_file, symbol)
+                            .map(|info| info.value)
+                    });
+                match value {
+                    Some(ConstValue::Integer(value)) if value >= 0 => {
+                        u64::try_from(value).map_err(|_| {
+                            invalid(format!("array length '{name}' ({value}) is too large"))
+                        })
+                    }
+                    Some(ConstValue::Integer(value)) => Err(invalid(format!(
+                        "array length '{name}' is negative ({value})"
+                    ))),
+                    Some(_) => Err(invalid(format!("array length '{name}' is not an integer"))),
+                    None => {
+                        let mut paths = self
+                            .source
+                            .out_of_scope_integer_const_paths(&self.key, &name);
+                        paths.sort_unstable();
+                        paths.dedup();
+                        let hint = if paths.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {name}: i32 = <module>.{name};`) to use it as an array length here",
+                                paths
+                                    .iter()
+                                    .map(AsRef::as_ref)
+                                    .collect::<Vec<&str>>()
+                                    .join(", ")
+                            )
+                        };
+                        Err(invalid(format!(
+                            "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
+                        )))
+                    }
+                }
+            }
+            N::ValueCall { name, arguments } => {
+                let Some(name) = arena.symbol(*name) else {
+                    return Err(self.rir_array_length_error(arena, syntax, span));
+                };
+                let Some(arguments) = Self::rir_type_references(arena, *arguments) else {
+                    return Err(self.rir_array_length_error(arena, syntax, span));
+                };
+                let callee = self.interner.resolve(name).to_owned();
+                if let Some(definition) = self.source.free_function(&self.key, &callee)
+                    && let Some(signature) =
+                        DurableCallableSource::function(&self.source, &definition)
+                    && (signature.parameters.len() != arguments.len()
+                        || signature
+                            .parameters
+                            .iter()
+                            .any(|parameter| !parameter.is_comptime))
+                {
+                    return Err(invalid(format!(
+                        "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
+                    )));
+                }
+                let display = self.rir_type_display(arena, syntax);
+                let reduced = self
+                    .reduce_rir_comptime_constructor_call(
+                        arena,
+                        std::slice::from_ref(&callee),
+                        &arguments,
+                        root_file,
+                        span,
+                        type_substitutions,
+                        value_substitutions,
+                        &display,
+                    )
+                    .map_err(|error| match error.kind {
+                        rue_error::ErrorKind::ComptimeArgNotConst { .. } => invalid(format!(
+                            "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
+                        )),
+                        _ => invalid(format!(
+                            "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
+                        )),
+                    })?;
+                match reduced.result {
+                    crate::SemanticComptimeCallResult::Value(
+                        crate::SemanticImportConstValue::Integer(value),
+                    ) if value >= 0 => u64::try_from(value).map_err(|_| {
+                        invalid(format!(
+                            "array length '{callee}(...)' ({value}) is too large"
+                        ))
+                    }),
+                    crate::SemanticComptimeCallResult::Value(
+                        crate::SemanticImportConstValue::Integer(value),
+                    ) => Err(invalid(format!(
+                        "array length '{callee}(...)' is negative ({value})"
+                    ))),
+                    _ => Err(invalid(format!(
+                        "array length call '{callee}(...)' did not evaluate to a compile-time integer"
+                    ))),
+                }
+            }
+            _ => Err(self.rir_array_length_error(arena, syntax, span)),
+        }
+    }
+
+    fn rir_array_length_error(
+        &self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+    ) -> CompileError {
+        CompileError::new(
+            rue_error::ErrorKind::InvalidArrayLength {
+                reason: arena
+                    .render_type_with(syntax, |symbol| self.interner.resolve(symbol))
+                    .unwrap_or_else(|| "<invalid structured array length>".to_owned()),
+            },
+            span,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_rir_type_constructor_call(
+        &mut self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        syntax: RirTypeSyntaxRef,
+        path: rue_rir::RirTypeSyntaxRange,
+        arguments: rue_rir::RirTypeSyntaxRange,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        let path = self
+            .rir_type_path(arena, path)
+            .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
+        let arguments = Self::rir_type_references(arena, arguments)
+            .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
+        if path.as_slice() == ["Str"] {
+            let [capacity] = arguments.as_slice() else {
+                return Err(self.rir_type_unknown_error(arena, syntax, span));
+            };
+            let capacity = self.resolve_rir_array_length(
+                arena,
+                *capacity,
+                root_file,
+                span,
+                type_substitutions,
+                value_substitutions,
+            )?;
+            let id = self
+                .endpoint
+                .register_generated_fixed_string(capacity)
+                .ok_or_else(|| self.rir_type_unknown_error(arena, syntax, span))?;
+            self.generated_structs
+                .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
+            return Ok(Type::new_struct(id));
+        }
+        let display = self.rir_type_display(arena, syntax);
+        let reduced = self.reduce_rir_comptime_constructor_call(
+            arena,
+            &path,
+            &arguments,
+            root_file,
+            span,
+            type_substitutions,
+            value_substitutions,
+            &display,
+        )?;
+        let crate::SemanticComptimeCallResult::Type(ty) = reduced.result else {
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(display.clone()),
+                span,
+            ));
+        };
+        self.register_import_nominal_identities(&ty).map_err(|_| {
+            CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
+        })?;
+        let resolved = self
+            .state
+            .identity_context()
+            .pool_mut()
+            .and_then(|mut pool| pool.resolve_provider_type(&ty).ok())
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
+            })?;
+        if let crate::SemanticImportType::AnonymousNominal(identity) = &ty {
+            self.install_provider_anonymous_methods(identity, resolved)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(display.clone()), span)
                 })?;
         }
         Ok(resolved)
@@ -3824,6 +4356,223 @@ where
                 }
             };
         Ok(reduced)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reduce_rir_comptime_constructor_call(
+        &mut self,
+        arena: &rue_rir::RirTypeSyntaxArena<Spur>,
+        path: &[String],
+        arguments: &[RirTypeSyntaxRef],
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        display: &str,
+    ) -> CompileResult<crate::DurableReducedComptimeCall<K, M>> {
+        let Some((name, prefix)) = path.split_last() else {
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(display.to_owned()),
+                span,
+            ));
+        };
+        let mut file = root_file;
+        for segment in prefix {
+            let symbol = self.interner.get_or_intern(segment);
+            let binding = self
+                .module_binding_for_symbol(file, symbol)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+                })?;
+            let module = binding.ty.as_module().ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+            })?;
+            file = self
+                .calls
+                .module_def(module)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+                })?
+                .file_id;
+        }
+        let source_name = self.interner.get_or_intern(name);
+        let symbol = self
+            .function_for_file_symbol(file, source_name)
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+            })?;
+        let (_, definition) = self.function_token_for_symbol(symbol).ok_or_else(|| {
+            CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+        })?;
+        let signature =
+            DurableCallableSource::function(&self.source, &definition).ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+            })?;
+        if let Some(locator) = self.source.definition_source(&definition)
+            && !self.is_accessible(root_file, locator.file_id, signature.is_public)
+        {
+            return Err(
+                CompileError::new(
+                    rue_error::ErrorKind::PrivateUnqualifiedAccess(Box::new(
+                        rue_error::PrivateUnqualifiedAccessData {
+                            item_kind: "function".to_owned(),
+                            name: name.to_owned(),
+                            defining_file: locator.physical_path.to_string(),
+                        },
+                    )),
+                    span,
+                )
+                .with_help(format!(
+                    "`{name}` is not marked `pub`; private items are only visible within their defining directory"
+                )),
+            );
+        }
+        if signature.parameters.len() != arguments.len()
+            || signature
+                .parameters
+                .iter()
+                .any(|parameter| !parameter.is_comptime)
+        {
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(display.to_owned()),
+                span,
+            ));
+        }
+
+        let mut type_arguments = Vec::new();
+        let mut value_arguments = Vec::new();
+        for (parameter, argument) in signature.parameters.iter().zip(arguments) {
+            if matches!(parameter.ty, crate::SemanticImportType::ComptimeType) {
+                let ty = self.resolve_rir_type_syntax_in_arena(
+                    arena,
+                    *argument,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                let value = self.durable_type_from_concrete(ty).ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+                })?;
+                type_arguments.push((parameter.name.clone(), value));
+                continue;
+            }
+            let concrete = match arena.node(*argument) {
+                Some(rue_rir::RirTypeSyntaxNode::Integer(value)) => {
+                    Some(ConstValue::Integer(*value))
+                }
+                Some(rue_rir::RirTypeSyntaxNode::Named(name)) => {
+                    let symbol = *arena.symbol(*name).ok_or_else(|| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(display.to_owned()),
+                            span,
+                        )
+                    })?;
+                    match self.interner.resolve(&symbol) {
+                        "true" => Some(ConstValue::Bool(true)),
+                        "false" => Some(ConstValue::Bool(false)),
+                        _ => value_substitutions
+                            .and_then(|values| values.get(&symbol))
+                            .copied()
+                            .or_else(|| {
+                                self.const_info_for_symbol(root_file, symbol)
+                                    .map(|info| info.value)
+                            }),
+                    }
+                }
+                Some(rue_rir::RirTypeSyntaxNode::ValueCall { name, arguments }) => {
+                    let name = arena.symbol(*name).ok_or_else(|| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(display.to_owned()),
+                            span,
+                        )
+                    })?;
+                    let nested = Self::rir_type_references(arena, *arguments).ok_or_else(|| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(display.to_owned()),
+                            span,
+                        )
+                    })?;
+                    match self
+                        .reduce_rir_comptime_constructor_call(
+                            arena,
+                            &[self.interner.resolve(name).to_owned()],
+                            &nested,
+                            root_file,
+                            span,
+                            type_substitutions,
+                            value_substitutions,
+                            display,
+                        )?
+                        .result
+                    {
+                        crate::SemanticComptimeCallResult::Value(value) => {
+                            self.materialize_durable_const_value(&value)
+                        }
+                        crate::SemanticComptimeCallResult::Type(_) => None,
+                    }
+                }
+                Some(rue_rir::RirTypeSyntaxNode::TypeCall { path, arguments }) => {
+                    let nested_path = self.rir_type_path(arena, *path).ok_or_else(|| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(display.to_owned()),
+                            span,
+                        )
+                    })?;
+                    let nested = Self::rir_type_references(arena, *arguments).ok_or_else(|| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(display.to_owned()),
+                            span,
+                        )
+                    })?;
+                    match self
+                        .reduce_rir_comptime_constructor_call(
+                            arena,
+                            &nested_path,
+                            &nested,
+                            root_file,
+                            span,
+                            type_substitutions,
+                            value_substitutions,
+                            display,
+                        )?
+                        .result
+                    {
+                        crate::SemanticComptimeCallResult::Value(value) => {
+                            self.materialize_durable_const_value(&value)
+                        }
+                        crate::SemanticComptimeCallResult::Type(_) => None,
+                    }
+                }
+                _ => None,
+            }
+            .ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::ComptimeArgNotConst {
+                        param_name: parameter.name.to_string(),
+                    },
+                    span,
+                )
+            })?;
+            let value = self.durable_value_from_concrete(concrete).ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(display.to_owned()), span)
+            })?;
+            value_arguments.push((parameter.name.clone(), value));
+        }
+        match self
+            .source
+            .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
+        {
+            DurableComptimeCallOutcome::Reduced(reduced) => Ok(reduced),
+            DurableComptimeCallOutcome::NotReduced => Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(display.to_owned()),
+                span,
+            )),
+            DurableComptimeCallOutcome::Diagnostic(diagnostic) => Err(CompileError::new(
+                diagnostic.kind,
+                diagnostic.span.unwrap_or(span),
+            )),
+        }
     }
 }
 
@@ -4136,19 +4885,21 @@ where
         assert_eq!(flags.len(), function.params.len());
         flags
     }
-    fn function_param_type_symbol(
+    fn function_param_type_syntax(
         &self,
         function: &FunctionCallInfo,
         param_index: usize,
-    ) -> Option<Spur> {
-        if let Some(symbol) = self
-            .durable_param_type_symbols
+    ) -> Option<super::fact_mode::StructuredTypeSyntax> {
+        if let Some(syntax) = self
+            .durable_callable_type_syntax
             .borrow()
             .get(&function.params)
-            .and_then(|symbols| symbols.get(param_index))
-            .copied()
+            .cloned()
         {
-            return Some(symbol);
+            return Some(super::fact_mode::StructuredTypeSyntax {
+                root: *syntax.parameters.get(param_index)?,
+                arena: syntax.arena,
+            });
         }
         let local = self.endpoint.function_info(self.function_symbol)?;
         if local.params != function.params {
@@ -4157,11 +4908,39 @@ where
         let InstData::FnDecl { params, .. } = &self.rir.rir().get(local.declaration).data else {
             return None;
         };
-        self.rir
-            .rir()
-            .params(params)
-            .get(param_index)
-            .map(|param| param.ty)
+        let root = self.rir.rir().params(params).get(param_index)?.ty;
+        Some(super::fact_mode::StructuredTypeSyntax {
+            arena: self.rir.rir().type_syntax().clone(),
+            root,
+        })
+    }
+    fn function_return_type_syntax(
+        &self,
+        function: &FunctionCallInfo,
+    ) -> Option<super::fact_mode::StructuredTypeSyntax> {
+        if let Some(syntax) = self
+            .durable_callable_type_syntax
+            .borrow()
+            .get(&function.params)
+            .cloned()
+        {
+            return Some(super::fact_mode::StructuredTypeSyntax {
+                arena: syntax.arena,
+                root: syntax.result,
+            });
+        }
+        let local = self.endpoint.function_info(self.function_symbol)?;
+        if local.params != function.params {
+            return None;
+        }
+        let InstData::FnDecl { return_type, .. } = &self.rir.rir().get(local.declaration).data
+        else {
+            return None;
+        };
+        Some(super::fact_mode::StructuredTypeSyntax {
+            arena: self.rir.rir().type_syntax().clone(),
+            root: *return_type,
+        })
     }
     fn function_signature_root_file(&self, function: &FunctionCallInfo) -> Option<FileId> {
         self.durable_signature_files
@@ -4308,9 +5087,17 @@ where
     fn stable_module_symbol_component(&self, token: &SemanticModuleToken) -> String {
         format!("m{}-{}", token.issuer(), token.slot())
     }
-    fn resolve_body_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
-        let name = self.interner.resolve(&type_sym).to_owned();
-        self.resolve_type_name(&name, span)
+    fn resolve_body_type(&mut self, syntax: RirTypeSyntaxRef, span: Span) -> CompileResult<Type> {
+        self.resolve_rir_type_syntax(syntax, span, None, None)
+    }
+    fn resolve_body_type_with_substitutions(
+        &mut self,
+        syntax: RirTypeSyntaxRef,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        self.resolve_rir_type_syntax(syntax, span, type_substitutions, value_substitutions)
     }
     fn replace_active_anonymous_producer(
         &mut self,
@@ -4685,7 +5472,12 @@ where
                 _ => unreachable!("registered provider member points at FnDecl"),
             };
             let body_span = host.rir.rir().get(body).span;
-            let return_type = if host.interner.resolve(&return_type) == "Self" {
+            let return_type = if matches!(
+                host.rir.rir().type_syntax().node(return_type),
+                Some(rue_rir::RirTypeSyntaxNode::Named(symbol))
+                    if host.rir.rir().type_syntax().symbol(*symbol)
+                        .is_some_and(|symbol| host.interner.resolve(symbol) == "Self")
+            ) {
                 info.struct_type
             } else {
                 host.resolve_body_type(return_type, info.span)?
@@ -5302,7 +6094,7 @@ where
         .borrow_mut()
         .insert(full_symbol, owner_token);
 
-    let mut params = host
+    let params = host
         .rir
         .rir()
         .params(&params)
@@ -5349,26 +6141,27 @@ where
         let symbol = host
             .interner
             .get_or_intern(&ty.safe_name_with_pool(Some(&host.type_pool)));
-        if let Some(id) = ty.as_struct() {
-            host.generated_structs.insert(symbol, id);
-        } else if let Some(id) = ty.as_enum() {
-            host.generated_enums.insert(symbol, id);
-        }
         if host.endpoint.durable_anonymous_identity(ty).is_some() {
             host.issued_anonymous_identity_for_type(ty)?;
         } else if host.endpoint.durable_named_identity(ty).is_some() {
             host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
                 .ok()?;
         }
-        Some(symbol)
+        Some(ty)
     };
-    for (parameter, (projected_type, _, _)) in params.iter_mut().zip(&projected.parameters) {
-        parameter.ty = materialize(&mut host, projected_type).ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-                "anonymous member parameter type cannot be materialized".into(),
-            ))
-        })?;
-    }
+    let mut resolved_params = params
+        .iter()
+        .zip(&projected.parameters)
+        .map(|(parameter, (projected_type, _, _))| {
+            materialize(&mut host, projected_type)
+                .map(|ty| (parameter.name, ty, parameter.mode, parameter.is_comptime))
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "anonymous member parameter type cannot be materialized".into(),
+                    ))
+                })
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
     let return_type = materialize(&mut host, &projected.result).ok_or_else(|| {
         CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
             "anonymous member result type cannot be materialized".into(),
@@ -5377,34 +6170,30 @@ where
     let infer = InferenceContext::new(&host);
     let host_setup_ns = elapsed_ns(host_setup_started);
     let expression_engine_started = Instant::now();
-    let analyzed = if member.kind == crate::AnonymousMemberKind::Destructor {
-        OrdinaryBodyEngine::new(&mut host).analyze_anonymous_destructor(
-            &infer,
-            issued_identity.clone(),
-            &full_name,
-            return_type,
-            params.into_iter(),
-            body,
-            span,
-            owner_type,
-            self_mode,
-            self_is_mut,
-        )?
-    } else {
-        OrdinaryBodyEngine::new(&mut host).analyze_method_with_identity(
-            &infer,
-            issued_identity.clone(),
-            &full_name,
-            return_type,
-            params.into_iter(),
-            body,
-            span,
-            owner_type,
-            has_self,
-            self_mode,
-            self_is_mut,
-        )?
-    };
+    if has_self {
+        resolved_params.insert(
+            0,
+            (
+                host.interner.get_or_intern("self"),
+                owner_type,
+                self_mode,
+                false,
+            ),
+        );
+    }
+    let analyzed = OrdinaryBodyEngine::new(&mut host).analyze_method_with_identity_kind_resolved(
+        &infer,
+        issued_identity.clone(),
+        &full_name,
+        return_type,
+        resolved_params,
+        body,
+        span,
+        owner_type,
+        self_is_mut,
+        member.kind == crate::AnonymousMemberKind::Destructor,
+        false,
+    )?;
     let expression_engine_ns = elapsed_ns(expression_engine_started);
     let expression_breakdown = host
         .expression_breakdown

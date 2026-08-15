@@ -145,7 +145,7 @@ pub use semantic_type_resolution::{
     SemanticTypeFact, SemanticTypeFactKind, SemanticTypeSyntaxError, SemanticTypeSyntaxFailure,
     SemanticTypeSyntaxProvider, SemanticValueSyntax, SemanticVisibilityDomain,
     resolve_semantic_comptime_call, resolve_semantic_module_path, resolve_semantic_type_syntax,
-    resolve_structured_semantic_type_syntax,
+    resolve_structured_semantic_type_syntax, resolve_structured_semantic_type_syntax_with,
 };
 pub use types::{
     ArrayLen, ArrayTypeId, EnumDef, EnumId, LangItem, ModuleDef, ModuleId, PtrConstTypeId,

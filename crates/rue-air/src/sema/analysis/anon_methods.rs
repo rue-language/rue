@@ -19,13 +19,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
             match ty {
                 super::super::AnonMethodType::SelfType => Some(self_type),
                 super::super::AnonMethodType::Concrete(ty) => Some(*ty),
-                // Query projections currently publish composites as concrete
-                // canonical types. These variants remain valid for the cold
-                // AIR evaluator but must not appear at this install seam.
-                super::super::AnonMethodType::Array { .. }
-                | super::super::AnonMethodType::PtrConst(_)
-                | super::super::AnonMethodType::PtrMut(_)
-                | super::super::AnonMethodType::Syntax(_) => None,
+                super::super::AnonMethodType::Syntax(_) => None,
             }
         }
 
@@ -105,21 +99,26 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
         Some(())
     }
 
-    /// Resolve a type symbol, with special handling for Self.
+    /// Resolve structured type syntax, with special handling for `Self`.
     ///
     /// If the type symbol is "Self", it resolves to the provided self_type.
     /// Otherwise, it delegates to the standard resolve_type method.
     pub(crate) fn resolve_type_with_self(
         &mut self,
-        type_sym: Spur,
+        syntax: rue_rir::RirTypeSyntaxRef,
         self_type: Type,
         span: Span,
     ) -> CompileResult<Type> {
-        let type_str = self.interner.resolve(&type_sym);
-        if type_str == "Self" {
+        let arena = self.rir.type_syntax();
+        let is_self = matches!(
+            arena.node(syntax),
+            Some(rue_rir::RirTypeSyntaxNode::Named(symbol))
+                if arena.symbol(*symbol).is_some_and(|symbol| self.interner.resolve(symbol) == "Self")
+        );
+        if is_self {
             Ok(self_type)
         } else {
-            self.resolve_type(type_sym, span)
+            self.resolve_rir_type(syntax, span)
         }
     }
 

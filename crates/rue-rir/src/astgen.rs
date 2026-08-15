@@ -41,6 +41,15 @@ impl<T: PayloadFallback> RecordPayloadFailure<T> for Result<T, crate::RirPayload
     }
 }
 
+fn type_syntax_build_error(error: crate::RirTypeSyntaxBuildError) -> crate::RirPayloadBuildError {
+    let family = match error {
+        crate::RirTypeSyntaxBuildError::TooManyNodes => "type syntax nodes",
+        crate::RirTypeSyntaxBuildError::TooManySymbols => "type syntax symbols",
+        crate::RirTypeSyntaxBuildError::TooMuchPayload => "type syntax payload",
+    };
+    crate::RirPayloadBuildError::ResourceLimitExceeded { family }
+}
+
 /// Generates RIR from an AST.
 pub struct AstGen<'a> {
     /// String interner for symbols (thread-safe, takes shared reference)
@@ -136,7 +145,7 @@ struct PreparedStruct {
     is_public: bool,
     is_linear: bool,
     name: Spur,
-    fields: Vec<(Spur, Spur)>,
+    fields: Vec<(Spur, crate::RirTypeSyntaxRef)>,
     span: rue_span::Span,
 }
 
@@ -400,7 +409,11 @@ impl<'a> AstGen<'a> {
         self.with_structural_segment(segment, |this| this.gen_expr(expr))
     }
 
-    fn intern_type_at(&mut self, segment: crate::RirStructuralPathSegment, ty: &TypeExpr) -> Spur {
+    fn intern_type_at(
+        &mut self,
+        segment: crate::RirStructuralPathSegment,
+        ty: &TypeExpr,
+    ) -> crate::RirTypeSyntaxRef {
         self.with_structural_segment(segment, |this| this.intern_type(ty))
     }
 
@@ -507,186 +520,21 @@ impl<'a> AstGen<'a> {
         }
     }
 
-    /// Convert a TypeExpr to its symbol representation.
-    /// For named types, returns the existing symbol. For compound types, interns a new string.
-    fn intern_type(&mut self, ty: &TypeExpr) -> Spur {
-        match ty {
-            TypeExpr::Named(ident) => self.symbol(ident.name),
-            TypeExpr::Qualified { segments, .. } => {
-                let name = self.render_type_path(segments);
-                self.interner.get_or_intern(&name)
-            }
-            TypeExpr::Unit(_) => self.interner.get_or_intern("()"),
-            TypeExpr::Never(_) => self.interner.get_or_intern("!"),
-            TypeExpr::Array {
-                element, length, ..
-            } => {
-                // For arrays, we need to construct a string representation
-                // Get the element symbol first, then look it up
-                let elem_sym = self.intern_type(element);
-                let elem_name = self.interner.resolve(&elem_sym);
-                // The length component is a literal (`4`), a name referring to
-                // a `const` / `comptime` value parameter (`N`), or a
-                // comptime-evaluable call (`fact(4)`), all resolved to a
-                // concrete value during sema (RUE-16, RUE-309).
-                let len_str = self.render_array_length(length);
-                let s = format!("[{}; {}]", elem_name, len_str);
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::Slice { element, .. } => {
-                // Slice type `[T]` (ADR-0043, RUE-322): canonical string is
-                // `[elem]` (no length), distinguishing it from `[elem; N]`.
-                // Sema recognizes this shape, gates it behind `--preview
-                // slices`, and (until the fat-pointer runtime lands) reports it
-                // as not-yet-implemented.
-                let elem_sym = self.intern_type(element);
-                let elem_name = self.interner.resolve(&elem_sym);
-                let s = format!("[{}]", elem_name);
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::AnonymousStruct { fields, .. } => {
-                // For anonymous structs, generate a canonical name representation
-                let mut s = String::from("struct { ");
-                for (i, field) in fields.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    let field_name = self.symbol(field.name.name);
-                    let name = self.interner.resolve(&field_name);
-                    let ty_sym = self.intern_type(&field.ty);
-                    let ty_name = self.interner.resolve(&ty_sym);
-                    s.push_str(name);
-                    s.push_str(": ");
-                    s.push_str(ty_name);
+    /// Project a parser type directly into the candidate's dense structured
+    /// type arena. No compound spelling is inserted into the ordinary symbol
+    /// universe, so downstream consumers cannot accidentally re-enter the type
+    /// grammar through a string.
+    fn intern_type(&mut self, ty: &TypeExpr) -> crate::RirTypeSyntaxRef {
+        let normalizer = &self.normalize_symbol;
+        match self.rir.add_parser_type(ty, |symbol| normalizer(symbol)) {
+            Ok(reference) => reference,
+            Err(error) => {
+                if self.payload_error.is_none() {
+                    self.payload_error = Some(type_syntax_build_error(error));
                 }
-                s.push_str(" }");
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::AnonymousEnum { variants, .. } => {
-                // Canonical name representation for an anonymous enum type used
-                // in type position (rare — anon enums normally appear as the
-                // body of a comptime type function, handled via AnonEnumType).
-                let mut s = String::from("enum { ");
-                for (i, variant) in variants.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    let variant_name = self.symbol(variant.name.name);
-                    let name = self.interner.resolve(&variant_name);
-                    s.push_str(name);
-                    if !variant.payload.is_empty() {
-                        s.push('(');
-                        for (j, ty) in variant.payload.iter().enumerate() {
-                            if j > 0 {
-                                s.push_str(", ");
-                            }
-                            let ty_sym = self.intern_type(ty);
-                            s.push_str(self.interner.resolve(&ty_sym));
-                        }
-                        s.push(')');
-                    }
-                }
-                s.push_str(" }");
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::PointerConst { pointee, .. } => {
-                // ptr const T
-                let pointee_sym = self.intern_type(pointee);
-                let pointee_name = self.interner.resolve(&pointee_sym);
-                let s = format!("ptr const {}", pointee_name);
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::PointerMut { pointee, .. } => {
-                // ptr mut T
-                let pointee_sym = self.intern_type(pointee);
-                let pointee_name = self.interner.resolve(&pointee_sym);
-                let s = format!("ptr mut {}", pointee_name);
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::TypeCall { name, args, .. } => {
-                // Type-function application `Name(arg, ...)` (RUE-241). Encode a
-                // canonical `Name(arg1, arg2)` string; sema (`resolve_type`)
-                // detects this call syntax and reduces the comptime type call
-                // to the monomorphized concrete type. Arguments are interned
-                // recursively so nested calls compose
-                // (`Result(Option(i32), i32)`).
-                let name = self.symbol(name.name);
-                let mut s = self.interner.resolve(&name).to_string();
-                s.push('(');
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    let arg_sym = self.intern_type(arg);
-                    s.push_str(self.interner.resolve(&arg_sym));
-                }
-                s.push(')');
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::QualifiedTypeCall { segments, args, .. } => {
-                let mut s = self.render_type_path(segments);
-                s.push('(');
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    let arg_sym = self.intern_type(arg);
-                    s.push_str(self.interner.resolve(&arg_sym));
-                }
-                s.push(')');
-                self.interner.get_or_intern(&s)
-            }
-            TypeExpr::IntArg { value, .. } => {
-                // Integer type-call argument (RUE-552): canonicalize to its
-                // decimal spelling inside the enclosing call's type string,
-                // the same form `Str(8)`'s dedicated node produces.
-                self.interner.get_or_intern(value.to_string())
-            }
-            TypeExpr::StrFixed { name, length, .. } => {
-                // Fixed-capacity string `Str(N)` with a literal capacity
-                // (ADR-0043 Phase 5, RUE-326). Canonicalize to `Name(N)` — the
-                // same string the const-capacity `TypeCall` spelling produces —
-                // so sema's `resolve_type` reduces both to one `Str(N)` type.
-                let name = self.symbol(name.name);
-                let callee = self.interner.resolve(&name);
-                let s = format!("{}({})", callee, length);
-                self.interner.get_or_intern(&s)
-            }
-        }
-    }
-
-    fn render_type_path(&mut self, segments: &[rue_parser::ast::Ident]) -> String {
-        let mut s = String::new();
-        for (i, segment) in segments.iter().enumerate() {
-            if i > 0 {
-                s.push('.');
-            }
-            let segment = self.symbol(segment.name);
-            s.push_str(self.interner.resolve(&segment));
-        }
-        s
-    }
-
-    /// Render an array-length component to its canonical string form for the
-    /// interned type name (`[element; <this>]`).
-    ///
-    /// A literal renders as its decimal value, a name as the identifier text,
-    /// and a call as `callee(arg, ...)` with each argument rendered by the same
-    /// rule so nested calls compose (RUE-309). Sema parses these forms back out
-    /// of the type string and folds them to a concrete length (RUE-16).
-    fn render_array_length(&mut self, length: &ArrayLength) -> String {
-        match length {
-            ArrayLength::Literal(n) => n.to_string(),
-            ArrayLength::Named(ident) => {
-                let name = self.symbol(ident.name);
-                self.interner.resolve(&name).to_string()
-            }
-            ArrayLength::Call { name, args } => {
-                let name = self.symbol(name.name);
-                let callee = self.interner.resolve(&name).to_owned();
-                let rendered: Vec<String> =
-                    args.iter().map(|a| self.render_array_length(a)).collect();
-                format!("{}({})", callee, rendered.join(", "))
+                self.rir
+                    .add_unit_type()
+                    .unwrap_or_else(|_| crate::RirTypeSyntaxRef::from_u32(0))
             }
         }
     }
@@ -771,7 +619,7 @@ impl<'a> AstGen<'a> {
         // sequence: for each variant, a count `k` followed by `k` payload
         // type-name symbols. Discriminant-only variants contribute a `0`.
         // The whole region is omitted (len 0) when no variant carries data.
-        let payload_types: Vec<Vec<Spur>> = enum_decl
+        let payload_types: Vec<Vec<crate::RirTypeSyntaxRef>> = enum_decl
             .variants
             .iter()
             .enumerate()
@@ -856,7 +704,7 @@ impl<'a> AstGen<'a> {
         let name = self.symbol(method.name.name);
         let return_type = match &method.return_type {
             Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
-            None => self.interner.get_or_intern("()"), // Default to unit type
+            None => self.intern_type(&TypeExpr::Unit(method.span)),
         };
 
         // Convert parameters (excluding self, which is handled specially by sema)
@@ -983,7 +831,7 @@ impl<'a> AstGen<'a> {
         let name = self.symbol(func.name.name);
         let return_type = match &func.return_type {
             Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
-            None => self.interner.get_or_intern("()"), // Default to unit type
+            None => self.intern_type(&TypeExpr::Unit(func.span)),
         };
 
         // Convert parameters
@@ -1051,7 +899,7 @@ impl<'a> AstGen<'a> {
         let name = self.symbol(foreign.name.name);
         let return_type = match &foreign.return_type {
             Some(ty) => self.intern_type_at(crate::RirStructuralPathSegment::ReturnType, ty),
-            None => self.interner.get_or_intern("()"),
+            None => self.intern_type(&TypeExpr::Unit(foreign.span)),
         };
         let params: Vec<_> = foreign
             .params
@@ -1623,7 +1471,7 @@ impl<'a> AstGen<'a> {
                             crate::AnonymousTypeSiteKind::Struct,
                         );
                         // Generate an anonymous struct type instruction with methods
-                        let field_decls: Vec<(Spur, Spur)> = fields
+                        let field_decls: Vec<(Spur, crate::RirTypeSyntaxRef)> = fields
                             .iter()
                             .enumerate()
                             .map(|(index, f)| {
@@ -1658,7 +1506,7 @@ impl<'a> AstGen<'a> {
                         // (RUE-221, ADR-0038).
                         let variant_syms: Vec<Spur> =
                             variants.iter().map(|v| self.symbol(v.name.name)).collect();
-                        let payload_types: Vec<Vec<Spur>> = variants
+                        let payload_types: Vec<Vec<crate::RirTypeSyntaxRef>> = variants
                             .iter()
                             .enumerate()
                             .map(|(variant_index, variant)| {
@@ -1697,8 +1545,8 @@ impl<'a> AstGen<'a> {
                     // `ty` returns it as `TypeExpr::Named` without consuming
                     // anything further. The named type keeps its own symbol, so
                     // a type value is spelled exactly as the source spells it.
-                    TypeExpr::Named(ident) => {
-                        let type_name = self.symbol(ident.name);
+                    TypeExpr::Named(_) => {
+                        let type_name = self.intern_type(&type_lit.type_expr);
                         self.rir.add_inst(Inst {
                             data: InstData::TypeConst { type_name },
                             span: type_lit.span,
@@ -1915,13 +1763,19 @@ impl<'a> AstGen<'a> {
         // let mut __p: u64 = 0;   (position — usize is u64)
         let p_name = self.interner.get_or_intern(format!("@rue:for:pos:{n}"));
         let u64_sym = self.interner.get_or_intern("u64");
+        let u64_type = self.rir.add_named_type(u64_sym).unwrap_or_else(|error| {
+            if self.payload_error.is_none() {
+                self.payload_error = Some(type_syntax_build_error(error));
+            }
+            crate::RirTypeSyntaxRef::from_u32(0)
+        });
         let zero = self.rir.add_inst(Inst {
             data: InstData::IntConst(0),
             span,
         });
         let p_alloc = self
             .rir
-            .add_alloc(&[], Some(p_name), true, Some(u64_sym), zero, false, span)
+            .add_alloc(&[], Some(p_name), true, Some(u64_type), zero, false, span)
             .record_failure(&mut self.payload_error);
         outer_stmts.push(p_alloc.as_u32());
 
@@ -1948,7 +1802,7 @@ impl<'a> AstGen<'a> {
                 &[],
                 Some(len_name),
                 false,
-                Some(u64_sym),
+                Some(u64_type),
                 len_call,
                 false,
                 span,
@@ -2583,6 +2437,7 @@ fn compound_op_data(op: CompoundOp, lhs: InstRef, rhs: InstRef) -> InstData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RirTypeSyntaxRef;
     use crate::inst::RirPrinter;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -2597,6 +2452,12 @@ mod tests {
         astgen.append_items(&ast.items);
         let rir = astgen.finish();
         (rir, interner)
+    }
+
+    fn type_spelling(rir: &Rir, interner: &ThreadedRodeo, reference: RirTypeSyntaxRef) -> String {
+        rir.type_syntax()
+            .render_type_with(reference, |symbol| interner.resolve(symbol))
+            .expect("AstGen must publish a valid structured type reference")
     }
 
     #[test]
@@ -2949,7 +2810,7 @@ mod tests {
                 assert_eq!(interner.resolve(&*name), "main");
                 let params = rir.params(params);
                 assert_eq!(params.len(), 0);
-                assert_eq!(interner.resolve(&*return_type), "i32");
+                assert_eq!(type_spelling(&rir, &interner, *return_type), "i32");
                 assert!(!has_self); // Regular functions don't have self
                 // Body should be the int constant
                 let body_inst = rir.get(*body);
@@ -3009,7 +2870,7 @@ mod tests {
                     _ => None,
                 })
                 .unwrap_or_else(|| panic!("no TypeIntrinsic lowered for {spelling}"));
-            assert_eq!(interner.resolve(&type_arg), canonical);
+            assert_eq!(type_spelling(&rir, &interner, type_arg), canonical);
         }
 
         // `@offset_of` routes its type position through the same interning.
@@ -3021,7 +2882,10 @@ mod tests {
                 _ => None,
             })
             .expect("no OffsetOf lowered");
-        assert_eq!(interner.resolve(&type_arg), "lib.pair.Pair(i32)");
+        assert_eq!(
+            type_spelling(&rir, &interner, type_arg),
+            "lib.pair.Pair(i32)"
+        );
         assert_eq!(interner.resolve(&field), "second");
     }
 
@@ -4043,7 +3907,7 @@ mod tests {
     fn type_constant_names(rir: &Rir, interner: &ThreadedRodeo) -> Vec<String> {
         rir.iter()
             .filter_map(|(_, instruction)| match &instruction.data {
-                InstData::TypeConst { type_name } => Some(interner.resolve(type_name).to_owned()),
+                InstData::TypeConst { type_name } => Some(type_spelling(rir, interner, *type_name)),
                 _ => None,
             })
             .collect()

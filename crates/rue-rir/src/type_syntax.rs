@@ -7,10 +7,10 @@
 //! uses candidate-local `Spur`s, while durable signature projections use their
 //! own compact spelling authority.
 
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
+use ahash::AHashMap;
 use rue_parser::ast::{ArrayLength, DirectiveArg, ParamMode, TypeExpr};
 
 /// Dense index of one structured type-syntax node.
@@ -127,6 +127,16 @@ pub struct RirTypeSyntaxArena<S> {
     symbols: Arc<[S]>,
 }
 
+impl<S> Default for RirTypeSyntaxArena<S> {
+    fn default() -> Self {
+        Self {
+            nodes: Arc::from([]),
+            extra: Arc::from([]),
+            symbols: Arc::from([]),
+        }
+    }
+}
+
 impl<S> RirTypeSyntaxArena<S> {
     pub fn nodes(&self) -> &[RirTypeSyntaxNode] {
         &self.nodes
@@ -139,6 +149,20 @@ impl<S> RirTypeSyntaxArena<S> {
 
     pub fn symbols(&self) -> &[S] {
         &self.symbols
+    }
+
+    /// Logical heap bytes retained by the arena's three shared slices.
+    ///
+    /// The enclosing RIR owns the inline arena headers. Rue's retained-value
+    /// accounting charges each reached Arc pointee in full and uses logical
+    /// element length rather than allocator capacity.
+    pub fn retained_allocation_charge(&self) -> u64 {
+        self.nodes
+            .len()
+            .saturating_mul(std::mem::size_of::<RirTypeSyntaxNode>())
+            .saturating_add(self.extra.len().saturating_mul(std::mem::size_of::<u32>()))
+            .saturating_add(self.symbols.len().saturating_mul(std::mem::size_of::<S>()))
+            as u64
     }
 
     pub fn node(&self, reference: RirTypeSyntaxRef) -> Option<&RirTypeSyntaxNode> {
@@ -154,18 +178,135 @@ impl<S> RirTypeSyntaxArena<S> {
         let end = start.checked_add(range.len as usize)?;
         self.extra.get(start..end)
     }
+
+    /// Visit every direct child type reference in canonical schema order.
+    /// Variable-width anonymous records are decoded here so semantic consumers
+    /// never need a second handwritten payload parser.
+    pub fn visit_child_references(
+        &self,
+        reference: RirTypeSyntaxRef,
+        mut visit: impl FnMut(RirTypeSyntaxRef),
+    ) -> bool {
+        let Some(node) = self.node(reference) else {
+            return false;
+        };
+        match node {
+            RirTypeSyntaxNode::Named(_)
+            | RirTypeSyntaxNode::Qualified { .. }
+            | RirTypeSyntaxNode::Unit
+            | RirTypeSyntaxNode::Never
+            | RirTypeSyntaxNode::Integer(_) => {}
+            RirTypeSyntaxNode::Array { element, length } => {
+                visit(*element);
+                visit(*length);
+            }
+            RirTypeSyntaxNode::Slice { element } => visit(*element),
+            RirTypeSyntaxNode::PointerConst { pointee }
+            | RirTypeSyntaxNode::PointerMut { pointee } => visit(*pointee),
+            RirTypeSyntaxNode::TypeCall { arguments, .. }
+            | RirTypeSyntaxNode::ValueCall { arguments, .. } => {
+                let Some(arguments) = self.words(*arguments) else {
+                    return false;
+                };
+                for argument in arguments {
+                    visit(RirTypeSyntaxRef::from_u32(*argument));
+                }
+            }
+            RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
+                let Some(fields) = self.words(*fields) else {
+                    return false;
+                };
+                if fields.len() % 2 != 0 {
+                    return false;
+                }
+                for field in fields.chunks_exact(2) {
+                    visit(RirTypeSyntaxRef::from_u32(field[1]));
+                }
+                let Some(methods) = self.words(*methods) else {
+                    return false;
+                };
+                let mut position = 0usize;
+                while position < methods.len() {
+                    let Some(header) = methods.get(position..position + 4) else {
+                        return false;
+                    };
+                    position += 4;
+                    for _ in 0..header[3] {
+                        let Some(parameter) = methods.get(position..position + 3) else {
+                            return false;
+                        };
+                        visit(RirTypeSyntaxRef::from_u32(parameter[2]));
+                        position += 3;
+                    }
+                    let Some(result) = methods.get(position) else {
+                        return false;
+                    };
+                    visit(RirTypeSyntaxRef::from_u32(*result));
+                    let Some(directive_count) = methods.get(position + 1) else {
+                        return false;
+                    };
+                    position += 2;
+                    for _ in 0..*directive_count {
+                        let Some(directive) = methods.get(position..position + 2) else {
+                            return false;
+                        };
+                        let Some(next) = position.checked_add(2 + directive[1] as usize) else {
+                            return false;
+                        };
+                        if next > methods.len() {
+                            return false;
+                        }
+                        position = next;
+                    }
+                }
+            }
+            RirTypeSyntaxNode::AnonymousEnum { variants } => {
+                let Some(variants) = self.words(*variants) else {
+                    return false;
+                };
+                let mut position = 0usize;
+                while position < variants.len() {
+                    let Some(header) = variants.get(position..position + 2) else {
+                        return false;
+                    };
+                    position += 2;
+                    let Some(next) = position.checked_add(header[1] as usize) else {
+                        return false;
+                    };
+                    let Some(payloads) = variants.get(position..next) else {
+                        return false;
+                    };
+                    for payload in payloads {
+                        visit(RirTypeSyntaxRef::from_u32(*payload));
+                    }
+                    position = next;
+                }
+            }
+        }
+        true
+    }
 }
 
-impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
-    /// Render the canonical diagnostic spelling of one structured node.
-    /// Semantic consumers must inspect nodes directly; this exists only for
-    /// diagnostics and the temporary legacy body-RIR adapter.
-    pub fn render_type(&self, reference: RirTypeSyntaxRef) -> Option<String> {
+impl<S> RirTypeSyntaxArena<S> {
+    /// Render the canonical diagnostic spelling through the owner's symbol
+    /// authority. Semantic consumers inspect nodes directly; this is only for
+    /// human-readable RIR presentation and diagnostics.
+    pub fn render_type_with<'a>(
+        &'a self,
+        reference: RirTypeSyntaxRef,
+        resolve: impl Copy + Fn(&'a S) -> &'a str,
+    ) -> Option<String> {
         let mut output = String::new();
-        self.write_type(reference, &mut output).then_some(output)
+        self.write_type(reference, &mut output, resolve)
+            .then_some(output)
     }
 
-    fn write_type(&self, reference: RirTypeSyntaxRef, output: &mut String) -> bool {
+    fn write_type<'a>(
+        &'a self,
+        reference: RirTypeSyntaxRef,
+        output: &mut String,
+        resolve: impl Copy + Fn(&'a S) -> &'a str,
+    ) -> bool {
         let Some(node) = self.node(reference) else {
             return false;
         };
@@ -174,10 +315,10 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
                 let Some(symbol) = self.symbol(*symbol) else {
                     return false;
                 };
-                output.push_str(symbol.as_ref());
+                output.push_str(resolve(symbol));
             }
             RirTypeSyntaxNode::Qualified { path } => {
-                if !self.write_path(*path, output) {
+                if !self.write_path(*path, output, resolve) {
                     return false;
                 }
             }
@@ -185,18 +326,18 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
             RirTypeSyntaxNode::Never => output.push('!'),
             RirTypeSyntaxNode::Array { element, length } => {
                 output.push('[');
-                if !self.write_type(*element, output) {
+                if !self.write_type(*element, output, resolve) {
                     return false;
                 }
                 output.push_str("; ");
-                if !self.write_type(*length, output) {
+                if !self.write_type(*length, output, resolve) {
                     return false;
                 }
                 output.push(']');
             }
             RirTypeSyntaxNode::Slice { element } => {
                 output.push('[');
-                if !self.write_type(*element, output) {
+                if !self.write_type(*element, output, resolve) {
                     return false;
                 }
                 output.push(']');
@@ -205,22 +346,22 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
             RirTypeSyntaxNode::AnonymousEnum { .. } => output.push_str("enum { ... }"),
             RirTypeSyntaxNode::PointerConst { pointee } => {
                 output.push_str("ptr const ");
-                if !self.write_type(*pointee, output) {
+                if !self.write_type(*pointee, output, resolve) {
                     return false;
                 }
             }
             RirTypeSyntaxNode::PointerMut { pointee } => {
                 output.push_str("ptr mut ");
-                if !self.write_type(*pointee, output) {
+                if !self.write_type(*pointee, output, resolve) {
                     return false;
                 }
             }
             RirTypeSyntaxNode::TypeCall { path, arguments } => {
-                if !self.write_path(*path, output) {
+                if !self.write_path(*path, output, resolve) {
                     return false;
                 }
                 output.push('(');
-                if !self.write_arguments(*arguments, output) {
+                if !self.write_arguments(*arguments, output, resolve) {
                     return false;
                 }
                 output.push(')');
@@ -229,9 +370,9 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
                 let Some(name) = self.symbol(*name) else {
                     return false;
                 };
-                output.push_str(name.as_ref());
+                output.push_str(resolve(name));
                 output.push('(');
-                if !self.write_arguments(*arguments, output) {
+                if !self.write_arguments(*arguments, output, resolve) {
                     return false;
                 }
                 output.push(')');
@@ -241,7 +382,12 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
         true
     }
 
-    fn write_path(&self, range: RirTypeSyntaxRange, output: &mut String) -> bool {
+    fn write_path<'a>(
+        &'a self,
+        range: RirTypeSyntaxRange,
+        output: &mut String,
+        resolve: impl Copy + Fn(&'a S) -> &'a str,
+    ) -> bool {
         let Some(words) = self.words(range) else {
             return false;
         };
@@ -252,12 +398,17 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
             if index != 0 {
                 output.push('.');
             }
-            output.push_str(symbol.as_ref());
+            output.push_str(resolve(symbol));
         }
         true
     }
 
-    fn write_arguments(&self, range: RirTypeSyntaxRange, output: &mut String) -> bool {
+    fn write_arguments<'a>(
+        &'a self,
+        range: RirTypeSyntaxRange,
+        output: &mut String,
+        resolve: impl Copy + Fn(&'a S) -> &'a str,
+    ) -> bool {
         let Some(words) = self.words(range) else {
             return false;
         };
@@ -265,11 +416,17 @@ impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
             if index != 0 {
                 output.push_str(", ");
             }
-            if !self.write_type(RirTypeSyntaxRef::from_u32(*word), output) {
+            if !self.write_type(RirTypeSyntaxRef::from_u32(*word), output, resolve) {
                 return false;
             }
         }
         true
+    }
+}
+
+impl<S: AsRef<str>> RirTypeSyntaxArena<S> {
+    pub fn render_type(&self, reference: RirTypeSyntaxRef) -> Option<String> {
+        self.render_type_with(reference, AsRef::as_ref)
     }
 }
 
@@ -281,12 +438,252 @@ pub enum RirTypeSyntaxBuildError {
     TooMuchPayload,
 }
 
+/// A malformed dense type-syntax arena. The reason is intentionally static so
+/// query failures stay deterministic and do not retain source-owned strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RirTypeSyntaxValidationError {
+    pub node: Option<RirTypeSyntaxRef>,
+    pub reason: &'static str,
+}
+
+#[derive(Debug)]
+pub enum RirTypeSyntaxAppendError<E> {
+    Malformed(RirTypeSyntaxValidationError),
+    Checkpoint(E),
+    Build(RirTypeSyntaxBuildError),
+}
+
+impl<E> From<RirTypeSyntaxBuildError> for RirTypeSyntaxAppendError<E> {
+    fn from(error: RirTypeSyntaxBuildError) -> Self {
+        Self::Build(error)
+    }
+}
+
+impl<E> From<RirTypeSyntaxValidationError> for RirTypeSyntaxAppendError<E> {
+    fn from(error: RirTypeSyntaxValidationError) -> Self {
+        Self::Malformed(error)
+    }
+}
+
+impl<S> RirTypeSyntaxArena<S> {
+    /// Validate the complete typed arena, including unused dense symbols.
+    /// Child references must be postorder so a declaration fragment is closed
+    /// and can be relocated by a single linear pass.
+    pub fn validate_with_symbol(
+        &self,
+        mut symbol_is_valid: impl FnMut(&S) -> bool,
+    ) -> Result<(), RirTypeSyntaxValidationError> {
+        fn invalid(
+            node: Option<RirTypeSyntaxRef>,
+            reason: &'static str,
+        ) -> RirTypeSyntaxValidationError {
+            RirTypeSyntaxValidationError { node, reason }
+        }
+
+        if self.symbols.iter().any(|symbol| !symbol_is_valid(symbol)) {
+            return Err(invalid(None, "type-syntax symbol is outside its owner"));
+        }
+
+        for (owner, node) in self.nodes.iter().enumerate() {
+            let owner_ref = RirTypeSyntaxRef::from_u32(owner as u32);
+            let check_ref = |reference: RirTypeSyntaxRef| {
+                if reference.index() < owner {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        Some(owner_ref),
+                        "type-syntax child is not a preceding node",
+                    ))
+                }
+            };
+            let check_symbol = |symbol: RirTypeSyntaxSymbol| {
+                if symbol.index() < self.symbols.len() {
+                    Ok(())
+                } else {
+                    Err(invalid(
+                        Some(owner_ref),
+                        "type-syntax symbol index is outside its arena",
+                    ))
+                }
+            };
+            let words = |range: RirTypeSyntaxRange| {
+                self.words(range).ok_or_else(|| {
+                    invalid(
+                        Some(owner_ref),
+                        "type-syntax payload range is outside its arena",
+                    )
+                })
+            };
+            let check_path = |range: RirTypeSyntaxRange| {
+                let path = words(range)?;
+                if path.is_empty() {
+                    return Err(invalid(Some(owner_ref), "type path is empty"));
+                }
+                for word in path {
+                    check_symbol(RirTypeSyntaxSymbol::from_u32(*word))?;
+                }
+                Ok(())
+            };
+            let check_arguments = |range: RirTypeSyntaxRange| {
+                for word in words(range)? {
+                    check_ref(RirTypeSyntaxRef::from_u32(*word))?;
+                }
+                Ok(())
+            };
+
+            match node {
+                RirTypeSyntaxNode::Named(symbol) => check_symbol(*symbol)?,
+                RirTypeSyntaxNode::Qualified { path } => check_path(*path)?,
+                RirTypeSyntaxNode::Unit
+                | RirTypeSyntaxNode::Never
+                | RirTypeSyntaxNode::Integer(_) => {}
+                RirTypeSyntaxNode::Array { element, length } => {
+                    check_ref(*element)?;
+                    check_ref(*length)?;
+                }
+                RirTypeSyntaxNode::Slice { element }
+                | RirTypeSyntaxNode::PointerConst { pointee: element }
+                | RirTypeSyntaxNode::PointerMut { pointee: element } => check_ref(*element)?,
+                RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
+                    let fields = words(*fields)?;
+                    if !fields.len().is_multiple_of(2) {
+                        return Err(invalid(Some(owner_ref), "struct field record is truncated"));
+                    }
+                    for field in fields.chunks_exact(2) {
+                        check_symbol(RirTypeSyntaxSymbol::from_u32(field[0]))?;
+                        check_ref(RirTypeSyntaxRef::from_u32(field[1]))?;
+                    }
+
+                    let methods = words(*methods)?;
+                    let mut position = 0usize;
+                    while position < methods.len() {
+                        let header = methods
+                            .get(position..position.saturating_add(4))
+                            .ok_or_else(|| {
+                                invalid(Some(owner_ref), "anonymous method header is truncated")
+                            })?;
+                        check_symbol(RirTypeSyntaxSymbol::from_u32(header[0]))?;
+                        if header[1] != u32::MAX && header[1] > 3 {
+                            return Err(invalid(
+                                Some(owner_ref),
+                                "anonymous receiver mode is invalid",
+                            ));
+                        }
+                        if header[2] > 1 {
+                            return Err(invalid(
+                                Some(owner_ref),
+                                "anonymous borrow-return flag is invalid",
+                            ));
+                        }
+                        position += 4;
+                        let param_count = header[3] as usize;
+                        for _ in 0..param_count {
+                            let parameter = methods
+                                .get(position..position.saturating_add(3))
+                                .ok_or_else(|| {
+                                    invalid(
+                                        Some(owner_ref),
+                                        "anonymous parameter record is truncated",
+                                    )
+                                })?;
+                            if parameter[0] > 3 {
+                                return Err(invalid(
+                                    Some(owner_ref),
+                                    "anonymous parameter mode is invalid",
+                                ));
+                            }
+                            check_symbol(RirTypeSyntaxSymbol::from_u32(parameter[1]))?;
+                            check_ref(RirTypeSyntaxRef::from_u32(parameter[2]))?;
+                            position += 3;
+                        }
+                        let result_and_count = methods
+                            .get(position..position.saturating_add(2))
+                            .ok_or_else(|| {
+                                invalid(Some(owner_ref), "anonymous method result is truncated")
+                            })?;
+                        check_ref(RirTypeSyntaxRef::from_u32(result_and_count[0]))?;
+                        position += 2;
+                        let directive_count = result_and_count[1] as usize;
+                        for _ in 0..directive_count {
+                            let directive = methods
+                                .get(position..position.saturating_add(2))
+                                .ok_or_else(|| {
+                                    invalid(Some(owner_ref), "anonymous directive is truncated")
+                                })?;
+                            check_symbol(RirTypeSyntaxSymbol::from_u32(directive[0]))?;
+                            position += 2;
+                            let argument_count = directive[1] as usize;
+                            let arguments = methods
+                                .get(position..position.saturating_add(argument_count))
+                                .ok_or_else(|| {
+                                    invalid(
+                                        Some(owner_ref),
+                                        "anonymous directive arguments are truncated",
+                                    )
+                                })?;
+                            for argument in arguments {
+                                check_symbol(RirTypeSyntaxSymbol::from_u32(*argument))?;
+                            }
+                            position += argument_count;
+                        }
+                    }
+                }
+                RirTypeSyntaxNode::AnonymousEnum { variants } => {
+                    let variants = words(*variants)?;
+                    let mut position = 0usize;
+                    while position < variants.len() {
+                        let header = variants
+                            .get(position..position.saturating_add(2))
+                            .ok_or_else(|| {
+                                invalid(Some(owner_ref), "anonymous enum variant is truncated")
+                            })?;
+                        check_symbol(RirTypeSyntaxSymbol::from_u32(header[0]))?;
+                        position += 2;
+                        let payload_count = header[1] as usize;
+                        let payload = variants
+                            .get(position..position.saturating_add(payload_count))
+                            .ok_or_else(|| {
+                                invalid(Some(owner_ref), "anonymous enum payload is truncated")
+                            })?;
+                        for reference in payload {
+                            check_ref(RirTypeSyntaxRef::from_u32(*reference))?;
+                        }
+                        position += payload_count;
+                    }
+                }
+                RirTypeSyntaxNode::TypeCall { path, arguments } => {
+                    check_path(*path)?;
+                    check_arguments(*arguments)?;
+                }
+                RirTypeSyntaxNode::ValueCall { name, arguments } => {
+                    check_symbol(*name)?;
+                    check_arguments(*arguments)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Mutable producer for one declaration-local syntax arena.
+#[derive(Debug)]
 pub struct RirTypeSyntaxBuilder<S> {
     nodes: Vec<RirTypeSyntaxNode>,
     extra: Vec<u32>,
     symbols: Vec<S>,
-    symbol_indexes: HashMap<S, RirTypeSyntaxSymbol>,
+    symbol_indexes: Option<AHashMap<S, RirTypeSyntaxSymbol>>,
+}
+
+// Most declaration-local type grammars mention only a handful of distinct
+// spellings. Keep those builders allocation-free while bounding the linear
+// prefix before promoting larger arenas to the expected-linear hash index.
+const LINEAR_SYMBOL_LIMIT: usize = 8;
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RirTypeSyntaxBuilderSnapshot {
+    nodes: usize,
+    extra: usize,
+    symbols: usize,
 }
 
 impl<S> Default for RirTypeSyntaxBuilder<S> {
@@ -295,12 +692,29 @@ impl<S> Default for RirTypeSyntaxBuilder<S> {
             nodes: Vec::new(),
             extra: Vec::new(),
             symbols: Vec::new(),
-            symbol_indexes: HashMap::new(),
+            symbol_indexes: None,
         }
     }
 }
 
 impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
+    pub(crate) fn snapshot(&self) -> RirTypeSyntaxBuilderSnapshot {
+        RirTypeSyntaxBuilderSnapshot {
+            nodes: self.nodes.len(),
+            extra: self.extra.len(),
+            symbols: self.symbols.len(),
+        }
+    }
+
+    pub(crate) fn rollback(&mut self, snapshot: RirTypeSyntaxBuilderSnapshot) {
+        self.nodes.truncate(snapshot.nodes);
+        self.extra.truncate(snapshot.extra);
+        self.symbols.truncate(snapshot.symbols);
+        if let Some(symbol_indexes) = &mut self.symbol_indexes {
+            symbol_indexes.retain(|_, index| index.index() < snapshot.symbols);
+        }
+    }
+
     pub fn finish(self) -> RirTypeSyntaxArena<S> {
         RirTypeSyntaxArena {
             nodes: self.nodes.into(),
@@ -449,6 +863,316 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
         self.push_node(RirTypeSyntaxNode::Unit)
     }
 
+    pub fn push_never_type(&mut self) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::Never)
+    }
+
+    pub fn push_named_type(
+        &mut self,
+        symbol: S,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        let symbol = self.symbol(symbol)?;
+        self.push_node(RirTypeSyntaxNode::Named(symbol))
+    }
+
+    pub fn push_integer(
+        &mut self,
+        value: i128,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::Integer(value))
+    }
+
+    pub fn push_array_type(
+        &mut self,
+        element: RirTypeSyntaxRef,
+        length: RirTypeSyntaxRef,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::Array { element, length })
+    }
+
+    pub fn push_slice_type(
+        &mut self,
+        element: RirTypeSyntaxRef,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::Slice { element })
+    }
+
+    pub fn push_pointer_const_type(
+        &mut self,
+        pointee: RirTypeSyntaxRef,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::PointerConst { pointee })
+    }
+
+    pub fn push_pointer_mut_type(
+        &mut self,
+        pointee: RirTypeSyntaxRef,
+    ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
+        self.push_node(RirTypeSyntaxNode::PointerMut { pointee })
+    }
+
+    /// Append one validated declaration-local arena, remapping its dense symbol
+    /// domain and every child reference exactly once. The append is atomic;
+    /// cancellation or malformed input restores the complete destination
+    /// builder, including its symbol interning table.
+    pub fn append_remapped<T, E>(
+        &mut self,
+        source: &RirTypeSyntaxArena<T>,
+        mut remap_symbol: impl FnMut(&T) -> S,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<RirTypeSyntaxRef>, RirTypeSyntaxAppendError<E>> {
+        source
+            .validate_with_symbol(|_| true)
+            .map_err(RirTypeSyntaxAppendError::Malformed)?;
+
+        let node_len = self.nodes.len();
+        let extra_len = self.extra.len();
+        let symbol_len = self.symbols.len();
+        let result = (|| {
+            let mut symbols = Vec::new();
+            symbols
+                .try_reserve_exact(source.symbols.len())
+                .map_err(|_| RirTypeSyntaxBuildError::TooManySymbols)?;
+            for source_symbol in source.symbols.iter() {
+                checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                symbols.push(self.symbol(remap_symbol(source_symbol))?);
+            }
+
+            let mut nodes: Vec<RirTypeSyntaxRef> = Vec::new();
+            nodes
+                .try_reserve_exact(source.nodes.len())
+                .map_err(|_| RirTypeSyntaxBuildError::TooManyNodes)?;
+            for source_node in source.nodes.iter() {
+                checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                let map_symbol = |symbol: RirTypeSyntaxSymbol| {
+                    symbols
+                        .get(symbol.index())
+                        .copied()
+                        .ok_or(RirTypeSyntaxValidationError {
+                            node: None,
+                            reason: "type-syntax symbol index is outside its arena",
+                        })
+                };
+                let map_ref = |reference: RirTypeSyntaxRef| {
+                    nodes
+                        .get(reference.index())
+                        .copied()
+                        .ok_or(RirTypeSyntaxValidationError {
+                            node: None,
+                            reason: "type-syntax child is not a preceding node",
+                        })
+                };
+                let map_path = |this: &mut Self, range: RirTypeSyntaxRange| {
+                    let words = source.words(range).ok_or(RirTypeSyntaxValidationError {
+                        node: None,
+                        reason: "type-syntax payload range is outside its arena",
+                    })?;
+                    let mut mapped = Vec::new();
+                    mapped
+                        .try_reserve_exact(words.len())
+                        .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                    for word in words {
+                        mapped.push(map_symbol(RirTypeSyntaxSymbol::from_u32(*word))?.as_u32());
+                    }
+                    Ok::<_, RirTypeSyntaxAppendError<E>>(this.push_words(mapped)?)
+                };
+                let map_refs = |this: &mut Self, range: RirTypeSyntaxRange| {
+                    let words = source.words(range).ok_or(RirTypeSyntaxValidationError {
+                        node: None,
+                        reason: "type-syntax payload range is outside its arena",
+                    })?;
+                    let mut mapped = Vec::new();
+                    mapped
+                        .try_reserve_exact(words.len())
+                        .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                    for word in words {
+                        mapped.push(map_ref(RirTypeSyntaxRef::from_u32(*word))?.as_u32());
+                    }
+                    Ok::<_, RirTypeSyntaxAppendError<E>>(this.push_words(mapped)?)
+                };
+
+                let node = match source_node {
+                    RirTypeSyntaxNode::Named(symbol) => RirTypeSyntaxNode::Named(
+                        map_symbol(*symbol).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                    ),
+                    RirTypeSyntaxNode::Qualified { path } => RirTypeSyntaxNode::Qualified {
+                        path: map_path(self, *path)?,
+                    },
+                    RirTypeSyntaxNode::Unit => RirTypeSyntaxNode::Unit,
+                    RirTypeSyntaxNode::Never => RirTypeSyntaxNode::Never,
+                    RirTypeSyntaxNode::Array { element, length } => RirTypeSyntaxNode::Array {
+                        element: map_ref(*element).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                        length: map_ref(*length).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                    },
+                    RirTypeSyntaxNode::Slice { element } => RirTypeSyntaxNode::Slice {
+                        element: map_ref(*element).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                    },
+                    RirTypeSyntaxNode::PointerConst { pointee } => {
+                        RirTypeSyntaxNode::PointerConst {
+                            pointee: map_ref(*pointee)
+                                .map_err(RirTypeSyntaxAppendError::Malformed)?,
+                        }
+                    }
+                    RirTypeSyntaxNode::PointerMut { pointee } => RirTypeSyntaxNode::PointerMut {
+                        pointee: map_ref(*pointee).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                    },
+                    RirTypeSyntaxNode::TypeCall { path, arguments } => {
+                        RirTypeSyntaxNode::TypeCall {
+                            path: map_path(self, *path)?,
+                            arguments: map_refs(self, *arguments)?,
+                        }
+                    }
+                    RirTypeSyntaxNode::ValueCall { name, arguments } => {
+                        RirTypeSyntaxNode::ValueCall {
+                            name: map_symbol(*name).map_err(RirTypeSyntaxAppendError::Malformed)?,
+                            arguments: map_refs(self, *arguments)?,
+                        }
+                    }
+                    RirTypeSyntaxNode::Integer(value) => RirTypeSyntaxNode::Integer(*value),
+                    RirTypeSyntaxNode::AnonymousStruct { fields, methods } => {
+                        let field_words =
+                            source.words(*fields).ok_or(RirTypeSyntaxValidationError {
+                                node: None,
+                                reason: "type-syntax payload range is outside its arena",
+                            })?;
+                        let mut mapped_fields = Vec::new();
+                        mapped_fields
+                            .try_reserve_exact(field_words.len())
+                            .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                        for field in field_words.chunks_exact(2) {
+                            checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                            mapped_fields.extend([
+                                map_symbol(RirTypeSyntaxSymbol::from_u32(field[0]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                                map_ref(RirTypeSyntaxRef::from_u32(field[1]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                            ]);
+                        }
+                        let fields = self.push_words(mapped_fields)?;
+
+                        let method_words =
+                            source.words(*methods).ok_or(RirTypeSyntaxValidationError {
+                                node: None,
+                                reason: "type-syntax payload range is outside its arena",
+                            })?;
+                        let mut mapped_methods = Vec::new();
+                        mapped_methods
+                            .try_reserve_exact(method_words.len())
+                            .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                        let mut position = 0usize;
+                        while position < method_words.len() {
+                            checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                            let header = &method_words[position..position + 4];
+                            mapped_methods.extend([
+                                map_symbol(RirTypeSyntaxSymbol::from_u32(header[0]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                                header[1],
+                                header[2],
+                                header[3],
+                            ]);
+                            position += 4;
+                            for _ in 0..header[3] {
+                                let parameter = &method_words[position..position + 3];
+                                mapped_methods.extend([
+                                    parameter[0],
+                                    map_symbol(RirTypeSyntaxSymbol::from_u32(parameter[1]))
+                                        .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                        .as_u32(),
+                                    map_ref(RirTypeSyntaxRef::from_u32(parameter[2]))
+                                        .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                        .as_u32(),
+                                ]);
+                                position += 3;
+                            }
+                            mapped_methods.push(
+                                map_ref(RirTypeSyntaxRef::from_u32(method_words[position]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                            );
+                            let directive_count = method_words[position + 1];
+                            mapped_methods.push(directive_count);
+                            position += 2;
+                            for _ in 0..directive_count {
+                                let directive_name = method_words[position];
+                                let argument_count = method_words[position + 1];
+                                mapped_methods.push(
+                                    map_symbol(RirTypeSyntaxSymbol::from_u32(directive_name))
+                                        .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                        .as_u32(),
+                                );
+                                mapped_methods.push(argument_count);
+                                position += 2;
+                                for _ in 0..argument_count {
+                                    mapped_methods.push(
+                                        map_symbol(RirTypeSyntaxSymbol::from_u32(
+                                            method_words[position],
+                                        ))
+                                        .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                        .as_u32(),
+                                    );
+                                    position += 1;
+                                }
+                            }
+                        }
+                        let methods = self.push_words(mapped_methods)?;
+                        RirTypeSyntaxNode::AnonymousStruct { fields, methods }
+                    }
+                    RirTypeSyntaxNode::AnonymousEnum { variants } => {
+                        let variant_words =
+                            source
+                                .words(*variants)
+                                .ok_or(RirTypeSyntaxValidationError {
+                                    node: None,
+                                    reason: "type-syntax payload range is outside its arena",
+                                })?;
+                        let mut mapped = Vec::new();
+                        mapped
+                            .try_reserve_exact(variant_words.len())
+                            .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?;
+                        let mut position = 0usize;
+                        while position < variant_words.len() {
+                            checkpoint().map_err(RirTypeSyntaxAppendError::Checkpoint)?;
+                            mapped.push(
+                                map_symbol(RirTypeSyntaxSymbol::from_u32(variant_words[position]))
+                                    .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                    .as_u32(),
+                            );
+                            let payload_count = variant_words[position + 1];
+                            mapped.push(payload_count);
+                            position += 2;
+                            for _ in 0..payload_count {
+                                mapped.push(
+                                    map_ref(RirTypeSyntaxRef::from_u32(variant_words[position]))
+                                        .map_err(RirTypeSyntaxAppendError::Malformed)?
+                                        .as_u32(),
+                                );
+                                position += 1;
+                            }
+                        }
+                        RirTypeSyntaxNode::AnonymousEnum {
+                            variants: self.push_words(mapped)?,
+                        }
+                    }
+                };
+                nodes.push(self.push_node(node)?);
+            }
+            Ok(nodes)
+        })();
+
+        if result.is_err() {
+            self.nodes.truncate(node_len);
+            self.extra.truncate(extra_len);
+            self.symbols.truncate(symbol_len);
+            if let Some(symbol_indexes) = &mut self.symbol_indexes {
+                symbol_indexes.retain(|_, index| index.index() < symbol_len);
+            }
+        }
+        result
+    }
+
     fn push_array_length(
         &mut self,
         length: &ArrayLength,
@@ -498,18 +1222,30 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
     }
 
     fn symbol(&mut self, symbol: S) -> Result<RirTypeSyntaxSymbol, RirTypeSyntaxBuildError> {
-        if let Some(index) = self.symbol_indexes.get(&symbol) {
-            return Ok(*index);
+        if let Some(symbol_indexes) = &self.symbol_indexes {
+            if let Some(index) = symbol_indexes.get(&symbol) {
+                return Ok(*index);
+            }
+        } else if let Some(index) = self.symbols.iter().position(|existing| existing == &symbol) {
+            return Ok(RirTypeSyntaxSymbol(index as u32));
         }
         let index = u32::try_from(self.symbols.len())
             .map_err(|_| RirTypeSyntaxBuildError::TooManySymbols)?;
         let index = RirTypeSyntaxSymbol(index);
         self.symbols.push(symbol.clone());
-        self.symbol_indexes.insert(symbol, index);
+        if let Some(symbol_indexes) = &mut self.symbol_indexes {
+            symbol_indexes.insert(symbol, index);
+        } else if self.symbols.len() > LINEAR_SYMBOL_LIMIT {
+            let mut symbol_indexes = AHashMap::with_capacity(self.symbols.len());
+            for (ordinal, symbol) in self.symbols.iter().cloned().enumerate() {
+                symbol_indexes.insert(symbol, RirTypeSyntaxSymbol(ordinal as u32));
+            }
+            self.symbol_indexes = Some(symbol_indexes);
+        }
         Ok(index)
     }
 
-    fn push_node(
+    pub(crate) fn push_node(
         &mut self,
         node: RirTypeSyntaxNode,
     ) -> Result<RirTypeSyntaxRef, RirTypeSyntaxBuildError> {
@@ -519,7 +1255,7 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
         Ok(RirTypeSyntaxRef(index))
     }
 
-    fn push_words(
+    pub(crate) fn push_words(
         &mut self,
         words: impl IntoIterator<Item = u32>,
     ) -> Result<RirTypeSyntaxRange, RirTypeSyntaxBuildError> {

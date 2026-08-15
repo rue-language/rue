@@ -18,8 +18,17 @@ pub struct FunctionInfo {
     pub params: ParamRange,
     /// Return type
     pub return_type: Type,
-    /// The return type symbol (before resolution) - needed for generic function specialization
-    pub return_type_sym: Spur,
+    /// Declaration-local structured return syntax used by generic
+    /// specialization. The reference belongs to the same RIR as
+    /// `declaration`; it is never transferred across an RIR owner.
+    pub return_type_syntax: rue_rir::RirTypeSyntaxRef,
+    /// Whether the source return annotation is literally `type`.
+    ///
+    /// `return_type` cannot answer this because dependent return syntax such as
+    /// `T` also uses `COMPTIME_TYPE` until specialization.  Carrying the kind
+    /// bit keeps call-site classification independent of any rendered or
+    /// source-impossible type-syntax symbol.
+    pub returns_type: bool,
     /// RIR body ref for generic specialization
     pub body: rue_rir::InstRef,
     /// Owning source declaration. Variable payload descriptors remain attached
@@ -106,7 +115,7 @@ pub struct MethodInfo {
 pub(crate) struct FunctionCallInfo {
     pub params: ParamRange,
     pub return_type: Type,
-    pub return_type_sym: Spur,
+    pub returns_type: bool,
     pub is_generic: bool,
     pub is_pub: bool,
     pub is_unchecked: bool,
@@ -119,7 +128,7 @@ impl FunctionCallInfo {
         Self {
             params: info.params,
             return_type: info.return_type,
-            return_type_sym: info.return_type_sym,
+            returns_type: info.returns_type,
             is_generic: info.is_generic,
             is_pub: info.is_pub,
             is_unchecked: info.is_unchecked,
@@ -171,12 +180,6 @@ impl MethodCallInfo {
 pub enum AnonMethodType {
     SelfType,
     Concrete(Type),
-    Array {
-        element: Box<AnonMethodType>,
-        len: u64,
-    },
-    PtrConst(Box<AnonMethodType>),
-    PtrMut(Box<AnonMethodType>),
     /// Unsupported syntax is retained as a deterministic fail-closed shape;
     /// equal spelling may match, but it cannot alias a differently spelled
     /// semantic type by accident.

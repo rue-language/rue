@@ -37,6 +37,23 @@ pub(crate) struct TypeSyntaxRequest<'a> {
     pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
 }
 
+/// One exact declaration-owned type fragment in a body-local symbol domain.
+/// Cloning this value only clones the arena's three shared slices; it never
+/// renders source text or transfers a parser/interner identity.
+#[derive(Debug, Clone)]
+pub(crate) struct StructuredTypeSyntax {
+    pub(crate) arena: rue_rir::RirTypeSyntaxArena<Spur>,
+    pub(crate) root: rue_rir::RirTypeSyntaxRef,
+}
+
+pub(crate) struct StructuredTypeSyntaxRequest<'a> {
+    pub(crate) syntax: &'a StructuredTypeSyntax,
+    pub(crate) root_file: FileId,
+    pub(crate) span: Span,
+    pub(crate) type_substitutions: Option<&'a HashMap<Spur, Type>>,
+    pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
+}
+
 /// Exact input for resolving a module-qualified type prefix.
 pub(crate) struct ModulePrefixRequest<'a> {
     pub(crate) root_file: FileId,
@@ -49,13 +66,6 @@ pub(crate) struct ArrayLengthRequest<'a> {
     pub(crate) length: &'a ArrayLen,
     pub(crate) span: Span,
     pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
-}
-
-/// Exact input for validating a deferred type-position parameter.
-pub(crate) struct DeferredTypeRequest<'a> {
-    pub(crate) type_name: String,
-    pub(crate) parameters: &'a super::typeck::DeferredParameterFacts<'a>,
-    pub(crate) span: Span,
 }
 
 type TypeSyntaxResult = Result<
@@ -107,6 +117,10 @@ pub(crate) trait BodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a>;
 
     fn resolve_type_syntax(&mut self, request: TypeSyntaxRequest<'_>) -> TypeSyntaxResult;
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> TypeSyntaxResult;
     fn resolve_type_module_prefix(
         &mut self,
         request: ModulePrefixRequest<'_>,
@@ -115,10 +129,6 @@ pub(crate) trait BodyAnalysisHost: BodyAnalysisReadHost + Sized {
         &mut self,
         request: ArrayLengthRequest<'_>,
     ) -> rue_error::CompileResult<u64>;
-    fn validate_deferred_type(
-        &mut self,
-        request: DeferredTypeRequest<'_>,
-    ) -> rue_error::CompileResult<Option<Type>>;
 }
 
 /// The canonical epoch host. This is the only location that names the epoch
@@ -170,6 +180,20 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
         )
     }
 
+    fn resolve_structured_type_syntax(
+        &mut self,
+        request: StructuredTypeSyntaxRequest<'_>,
+    ) -> TypeSyntaxResult {
+        self.resolve_structured_type_syntax_with_epoch_facts(
+            &request.syntax.arena,
+            request.syntax.root,
+            request.root_file,
+            request.span,
+            request.type_substitutions,
+            request.value_substitutions,
+        )
+    }
+
     fn resolve_type_module_prefix(
         &mut self,
         request: ModulePrefixRequest<'_>,
@@ -189,17 +213,6 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
             request.length,
             request.span,
             request.value_substitutions,
-        )
-    }
-
-    fn validate_deferred_type(
-        &mut self,
-        request: DeferredTypeRequest<'_>,
-    ) -> rue_error::CompileResult<Option<Type>> {
-        self.validate_deferred_type_position_with_epoch_facts(
-            request.type_name,
-            request.parameters,
-            request.span,
         )
     }
 }

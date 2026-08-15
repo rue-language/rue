@@ -522,6 +522,7 @@ mod tests {
             .unwrap();
         rir.replace_internal_intrinsic(intrinsic_ref, InternalIntrinsic::IterLen, &[])
             .unwrap();
+        let rir = rir.finish();
 
         let errors = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all()
@@ -4021,10 +4022,13 @@ fn main() -> i32 {
         ] {
             let errors = compile_to_air(source).unwrap_err();
             assert_eq!(errors.len(), 1, "unexpected diagnostics: {errors:?}");
-            assert!(matches!(
-                &errors.iter().next().unwrap().kind,
-                ErrorKind::ComptimeEvaluationFailed { reason } if reason == expected_reason
-            ));
+            assert!(
+                matches!(
+                    &errors.iter().next().unwrap().kind,
+                    ErrorKind::ComptimeEvaluationFailed { reason } if reason == expected_reason
+                ),
+                "unexpected diagnostics: {errors:?}"
+            );
         }
     }
 

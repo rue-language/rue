@@ -53,7 +53,7 @@ fn deferred_generic_signature_lookup_has_one_first_wins_index() {
 
     assert!(manifest.contains("let mut generic_name_indices = HashMap::new()"));
     assert!(manifest.contains(".entry(param.name)\n                .or_insert(index as u32)"));
-    assert!(manifest.contains(".and_then(|name| generic_name_indices.get(&name))"));
+    assert!(manifest.contains("generic_name_indices\n                    .get(symbol)"));
     assert!(!manifest.contains(".position(|name| self.interner.resolve(name) == syntax)"));
 }
 
