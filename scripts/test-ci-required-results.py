@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("ci-required-results.py")
-SPEC = importlib.util.spec_from_file_location("ci_required_results", SCRIPT)
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+MODULE = load_script("ci-required-results.py", __file__)
 
 
 def results(value="success"):

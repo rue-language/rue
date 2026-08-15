@@ -3,16 +3,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "validate_performance_stall",
-    Path(__file__).resolve().parent / "validate-performance-stall.py",
-)
-stall = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(stall)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+stall = load_script("validate-performance-stall.py", __file__)
 
 
 def data(*points: tuple[str, str, str]) -> dict:

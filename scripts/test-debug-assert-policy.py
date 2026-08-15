@@ -3,17 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-debug-assert-policy.py")
-SPEC = importlib.util.spec_from_file_location("debug_assert_policy", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-policy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(policy)
+policy = load_script("validate-debug-assert-policy.py", __file__)
 
 
 class DebugAssertPolicyTests(unittest.TestCase):

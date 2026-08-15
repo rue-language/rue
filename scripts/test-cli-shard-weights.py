@@ -3,17 +3,16 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("generate-cli-shard-weights.py")
-SPEC = importlib.util.spec_from_file_location("cli_shard_weights", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-weights = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(weights)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+weights = load_script("generate-cli-shard-weights.py", __file__)
 
 
 class CliShardWeightTests(unittest.TestCase):

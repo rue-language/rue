@@ -3,18 +3,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-SPEC = importlib.util.spec_from_file_location(
-    "annotate_performance_commits",
-    Path(__file__).resolve().parent / "annotate-performance-commits.py",
-)
-annotate = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(annotate)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+annotate = load_script("annotate-performance-commits.py", __file__)
 
 
 def data(*commits: str) -> dict:

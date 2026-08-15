@@ -14,7 +14,6 @@ the real file and requiring the finding to come back.
 
 from __future__ import annotations
 
-import importlib.util
 import re
 import subprocess
 import sys
@@ -23,12 +22,11 @@ import textwrap
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
 SCRIPT = Path(__file__).with_name("validate-python-baseline.py")
-SPEC = importlib.util.spec_from_file_location("python_baseline", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
-policy = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(policy)
+policy = load_script("validate-python-baseline.py", __file__)
 
 TOOL = Path(__file__).with_name("cli-timeout-policy.py")
 

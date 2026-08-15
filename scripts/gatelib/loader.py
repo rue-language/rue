@@ -9,6 +9,7 @@ confusing ``None`` crash.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
@@ -28,5 +29,12 @@ def load_script(name: str, relative_to: str) -> ModuleType:
     if spec is None or spec.loader is None:
         raise ImportError(f"could not build an import spec for {script}")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Registered before execution: `@dataclass` resolves a class's module
+    # through `sys.modules`, and fails outright when it is missing.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
     return module

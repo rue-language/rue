@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("validate-ci-gate.py")
-SPEC = importlib.util.spec_from_file_location("validate_ci_gate", SCRIPT)
-MODULE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(MODULE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
+
+MODULE = load_script("validate-ci-gate.py", __file__)
 SOURCE = Path(os.environ["RUE_CI_WORKFLOW"])
 # Under Buck the crate source is a declared input; a direct run falls back to
 # the checkout path the validator resolves on its own.

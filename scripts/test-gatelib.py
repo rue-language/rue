@@ -160,6 +160,14 @@ class GateHelperTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             load_script("no-such-script.py", __file__)
 
+    def test_load_script_registers_module_for_dataclasses(self) -> None:
+        # `@dataclass` resolves a class's module through `sys.modules` while
+        # the script executes, so a gate defining one fails to load unless the
+        # loader registers the module first.
+        module = load_script("validate-tier-ci-selectors.py", __file__)
+        self.assertTrue(hasattr(module, "Selector"))
+        self.assertIs(sys.modules["validate_tier_ci_selectors"], module)
+
 
 if __name__ == "__main__":
     unittest.main()
