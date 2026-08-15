@@ -11,7 +11,7 @@ use std::hash::{BuildHasher, Hasher};
 use std::sync::Arc;
 
 use lasso::{Key, Spur, ThreadedRodeo};
-use rue_span::Span;
+use rue_span::{FileId, Span};
 
 use super::*;
 
@@ -92,6 +92,16 @@ pub struct PackedRirMetadata {
     pub method_owner: Option<PackedRirMethodOwner>,
 }
 
+/// Exact request-local authority for projecting one declaration-relative
+/// packed candidate into its current source revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedRirProjection {
+    pub symbol_count: usize,
+    pub file_id: FileId,
+    pub declaration_start: u32,
+    pub source_length: u32,
+}
+
 /// RIR-level method-owner shell metadata. Compiler-specific identities stay
 /// outside this crate; these are precisely the scalars required to rebuild the
 /// canonical shell through `RirEditor`.
@@ -138,6 +148,17 @@ impl PackedValidatedRir {
             .instructions as usize
     }
 
+    /// Number of dense candidate-local symbol spellings in the envelope.
+    ///
+    /// This reads only the validated fixed header. Consumers that need both
+    /// the count and the spellings should create one [`PackedRirSymbols`]
+    /// iterator and use its exact size rather than rescanning the section.
+    pub fn symbol_count(&self) -> usize {
+        Header::parse(&self.0)
+            .expect("privately constructed packed RIR is valid")
+            .symbols as usize
+    }
+
     /// Complete dense spelling table transported with the owner, including
     /// empty and unreferenced ordinals.
     pub fn symbols(&self) -> PackedRirSymbols<'_> {
@@ -165,7 +186,14 @@ impl PackedValidatedRir {
         remap_symbol: impl FnMut(u32) -> Result<Spur, E>,
         remap_span: impl FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
     ) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
-        self.try_append_remapped_internal(destination, None, checkpoint, remap_symbol, remap_span)
+        self.try_append_remapped_internal(
+            destination,
+            None,
+            true,
+            checkpoint,
+            remap_symbol,
+            remap_span,
+        )
     }
 
     /// Append a methodless struct-shell candidate while installing the
@@ -181,16 +209,146 @@ impl PackedValidatedRir {
         self.try_append_remapped_internal(
             destination,
             Some(methods),
+            true,
             checkpoint,
             remap_symbol,
             remap_span,
         )
     }
 
+    /// Decode one candidate into a fresh validated owner without repeating the
+    /// generic post-construction RIR scan.
+    ///
+    /// The packed decoder already checks the complete typed payload schema,
+    /// every instruction reference, every symbol ordinal, and every span slot
+    /// while constructing the editor. This boundary also checks the complete
+    /// dense symbol count and projects every declaration-relative span through
+    /// one current source authority, so the resulting [`ValidatedRir`] has the
+    /// same guarantees as [`ValidatedRir::finish`] without walking the finished
+    /// arena a second time.
+    pub fn try_decode_validated<E>(
+        &self,
+        projection: PackedRirProjection,
+        checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
+        self.try_decode_validated_internal(projection, false, checkpoint)
+    }
+
+    /// Decode one candidate and append its analysis-only named-method owner
+    /// shell before publishing the validated owner.
+    pub fn try_decode_validated_with_method_owner<E>(
+        &self,
+        projection: PackedRirProjection,
+        checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
+        self.try_decode_validated_internal(projection, true, checkpoint)
+    }
+
+    fn try_decode_validated_internal<E>(
+        &self,
+        projection: PackedRirProjection,
+        include_method_owner: bool,
+        mut checkpoint: impl FnMut() -> Result<(), E>,
+    ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
+        enum Checked<E> {
+            Callback(E),
+            Invalid(PackedRirDecodeError),
+        }
+
+        fn map_checked<E>(error: PackedRirAppendError<Checked<E>>) -> PackedRirAppendError<E> {
+            match error {
+                PackedRirAppendError::Decode(error) => PackedRirAppendError::Decode(error),
+                PackedRirAppendError::Build(error) => PackedRirAppendError::Build(error),
+                PackedRirAppendError::Checkpoint(Checked::Callback(error)) => {
+                    PackedRirAppendError::Checkpoint(error)
+                }
+                PackedRirAppendError::SymbolRemap(Checked::Callback(error)) => {
+                    PackedRirAppendError::SymbolRemap(error)
+                }
+                PackedRirAppendError::SpanRemap {
+                    slot,
+                    error: Checked::Callback(error),
+                } => PackedRirAppendError::SpanRemap { slot, error },
+                PackedRirAppendError::Checkpoint(Checked::Invalid(error))
+                | PackedRirAppendError::SymbolRemap(Checked::Invalid(error))
+                | PackedRirAppendError::SpanRemap {
+                    error: Checked::Invalid(error),
+                    ..
+                } => PackedRirAppendError::Decode(error),
+            }
+        }
+
+        let header = Header::parse(&self.0).map_err(PackedRirAppendError::Decode)?;
+        if header.symbols as usize != projection.symbol_count {
+            return Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "projected symbol universe",
+                },
+            ));
+        }
+        let mut editor = RirEditor::new();
+        let appended = self
+            .try_append_remapped_internal(
+                &mut editor,
+                None,
+                // This type has no public unchecked constructor: packing
+                // validated the immutable dense-symbol section once. The
+                // generic append boundary retains full corruption checking,
+                // while a fresh direct decode need not allocate and populate
+                // the duplicate-detection map for every body request.
+                false,
+                || checkpoint().map_err(Checked::Callback),
+                |ordinal| {
+                    Spur::try_from_usize(ordinal as usize).ok_or(Checked::Invalid(
+                        PackedRirDecodeError::CountOutOfBounds {
+                            family: "projected symbol ordinal",
+                        },
+                    ))
+                },
+                |_slot, (relative_start, relative_end)| {
+                    let start = projection
+                        .declaration_start
+                        .checked_add(relative_start)
+                        .ok_or(Checked::Invalid(PackedRirDecodeError::CountOutOfBounds {
+                            family: "projected span start",
+                        }))?;
+                    let end = projection
+                        .declaration_start
+                        .checked_add(relative_end)
+                        .ok_or(Checked::Invalid(PackedRirDecodeError::CountOutOfBounds {
+                            family: "projected span end",
+                        }))?;
+                    if start > end || end > projection.source_length {
+                        return Err(Checked::Invalid(PackedRirDecodeError::CountOutOfBounds {
+                            family: "projected span range",
+                        }));
+                    }
+                    Ok(Span::with_file(projection.file_id, start, end))
+                },
+            )
+            .map_err(map_checked)?;
+        if include_method_owner && let Some(owner) = appended.metadata.method_owner {
+            let span = editor.get(owner.declaration).span;
+            editor
+                .add_struct_decl(
+                    &[],
+                    owner.is_public,
+                    owner.is_linear,
+                    owner.name,
+                    &[],
+                    &[owner.declaration],
+                    span,
+                )
+                .map_err(PackedRirAppendError::Build)?;
+        }
+        Ok((ValidatedRir(editor.into_unvalidated()), appended.metadata))
+    }
+
     fn try_append_remapped_internal<E>(
         &self,
         destination: &mut RirEditor,
         root_methods: Option<&[InstRef]>,
+        revalidate_symbols: bool,
         checkpoint: impl FnMut() -> Result<(), E>,
         remap_symbol: impl FnMut(u32) -> Result<Spur, E>,
         remap_span: impl FnMut(RirSpanSlot, (u32, u32)) -> Result<Span, E>,
@@ -202,6 +360,7 @@ impl PackedValidatedRir {
             &self.0,
             destination,
             root_methods,
+            revalidate_symbols,
             checkpoint,
             remap_symbol,
             remap_span,
@@ -1412,16 +1571,11 @@ impl<'a> PackedRirSymbols<'a> {
         let section = bytes
             .get(header.symbols_offset..header.instructions_offset)
             .ok_or(PackedRirDecodeError::Truncated)?;
-        let mut check = Reader::new(section);
-        for ordinal in 0..header.symbols {
-            let length = check.u32()? as usize;
-            let spelling = check.bytes(length)?;
-            std::str::from_utf8(spelling)
-                .map_err(|_| PackedRirDecodeError::InvalidUtf8Symbol { symbol: ordinal })?;
-        }
-        if !check.finished() {
-            return Err(PackedRirDecodeError::TrailingBytes);
-        }
+        // PackedValidatedRir has no public unchecked constructor: the encoder
+        // produced and validated this immutable section. The fallible decoder
+        // still revalidates symbols when accepting bytes at the append
+        // boundary; this borrowing accessor must not walk the entire section
+        // before walking it again to yield the spellings.
         Ok(Self {
             reader: Reader::new(section),
             remaining: header.symbols as usize,
@@ -1459,6 +1613,7 @@ struct Decoder<'a, E, C, S, P> {
     bytes: &'a [u8],
     destination: &'a mut RirEditor,
     root_methods: Option<&'a [InstRef]>,
+    revalidate_symbols: bool,
     checkpoint: C,
     remap_symbol: S,
     remap_span: P,
@@ -1482,6 +1637,7 @@ impl<
         bytes: &'a [u8],
         destination: &'a mut RirEditor,
         root_methods: Option<&'a [InstRef]>,
+        revalidate_symbols: bool,
         checkpoint: C,
         remap_symbol: S,
         remap_span: P,
@@ -1490,6 +1646,7 @@ impl<
             bytes,
             destination,
             root_methods,
+            revalidate_symbols,
             checkpoint,
             remap_symbol,
             remap_span,
@@ -1504,7 +1661,9 @@ impl<
 
     fn decode(mut self) -> Result<PackedRirAppend, PackedRirAppendError<E>> {
         let header = Header::parse(self.bytes)?;
-        self.validate_symbols(header)?;
+        if self.revalidate_symbols {
+            self.validate_symbols(header)?;
+        }
         self.instructions = header.instructions;
         self.symbols = header.symbols;
         let instruction_bytes = header.basis_offset - header.instructions_offset;
@@ -2611,6 +2770,72 @@ mod tests {
     }
 
     #[test]
+    fn direct_validated_decode_matches_the_generic_finish_boundary() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        assert_eq!(packed.symbol_count(), symbols.len());
+        let context = RirValidationContext {
+            symbol_count: symbols.len(),
+            source_lengths: &[(FileId::DEFAULT, 3)],
+        };
+        let (decoded, metadata) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: context.symbol_count,
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: 3,
+                },
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert_eq!(metadata.declaration, root);
+        assert!(source.exact_eq(&decoded));
+        assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    #[test]
+    fn direct_validated_decode_rejects_mapped_context_mismatches() {
+        let (source, symbols, root) = validated_owner(false);
+        let packed = pack(&source, &symbols, root);
+        let invalid_symbol = packed.try_decode_validated(
+            PackedRirProjection {
+                symbol_count: symbols.len() + 1,
+                file_id: FileId::DEFAULT,
+                declaration_start: 0,
+                source_length: 3,
+            },
+            || Ok::<_, ()>(()),
+        );
+        assert!(matches!(
+            invalid_symbol,
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "projected symbol universe"
+                }
+            ))
+        ));
+
+        let invalid_span = packed.try_decode_validated(
+            PackedRirProjection {
+                symbol_count: symbols.len(),
+                file_id: FileId::new(7),
+                declaration_start: 10,
+                source_length: 3,
+            },
+            || Ok::<_, ()>(()),
+        );
+        assert!(matches!(
+            invalid_span,
+            Err(PackedRirAppendError::Decode(
+                PackedRirDecodeError::CountOutOfBounds {
+                    family: "projected span range"
+                }
+            ))
+        ));
+    }
+
+    #[test]
     fn logical_payload_ignores_orphan_prefix_and_raw_range_start() {
         let (dense, dense_symbols, dense_root) = validated_owner(false);
         let (holey, holey_symbols, holey_root) = validated_owner(true);
@@ -3181,6 +3406,21 @@ mod tests {
         let decoded = ValidatedRir::finish(destination, &context).unwrap();
         assert!(source.exact_eq(&decoded));
         assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+
+        let (direct, metadata) = packed
+            .try_decode_validated(
+                PackedRirProjection {
+                    symbol_count: context.symbol_count,
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: 3,
+                },
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert_eq!(metadata.declaration, root);
+        assert!(source.exact_eq(&direct));
+        assert_eq!(pack(&direct, &symbols, root).as_bytes(), packed.as_bytes());
     }
 
     #[test]
@@ -3390,6 +3630,42 @@ mod tests {
                 is_public: true,
                 is_linear: true,
             })
+        );
+
+        let (decoded, metadata) = packed
+            .try_decode_validated_with_method_owner(
+                PackedRirProjection {
+                    symbol_count: context.symbol_count,
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: 3,
+                },
+                || Ok::<_, ()>(()),
+            )
+            .unwrap();
+        assert_eq!(metadata, appended.metadata);
+        assert_eq!(decoded.len(), source.len() + 1);
+        let owner = InstRef::from_raw(decoded.len() as u32 - 1);
+        let InstData::StructDecl {
+            name: owner_name,
+            methods,
+            is_pub,
+            is_linear,
+            ..
+        } = &decoded.get(owner).data
+        else {
+            panic!("validated method candidate must end in its synthetic owner shell")
+        };
+        assert_eq!(*owner_name, empty);
+        assert!(*is_pub);
+        assert!(*is_linear);
+        assert_eq!(
+            decoded
+                .struct_methods(methods)
+                .iter()
+                .map(|method| *method)
+                .collect::<Vec<_>>(),
+            [root]
         );
     }
 

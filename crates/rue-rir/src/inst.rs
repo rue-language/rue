@@ -14,8 +14,8 @@ mod payload_support;
 
 pub use packed::{
     PackedRirAppend, PackedRirAppendError, PackedRirAppendMetadata, PackedRirDecodeError,
-    PackedRirEncodeError, PackedRirMetadata, PackedRirMethodOwner, PackedRirSymbols,
-    PackedValidatedRir, RirFallibleIntrinsic, RirFallibleIntrinsicSet,
+    PackedRirEncodeError, PackedRirMetadata, PackedRirMethodOwner, PackedRirProjection,
+    PackedRirSymbols, PackedValidatedRir, RirFallibleIntrinsic, RirFallibleIntrinsicSet,
 };
 
 /// The published per-program ceiling shared by the RIR instruction array and

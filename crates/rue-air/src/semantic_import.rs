@@ -1581,8 +1581,7 @@ where
             })
             .collect::<Result<Vec<_>, SemanticBodyImportFailure>>()?;
         let mut aggregate_types = std::collections::HashMap::new();
-        let type_snapshot = self.type_pool.clone().freeze();
-        for ty in type_snapshot.all_types() {
+        for ty in self.type_pool.complete_type_handles() {
             if matches!(
                 ty.kind(),
                 crate::TypeKind::Struct(_) | crate::TypeKind::Enum(_) | crate::TypeKind::Array(_)

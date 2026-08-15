@@ -34,8 +34,8 @@ pub use astgen::{
 pub use inst::{
     Inst, InstData, InstRef, InternalIntrinsic, MAX_RIR_ENTRIES_PER_PROGRAM, PackedRirAppend,
     PackedRirAppendError, PackedRirAppendMetadata, PackedRirDecodeError, PackedRirEncodeError,
-    PackedRirMetadata, PackedRirMethodOwner, PackedRirSymbols, PackedValidatedRir,
-    RIR_PAYLOAD_FAMILY_NAMES, RIR_SPAN_FIELD_FAMILY_NAMES, RepeatCount, Rir,
+    PackedRirMetadata, PackedRirMethodOwner, PackedRirProjection, PackedRirSymbols,
+    PackedValidatedRir, RIR_PAYLOAD_FAMILY_NAMES, RIR_SPAN_FIELD_FAMILY_NAMES, RepeatCount, Rir,
     RirAnonEnumPayloadsRange, RirAnonEnumVariantsRange, RirAnonStructFieldsRange,
     RirAnonStructMethodsRange, RirArgMode, RirArrayElemsRange, RirBlockInstsRange, RirCallArg,
     RirCallArgsRange, RirDirective, RirDirectiveView, RirDirectivesRange, RirEditor,

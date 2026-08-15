@@ -165,6 +165,47 @@ consistent local-phase reduction and smaller, noisier root reduction match the
 expected effect of removing duplicate producer work from one part of the full
 compile rather than deleting a large bookkeeping-node population.
 
+## Implementation checkpoint: direct request materialization
+
+The request-local body adapter now decodes a packed candidate directly into a
+fresh validated RIR owner. The typed packed decoder already checks every
+instruction, payload, reference, symbol ordinal, and span slot while appending,
+so a fresh-owner decode no longer populates a duplicate-symbol hash map and then
+walks the completed arena again through `ValidatedRir::finish`. The dense local
+symbol interner is still rebuilt once because AIR consumes ordinary `Spur`
+values, but ordinal identity is checked during that one construction rather
+than copied into a second remap vector. Generic module composition retains its
+full append-boundary validation because it relocates into a nonempty arena.
+
+Local semantic materialization also no longer clones and freezes the complete
+request-local type universe merely to enumerate aggregate handles before
+freezing the original universe for publication. It snapshots only the compact
+`Type` handles, preserving shared-base/overlay order and exact aggregate export
+while avoiding the duplicate definitions, lookup indexes, and containment
+metadata.
+
+Both removals are expected to improve wall time: the frozen workload performs
+1,263 body decodes and 1,280 local semantic materializations, so the displaced
+linear scans and type-universe copies were on the one-worker critical path, not
+merely retained bookkeeping. Two independent runs of twelve alternating
+baseline/prototype pairs used release thin-LTO x86-64 compilers and the frozen
+one-worker Lattice command. All 48 outputs were 1,413,120 bytes with SHA-256
+`b893e76cfabed737b149d0e8c4d8527077dedd17da78418db20a28a7d30885e5`.
+Across all 24 pairs, 20 prototype runs were faster and the paired median
+compiler-root delta was -7.686 ms. Absolute median root time fell from
+677.577 ms to 666.053 ms. The two directly affected phases improved
+consistently: paired median body-input lowering fell by 2.137 ms and semantic
+materialization by 3.105 ms.
+
+This slice adds no query terminal or retained artifact. Claims, memo nodes, and
+memo display-identity bytes were byte-for-byte unchanged. Peak RSS was
+effectively flat but slightly positive in the combined median: +155,648 bytes
+externally and +221,184 bytes in the compiler report (absolute medians
+374,923,264 to 375,504,896 and 374,652,928 to 375,160,832 bytes). That sub-MiB
+movement is reported as measurement noise, not a memory improvement; the
+wall-time claim rests on the repeatable phase-local reductions and the 20/24
+paired root wins.
+
 ## Retained declaration artifact contract
 
 The canonical parse/index boundary publishes compact candidate projections, and

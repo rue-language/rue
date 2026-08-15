@@ -682,6 +682,20 @@ fn checked_pool_index(index: usize) -> Option<u32> {
     (index <= type_encoding::MAX_PAYLOAD).then_some(index)
 }
 
+fn complete_type_handle(index: usize, data: &TypeData) -> Type {
+    let index = checked_pool_index(index).expect("type pool index invariant");
+    match data {
+        TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
+        TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
+        TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
+        TypeData::PtrConst { .. } => Type::new_ptr_const(PtrConstTypeId::from_pool_index(index)),
+        TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
+        TypeData::ReservedStruct | TypeData::DeclaredStruct(_) | TypeData::DeclaredEnum(_) => {
+            unreachable!("complete type-pool traversal contains an incomplete entry")
+        }
+    }
+}
+
 /// The struct definition read back for a handle that the composite-type
 /// capacity latch aliased onto an entry of a different kind, and only for such
 /// a handle (see [`TypeInternPoolInner::next_pool_index`]).
@@ -2398,6 +2412,20 @@ impl TypeInternPool {
             .capacity_exceeded()
     }
 
+    /// Snapshot only the compact handles for this completed semantic epoch.
+    ///
+    /// Aggregate export needs to enumerate the visible types before consuming
+    /// the pool, but it does not need a second owned copy of their definitions,
+    /// lookup indexes, or containment metadata. Keeping this operation on the
+    /// mutable pool avoids a deep clone-and-freeze immediately before the
+    /// original pool is frozen for publication.
+    pub(crate) fn complete_type_handles(&self) -> Vec<Type> {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        (0..inner.entry_count())
+            .map(|index| complete_type_handle(index, inner.entry(index)))
+            .collect()
+    }
+
     /// Consume the completed semantic type universe for backend-facing reads.
     ///
     /// This is the last legal mutation boundary. Request-local symbol interners
@@ -3979,23 +4007,11 @@ impl FrozenTypeInternPool {
     /// The returned [`Type`] handles preserve global allocation order without
     /// exposing the raw pool positions used to encode their typed payloads.
     pub fn all_types(&self) -> impl ExactSizeIterator<Item = Type> + '_ {
-        self.inner.types.iter().enumerate().map(|(index, data)| {
-            let index = checked_pool_index(index).expect("type pool index invariant");
-            match data {
-                TypeData::Struct(_) => Type::new_struct(StructId::from_pool_index(index)),
-                TypeData::Enum(_) => Type::new_enum(EnumId::from_pool_index(index)),
-                TypeData::Array { .. } => Type::new_array(ArrayTypeId::from_pool_index(index)),
-                TypeData::PtrConst { .. } => {
-                    Type::new_ptr_const(PtrConstTypeId::from_pool_index(index))
-                }
-                TypeData::PtrMut { .. } => Type::new_ptr_mut(PtrMutTypeId::from_pool_index(index)),
-                TypeData::ReservedStruct
-                | TypeData::DeclaredStruct(_)
-                | TypeData::DeclaredEnum(_) => {
-                    unreachable!("frozen type pool contains an incomplete entry")
-                }
-            }
-        })
+        self.inner
+            .types
+            .iter()
+            .enumerate()
+            .map(|(index, data)| complete_type_handle(index, data))
     }
 
     pub fn len(&self) -> usize {
@@ -4879,20 +4895,21 @@ mod tests {
             struct_def("Owner", vec![]),
         );
         let array = pool.try_intern_array(Type::new_struct(owner), 3).unwrap();
+        pool.rebase_overlay_in_place();
         let (choice, _) =
             pool.register_enum(declarations.get_or_intern("Choice"), enum_def("Choice"));
         let pointer = pool.try_intern_ptr_const(array).unwrap();
 
+        let expected = [
+            Type::new_struct(owner),
+            array,
+            Type::new_enum(choice),
+            pointer,
+        ];
+        assert_eq!(pool.complete_type_handles(), expected);
+
         let frozen = pool.freeze();
-        assert_eq!(
-            frozen.all_types().collect::<Vec<_>>(),
-            [
-                Type::new_struct(owner),
-                array,
-                Type::new_enum(choice),
-                pointer
-            ]
-        );
+        assert_eq!(frozen.all_types().collect::<Vec<_>>(), expected);
     }
 
     #[test]
