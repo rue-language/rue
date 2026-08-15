@@ -21,7 +21,7 @@ use rue_perf_schema::{
     ExpectedEditOutcome, FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity,
     OutcomeKind, PhaseWork, RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome,
     SourceShape, StructuralWork, TransformationIdentity, ValidationWork as ReportValidationWork,
-    WorkerMode, canonical_json, derive_edit_report, render_edit_report_markdown,
+    WorkerMode, canonical_json, derive_edit_report, is_commit, render_edit_report_markdown,
     validate_edit_report,
 };
 use serde::Deserialize;
@@ -626,7 +626,7 @@ fn parse_args() -> Result<IncrementalOptions, String> {
         }
     }
     let commit = commit.ok_or("incremental requires --commit <revision>")?;
-    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if !is_commit(&commit) {
         return Err("incremental commit must be a 40-character hexadecimal hash".into());
     }
     let repo_root = repo_root.unwrap_or_else(|| PathBuf::from("."));

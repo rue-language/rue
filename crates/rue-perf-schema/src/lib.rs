@@ -95,6 +95,7 @@ pub use runtime::{
     RuntimeValidationOutcome, RuntimeWorkload, ThreadPolicy, runtime_sample_value, summarize,
     validate_runtime_report,
 };
+pub use sanity::is_commit;
 pub use scaling::{
     CfgLocalEpochWork, CfgMaterializationWork, CfgPrerequisiteWork, CfgRetainedChargeWork,
     CompilerWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity,

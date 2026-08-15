@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use crate::RUN_SCHEMA_VERSION;
 use crate::manifest::Manifest;
 use crate::run::{FailureRecord, Phase, RunObject, Sample};
-use crate::sanity::{is_utc_timestamp, samples_beyond_policy};
+use crate::sanity::{is_commit, is_utc_timestamp, samples_beyond_policy};
 use crate::stats::median;
 
 /// A reason a run may not enter a series at all.
@@ -616,7 +616,7 @@ fn check_boundary_evidence(
 
 fn check_identity_shape(run: &RunObject, errors: &mut Vec<ValidationError>) {
     let commit = &run.identity.commit;
-    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !is_commit(commit) {
         errors.push(ValidationError::MalformedCommit {
             value: commit.clone(),
         });
