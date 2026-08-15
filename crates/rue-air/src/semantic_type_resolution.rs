@@ -271,6 +271,31 @@ pub struct SemanticResolvedComptimeCall<K, N, A, T, V> {
 
 pub type SemanticProviderResult<T, E, F> = Result<T, SemanticProviderError<E, F>>;
 
+/// One comptime value argument preserved by structured type syntax.
+///
+/// `Rendered` belongs only to the temporary adapter for legacy RIR type
+/// spellings. Parser-owned declaration artifacts produce `Integer` or `Name`,
+/// so their semantic path never tokenizes or reparses text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SemanticValueSyntax<'a> {
+    Integer(i128),
+    Name(&'a str),
+    Rendered(&'a str),
+}
+
+impl<'a> SemanticValueSyntax<'a> {
+    pub fn from_rendered(syntax: &'a str) -> Self {
+        let syntax = syntax.trim();
+        if let Ok(value) = syntax.parse::<i128>() {
+            Self::Integer(value)
+        } else if is_unqualified_name_syntax(syntax) {
+            Self::Name(syntax)
+        } else {
+            Self::Rendered(syntax)
+        }
+    }
+}
+
 pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
     SemanticModulePathProvider<S, M, A>
 {
@@ -358,7 +383,13 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
     fn resolve_array_length(
         &mut self,
         scope: &S,
-        length: &crate::ArrayLen,
+        length: SemanticValueSyntax<'_>,
+    ) -> SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure>;
+
+    fn array_length_from_value(
+        &mut self,
+        scope: &S,
+        value: &V,
     ) -> SemanticProviderResult<Option<u64>, Self::Abort, Self::Failure>;
 
     fn array_type(
@@ -392,7 +423,7 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
         &mut self,
         scope: &S,
         name: &str,
-        arguments: &[String],
+        arguments: &[SemanticValueSyntax<'_>],
     ) -> SemanticProviderResult<Option<T>, Self::Abort, Self::Failure>;
 
     fn root_constructor(
@@ -423,7 +454,7 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
         parameter_index: usize,
         type_arguments: &[(N, T)],
         value_arguments: &[(N, V)],
-        syntax: &str,
+        syntax: SemanticValueSyntax<'_>,
     ) -> SemanticProviderResult<V, Self::Abort, Self::Failure>;
 
     fn reduce_comptime_call(
@@ -549,6 +580,292 @@ where
     Ok(fact.value)
 }
 
+fn resolve_unqualified_semantic_type<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    name: &str,
+) -> Result<Option<T>, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    let accessing = provider.accessing_domain(root_scope);
+    if let Some(ty) = lift_provider(provider.substituted_type(root_scope, name))? {
+        lift_provider(provider.observe_materialized_type(&ty))?;
+        return Ok(Some(ty));
+    }
+    if let Some(ty) = lift_provider(provider.primitive_type(name))? {
+        return Ok(Some(ty));
+    }
+    if let Some(ty) = lift_provider(provider.builtin_type(root_scope, name))? {
+        return Ok(Some(ty));
+    }
+    if let Some(fact) = lift_provider(provider.root_struct_type(root_scope, name))? {
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Struct,
+            name,
+            &accessing,
+        )
+        .map(Some);
+    }
+    if let Some(fact) = lift_provider(provider.root_enum_type(root_scope, name))? {
+        return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing)
+            .map(Some);
+    }
+    if let Some(fact) = lift_provider(provider.root_type_alias(root_scope, name))? {
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Constant,
+            name,
+            &accessing,
+        )
+        .map(Some);
+    }
+    Ok(None)
+}
+
+fn resolve_qualified_semantic_type<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    segments: &[&str],
+    syntax: Arc<str>,
+) -> Result<T, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    M: Clone,
+    A: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    use SemanticResolutionError as E;
+    use SemanticTypeSyntaxFailure as F;
+
+    if !provider.allows_qualified_paths(root_scope) {
+        return Err(E::Semantic(F::UnknownType { syntax }));
+    }
+    let Some((name, prefix)) = segments.split_last() else {
+        return Err(E::Semantic(F::UnknownType { syntax }));
+    };
+    if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+        return Err(E::Semantic(F::UnknownType { syntax }));
+    }
+    let accessing = provider.accessing_domain(root_scope);
+    let resolved = resolve_semantic_module_path(provider, root_scope, prefix)
+        .map_err(|error| error.map_semantic(F::Path))?;
+    if let Some(fact) = lift_provider(provider.module_struct_type(&resolved.module, name))? {
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Struct,
+            name,
+            &accessing,
+        );
+    }
+    if let Some(fact) = lift_provider(provider.module_enum_type(&resolved.module, name))? {
+        return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing);
+    }
+    if let Some(fact) = lift_provider(provider.module_type_alias(&resolved.module, name))? {
+        return select_named_type(
+            provider,
+            fact,
+            SemanticTypeFactKind::Constant,
+            name,
+            &accessing,
+        );
+    }
+    Err(E::Semantic(F::UnknownModuleMember {
+        module: provider.module_display_name(&resolved.module),
+        module_site: resolved.site,
+        member: Arc::from(*name),
+    }))
+}
+
+enum ResolvedComptimeArgument<T, V> {
+    Type(T),
+    Value(V),
+}
+
+fn resolve_semantic_comptime_call_core<S, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    call_segments: &[&str],
+    argument_count: usize,
+    expectation: SemanticComptimeCallExpectation,
+    mut call_display: impl FnMut() -> Arc<str>,
+    mut argument_display: impl FnMut(usize) -> Arc<str>,
+    mut argument_is_literal_value: impl FnMut(usize) -> bool,
+    mut resolve_argument: impl FnMut(
+        &mut P,
+        usize,
+        bool,
+        &SemanticTypeConstructorHead<K, N, A>,
+        &[(N, T)],
+        &[(N, V)],
+    ) -> Result<
+        ResolvedComptimeArgument<T, V>,
+        SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
+    >,
+) -> Result<
+    SemanticResolvedComptimeCall<K, N, A, T, V>,
+    SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
+>
+where
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    use SemanticResolutionError as E;
+    use SemanticTypeSyntaxFailure as F;
+
+    let accessing = provider.accessing_domain(root_scope);
+    if call_segments.is_empty()
+        || call_segments.iter().any(|segment| segment.is_empty())
+        || (call_segments.len() > 1
+            && !provider.allows_qualified_comptime_call_head(root_scope, expectation))
+    {
+        return Err(E::Semantic(F::UnknownType {
+            syntax: call_display(),
+        }));
+    }
+    let name = *call_segments.last().expect("type call always has a name");
+    let head = if call_segments.len() == 1 {
+        lift_provider(provider.root_constructor(root_scope, name))?
+    } else {
+        let resolved = resolve_semantic_module_path(
+            provider,
+            root_scope,
+            &call_segments[..call_segments.len() - 1],
+        )
+        .map_err(|error| error.map_semantic(F::Path))?;
+        lift_provider(provider.module_constructor(&resolved.module, name))?
+    }
+    .ok_or_else(|| {
+        E::Semantic(F::UnknownType {
+            syntax: call_display(),
+        })
+    })?;
+    if !head
+        .defining_domain
+        .is_visible_from(&accessing, head.is_public)
+    {
+        return Err(E::Semantic(F::PrivateItem {
+            kind: SemanticTypeFactKind::Function,
+            name: Arc::from(name),
+            site: head.site,
+            defining_file: head.defining_file,
+        }));
+    }
+    if expectation == SemanticComptimeCallExpectation::Type && !head.returns_type {
+        return Err(E::Semantic(F::NotTypeConstructor {
+            constructor: Arc::from(call_segments.join(".")),
+            site: head.site,
+        }));
+    }
+    if expectation == SemanticComptimeCallExpectation::Value && head.returns_type {
+        return Err(E::Semantic(F::TypeWhereValueExpected {
+            constructor: Arc::from(call_segments.join(".")),
+            site: head.site,
+        }));
+    }
+    if head.parameters.len() != argument_count {
+        return Err(E::Semantic(F::InvalidConstructorArity {
+            constructor: Arc::from(call_segments.join(".")),
+            site: head.site,
+            expected: head.parameters.len(),
+            found: argument_count,
+        }));
+    }
+    let eligible = head
+        .parameters
+        .iter()
+        .all(|parameter| parameter.is_comptime)
+        && (head.returns_type || !head.parameters.is_empty());
+    if !eligible {
+        return Err(E::Semantic(F::RuntimeConstructorParameter {
+            constructor: Arc::from(call_segments.join(".")),
+            site: head.site,
+            expected: head.parameters.len(),
+            found: argument_count,
+        }));
+    }
+
+    let constructor_site = head.site.clone();
+    let mut type_arguments = Vec::new();
+    let mut value_arguments = Vec::new();
+    for parameter_index in 0..argument_count {
+        let parameter = &head.parameters[parameter_index];
+        if parameter.is_type && argument_is_literal_value(parameter_index) {
+            return Err(E::Semantic(F::ValueWhereTypeExpected {
+                constructor: Arc::from(call_segments.join(".")),
+                site: constructor_site.clone(),
+                argument: argument_display(parameter_index),
+                parameter: parameter.name.clone(),
+            }));
+        }
+        match resolve_argument(
+            provider,
+            parameter_index,
+            parameter.is_type,
+            &head,
+            &type_arguments,
+            &value_arguments,
+        ) {
+            Ok(ResolvedComptimeArgument::Type(value)) if parameter.is_type => {
+                type_arguments.push((parameter.name.clone(), value));
+            }
+            Ok(ResolvedComptimeArgument::Value(value)) if !parameter.is_type => {
+                value_arguments.push((parameter.name.clone(), value));
+            }
+            Ok(ResolvedComptimeArgument::Value(_)) => {
+                return Err(E::Semantic(F::ValueWhereTypeExpected {
+                    constructor: Arc::from(call_segments.join(".")),
+                    site: constructor_site.clone(),
+                    argument: argument_display(parameter_index),
+                    parameter: parameter.name.clone(),
+                }));
+            }
+            Ok(ResolvedComptimeArgument::Type(_)) => {
+                return Err(E::Semantic(F::TypeWhereValueExpected {
+                    constructor: Arc::from(call_segments.join(".")),
+                    site: constructor_site.clone(),
+                }));
+            }
+            Err(error) if parameter.is_type => {
+                return Err(E::ComptimeCallTypeArgument {
+                    constructor: Arc::from(call_segments.join(".")),
+                    argument_index: parameter_index,
+                    argument: argument_display(parameter_index),
+                    error: Box::new(error),
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let result =
+        lift_provider(provider.reduce_comptime_call(&head, &type_arguments, &value_arguments))?
+            .ok_or_else(|| {
+                E::Semantic(F::ConstructorDidNotReduce {
+                    constructor: Arc::from(call_segments.join(".")),
+                    site: constructor_site,
+                })
+            })?;
+    if expectation == SemanticComptimeCallExpectation::Type
+        && !matches!(result, SemanticComptimeCallResult::Type(_))
+    {
+        return Err(E::Semantic(F::ConstructorDidNotReduce {
+            constructor: Arc::from(call_segments.join(".")),
+            site: head.site,
+        }));
+    }
+    Ok(SemanticResolvedComptimeCall {
+        head,
+        type_arguments,
+        value_arguments,
+        result,
+    })
+}
+
 pub fn resolve_semantic_comptime_call<S, M, A, K, N, T, V, P>(
     provider: &mut P,
     root_scope: &S,
@@ -565,140 +882,301 @@ where
     N: Clone,
     P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
 {
-    use SemanticResolutionError as E;
-    use SemanticTypeSyntaxFailure as F;
-
-    let accessing = provider.accessing_domain(root_scope);
     let segments = call_path.split('.').collect::<Vec<_>>();
-    if segments.iter().any(|segment| segment.is_empty())
-        || (segments.len() > 1
-            && !provider.allows_qualified_comptime_call_head(root_scope, expectation))
-    {
-        return Err(E::Semantic(F::UnknownType {
-            syntax: Arc::from(format!("{}({})", call_path, arguments.join(", "))),
-        }));
-    }
-    let name = *segments.last().expect("type call always has a name");
-    let head = if segments.len() == 1 {
-        lift_provider(provider.root_constructor(root_scope, name))?
-    } else {
-        let resolved =
-            resolve_semantic_module_path(provider, root_scope, &segments[..segments.len() - 1])
-                .map_err(|error| error.map_semantic(F::Path))?;
-        lift_provider(provider.module_constructor(&resolved.module, name))?
-    }
-    .ok_or_else(|| {
-        E::Semantic(F::UnknownType {
-            syntax: Arc::from(format!("{}({})", call_path, arguments.join(", "))),
-        })
-    })?;
-    if !head
-        .defining_domain
-        .is_visible_from(&accessing, head.is_public)
-    {
-        return Err(E::Semantic(F::PrivateItem {
-            kind: SemanticTypeFactKind::Function,
-            name: Arc::from(name),
-            site: head.site,
-            defining_file: head.defining_file,
-        }));
-    }
-    if expectation == SemanticComptimeCallExpectation::Type && !head.returns_type {
-        return Err(E::Semantic(F::NotTypeConstructor {
-            constructor: Arc::from(call_path),
-            site: head.site,
-        }));
-    }
-    if expectation == SemanticComptimeCallExpectation::Value && head.returns_type {
-        return Err(E::Semantic(F::TypeWhereValueExpected {
-            constructor: Arc::from(call_path),
-            site: head.site,
-        }));
-    }
-    if head.parameters.len() != arguments.len() {
-        return Err(E::Semantic(F::InvalidConstructorArity {
-            constructor: Arc::from(call_path),
-            site: head.site,
-            expected: head.parameters.len(),
-            found: arguments.len(),
-        }));
-    }
-    let eligible = head
-        .parameters
-        .iter()
-        .all(|parameter| parameter.is_comptime)
-        && (head.returns_type || !head.parameters.is_empty());
-    if !eligible {
-        return Err(E::Semantic(F::RuntimeConstructorParameter {
-            constructor: Arc::from(call_path),
-            site: head.site,
-            expected: head.parameters.len(),
-            found: arguments.len(),
-        }));
-    }
-
-    let constructor_site = head.site.clone();
-    let mut type_arguments = Vec::new();
-    let mut value_arguments = Vec::new();
-    for (parameter_index, (parameter, argument)) in
-        head.parameters.iter().zip(arguments).enumerate()
-    {
-        if parameter.is_type {
-            if argument.trim().parse::<i128>().is_ok() {
-                return Err(E::Semantic(F::ValueWhereTypeExpected {
-                    constructor: Arc::from(call_path),
-                    site: constructor_site,
-                    argument: Arc::from(argument.as_str()),
-                    parameter: parameter.name.clone(),
-                }));
-            }
-            let resolved =
-                resolve_semantic_type_syntax(provider, root_scope, argument).map_err(|error| {
-                    E::ComptimeCallTypeArgument {
-                        constructor: Arc::from(call_path),
-                        argument_index: parameter_index,
-                        argument: Arc::from(argument.as_str()),
-                        error: Box::new(error),
-                    }
-                })?;
-            type_arguments.push((parameter.name.clone(), resolved));
-        } else {
-            value_arguments.push((
-                parameter.name.clone(),
+    resolve_semantic_comptime_call_core(
+        provider,
+        root_scope,
+        &segments,
+        arguments.len(),
+        expectation,
+        || Arc::from(format!("{}({})", call_path, arguments.join(", "))),
+        |index| Arc::from(arguments[index].as_str()),
+        |index| arguments[index].trim().parse::<i128>().is_ok(),
+        |provider, parameter_index, is_type, head, type_arguments, value_arguments| {
+            let argument = &arguments[parameter_index];
+            if is_type {
+                resolve_semantic_type_syntax(provider, root_scope, argument)
+                    .map(ResolvedComptimeArgument::Type)
+            } else {
                 lift_provider(provider.resolve_value_argument(
                     root_scope,
                     call_path,
-                    &head,
+                    head,
                     parameter_index,
-                    &type_arguments,
-                    &value_arguments,
+                    type_arguments,
+                    value_arguments,
+                    SemanticValueSyntax::from_rendered(argument),
+                ))
+                .map(ResolvedComptimeArgument::Value)
+            }
+        },
+    )
+}
+
+fn structured_path<Sym: AsRef<str>>(
+    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    range: rue_rir::RirTypeSyntaxRange,
+) -> Option<Vec<&str>> {
+    arena
+        .words(range)?
+        .iter()
+        .map(|word| {
+            arena
+                .symbol(rue_rir::RirTypeSyntaxSymbol::from_u32(*word))
+                .map(AsRef::as_ref)
+        })
+        .collect()
+}
+
+fn structured_references<Sym>(
+    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    range: rue_rir::RirTypeSyntaxRange,
+) -> Option<Vec<rue_rir::RirTypeSyntaxRef>> {
+    Some(
+        arena
+            .words(range)?
+            .iter()
+            .copied()
+            .map(rue_rir::RirTypeSyntaxRef::from_u32)
+            .collect(),
+    )
+}
+
+fn structured_syntax_display<Sym: AsRef<str>>(
+    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    reference: rue_rir::RirTypeSyntaxRef,
+) -> Arc<str> {
+    arena
+        .render_type(reference)
+        .map(Arc::from)
+        .unwrap_or_else(|| Arc::from("<invalid structured type syntax>"))
+}
+
+fn structured_value_syntax<'a, Sym: AsRef<str>>(
+    arena: &'a rue_rir::RirTypeSyntaxArena<Sym>,
+    reference: rue_rir::RirTypeSyntaxRef,
+) -> Option<SemanticValueSyntax<'a>> {
+    match arena.node(reference)? {
+        rue_rir::RirTypeSyntaxNode::Integer(value) => Some(SemanticValueSyntax::Integer(*value)),
+        rue_rir::RirTypeSyntaxNode::Named(symbol) => arena
+            .symbol(*symbol)
+            .map(|symbol| SemanticValueSyntax::Name(symbol.as_ref())),
+        _ => None,
+    }
+}
+
+fn resolve_structured_semantic_comptime_call<S, Sym, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    call_reference: rue_rir::RirTypeSyntaxRef,
+    call_segments: Vec<&str>,
+    arguments: Vec<rue_rir::RirTypeSyntaxRef>,
+    expectation: SemanticComptimeCallExpectation,
+) -> Result<
+    SemanticResolvedComptimeCall<K, N, A, T, V>,
+    SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>,
+>
+where
+    Sym: AsRef<str>,
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    let constructor = call_segments.join(".");
+    resolve_semantic_comptime_call_core(
+        provider,
+        root_scope,
+        &call_segments,
+        arguments.len(),
+        expectation,
+        || structured_syntax_display(arena, call_reference),
+        |index| structured_syntax_display(arena, arguments[index]),
+        |index| {
+            matches!(
+                arena.node(arguments[index]),
+                Some(rue_rir::RirTypeSyntaxNode::Integer(_))
+            )
+        },
+        |provider, parameter_index, is_type, head, type_arguments, value_arguments| {
+            let argument = arguments[parameter_index];
+            if is_type {
+                return resolve_structured_semantic_type_syntax(
+                    provider, root_scope, arena, argument,
+                )
+                .map(ResolvedComptimeArgument::Type);
+            }
+            if let Some(syntax) = structured_value_syntax(arena, argument) {
+                return lift_provider(provider.resolve_value_argument(
+                    root_scope,
+                    &constructor,
+                    head,
+                    parameter_index,
+                    type_arguments,
+                    value_arguments,
+                    syntax,
+                ))
+                .map(ResolvedComptimeArgument::Value);
+            }
+            let call = match arena.node(argument) {
+                Some(rue_rir::RirTypeSyntaxNode::TypeCall { path, arguments }) => Some((
+                    structured_path(arena, *path),
+                    structured_references(arena, *arguments),
+                )),
+                Some(rue_rir::RirTypeSyntaxNode::ValueCall { name, arguments }) => Some((
+                    arena.symbol(*name).map(|name| vec![name.as_ref()]),
+                    structured_references(arena, *arguments),
+                )),
+                _ => None,
+            };
+            if let Some((Some(path), Some(arguments))) = call {
+                let resolved = resolve_structured_semantic_comptime_call(
+                    provider,
+                    root_scope,
+                    arena,
                     argument,
-                ))?,
-            ));
+                    path,
+                    arguments,
+                    SemanticComptimeCallExpectation::Value,
+                )?;
+                return match resolved.result {
+                    SemanticComptimeCallResult::Value(value) => {
+                        Ok(ResolvedComptimeArgument::Value(value))
+                    }
+                    SemanticComptimeCallResult::Type(value) => {
+                        Ok(ResolvedComptimeArgument::Type(value))
+                    }
+                };
+            }
+            resolve_structured_semantic_type_syntax(provider, root_scope, arena, argument)
+                .map(ResolvedComptimeArgument::Type)
+        },
+    )
+}
+
+/// Resolve one parser-structured type without reconstructing or tokenizing its
+/// source spelling. Namespace selection and comptime-call policy are shared
+/// with [`resolve_semantic_type_syntax`]; only the input adapter differs.
+pub fn resolve_structured_semantic_type_syntax<S, Sym, M, A, K, N, T, V, P>(
+    provider: &mut P,
+    root_scope: &S,
+    arena: &rue_rir::RirTypeSyntaxArena<Sym>,
+    root: rue_rir::RirTypeSyntaxRef,
+) -> Result<T, SemanticTypeSyntaxError<P::Abort, P::Failure, A, N>>
+where
+    Sym: AsRef<str>,
+    M: Clone,
+    A: Clone,
+    N: Clone,
+    P: SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>,
+{
+    use SemanticResolutionError as E;
+    use SemanticTypeSyntaxFailure as F;
+    use rue_rir::RirTypeSyntaxNode as R;
+
+    let unknown = || {
+        E::Semantic(F::UnknownType {
+            syntax: structured_syntax_display(arena, root),
+        })
+    };
+    match arena.node(root).cloned().ok_or_else(unknown)? {
+        R::Named(symbol) => {
+            let name = arena.symbol(symbol).ok_or_else(unknown)?.as_ref();
+            resolve_unqualified_semantic_type(provider, root_scope, name)?.ok_or_else(unknown)
         }
+        R::Qualified { path } => {
+            let segments = structured_path(arena, path).ok_or_else(unknown)?;
+            resolve_qualified_semantic_type(
+                provider,
+                root_scope,
+                &segments,
+                structured_syntax_display(arena, root),
+            )
+        }
+        R::Unit => {
+            resolve_unqualified_semantic_type(provider, root_scope, "()")?.ok_or_else(unknown)
+        }
+        R::Never => {
+            resolve_unqualified_semantic_type(provider, root_scope, "!")?.ok_or_else(unknown)
+        }
+        R::Array { element, length } => {
+            let element =
+                resolve_structured_semantic_type_syntax(provider, root_scope, arena, element)?;
+            let length = if let Some(length) = structured_value_syntax(arena, length) {
+                lift_provider(provider.resolve_array_length(root_scope, length))?
+            } else if let Some(R::ValueCall { name, arguments }) = arena.node(length) {
+                let name = arena.symbol(*name).ok_or_else(unknown)?.as_ref();
+                let arguments = structured_references(arena, *arguments).ok_or_else(unknown)?;
+                let call = resolve_structured_semantic_comptime_call(
+                    provider,
+                    root_scope,
+                    arena,
+                    length,
+                    vec![name],
+                    arguments,
+                    SemanticComptimeCallExpectation::Value,
+                )?;
+                let SemanticComptimeCallResult::Value(value) = call.result else {
+                    return Err(unknown());
+                };
+                lift_provider(provider.array_length_from_value(root_scope, &value))?
+            } else {
+                return Err(unknown());
+            };
+            lift_provider(provider.array_type(element, length))
+        }
+        R::Slice { element } => {
+            let syntax = structured_syntax_display(arena, root);
+            lift_provider(provider.preflight_slice(root_scope, &syntax))?;
+            let element =
+                resolve_structured_semantic_type_syntax(provider, root_scope, arena, element)?;
+            lift_provider(provider.slice_type(root_scope, &syntax, element))
+        }
+        R::PointerConst { pointee } => {
+            let pointee =
+                resolve_structured_semantic_type_syntax(provider, root_scope, arena, pointee)?;
+            lift_provider(provider.ptr_const_type(pointee))
+        }
+        R::PointerMut { pointee } => {
+            let pointee =
+                resolve_structured_semantic_type_syntax(provider, root_scope, arena, pointee)?;
+            lift_provider(provider.ptr_mut_type(pointee))
+        }
+        R::TypeCall { path, arguments } => {
+            let segments = structured_path(arena, path).ok_or_else(unknown)?;
+            let arguments = structured_references(arena, arguments).ok_or_else(unknown)?;
+            if let [name] = segments.as_slice()
+                && let Some(value_arguments) = arguments
+                    .iter()
+                    .copied()
+                    .map(|argument| structured_value_syntax(arena, argument))
+                    .collect::<Option<Vec<_>>>()
+                && let Some(ty) =
+                    lift_provider(provider.builtin_type_call(root_scope, name, &value_arguments))?
+            {
+                return Ok(ty);
+            }
+            let call = resolve_structured_semantic_comptime_call(
+                provider,
+                root_scope,
+                arena,
+                root,
+                segments,
+                arguments,
+                SemanticComptimeCallExpectation::Type,
+            )?;
+            let SemanticComptimeCallResult::Type(ty) = call.result else {
+                return Err(unknown());
+            };
+            lift_provider(provider.observe_materialized_type(&ty))?;
+            Ok(ty)
+        }
+        R::AnonymousStruct { .. }
+        | R::AnonymousEnum { .. }
+        | R::ValueCall { .. }
+        | R::Integer(_) => Err(unknown()),
     }
-    let result =
-        lift_provider(provider.reduce_comptime_call(&head, &type_arguments, &value_arguments))?
-            .ok_or_else(|| {
-                E::Semantic(F::ConstructorDidNotReduce {
-                    constructor: Arc::from(call_path),
-                    site: constructor_site,
-                })
-            })?;
-    if expectation == SemanticComptimeCallExpectation::Type
-        && !matches!(result, SemanticComptimeCallResult::Type(_))
-    {
-        return Err(E::Semantic(F::ConstructorDidNotReduce {
-            constructor: Arc::from(call_path),
-            site: head.site,
-        }));
-    }
-    Ok(SemanticResolvedComptimeCall {
-        head,
-        type_arguments,
-        value_arguments,
-        result,
-    })
 }
 
 pub fn resolve_semantic_type_syntax<S, M, A, K, N, T, V, P>(
@@ -715,50 +1193,19 @@ where
     use SemanticResolutionError as E;
     use SemanticTypeSyntaxFailure as F;
 
-    let accessing = provider.accessing_domain(root_scope);
-    if is_unqualified_name_syntax(syntax) {
-        if let Some(ty) = lift_provider(provider.substituted_type(root_scope, syntax))? {
-            lift_provider(provider.observe_materialized_type(&ty))?;
-            return Ok(ty);
-        }
-        if let Some(ty) = lift_provider(provider.primitive_type(syntax))? {
-            return Ok(ty);
-        }
-        if let Some(ty) = lift_provider(provider.builtin_type(root_scope, syntax))? {
-            return Ok(ty);
-        }
-        if let Some(fact) = lift_provider(provider.root_struct_type(root_scope, syntax))? {
-            return select_named_type(
-                provider,
-                fact,
-                SemanticTypeFactKind::Struct,
-                syntax,
-                &accessing,
-            );
-        }
-        if let Some(fact) = lift_provider(provider.root_enum_type(root_scope, syntax))? {
-            return select_named_type(
-                provider,
-                fact,
-                SemanticTypeFactKind::Enum,
-                syntax,
-                &accessing,
-            );
-        }
-        if let Some(fact) = lift_provider(provider.root_type_alias(root_scope, syntax))? {
-            return select_named_type(
-                provider,
-                fact,
-                SemanticTypeFactKind::Constant,
-                syntax,
-                &accessing,
-            );
-        }
+    if is_unqualified_name_syntax(syntax)
+        && let Some(ty) = resolve_unqualified_semantic_type(provider, root_scope, syntax)?
+    {
+        return Ok(ty);
     }
 
     if let Some((element, length)) = crate::parse_array_type_syntax(syntax) {
         let element = resolve_semantic_type_syntax(provider, root_scope, &element)?;
-        let length = lift_provider(provider.resolve_array_length(root_scope, &length))?;
+        let length = match &length {
+            crate::ArrayLen::Literal(value) => SemanticValueSyntax::Integer(i128::from(*value)),
+            crate::ArrayLen::Named(name) => SemanticValueSyntax::from_rendered(name),
+        };
+        let length = lift_provider(provider.resolve_array_length(root_scope, length))?;
         return lift_provider(provider.array_type(element, length));
     }
     if let Some((pointee, mutability)) = crate::parse_pointer_type_syntax(syntax) {
@@ -770,9 +1217,13 @@ where
     }
 
     if let Some((call_path, arguments)) = crate::types::parse_type_call_syntax(syntax) {
+        let value_arguments = arguments
+            .iter()
+            .map(|argument| SemanticValueSyntax::from_rendered(argument))
+            .collect::<Vec<_>>();
         if !call_path.contains('.')
             && let Some(ty) =
-                lift_provider(provider.builtin_type_call(root_scope, &call_path, &arguments))?
+                lift_provider(provider.builtin_type_call(root_scope, &call_path, &value_arguments))?
         {
             return Ok(ty);
         }
@@ -798,50 +1249,8 @@ where
     }
 
     if syntax.contains('.') {
-        if !provider.allows_qualified_paths(root_scope) {
-            return Err(E::Semantic(F::UnknownType {
-                syntax: Arc::from(syntax),
-            }));
-        }
         let segments = syntax.split('.').collect::<Vec<_>>();
-        let Some((name, prefix)) = segments.split_last() else {
-            return Err(E::Semantic(F::UnknownType {
-                syntax: Arc::from(syntax),
-            }));
-        };
-        if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
-            return Err(E::Semantic(F::UnknownType {
-                syntax: Arc::from(syntax),
-            }));
-        }
-        let resolved = resolve_semantic_module_path(provider, root_scope, prefix)
-            .map_err(|error| error.map_semantic(F::Path))?;
-        if let Some(fact) = lift_provider(provider.module_struct_type(&resolved.module, name))? {
-            return select_named_type(
-                provider,
-                fact,
-                SemanticTypeFactKind::Struct,
-                name,
-                &accessing,
-            );
-        }
-        if let Some(fact) = lift_provider(provider.module_enum_type(&resolved.module, name))? {
-            return select_named_type(provider, fact, SemanticTypeFactKind::Enum, name, &accessing);
-        }
-        if let Some(fact) = lift_provider(provider.module_type_alias(&resolved.module, name))? {
-            return select_named_type(
-                provider,
-                fact,
-                SemanticTypeFactKind::Constant,
-                name,
-                &accessing,
-            );
-        }
-        return Err(E::Semantic(F::UnknownModuleMember {
-            module: provider.module_display_name(&resolved.module),
-            module_site: resolved.site,
-            member: Arc::from(*name),
-        }));
+        return resolve_qualified_semantic_type(provider, root_scope, &segments, Arc::from(syntax));
     }
 
     Err(E::Semantic(F::UnknownType {
@@ -852,6 +1261,11 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use lasso::ThreadedRodeo;
+    use rue_lexer::Lexer;
+    use rue_parser::Parser;
+    use rue_parser::ast::Item;
 
     use super::*;
 
@@ -1024,13 +1438,23 @@ mod tests {
         fn resolve_array_length(
             &mut self,
             scope: &&'static str,
-            length: &crate::ArrayLen,
+            length: SemanticValueSyntax<'_>,
         ) -> FixtureResult<Option<u64>> {
             self.call("array_length", scope, &format!("{length:?}"));
             match length {
-                crate::ArrayLen::Literal(value) => Ok(Some(*value)),
-                crate::ArrayLen::Named(_) => Err(SemanticProviderError::Failure("unknown length")),
+                SemanticValueSyntax::Integer(value) => Ok(u64::try_from(value).ok()),
+                SemanticValueSyntax::Name(_) | SemanticValueSyntax::Rendered(_) => {
+                    Err(SemanticProviderError::Failure("unknown length"))
+                }
             }
+        }
+
+        fn array_length_from_value(
+            &mut self,
+            _scope: &&'static str,
+            value: &i64,
+        ) -> FixtureResult<Option<u64>> {
+            Ok(u64::try_from(*value).ok())
         }
 
         fn array_type(
@@ -1074,7 +1498,7 @@ mod tests {
             &mut self,
             scope: &&'static str,
             name: &str,
-            _arguments: &[String],
+            _arguments: &[SemanticValueSyntax<'_>],
         ) -> FixtureResult<Option<&'static str>> {
             self.call("builtin_call", scope, name);
             Ok(None)
@@ -1106,12 +1530,16 @@ mod tests {
             _parameter_index: usize,
             _type_arguments: &[(&'static str, &'static str)],
             _value_arguments: &[(&'static str, i64)],
-            syntax: &str,
+            syntax: SemanticValueSyntax<'_>,
         ) -> FixtureResult<i64> {
             self.call("value", scope, constructor);
-            syntax
-                .parse()
-                .map_err(|_| SemanticProviderError::Failure("unknown value"))
+            match syntax {
+                SemanticValueSyntax::Integer(value) => i64::try_from(value)
+                    .map_err(|_| SemanticProviderError::Failure("unknown value")),
+                SemanticValueSyntax::Name(syntax) | SemanticValueSyntax::Rendered(syntax) => syntax
+                    .parse()
+                    .map_err(|_| SemanticProviderError::Failure("unknown value")),
+            }
         }
 
         fn reduce_comptime_call(
@@ -1177,6 +1605,35 @@ mod tests {
             is_comptime: comptime,
             is_type: true,
         }
+    }
+
+    fn value_parameter(comptime: bool) -> SemanticTypeConstructorParameter<&'static str> {
+        SemanticTypeConstructorParameter {
+            name: "N",
+            is_comptime: comptime,
+            is_type: false,
+        }
+    }
+
+    fn structured_type(
+        syntax: &str,
+    ) -> (
+        rue_rir::RirTypeSyntaxArena<Arc<str>>,
+        rue_rir::RirTypeSyntaxRef,
+    ) {
+        let source = format!("fn probe(value: {syntax}) {{}}");
+        let (tokens, interner): (_, ThreadedRodeo) = Lexer::new(&source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("fixture parses as a function");
+        };
+        let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
+        let root = builder
+            .push_parser_type(&function.params[0].ty, |symbol| {
+                Arc::<str>::from(interner.resolve(&symbol))
+            })
+            .unwrap();
+        (builder.finish(), root)
     }
 
     #[test]
@@ -1281,7 +1738,7 @@ mod tests {
                 &[
                     "substitution:app/main.rue:i32",
                     "primitive:-:i32",
-                    "array_length:app/main.rue:Literal(2)",
+                    "array_length:app/main.rue:Integer(2)",
                     "array_type",
                 ],
             ),
@@ -1323,6 +1780,133 @@ mod tests {
             resolve_semantic_type_syntax(&mut fixture, &"app/main.rue", syntax).unwrap();
             assert_eq!(fixture.calls, expected, "unexpected trace for '{syntax}'");
         }
+    }
+
+    #[test]
+    fn structured_and_legacy_adapters_share_resolution_policy() {
+        for syntax in [
+            "api.Alias",
+            "[i32; 2]",
+            "ptr const i32",
+            "ptr mut ptr const i32",
+            "Make(i32)",
+            "Buffer(2)",
+            "[i32]",
+        ] {
+            let configured = || {
+                let mut fixture = Fixture::default();
+                fixture.bindings.insert(
+                    ("app/main.rue", "api"),
+                    binding("api", "api-binding", true, "app/main.rue"),
+                );
+                fixture.module_aliases.insert(
+                    ("api", "Alias"),
+                    fact("alias", "alias-site", true, "lib/api.rue"),
+                );
+                fixture.constructors.insert(
+                    ("app/main.rue", "Make"),
+                    head("make-site", true, true, vec![type_parameter(true)]),
+                );
+                fixture.constructors.insert(
+                    ("app/main.rue", "Buffer"),
+                    head("buffer-site", true, true, vec![value_parameter(true)]),
+                );
+                fixture
+            };
+            let mut legacy = configured();
+            let legacy_result =
+                resolve_semantic_type_syntax(&mut legacy, &"app/main.rue", syntax).unwrap();
+
+            let (arena, root) = structured_type(syntax);
+            let mut structured = configured();
+            let structured_result = resolve_structured_semantic_type_syntax(
+                &mut structured,
+                &"app/main.rue",
+                &arena,
+                root,
+            )
+            .unwrap();
+
+            assert_eq!(structured_result, legacy_result, "result for `{syntax}`");
+            assert_eq!(structured.calls, legacy.calls, "trace for `{syntax}`");
+        }
+    }
+
+    #[test]
+    fn structured_and_legacy_adapters_share_failure_diagnostics_and_work() {
+        for syntax in [
+            "Missing",
+            "api.PrivateAlias",
+            "ValueMaker(i32)",
+            "Make(i32, i32)",
+            "Make(2)",
+        ] {
+            let configured = || {
+                let mut fixture = Fixture::default();
+                fixture.bindings.insert(
+                    ("app/main.rue", "api"),
+                    binding("api", "api-binding", true, "app/main.rue"),
+                );
+                fixture.module_aliases.insert(
+                    ("api", "PrivateAlias"),
+                    fact("private", "private-site", false, "lib/api.rue"),
+                );
+                fixture.constructors.insert(
+                    ("app/main.rue", "Make"),
+                    head("make-site", true, true, vec![type_parameter(true)]),
+                );
+                fixture.constructors.insert(
+                    ("app/main.rue", "ValueMaker"),
+                    head("value-maker-site", true, false, vec![type_parameter(true)]),
+                );
+                fixture
+            };
+
+            let mut legacy = configured();
+            let legacy_result = resolve_semantic_type_syntax(&mut legacy, &"app/main.rue", syntax);
+            assert!(legacy_result.is_err(), "fixture must fail for `{syntax}`");
+
+            let (arena, root) = structured_type(syntax);
+            let mut structured = configured();
+            let structured_result = resolve_structured_semantic_type_syntax(
+                &mut structured,
+                &"app/main.rue",
+                &arena,
+                root,
+            );
+
+            assert_eq!(
+                structured_result, legacy_result,
+                "diagnostic for `{syntax}`"
+            );
+            assert_eq!(structured.calls, legacy.calls, "work trace for `{syntax}`");
+        }
+    }
+
+    #[test]
+    fn structured_array_length_call_never_renders_and_reparses_the_call() {
+        let (arena, root) = structured_type("[i32; Width(2)]");
+        let mut fixture = Fixture::default();
+        fixture.constructors.insert(
+            ("app/main.rue", "Width"),
+            head("width-site", true, false, vec![value_parameter(true)]),
+        );
+
+        assert_eq!(
+            resolve_structured_semantic_type_syntax(&mut fixture, &"app/main.rue", &arena, root,),
+            Ok("array")
+        );
+        assert_eq!(
+            fixture.calls,
+            [
+                "substitution:app/main.rue:i32",
+                "primitive:-:i32",
+                "root_constructor:app/main.rue:Width",
+                "value:app/main.rue:Width",
+                "reduce:ctor-key",
+                "array_type",
+            ]
+        );
     }
 
     #[test]

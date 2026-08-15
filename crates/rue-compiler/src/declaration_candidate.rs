@@ -97,28 +97,6 @@ pub(crate) struct RawAnonymousSite {
     pub(crate) anchor: rue_rir::RirStructuralAnchor,
 }
 
-/// Test-only parser projection for the retired raw-constant query.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct RawConstSyntax {
-    pub(crate) declared_type: Option<Arc<str>>,
-    pub(crate) initializer: Arc<str>,
-    /// Anonymous type literals inside `initializer`, retained only for the
-    /// deleted-route oracle.
-    pub(crate) anonymous_sites: Arc<[RawAnonymousSite]>,
-}
-
-/// Stable, position-free failure retained by the exact raw-constant family.
-#[cfg(test)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RawConstSyntaxFailure {
-    OccurrencesUnavailable(DeclarationOccurrenceFailure),
-    Absent(DeclarationCandidateKey),
-    Ambiguous(DeclarationCandidateKey),
-    CategoryMismatch(DeclarationCandidateKey),
-    ParserCapabilityMismatch(DeclarationCandidateKey),
-}
-
 /// Test-only parser projection for the retired raw-body query.
 ///
 /// Production runtime and comptime evaluation consume the packed candidate

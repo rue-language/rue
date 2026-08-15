@@ -348,6 +348,92 @@ fn exact_source_boundaries_ignore_braces_in_comments_and_strings() {
 }
 
 #[test]
+fn semantic_signatures_preserve_parser_type_structure_without_a_text_grammar() {
+    let projection_source = include_str!("semantic_query_nucleus.rs");
+    let projection = source_between_exact_boundaries(
+        projection_source,
+        "pub(crate) fn project_semantic_signature(",
+        "\n#[derive(Debug, Clone, PartialEq, Eq, Hash)]\npub(crate) struct SemanticQueryConfiguration",
+    );
+    for required in [
+        "RirTypeSyntaxBuilder::default()",
+        "push_parser_type",
+        "declaration_ast(key)",
+        "resolve_raw_symbol",
+    ] {
+        assert!(
+            projection.contains(required),
+            "signature projection lost its canonical parsed-structure edge: {required}"
+        );
+    }
+    for forbidden in [
+        "source_text",
+        "parse_semantic_signature",
+        "resolve_semantic_type_syntax",
+        "render_type",
+        "rue_lexer",
+        "Lexer::",
+        "Parser::",
+        "split(",
+        "trim(",
+    ] {
+        assert!(
+            !projection.contains(forbidden),
+            "signature projection regained a source-text grammar: {forbidden}"
+        );
+    }
+
+    let runtime = include_str!("revisioned_query_database.rs");
+    let resolver = source_between_exact_boundaries(
+        runtime,
+        "fn resolve_parsed_semantic_signature(",
+        "\nimpl RevisionedQueryDatabase {",
+    );
+    assert!(resolver.contains("resolve_structured_semantic_type_syntax"));
+    for forbidden in [
+        "resolve_semantic_type_syntax(",
+        "parse_type_call_syntax",
+        "rue_lexer",
+        "rue_parser",
+        ".split(",
+        ".split_once(",
+        ".trim(",
+        ".strip_prefix(",
+        ".starts_with(",
+    ] {
+        assert!(
+            !resolver.contains(forbidden),
+            "semantic signature resolution regained a handwritten text grammar: {forbidden}"
+        );
+    }
+
+    let projection_value = source_between_exact_boundaries(
+        projection_source,
+        "pub(crate) enum ParsedSemanticSignature",
+        "\nimpl ParsedSemanticSignature",
+    );
+    for required in ["RirTypeSyntaxArena<Arc<str>>", "RirTypeSyntaxRef"] {
+        assert!(
+            projection_value.contains(required),
+            "signature value lost dense type-syntax ownership: {required}"
+        );
+    }
+    for forbidden in [
+        "Span",
+        "FileId",
+        "ThreadedRodeo",
+        "rue_parser",
+        "source_text",
+        "fragment",
+    ] {
+        assert!(
+            !projection_value.contains(forbidden),
+            "signature value retained parser/source provenance: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn body_transaction_has_no_complete_declaration_candidate_map() {
     let runtime = include_str!("revisioned_query_database.rs");
     let method = source_between_exact_boundaries(
@@ -2099,7 +2185,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         if !matches!(*name, "parsed_modules" | "revisioned_query_database") {
             for evaluator_only in [
                 ".evaluate_declaration_shell(",
-                ".evaluate_raw_const_syntax(",
                 ".evaluate_raw_declaration_signature(",
                 ".evaluate_raw_declaration_body(",
                 ".declaration_import(",
@@ -2111,18 +2196,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                     "raw declaration evaluator/importer escaped into {name}: {evaluator_only}"
                 );
             }
-        }
-        if !matches!(
-            *name,
-            "declaration_candidate"
-                | "parsed_modules"
-                | "revisioned_query_database"
-                | "semantic_query_nucleus"
-        ) {
-            assert!(
-                !source.contains("RawConstSyntax"),
-                "compiler production module {name} escaped the raw-constant authority allowlist"
-            );
         }
         if !matches!(
             *name,
@@ -2167,10 +2240,18 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     assert!(!canonical.contains("fn analyze_canonical_program("));
     assert_eq!(runtime.matches(".evaluate_declaration_shell(").count(), 1);
     assert_eq!(parsed.matches("fn evaluate_declaration_shell(").count(), 1);
-    assert_eq!(runtime.matches(".evaluate_raw_const_syntax(").count(), 1);
-    assert_eq!(parsed.matches("fn evaluate_raw_const_syntax(").count(), 1);
-    assert_eq!(runtime.matches("\"compiler.raw-const-syntax\"").count(), 1);
-    assert_eq!(parsed.matches("RawConstSyntax {").count(), 1);
+    for (name, source) in &production {
+        for removed in [
+            "RawConstSyntax",
+            "raw_const_syntax",
+            "compiler.raw-const-syntax",
+        ] {
+            assert!(
+                !source.contains(removed),
+                "the deleted raw-constant authority returned in {name}: {removed}"
+            );
+        }
+    }
     assert_eq!(
         runtime
             .matches(".evaluate_raw_declaration_signature(")
@@ -2269,7 +2350,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     let shell_terminal = runtime
         .split("enum DeclarationShellQueryValue")
         .nth(1)
-        .and_then(|tail| tail.split("struct RawConstSyntaxQueryKey").next())
+        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
         .unwrap();
     for forbidden in [
         "CompileErrors",
@@ -2283,26 +2364,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !shell_terminal.contains(forbidden),
             "shell terminal regained positioned/live semantic payload: {forbidden}"
-        );
-    }
-    let raw_const_terminal = runtime
-        .split("enum RawConstSyntaxQueryValue")
-        .nth(1)
-        .and_then(|tail| tail.split("struct RawDeclarationBodyQueryKey").next())
-        .unwrap();
-    for forbidden in [
-        "CompileErrors",
-        "Span",
-        "FileId",
-        "Spur",
-        "InstRef",
-        "Rir",
-        "SemanticDefinitionToken",
-        "SemanticModuleToken",
-    ] {
-        assert!(
-            !raw_const_terminal.contains(forbidden),
-            "raw-constant terminal regained positioned/live parser or semantic payload: {forbidden}"
         );
     }
     let raw_body_terminal = runtime
@@ -2372,17 +2433,6 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         assert!(
             !lookup_value.contains(forbidden),
             "LookupName terminal regained locator/live payload: {forbidden}"
-        );
-    }
-    let raw_const_payload = module("declaration_candidate")
-        .split("pub(crate) struct RawConstSyntax")
-        .nth(1)
-        .and_then(|tail| tail.split("pub(crate) enum RawConstSyntaxFailure").next())
-        .unwrap();
-    for forbidden in ["Span", "FileId", "Spur", "Ast", "Rir", "InstRef"] {
-        assert!(
-            !raw_const_payload.contains(forbidden),
-            "raw-constant payload regained a positioned or live parser handle: {forbidden}"
         );
     }
     let raw_body_payload = module("declaration_candidate")

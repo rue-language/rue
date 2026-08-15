@@ -32,7 +32,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::declaration_candidate::{RawAnonymousSite, RawConstSyntax, RawDeclarationBodySyntax};
+use crate::declaration_candidate::{RawAnonymousSite, RawDeclarationBodySyntax};
 
 /// Slice the module-relative anonymous type sites that fall inside `fragment`
 /// into locators relative to `fragment`'s start. The frontend anchor rides
@@ -180,8 +180,6 @@ pub struct ParsedDefinitionIndex {
     rir_recipes: Arc<[ParsedRirRecipe]>,
     declaration_capabilities: Arc<[DeclarationOccurrenceCapability]>,
     #[cfg(test)]
-    raw_const_syntax_materializations: Arc<AtomicUsize>,
-    #[cfg(test)]
     raw_declaration_body_terminal_materializations: Arc<AtomicUsize>,
     #[cfg(test)]
     declaration_import_locator_materializations: Arc<AtomicUsize>,
@@ -271,7 +269,7 @@ impl ParsedDefinitionIndex {
             .saturating_add(declaration_capabilities);
         #[cfg(test)]
         let charge = {
-            let atomics = 4_u64.saturating_mul(std::mem::size_of::<AtomicUsize>() as u64);
+            let atomics = 2_u64.saturating_mul(std::mem::size_of::<AtomicUsize>() as u64);
             let by_name = self.by_name.iter().fold(
                 (self.by_name.len()
                     * std::mem::size_of::<(
@@ -333,57 +331,7 @@ impl ParsedDefinitionIndex {
         if candidate.fact.key != *key {
             return None;
         }
-        candidate.raw_body_span.or_else(|| {
-            candidate
-                .raw_const_syntax_spans
-                .map(|spans| spans.initializer)
-        })
-    }
-
-    /// Select the retired raw-syntax oracle for exactly one constant key.
-    ///
-    /// The declaration table is constructed once with the module. This lookup
-    /// remains an exact `declaration_by_key` lookup so the test proves the old
-    /// projection never scanned unrelated declarations. Production constant
-    /// evaluation consumes the packed candidate artifact instead.
-    #[cfg(test)]
-    fn materialize_raw_const_syntax(
-        &self,
-        key: &DeclarationCandidateKey,
-        source_text: &str,
-    ) -> Option<RawConstSyntax> {
-        let index = self.declaration_by_key.get(key).copied()?;
-        let candidate = self.declarations.get(index)?;
-        if candidate.fact.key != *key {
-            return None;
-        }
-        let spans = candidate.raw_const_syntax_spans?;
-        let fragment = |span: Span| {
-            source_text
-                .get(span.start as usize..span.end as usize)
-                .map(Arc::from)
-        };
-        let syntax = RawConstSyntax {
-            declared_type: match spans.declared_type {
-                Some(span) => Some(fragment(span)?),
-                None => None,
-            },
-            initializer: fragment(spans.initializer)?,
-            anonymous_sites: fragment_anonymous_sites(
-                &candidate.anonymous_sites,
-                spans.initializer,
-            ),
-        };
-        #[cfg(test)]
-        self.raw_const_syntax_materializations
-            .fetch_add(1, Ordering::Relaxed);
-        Some(syntax)
-    }
-
-    #[cfg(test)]
-    fn raw_const_syntax_materialization_count(&self) -> usize {
-        self.raw_const_syntax_materializations
-            .load(Ordering::Relaxed)
+        candidate.raw_body_span.or(candidate.const_initializer_span)
     }
 
     /// Every method one owner declares in this module — its name, whether it
@@ -499,7 +447,7 @@ pub(crate) struct ParsedDeclarationCandidate {
     fact: DeclarationShellFact,
     ast_locator: ParsedDeclarationAstLocator,
     declaration_span: Span,
-    raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
+    const_initializer_span: Option<Span>,
     raw_body_span: Option<Span>,
     is_accessor: bool,
     /// The method names this declaration's body calls on its own `self`
@@ -510,8 +458,8 @@ pub(crate) struct ParsedDeclarationCandidate {
     raw_import_range: Option<RawDeclarationImportRange>,
     /// Value-position anonymous type literals inside this declaration's constant
     /// initializer or body, with module-relative spans and their frontend
-    /// anchors. Sliced into fragment-relative sites when the raw const/body
-    /// terminal is materialized (RUE-1089).
+    /// anchors. Sliced into fragment-relative sites only by the remaining
+    /// test-only raw-body oracle (RUE-1089).
     anonymous_sites: Arc<[rue_rir::AnonymousTypeSite]>,
 }
 
@@ -556,15 +504,6 @@ pub enum ParsedDeclarationAstRef<'a> {
     ExternFunction {
         function: &'a rue_parser::ast::ExternFn,
     },
-}
-
-/// Parser-private locators for syntax that is materialized only after an exact
-/// declaration-key lookup. Keeping these current-epoch spans private also
-/// leaves diagnostic projection independent from the durable query terminal.
-#[derive(Debug, Clone, Copy)]
-struct RawConstSyntaxSpans {
-    declared_type: Option<Span>,
-    initializer: Span,
 }
 
 /// Parser-private range into the module's source-ordered import table for one
@@ -760,20 +699,6 @@ impl ParsedModule {
             .saturating_add(self.definitions.retained_allocation_charge())
             .saturating_add(imports_charge(&self.imports))
             .saturating_add(invalid_imports)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn evaluate_raw_const_syntax(
-        &self,
-        key: &DeclarationCandidateKey,
-    ) -> Option<RawConstSyntax> {
-        self.definitions
-            .materialize_raw_const_syntax(key, self.source_text())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn raw_const_syntax_materialization_count(&self) -> usize {
-        self.definitions.raw_const_syntax_materialization_count()
     }
 
     #[cfg(test)]
@@ -1672,12 +1597,7 @@ fn bind_payload(
                 fact: candidate.fact,
                 ast_locator: candidate.ast_locator,
                 declaration_span: remap_span(candidate.declaration_span),
-                raw_const_syntax_spans: candidate.raw_const_syntax_spans.map(|spans| {
-                    RawConstSyntaxSpans {
-                        declared_type: spans.declared_type.map(remap_span),
-                        initializer: remap_span(spans.initializer),
-                    }
-                }),
+                const_initializer_span: candidate.const_initializer_span.map(remap_span),
                 raw_body_span: candidate.raw_body_span.map(remap_span),
                 is_accessor: candidate.is_accessor,
                 self_call_targets: candidate.self_call_targets.clone(),
@@ -1698,11 +1618,6 @@ fn bind_payload(
         declaration_by_key: payload.definitions.declaration_by_key.clone(),
         rir_recipes: payload.definitions.rir_recipes.clone(),
         declaration_capabilities: payload.definitions.declaration_capabilities.clone(),
-        #[cfg(test)]
-        raw_const_syntax_materializations: payload
-            .definitions
-            .raw_const_syntax_materializations
-            .clone(),
         #[cfg(test)]
         raw_declaration_body_terminal_materializations: payload
             .definitions
@@ -2133,7 +2048,7 @@ fn build_definition_index(
         DeclarationShellFact,
         ParsedDeclarationAstLocator,
         Span,
-        Option<RawConstSyntaxSpans>,
+        Option<Span>,
         Option<Span>,
         bool,
         Arc<[Arc<str>]>,
@@ -2253,7 +2168,7 @@ fn build_definition_index(
                         method_self_call_targets: Arc<[Arc<str>]>,
                         declaration_span,
                         signature_spans: Vec<Span>,
-                        raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
+                        const_initializer_span: Option<Span>,
                         raw_body_span: Option<Span>,
                         anonymous_sites: Arc<[rue_rir::AnonymousTypeSite]>|
          -> CompileResult<()> {
@@ -2299,7 +2214,7 @@ fn build_definition_index(
                 },
                 ast_locator,
                 declaration_span,
-                raw_const_syntax_spans,
+                const_initializer_span,
                 raw_body_span,
                 is_accessor,
                 method_self_call_targets,
@@ -2422,10 +2337,6 @@ fn build_definition_index(
                 }
                 let initializer = value.init.span();
                 validate_span("constant initializer", initializer, file_id, source_text)?;
-                let raw_const_syntax_spans = RawConstSyntaxSpans {
-                    declared_type,
-                    initializer,
-                };
                 push(
                     DeclarationCandidateCategory::ConstCandidate,
                     resolve_name(value.name)?,
@@ -2442,7 +2353,7 @@ fn build_definition_index(
                     Arc::from([]),
                     value.span,
                     vec![signature_prefix(value.span, value.init.span())?],
-                    Some(raw_const_syntax_spans),
+                    Some(initializer),
                     None,
                     rue_rir::anonymous_type_sites(&value.init).into(),
                 )?;
@@ -2568,7 +2479,7 @@ fn build_definition_index(
                 mut fact,
                 ast_locator,
                 declaration_span,
-                raw_const_syntax_spans,
+                const_initializer_span,
                 raw_body_span,
                 is_accessor,
                 self_call_targets,
@@ -2590,7 +2501,7 @@ fn build_definition_index(
                     fact,
                     ast_locator,
                     declaration_span,
-                    raw_const_syntax_spans,
+                    const_initializer_span,
                     raw_body_span,
                     is_accessor,
                     self_call_targets,
@@ -2697,8 +2608,6 @@ fn build_definition_index(
         declaration_by_key,
         rir_recipes: rir_recipes.into(),
         declaration_capabilities: declaration_capabilities.into(),
-        #[cfg(test)]
-        raw_const_syntax_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]
         raw_declaration_body_terminal_materializations: Arc::new(AtomicUsize::new(0)),
         #[cfg(test)]

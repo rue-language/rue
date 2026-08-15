@@ -26,6 +26,7 @@ mod anonymous_sites;
 mod api_inventory;
 mod astgen;
 mod inst;
+mod type_syntax;
 
 pub use anonymous_sites::{AnonymousTypeSite, AnonymousTypeSiteKind, anonymous_type_sites};
 pub use astgen::{
@@ -46,4 +47,8 @@ pub use inst::{
     RirSpanField, RirSpanRemapError, RirSpanSlot, RirSpanTraversalError, RirStructFieldsRange,
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
     ValidatedRir,
+};
+pub use type_syntax::{
+    RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder, RirTypeSyntaxNode,
+    RirTypeSyntaxRange, RirTypeSyntaxRef, RirTypeSyntaxSymbol,
 };

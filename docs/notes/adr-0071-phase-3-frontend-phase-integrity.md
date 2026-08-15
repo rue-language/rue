@@ -8,7 +8,7 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 
 | Re-entry | Production owner and consumers | Displaced work | Required deletion proof |
 | --- | --- | --- | --- |
-| Declaration signatures | `compiler.semantic-nucleus` owns a request-local projection from the exact canonical parsed declaration; specialization typing and call ABI consume its resolved signature, while cheap named-body classification uses parser-indexed shell facts | Deletes body-free source reconstruction, signature lexing/parsing, and the additive retained `compiler.declaration-signature-projection` family | Complete: no production call or definition of `parse_semantic_signature`, no raw-signature parser locator/materializer or peer query family, and a cold signature request performs no body AstGen work |
+| Declaration signatures | `compiler.semantic-nucleus` owns a declaration-local dense type-syntax arena projected directly from the exact canonical parsed declaration; specialization typing and call ABI traverse its nodes, while cheap named-body classification uses parser-indexed shell facts | Deletes body-free source reconstruction, signature lexing/parsing, the punctuation-splitting type tokenizer, and the additive retained `compiler.declaration-signature-projection` family | Complete: no production call or definition of `parse_semantic_signature`, no raw-signature or raw-constant parser locator/materializer or peer query family, semantic signature resolution calls only the structured resolver, and a cold signature request performs no body AstGen work |
 | Runtime and specialized bodies | `compiler.declaration-body-plan-artifacts` owns one packed candidate artifact; the ordinary-definition and free-function-specialization arms of `BodyTransactionEvaluator` consume it through the transient resolver | Deletes concatenated signature/body text, synthetic snapshots, body-local lex/parse/AstGen, synthetic span remapping, and specialization-multiplied frontend work | Complete: both transaction arms consume the same candidate-keyed structured body plan; no production call or definition of `lower_owned_body_input`; specialization count does not increase parsing or AstGen lowering |
 | Anonymous members | `compiler.declaration-body-plan-artifacts` owns the ultimate named/constant producer candidate; the anonymous-member arm recursively selects the exact nested declaration by producer chain, indexed owner anchor, name, and member kind | Deletes destructor spelling rewrites, fake named owners, synthetic source assembly, lex/parse/AstGen, and the second RIR remap/index path | Complete: no production call or definition of `lower_anonymous_member_body_input` or its explicit-anchor lowering seam; nested and constant-produced members directly observe the producer candidate artifact, and member demand adds no candidate AstGen work |
 | Comptime bodies | The semantic-nucleus comptime-call evaluator directly decodes the exact `compiler.declaration-body-plan-artifacts` terminal into its request-local semantic evaluator | Deletes fake-function source assembly, body lexing/parsing, duplicate import discovery, cloned AST evaluation, and a second anonymous-anchor transport | Complete: comptime evaluation consumes the same candidate artifact as runtime analysis; no production call or definition of `parse_semantic_body`, and declaration discovery hands the exact artifact terminals to body closure without a second AstGen pass |
@@ -17,6 +17,45 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 | Structured type syntax | `AstGen::intern_type` in `rue-rir/src/astgen.rs` renders arrays, pointers, calls, qualified paths, and integer arguments into interned text; `rue-air` and compiler consumers then use parse helpers, prefix/slice tests, qualified-name splitting, and literal `"type"` comparisons to recover structure | Turns parser structure into a peer string grammar and repeatedly reconstructs it during inference, semantic type resolution, binding-manifest construction, provider analysis, and comptime classification | RIR carries dense structured type-syntax references; semantic consumers traverse them; no production code parses, splits, trims, or prefix-tests rendered compound type text. Leaf-name lookup and presentation-only formatting remain allowed; the parser-to-RIR-to-sema conformance round-trip test is removed |
 | Semantic-nucleus type tokenization | `SemanticNucleusTypeProvider` in `crates/rue-compiler/src/revisioned_query_database.rs`, including the handwritten split/decomposition route around lines 10054–10129 and the `parse_type_call_syntax` route beginning around line 10551 | A second handwritten type grammar reconstructs declaration types while binding semantic signatures and constants | The provider consumes the artifact's dense type-syntax nodes; neither the handwritten tokenizer nor a production call to `parse_type_call_syntax` remains in the provider |
 | Warning-only static-call discovery | `warning_static_call_heads` and `WarningStaticCallCollector` in `revisioned_query_database.rs` independently walk canonical AST bodies, implement lexical scopes and static aliases/import paths, and discover value/type call heads for warning reachability | Maintains a peer body-discovery and partial name-resolution path even though it does not reparse text | The canonical candidate/artifact boundary publishes one structured body-reference projection; warning reachability is a thin consumer and the peer collector/scoping resolver is deleted |
+
+## Implementation checkpoint: parser-owned signature type syntax
+
+The semantic-signature projection now preserves parser `TypeExpr` structure in
+one dense declaration-local arena. Named and qualified paths, unit/never,
+arrays and their literal/name/call lengths, slices, pointers, type/value calls,
+and integer arguments are emitted once in postorder with a deduplicated spelling
+table. `compiler.semantic-nucleus` traverses those nodes through the shared
+semantic type-resolution policy. It no longer slices type fragments from source,
+reparses them, or runs the former punctuation-splitting dependency tokenizer.
+Exact candidate selection, duplicate discriminators, sibling/body independence,
+and every parser-legal annotation shape have direct query tests. A source
+inventory fails if either the projection or semantic-signature resolver regains
+a lexer, parser, split/trim grammar, rendered-type adapter, `Span`, or `FileId`.
+
+This checkpoint deliberately does **not** claim the full structured-type row.
+Candidate RIR and the request-local rue-air body adapter still intern rendered
+compound type spellings, and the legacy semantic type resolver remains for those
+body/constant RIR slots. The next structured-type slice extends the same arena
+through candidate RIR and replaces those slots; only then can the old string
+resolver and `parse_type_call_syntax` branch be deleted globally.
+
+The one-worker frozen Lattice measurement isolates why this slice should improve
+time. The parent rebuilt semantic type structure from compact signature text and
+ran a speculative punctuation tokenizer that issued name queries for every
+type-looking token. The replacement projects parser nodes once and resolves only
+the resulting typed paths. Against exact parent `986b3a51`, six alternating
+release-thin-LTO x86-64 pairs reduced query claims and memo nodes by exactly 322.
+Declaration-nucleus time fell from a 28.006 ms median to 26.437 ms (-1.569 ms,
+-5.6%), semantic time from 296.877 ms to 291.658 ms (-5.219 ms), and compiler
+root time from 660.199 ms to 652.051 ms (-8.148 ms, -1.23%). Five of six paired
+root observations improved; the median paired effect was -3.671 ms, so the
+smaller paired result remains the conservative reading on this interactive
+host. External peak RSS fell from 376,799,232 to 367,222,784 bytes by marginal
+medians (median paired effect -8,953,856 bytes), although two individual pairs
+were positive and the memory result is therefore treated as a non-regression,
+not a precise allocation attribution. Every warm and measured executable was
+1,662,976 bytes with SHA-256
+`45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`.
 
 ## Implementation checkpoint: named-body frontend cutover
 
@@ -125,9 +164,11 @@ slice rather than a hidden frontend fallback.
 Constant and comptime semantic-nucleus evaluation now decodes the same packed
 candidate artifact used by runtime bodies. The evaluator receives a borrowed
 dense spelling view keyed by packed ordinals, so it neither reconstructs a
-`ThreadedRodeo` nor parses a synthetic const/function. The old raw-constant and
-raw-body query families, fragment materializers, and cloned-AST evaluators are
-test-only deleted-route oracles; they are not registered in production.
+`ThreadedRodeo` nor parses a synthetic const/function. The old raw-constant
+query family, payload/failure algebra, initializer/type-span locator, fragment
+materializer, and lifecycle tests are deleted. The raw-body query and fragment
+materializer remain `cfg(test)` only as a deleted-route oracle; neither is
+registered in production.
 
 Declaration discovery and body closure are separate rooted requests. The
 candidate artifact family deliberately keeps only a small unrooted history, so
@@ -240,9 +281,10 @@ so internal trivia that moves diagnostic endpoints dirties the artifact:
 
 Signature projection remains independently demandable inside the authoritative
 semantic-nucleus evaluator; there is no second retained signature family.
-Raw-body and raw-constant query families and source-fragment materializers are
-`cfg(test)` deleted-route oracles only. Production constant, comptime, runtime,
-specialized, and anonymous evaluation all consume the candidate artifact. The
+The raw-constant query family and source-fragment materializer are deleted;
+the raw-body family remains a `cfg(test)` deleted-route oracle only. Production
+constant, comptime, runtime, specialized, and anonymous evaluation all consume
+the candidate artifact. The
 complete declaration plan's structural equality covers every semantically
 relevant part of the declaration: parameters, result, comptime and parameter
 modes, directives, accessor-only state, body structure, declaration category,

@@ -28,32 +28,21 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ParsedSemanticParameter {
-    pub(crate) name: ParsedSemanticText,
+    pub(crate) name: rue_rir::RirTypeSyntaxSymbol,
     pub(crate) mode: crate::declaration_candidate::DeclarationParameterMode,
     pub(crate) is_comptime: bool,
-    pub(crate) ty: ParsedSemanticText,
-}
-
-/// One string inside a declaration signature's compact text envelope.
-///
-/// The range is candidate-local and position-independent. It never indexes the
-/// source file: the producer copies only the semantic spellings that consumers
-/// still need until the structured-type tranche removes those spellings too.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ParsedSemanticText {
-    pub(crate) start: u32,
-    pub(crate) end: u32,
+    pub(crate) ty: rue_rir::RirTypeSyntaxRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParsedSemanticField {
-    pub(crate) name: ParsedSemanticText,
-    pub(crate) ty: ParsedSemanticText,
+    pub(crate) name: rue_rir::RirTypeSyntaxSymbol,
+    pub(crate) ty: rue_rir::RirTypeSyntaxRef,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParsedSemanticVariant {
-    pub(crate) name: ParsedSemanticText,
+    pub(crate) name: rue_rir::RirTypeSyntaxSymbol,
     pub(crate) payload_start: u32,
     pub(crate) payload_end: u32,
 }
@@ -61,9 +50,9 @@ pub(crate) struct ParsedSemanticVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedSemanticSignature {
     Callable {
-        text: Arc<str>,
+        syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
         parameters: Arc<[ParsedSemanticParameter]>,
-        result: ParsedSemanticText,
+        result: rue_rir::RirTypeSyntaxRef,
         has_self: bool,
         self_mode: crate::declaration_candidate::DeclarationParameterMode,
         is_unchecked: bool,
@@ -84,76 +73,71 @@ pub(crate) enum ParsedSemanticSignature {
         accessor_cycle: Option<Arc<str>>,
     },
     Struct {
-        text: Arc<str>,
+        syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
         fields: Arc<[ParsedSemanticField]>,
         is_copy: bool,
         is_linear: bool,
         is_repr_c: bool,
     },
     Enum {
-        text: Arc<str>,
+        syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
         variants: Arc<[ParsedSemanticVariant]>,
-        payloads: Arc<[ParsedSemanticText]>,
+        payloads: Arc<[rue_rir::RirTypeSyntaxRef]>,
     },
     Destructor,
 }
 
 impl ParsedSemanticSignature {
-    pub(crate) fn text(&self, value: ParsedSemanticText) -> &str {
-        let text = match self {
-            Self::Callable { text, .. } | Self::Struct { text, .. } | Self::Enum { text, .. } => {
-                text
-            }
-            Self::Destructor => return "",
+    pub(crate) fn syntax(&self) -> Option<&rue_rir::RirTypeSyntaxArena<Arc<str>>> {
+        match self {
+            Self::Callable { syntax, .. }
+            | Self::Struct { syntax, .. }
+            | Self::Enum { syntax, .. } => Some(syntax),
+            Self::Destructor => None,
+        }
+    }
+
+    pub(crate) fn symbol(&self, value: rue_rir::RirTypeSyntaxSymbol) -> &str {
+        self.syntax()
+            .and_then(|syntax| syntax.symbol(value))
+            .map(AsRef::as_ref)
+            .expect("signature symbols are validated when projected")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_type(&self, value: rue_rir::RirTypeSyntaxRef) -> String {
+        self.syntax()
+            .and_then(|syntax| syntax.render_type(value))
+            .expect("signature type roots are validated when projected")
+    }
+
+    pub(crate) fn is_type_parameter_syntax(&self, value: rue_rir::RirTypeSyntaxRef) -> bool {
+        let Some(syntax) = self.syntax() else {
+            return false;
         };
-        text.get(value.start as usize..value.end as usize)
-            .expect("signature text ranges are validated when projected")
+        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = syntax.node(value) else {
+            return false;
+        };
+        syntax
+            .symbol(*symbol)
+            .is_some_and(|name| name.as_ref() == "type")
     }
 
     pub(crate) fn callable_type_syntax(&self) -> Option<rue_air::DurableCallableTypeSyntax> {
         let Self::Callable {
-            parameters, result, ..
+            syntax,
+            parameters,
+            result,
+            ..
         } = self
         else {
             return None;
         };
         Some(rue_air::DurableCallableTypeSyntax {
-            parameters: parameters
-                .iter()
-                .map(|parameter| Arc::from(self.text(parameter.ty)))
-                .collect(),
-            result: Arc::from(self.text(*result)),
+            syntax: syntax.clone(),
+            parameters: parameters.iter().map(|parameter| parameter.ty).collect(),
+            result: *result,
         })
-    }
-}
-
-fn source_fragment(source: &str, span: rue_span::Span) -> Result<&str, Arc<str>> {
-    source
-        .get(span.start as usize..span.end as usize)
-        .ok_or_else(|| Arc::from("semantic signature contains an invalid local span"))
-}
-
-#[derive(Default)]
-struct ParsedSemanticTextBuilder {
-    text: String,
-}
-
-impl ParsedSemanticTextBuilder {
-    fn push(&mut self, value: &str) -> Result<ParsedSemanticText, Arc<str>> {
-        let start = u32::try_from(self.text.len())
-            .map_err(|_| Arc::from("semantic signature text exceeds the supported size"))?;
-        let end = self
-            .text
-            .len()
-            .checked_add(value.len())
-            .and_then(|value| u32::try_from(value).ok())
-            .ok_or_else(|| Arc::from("semantic signature text exceeds the supported size"))?;
-        self.text.push_str(value);
-        Ok(ParsedSemanticText { start, end })
-    }
-
-    fn finish(self) -> Arc<str> {
-        Arc::from(self.text)
     }
 }
 
@@ -170,8 +154,7 @@ fn parameter_mode(
 }
 
 fn parsed_parameters<'a>(
-    text: &mut ParsedSemanticTextBuilder,
-    source: &str,
+    syntax: &mut rue_rir::RirTypeSyntaxBuilder<Arc<str>>,
     resolve: impl Copy + Fn(Spur) -> &'a str,
     parameters: &[rue_parser::ast::Param],
 ) -> Result<Arc<[ParsedSemanticParameter]>, Arc<str>> {
@@ -180,14 +163,24 @@ fn parsed_parameters<'a>(
         .map(|parameter| {
             let (mode, is_comptime) = parameter_mode(parameter.mode);
             Ok(ParsedSemanticParameter {
-                name: text.push(resolve(parameter.name.name))?,
+                name: syntax
+                    .intern_symbol(Arc::from(resolve(parameter.name.name)))
+                    .map_err(type_syntax_build_failure)?,
                 mode,
                 is_comptime,
-                ty: text.push(source_fragment(source, parameter.ty.span())?)?,
+                ty: syntax
+                    .push_parser_type(&parameter.ty, |symbol| Arc::from(resolve(symbol)))
+                    .map_err(type_syntax_build_failure)?,
             })
         })
         .collect::<Result<Vec<_>, Arc<str>>>()
         .map(Into::into)
+}
+
+fn type_syntax_build_failure(error: rue_rir::RirTypeSyntaxBuildError) -> Arc<str> {
+    Arc::from(format!(
+        "semantic signature type syntax exceeds the supported size: {error:?}"
+    ))
 }
 
 /// The `yield` an accessor body falls through to: the body itself, the
@@ -357,8 +350,9 @@ fn accessor_body_shape<'a>(
 ///
 /// This borrows parser state only while building the position-independent
 /// value projection. No parser node, parser interner, FileId, or absolute span
-/// enters the returned value; type fragments remain the existing deferred
-/// semantic-type syntax until the structured-type tranche replaces them.
+/// enters the returned value. Every annotation is projected directly into the
+/// declaration-local dense type-syntax arena; semantic resolution never
+/// reconstructs or reparses a source fragment.
 pub(crate) fn project_semantic_signature(
     module: &crate::parsed_modules::ParsedModule,
     key: &DeclarationCandidateKey,
@@ -373,7 +367,6 @@ pub(crate) fn project_semantic_signature(
     let declaration = module
         .declaration_ast(key)
         .ok_or_else(|| Arc::from("semantic signature has no exact parsed declaration"))?;
-    let source = module.source_text();
     let resolve = |symbol| module.resolve_raw_symbol(symbol);
     let owner_methods = module
         .declaration_accessor_owner_methods(key)
@@ -391,14 +384,16 @@ pub(crate) fn project_semantic_signature(
                     is_accessor,
                     body: Option<&rue_parser::ast::Expr>|
      -> Result<ParsedSemanticSignature, Arc<str>> {
-        let mut text = ParsedSemanticTextBuilder::default();
-        let parameters = parsed_parameters(&mut text, source, resolve, parameters)?;
-        let result = text.push(match result {
-            Some(value) => source_fragment(source, value.span())?,
-            None => "()",
-        })?;
+        let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
+        let parameters = parsed_parameters(&mut syntax, resolve, parameters)?;
+        let result = match result {
+            Some(value) => syntax
+                .push_parser_type(value, |symbol| Arc::from(resolve(symbol)))
+                .map_err(type_syntax_build_failure)?,
+            None => syntax.push_unit_type().map_err(type_syntax_build_failure)?,
+        };
         Ok(ParsedSemanticSignature::Callable {
-            text: text.finish(),
+            syntax: syntax.finish(),
             parameters,
             result,
             has_self,
@@ -456,19 +451,23 @@ pub(crate) fn project_semantic_signature(
             Some(&method.body),
         ),
         ParsedDeclarationAstRef::Struct(structure) => {
-            let mut text = ParsedSemanticTextBuilder::default();
+            let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
             let fields = structure
                 .fields
                 .iter()
                 .map(|field| {
                     Ok(ParsedSemanticField {
-                        name: text.push(resolve(field.name.name))?,
-                        ty: text.push(source_fragment(source, field.ty.span())?)?,
+                        name: syntax
+                            .intern_symbol(Arc::from(resolve(field.name.name)))
+                            .map_err(type_syntax_build_failure)?,
+                        ty: syntax
+                            .push_parser_type(&field.ty, |symbol| Arc::from(resolve(symbol)))
+                            .map_err(type_syntax_build_failure)?,
                     })
                 })
                 .collect::<Result<Vec<_>, Arc<str>>>()?;
             Ok(ParsedSemanticSignature::Struct {
-                text: text.finish(),
+                syntax: syntax.finish(),
                 fields: fields.into(),
                 is_copy: structure
                     .directives
@@ -486,7 +485,7 @@ pub(crate) fn project_semantic_signature(
             })
         }
         ParsedDeclarationAstRef::Enum(value) => {
-            let mut text = ParsedSemanticTextBuilder::default();
+            let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
             let mut payloads = Vec::new();
             let variants = value
                 .variants
@@ -496,20 +495,26 @@ pub(crate) fn project_semantic_signature(
                         Arc::from("semantic signature payload exceeds the supported size")
                     })?;
                     for ty in &variant.payload {
-                        payloads.push(text.push(source_fragment(source, ty.span())?)?);
+                        payloads.push(
+                            syntax
+                                .push_parser_type(ty, |symbol| Arc::from(resolve(symbol)))
+                                .map_err(type_syntax_build_failure)?,
+                        );
                     }
                     let payload_end = u32::try_from(payloads.len()).map_err(|_| {
                         Arc::from("semantic signature payload exceeds the supported size")
                     })?;
                     Ok(ParsedSemanticVariant {
-                        name: text.push(resolve(variant.name.name))?,
+                        name: syntax
+                            .intern_symbol(Arc::from(resolve(variant.name.name)))
+                            .map_err(type_syntax_build_failure)?,
                         payload_start,
                         payload_end,
                     })
                 })
                 .collect::<Result<Vec<_>, Arc<str>>>()?;
             Ok(ParsedSemanticSignature::Enum {
-                text: text.finish(),
+                syntax: syntax.finish(),
                 variants: variants.into(),
                 payloads: payloads.into(),
             })
@@ -969,12 +974,10 @@ impl RetainedCharge for DeclarationSignatureProjection {
 
 impl RetainedCharge for ResolvedDeclarationSignature {
     fn retained_charge(&self) -> u64 {
-        let callable_type_syntax = self.callable_type_syntax.as_ref().map_or(0, |syntax| {
-            syntax
-                .parameters
-                .retained_charge()
-                .saturating_add(syntax.result.retained_charge())
-        });
+        let callable_type_syntax = self
+            .callable_type_syntax
+            .as_ref()
+            .map_or(0, |syntax| syntax.retained_charge());
         self.definition
             .retained_charge()
             .saturating_add(self.signature.retained_charge())

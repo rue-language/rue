@@ -2215,14 +2215,15 @@ pub struct DurableSignatureParameter<K, M> {
     pub is_comptime: bool,
 }
 
-/// Exact parameter and result type fragments retained by the canonical
-/// declaration-signature parse. Dependent callable types cannot always be
-/// reconstructed from their reduced durable placeholders, so executable body
-/// materialization carries these fragments beside the semantic signature.
+/// Exact parser-structured parameter and result types retained by the
+/// canonical declaration-signature projection. Dependent callable types
+/// cannot always be reconstructed from reduced durable placeholders, so body
+/// materialization carries the shared dense syntax beside the signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DurableCallableTypeSyntax {
-    pub parameters: Arc<[Arc<str>]>,
-    pub result: Arc<str>,
+    pub syntax: rue_rir::RirTypeSyntaxArena<Arc<str>>,
+    pub parameters: Arc<[rue_rir::RirTypeSyntaxRef]>,
+    pub result: rue_rir::RirTypeSyntaxRef,
 }
 
 /// The durable signature of a free function, sufficient to assemble the
