@@ -154,22 +154,11 @@ pub struct DurableAnonymousMethodSignature {
     pub self_mode: DurableParameterMode,
     pub parameters: Arc<[(DurableAnonymousMethodType, DurableParameterMode, bool)]>,
     pub result: DurableAnonymousMethodType,
-    /// Exact producer-owned syntax for this member body. Declaration-only
-    /// projections may omit it, but a body transaction must refuse to analyze
-    /// the member unless the producer's `body-produced-anonymous` projection
-    /// supplied this fragment.
-    pub body: Option<DurableAnonymousMemberBodySyntax>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DurableAnonymousMemberBodySyntax {
-    /// Exact byte offsets relative to the producer's retained body or constant
-    /// initializer. They are presentation locators, not anonymous identity.
-    pub declaration_start: u32,
-    pub body_start: u32,
-    pub body_end: u32,
-    pub signature: crate::declaration_candidate::RawDeclarationSignatureSyntax,
-    pub body: crate::declaration_candidate::RawDeclarationBodySyntax,
+    /// Whether the producer declared a body for this member. The body itself
+    /// stays in the producer's canonical candidate artifact; anonymous-member
+    /// transactions select that exact nested declaration by owner anchor,
+    /// member name, and member kind instead of retaining or reparsing text.
+    pub has_body: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -252,15 +241,6 @@ impl RetainedCharge for DurableAnonymousMethodSignature {
             .retained_charge()
             .saturating_add(self.parameters.retained_charge())
             .saturating_add(self.result.retained_charge())
-            .saturating_add(self.body.retained_charge())
-    }
-}
-
-impl RetainedCharge for DurableAnonymousMemberBodySyntax {
-    fn retained_charge(&self) -> u64 {
-        self.signature
-            .retained_charge()
-            .saturating_add(self.body.retained_charge())
     }
 }
 

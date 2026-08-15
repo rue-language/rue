@@ -9,8 +9,8 @@ marked complete describe paths already removed by the bounded Phase 3 slices.
 | Re-entry | Production owner and consumers | Displaced work | Required deletion proof |
 | --- | --- | --- | --- |
 | Declaration signatures | `compiler.semantic-nucleus` owns a request-local projection from the exact canonical parsed declaration; specialization typing and call ABI consume its resolved signature, while cheap named-body classification uses parser-indexed shell facts | Deletes body-free source reconstruction, signature lexing/parsing, and the additive retained `compiler.declaration-signature-projection` family | Complete: no production call or definition of `parse_semantic_signature`, no raw-signature parser locator/materializer or peer query family, and a cold signature request performs no body AstGen work |
-| Runtime and specialized bodies | `lower_owned_body_input` in `revisioned_query_database.rs`; called by both the ordinary-definition and free-function-specialization arms of `BodyTransactionEvaluator` | Concatenates retained signature/body text, builds a synthetic snapshot, lexes, parses, lowers with `AstGen`, builds a body RIR index, and remaps synthetic spans for every body transaction and specialization | Both transaction arms consume the same candidate-keyed structured body plan; no production call or definition of `lower_owned_body_input`; specialization count does not increase parsing or AstGen lowering |
-| Anonymous members | `lower_anonymous_member_body_input` in `revisioned_query_database.rs`; called by the anonymous-member arm of `BodyTransactionEvaluator` | Rewrites destructor spelling, wraps the member in a fake named struct, lexes, parses, lowers, indexes, and remaps it | Anonymous-member transactions consume a producer-published structured member plan; no production call or definition of `lower_anonymous_member_body_input` |
+| Runtime and specialized bodies | `compiler.declaration-body-plan-artifacts` owns one packed candidate artifact; the ordinary-definition and free-function-specialization arms of `BodyTransactionEvaluator` consume it through the transient resolver | Deletes concatenated signature/body text, synthetic snapshots, body-local lex/parse/AstGen, synthetic span remapping, and specialization-multiplied frontend work | Complete: both transaction arms consume the same candidate-keyed structured body plan; no production call or definition of `lower_owned_body_input`; specialization count does not increase parsing or AstGen lowering |
+| Anonymous members | `compiler.declaration-body-plan-artifacts` owns the ultimate named/constant producer candidate; the anonymous-member arm recursively selects the exact nested declaration by producer chain, indexed owner anchor, name, and member kind | Deletes destructor spelling rewrites, fake named owners, synthetic source assembly, lex/parse/AstGen, and the second RIR remap/index path | Complete: no production call or definition of `lower_anonymous_member_body_input` or its explicit-anchor lowering seam; nested and constant-produced members directly observe the producer candidate artifact, and member demand adds no candidate AstGen work |
 | Comptime bodies | `parse_semantic_body` in `semantic_query_nucleus.rs`; called by the semantic-nucleus comptime-call evaluator | Wraps exact body text in a fake function, lexes and parses it, rediscovers imports, transports anonymous anchors, then evaluates the cloned AST | Comptime evaluation consumes the same declaration artifact as runtime analysis; no production call or definition of `parse_semantic_body` |
 | Constants | `parse_semantic_const` in `semantic_query_nucleus.rs`; called by the semantic-nucleus const evaluator | Reconstructs a fake const declaration, lexes and parses it, rediscovers imports, transports anonymous anchors, then evaluates the cloned AST | Constant evaluation consumes the declaration artifact directly; no production call or definition of `parse_semantic_const` |
 | Well-known option body scan | `PackedValidatedRir::fallible_intrinsics`; consumed by `compiler.body-toolchain-demands` through `DeclarationBodyPlanArtifacts` | Derives the typed five-kind set during the one canonical packed-RIR traversal; production performs no second lexer pass over retained body text | Complete: the packed header owns the stable typed set and the old lexical scanner remains only as an independent `cfg(test)` oracle |
@@ -43,10 +43,10 @@ publishes plan-materialization, base-symbol, instruction/payload, and index work
 separately. The next slice is the immutable-base/projected rue-air view that
 removes those remaining per-transaction remap, validation, index, and interner
 rebuilds. Candidate-local construction is independently demandable for indexed
-named declarations, but anonymous members retain their separately listed
-synthetic reparse route until their producer-published structured member plan
-lands. Accordingly this checkpoint still does **not** claim complete frontend
-phase integrity or acceptance items 3 and 12.
+named declarations, and anonymous members now reuse the ultimate producer
+candidate as described below. This checkpoint still does **not** claim complete
+frontend phase integrity or acceptance items 3 and 12 because the request-local
+AIR adapter and candidate-granularity sibling construction remain.
 
 The candidate producer still observes the module parse terminal. A sibling-only
 module revision therefore reevaluates AstGen once for each reached candidate,
@@ -55,6 +55,70 @@ equal; transactions, CFGs, and codegen remain green. Work is not
 multiplied by consumers or specializations, but eliminating this remaining
 producer reevaluation requires a finer parser-owned candidate input stamp and
 is deferred and measured separately.
+
+## Implementation checkpoint: anonymous-member frontend cutover
+
+Anonymous method, associated-function, and destructor transactions no longer
+retain or reconstruct method source. The producer's durable anonymous shape
+retains only the member signature plus a body-availability bit. At execution,
+the transaction requests the packed artifact of the named function, method, or
+constant that ultimately owns the producer chain, decodes that artifact once,
+and recursively locates the exact member declaration. Each hop is identified
+by its indexed structural owner anchor and exact member name/kind; method edges
+are never rediscovered by source position or a name-only scan.
+
+The selected declaration is passed directly to the existing provider-backed
+semantic analyzer. Its current RIR body span is converted to the producer
+body's relative coordinate before the transaction is retained, so a prefix or
+sibling relocation keeps the artifact and transaction stamps green while
+warning and diagnostic presentation uses the latest `FileId` and absolute
+origin. Internal member trivia remains part of the candidate-relative span
+basis and correctly dirties the artifact and transaction.
+
+The displaced route and its support code are deleted: no fake struct owner,
+synthetic `SourceSnapshot`, anonymous lexer/parser/AstGen, explicit anonymous
+anchor override, module-RIR rematerialization helper, or raw anonymous member
+body carrier remains in production. A nested member producer and a member of a
+constant-produced anonymous type both resolve back to the same ultimate
+candidate artifact. Materialization cancellation publishes no terminal and an
+uncanceled retry succeeds; malformed member kind and producer artifact failure
+publish deterministic typed failures rather than cancellation.
+
+This slice removes frontend work from the anonymous-member critical path but
+does not yet remove the one request-local packed decode, current-span
+projection, symbol reconstruction, RIR validation, and index build performed
+for each anonymous transaction. Those costs remain visible under the same AIR
+view deferral as ordinary and specialized bodies.
+
+### Isolated performance evidence
+
+The expected time effect is direct: each reached anonymous runtime member used
+to assemble a synthetic source snapshot and repeat lexing, parsing, AstGen, span
+remapping, validation, and index construction. The replacement selects the
+member from its already-demanded producer artifact. It still decodes the
+producer artifact for the request-local AIR adapter, but it removes the second
+frontend traversal from the one-worker critical path rather than merely moving
+retained ownership.
+
+On the frozen Lattice workload, a release thin-LTO x86-64 compiler was measured
+against its exact parent in six alternating one-worker pairs after one warmup
+per binary. All twelve native outputs were 1,413,120 bytes with SHA-256
+`b893e76cfabed737b149d0e8c4d8527077dedd17da78418db20a28a7d30885e5`.
+The absolute median compiler-root time fell from 746.141 ms to 673.888 ms
+(-72.253 ms, -9.68%); every paired prototype run was faster and the paired
+median delta was -43.513 ms. Median external peak RSS fell from 387,817,472 to
+374,939,648 bytes (-12,877,824 bytes, -12.28 MiB), while the benchmark's
+internal peak fell from 387,555,328 to 374,718,464 bytes. The paired median
+external RSS delta was -13,484,032 bytes.
+
+The phase counters support the intended cause. Median attributed body-input
+work fell from 32.486 ms to 10.980 ms: synthetic assembly (4.239 ms), lex/parse
+(16.700 ms), and body-local RIR lowering (9.395 ms) all fell to zero, leaving
+only the packed decode/current-coordinate projection. Query claims and memo
+nodes each fell by 2,731. The request-local decoded instruction count rose
+because an anonymous transaction now decodes its ultimate producer fragment;
+that remaining work is the explicitly deferred borrowed/projected AIR-view
+slice rather than a hidden frontend fallback.
 
 ## Retained declaration artifact contract
 
@@ -67,11 +131,13 @@ and safe to retain across source revisions. Equality is exact packed-byte
 equality and intentionally includes the candidate-relative diagnostic basis,
 so internal trivia that moves diagnostic endpoints dirties the artifact:
 
-- a canonical typed-logical packed RIR for exactly the selected declaration
-  body. Arena allocation order, orphan payload words, and replacement holes do
-  not enter durable identity. Constant initializers and anonymous member bodies use independently
-  demandable/retained subplans under the same schema; requesting one never
-  eagerly constructs its siblings;
+- a canonical typed-logical packed RIR for exactly the selected top-level or
+  named-member declaration candidate. Arena allocation order, orphan payload
+  words, and replacement holes do not enter durable identity. Constant
+  initializers use their own candidate artifacts; anonymous member bodies are
+  nested declarations selected from the artifact of their ultimate producer.
+  A member request never invokes a second AstGen pass, although candidate-local
+  construction still includes every nested declaration owned by that candidate;
 - an artifact-owned dense string table. RIR symbol indexes refer only to this
   table, never to a parser `Spur` or parser resolver;
 - dense structured type-syntax nodes referenced by declarations and

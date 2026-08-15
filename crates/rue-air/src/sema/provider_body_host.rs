@@ -395,6 +395,12 @@ pub struct ProviderSpecializedBody<K, M> {
 pub struct ProviderAnonymousBody<K, M> {
     pub work: ProviderBodyWork,
     pub export: crate::SemanticAnonymousBodyExport,
+    /// Exact current-source span of the selected anonymous member body.
+    ///
+    /// The compiler converts this to the producer body's relative coordinate
+    /// before retaining the transaction; no absolute source coordinate crosses
+    /// the query boundary.
+    pub body_span: rue_span::Span,
     /// Exact body-local AIR and its issuing domains; retained for the canonical
     /// local-materialization boundary rather than discarded after export.
     pub function: AnalyzedFunction,
@@ -803,6 +809,12 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     owner_kind: crate::StableDefinitionKind,
     owner_file: FileId,
     owner_name: Option<Arc<str>>,
+    /// Exact declaration selected inside a producer candidate for an
+    /// anonymous-member transaction. Named bodies continue to resolve through
+    /// the request-local declaration index; anonymous members have no named
+    /// source owner and therefore carry their already-validated `InstRef`
+    /// directly.
+    current_declaration_override: Option<InstRef>,
     source: S,
     key: K,
     // Request-local exact-lookup registries. Their iteration order is never a
@@ -953,6 +965,7 @@ where
             owner_kind,
             owner_file: file,
             owner_name: owner_name.map(Arc::from),
+            current_declaration_override: None,
             source,
             key: key.clone(),
             function_infos: RefCell::new(AHashMap::new()),
@@ -1125,19 +1138,23 @@ where
     }
 
     fn current_callable_locator(&self) -> Option<(InstRef, InstRef, Span)> {
-        let name = self.interner.resolve(&self.owner_source_symbol);
-        let declaration = match self.owner_kind {
-            crate::StableDefinitionKind::Function => {
-                self.endpoint.first_free_function(name, self.owner_file)?
+        let declaration = if let Some(declaration) = self.current_declaration_override {
+            declaration
+        } else {
+            let name = self.interner.resolve(&self.owner_source_symbol);
+            match self.owner_kind {
+                crate::StableDefinitionKind::Function => {
+                    self.endpoint.first_free_function(name, self.owner_file)?
+                }
+                crate::StableDefinitionKind::Method
+                | crate::StableDefinitionKind::AssociatedFunction => self
+                    .endpoint
+                    .named_method_declaration(self.owner_file, self.owner_name.as_deref()?, name)?,
+                crate::StableDefinitionKind::Destructor => self
+                    .endpoint
+                    .destructor(self.owner_file, self.owner_name.as_deref()?)?,
+                _ => return None,
             }
-            crate::StableDefinitionKind::Method
-            | crate::StableDefinitionKind::AssociatedFunction => self
-                .endpoint
-                .named_method_declaration(self.owner_file, self.owner_name.as_deref()?, name)?,
-            crate::StableDefinitionKind::Destructor => self
-                .endpoint
-                .destructor(self.owner_file, self.owner_name.as_deref()?)?,
-            _ => return None,
         };
         let instruction = self.rir.rir().get(declaration);
         let body = match instruction.data {
@@ -4889,13 +4906,136 @@ where
     })
 }
 
-/// Run one exact anonymous-member request from the producer-owned member
-/// fragment. The supplied RIR bundle contains only a synthetic owner and this
-/// member; the durable anonymous key remains the sole owner authority.
+fn anonymous_member_in_producer(
+    rir: &rue_rir::Rir,
+    interner: &ThreadedRodeo,
+    producer_root: InstRef,
+    owner_anchor: &rue_rir::RirStructuralAnchor,
+    member: &crate::AnonymousMemberKey,
+) -> Result<InstRef, &'static str> {
+    let member_symbol = interner
+        .get(member.name.as_ref())
+        .ok_or("anonymous member name is absent from its producer artifact")?;
+    let mut pending = vec![producer_root];
+    let mut visited = HashSet::new();
+    let mut owner_found = false;
+    let mut declaration = None;
+    while let Some(reference) = pending.pop() {
+        if !visited.insert(reference) {
+            continue;
+        }
+        let instruction = rir.get(reference);
+        if let InstData::AnonStructType {
+            anchor, methods, ..
+        } = &instruction.data
+        {
+            // Anonymous method bodies are independent semantic producers. A
+            // nested producer can legitimately reuse the same relative anchor,
+            // so never cross method edges while locating an owner in this root.
+            if anchor != owner_anchor {
+                continue;
+            }
+            if owner_found {
+                return Err("anonymous owner anchor is duplicated in its producer artifact");
+            }
+            owner_found = true;
+            for method_ref in rir.anon_struct_methods(methods) {
+                let InstData::FnDecl { name, has_self, .. } = &rir.get(method_ref).data else {
+                    return Err("anonymous owner method edge does not reference a function");
+                };
+                let kind = if interner.resolve(name) == "__drop" {
+                    crate::AnonymousMemberKind::Destructor
+                } else if *has_self {
+                    crate::AnonymousMemberKind::Method
+                } else {
+                    crate::AnonymousMemberKind::AssociatedFunction
+                };
+                if *name == member_symbol
+                    && kind == member.kind
+                    && declaration.replace(method_ref).is_some()
+                {
+                    return Err("anonymous member is duplicated in its producer artifact");
+                }
+            }
+            continue;
+        }
+        rir.child_instructions(reference, &mut pending);
+    }
+    if !owner_found {
+        return Err("anonymous owner anchor is absent from its producer artifact");
+    }
+    declaration.ok_or("anonymous member is absent from its producer artifact")
+}
+
+fn anonymous_producer_root<K, M>(
+    rir: &rue_rir::Rir,
+    interner: &ThreadedRodeo,
+    candidate_root: InstRef,
+    source_key: &K,
+    producer: &crate::StableProducerId<K, M>,
+) -> Result<InstRef, &'static str>
+where
+    K: Eq,
+{
+    match producer {
+        crate::StableProducerId::Definition(key) if key == source_key => Ok(candidate_root),
+        crate::StableProducerId::Definition(_) => {
+            Err("anonymous producer definition disagrees with its candidate artifact")
+        }
+        crate::StableProducerId::Function(function) => {
+            anonymous_function_producer_root(rir, interner, candidate_root, source_key, function)
+        }
+    }
+}
+
+fn anonymous_function_producer_root<K, M>(
+    rir: &rue_rir::Rir,
+    interner: &ThreadedRodeo,
+    candidate_root: InstRef,
+    source_key: &K,
+    function: &crate::FunctionInstanceKey<K, M>,
+) -> Result<InstRef, &'static str>
+where
+    K: Eq,
+{
+    match function {
+        crate::FunctionInstanceKey::Definition(key) if key == source_key => Ok(candidate_root),
+        crate::FunctionInstanceKey::Definition(_) => {
+            Err("anonymous function producer disagrees with its candidate artifact")
+        }
+        crate::FunctionInstanceKey::Specialization { base, .. } => {
+            anonymous_function_producer_root(rir, interner, candidate_root, source_key, base)
+        }
+        crate::FunctionInstanceKey::AnonymousMember { owner, member } => {
+            let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) =
+                owner.as_ref()
+            else {
+                return Err("nested anonymous producer has a non-anonymous owner");
+            };
+            let producer_root = anonymous_producer_root(
+                rir,
+                interner,
+                candidate_root,
+                source_key,
+                &owner.producer,
+            )?;
+            anonymous_member_in_producer(rir, interner, producer_root, &owner.anchor, member)
+        }
+        crate::FunctionInstanceKey::DropGlue(_) => {
+            Err("drop glue cannot produce an anonymous member body")
+        }
+    }
+}
+
+/// Run one exact anonymous-member request from the canonical artifact of the
+/// named declaration that ultimately produced its owner. Producer boundaries,
+/// structural anchors, and exact member identity select the nested declaration
+/// without source assembly, parsing, AstGen, or a fake named owner.
 pub fn analyze_provider_anonymous_body<P, S, K, M>(
     provider: &P,
     source: S,
     bundle: &BodyRirBundle,
+    candidate_root: InstRef,
     source_key: K,
     owner: &TypeInstanceKey<K, M>,
     member: &crate::AnonymousMemberKey,
@@ -4913,35 +5053,9 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    const SYNTHETIC_OWNER: &str = "AnonymousBodyOwner";
     let owner_file = bundle.source_file_id().ok_or_else(|| {
         CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
             "provider anonymous body RIR does not have one source file".into(),
-        ))
-    })?;
-    let host_setup_started = Instant::now();
-    let mut host = ProviderBodyHost::new(
-        provider,
-        source,
-        bundle,
-        source_key,
-        owner_file,
-        member.name.as_ref(),
-        match member.kind {
-            crate::AnonymousMemberKind::Method => crate::StableDefinitionKind::Method,
-            crate::AnonymousMemberKind::AssociatedFunction => {
-                crate::StableDefinitionKind::AssociatedFunction
-            }
-            crate::AnonymousMemberKind::Destructor => crate::StableDefinitionKind::Destructor,
-        },
-        Some(SYNTHETIC_OWNER),
-        target,
-        preview,
-        well_known,
-    )
-    .ok_or_else(|| {
-        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
-            "provider anonymous body host could not be constructed".into(),
         ))
     })?;
     let TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(durable_owner)) = owner
@@ -4952,6 +5066,55 @@ where
             ),
         ));
     };
+    let declaration = {
+        let view = bundle.view();
+        let producer_root = anonymous_producer_root(
+            view.rir(),
+            view.rir_interner(),
+            candidate_root,
+            &source_key,
+            &durable_owner.producer,
+        )
+        .map_err(|detail| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(detail.into()))
+        })?;
+        anonymous_member_in_producer(
+            view.rir(),
+            view.rir_interner(),
+            producer_root,
+            &durable_owner.anchor,
+            member,
+        )
+        .map_err(|detail| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(detail.into()))
+        })?
+    };
+    let host_setup_started = Instant::now();
+    let mut host = ProviderBodyHost::new(
+        provider,
+        source,
+        bundle,
+        source_key.clone(),
+        owner_file,
+        member.name.as_ref(),
+        match member.kind {
+            crate::AnonymousMemberKind::Method => crate::StableDefinitionKind::Method,
+            crate::AnonymousMemberKind::AssociatedFunction => {
+                crate::StableDefinitionKind::AssociatedFunction
+            }
+            crate::AnonymousMemberKind::Destructor => crate::StableDefinitionKind::Destructor,
+        },
+        None,
+        target,
+        preview,
+        well_known,
+    )
+    .ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider anonymous body host could not be constructed".into(),
+        ))
+    })?;
+    host.current_declaration_override = Some(declaration);
     let issued_owner = host
         .register_and_issue_anonymous_identity(durable_owner)
         .ok_or_else(|| {
@@ -5057,14 +5220,6 @@ where
         .cloned()
         .collect::<HashSet<_>>();
 
-    let declaration = host
-        .endpoint
-        .named_method_declaration(owner_file, SYNTHETIC_OWNER, member.name.as_ref())
-        .ok_or_else(|| {
-            CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
-                member.name.to_string(),
-            ))
-        })?;
     let (params, body, has_self, self_mode, self_is_mut, span) =
         match &host.rir.rir().get(declaration).data {
             InstData::FnDecl {
@@ -5345,6 +5500,7 @@ where
     Ok(ProviderAnonymousBody {
         work,
         export,
+        body_span,
         function,
         warnings,
         strings,

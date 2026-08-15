@@ -4027,6 +4027,37 @@ pub(crate) fn function_definition_key(
     }
 }
 
+fn producer_body_source_definition_key(
+    producer: &crate::StableProducerId,
+) -> Option<&StableDefinitionKey> {
+    match producer {
+        crate::StableProducerId::Definition(key) => Some(key),
+        crate::StableProducerId::Function(function) => {
+            function_body_source_definition_key(function)
+        }
+    }
+}
+
+fn function_body_source_definition_key(
+    function: &crate::FunctionInstanceKey,
+) -> Option<&StableDefinitionKey> {
+    match function {
+        crate::FunctionInstanceKey::Definition(key) => Some(key),
+        crate::FunctionInstanceKey::Specialization { base, .. } => {
+            function_body_source_definition_key(base)
+        }
+        crate::FunctionInstanceKey::AnonymousMember { owner, .. } => {
+            let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) =
+                owner.as_ref()
+            else {
+                return None;
+            };
+            producer_body_source_definition_key(&owner.producer)
+        }
+        crate::FunctionInstanceKey::DropGlue(_) => None,
+    }
+}
+
 fn body_source_definition_key(
     function: &crate::FunctionInstanceKey,
 ) -> Option<&StableDefinitionKey> {
@@ -4036,12 +4067,9 @@ fn body_source_definition_key(
         else {
             return None;
         };
-        return match &owner.producer {
-            crate::StableProducerId::Definition(key) => Some(key),
-            crate::StableProducerId::Function(function) => function_definition_key(function),
-        };
+        return producer_body_source_definition_key(&owner.producer);
     }
-    function_definition_key(function)
+    function_body_source_definition_key(function)
 }
 
 fn closure_callable_has_body(
@@ -4673,52 +4701,6 @@ impl<'a> WarningStaticCallCollector<'a> {
     }
 }
 
-#[derive(Debug)]
-struct AnonymousMemberLowering {
-    bundle: rue_air::BodyRirBundle,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct AnonymousMemberLoweringAttribution {
-    assembly_snapshot_ns: u64,
-    lex_parse_ns: u64,
-    rir_lower_ns: u64,
-    span_remap_validation_ns: u64,
-    index: rue_air::BodyRirIndexAttribution,
-    source_bytes: u64,
-    declaration_fragments: u64,
-    rir_instructions: u64,
-    rir_payload_words: u64,
-}
-
-fn elapsed_ns(started: std::time::Instant) -> u64 {
-    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-}
-
-fn publish_anonymous_member_lowering_attribution(attribution: AnonymousMemberLoweringAttribution) {
-    let attributed_total_ns = attribution
-        .assembly_snapshot_ns
-        .saturating_add(attribution.lex_parse_ns)
-        .saturating_add(attribution.rir_lower_ns)
-        .saturating_add(attribution.span_remap_validation_ns)
-        .saturating_add(attribution.index.duration_ns);
-    tracing::event!(
-        name: "semantic_anonymous_member_lowering_breakdown",
-        target: "rue::timing",
-        tracing::Level::INFO,
-        attributed_total_ns,
-        assembly_snapshot_ns = attribution.assembly_snapshot_ns,
-        lex_parse_ns = attribution.lex_parse_ns,
-        rir_lower_ns = attribution.rir_lower_ns,
-        span_remap_validation_ns = attribution.span_remap_validation_ns,
-        body_rir_index_ns = attribution.index.duration_ns,
-        source_bytes = attribution.source_bytes,
-        declaration_fragments = attribution.declaration_fragments,
-        rir_instructions = attribution.rir_instructions,
-        rir_payload_words = attribution.rir_payload_words,
-    );
-}
-
 fn publish_body_plan_materialization_attribution(
     attribution: crate::canonical_lower::BodyPlanMaterializationAttribution,
 ) {
@@ -4748,196 +4730,6 @@ fn publish_body_plan_materialization_attribution(
         index_named_methods_indexed = attribution.index.named_methods_indexed,
         index_const_declarations_indexed = attribution.index.const_declarations_indexed,
     );
-}
-
-fn lower_anonymous_member_body_input(
-    input: &crate::durable_semantics::DurableAnonymousMemberBodySyntax,
-    member: &crate::AnonymousMemberKey,
-    source_locator: &rue_air::DurableBodySourceLocator,
-    producer_fragment_start: u32,
-) -> Result<AnonymousMemberLowering, Arc<str>> {
-    let _body_input_lowering_span =
-        tracing::info_span!("body_input_lowering", phase = "semantic_analysis").entered();
-    let attribution_started = tracing::enabled!(
-        target: "rue::timing",
-        tracing::Level::INFO
-    )
-    .then(std::time::Instant::now);
-    // Anonymous members are lowered from the exact fragment published by their
-    // producer. The synthetic named owner exists only to give the standalone
-    // parser the grammar context the member declaration requires; it carries
-    // no semantic identity and never crosses this request.
-    const OWNER: &str = "AnonymousBodyOwner";
-    let mut declaration = input
-        .signature
-        .declaration_fragments
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<&str>>()
-        .concat();
-    let mut destructor_expansion = None;
-    if member.kind == crate::AnonymousMemberKind::Destructor {
-        // Named structs spell destructors as a separate declaration, while an
-        // anonymous type spells one inline. The fragment parser only needs a
-        // method-shaped carrier; the durable member key remains the authority
-        // that selects destructor analysis below.
-        let offset = declaration
-            .find("drop fn")
-            .ok_or_else(|| Arc::from("anonymous destructor signature has no `drop fn` marker"))?;
-        declaration.replace_range(offset..offset + "drop fn".len(), "fn __drop");
-        destructor_expansion = Some((offset as u32, 2u32));
-    }
-    let prefix = format!("struct {OWNER} {{");
-    let mut source = prefix.clone();
-    source.push_str(&declaration);
-    source.push_str(input.body.body.as_ref());
-    source.push('}');
-    let source_bytes = source.len() as u64;
-
-    let snapshot = crate::SourceSnapshot::single("<rue-anonymous-body-input>", source)
-        .map_err(|errors| Arc::from(errors.to_string()))?;
-    let module_id = snapshot
-        .module_id(crate::FileId::DEFAULT)
-        .cloned()
-        .ok_or_else(|| Arc::from("anonymous body snapshot has no synthetic module"))?;
-    let assembly_finished_ns = attribution_started.map(elapsed_ns);
-    let (parsed, _) = crate::parsed_modules::parse_source_snapshot_module(&snapshot, &module_id);
-    let module = parsed.map_err(|errors| Arc::from(errors.to_string()))?;
-    if module.ast().items.len() != 1
-        || !module
-            .ast()
-            .items
-            .first()
-            .is_some_and(|item| matches!(item, rue_parser::ast::Item::Struct(_)))
-    {
-        return Err(Arc::from(
-            "anonymous member input did not lower to exactly one synthetic owner",
-        ));
-    }
-    let parse_finished_ns = attribution_started.map(elapsed_ns);
-    let signature_len = prefix.len() + declaration.len();
-    let body_len = input.body.body.len();
-    let anchors = input
-        .body
-        .anonymous_sites
-        .iter()
-        .map(|site| {
-            let start = signature_len
-                .checked_add(site.fragment_start as usize)
-                .and_then(|offset| u32::try_from(offset).ok())
-                .ok_or_else(|| Arc::from("anonymous member anchor start exceeds local source"))?;
-            let end = signature_len
-                .checked_add(site.fragment_end as usize)
-                .and_then(|offset| u32::try_from(offset).ok())
-                .ok_or_else(|| Arc::from("anonymous member anchor end exceeds local source"))?;
-            if site.fragment_start >= site.fragment_end || site.fragment_end as usize > body_len {
-                return Err(Arc::from(
-                    "anonymous member anchor locator is outside its exact body syntax",
-                ));
-            }
-            Ok((
-                rue_span::Span::new(start, end),
-                site.kind,
-                site.anchor.clone(),
-            ))
-        })
-        .collect::<Result<Vec<_>, Arc<str>>>()?;
-    let artifacts = module
-        .definitions()
-        .declaration_keys_in_source_order()
-        .map(|key| {
-            let artifact = if matches!(
-                key.category,
-                crate::declaration_candidate::DeclarationCandidateCategory::Method
-                    | crate::declaration_candidate::DeclarationCandidateCategory::AssociatedFunction
-            ) {
-                crate::canonical_lower::lower_parsed_declaration_body_plan_with_anonymous_anchors(
-                    &module,
-                    key,
-                    &anchors,
-                    || Ok(()),
-                )
-            } else {
-                crate::canonical_lower::lower_parsed_declaration_body_plan(&module, key, || Ok(()))
-            }
-            .map_err(|error| Arc::from(format!("{error:?}")))?;
-            Ok((key.clone(), Arc::new(artifact)))
-        })
-        .collect::<Result<HashMap<_, _>, Arc<str>>>()?;
-    let rir = crate::canonical_lower::compose_module_rir_from_candidate_artifacts(
-        module.clone(),
-        &artifacts,
-        || Ok(()),
-    )
-    .map_err(|error| Arc::from(format!("{error:?}")))?;
-    let rir_finished_ns = attribution_started.map(elapsed_ns);
-    let source_length = source_locator.source_length;
-    let local_prefix = u32::try_from(prefix.len())
-        .map_err(|_| Arc::from("anonymous owner prefix exceeds span capacity"))?;
-    let local_body_start = u32::try_from(signature_len)
-        .map_err(|_| Arc::from("anonymous member signature exceeds span capacity"))?;
-    let remap_signature_offset = |offset: u32| match destructor_expansion {
-        Some((expansion_at, expansion)) if offset > expansion_at => {
-            offset.saturating_sub(expansion)
-        }
-        _ => offset,
-    };
-    let remap_offset = |offset: u32| {
-        if offset >= local_body_start {
-            producer_fragment_start
-                .saturating_add(input.body_start)
-                .saturating_add(offset - local_body_start)
-                .min(producer_fragment_start.saturating_add(input.body_end))
-                .min(source_length)
-        } else if offset >= local_prefix {
-            producer_fragment_start
-                .saturating_add(input.declaration_start)
-                .saturating_add(remap_signature_offset(offset - local_prefix))
-                .min(producer_fragment_start.saturating_add(input.body_start))
-                .min(source_length)
-        } else {
-            producer_fragment_start
-                .saturating_add(input.declaration_start)
-                .min(source_length)
-        }
-    };
-    let (bundle, remap) = rir
-        .into_remapped_body_rir_bundle_with_attribution(
-            source_locator.file_id,
-            source_length,
-            |span| {
-                rue_span::Span::with_file(
-                    source_locator.file_id,
-                    remap_offset(span.start),
-                    remap_offset(span.end),
-                )
-            },
-            attribution_started
-                .zip(rir_finished_ns)
-                .map(|(started, rir_lower_finished_ns)| {
-                    crate::canonical_lower::BodyRirAttributionClock {
-                        started,
-                        rir_lower_finished_ns,
-                    }
-                }),
-        )
-        .map_err(Arc::from)?;
-    if let (Some(assembly_finished_ns), Some(parse_finished_ns), Some(rir_finished_ns)) =
-        (assembly_finished_ns, parse_finished_ns, rir_finished_ns)
-    {
-        publish_anonymous_member_lowering_attribution(AnonymousMemberLoweringAttribution {
-            assembly_snapshot_ns: assembly_finished_ns,
-            lex_parse_ns: parse_finished_ns.saturating_sub(assembly_finished_ns),
-            rir_lower_ns: rir_finished_ns.saturating_sub(parse_finished_ns),
-            span_remap_validation_ns: remap.span_remap_validation_ns,
-            index: remap.index,
-            source_bytes,
-            declaration_fragments: input.signature.declaration_fragments.len() as u64,
-            rir_instructions: remap.rir_instructions,
-            rir_payload_words: remap.rir_payload_words,
-        });
-    }
-    Ok(AnonymousMemberLowering { bundle })
 }
 
 fn declaration_candidate_for_stable_key(
@@ -8318,20 +8110,6 @@ impl SemanticConstEvaluator<'_, '_> {
                         crate::durable_semantics::DurableParameterMode::Inout
                     }
                 };
-                // 6.6:7's accessor-link and 6.6:14 cycle-edge facts for this
-                // anonymous owner's own methods, exactly as a named owner's
-                // members retain them.
-                let owner_methods =
-                    crate::semantic_query_nucleus::owner_method_accessor_facts(methods.iter().map(
-                        |method| rue_air::declaration_validation::AccessorOwnerMethod {
-                            name: Arc::from(self.interner.resolve(&method.name.name)),
-                            is_accessor: method.borrow_return.is_some(),
-                            self_call_targets: crate::semantic_query_nucleus::ast_self_call_targets(
-                                &method.body,
-                                self.interner,
-                            ),
-                        },
-                    ));
                 let methods = methods
                     .iter()
                     .map(|method| {
@@ -8375,69 +8153,6 @@ impl SemanticConstEvaluator<'_, '_> {
                                 },
                             ));
                         }
-                        let body_span = method.body.span();
-                        let declaration_start = method
-                            .span
-                            .start
-                            .checked_sub(self.producer_fragment_start)
-                            .ok_or_else(|| {
-                                Self::failure_value(
-                                    "anonymous member precedes its producer fragment",
-                                )
-                            })?;
-                        let member_body_start = body_span
-                            .start
-                            .checked_sub(self.producer_fragment_start)
-                            .ok_or_else(|| {
-                                Self::failure_value(
-                                    "anonymous member body precedes its producer fragment",
-                                )
-                            })?;
-                        let member_body_end = body_span
-                            .end
-                            .checked_sub(self.producer_fragment_start)
-                            .ok_or_else(|| {
-                                Self::failure_value(
-                                    "anonymous member body precedes its producer fragment",
-                                )
-                            })?;
-                        let signature = self
-                            .source
-                            .get(method.span.start as usize..body_span.start as usize)
-                            .ok_or_else(|| {
-                                Self::failure_value(
-                                    "anonymous member signature span is invalid",
-                                )
-                            })?;
-                        let body = self
-                            .source
-                            .get(body_span.start as usize..body_span.end as usize)
-                            .ok_or_else(|| {
-                                Self::failure_value("anonymous member body span is invalid")
-                            })?;
-                        let anonymous_sites = rue_rir::anonymous_type_sites(&method.body)
-                            .into_iter()
-                            .map(|site| {
-                                let fragment_start =
-                                    site.span.start.checked_sub(body_span.start).ok_or_else(|| {
-                                        Self::failure_value(
-                                            "anonymous member nested site precedes its body",
-                                        )
-                                    })?;
-                                let fragment_end =
-                                    site.span.end.checked_sub(body_span.start).ok_or_else(|| {
-                                        Self::failure_value(
-                                            "anonymous member nested site precedes its body",
-                                        )
-                                    })?;
-                                Ok(crate::declaration_candidate::RawAnonymousSite {
-                                    fragment_start,
-                                    fragment_end,
-                                    kind: site.kind,
-                                    anchor: site.anchor,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
                         let parameters = method
                             .params
                             .iter()
@@ -8464,29 +8179,7 @@ impl SemanticConstEvaluator<'_, '_> {
                             ),
                             parameters: parameters.into(),
                             result,
-                            body: Some(
-                                crate::durable_semantics::DurableAnonymousMemberBodySyntax {
-                                    declaration_start,
-                                    body_start: member_body_start,
-                                    body_end: member_body_end,
-                                    signature:
-                                        crate::declaration_candidate::RawDeclarationSignatureSyntax {
-                                            declaration_fragments: Arc::from([Arc::from(signature)]),
-                                            extern_abi: None,
-                                            accessor: method.borrow_return.is_some().then(|| {
-                                                Arc::new(crate::declaration_candidate::RawAccessorSignatureSyntax {
-                                                    body: Arc::from(body),
-                                                    owner_methods: owner_methods.clone(),
-                                                })
-                                            }),
-                                        },
-                                    body:
-                                        crate::declaration_candidate::RawDeclarationBodySyntax {
-                                            body: Arc::from(body),
-                                            anonymous_sites: anonymous_sites.into(),
-                                        },
-                                },
-                            ),
+                            has_body: true,
                         })
                     })
                     .collect::<Result<Vec<_>, EvaluateSemanticConstError>>()?;
@@ -16483,7 +16176,6 @@ impl RevisionedQueryDatabase {
                     parse_modules: parse_modules.clone(),
                     module_source_bases: module_source_bases.clone(),
                     body_input: body_input_resolver,
-                    body_source_bases: body_source_bases.clone(),
                     body_toolchain_demands: body_toolchain_demands.clone(),
                     body_produced_anonymous: body_produced_anonymous.clone(),
                     semantic_nucleus: semantic_nucleus.clone(),
@@ -17443,30 +17135,34 @@ struct BodyInputResolver {
 }
 
 impl BodyInputResolver {
-    fn resolve(
+    fn select(
         &self,
         context: &rue_query::QueryContext,
         key: &crate::body_query::BodyQueryKey,
-    ) -> Result<crate::body_query::BodyInputValue, QueryAbort> {
-        use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
+    ) -> Result<
+        Result<
+            (
+                StableDefinitionKey,
+                crate::declaration_candidate::DeclarationCandidateKey,
+            ),
+            crate::body_query::BodyInputIncomplete,
+        >,
+        QueryAbort,
+    > {
+        use crate::body_query::BodyInputIncomplete as Incomplete;
 
         let Some(definition) = body_source_definition_key(&key.instance).cloned() else {
-            return Ok(BodyInputValue::Incomplete(Incomplete::UnsupportedInstance));
+            return Ok(Err(Incomplete::UnsupportedInstance));
         };
-        if !definition.kind().owns_body() {
-            return Ok(BodyInputValue::Incomplete(Incomplete::UnsupportedKind(
-                definition.kind(),
-            )));
-        }
         let classification = match context.query_registered(
             &self.stable_declaration_classifications,
             StableDeclarationClassificationQueryKey(definition.clone()),
         ) {
             Ok(value) => value,
             Err(QueryAbort::MissingInput(_)) => {
-                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                    Arc::from("stable declaration classification"),
-                )));
+                return Ok(Err(Incomplete::MissingPrerequisite(Arc::from(
+                    "stable declaration classification",
+                ))));
             }
             Err(abort) => return Err(abort),
         };
@@ -17475,11 +17171,91 @@ impl BodyInputResolver {
                 StableDeclarationClassificationQueryValue::Selected(candidate),
             ) => candidate.clone(),
             _ => {
+                return Ok(Err(Incomplete::MissingPrerequisite(Arc::from(
+                    "stable declaration candidate",
+                ))));
+            }
+        };
+        Ok(Ok((definition, candidate)))
+    }
+
+    fn resolve_selected_artifact(
+        &self,
+        context: &rue_query::QueryContext,
+        key: &crate::body_query::BodyQueryKey,
+        definition: StableDefinitionKey,
+        candidate: crate::declaration_candidate::DeclarationCandidateKey,
+    ) -> Result<crate::body_query::BodyInputValue, QueryAbort> {
+        use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
+
+        let artifacts = match context.query_registered(
+            &self.declaration_body_plan_artifacts,
+            DeclarationBodyPlanQueryKey(candidate),
+        ) {
+            Ok(value) => value,
+            Err(QueryAbort::MissingInput(_)) => {
                 return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                    Arc::from("stable declaration candidate"),
+                    Arc::from("declaration body plan"),
+                )));
+            }
+            Err(abort) => return Err(abort),
+        };
+        let rue_query::QueryOutcome::Success(artifacts) = artifacts.outcome() else {
+            unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
+        };
+        let artifacts = match artifacts {
+            DeclarationBodyPlanArtifactsValue::Available(artifacts) => artifacts,
+            DeclarationBodyPlanArtifactsValue::Failure(failure) => {
+                return Ok(BodyInputValue::Incomplete(Incomplete::BodyPlanFailure(
+                    failure.clone(),
                 )));
             }
         };
+        let locator = context.query_registered(&self.body_source_bases, key.clone())?;
+        let rue_query::QueryOutcome::Success(Some(locator)) = locator.outcome() else {
+            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
+                Arc::from("body source basis"),
+            )));
+        };
+        Ok(BodyInputValue::Available(
+            crate::body_query::OwnedBodyInput {
+                owner: definition,
+                source: locator.clone(),
+                artifacts: artifacts.clone(),
+            },
+        ))
+    }
+
+    fn resolve_producer_artifact(
+        &self,
+        context: &rue_query::QueryContext,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> Result<crate::body_query::BodyInputValue, QueryAbort> {
+        let (definition, candidate) = match self.select(context, key)? {
+            Ok(selected) => selected,
+            Err(incomplete) => {
+                return Ok(crate::body_query::BodyInputValue::Incomplete(incomplete));
+            }
+        };
+        self.resolve_selected_artifact(context, key, definition, candidate)
+    }
+
+    fn resolve(
+        &self,
+        context: &rue_query::QueryContext,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> Result<crate::body_query::BodyInputValue, QueryAbort> {
+        use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
+
+        let (definition, candidate) = match self.select(context, key)? {
+            Ok(selected) => selected,
+            Err(incomplete) => return Ok(BodyInputValue::Incomplete(incomplete)),
+        };
+        if !definition.kind().owns_body() {
+            return Ok(BodyInputValue::Incomplete(Incomplete::UnsupportedKind(
+                definition.kind(),
+            )));
+        }
         let shell = match context.query_registered(
             &self.declaration_shells,
             DeclarationShellQueryKey(candidate.clone()),
@@ -17519,42 +17295,7 @@ impl BodyInputResolver {
                 return Ok(BodyInputValue::Incomplete(Incomplete::Generic));
             }
         }
-        let artifacts = match context.query_registered(
-            &self.declaration_body_plan_artifacts,
-            DeclarationBodyPlanQueryKey(candidate),
-        ) {
-            Ok(value) => value,
-            Err(QueryAbort::MissingInput(_)) => {
-                return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                    Arc::from("declaration body plan"),
-                )));
-            }
-            Err(abort) => return Err(abort),
-        };
-        let rue_query::QueryOutcome::Success(artifacts) = artifacts.outcome() else {
-            unreachable!("DeclarationBodyPlanArtifacts publishes typed values")
-        };
-        let artifacts = match artifacts {
-            DeclarationBodyPlanArtifactsValue::Available(artifacts) => artifacts,
-            DeclarationBodyPlanArtifactsValue::Failure(failure) => {
-                return Ok(BodyInputValue::Incomplete(Incomplete::BodyPlanFailure(
-                    failure.clone(),
-                )));
-            }
-        };
-        let locator = context.query_registered(&self.body_source_bases, key.clone())?;
-        let rue_query::QueryOutcome::Success(Some(locator)) = locator.outcome() else {
-            return Ok(BodyInputValue::Incomplete(Incomplete::MissingPrerequisite(
-                Arc::from("body source basis"),
-            )));
-        };
-        Ok(BodyInputValue::Available(
-            crate::body_query::OwnedBodyInput {
-                owner: definition,
-                source: locator.clone(),
-                artifacts: artifacts.clone(),
-            },
-        ))
+        self.resolve_selected_artifact(context, key, definition, candidate)
     }
 }
 
@@ -17562,8 +17303,6 @@ struct BodyTransactionEvaluator {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     body_input: BodyInputResolver,
-    body_source_bases:
-        QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
     body_toolchain_demands:
         QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
     body_produced_anonymous:
@@ -18614,16 +18353,28 @@ impl BodyTransactionEvaluator {
                     owner_identity,
                 )) = owner.as_ref()
                 else {
-                    return Err(QueryAbort::Canceled);
+                    return Ok(QueryOutput::success(Self::lowering_failure(
+                        &definition,
+                        "anonymous member has a non-anonymous owner",
+                    ))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
                 };
                 let Some(owner_fact) = selected_anonymous.get(owner_identity) else {
-                    return Err(QueryAbort::Canceled);
+                    return Ok(QueryOutput::success(Self::lowering_failure(
+                        &definition,
+                        "anonymous member owner fact is unavailable",
+                    ))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
                 };
                 let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                     methods, ..
                 } = &owner_fact.shape
                 else {
-                    return Err(QueryAbort::Canceled);
+                    return Ok(QueryOutput::success(Self::lowering_failure(
+                        &definition,
+                        "anonymous enum cannot own a callable member",
+                    ))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
                 };
                 let Some(method) = methods.iter().find(|candidate| {
                     let kind = if candidate.name.as_ref() == "__drop" {
@@ -18635,21 +18386,103 @@ impl BodyTransactionEvaluator {
                     };
                     candidate.name == member.name && kind == member.kind
                 }) else {
-                    return Err(QueryAbort::Canceled);
-                };
-                let Some(member_input) = &method.body else {
-                    return Err(QueryAbort::Canceled);
-                };
-                let source_basis =
-                    context.query_registered(&self.body_source_bases, key.clone())?;
-                let rue_query::QueryOutcome::Success(Some(source_basis)) = source_basis.outcome()
-                else {
                     return Ok(QueryOutput::success(Self::lowering_failure(
                         &definition,
-                        "anonymous member producer has no real source basis",
+                        "anonymous member identity is absent from its producer facts",
                     ))
                     .with_terminal_kind(QueryTerminalKind::Failure));
                 };
+                if !method.has_body {
+                    return Ok(QueryOutput::success(Self::lowering_failure(
+                        &definition,
+                        "anonymous member producer facts do not admit a body",
+                    ))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+                }
+                let input = self.body_input.resolve_producer_artifact(context, key)?;
+                let input = match input {
+                    crate::body_query::BodyInputValue::Available(input) => input,
+                    crate::body_query::BodyInputValue::Incomplete(
+                        crate::body_query::BodyInputIncomplete::BodyPlanFailure(failure),
+                    ) => {
+                        return Ok(QueryOutput::success(Self::body_plan_failure(
+                            &definition,
+                            &failure,
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    crate::body_query::BodyInputValue::Incomplete(incomplete) => {
+                        return Ok(QueryOutput::success(Self::lowering_failure(
+                            &definition,
+                            format!("anonymous producer artifact is unavailable: {incomplete:?}"),
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                };
+                let attribution_enabled =
+                    tracing::enabled!(target: "rue::timing", tracing::Level::INFO);
+                let _body_input_lowering_span =
+                    tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
+                        .entered();
+                let materialized = if attribution_enabled {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle_with_declaration_and_attribution(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|(bundle, declaration, attribution)| {
+                            (bundle, declaration, Some(attribution))
+                        })
+                } else {
+                    input
+                        .artifacts
+                        .plan
+                        .materialize_body_rir_bundle_with_declaration(
+                            input.source.file_id,
+                            input.source.declaration_start,
+                            input.source.source_length,
+                            || self.materialization_checkpoint(context),
+                        )
+                        .map(|(bundle, declaration)| (bundle, declaration, None))
+                };
+                let (bundle, candidate_root) = match materialized {
+                    Ok((bundle, declaration, attribution))
+                        if input.artifacts.plan.instruction_count() > 0 =>
+                    {
+                        if let Some(attribution) = attribution {
+                            publish_body_plan_materialization_attribution(attribution);
+                        }
+                        (bundle, declaration)
+                    }
+                    Ok(_) => {
+                        return Ok(QueryOutput::success(Self::lowering_failure(
+                            &definition,
+                            "anonymous producer artifact contains no local instructions",
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Query(abort)) => {
+                        return Err(abort);
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Build(error)) => {
+                        return Ok(QueryOutput::success(Self::lowering_build_failure(&error))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                    Err(crate::canonical_lower::BodyPlanMaterializationFailure::Invalid(
+                        failure,
+                    )) => {
+                        return Ok(QueryOutput::success(Self::lowering_failure(
+                            &definition,
+                            failure,
+                        ))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                };
+                drop(_body_input_lowering_span);
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -18661,25 +18494,9 @@ impl BodyTransactionEvaluator {
                     .with_producer_transport_failure(producer_transport_failure.clone()),
                 );
                 let source_locator = rue_air::DurableBodySourceLocator {
-                    file_id: source_basis.file_id,
-                    physical_path: source_basis.physical_path.clone(),
-                    source_length: source_basis.source_length,
-                };
-                let producer_fragment_start = source_basis.body_start;
-                let lowering = match lower_anonymous_member_body_input(
-                    member_input,
-                    member,
-                    &source_locator,
-                    producer_fragment_start,
-                ) {
-                    Ok(lowering) => lowering,
-                    Err(detail) => {
-                        return Ok(QueryOutput::success(Self::lowering_failure(
-                            &definition,
-                            detail,
-                        ))
-                        .with_terminal_kind(QueryTerminalKind::Failure));
-                    }
+                    file_id: input.source.file_id,
+                    physical_path: input.source.physical_path.clone(),
+                    source_length: input.source.source_length,
                 };
                 let source = CompilerBodyDurableSource::with_anonymous(
                     &provider,
@@ -18702,7 +18519,8 @@ impl BodyTransactionEvaluator {
                     rue_air::analyze_provider_anonymous_body(
                         &provider,
                         source,
-                        &lowering.bundle,
+                        &bundle,
+                        candidate_root,
                         definition.clone(),
                         owner.as_ref(),
                         member,
@@ -18723,6 +18541,20 @@ impl BodyTransactionEvaluator {
                     Ok(analyzed) => {
                         self.provider_observation_meter
                             .accrue_provider_body_work(analyzed.work);
+                        let body_anchor = analyzed
+                            .body_span
+                            .start
+                            .checked_sub(input.source.body_start)
+                            .zip(analyzed.body_span.end.checked_sub(input.source.body_start))
+                            .filter(|(start, end)| {
+                                analyzed.body_span.file_id == input.source.file_id
+                                    && start <= end
+                                    && analyzed.body_span.end <= input.source.body_end
+                            })
+                            .map(|(start, end)| crate::body_query::BodyRelativeRange {
+                                start,
+                                end,
+                            });
                         let definition_tokens = analyzed
                             .definition_tokens
                             .into_iter()
@@ -18765,7 +18597,7 @@ impl BodyTransactionEvaluator {
                                 Ok(body),
                                 Ok(nested),
                                 Ok(produced_anonymous_nominals),
-                            ) if identity == key.instance => {
+                            ) if identity == key.instance && body_anchor.is_some() => {
                                 let mut references = analyzed
                                     .referenced_definitions
                                     .into_iter()
@@ -18790,10 +18622,9 @@ impl BodyTransactionEvaluator {
                                 crate::body_query::BodyTransaction::Success {
                                     body: Arc::new(crate::body_query::CanonicalBody::Anonymous {
                                         identity,
-                                        body_anchor: crate::body_query::BodyRelativeRange {
-                                            start: member_input.body_start,
-                                            end: member_input.body_end,
-                                        },
+                                        body_anchor: body_anchor.expect(
+                                            "successful anonymous body projection has an anchor",
+                                        ),
                                         body,
                                     }),
                                     references: crate::body_query::BodyReferences(
@@ -18822,7 +18653,7 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => body_failure_with_source(error, source_basis),
+                    Err(error) => body_failure_with_source(error, &input.source),
                 }
             } else {
                 crate::body_query::BodyTransaction::DeterministicFailure {
@@ -22926,7 +22757,7 @@ fn project_provider_produced_anonymous_nominals(
                                         .collect::<Result<Vec<_>, _>>()?
                                         .into(),
                                     result: method_type(&method.result)?,
-                                    body: None,
+                                    has_body: true,
                                 })
                             })
                             .collect::<Result<Vec<_>, _>>()?
@@ -25754,10 +25585,10 @@ mod tests {
             "production provider construction must obtain its view from BodyRirBundle::view"
         );
         let lower = include_str!("canonical_lower.rs");
-        assert!(lower.contains("BodyRirBundle::new"));
+        assert!(lower.contains("BodyRirBundle::new_with_index_attribution"));
         assert!(
-            lower.contains("into_remapped_body_rir_bundle"),
-            "the production lowerer owns the request-local bundle"
+            lower.contains("materialize_body_rir_bundle_with_declaration"),
+            "the packed candidate materializer owns the request-local bundle"
         );
     }
 
@@ -30595,7 +30426,7 @@ fn main() -> i32 {
                     result: crate::durable_semantics::DurableAnonymousMethodType::Concrete(
                         rue_air::SemanticImportType::I32,
                     ),
-                    body: None,
+                    has_body: false,
                 }]),
             },
             Arc::from([]),
@@ -39513,83 +39344,858 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn anonymous_member_body_anchors_are_producer_fragment_relative() {
+    fn anonymous_member_reuses_its_candidate_artifact_and_current_source_basis() {
         let first_text = "// unrelated leading source\nfn Box() -> type {\n    struct { fn get(self) -> i32 { 7 } }\n}";
         let shifted_text = "// another position-only line\n// unrelated leading source\nfn Box() -> type {\n    struct { fn get(self) -> i32 { 7 } }\n}";
-        let source = |text| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let source =
+            |file_id, text| source_snapshot(&[(file_id, "/main.rue", "main.rue", text)], file_id);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let producer = crate::FunctionInstanceKey::Specialization {
             base: Box::new(free_function_instance(&module, "Box")),
             arguments: crate::CanonicalArguments::default(),
         };
-        let key = crate::body_query::BodyQueryKey::new(producer, semantic_configuration());
-        let member_syntax =
+        let producer_key =
+            crate::body_query::BodyQueryKey::new(producer.clone(), semantic_configuration());
+        let member_key =
             |terminal: &rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>| {
                 let rue_query::QueryOutcome::Success(
                     crate::body_query::ProducedAnonymous::Produced(produced),
                 ) = terminal.outcome()
                 else {
-                    panic!("anonymous producer did not publish its member syntax")
+                    panic!("anonymous producer did not publish its member facts")
                 };
-                produced
+                let owner = produced
                     .0
                     .iter()
-                    .find_map(|nominal| {
+                    .find(|nominal| {
                         let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
                             methods,
                             ..
                         } = &nominal.shape
                         else {
-                            return None;
+                            return false;
                         };
                         methods
                             .iter()
-                            .find(|method| method.name.as_ref() == "get")?
-                            .body
-                            .clone()
+                            .any(|method| method.name.as_ref() == "get" && method.has_body)
                     })
-                    .expect("producer publishes the anonymous get body")
+                    .expect("producer publishes a body-bearing anonymous get method");
+                crate::body_query::BodyQueryKey::new(
+                    crate::FunctionInstanceKey::AnonymousMember {
+                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                            crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                        )),
+                        member: crate::AnonymousMemberKey {
+                            kind: crate::AnonymousMemberKind::Method,
+                            name: Arc::from("get"),
+                        },
+                    },
+                    semantic_configuration(),
+                )
             };
 
         let mut database = RevisionedQueryDatabase::default();
-        let first_source = source(first_text);
+        let first_source = source(1, first_text);
         let first_revision = revision_for(&mut database, &first_source);
-        let first = database.runtime.request_registered(
+        let first_produced = database.runtime.request_registered(
             &database.body_produced_anonymous,
             first_revision,
-            key.clone(),
+            producer_key.clone(),
             CancellationToken::new(),
         );
-        let first_terminal = first.terminal().unwrap();
-        let first_syntax = member_syntax(first_terminal);
-        let producer_fragment_start = first_text.find("{\n    struct").unwrap();
-        let declaration_start = first_text.find("fn get").unwrap() - producer_fragment_start;
-        let body_start = first_text.find("{ 7 }").unwrap() - producer_fragment_start;
-        assert_eq!(
-            first_syntax.declaration_start,
-            u32::try_from(declaration_start).unwrap(),
+        let first_member = member_key(first_produced.terminal().unwrap());
+        let first_candidate = declaration_candidate(
+            &database,
+            first_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
         );
-        assert_eq!(first_syntax.body_start, u32::try_from(body_start).unwrap());
+        let first_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            first_revision,
+            DeclarationBodyPlanQueryKey(first_candidate),
+            CancellationToken::new(),
+        );
+        let first_artifact_stamp = first_artifact.terminal().unwrap().stamp();
+        let astgen_before_member = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let first_transaction = database
+            .body_transaction(
+                first_revision,
+                first_member.clone(),
+                CancellationToken::new(),
+            )
+            .expect("anonymous get transaction succeeds from its producer artifact");
         assert_eq!(
-            first_syntax.body_end,
-            u32::try_from(body_start + "{ 7 }".len()).unwrap(),
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            astgen_before_member,
+            "the anonymous member must reuse its producer candidate AstGen result",
+        );
+        assert!(first_transaction.dependencies().iter().any(|dependency| {
+            dependency.node.family() == "compiler.declaration-body-plan-artifacts"
+                && dependency.stamp == first_artifact_stamp
+        }));
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
+            body,
+            ..
+        }) = first_transaction.outcome()
+        else {
+            panic!("anonymous get transaction did not publish a body")
+        };
+        let crate::body_query::CanonicalBody::Anonymous {
+            body_anchor: first_anchor,
+            ..
+        } = body.as_ref()
+        else {
+            panic!("anonymous get transaction published the wrong body kind")
+        };
+        let first_locator = database
+            .body_source_basis_projection(
+                first_revision,
+                first_member.clone(),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(Some(first_locator)) = first_locator.outcome() else {
+            panic!("anonymous member has its producer's current source basis")
+        };
+        assert_eq!(
+            first_locator.body_start + first_anchor.start,
+            u32::try_from(first_text.find("7 }").unwrap()).unwrap(),
+        );
+        assert_eq!(
+            first_locator.body_start + first_anchor.end,
+            u32::try_from(first_text.find("7 }").unwrap() + "7".len()).unwrap(),
         );
 
-        let shifted_source = source(shifted_text);
+        let shifted_source = source(7, shifted_text);
         let shifted_revision = revision_for(&mut database, &shifted_source);
-        let shifted = database.runtime.request_registered(
+        let shifted_produced = database.runtime.request_registered(
             &database.body_produced_anonymous,
             shifted_revision,
-            key,
+            producer_key,
             CancellationToken::new(),
         );
-        let shifted_terminal = shifted.terminal().unwrap();
-        assert_eq!(
-            shifted_terminal.stamp(),
-            first_terminal.stamp(),
-            "moving the producer in its module must not restamp its member syntax",
+        let shifted_member = member_key(shifted_produced.terminal().unwrap());
+        assert_eq!(shifted_member, first_member);
+        let shifted_candidate = declaration_candidate(
+            &database,
+            shifted_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
         );
-        assert_eq!(member_syntax(shifted_terminal), first_syntax);
+        let shifted_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            shifted_revision,
+            DeclarationBodyPlanQueryKey(shifted_candidate),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            shifted_artifact.terminal().unwrap().stamp(),
+            first_artifact_stamp,
+            "moving the producer must not restamp its candidate artifact",
+        );
+        let astgen_before_shifted_member = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let shifted_transaction = database
+            .body_transaction(
+                shifted_revision,
+                shifted_member.clone(),
+                CancellationToken::new(),
+            )
+            .expect("shifted anonymous get transaction succeeds");
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            astgen_before_shifted_member,
+        );
+        assert_eq!(shifted_transaction.stamp(), first_transaction.stamp());
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success {
+            body,
+            ..
+        }) = shifted_transaction.outcome()
+        else {
+            panic!("shifted anonymous get transaction did not publish a body")
+        };
+        let crate::body_query::CanonicalBody::Anonymous {
+            body_anchor: shifted_anchor,
+            ..
+        } = body.as_ref()
+        else {
+            panic!("shifted anonymous get transaction published the wrong body kind")
+        };
+        assert_eq!(shifted_anchor, first_anchor);
+        let shifted_locator = database
+            .body_source_basis_projection(
+                shifted_revision,
+                shifted_member,
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(Some(shifted_locator)) = shifted_locator.outcome()
+        else {
+            panic!("shifted anonymous member has its current producer basis")
+        };
+        assert_eq!(shifted_locator.file_id, FileId::new(7));
+        assert_eq!(
+            shifted_locator.body_start + shifted_anchor.start,
+            u32::try_from(shifted_text.find("7 }").unwrap()).unwrap(),
+        );
+        assert_eq!(
+            shifted_locator.body_start + shifted_anchor.end,
+            u32::try_from(shifted_text.find("7 }").unwrap() + "7".len()).unwrap(),
+        );
+    }
+
+    #[test]
+    fn anonymous_member_diagnostics_relocate_and_internal_trivia_invalidates() {
+        let text = |prefix: &str, trivia: &str| {
+            format!(
+                "{prefix}fn Box() -> type {{\n    struct {{ fn get(self) -> i32 {{ {trivia}missing }} }}\n}}"
+            )
+        };
+        let source = |text: &str| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let member_key =
+            |terminal: &rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>| {
+                let rue_query::QueryOutcome::Success(
+                    crate::body_query::ProducedAnonymous::Produced(produced),
+                ) = terminal.outcome()
+                else {
+                    panic!("Box did not publish get's owner")
+                };
+                let owner = produced
+                    .0
+                    .iter()
+                    .find(|nominal| {
+                        matches!(
+                            &nominal.shape,
+                            crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                                methods,
+                                ..
+                            } if methods.iter().any(|method| method.name.as_ref() == "get")
+                        )
+                    })
+                    .unwrap();
+                crate::body_query::BodyQueryKey::new(
+                    crate::FunctionInstanceKey::AnonymousMember {
+                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                            crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                        )),
+                        member: crate::AnonymousMemberKey {
+                            kind: crate::AnonymousMemberKind::Method,
+                            name: Arc::from("get"),
+                        },
+                    },
+                    semantic_configuration(),
+                )
+            };
+        let request = |database: &RevisionedQueryDatabase,
+                       revision,
+                       producer_key: crate::body_query::BodyQueryKey| {
+            let produced = database.runtime.request_registered(
+                &database.body_produced_anonymous,
+                revision,
+                producer_key,
+                CancellationToken::new(),
+            );
+            let member = member_key(produced.terminal().unwrap());
+            let transaction = database
+                .body_transaction(revision, member.clone(), CancellationToken::new())
+                .expect("anonymous diagnostic publishes deterministically");
+            let locator = database
+                .body_source_basis_projection(revision, member, CancellationToken::new())
+                .unwrap();
+            (transaction, locator)
+        };
+
+        let mut database = RevisionedQueryDatabase::default();
+        let first_text = text("", "");
+        let first_source = source(&first_text);
+        let first_revision = revision_for(&mut database, &first_source);
+        let first_candidate = declaration_candidate(
+            &database,
+            first_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
+        );
+        let first_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            first_revision,
+            DeclarationBodyPlanQueryKey(first_candidate),
+            CancellationToken::new(),
+        );
+        let (first_transaction, _) = request(
+            &database,
+            first_revision,
+            crate::body_query::BodyQueryKey::new(producer.clone(), semantic_configuration()),
+        );
+
+        let shifted_text = text("// position-only prefix\n", "");
+        let shifted_source = source(&shifted_text);
+        let shifted_revision = revision_for(&mut database, &shifted_source);
+        let shifted_candidate = declaration_candidate(
+            &database,
+            shifted_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
+        );
+        let shifted_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            shifted_revision,
+            DeclarationBodyPlanQueryKey(shifted_candidate),
+            CancellationToken::new(),
+        );
+        let (shifted_transaction, shifted_locator) = request(
+            &database,
+            shifted_revision,
+            crate::body_query::BodyQueryKey::new(producer.clone(), semantic_configuration()),
+        );
+        assert_eq!(
+            shifted_artifact.terminal().unwrap().stamp(),
+            first_artifact.terminal().unwrap().stamp(),
+        );
+        assert_eq!(shifted_transaction.stamp(), first_transaction.stamp());
+        let rue_query::QueryOutcome::Success(Some(shifted_locator)) = shifted_locator.outcome()
+        else {
+            panic!("shifted anonymous diagnostic has a current source basis")
+        };
+        let rue_query::QueryOutcome::Success(transaction) = shifted_transaction.outcome() else {
+            panic!("shifted anonymous diagnostic has a typed transaction")
+        };
+        let projected = project_transaction_diagnostics(transaction.clone(), Some(shifted_locator));
+        let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } = projected
+        else {
+            panic!("undefined anonymous name remains a deterministic failure")
+        };
+        let shifted_missing = u32::try_from(shifted_text.find("missing").unwrap()).unwrap();
+        assert!(errors.iter().any(|error| {
+            error.span().is_some_and(|span| {
+                span.file_id == shifted_locator.file_id
+                    && span.start <= shifted_missing
+                    && shifted_missing < span.end
+            })
+        }));
+
+        let internal_text = text("// position-only prefix\n", "       ");
+        let internal_source = source(&internal_text);
+        let internal_revision = revision_for(&mut database, &internal_source);
+        let internal_candidate = declaration_candidate(
+            &database,
+            internal_revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
+        );
+        let internal_artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            internal_revision,
+            DeclarationBodyPlanQueryKey(internal_candidate),
+            CancellationToken::new(),
+        );
+        let (internal_transaction, internal_locator) = request(
+            &database,
+            internal_revision,
+            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
+        );
+        assert_ne!(
+            internal_artifact.terminal().unwrap().stamp(),
+            shifted_artifact.terminal().unwrap().stamp(),
+        );
+        assert_ne!(internal_transaction.stamp(), shifted_transaction.stamp());
+        let rue_query::QueryOutcome::Success(Some(internal_locator)) = internal_locator.outcome()
+        else {
+            panic!("internally shifted anonymous diagnostic has a current source basis")
+        };
+        let rue_query::QueryOutcome::Success(transaction) = internal_transaction.outcome() else {
+            panic!("internally shifted anonymous diagnostic has a typed transaction")
+        };
+        let projected =
+            project_transaction_diagnostics(transaction.clone(), Some(internal_locator));
+        let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } = projected
+        else {
+            panic!("internally shifted undefined name remains deterministic")
+        };
+        let internal_missing = u32::try_from(internal_text.find("missing").unwrap()).unwrap();
+        assert!(errors.iter().any(|error| {
+            error.span().is_some_and(|span| {
+                span.file_id == internal_locator.file_id
+                    && span.start <= internal_missing
+                    && internal_missing < span.end
+            })
+        }));
+    }
+
+    #[test]
+    fn nested_anonymous_members_share_the_ultimate_candidate_artifact() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Outer() -> type {\n\
+                     struct {\n\
+                         fn make(self) -> type {\n\
+                             struct { fn value(self) -> i32 { 11 } }\n\
+                         }\n\
+                     }\n\
+                 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Outer")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let member_key =
+            |terminal: &rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>,
+             name: &str| {
+                let rue_query::QueryOutcome::Success(
+                    crate::body_query::ProducedAnonymous::Produced(produced),
+                ) = terminal.outcome()
+                else {
+                    panic!("anonymous producer did not publish {name}")
+                };
+                let owner = produced
+                    .0
+                    .iter()
+                    .find(|nominal| {
+                        let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                            methods,
+                            ..
+                        } = &nominal.shape
+                        else {
+                            return false;
+                        };
+                        methods
+                            .iter()
+                            .any(|method| method.name.as_ref() == name && method.has_body)
+                    })
+                    .unwrap_or_else(|| panic!("anonymous producer has no body-bearing {name}"));
+                crate::body_query::BodyQueryKey::new(
+                    crate::FunctionInstanceKey::AnonymousMember {
+                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                            crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                        )),
+                        member: crate::AnonymousMemberKey {
+                            kind: crate::AnonymousMemberKind::Method,
+                            name: Arc::from(name),
+                        },
+                    },
+                    semantic_configuration(),
+                )
+            };
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let outer = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
+            CancellationToken::new(),
+        );
+        let make = member_key(outer.terminal().unwrap(), "make");
+        let after_outer = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            after_outer, 0,
+            "discovering Outer does not demand a runtime body artifact",
+        );
+
+        let inner = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            make.clone(),
+            CancellationToken::new(),
+        );
+        let value = member_key(inner.terminal().unwrap(), "value");
+        let after_make = database
+            .declaration_body_plan_astgen_evaluations
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(after_make, 1, "make demands Outer's candidate exactly once");
+        let value_transaction = database
+            .body_transaction(revision, value, CancellationToken::new())
+            .expect("nested value transaction succeeds");
+        assert!(matches!(
+            value_transaction.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            after_make,
+            "make and value must both select nested declarations from Outer",
+        );
+
+        let make_transaction = database
+            .body_transaction(revision, make, CancellationToken::new())
+            .expect("make transaction remains retained");
+        let artifact_dependency = |transaction: &rue_query::QueryTerminal<_>| {
+            transaction
+                .dependencies()
+                .iter()
+                .find(|dependency| {
+                    dependency.node.family() == "compiler.declaration-body-plan-artifacts"
+                })
+                .map(|dependency| (dependency.incarnation, dependency.stamp))
+                .expect("anonymous transaction directly observes its producer artifact")
+        };
+        assert_eq!(
+            artifact_dependency(&make_transaction),
+            artifact_dependency(&value_transaction),
+        );
+    }
+
+    #[test]
+    fn const_produced_anonymous_member_uses_the_const_candidate_artifact() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "const T: type = struct {\n\
+                     value: i32,\n\
+                     fn get(self) -> i32 { self.value }\n\
+                 };\n\
+                 fn main() -> i32 {\n\
+                     let value: T = T { value: 5 };\n\
+                     value.get()\n\
+                 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let configuration = semantic_configuration();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: configuration.clone(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("const-produced anonymous member closure succeeds");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            panic!("const-produced closure publishes a typed value")
+        };
+        let get = output
+            .reached
+            .iter()
+            .find(|instance| {
+                matches!(
+                    instance,
+                    crate::FunctionInstanceKey::AnonymousMember { member, .. }
+                        if member.name.as_ref() == "get"
+                )
+            })
+            .cloned()
+            .expect("main reaches T.get");
+        let transaction = database
+            .body_transaction(
+                revision,
+                crate::body_query::BodyQueryKey::new(get, configuration),
+                CancellationToken::new(),
+            )
+            .expect("T.get transaction remains retained");
+        assert!(matches!(
+            transaction.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+
+        let candidate = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
+            "T",
+        );
+        let artifact = database.runtime.request_registered(
+            &database.declaration_body_plan_artifacts,
+            revision,
+            DeclarationBodyPlanQueryKey(candidate),
+            CancellationToken::new(),
+        );
+        let artifact_stamp = artifact.terminal().unwrap().stamp();
+        assert!(transaction.dependencies().iter().any(|dependency| {
+            dependency.node.family() == "compiler.declaration-body-plan-artifacts"
+                && dependency.stamp == artifact_stamp
+        }));
+        assert_eq!(
+            database
+                .declaration_body_plan_astgen_evaluations
+                .load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "main and const T each lower once; T.get adds no AstGen work",
+        );
+    }
+
+    #[test]
+    fn anonymous_member_preserves_its_producer_artifact_failure() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Box() -> type { struct { fn get(self) -> i32 { 7 } } }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let crate::FunctionInstanceKey::Definition(definition) =
+            free_function_instance(&module, "Box")
+        else {
+            unreachable!()
+        };
+        let errors = crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput(
+                "injected anonymous producer artifact failure".into(),
+            ),
+        ));
+        let mut database = RevisionedQueryDatabase::default();
+        database.inject_declaration_body_plan_failure_for_test(&definition, errors.clone());
+        let revision = revision_for(&mut database, &source);
+        let produced = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
+            CancellationToken::new(),
+        );
+        let terminal = produced.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+            produced,
+        )) = terminal.outcome()
+        else {
+            panic!("Box publishes its anonymous type before runtime body analysis")
+        };
+        let owner = produced
+            .0
+            .iter()
+            .find(|nominal| {
+                matches!(
+                    &nominal.shape,
+                    crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                        methods,
+                        ..
+                    } if methods.iter().any(|method| method.name.as_ref() == "get")
+                )
+            })
+            .expect("Box publishes get's owner");
+        let get = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                )),
+                member: crate::AnonymousMemberKey {
+                    kind: crate::AnonymousMemberKind::Method,
+                    name: Arc::from("get"),
+                },
+            },
+            semantic_configuration(),
+        );
+        let transaction = database
+            .body_transaction(revision, get, CancellationToken::new())
+            .expect("artifact failure publishes a deterministic anonymous transaction");
+        let rue_query::QueryOutcome::Success(
+            crate::body_query::BodyTransaction::DeterministicFailure {
+                errors: published, ..
+            },
+        ) = transaction.outcome()
+        else {
+            panic!("anonymous artifact failure was downgraded or canceled")
+        };
+        assert_eq!(published, &errors);
+    }
+
+    #[test]
+    fn anonymous_member_kind_mismatch_is_deterministic_not_cancellation() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Box() -> type { struct { fn get(self) -> i32 { 7 } } }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let produced = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
+            CancellationToken::new(),
+        );
+        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+            produced,
+        )) = produced.terminal().unwrap().outcome()
+        else {
+            panic!("Box publishes get's owner")
+        };
+        let owner = produced
+            .0
+            .first()
+            .expect("Box publishes one anonymous struct");
+        let mismatched = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                )),
+                member: crate::AnonymousMemberKey {
+                    kind: crate::AnonymousMemberKind::AssociatedFunction,
+                    name: Arc::from("get"),
+                },
+            },
+            semantic_configuration(),
+        );
+        let attempt = database.runtime.request_registered(
+            &database.body_transactions,
+            revision,
+            mismatched.clone(),
+            CancellationToken::new(),
+        );
+        assert!(attempt.abort().is_none());
+        let terminal = attempt
+            .terminal()
+            .expect("mismatched anonymous member publishes a stable failure");
+        assert!(matches!(
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
+            )
+        ));
+        assert!(
+            database
+                .body_transactions
+                .contains_retained_key(&mismatched)
+        );
+    }
+
+    #[test]
+    fn anonymous_member_materialization_cancellation_publishes_nothing_and_retries() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Box() -> type {\n\
+                     struct { fn get(self) -> i32 { let x = 7; x } }\n\
+                 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let produced = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            crate::body_query::BodyQueryKey::new(producer, semantic_configuration()),
+            CancellationToken::new(),
+        );
+        let terminal = produced.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+            produced,
+        )) = terminal.outcome()
+        else {
+            panic!("Box publishes its anonymous get owner")
+        };
+        let owner = produced
+            .0
+            .iter()
+            .find(|nominal| {
+                matches!(
+                    &nominal.shape,
+                    crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                        methods,
+                        ..
+                    } if methods.iter().any(|method| method.name.as_ref() == "get")
+                )
+            })
+            .unwrap();
+        let get = crate::body_query::BodyQueryKey::new(
+            crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(owner.identity.clone()),
+                )),
+                member: crate::AnonymousMemberKey {
+                    kind: crate::AnonymousMemberKind::Method,
+                    name: Arc::from("get"),
+                },
+            },
+            semantic_configuration(),
+        );
+        let candidate = declaration_candidate(
+            &database,
+            revision,
+            &module,
+            crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            "Box",
+        );
+        database
+            .runtime
+            .request_registered(
+                &database.declaration_body_plan_artifacts,
+                revision,
+                DeclarationBodyPlanQueryKey(candidate),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .expect("producer artifact is warm before transaction materialization");
+
+        {
+            let _injection = database.cancel_body_materialization_after_checkpoints_for_test(1);
+            let attempt = database.runtime.request_registered(
+                &database.body_transactions,
+                revision,
+                get.clone(),
+                CancellationToken::new(),
+            );
+            assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+            assert!(attempt.terminal().is_none());
+            assert!(!database.body_transactions.contains_retained_key(&get));
+        }
+
+        let retry = database
+            .body_transaction(revision, get.clone(), CancellationToken::new())
+            .expect("uncanceled anonymous-member retry completes");
+        assert!(matches!(
+            retry.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyTransaction::Success { .. })
+        ));
+        assert!(database.body_transactions.contains_retained_key(&get));
     }
 
     #[test]
@@ -39659,7 +40265,7 @@ fn main() -> i32 {
                 1,
                 "/main.rue",
                 "main.rue",
-                "fn selected(comptime T: type) -> T { 7 }\n",
+                "fn selected(comptime T: type) -> T { 7 }\nstruct NotABody {}\n",
             )],
             1,
         );

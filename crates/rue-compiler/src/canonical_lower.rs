@@ -160,7 +160,7 @@ impl DeclarationBodyPlan {
             false,
             checkpoint,
         )
-        .map(|(bundle, _)| bundle)
+        .map(|(bundle, _, _)| bundle)
     }
 
     pub(crate) fn materialize_body_rir_bundle_with_attribution(
@@ -180,6 +180,51 @@ impl DeclarationBodyPlan {
             true,
             checkpoint,
         )
+        .map(|(bundle, attribution, _)| (bundle, attribution))
+    }
+
+    /// Materialize the producer candidate and retain its exact decoded
+    /// declaration root. Anonymous-member analysis uses that root to select a
+    /// nested producer/member directly from this same candidate graph.
+    pub(crate) fn materialize_body_rir_bundle_with_declaration(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<(rue_air::BodyRirBundle, InstRef), BodyPlanMaterializationFailure> {
+        self.materialize_body_rir_bundle_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            false,
+            checkpoint,
+        )
+        .map(|(bundle, _, declaration)| (bundle, declaration))
+    }
+
+    pub(crate) fn materialize_body_rir_bundle_with_declaration_and_attribution(
+        &self,
+        file_id: FileId,
+        declaration_start: u32,
+        source_length: u32,
+        checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
+    ) -> Result<
+        (
+            rue_air::BodyRirBundle,
+            InstRef,
+            BodyPlanMaterializationAttribution,
+        ),
+        BodyPlanMaterializationFailure,
+    > {
+        self.materialize_body_rir_bundle_internal(
+            file_id,
+            declaration_start,
+            source_length,
+            true,
+            checkpoint,
+        )
+        .map(|(bundle, attribution, declaration)| (bundle, declaration, attribution))
     }
 
     fn materialize_body_rir_bundle_internal(
@@ -190,11 +235,21 @@ impl DeclarationBodyPlan {
         attribution_enabled: bool,
         mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<
-        (rue_air::BodyRirBundle, BodyPlanMaterializationAttribution),
+        (
+            rue_air::BodyRirBundle,
+            BodyPlanMaterializationAttribution,
+            InstRef,
+        ),
         BodyPlanMaterializationFailure,
     > {
-        let (rir, symbols, _remap_finished_ns, symbol_finished_ns, validation_finished_ns) = self
-            .materialize_candidate_rir_internal(
+        let (
+            rir,
+            symbols,
+            declaration,
+            _remap_finished_ns,
+            symbol_finished_ns,
+            validation_finished_ns,
+        ) = self.materialize_candidate_rir_internal(
             file_id,
             declaration_start,
             source_length,
@@ -223,6 +278,7 @@ impl DeclarationBodyPlan {
                 rir_instructions,
                 rir_payload_words,
             },
+            declaration,
         ))
     }
 
@@ -242,7 +298,7 @@ impl DeclarationBodyPlan {
             false,
             &mut checkpoint,
         )
-        .map(|(rir, symbols, _, _, _)| (rir, symbols))
+        .map(|(rir, symbols, _, _, _, _)| (rir, symbols))
     }
 
     fn materialize_candidate_rir_internal(
@@ -253,8 +309,10 @@ impl DeclarationBodyPlan {
         include_method_owner: bool,
         attribution_enabled: bool,
         checkpoint: &mut impl FnMut() -> Result<(), rue_query::QueryAbort>,
-    ) -> Result<(ValidatedRir, lasso::ThreadedRodeo, u64, u64, u64), BodyPlanMaterializationFailure>
-    {
+    ) -> Result<
+        (ValidatedRir, lasso::ThreadedRodeo, InstRef, u64, u64, u64),
+        BodyPlanMaterializationFailure,
+    > {
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let started = attribution_enabled.then(Instant::now);
         let elapsed = || {
@@ -358,6 +416,7 @@ impl DeclarationBodyPlan {
         Ok((
             rir,
             symbols,
+            appended.metadata.declaration,
             remap_finished_ns,
             symbol_finished_ns,
             validation_finished_ns,
@@ -413,47 +472,13 @@ pub(crate) fn lower_parsed_declaration_body_plan(
     let anchors = module
         .declaration_anonymous_sites(candidate)
         .ok_or(DeclarationBodyPlanBuildFailure::MissingCandidate)?;
-    lower_parsed_declaration_body_plan_internal(
-        module,
-        candidate,
-        CandidateAnonymousAnchors::Indexed(anchors),
-        checkpoint,
-    )
-}
-
-pub(crate) fn lower_parsed_declaration_body_plan_with_anonymous_anchors(
-    module: &crate::parsed_modules::ParsedModule,
-    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
-    anchors: &[(
-        rue_span::Span,
-        rue_rir::AnonymousTypeSiteKind,
-        rue_rir::RirStructuralAnchor,
-    )],
-    checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
-) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
-    lower_parsed_declaration_body_plan_internal(
-        module,
-        candidate,
-        CandidateAnonymousAnchors::Explicit(anchors),
-        checkpoint,
-    )
-}
-
-enum CandidateAnonymousAnchors<'a> {
-    Indexed(&'a [rue_rir::AnonymousTypeSite]),
-    Explicit(
-        &'a [(
-            rue_span::Span,
-            rue_rir::AnonymousTypeSiteKind,
-            rue_rir::RirStructuralAnchor,
-        )],
-    ),
+    lower_parsed_declaration_body_plan_internal(module, candidate, anchors, checkpoint)
 }
 
 fn lower_parsed_declaration_body_plan_internal(
     module: &crate::parsed_modules::ParsedModule,
     candidate: &crate::declaration_candidate::DeclarationCandidateKey,
-    authoritative_anchors: CandidateAnonymousAnchors<'_>,
+    authoritative_anchors: &[rue_rir::AnonymousTypeSite],
     mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
 ) -> Result<DeclarationBodyPlanArtifacts, DeclarationBodyPlanBuildFailure> {
     checkpoint().map_err(DeclarationBodyPlanBuildFailure::Query)?;
@@ -488,18 +513,15 @@ fn lower_parsed_declaration_body_plan_internal(
             }
         });
         generator.install_cancellation_check(&mut cancellation_check);
-        match authoritative_anchors {
-            CandidateAnonymousAnchors::Indexed(anchors) => generator
-                .install_authoritative_anonymous_anchors(
-                    anchors
-                        .iter()
-                        .map(|site| (site.span, site.kind, site.anchor.clone())),
-                ),
-            CandidateAnonymousAnchors::Explicit(anchors) => {
-                generator.install_authoritative_anonymous_anchors(anchors.iter().cloned())
-            }
-        }
-        .map_err(|error| DeclarationBodyPlanBuildFailure::Payload(Arc::from(error.to_string())))?;
+        generator
+            .install_authoritative_anonymous_anchors(
+                authoritative_anchors
+                    .iter()
+                    .map(|site| (site.span, site.kind, site.anchor.clone())),
+            )
+            .map_err(|error| {
+                DeclarationBodyPlanBuildFailure::Payload(Arc::from(error.to_string()))
+            })?;
         let (producer, owner) = match ast {
             crate::parsed_modules::ParsedDeclarationAstRef::Function(value) => {
                 (rue_rir::AstGenCandidate::Function(value), None)
@@ -733,20 +755,6 @@ fn finish_declaration_body_plan(
     })
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct RemappedBodyRirAttribution {
-    pub(crate) span_remap_validation_ns: u64,
-    pub(crate) index: rue_air::BodyRirIndexAttribution,
-    pub(crate) rir_instructions: u64,
-    pub(crate) rir_payload_words: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct BodyRirAttributionClock {
-    pub(crate) started: Instant,
-    pub(crate) rir_lower_finished_ns: u64,
-}
-
 impl CandidateModuleRirOutput {
     pub(crate) fn revision(&self) -> &crate::ModuleRevision {
         &self.revision
@@ -754,70 +762,6 @@ impl CandidateModuleRirOutput {
 
     pub(crate) fn work(&self) -> CanonicalRirWork {
         self.work
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn into_remapped_body_rir_bundle(
-        self,
-        file_id: FileId,
-        source_length: u32,
-        remap_span: impl FnMut(rue_span::Span) -> rue_span::Span,
-    ) -> Result<rue_air::BodyRirBundle, String> {
-        self.into_remapped_body_rir_bundle_with_attribution(
-            file_id,
-            source_length,
-            remap_span,
-            None,
-        )
-        .map(|(bundle, _)| bundle)
-    }
-
-    pub(crate) fn into_remapped_body_rir_bundle_with_attribution(
-        self,
-        file_id: FileId,
-        source_length: u32,
-        remap_span: impl FnMut(rue_span::Span) -> rue_span::Span,
-        attribution_clock: Option<BodyRirAttributionClock>,
-    ) -> Result<(rue_air::BodyRirBundle, RemappedBodyRirAttribution), String> {
-        let rir_instructions = self.rir.len() as u64;
-        let rir_payload_words = self.rir.extra_len() as u64;
-        let mut editor = RirEditor::new();
-        editor
-            .append_remapped_with_spans(&self.rir, std::convert::identity, remap_span)
-            .map_err(|error| error.to_string())?;
-        let source_lengths = [(file_id, source_length)];
-        let validation = RirValidationContext {
-            symbol_count: self.symbols.interner().len(),
-            source_lengths: &source_lengths,
-        };
-        let rir = ValidatedRir::finish(editor, &validation).map_err(|error| error.to_string())?;
-        let remap_finished_ns = attribution_clock
-            .map(|clock| u64::try_from(clock.started.elapsed().as_nanos()).unwrap_or(u64::MAX));
-        let (bundle, mut index) = rue_air::BodyRirBundle::new_with_index_attribution(
-            rir,
-            Arc::try_unwrap(self.symbols.into_interner())
-                .expect("module RIR owns its semantic symbol interner"),
-            attribution_clock.is_some(),
-        );
-        let span_remap_validation_ns = attribution_clock
-            .zip(remap_finished_ns)
-            .map_or(0, |(clock, finished)| {
-                finished.saturating_sub(clock.rir_lower_finished_ns)
-            });
-        if let (Some(clock), Some(remap_finished_ns)) = (attribution_clock, remap_finished_ns) {
-            let index_finished_ns =
-                u64::try_from(clock.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            index.duration_ns = index_finished_ns.saturating_sub(remap_finished_ns);
-        }
-        Ok((
-            bundle,
-            RemappedBodyRirAttribution {
-                span_remap_validation_ns,
-                index,
-                rir_instructions,
-                rir_payload_words,
-            },
-        ))
     }
 }
 
@@ -1827,7 +1771,7 @@ fn target(inout values: [i32; 4]) -> type {
             lower_parsed_declaration_body_plan_internal(
                 &module,
                 target_key,
-                CandidateAnonymousAnchors::Indexed(&corrupted_index),
+                &corrupted_index,
                 || Ok(()),
             ),
             Err(DeclarationBodyPlanBuildFailure::Payload(_))

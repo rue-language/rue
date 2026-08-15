@@ -1009,23 +1009,6 @@ macro_rules! candidate_failure_charge {
 candidate_failure_charge!(crate::declaration_candidate::RawConstSyntaxFailure);
 candidate_failure_charge!(crate::declaration_candidate::RawDeclarationBodyFailure);
 
-impl RetainedCharge for crate::declaration_candidate::RawDeclarationSignatureSyntax {
-    fn retained_charge(&self) -> u64 {
-        self.declaration_fragments
-            .retained_charge()
-            .saturating_add(self.extern_abi.retained_charge())
-            .saturating_add(self.accessor.retained_charge())
-    }
-}
-
-impl RetainedCharge for crate::declaration_candidate::RawAccessorSignatureSyntax {
-    fn retained_charge(&self) -> u64 {
-        self.body
-            .retained_charge()
-            .saturating_add(self.owner_methods.retained_charge())
-    }
-}
-
 impl RetainedCharge for crate::semantic_query_nucleus::ParsedSemanticParameter {
     fn retained_charge(&self) -> u64 {
         0

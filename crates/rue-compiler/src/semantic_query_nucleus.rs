@@ -204,9 +204,9 @@ fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::Yiel
     }
 }
 
-/// Normalize one owner's method facts into the form
-/// [`crate::declaration_candidate::RawAccessorSignatureSyntax`] retains:
-/// sorted by name, with every ambiguously duplicated name dropped.
+/// Normalize one owner's parsed method facts for canonical accessor
+/// declaration validation: sorted by name, with every ambiguously duplicated
+/// name dropped.
 ///
 /// A duplicate method is its own diagnostic, and 6.6:7 stays permissive
 /// wherever it cannot *prove* a callee is a plain method, so a name that two
@@ -226,33 +226,6 @@ pub(crate) fn owner_method_accessor_facts(
     facts.dedup_by(|left, right| left.name == right.name);
     facts.retain(|fact| !duplicated.contains(&fact.name));
     Arc::from(facts)
-}
-
-/// The method names one body calls on its own `self` receiver, normalized
-/// (sorted, deduplicated) — the 6.6:14 cycle-edge fact (RUE-1282), for a
-/// producer holding the parsed AST and its interner.
-pub(crate) fn ast_self_call_targets(
-    body: &rue_parser::ast::Expr,
-    interner: &crate::ThreadedRodeo,
-) -> Arc<[Arc<str>]> {
-    use rue_parser::ast::Expr;
-    let mut walk = vec![body];
-    let mut targets: Vec<Arc<str>> = Vec::new();
-    while let Some(expr) = walk.pop() {
-        if let Expr::MethodCall(call) = expr {
-            let mut receiver = &*call.receiver;
-            while let Expr::Paren(paren) = receiver {
-                receiver = &paren.inner;
-            }
-            if matches!(receiver, Expr::SelfExpr(_)) {
-                targets.push(Arc::from(interner.resolve(&call.method.name)));
-            }
-        }
-        expr.child_exprs(&mut walk);
-    }
-    targets.sort();
-    targets.dedup();
-    Arc::from(targets)
 }
 
 /// What one method-call link in a yielded projection chain is, as far as the
