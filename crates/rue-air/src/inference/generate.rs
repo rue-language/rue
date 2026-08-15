@@ -544,16 +544,6 @@ impl<'a> ConstraintGenerator<'a> {
         self
     }
 
-    /// Provide module-local struct types for file-scoped and module-qualified
-    /// struct literal resolution.
-    pub fn with_structs_by_file_name(
-        mut self,
-        structs_by_file_name: &'a HashMap<(FileId, Spur), Type>,
-    ) -> Self {
-        self.structs_by_file_name = Some(structs_by_file_name);
-        self
-    }
-
     /// Provide the (defining file, source name) -> internal function key map
     /// for module-member call resolution (RUE-576).
     pub fn with_functions_by_file_name(
@@ -570,16 +560,6 @@ impl<'a> ConstraintGenerator<'a> {
         module_file_ids: &'a HashMap<crate::types::ModuleId, FileId>,
     ) -> Self {
         self.module_file_ids = Some(module_file_ids);
-        self
-    }
-
-    /// Provide module-local enum types for file-scoped and module-qualified
-    /// enum variant/pattern resolution.
-    pub fn with_enums_by_file_name(
-        mut self,
-        enums_by_file_name: &'a HashMap<(FileId, Spur), Type>,
-    ) -> Self {
-        self.enums_by_file_name = Some(enums_by_file_name);
         self
     }
 
@@ -622,16 +602,6 @@ impl<'a> ConstraintGenerator<'a> {
     /// `const_values` field (RUE-16).
     pub fn with_const_values(mut self, const_values: &'a HashMap<(FileId, Spur), i128>) -> Self {
         self.const_values = Some(const_values);
-        self
-    }
-
-    /// Provide function-valued constants so `alias(...)` gets the callee's
-    /// signature during constraint generation.
-    pub fn with_const_function_aliases(
-        mut self,
-        const_function_aliases: &'a HashMap<(FileId, Spur), Spur>,
-    ) -> Self {
-        self.const_function_aliases = Some(const_function_aliases);
         self
     }
 
@@ -935,11 +905,6 @@ impl<'a> ConstraintGenerator<'a> {
     /// Get all collected constraints.
     pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
-    }
-
-    /// Take ownership of the collected constraints.
-    pub fn take_constraints(self) -> Vec<Constraint> {
-        self.constraints
     }
 
     /// Get the expression type mapping.

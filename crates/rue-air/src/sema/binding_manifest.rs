@@ -2107,47 +2107,6 @@ impl<'a> BoundSema<'a> {
         Ok(self)
     }
 
-    /// Install stable declaration dependency observations captured by the
-    /// semantic query nucleus. These events describe the declaration payloads
-    /// already installed in this epoch; AIR must not rediscover them by
-    /// re-running declaration resolution.
-    pub fn install_query_declaration_dependencies(
-        mut self,
-        type_dependencies: &[crate::DeclarationTypeDependencyEvent],
-        type_call_heads: &[crate::DeclarationTypeCallHeadDependencyEvent],
-        builtin_type_call_heads: &[crate::DeclarationBuiltinTypeCallHeadDependencyEvent],
-        named_const_dependencies: &[crate::NamedConstDependencyEvent],
-    ) -> Self {
-        for event in type_dependencies {
-            if self
-                .sema
-                .declaration_type_dependency_index
-                .insert(event.clone())
-            {
-                self.sema.declaration_type_dependencies.push(event.clone());
-            }
-        }
-        self.sema
-            .declaration_type_call_head_dependencies
-            .extend_from_slice(type_call_heads);
-        self.sema
-            .declaration_builtin_type_call_head_dependencies
-            .extend_from_slice(builtin_type_call_heads);
-        self.sema
-            .named_const_dependencies
-            .extend_from_slice(named_const_dependencies);
-        self.sema
-            .body_analysis_work
-            .declaration_type_dependency_events += type_dependencies.len();
-        self.sema
-            .body_analysis_work
-            .declaration_type_call_head_dependency_events +=
-            type_call_heads.len() + builtin_type_call_heads.len();
-        self.sema.body_analysis_work.named_const_dependency_events +=
-            named_const_dependencies.len();
-        self
-    }
-
     pub fn install_stable_identity_endpoints(
         mut self,
         definitions: &[crate::SemanticDefinitionEndpoint],
@@ -2175,57 +2134,6 @@ impl<'a> BoundSema<'a> {
             &expected_modules,
         )?;
         Ok(self)
-    }
-
-    pub fn install_specialized_body_candidates<K, M>(
-        mut self,
-        candidates: Vec<crate::SemanticSpecializedBodyCandidate<K, M>>,
-        definition: impl Fn(
-            &K,
-        ) -> Result<
-            crate::SemanticDefinitionToken,
-            crate::SemanticStableResolutionFailure,
-        >,
-        module: impl Fn(
-            &M,
-        )
-            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
-    ) -> (Self, crate::SemanticSpecializedCandidateInstallWork)
-    where
-        K: Clone + Ord,
-        M: Clone + Ord,
-    {
-        let mut work = crate::SemanticSpecializedCandidateInstallWork::default();
-        for candidate in candidates {
-            work.attempts += 1;
-            let map_module = |key: &M| module(key);
-            let map_definition = |key: &K| definition(key);
-            let identity = candidate
-                .identity
-                .try_map_keys(&map_definition, &map_module);
-            let body = candidate.body.try_map_keys(&map_definition, &map_module);
-            let dependencies = candidate
-                .dependencies
-                .iter()
-                .map(&map_definition)
-                .collect::<Result<Vec<_>, _>>();
-            if let (Ok(identity), Ok(body), Ok(dependencies)) = (identity, body, dependencies) {
-                self.sema
-                    .reusable_specialized_bodies
-                    .entry(identity.clone())
-                    .or_insert_with(|| crate::SemanticSpecializedBodyCandidate {
-                        identity,
-                        body_span: candidate.body_span,
-                        body,
-                        dependencies: dependencies.into(),
-                        dependency_boundary_complete: candidate.dependency_boundary_complete,
-                    });
-                work.successes += 1;
-            } else {
-                work.mapping_failures += 1;
-            }
-        }
-        (self, work)
     }
 
     /// Resolve durable keys into request-independent declaration identities and
@@ -2703,34 +2611,6 @@ impl<'a> BoundSema<'a> {
     ) -> Result<R, SemanticExportFailure> {
         let manifest = self.binding_manifest();
         let (records, work) = self.sema.build_declaration_semantics(manifest)?;
-        Ok(convert(&records, work))
-    }
-
-    /// Export resolved declarations using the stable shells captured before
-    /// resolution. Unlike [`Self::with_declaration_semantics`], this does not
-    /// materialize the binding manifest or traverse RIR.
-    pub fn with_declaration_semantics_from_shells<R>(
-        &self,
-        shells: &[SemanticDeclarationShell],
-        convert: impl FnOnce(&[SemanticDeclarationExport], SemanticDeclarationExportWork) -> R,
-    ) -> Result<R, SemanticExportFailure> {
-        let bindings = shells
-            .iter()
-            .map(|shell| SemanticBinding {
-                file_id: shell.declaration_span.file_id,
-                declaration_span: shell.declaration_span,
-                namespace: shell.identity.namespace,
-                kind: shell.identity.kind,
-                name: shell.identity.name.clone(),
-                owner: shell.identity.owner.clone(),
-                is_public: shell.is_public,
-            })
-            .collect();
-        let manifest = SemanticBindingManifest {
-            bindings,
-            work: SemanticBindingManifestWork::default(),
-        };
-        let (records, work) = self.sema.build_declaration_semantics(&manifest)?;
         Ok(convert(&records, work))
     }
 

@@ -114,13 +114,6 @@ impl<H: Handle, V: Clone> IndexMap<H, V> {
     }
 }
 
-impl<H: Handle, V: Default> IndexMap<H, V> {
-    /// Resize the map to contain `new_len` elements, filling new slots with default values.
-    pub fn resize_default(&mut self, new_len: usize) {
-        self.data.resize_with(new_len, V::default);
-    }
-}
-
 impl<H: Handle, V> Default for IndexMap<H, V> {
     fn default() -> Self {
         Self::new()

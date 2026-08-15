@@ -3145,21 +3145,6 @@ impl CompilerSession {
         self.diagnostics.find(source, stage)
     }
 
-    /// Compatibility name for [`Self::most_recent_diagnostics_for`].
-    ///
-    /// This is not an exact lookup when canonical and presentation provenance
-    /// share a public stage; it follows the selection contract documented by
-    /// `most_recent_diagnostics_for`.
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn diagnostics_for(
-        &self,
-        source: &SourceSnapshot,
-        stage: &FrontendDiagnosticIdentity,
-    ) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
-        self.most_recent_diagnostics_for(source, stage)
-    }
-
     fn publish_diagnostics(
         &mut self,
         source: &SourceSnapshot,
@@ -6720,8 +6705,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
-        StableDefinitionKey, Target,
+        OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot, Target,
     };
 
     #[test]
@@ -8361,44 +8345,6 @@ mod tests {
             );
             assert_eq!(error.span(), Some(expected));
         }
-    }
-
-    /// Generate `QUERY_TERMINAL_RETENTION_LIMIT + 1` distinct `CompileOptions`
-    /// for terminal retention/eviction tests (one more key than the store can
-    /// hold, forcing exactly one eviction). The low `feature_bits` bits of each
-    /// mask pick a preview-feature subset; the remaining high bits index the
-    /// compile target, so every mask is a distinct `(preview_features, target)`
-    /// pair. Both dimensions are part of the semantic, definition, and
-    /// dependency-manifest query keys — unlike `opt_level`, which keys only the
-    /// semantic store — so the variants force one eviction in every terminal
-    /// family under test.
-    ///
-    /// With `2` preview features the mask spans four subsets, and three targets
-    /// carry them to `4 * 3 = 12` distinct keys, exactly `LIMIT + 1`. The
-    /// assertion guards that the mask range spans no more `feature_bits`-wide
-    /// blocks than there are targets; if a future feature-count drop breaks it,
-    /// `QUERY_TERMINAL_RETENTION_LIMIT` must fall so `LIMIT + 1` still fits the
-    /// available `(preview_features, target)` key space.
-    #[allow(dead_code)]
-    fn retention_variants() -> Vec<CompileOptions> {
-        let feature_bits = PreviewFeature::all().len();
-        let targets = Target::all();
-        assert!(
-            (QUERY_TERMINAL_RETENTION_LIMIT >> feature_bits) < targets.len(),
-            "retention variants need a distinct (preview_features, target) key per mask"
-        );
-        (0..=QUERY_TERMINAL_RETENTION_LIMIT)
-            .map(|mask| CompileOptions {
-                preview_features: PreviewFeature::all()
-                    .iter()
-                    .enumerate()
-                    .filter(|(bit, _)| mask & (1 << bit) != 0)
-                    .map(|(_, feature)| *feature)
-                    .collect(),
-                target: targets[mask >> feature_bits],
-                ..CompileOptions::default()
-            })
-            .collect()
     }
 
     #[test]
@@ -10713,72 +10659,6 @@ fn main() -> i32 {
             )
             .unwrap()
             .anonymous_nominals
-    }
-
-    #[allow(dead_code)]
-    fn specialized_anonymous_producer(
-        nominal: &crate::durable_semantics::DurableAnonymousNominal,
-    ) -> Option<(&StableDefinitionKey, &crate::CanonicalArguments)> {
-        let crate::StableProducerId::Function(function) = &nominal.identity.producer else {
-            return None;
-        };
-        let crate::FunctionInstanceKey::Specialization { base, arguments } = function.as_ref()
-        else {
-            return None;
-        };
-        let crate::FunctionInstanceKey::Definition(definition) = base.as_ref() else {
-            return None;
-        };
-        Some((definition, arguments))
-    }
-
-    #[allow(dead_code)]
-    fn nested_option_result_facts(
-        facts: &[crate::durable_semantics::DurableAnonymousNominal],
-    ) -> (
-        &crate::durable_semantics::DurableAnonymousNominal,
-        &crate::durable_semantics::DurableAnonymousNominal,
-    ) {
-        let by_name = |name: &str| {
-            facts
-                .iter()
-                .find(|fact| {
-                    specialized_anonymous_producer(fact)
-                        .is_some_and(|(definition, _)| definition.name() == name)
-                })
-                .unwrap_or_else(|| panic!("missing anonymous fact owned by {name}: {facts:?}"))
-        };
-        (by_name("Option"), by_name("Result"))
-    }
-
-    #[allow(dead_code)]
-    fn assert_nested_result_owns_option_argument(
-        option: &crate::durable_semantics::DurableAnonymousNominal,
-        result: &crate::durable_semantics::DurableAnonymousNominal,
-        ordered_facts: &[crate::durable_semantics::DurableAnonymousNominal],
-    ) {
-        let (_, option_arguments) = specialized_anonymous_producer(option).unwrap();
-        let (_, result_arguments) = specialized_anonymous_producer(result).unwrap();
-        assert_eq!(option.identity.arguments, *option_arguments);
-        assert_eq!(result.identity.arguments, *result_arguments);
-        assert!(matches!(
-            result_arguments.types.first(),
-            Some(crate::TypeInstanceKey::Nominal(
-                crate::NominalInstanceKey::Anonymous(identity)
-            )) if identity == &option.identity
-        ));
-        let option_position = ordered_facts
-            .iter()
-            .position(|fact| fact.identity == option.identity)
-            .unwrap();
-        let result_position = ordered_facts
-            .iter()
-            .position(|fact| fact.identity == result.identity)
-            .unwrap();
-        assert!(
-            option_position < result_position,
-            "the dependency fact must precede its nested consumer: {ordered_facts:?}"
-        );
     }
 
     /// Warm-session locality of callable identity (RUE-1125).

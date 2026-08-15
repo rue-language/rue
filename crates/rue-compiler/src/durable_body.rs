@@ -28,15 +28,3 @@ pub struct DurableBodyWork {
     pub reused_bodies: usize,
     pub skipped_body_analyses: usize,
 }
-
-impl DurableBodyWork {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn record_import_failure(
-        &mut self,
-        _reason: rue_air::SemanticBodyImportFailureKind,
-        count: usize,
-    ) {
-        self.import_failures += count;
-    }
-}

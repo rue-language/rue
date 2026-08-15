@@ -972,6 +972,25 @@ where
         self.interner.resolve(&symbol)
     }
 
+    #[cfg(test)]
+    /// Record the concrete [`Type`] an anonymous nominal was issued, so a later
+    /// consult of its key resolves by lookup. Mirrors the epoch's
+    /// `anon_struct_identities` / `anon_enum_identities` maps that
+    /// `resolve_instance_type` consults for the anonymous arm.
+    pub(in crate::sema) fn register_issued_anonymous(
+        &mut self,
+        key: AnonymousNominalKey<K, M>,
+        ty: Type,
+    ) where
+        M: Clone,
+    {
+        debug_assert!(
+            !self.anonymous_poisoned.contains_key(&key),
+            "a poisoned anonymous identity cannot be registered as successful"
+        );
+        self.record_anonymous_identity(key, ty);
+    }
+
     /// Intern a source name into the pool's own interner, returning its
     /// pool-relative [`Spur`]. The provider-driven endpoint driver
     /// ([`super::body_endpoint::ProviderEndpointFacts`]) interns each consulted
@@ -2296,6 +2315,26 @@ where
     M: Clone + Eq + Hash,
     S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M> + DurableCallableSource<K, M>,
 {
+    #[cfg(test)]
+    pub(in crate::sema) fn resolve_function_call(
+        &mut self,
+        key: &K,
+        returns_type: bool,
+        file_id: FileId,
+    ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
+        let signature = self.function_signature(key)?;
+        Ok(super::info::FunctionCallInfo {
+            params: signature.params,
+            return_type: signature.return_type,
+            returns_type,
+            is_generic: signature.is_generic,
+            is_pub: signature.is_pub,
+            is_unchecked: signature.is_unchecked,
+            is_extern: signature.is_extern,
+            file_id,
+        })
+    }
+
     /// Assemble a [`FunctionInfo`] for a durable function key, combining the
     /// minted signature-derived subset with the caller-provided request/RIR
     /// facts. Mints the signature on first consult; deduplicates thereafter.

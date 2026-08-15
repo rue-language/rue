@@ -785,12 +785,6 @@ impl CoalesceResult {
         self.coalesce_map.get(&vreg).copied().unwrap_or(vreg)
     }
 
-    /// Check if a vreg was coalesced with another.
-    #[allow(dead_code)]
-    pub fn is_coalesced(&self, vreg: VReg) -> bool {
-        self.coalesce_map.contains_key(&vreg)
-    }
-
     /// Check if a move instruction at the given index was eliminated.
     pub fn is_eliminated(&self, inst_idx: usize) -> bool {
         self.eliminated_moves.contains(&inst_idx)
@@ -1859,34 +1853,6 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
         true,
         &cost_model,
         &loop_info,
-    )
-}
-
-/// Perform linear scan register allocation with cost model and return debug information.
-///
-/// This is the same as [`linear_scan_with_cost_model`] but also collects debug information
-/// about the allocation process for display via `--emit regalloc`.
-pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
-    vreg_count: u32,
-    liveness: &LivenessInfo<Reg>,
-    allocatable_regs: &[Reg],
-    existing_locals: u32,
-    cost_model: &CostModel,
-    loop_info: &LoopInfo,
-) -> (
-    IndexMap<VReg, Option<Allocation<Reg>>>,
-    u32,
-    Vec<Reg>,
-    RegAllocDebugInfo<Reg>,
-) {
-    linear_scan_impl(
-        vreg_count,
-        liveness,
-        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
-        existing_locals,
-        true,
-        cost_model,
-        loop_info,
     )
 }
 

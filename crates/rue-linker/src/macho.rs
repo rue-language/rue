@@ -613,12 +613,6 @@ impl MachOBuilder {
         }
     }
 
-    /// Set header flags.
-    pub fn with_flags(mut self, flags: u32) -> Self {
-        self.flags = flags;
-        self
-    }
-
     /// Set the code and entry point.
     pub fn with_code(mut self, code: Vec<u8>, entry_offset: u64) -> Self {
         self.code = code;

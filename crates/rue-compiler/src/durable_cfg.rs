@@ -2,11 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
-#[cfg(test)]
-use rue_air::AnalyzedFunction;
 use rue_air::{AirInstData, SemanticImportType, Type, TypeKind};
-#[cfg(test)]
-use rue_error::ErrorKind;
 use rue_span::Span;
 
 use crate::DurableAirInstData;
@@ -1231,6 +1227,7 @@ impl CfgDomainProjection {
         })
     }
 
+    #[cfg(test)]
     pub fn import_cfg(
         old: &Self,
         new: &Self,

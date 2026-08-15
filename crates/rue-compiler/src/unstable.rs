@@ -447,12 +447,6 @@ pub fn update_for_presentation(
     session.update_for_presentation(snapshot)
 }
 
-/// Force the canonical merge query for in-tree query-metrics tooling without
-/// exposing its raw owner.
-pub fn query_merge(session: &mut crate::CompilerSession) -> Result<(), crate::CompileErrors> {
-    session.merge().map(drop)
-}
-
 /// Return the latest attempted discovery revision for in-tree source-loading
 /// diagnostics. Stable consumers query committed graph and diagnostic views.
 pub fn discovery_attempt(
@@ -747,17 +741,6 @@ pub fn runnable_ready(
         &ready.options,
         ready.rooted,
     )
-}
-
-/// Drive this session through the pre-link boundary (RIR → semantic → CFG →
-/// codegen → object generation) without linking, returning the total generated
-/// object-byte count. Used by the RUE-1086 scaling-bench runner to time a
-/// genuinely pre-link interval; the ~45 ms Caldera target is a pre-link number.
-pub fn pre_link_object_bytes(
-    session: &mut crate::CompilerSession,
-    options: &crate::CompileOptions,
-) -> crate::MultiErrorResult<usize> {
-    crate::queries::pre_link_object_bytes_with_session(session, options)
 }
 
 impl PresentationOutput {

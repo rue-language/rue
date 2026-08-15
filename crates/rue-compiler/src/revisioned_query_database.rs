@@ -3422,7 +3422,7 @@ fn declaration_occurrence_index_value_equal(
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 fn project_semantic_shell(
     fact: &crate::declaration_candidate::DeclarationShellFact,
     declaration_span: rue_span::Span,
@@ -15938,22 +15938,6 @@ impl RevisionedQueryDatabase {
         Ok(())
     }
 
-    /// Retire lookup leases for body roots absent from the successfully
-    /// published semantic closure. Non-body probe roots are intentionally
-    /// untouched.
-    #[allow(dead_code)]
-    pub(crate) fn retain_published_body_lookup_roots(&self, reachable: &BTreeSet<String>) {
-        let mut lease = self
-            .lookup_root_lease
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let evictions_before = self.runtime.metrics().evictions;
-        lease
-            .roots
-            .retain(|root, _| !root.starts_with("body:") || reachable.contains(root));
-        lease.supersession_evictions += self.runtime.metrics().evictions - evictions_before;
-    }
-
     /// An owned snapshot of the lookup-family pressure metrics (RUE-1091,
     /// ADR-0066 §4): the lease-scoped retained working set (published roots,
     /// leased terminals, distinct logical keys), the lookup families' currently
@@ -16119,7 +16103,6 @@ impl RevisionedQueryDatabase {
     }
 
     #[cfg(test)]
-    #[allow(dead_code)]
     pub(crate) fn optimized_cfg(
         &self,
         revision: Revision,
@@ -18390,7 +18373,7 @@ impl RevisionedQueryDatabase {
     /// declaration artifact, is pure and I/O-free, and never itself parks. The rooted attempt
     /// checks the projected modules against the satisfied catalogue and decides
     /// whether to park BEFORE the body transaction runs.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn body_toolchain_demands(
         &self,
         revision: Revision,
@@ -22537,7 +22520,6 @@ impl<'a> CompilerBodyFactProvider<'a> {
 
 /// One observed receiver member: its declaration handle, syntactic kind,
 /// `self`-receiver classification (from the signature), and visibility.
-#[allow(dead_code)]
 struct MemberObservation {
     declaration: crate::declaration_candidate::DeclarationCandidateKey,
     kind: rue_air::MemberKind,
@@ -23654,7 +23636,6 @@ pub(crate) struct SignatureFacts<'p, 'db> {
 /// (the anonymous reduction result is a body-level durable value production's
 /// declaration binder rejects exporting); the endpoint pool mints the identity
 /// itself (RUE-1091 r6b).
-#[allow(dead_code)]
 fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
     use crate::DurableType as T;
     match ty {

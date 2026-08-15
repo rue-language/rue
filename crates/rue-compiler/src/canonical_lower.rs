@@ -8,7 +8,6 @@ use std::time::Instant;
 
 use lasso::Key;
 use rue_error::{CompileError, ErrorKind};
-use rue_rir::RirPrinter;
 use rue_rir::{
     AstGen, InstRef, PackedRirMetadata, PackedRirMethodOwner, PackedRirProjection,
     PackedValidatedRir, Rir, RirEditor, RirPayloadBuildError, RirValidationContext, ValidatedRir,
@@ -814,23 +813,6 @@ pub struct CanonicalRirPresentationOrder {
 }
 
 impl CanonicalRirOutput {
-    #[allow(dead_code)]
-    pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
-        self.source_revision == other.source_revision
-            && RirPrinter::new(&self.rir, self.symbols.interner()).to_string()
-                == RirPrinter::new(&other.rir, other.symbols.interner()).to_string()
-            && self.module_ranges.len() == other.module_ranges.len()
-            && self
-                .module_ranges
-                .iter()
-                .zip(other.module_ranges.iter())
-                .all(|(left, right)| {
-                    left.file_id == right.file_id
-                        && left.instructions == right.instructions
-                        && left.extra == right.extra
-                })
-    }
-
     pub fn source_revision(&self) -> &SourceRevision {
         &self.source_revision
     }

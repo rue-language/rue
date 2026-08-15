@@ -84,11 +84,6 @@ impl InferType {
         InferType::IntLiteral
     }
 
-    /// Check if this is a concrete type.
-    pub fn is_concrete(&self) -> bool {
-        matches!(self, InferType::Concrete(_))
-    }
-
     /// Check if this is a type variable.
     pub fn is_var(&self) -> bool {
         matches!(self, InferType::Var(_))
@@ -103,14 +98,6 @@ impl InferType {
     pub fn as_concrete(&self) -> Option<Type> {
         match self {
             InferType::Concrete(ty) => Some(*ty),
-            _ => None,
-        }
-    }
-
-    /// Get the type variable ID if this is `Var`.
-    pub fn as_var(&self) -> Option<TypeVarId> {
-        match self {
-            InferType::Var(id) => Some(*id),
             _ => None,
         }
     }

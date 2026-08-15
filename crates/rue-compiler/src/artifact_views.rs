@@ -570,10 +570,6 @@ impl RirView {
         self.len() == 0
     }
 
-    pub fn shares_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.owner, &other.owner)
-    }
-
     pub fn instructions(&self) -> impl ExactSizeIterator<Item = RirInstructionView> + '_ {
         (0..self.len()).map(|ordinal| RirInstructionView {
             owner: self.owner.clone(),

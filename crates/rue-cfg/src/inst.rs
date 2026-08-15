@@ -2350,41 +2350,6 @@ impl Cfg {
         ))
     }
 
-    /// Append a place write whose projections are owned by this CFG.
-    #[allow(clippy::too_many_arguments)]
-    pub fn append_place_write(
-        &mut self,
-        block: BlockId,
-        base: PlaceBase,
-        base_type: Type,
-        projections: impl IntoIterator<Item = Projection>,
-        value: CfgValue,
-        ty: Type,
-        span: Span,
-    ) -> Result<CfgValue, CfgEditError> {
-        const OP: &str = "projections";
-        if value.0 as usize >= self.values.len() {
-            return Err(Self::invalid_edit(OP, "written value is undefined"));
-        }
-        let staged = Self::stage_edit(OP, projections)?;
-        self.validate_place_input(OP, base, &staged)?;
-        self.preflight_append(OP, block)?;
-        let projections = payload::push_projections(&mut self.projections, staged)?;
-        let place = Place {
-            base,
-            base_type,
-            projections,
-        };
-        Ok(self.add_inst_to_block(
-            block,
-            CfgInst {
-                data: CfgInstData::PlaceWrite { place, value },
-                ty,
-                span,
-            },
-        ))
-    }
-
     /// Add a block parameter and return its value.
     pub fn add_block_param(&mut self, block: BlockId, ty: Type) -> CfgValue {
         let param_index = self.blocks[block.0 as usize].params.len() as u32;

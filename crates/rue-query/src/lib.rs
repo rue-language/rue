@@ -2842,11 +2842,6 @@ impl<V> QueryRequestAttempt<V> {
         &self.nested_attempts
     }
 
-    /// Origin terminal revision for reuse/join provenance.
-    pub fn origin_revision(&self) -> Option<Revision> {
-        self.terminal.as_ref().map(|terminal| terminal.revision())
-    }
-
     /// Ends the attempt-carried bridge lease now that a successor protection
     /// holds the result.
     ///

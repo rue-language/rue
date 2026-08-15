@@ -213,19 +213,6 @@ pub fn type_size_bytes(type_pool: &FrozenTypeInternPool, ty: Type) -> u64 {
     type_pool.layout(ty).size
 }
 
-/// Total slot count of a struct: the sum of every field's slot count. Equal to
-/// `type_slot_count(Struct(struct_id))`, but reachable directly from a
-/// `StructId` (used to anchor ascending place addressing at a struct root —
-/// ADR-0040 / RUE-311).
-pub fn struct_slot_count(type_pool: &FrozenTypeInternPool, struct_id: StructId) -> u32 {
-    let struct_def = type_pool.struct_def(struct_id);
-    let mut total = 0u32;
-    for field in &struct_def.fields {
-        total += type_slot_count(type_pool, field.ty);
-    }
-    total
-}
-
 /// Calculate the slot offset for a field within a struct.
 ///
 /// This is the *internal value-decomposition* offset (ADR-0052 representation

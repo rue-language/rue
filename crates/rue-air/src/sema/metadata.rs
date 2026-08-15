@@ -31,19 +31,6 @@ impl SemaMetadata {
         })
     }
 
-    /// Explicit single-file fixture for phase-local and synthetic tests.
-    ///
-    /// Such tests do not participate in durable compiler identity joins.
-    pub fn synthetic_single_file(file_id: FileId, path: impl Into<String>) -> Self {
-        let path = path.into();
-        Self::new(
-            file_id,
-            HashMap::from([(file_id, path.clone())]),
-            HashMap::from([(file_id, path)]),
-        )
-        .expect("synthetic sema fixture path must be non-empty")
-    }
-
     /// The internal symbol an ordinary free function declared in the root
     /// module of a [`super::Sema::new_synthetic`] program is bound under.
     ///
