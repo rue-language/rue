@@ -112,6 +112,9 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import prune_names
+
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -126,19 +129,6 @@ FLOOR = (3, 11)
 UNGUARDED = (3, 9)
 
 SCANNER = (sys.version_info[0], sys.version_info[1])
-
-# Build outputs and vendored trees are not ours to police, and `buck-out` in
-# particular makes the scan's cost and result depend on whether a build has run.
-SKIP_DIRECTORIES = {
-    ".buckd",
-    ".git",
-    ".jj",
-    "buck-out",
-    "buck2-bin",
-    "node_modules",
-    "target",
-    "third-party",
-}
 
 ALLOW = re.compile(r"#\s*python-baseline-ok:\s*(?P<reason>\S.*?)\s*$")
 
@@ -641,25 +631,6 @@ def split_comment(line: str) -> tuple[str, str]:
     return line, ""
 
 
-def _prune(directory: Path, names: list[str]) -> list[str]:
-    """Directory names to descend into.
-
-    Nested checkouts are pruned by their own VCS marker rather than by name:
-    the working agreement puts sibling worktrees under `.claude/worktrees/`,
-    and reporting a path inside one as though it were a path in THIS tree is
-    worse than not scanning it -- that copy has its own gate.
-    """
-    kept = []
-    for name in sorted(names):
-        if name in SKIP_DIRECTORIES:
-            continue
-        path = directory / name
-        if (path / ".git").exists() or (path / ".jj").exists():
-            continue
-        kept.append(name)
-    return kept
-
-
 def sources(root: Path) -> list[Path]:
     """Every Python file under `root`, by extension or by shebang.
 
@@ -671,7 +642,7 @@ def sources(root: Path) -> list[Path]:
     found: list[Path] = []
     for directory, names, files in os.walk(root):
         here = Path(directory)
-        names[:] = _prune(here, names)
+        names[:] = prune_names(here, names)
         for name in sorted(files):
             path = here / name
             if path.is_symlink() or not path.is_file():

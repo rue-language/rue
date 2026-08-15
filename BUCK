@@ -889,7 +889,7 @@ rue_sh_test(
     resources = [
         "scripts/cli-timeout-policy.py",
         "scripts/validate-python-baseline.py",
-    ],
+    ] + glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
