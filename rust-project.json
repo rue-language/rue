@@ -2,85 +2,45 @@
   "sysroot_src": null,
   "crates": [
     {
-      "display_name": "rue-air-profile",
-      "root_module": "crates/rue-air-profile/src/main.rs",
-      "edition": "2024",
-      "deps": [
-        {
-          "crate": 1,
-          "name": "rue_air"
-        },
-        {
-          "crate": 6,
-          "name": "rue_cfg"
-        },
-        {
-          "crate": 10,
-          "name": "rue_compiler"
-        },
-        {
-          "crate": 21,
-          "name": "rue_rir"
-        },
-        {
-          "crate": 25,
-          "name": "rue_span"
-        },
-        {
-          "crate": 67,
-          "name": "lasso"
-        },
-        {
-          "crate": 105,
-          "name": "serde_json"
-        }
-      ],
-      "is_workspace_member": true,
-      "source": {
-        "include_dirs": [
-          "crates/rue-air-profile/src"
-        ],
-        "exclude_dirs": []
-      },
-      "cfg": [
-        "test",
-        "debug_assertions"
-      ],
-      "env": {},
-      "is_proc_macro": false
-    },
-    {
       "display_name": "rue-air",
       "root_module": "crates/rue-air/src/lib.rs",
       "edition": "2024",
       "deps": [
         {
-          "crate": 5,
+          "crate": 4,
           "name": "rue_builtins"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
+        },
+        {
+          "crate": 36,
+          "name": "ahash"
         },
         {
           "crate": 67,
           "name": "lasso"
+        },
+        {
+          "crate": 118,
+          "name": "tracing"
         }
       ],
       "is_workspace_member": true,
@@ -103,36 +63,40 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 5,
+          "crate": 4,
           "name": "rue_builtins"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
+        },
+        {
+          "crate": 36,
+          "name": "ahash"
         },
         {
           "crate": 67,
@@ -141,6 +105,10 @@
         {
           "crate": 97,
           "name": "rayon"
+        },
+        {
+          "crate": 118,
+          "name": "tracing"
         }
       ],
       "is_workspace_member": true,
@@ -182,8 +150,16 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 19,
+          "crate": 9,
+          "name": "rue_compiler"
+        },
+        {
+          "crate": 18,
           "name": "rue_perf_schema"
+        },
+        {
+          "crate": 31,
+          "name": "rue_driver"
         },
         {
           "crate": 72,
@@ -204,6 +180,10 @@
         {
           "crate": 111,
           "name": "tempfile"
+        },
+        {
+          "crate": 114,
+          "name": "toml"
         }
       ],
       "is_workspace_member": true,
@@ -226,7 +206,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         }
       ],
@@ -250,15 +230,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
@@ -286,15 +266,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
@@ -322,15 +302,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 15,
+          "crate": 14,
           "name": "rue_linker"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
         },
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -374,31 +354,31 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 5,
+          "crate": 4,
           "name": "rue_builtins"
         },
         {
-          "crate": 6,
+          "crate": 5,
           "name": "rue_cfg"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
         },
         {
@@ -408,6 +388,10 @@
         {
           "crate": 67,
           "name": "lasso"
+        },
+        {
+          "crate": 109,
+          "name": "smallvec"
         },
         {
           "crate": 118,
@@ -434,60 +418,68 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 5,
+          "crate": 4,
           "name": "rue_builtins"
         },
         {
-          "crate": 6,
+          "crate": 5,
           "name": "rue_cfg"
         },
         {
-          "crate": 9,
+          "crate": 8,
           "name": "rue_codegen"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 15,
+          "crate": 14,
           "name": "rue_linker"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 20,
+          "crate": 19,
           "name": "rue_query"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
+        },
+        {
+          "crate": 36,
+          "name": "ahash"
         },
         {
           "crate": 39,
           "name": "annotate_snippets"
+        },
+        {
+          "crate": 65,
+          "name": "itoa"
         },
         {
           "crate": 67,
@@ -496,10 +488,6 @@
         {
           "crate": 72,
           "name": "libc"
-        },
-        {
-          "crate": 97,
-          "name": "rayon"
         },
         {
           "crate": 103,
@@ -542,7 +530,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
@@ -570,15 +558,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -610,51 +598,51 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 2,
+          "crate": 1,
           "name": "rue_air_fuzz_support"
         },
         {
-          "crate": 6,
+          "crate": 5,
           "name": "rue_cfg"
         },
         {
-          "crate": 7,
+          "crate": 6,
           "name": "rue_cfg_fuzz_support"
         },
         {
-          "crate": 9,
+          "crate": 8,
           "name": "rue_codegen"
         },
         {
-          "crate": 10,
+          "crate": 9,
           "name": "rue_compiler"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 22,
+          "crate": 21,
           "name": "rue_rir_fuzz_support"
         },
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -690,11 +678,11 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
@@ -726,7 +714,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
         },
         {
@@ -754,19 +742,19 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 10,
+          "crate": 9,
           "name": "rue_compiler"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 17,
+          "crate": 16,
           "name": "rue_oracle"
         },
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -802,15 +790,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 1,
+          "crate": 0,
           "name": "rue_air"
         },
         {
-          "crate": 6,
+          "crate": 5,
           "name": "rue_cfg"
         },
         {
-          "crate": 10,
+          "crate": 9,
           "name": "rue_compiler"
         },
         {
@@ -838,15 +826,15 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
         },
         {
@@ -916,7 +904,20 @@
       "display_name": "rue-query",
       "root_module": "crates/rue-query/src/lib.rs",
       "edition": "2024",
-      "deps": [],
+      "deps": [
+        {
+          "crate": 36,
+          "name": "ahash"
+        },
+        {
+          "crate": 109,
+          "name": "smallvec"
+        },
+        {
+          "crate": 118,
+          "name": "tracing"
+        }
+      ],
       "is_workspace_member": true,
       "source": {
         "include_dirs": [
@@ -937,16 +938,20 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
+        },
+        {
+          "crate": 36,
+          "name": "ahash"
         },
         {
           "crate": 67,
@@ -973,16 +978,20 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 14,
+          "crate": 13,
           "name": "rue_lexer"
         },
         {
-          "crate": 18,
+          "crate": 17,
           "name": "rue_parser"
         },
         {
-          "crate": 25,
+          "crate": 24,
           "name": "rue_span"
+        },
+        {
+          "crate": 36,
+          "name": "ahash"
         },
         {
           "crate": 67,
@@ -1028,11 +1037,11 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 3,
+          "crate": 2,
           "name": "rue_allocator"
         },
         {
-          "crate": 23,
+          "crate": 22,
           "name": "rue_runtime_abi"
         }
       ],
@@ -1075,7 +1084,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -1126,11 +1135,11 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
         },
         {
@@ -1170,7 +1179,7 @@
       "edition": "2024",
       "deps": [
         {
-          "crate": 28,
+          "crate": 27,
           "name": "rue_test_runner"
         },
         {
@@ -1196,26 +1205,49 @@
       "display_name": "rue",
       "root_module": "crates/rue/src/main.rs",
       "edition": "2024",
+      "deps": [],
+      "is_workspace_member": true,
+      "source": {
+        "include_dirs": [
+          "crates/rue/src"
+        ],
+        "exclude_dirs": []
+      },
+      "cfg": [
+        "test",
+        "debug_assertions"
+      ],
+      "env": {},
+      "is_proc_macro": false
+    },
+    {
+      "display_name": "rue-benchmark",
+      "root_module": "crates/rue/src/main.rs",
+      "edition": "2024",
       "deps": [
         {
-          "crate": 10,
+          "crate": 9,
           "name": "rue_compiler"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 19,
+          "crate": 18,
           "name": "rue_perf_schema"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
+        },
+        {
+          "crate": 31,
+          "name": "rue_driver"
         },
         {
           "crate": 72,
@@ -1257,28 +1289,28 @@
       "is_proc_macro": false
     },
     {
-      "display_name": "rue-benchmark",
-      "root_module": "crates/rue/src/main.rs",
+      "display_name": "rue-driver",
+      "root_module": "crates/rue/src/lib.rs",
       "edition": "2024",
       "deps": [
         {
-          "crate": 10,
+          "crate": 9,
           "name": "rue_compiler"
         },
         {
-          "crate": 11,
+          "crate": 10,
           "name": "rue_error"
         },
         {
-          "crate": 19,
+          "crate": 18,
           "name": "rue_perf_schema"
         },
         {
-          "crate": 21,
+          "crate": 20,
           "name": "rue_rir"
         },
         {
-          "crate": 27,
+          "crate": 26,
           "name": "rue_target"
         },
         {
@@ -1451,6 +1483,10 @@
           "name": "cfg_if"
         },
         {
+          "crate": 61,
+          "name": "getrandom"
+        },
+        {
           "crate": 85,
           "name": "once_cell"
         },
@@ -1468,7 +1504,11 @@
       },
       "cfg": [
         "test",
-        "debug_assertions"
+        "debug_assertions",
+        "feature=\"default\"",
+        "feature=\"getrandom\"",
+        "feature=\"runtime-rng\"",
+        "feature=\"std\""
       ],
       "env": {},
       "is_proc_macro": false
