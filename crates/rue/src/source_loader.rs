@@ -2067,6 +2067,17 @@ mod tests {
             (MODULES - 1) as u64,
             "each import occurrence must enter the plan exactly once"
         );
+        // ADR-0073: every frontier round publishes an append-only overlay, so
+        // validation certificates survive the whole discovery chain. Without
+        // that, each of the ~MODULES rounds expired every certificate and this
+        // count grew as rounds times graph size — quadratic in chain depth
+        // (961+ at this shape). The bound is deliberately loose against
+        // scheduling variation while remaining far below quadratic growth.
+        assert!(
+            rue_compiler::unstable::validation_certificate_misses(&result.session)
+                <= (MODULES as u64) * 8,
+            "discovery certificate misses must stay linear in module count"
+        );
     }
 
     fn module_source_id(

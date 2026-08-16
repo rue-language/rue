@@ -200,6 +200,15 @@ pub fn parse_sources_materialized(session: &crate::CompilerSession) -> u64 {
     session.parse_sources_materialized()
 }
 
+/// Cumulative red/green validation certificate misses (ADR-0073). Fresh-build
+/// discovery preserves certificates across append-only frontier rounds, so a
+/// deep import chain keeps this linear in module count; growth toward
+/// rounds-times-graph is a structural regression, gated where discovery-shape
+/// tests already pin per-round linearity.
+pub fn validation_certificate_misses(session: &crate::CompilerSession) -> u64 {
+    session.validation_certificate_misses()
+}
+
 /// Source entries embedded in parse query keys (RUE-1112): an ordinary key
 /// carries every file's exact content identity; a successor key carries only
 /// the published lineage identity plus its appended segment.
