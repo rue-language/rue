@@ -5,6 +5,13 @@ load("//crates:defs.bzl", "rue_binary")
 # (e.g. differential_opt pinning), so the generated rust_test target is kept.
 rue_binary(
     name = "rue-cli-tests",
+    # Authored contract data the unit tests read natively via include_str!,
+    # so scheduling facts (e.g. mosaic staying on the slow tier) are pinned
+    # where the corpus files are parsed.
+    mapped_srcs = {
+        "cases/execution_contracts.toml": "src/execution_contracts.toml",
+        "cases/examples_mosaic.toml": "src/examples_mosaic.toml",
+    },
     deps = [
         "//crates/rue-linker:rue-linker",
         "//crates/rue-target:rue-target",

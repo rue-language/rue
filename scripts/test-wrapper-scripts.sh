@@ -912,21 +912,6 @@ test_cache_probe_counter_validation() {
 test_ci_heavy_suite_audits_its_target() {
   local sb; sb="$(mktemp -d)"
   cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/ci-heavy-suite"; chmod +x "$sb/ci-heavy-suite"
-  mkdir -p "$sb/scripts"
-  cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
-#!/usr/bin/env bash
-target=""
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--target" ]; then target="$2"; shift 2; else shift; fi
-done
-case "$target" in
-  //:cli-tests) echo 3600 ;;
-  //:cli-tests-slow) echo 7200 ;;
-  //:cli-tests-shard-*) echo 1234 ;;
-  *) exit 2 ;;
-esac
-EOF
-  chmod +x "$sb/scripts/cli-timeout-policy.py"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 # The invocation id is read from the environment at startup, before any argument

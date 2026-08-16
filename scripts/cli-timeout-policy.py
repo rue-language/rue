@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import platform
 import re
 import sys
 from pathlib import Path
@@ -71,18 +70,6 @@ def load_policy(path: Path) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
         if contract["timeout_profile"] not in profiles:
             raise ValueError(f"{path}: contract.{name} selects an unknown timeout profile")
     return profiles, policy
-
-
-def host_platform() -> str:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    if system == "darwin":
-        return "macos"
-    if system == "linux" and machine in ("aarch64", "arm64"):
-        return "linux-arm64"
-    if system == "linux" and machine in ("x86_64", "amd64"):
-        return "linux-x64"
-    return "other"
 
 
 def load_shard_loads(path: Path) -> dict:
@@ -227,8 +214,6 @@ def main() -> int:
         "//:cli-shard-loads-json (the harness's RUE_CLI_EMIT_SHARD_LOADS "
         "mode is the packing authority)",
     )
-    parser.add_argument("--platform", default=host_platform())
-    parser.add_argument("--target")
     parser.add_argument(
         "--buck",
         type=Path,
@@ -243,33 +228,17 @@ def main() -> int:
             if args.shard_loads is not None
             else None
         )
-        if args.target is None:
-            if args.buck is not None:
-                if loads is None:
-                    raise ValueError("--buck requires --shard-loads")
-                errors = check_buck_timeouts(args.buck, loads, policy)
-                if errors:
-                    for error in errors:
-                        print(f"error: {error}", file=sys.stderr)
-                    return 1
-                print("CLI timeout policy valid; corpus action bounds cover it")
-                return 0
-            print("CLI timeout policy valid")
+        if args.buck is not None:
+            if loads is None:
+                raise ValueError("--buck requires --shard-loads")
+            errors = check_buck_timeouts(args.buck, loads, policy)
+            if errors:
+                for error in errors:
+                    print(f"error: {error}", file=sys.stderr)
+                return 1
+            print("CLI timeout policy valid; corpus action bounds cover it")
             return 0
-        timeout_ms, expected_ms = timeout_for_target(
-            args.target, loads, args.platform, policy
-        )
-        detail = (
-            "fixed slow-suite guard"
-            if expected_ms is None
-            else f"expected={expected_ms}ms plus declarative headroom"
-        )
-        print(
-            f"cli timeout policy: {args.target} {detail}; "
-            f"correctness deadline={timeout_ms}ms (not a performance threshold)",
-            file=sys.stderr,
-        )
-        print(math.ceil(timeout_ms / 1000))
+        print("CLI timeout policy valid")
         return 0
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)

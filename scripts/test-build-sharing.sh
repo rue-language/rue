@@ -207,24 +207,7 @@ test_full_suite_orchestration() {
     mkdir -p "$sb/scripts"
     cp "$SRC_ROOT/test.sh" "$sb/test.sh"
     cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
-    cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
-#!/usr/bin/env bash
-target=""
-while [[ "$#" -gt 0 ]]; do
-    if [[ "$1" == "--target" ]]; then
-        target="$2"
-        shift 2
-    else
-        shift
-    fi
-done
-case "$target" in
-    //:cli-tests) echo 3600 ;;
-    //:cli-tests-slow) echo 7200 ;;
-    *) exit 2 ;;
-esac
-EOF
-    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" "$sb/scripts/cli-timeout-policy.py"
+    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite"
     cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$BUCK_LOG"
