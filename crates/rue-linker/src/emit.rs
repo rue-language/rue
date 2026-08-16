@@ -673,24 +673,35 @@ impl ObjectBuilder {
         }
 
         // External symbol names (for relocations)
-        // All symbols need underscore prefix for macOS
-        let mut extern_symbols: Vec<String> = Vec::new();
+        // All symbols need underscore prefix for macOS.
+        //
+        // Keyed by the *source* name rather than the Mach-O one, the same way
+        // `build_elf` indexes its externals: `add_macho_underscore` prepends
+        // exactly one `_` to every name, so both keys partition the relocations
+        // identically, and keying on the source name means the underscored
+        // string is built once per distinct symbol here instead of again for
+        // every relocation that names it. The map replaces a linear `contains`
+        // per relocation while building the table and a linear `position` per
+        // relocation while emitting them, both quadratic in an object's symbol
+        // count.
         let mut extern_name_offsets: Vec<usize> = Vec::new();
+        let mut extern_symbol_indices: HashMap<&str, usize> = HashMap::new();
         for reloc in &self.relocations {
             // Skip string symbols - they're handled via local symbols
             // String symbols use .rodata.strN format (possibly with @PAGE/@PAGEOFF suffix)
             if reloc.symbol.starts_with(".rodata.str") {
                 continue;
             }
-            // Always add underscore prefix for macOS
-            let macho_sym = crate::util::add_macho_underscore(&reloc.symbol);
-            if !extern_symbols.contains(&macho_sym) {
+            if !extern_symbol_indices.contains_key(reloc.symbol.as_str()) {
+                extern_symbol_indices.insert(reloc.symbol.as_str(), extern_name_offsets.len());
                 extern_name_offsets.push(strtab.len());
+                // Always add underscore prefix for macOS
+                let macho_sym = crate::util::add_macho_underscore(&reloc.symbol);
                 strtab.extend_from_slice(macho_sym.as_bytes());
                 strtab.push(0);
-                extern_symbols.push(macho_sym);
             }
         }
+        let num_extern_symbols = extern_name_offsets.len();
 
         // Symbol table follows text relocations
         let symtab_offset = align_up(
@@ -706,7 +717,7 @@ impl ObjectBuilder {
         // r_symbolnum=0 in relocations as invalid. By putting function first,
         // string symbols start at index 1+.
         let num_local_syms = 0; // No local symbols - all are external
-        let num_extern_syms = 1 + num_string_syms + extern_symbols.len(); // function + non-empty strings + external refs
+        let num_extern_syms = 1 + num_string_syms + num_extern_symbols; // function + non-empty strings + external refs
         let num_syms = num_local_syms + num_extern_syms;
 
         // String table follows symbol table
@@ -821,7 +832,7 @@ impl ObjectBuilder {
         //   - External defined symbols: function + string constants
         //   - Undefined symbols: external references
         let num_extdef = 1 + num_string_syms; // function + string symbols
-        let num_undef = extern_symbols.len();
+        let num_undef = num_extern_symbols;
 
         macho.extend_from_slice(&LC_DYSYMTAB.to_le_bytes()); // cmd
         macho.extend_from_slice(&(MACHO64_DYSYMTAB_CMD_SIZE as u32).to_le_bytes()); // cmdsize
@@ -895,9 +906,10 @@ impl ObjectBuilder {
                     // Function symbol is at index 0
                     (0_u32, true)
                 } else {
-                    // Undefined external symbol
-                    let macho_sym = crate::util::add_macho_underscore(&reloc.symbol);
-                    let sym_idx = extern_symbols.iter().position(|s| s == &macho_sym).unwrap();
+                    // Undefined external symbol. Every non-string relocation
+                    // registered its symbol in the table above, so this lookup
+                    // cannot miss.
+                    let sym_idx = extern_symbol_indices[reloc.symbol.as_str()];
                     // Undefined externals start after function and non-empty string symbols
                     (1 + num_string_syms as u32 + sym_idx as u32, true)
                 }
@@ -996,8 +1008,8 @@ impl ObjectBuilder {
         }
 
         // Symbols N+1..: External symbols (undefined)
-        for (i, _sym) in extern_symbols.iter().enumerate() {
-            macho.extend_from_slice(&(extern_name_offsets[i] as u32).to_le_bytes()); // n_strx
+        for &name_offset in &extern_name_offsets {
+            macho.extend_from_slice(&(name_offset as u32).to_le_bytes()); // n_strx
             macho.push(N_EXT | N_UNDF); // n_type: external, undefined
             macho.push(0); // n_sect: NO_SECT
             macho.extend_from_slice(&0_u16.to_le_bytes()); // n_desc
@@ -1633,6 +1645,71 @@ mod tests {
         assert!(obj_str.contains("_helper"), "should contain _helper");
         assert!(obj_str.contains("_more_data"), "should contain _more_data");
         assert!(obj_str.contains("_exit"), "should contain _exit");
+    }
+
+    /// Every Mach-O relocation must resolve to the symbol it names, whatever
+    /// the order and repetition of the references.
+    ///
+    /// The emitted symbol table is function, then non-empty string constants,
+    /// then undefined externals in first-reference order, and a relocation's
+    /// `r_symbolnum` indexes that table. Round-tripping through the parser
+    /// pins the index map against each case that can shift it: a self-reference
+    /// (index 0), string constants interleaved with externals, repeated
+    /// references to an already-registered external, and a late reference back
+    /// to the first external registered.
+    #[test]
+    fn test_macho_relocation_symbol_resolution_round_trip() {
+        let references = [
+            "puts",
+            ".rodata.str0",
+            "malloc",
+            "puts",
+            "resolver",
+            ".rodata.str1",
+            "free",
+            "malloc",
+            ".rodata.str0",
+            "puts",
+        ];
+
+        let nop = [0x1F, 0x20, 0x03, 0xD5];
+        let mut code = Vec::new();
+        for _ in 0..references.len() {
+            code.extend_from_slice(&nop);
+        }
+
+        let mut builder = ObjectBuilder::new(Target::Aarch64Macos, "resolver")
+            .code(code)
+            .strings(vec!["alpha".to_string(), "beta".to_string()]);
+        for (i, symbol) in references.iter().enumerate() {
+            builder = builder.relocation(CodeRelocation {
+                offset: (i * 4) as u64,
+                symbol: (*symbol).into(),
+                rel_type: if symbol.starts_with(".rodata.str") {
+                    RelocationType::AdrpPage21
+                } else {
+                    RelocationType::Call26
+                },
+                addend: 0,
+            });
+        }
+        let obj = builder.build();
+
+        let parsed = ObjectFile::parse(&obj).expect("emitted Mach-O object parses");
+        let text = parsed.section_map["__TEXT,__text"];
+        let resolved: Vec<&str> = parsed.sections[text]
+            .relocations
+            .iter()
+            .map(|reloc| parsed.symbols[reloc.symbol_index].name.as_str())
+            .collect();
+
+        // Emission prefixes every Mach-O symbol with exactly one underscore and
+        // parsing strips exactly that one back off (RUE-919), so a correctly
+        // indexed relocation round-trips to the name it was emitted for.
+        assert_eq!(
+            resolved, references,
+            "each relocation must name the symbol it was emitted for"
+        );
     }
 
     /// Test multiple string constants with varying sizes.
