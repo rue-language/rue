@@ -186,26 +186,17 @@ pub(crate) use source_identity::{
 // Immutable query artifacts and stable identities returned by CompilerSession.
 #[cfg(test)]
 pub(crate) use body_query::{BodyTransaction, transaction_equal};
-#[cfg(test)]
-pub(crate) use bound_definitions::BoundDefinitionSet;
 pub(crate) use bound_definitions::{
     StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
 };
 pub(crate) use canonical_lower::CanonicalRirOutput;
 pub(crate) use canonical_merge::CanonicalMergedProgram;
 pub(crate) use definition_snapshot::{DefinitionKind, DefinitionNamespace, DefinitionSnapshot};
-#[cfg(test)]
-pub(crate) use definition_snapshot::{DefinitionNameKey, DefinitionOccurrenceId, DefinitionRecord};
 pub(crate) use durable_body::{DurableAirInstData, DurableProjection};
 #[cfg(test)]
 pub(crate) use durable_semantics::DurableDeclarationPayload;
 pub(crate) use durable_semantics::DurableDeclarationSemantic;
 pub(crate) use durable_semantics::{DurableConstValue, DurableType};
-#[cfg(test)]
-pub(crate) use durable_semantics::{
-    DurableSemanticProjectionFailure, DurableSemanticProjectionWork,
-    project_durable_declaration_semantics,
-};
 
 // Small foundational types callers need to configure or inspect the facade.
 pub use rue_cfg::OptLevel;

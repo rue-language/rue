@@ -20404,23 +20404,6 @@ impl RevisionedQueryDatabase {
 }
 
 #[cfg(test)]
-pub(crate) fn projected_declaration_shells_for_test(
-    merged: &crate::canonical_merge::CanonicalMergedProgram,
-) -> Result<Vec<rue_air::SemanticDeclarationShell>, crate::CompileErrors> {
-    let snapshot = merged.definitions().source_snapshot();
-    let mut database = RevisionedQueryDatabase::default();
-    let revision =
-        database.source_revision(&super::session::ExactSourceInput::new(snapshot), snapshot);
-    database
-        .projected_declaration_shells(revision, merged.ast(), CancellationToken::new())
-        .map_err(|failure| {
-            crate::CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
-                format!("test declaration-shell query failed: {failure:?}"),
-            )))
-        })
-}
-
-#[cfg(test)]
 pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExecution {
     attempt.execution()
 }
@@ -23991,32 +23974,37 @@ impl RevisionedQueryDatabase {
 }
 
 // ---------------------------------------------------------------------------
-// Shared test support for provider differential oracles: a durable declaration
-// adapter used to compare keyed production facts with independently bound AIR.
+// Shared test support for provider tests: a durable declaration adapter fed
+// from the production semantic-nucleus projection.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
 
-    /// The production durable declaration set for a snapshot — the epoch truth
-    /// the provider resolution is diffed against.
+    /// The production durable declaration set for a snapshot, produced by the
+    /// semantic-nucleus batch projection — the same terminal the production
+    /// pipeline roots.
     pub(crate) fn production_declarations(
         snapshot: &SourceSnapshot,
     ) -> Arc<[crate::durable_semantics::DurableDeclarationSemantic]> {
         let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
         let merged = &stages.merged;
-        let rir = &stages.rir;
         let imports = crate::test_support::test_import_graph(snapshot).unwrap();
-        let (_definitions, query_declarations, _work) =
-            crate::bound_definitions::bind_canonical_declaration_semantics(
-                merged,
-                rir,
-                crate::PreviewFeatures::default(),
+        let mut database = RevisionedQueryDatabase::default();
+        let revision =
+            database.source_revision(&crate::session::ExactSourceInput::new(snapshot), snapshot);
+        database.adopt_test_import_graph_for_revision(revision, imports);
+        let revision = database.current_semantic_revision().unwrap();
+        database
+            .projected_declaration_semantics(
+                revision,
+                merged.ast(),
                 rue_target::Target::X86_64Linux,
-                &imports,
+                &crate::PreviewFeatures::default(),
+                CancellationToken::new(),
             )
-            .unwrap();
-        query_declarations
+            .expect("declaration semantics project for the fixture")
+            .declarations
     }
 
     pub(crate) fn durable_decl<'a>(
@@ -24339,7 +24327,7 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Index-independent copyability, mirroring `Sema::is_type_copy`.
+    /// Index-independent copyability over the pool's own definitions.
     pub(crate) fn endpoint_is_copy(pool: &rue_air::TypeInternPool, ty: rue_air::Type) -> bool {
         use rue_air::TypeKind;
         match ty.kind() {
@@ -26063,184 +26051,6 @@ fn main() -> i32 {
         );
     }
 
-    fn retired_declaration_exports(
-        source: &SourceSnapshot,
-    ) -> Vec<rue_air::SemanticDeclarationExport> {
-        let stages = crate::test_support::test_frontend_stages(source).unwrap();
-        let _merged = &stages.merged;
-        let rir = &stages.rir;
-        let bound = rue_air::Sema::new_synthetic(
-            rir.rir(),
-            rir.semantic_symbols().interner(),
-            crate::PreviewFeatures::new(),
-        )
-        .bind_declarations_for_test()
-        .unwrap();
-        bound
-            .with_declaration_semantics(|exports, _| exports.to_vec())
-            .unwrap()
-    }
-
-    fn retired_declaration_failure(source: &SourceSnapshot) -> String {
-        let stages = crate::test_support::test_frontend_stages(source).unwrap();
-        let _merged = &stages.merged;
-        let rir = &stages.rir;
-        let errors = match rue_air::Sema::new_synthetic(
-            rir.rir(),
-            rir.semantic_symbols().interner(),
-            crate::PreviewFeatures::new(),
-        )
-        .bind_declarations_for_test()
-        {
-            Err(errors) => errors,
-            Ok(_) => panic!("retired fixture unexpectedly passed declaration binding"),
-        };
-        errors
-            .first()
-            .expect("retired fixture must produce one declaration failure")
-            .to_string()
-    }
-
-    fn export_type_agrees(
-        retired: &rue_air::SemanticExportType,
-        keyed: &crate::durable_semantics::DurableType,
-    ) -> bool {
-        use crate::durable_semantics::DurableType as K;
-        use rue_air::SemanticExportType as R;
-        match (retired, keyed) {
-            (R::I8, K::I8)
-            | (R::I16, K::I16)
-            | (R::I32, K::I32)
-            | (R::I64, K::I64)
-            | (R::U8, K::U8)
-            | (R::U16, K::U16)
-            | (R::U32, K::U32)
-            | (R::U64, K::U64)
-            | (R::Bool, K::Bool)
-            | (R::Unit, K::Unit)
-            | (R::Never, K::Never)
-            | (R::ComptimeType, K::ComptimeType) => true,
-            (R::GenericParameter(left), K::GenericParameter(right)) => left == right,
-            (R::Nominal(left), K::Nominal(right)) => {
-                left.name.as_ref() == right.name() && left.kind == right.kind()
-            }
-            (
-                R::Array {
-                    element: left,
-                    len: left_len,
-                },
-                K::Array {
-                    element: right,
-                    len: right_len,
-                },
-            ) => left_len == right_len && export_type_agrees(left, right),
-            (R::PtrConst(left), K::PtrConst(right)) | (R::PtrMut(left), K::PtrMut(right)) => {
-                export_type_agrees(left, right)
-            }
-            _ => false,
-        }
-    }
-
-    fn signature_agrees(
-        retired: &rue_air::SemanticDeclarationPayload,
-        keyed: &crate::semantic_query_nucleus::DeclarationSignatureProjection,
-    ) -> bool {
-        use crate::semantic_query_nucleus::DeclarationSignatureProjection as K;
-        use rue_air::SemanticDeclarationPayload as R;
-        match (retired, keyed) {
-            (
-                R::Callable {
-                    parameters: left,
-                    result: left_result,
-                    has_self: left_self,
-                    self_mode: left_self_mode,
-                    is_unchecked: left_unchecked,
-                },
-                K::Callable {
-                    parameters: right,
-                    result: right_result,
-                    has_self: right_self,
-                    self_mode: right_self_mode,
-                    is_unchecked: right_unchecked,
-                    ..
-                },
-            ) => {
-                left_self == right_self
-                    && matches!(
-                        (left_self_mode, right_self_mode),
-                        (
-                            rue_air::SemanticParameterMode::Value,
-                            crate::durable_semantics::DurableParameterMode::Value
-                        ) | (
-                            rue_air::SemanticParameterMode::Borrow,
-                            crate::durable_semantics::DurableParameterMode::Borrow
-                        ) | (
-                            rue_air::SemanticParameterMode::Inout,
-                            crate::durable_semantics::DurableParameterMode::Inout
-                        )
-                    )
-                    && left_unchecked == right_unchecked
-                    && export_type_agrees(left_result, right_result)
-                    && left.len() == right.len()
-                    && left.iter().zip(right.iter()).all(|(left, right)| {
-                        let mode_agrees = matches!(
-                            (left.mode, right.mode),
-                            (
-                                rue_air::SemanticParameterMode::Value,
-                                crate::durable_semantics::DurableParameterMode::Value
-                            ) | (
-                                rue_air::SemanticParameterMode::Borrow,
-                                crate::durable_semantics::DurableParameterMode::Borrow
-                            ) | (
-                                rue_air::SemanticParameterMode::Inout,
-                                crate::durable_semantics::DurableParameterMode::Inout
-                            )
-                        );
-                        mode_agrees
-                            && left.is_comptime == right.is_comptime
-                            && export_type_agrees(&left.ty, &right.ty)
-                    })
-            }
-            (
-                R::Struct {
-                    fields: left,
-                    is_copy: left_copy,
-                    is_linear: left_linear,
-                },
-                K::Struct {
-                    fields: right,
-                    is_copy: right_copy,
-                    is_linear: right_linear,
-                    ..
-                },
-            ) => {
-                left_copy == right_copy
-                    && left_linear == right_linear
-                    && left.len() == right.len()
-                    && left.iter().zip(right.iter()).all(
-                        |((left_name, left_ty), (right_name, right_ty))| {
-                            left_name == right_name && export_type_agrees(left_ty, right_ty)
-                        },
-                    )
-            }
-            (R::Enum { variants: left }, K::Enum { variants: right }) => {
-                left.len() == right.len()
-                    && left.iter().zip(right.iter()).all(
-                        |((left_name, left_payload), (right_name, right_payload))| {
-                            left_name == right_name
-                                && left_payload.len() == right_payload.len()
-                                && left_payload
-                                    .iter()
-                                    .zip(right_payload.iter())
-                                    .all(|(left, right)| export_type_agrees(left, right))
-                        },
-                    )
-            }
-            (R::Destructor, K::Destructor) => true,
-            _ => false,
-        }
-    }
-
     fn nucleus_failure_message(
         value: &crate::semantic_query_nucleus::SemanticNucleusValue,
     ) -> Option<String> {
@@ -26261,9 +26071,13 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn direct_identity_and_signature_families_match_retired_air_per_declaration() {
+    fn direct_identity_and_signature_families_are_complete_per_declaration() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
-        use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
+        use crate::durable_semantics::{DurableParameterMode, DurableType};
+        use crate::semantic_query_nucleus::{
+            DeclarationSignatureProjection as Sig, SemanticNucleusKey as Key,
+            SemanticNucleusValue as V,
+        };
 
         let source = source_snapshot(
             &[(
@@ -26274,7 +26088,6 @@ fn main() -> i32 {
             )],
             1,
         );
-        let retired = retired_declaration_exports(&source);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = database.source_revision(
@@ -26282,24 +26095,37 @@ fn main() -> i32 {
             &source,
         );
 
-        for (category, kind, name) in [
+        for (category, kind, name, owner) in [
             (
                 Category::Function,
                 crate::StableDefinitionKind::Function,
                 "free",
+                None,
             ),
-            (Category::Struct, crate::StableDefinitionKind::Struct, "S"),
-            (Category::Enum, crate::StableDefinitionKind::Enum, "E"),
-            (Category::Method, crate::StableDefinitionKind::Method, "get"),
+            (
+                Category::Struct,
+                crate::StableDefinitionKind::Struct,
+                "S",
+                None,
+            ),
+            (Category::Enum, crate::StableDefinitionKind::Enum, "E", None),
+            (
+                Category::Method,
+                crate::StableDefinitionKind::Method,
+                "get",
+                Some("S"),
+            ),
             (
                 Category::AssociatedFunction,
                 crate::StableDefinitionKind::AssociatedFunction,
                 "make",
+                Some("S"),
             ),
             (
                 Category::Destructor,
                 crate::StableDefinitionKind::Destructor,
                 "S",
+                Some("S"),
             ),
         ] {
             let declaration = declaration_candidate(&database, revision, &module, category, name);
@@ -26343,20 +26169,15 @@ fn main() -> i32 {
             let V::Identity(identity) = identity else {
                 panic!("direct identity failed for {kind:?} {name}: {identity:?}")
             };
-            let retired = retired
-                .iter()
-                .find(|export| {
-                    export.identity.kind == kind && export.identity.name.as_ref() == name
-                })
-                .unwrap_or_else(|| panic!("retired AIR omitted {kind:?} {name}"));
-            assert_eq!(identity.key.namespace(), retired.identity.namespace);
-            assert_eq!(identity.key.kind(), retired.identity.kind);
-            assert_eq!(identity.key.name(), retired.identity.name.as_ref());
-            assert_eq!(
-                identity.key.owner().map(|owner| owner.name()),
-                retired.identity.owner.as_deref()
+            assert_eq!(identity.key.namespace(), kind.namespace());
+            assert_eq!(identity.key.kind(), kind);
+            assert_eq!(identity.key.name(), name);
+            assert_eq!(identity.key.module(), &module);
+            assert_eq!(identity.key.owner().map(|owner| owner.name()), owner);
+            assert!(
+                !identity.is_public,
+                "no declaration in this fixture is `pub`"
             );
-            assert_eq!(identity.is_public, retired.identity.is_public);
 
             let (signature, signature_attempt) =
                 request_semantic_nucleus_observed(&database, revision, Key::Signature(query));
@@ -26414,17 +26235,110 @@ fn main() -> i32 {
             let V::Signature(signature) = signature else {
                 panic!("direct signature failed for {kind:?} {name}: {signature:?}")
             };
-            assert!(
-                signature_agrees(&retired.payload, &signature.signature),
-                "retired/keyed signature disagreement for {kind:?} {name}: retired={:?}, keyed={:?}",
-                retired.payload,
-                signature.signature,
-            );
+            let signature = &signature.signature;
+            match (kind, name) {
+                (crate::StableDefinitionKind::Function, "free") => {
+                    let Sig::Callable {
+                        parameters,
+                        result,
+                        has_self,
+                        self_mode,
+                        is_accessor,
+                        is_unchecked,
+                        is_extern,
+                        is_c_export,
+                    } = signature
+                    else {
+                        panic!("free must project a callable signature: {signature:?}")
+                    };
+                    let [value] = parameters.as_ref() else {
+                        panic!("free has one parameter: {parameters:?}")
+                    };
+                    assert_eq!(value.name.as_ref(), "value");
+                    assert_eq!(value.ty, DurableType::I32);
+                    assert_eq!(value.mode, DurableParameterMode::Value);
+                    assert!(!value.is_comptime);
+                    assert_eq!(result, &DurableType::I32);
+                    assert!(!has_self);
+                    assert_eq!(self_mode, &DurableParameterMode::Value);
+                    assert!(!is_accessor && !is_unchecked && !is_extern && !is_c_export);
+                }
+                (crate::StableDefinitionKind::Struct, "S") => {
+                    let Sig::Struct {
+                        fields,
+                        is_copy,
+                        is_linear,
+                        is_repr_c,
+                    } = signature
+                    else {
+                        panic!("S must project a struct signature: {signature:?}")
+                    };
+                    let [(field, ty)] = fields.as_ref() else {
+                        panic!("S has one field: {fields:?}")
+                    };
+                    assert_eq!(field.as_ref(), "value");
+                    assert_eq!(ty, &DurableType::I32);
+                    assert!(!is_copy, "a destructor-bearing struct is not copyable");
+                    assert!(!is_linear && !is_repr_c);
+                }
+                (crate::StableDefinitionKind::Enum, "E") => {
+                    let Sig::Enum { variants } = signature else {
+                        panic!("E must project an enum signature: {signature:?}")
+                    };
+                    let rendered = variants
+                        .iter()
+                        .map(|(name, payload)| (name.as_ref(), payload.len()))
+                        .collect::<Vec<_>>();
+                    assert_eq!(rendered, [("A", 0), ("B", 0)]);
+                }
+                (crate::StableDefinitionKind::Method, "get") => {
+                    let Sig::Callable {
+                        parameters,
+                        result,
+                        has_self,
+                        self_mode,
+                        ..
+                    } = signature
+                    else {
+                        panic!("get must project a callable signature: {signature:?}")
+                    };
+                    let [delta] = parameters.as_ref() else {
+                        panic!("get has one explicit parameter: {parameters:?}")
+                    };
+                    assert_eq!(delta.name.as_ref(), "delta");
+                    assert_eq!(delta.ty, DurableType::I32);
+                    assert_eq!(result, &DurableType::I32);
+                    assert!(has_self);
+                    assert_eq!(self_mode, &DurableParameterMode::Borrow);
+                }
+                (crate::StableDefinitionKind::AssociatedFunction, "make") => {
+                    let Sig::Callable {
+                        parameters,
+                        result,
+                        has_self,
+                        ..
+                    } = signature
+                    else {
+                        panic!("make must project a callable signature: {signature:?}")
+                    };
+                    assert_eq!(parameters.len(), 1);
+                    assert!(!has_self);
+                    let DurableType::Nominal(owner_key) = result else {
+                        panic!("make returns the owning nominal: {result:?}")
+                    };
+                    assert_eq!(owner_key.name(), "S");
+                    assert_eq!(owner_key.kind(), crate::StableDefinitionKind::Struct);
+                }
+                (crate::StableDefinitionKind::Destructor, "S") => {
+                    assert_eq!(signature, &Sig::Destructor);
+                }
+                other => panic!("unexpected fixture declaration {other:?}"),
+            }
         }
     }
 
     #[test]
-    fn direct_const_family_matches_retired_evaluation() {
+    fn direct_const_family_evaluates_the_annotated_initializer() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{
             ConstResolutionProjection as Resolution, SemanticNucleusKey as Key,
@@ -26440,22 +26354,6 @@ fn main() -> i32 {
             )],
             1,
         );
-        let retired = retired_declaration_exports(&source);
-        let retired = retired
-            .iter()
-            .find(|export| {
-                export.identity.kind == crate::StableDefinitionKind::ValueConst
-                    && export.identity.name.as_ref() == "SELECTED"
-            })
-            .expect("retired AIR omitted SELECTED");
-        let rue_air::SemanticDeclarationPayload::Const {
-            ty: retired_ty,
-            value: rue_air::SemanticExportConstValue::Integer(retired_value),
-        } = &retired.payload
-        else {
-            panic!("retired AIR classified SELECTED unexpectedly: {retired:?}")
-        };
-
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = database.source_revision(
@@ -26469,10 +26367,7 @@ fn main() -> i32 {
             Category::ConstCandidate,
             "SELECTED",
         );
-        let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
-            target: rue_target::Target::host().expect("retired AIR requires a supported host"),
-            preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
-        };
+        let configuration = semantic_configuration();
         let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
             &database,
             revision,
@@ -26510,12 +26405,12 @@ fn main() -> i32 {
         let crate::durable_semantics::DurableConstValue::Integer(keyed_value) = *value else {
             panic!("direct const terminal returned a non-integer value")
         };
-        assert!(export_type_agrees(retired_ty, &keyed_ty));
-        assert_eq!(*retired_value, keyed_value);
+        assert_eq!(keyed_ty, crate::durable_semantics::DurableType::I32);
+        assert_eq!(keyed_value, 42, "`40 + 2` evaluates at declaration time");
     }
 
     #[test]
-    fn direct_target_selected_comptime_matches_retired_air_oracle() {
+    fn direct_target_selected_comptime_evaluates_under_the_host_arch() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{
             ComptimeCallQueryKey, ComptimeCallResultProjection as ResultProjection,
@@ -26531,29 +26426,13 @@ fn main() -> i32 {
             )],
             1,
         );
-        let stages = crate::test_support::test_frontend_stages(&source).unwrap();
-        let _merged = &stages.merged;
-        let rir = &stages.rir;
-        let retired = rue_air::Sema::new_synthetic(
-            rir.rir(),
-            rir.semantic_symbols().interner(),
-            crate::PreviewFeatures::new(),
-        )
-        .analyze_all_for_test()
-        .unwrap();
-        let retired = retired
-            .functions
-            .iter()
-            .flat_map(|function| function.air.iter())
-            .find_map(|(_, instruction)| match &instruction.data {
-                rue_air::AirInstData::EnumVariant { variant_index, .. } => match variant_index {
-                    0 => Some(64),
-                    1 => Some(32),
-                    _ => None,
-                },
-                _ => None,
-            })
-            .expect("retired AIR did not lower the target-selected Arch variant");
+        let target = rue_target::Target::host().expect("test host is a supported target");
+        // `@target_arch()` selects the match arm from the configured target, so
+        // the expected value follows directly from the host architecture.
+        let expected = match target.arch() {
+            rue_target::Arch::X86_64 => 64,
+            rue_target::Arch::Aarch64 => 32,
+        };
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let revision = database.source_revision(
@@ -26561,8 +26440,7 @@ fn main() -> i32 {
             &source,
         );
         let mut configuration = semantic_configuration();
-        configuration.target =
-            rue_target::Target::host().expect("retired AIR requires a supported host");
+        configuration.target = target;
         let (keyed, keyed_attempt) = request_semantic_nucleus_observed(
             &database,
             revision,
@@ -26609,7 +26487,7 @@ fn main() -> i32 {
         else {
             panic!("direct target-selected const failed: {keyed:?}")
         };
-        assert_eq!(i128::from(retired), keyed);
+        assert_eq!(i128::from(expected), keyed);
     }
 
     /// RUE-1112 demand-resolves proof. Once the trusted `\0rue-std/option.rue`
@@ -26801,18 +26679,20 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn direct_ownership_terminals_match_retired_air_acceptance_and_failure() {
+    fn direct_ownership_terminals_accept_droppable_and_reject_linear_payloads() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
 
-        for (source_text, should_accept) in [
+        for (source_text, expected_failure) in [
             (
                 "enum Maybe { Some, None } fn Gated(comptime T: type) -> type { @require_droppable(T); T } const G = Gated(Maybe); fn main() {}",
-                true,
+                None,
             ),
             (
                 "linear struct Token { v: i32 } fn Gated(comptime T: type) -> type { @require_droppable(T); T } const G = Gated(Token); fn main() {}",
-                false,
+                Some(
+                    "`@require_droppable` requires a trivially-droppable type, but `Token` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet track element linearity, so the element would be leaked (RUE-388)",
+                ),
             ),
         ] {
             let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
@@ -26896,52 +26776,44 @@ fn main() -> i32 {
                 ],
                 18,
             );
-            if should_accept {
-                let retired = retired_declaration_exports(&source);
-                assert!(
-                    retired
-                        .iter()
-                        .any(|export| export.identity.name.as_ref() == "G"),
-                    "retired AIR omitted accepted G"
-                );
-                assert_eq!(keyed, V::DeferredOwnership);
-            } else {
-                let retired = retired_declaration_failure(&source);
-                assert_eq!(
-                    nucleus_failure_message(&keyed).as_deref(),
-                    Some(retired.as_str())
-                );
+            match expected_failure {
+                None => assert_eq!(keyed, V::DeferredOwnership),
+                Some(expected) => {
+                    assert_eq!(nucleus_failure_message(&keyed).as_deref(), Some(expected));
+                }
             }
         }
     }
 
     #[test]
-    fn direct_family_failures_match_retired_air_without_root_prevalidation() {
+    fn direct_family_failures_are_deterministic_without_root_prevalidation() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
 
-        for (source_text, category, name, identity_terminal) in [
+        for (source_text, category, name, identity_terminal, expected) in [
             (
                 "drop fn Missing(self) {} fn main() {}",
                 Category::Destructor,
                 "Missing",
                 false,
+                "unknown type 'Missing' in destructor",
             ),
             (
                 "struct S {} drop fn S(self) {} drop fn S(self) {} fn main() {}",
                 Category::Destructor,
                 "S",
                 true,
+                "duplicate destructor for type 'S'",
             ),
             (
                 "struct S { fn make(a: i32, a: i32) {} } fn main() {}",
                 Category::AssociatedFunction,
                 "make",
                 false,
+                "duplicate parameter name 'a'",
             ),
         ] {
             let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
-            let retired = retired_declaration_failure(&source);
             let module = ModuleId::from_logical_path("main.rue").unwrap();
             let mut database = RevisionedQueryDatabase::default();
             let revision = database.source_revision(
@@ -27006,7 +26878,7 @@ fn main() -> i32 {
             assert!(matches!(keyed, V::Failure(_)));
             assert_eq!(
                 nucleus_failure_message(&keyed).as_deref(),
-                Some(retired.as_str()),
+                Some(expected),
                 "direct keyed failure diverged for {category:?} {name}: {keyed:?}"
             );
         }
@@ -33717,9 +33589,10 @@ fn main() -> i32 {
     // These prove `ProviderTypeFacts` (BodyFactProvider + overlay) resolves every
     // type-syntax shape in r2's scope to the same durable type the production
     // binder assigned, and materializes each consulted nominal into the overlay
-    // with byte-identical durable metadata. The epoch truth is the independently
-    // produced durable declaration set (`bind_canonical_declaration_semantics`),
-    // never the same provider terminal, so agreement is a real cross-path proof.
+    // with byte-identical durable metadata. The reference truth is the
+    // production durable declaration set (the semantic-nucleus batch projection
+    // behind `production_declarations`), never the same provider terminal, so
+    // agreement is a real cross-path proof.
 
     /// Resolve `syntax` through `ProviderTypeFacts` inside one probe, returning
     /// the resolved durable type (or `None` when resolution failed / deferred),
@@ -34084,9 +33957,9 @@ fn main() -> i32 {
     // These prove the flipped `ProviderTypeFacts` comptime-call arms (backed by
     // `SignatureFacts` + the argument-parameterized comptime-call boundary op)
     // reduce a comptime type/value call to the same durable type/value the
-    // production binder assigned. The epoch truth is the production durable const
-    // declaration whose initializer IS the call, produced independently by
-    // `bind_canonical_declaration_semantics`, never the same provider terminal.
+    // production nucleus assigned. The reference truth is the production durable
+    // const declaration whose initializer IS the call, produced independently by
+    // the semantic-nucleus batch projection, never the same provider terminal.
 
     /// The `Const { value }` durable value the production binder assigned to the
     /// value-const named `name`.
@@ -34577,10 +34450,10 @@ fn main() -> i32 {
     // These prove `rue_air::ProviderCallFacts` (the provider-driven realization
     // of the r1b `CallResolutionFacts` seam) assembles the family-1C identities
     // from the exact body-fact provider (`CompilerBodyFactProvider`) + the body
-    // identity pool, matching the epoch. The durable source the pool consults is
-    // built from the independently produced durable declaration set
-    // (`bind_canonical_declaration_semantics`, r2's stable-keyed metadata), so
-    // agreement is a real cross-path proof, not the same provider terminal.
+    // identity pool. The durable source the pool consults is built from the
+    // production durable declaration set (the semantic-nucleus batch
+    // projection, r2's stable-keyed metadata), so agreement is a real
+    // cross-path proof, not the same provider terminal.
     //
     // Scope landed here: free-function and nominal-member info composition
     // (including associated functions), lookup selection, callable-symbol
@@ -34611,7 +34484,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_call_facts_function_info_matches_epoch() {
+    fn provider_call_facts_function_info_is_assembled_from_durable_truth() {
         use crate::StableDefinitionKind as Kind;
         // A free function whose first parameter is a NOMINAL (`Point`): its type
         // resolves through the pool's 2a nominal machinery, its `n`/return through
@@ -34626,32 +34499,11 @@ fn main() -> i32 {
         let make = durable_decl(&decls, Kind::Function, "make");
         let make_key = make.key.clone();
 
-        // Independently bind the same source through the declaration path. This
-        // is the oracle side of the comparison, not the queried durable terminal.
-        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
-        let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         // The RIR + its interner are body-query inputs the driver fills the
-        // request/RIR handle from; the BoundSema is bound from the same `rir`, so
-        // its `Spur`s and the driver's line up.
+        // request/RIR handle from.
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let rir = &stages.rir;
         let interner = rir.semantic_symbols().interner();
-        let make_sym = interner.get("make").expect("make interned");
-        let make_symbol = bound
-            .free_function_symbol(file, make_sym)
-            .expect("make is bound in its own module");
-        let prod = bound
-            .function_info(make_symbol)
-            .expect("the epoch has make's FunctionInfo");
-
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
@@ -34711,19 +34563,41 @@ fn main() -> i32 {
         );
         let info = outcome.result;
 
-        // Cross-path against the LIVE production `FunctionInfo` (not hardcoded
-        // literals): span/flags/file/return-symbol all equal the epoch's. This
-        // makes the r4a-2c span contract a real comparison — production's own
-        // `FunctionInfo.span` (sourced from `shell.declaration_span`) equals the
-        // provider-assembled handle span — not a re-read of the same inst.
-        assert_eq!(info.span, prod.span, "assembled span equals production's");
-        assert_eq!(info.file_id, prod.file_id);
-        assert_eq!(info.is_pub, prod.is_pub);
-        assert_eq!(info.is_generic, prod.is_generic);
-        assert_eq!(info.is_unchecked, prod.is_unchecked);
+        // The assembled handles resolve back into the exact source declaration:
+        // the r4a-2c span contract sources `FunctionInfo.span` from the shell's
+        // declaration span, so it must slice to the declaration text, and the
+        // declaration/body refs must name the RIR instructions at those spans.
         assert_eq!(
-            info.return_type_syntax, prod.return_type_syntax,
-            "pre-resolution return symbol matches production"
+            &source[info.span.start as usize..info.span.end as usize],
+            "@allow(unused_function)\npub fn make(p: Point, n: i32) -> i64 { 0 }",
+            "assembled span slices to the attributed declaration text"
+        );
+        let declaration = rir_ref.get(info.declaration);
+        assert!(
+            matches!(declaration.data, rue_rir::InstData::FnDecl { .. }),
+            "the declaration handle names the FnDecl instruction"
+        );
+        assert_eq!(
+            info.span, declaration.span,
+            "the assembled span is the declaration instruction's own"
+        );
+        let body_span = rir_ref.get(info.body).span;
+        assert_eq!(
+            &source[body_span.start as usize..body_span.end as usize],
+            "0",
+            "the body handle names the body expression"
+        );
+        assert_eq!(info.file_id, file);
+        assert!(info.is_pub, "make is declared pub");
+        assert!(!info.is_generic, "make has no comptime parameters");
+        assert!(!info.is_unchecked);
+        assert_eq!(
+            rir_ref
+                .type_syntax()
+                .render_type_with(info.return_type_syntax, |symbol| interner.resolve(symbol))
+                .as_deref(),
+            Some("i64"),
+            "the pre-resolution return syntax spells the annotated type"
         );
 
         // The P-op path consults the pool (durable source) + the RIR handle, not
@@ -34794,7 +34668,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_call_facts_method_info_matches_epoch() {
+    fn provider_call_facts_method_info_is_assembled_from_durable_truth() {
         use crate::StableDefinitionKind as Kind;
         // A named method whose receiver (`Widget`), one explicit param (`Point`),
         // and return (`i64`) all resolve through the pool's 2a nominal machinery
@@ -34812,29 +34686,9 @@ fn main() -> i32 {
         let shift = durable_decl(&decls, Kind::Method, "shift");
         let shift_key = shift.key.clone();
 
-        // The LIVE epoch, bound through the production declaration path — the
-        // INDEPENDENT side the provider assembly is compared against.
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let widget_sym = interner.get("Widget").expect("Widget interned");
-        let shift_sym = interner.get("shift").expect("shift interned");
-        let prod = bound
-            .epoch_method_info(file, widget_sym, shift_sym)
-            .expect("the epoch has Widget.shift's MethodInfo");
-        let prod_receiver = bound.with_type_pool(|pool| render_pool_type(pool, prod.struct_type));
-        let prod_return = bound.with_type_pool(|pool| render_pool_type(pool, prod.return_type));
-
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
@@ -34928,25 +34782,29 @@ fn main() -> i32 {
         );
         let (info, named, receiver, ret) = outcome.result;
 
-        // Cross-path against the LIVE epoch `MethodInfo` (not literals):
-        // pool-independent fields directly, pool-relative types by render.
-        assert_eq!(receiver, prod_receiver, "receiver equals the epoch's");
+        // The assembled metadata resolves back into the exact source
+        // declaration: pool-relative types by index-independent render, RIR
+        // handles by the source text at their spans.
         assert_eq!(receiver, "Widget", "receiver is the owning nominal");
-        assert_eq!(ret, prod_return, "return equals the epoch's");
-        assert_eq!(info.has_self, prod.has_self, "has_self matches");
+        assert_eq!(ret, "i64", "return renders as the annotated type");
         assert!(info.has_self, "shift takes self");
-        assert_eq!(info.self_mode, prod.self_mode, "self_mode matches");
         assert_eq!(info.self_mode, rue_rir::RirParamMode::Borrow);
-        assert_eq!(info.self_is_mut, prod.self_is_mut, "self_is_mut matches");
+        assert!(!info.self_is_mut, "shift's receiver is not `mut self`");
+        let named_body_span = rir_ref.get(named.body).span;
         assert_eq!(
-            named.body, prod.body,
-            "named method body InstRef matches the epoch"
+            &source[named_body_span.start as usize..named_body_span.end as usize],
+            "self.id",
+            "the named method body handle names shift's body expression"
         );
         assert_ne!(
             info.body, named.body,
             "anonymous collision remains selected"
         );
-        assert_eq!(info.span, prod.span, "method span matches the epoch");
+        assert_eq!(
+            &source[info.span.start as usize..info.span.end as usize],
+            "fn shift(borrow self, p: Point, n: i32) -> i64 { self.id }",
+            "the method span slices to the declaration text"
+        );
 
         // The P-op path consults the pool + the RIR handle, not the live provider
         // terminals, so it records no provider edge (pool answered-by-metadata).
@@ -34958,7 +34816,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_call_facts_associated_function_matches_live_epoch() {
+    fn provider_call_facts_associated_function_is_assembled_from_durable_truth() {
         use crate::StableDefinitionKind as Kind;
 
         let source = "pub struct Counter { value: i32, \
@@ -34972,30 +34830,8 @@ fn main() -> i32 {
             .clone();
 
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let counter = interner.get("Counter").expect("Counter interned");
-        let make = interner.get("make").expect("make interned");
-        let epoch = bound
-            .epoch_method_info(file, counter, make)
-            .expect("the LIVE epoch has Counter.make");
-        let epoch_types = bound.with_type_pool(|pool| {
-            (
-                render_pool_type(pool, epoch.struct_type),
-                render_pool_type(pool, epoch.return_type),
-            )
-        });
-
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
@@ -35023,12 +34859,28 @@ fn main() -> i32 {
         );
         let (provider, provider_types) = outcome.result;
 
-        assert_eq!(provider_types, epoch_types);
-        assert_eq!(provider.has_self, epoch.has_self);
+        assert_eq!(
+            provider_types,
+            ("Counter".to_owned(), "Counter".to_owned()),
+            "owner and return both render as the owning nominal"
+        );
         assert!(!provider.has_self, "Counter.make is an associated function");
-        assert_eq!(provider.params.len(), epoch.params.len());
-        assert_eq!(provider.body, epoch.body);
-        assert_eq!(provider.span, epoch.span);
+        assert_eq!(
+            provider.params.len(),
+            1,
+            "make takes one explicit parameter"
+        );
+        let body_span = rir_ref.get(provider.body).span;
+        assert_eq!(
+            &source[body_span.start as usize..body_span.end as usize],
+            "Counter { value: value }",
+            "the body handle names make's body expression"
+        );
+        assert_eq!(
+            &source[provider.span.start as usize..provider.span.end as usize],
+            "fn make(value: i32) -> Counter { Counter { value: value } }",
+            "the assembled span slices to the declaration text"
+        );
         assert!(
             outcome.dependencies.is_empty(),
             "associated assembly uses durable metadata + RIR only: {:?}",
@@ -35037,7 +34889,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_named_destructor_metadata_matches_live_epoch() {
+    fn provider_named_destructor_metadata_is_retained_on_the_minted_nominal() {
         use crate::StableDefinitionKind as Kind;
         use rue_air::{
             NominalInstanceKey, SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
@@ -35052,28 +34904,8 @@ fn main() -> i32 {
         let box_key = durable_decl(&decls, Kind::Struct, "Box").key.clone();
 
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let box_symbol = interner.get("Box").expect("Box interned");
-        let epoch_box = bound
-            .epoch_nominal_type(file, box_symbol)
-            .expect("the LIVE epoch resolves Box");
-        let epoch_destructor = bound.with_type_pool(|pool| {
-            pool.struct_def(epoch_box.as_struct().expect("Box is a struct"))
-                .destructor
-                .clone()
-        });
-
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
@@ -35106,29 +34938,23 @@ fn main() -> i32 {
         );
 
         assert_eq!(
-            outcome.result, epoch_destructor,
-            "provider destructor metadata diverged from the independently bound LIVE epoch"
-        );
-        assert!(
-            outcome.result.is_some(),
-            "the destructor-bearing nominal must retain a destructor symbol"
+            outcome.result.as_deref(),
+            Some("Box$m_2erue.__drop"),
+            "the destructor-bearing nominal must retain its stable destructor symbol"
         );
     }
 
-    // ---- RUE-1091 r4b-2: endpoint ProviderFacts differentials ----------------
+    // ---- RUE-1091 r4b-2: endpoint ProviderFacts coverage ---------------------
     //
     // These prove `rue_air::ProviderEndpointFacts` (the provider-driven
     // realization of the family-1A `BodyEndpointProvider` seam) resolves every
-    // `TypeInstanceKey` arm the body identity pool supports, matching the epoch.
-    // The driver REUSES the same provider-generic `resolve_instance_type` logic
-    // production runs (`body_endpoint.rs`), driven over the pool + an overlay
-    // token space in place of the epoch's `structs_by_file_name` /
-    // `stable_definition_endpoints` tables; only the fact SOURCE differs, so the
-    // agreement is a real cross-path proof. The durable source (`DurableDeclSource`,
-    // shared with the r4b-1 block) is built from the independently produced
-    // durable declaration set, and the comparison target is the LIVE epoch's own
-    // resolved nominal `Type` (`BoundSema::epoch_nominal_type`), rendered
-    // index-independently — never a pool-relative index, never a literal.
+    // `TypeInstanceKey` arm the body identity pool supports. The driver REUSES
+    // the same provider-generic `resolve_instance_type` logic production runs
+    // (`body_endpoint.rs`), driven over the pool + an overlay token space. The
+    // durable source (`DurableDeclSource`, shared with the r4b-1 block) is
+    // built from the production durable declaration set, and each resolution is
+    // pinned through its index-independent render — never a pool-relative
+    // index.
     //
     // Scope landed here: `resolve_instance_type` over primitives, named
     // struct/enum (the by-file-name lookup + endpoint token space), builtin `str`
@@ -35142,7 +34968,7 @@ fn main() -> i32 {
     // endpoint-trait seam → r4b-3.
 
     #[test]
-    fn provider_endpoint_facts_resolve_instance_type_matches_epoch() {
+    fn provider_endpoint_facts_resolve_instance_type_mints_the_declared_surface() {
         use crate::StableDefinitionKind as Kind;
         use rue_air::{
             NominalInstanceKey as N, SemanticDefinitionToken as DTok, SemanticModuleToken as MTok,
@@ -35151,8 +34977,8 @@ fn main() -> i32 {
         // The full nominal / structural surface: `Point` is a non-copy nominal
         // (its fields resolve through the pool's 2a machinery); `Holder` embeds a
         // nominal field plus the array / `ptr const` / `ptr mut` structural arms;
-        // `Color` is a named enum. Each is minted by the provider path and
-        // compared to the LIVE epoch's own resolution.
+        // `Color` is a named enum. Each is minted by the provider path and its
+        // index-independent render is pinned against the declared source shape.
         let source = "pub struct Point { x: i64, y: i64 }\n\
                       pub enum Color { Red, Green }\n\
                       pub struct Holder { p: Point, arr: [i64; 3], pc: ptr const Point, pm: ptr mut i64 }\n\
@@ -35164,64 +34990,13 @@ fn main() -> i32 {
         let holder_key = durable_decl(&decls, Kind::Struct, "Holder").key.clone();
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
 
-        // The LIVE epoch, bound through the production declaration path — the
-        // INDEPENDENT side the provider assembly is compared against.
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
         let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let point_sym = interner.get("Point").expect("Point interned");
-        let holder_sym = interner.get("Holder").expect("Holder interned");
-        let color_sym = interner.get("Color").expect("Color interned");
         let durable_module = merged.ast().modules()[0].module_id().clone();
         let conflicting_durable_module =
             crate::ModuleId::from_logical_path("other.rue").expect("second durable module id");
-
-        let epoch_point = bound
-            .epoch_nominal_type(file, point_sym)
-            .expect("epoch resolves Point");
-        let epoch_holder = bound
-            .epoch_nominal_type(file, holder_sym)
-            .expect("epoch resolves Holder");
-        let epoch_color = bound
-            .epoch_nominal_type(file, color_sym)
-            .expect("epoch resolves Color");
-        let epoch_module = bound
-            .epoch_module_type(file)
-            .expect("epoch resolves the module endpoint through its registry");
-        let epoch_module_file = bound
-            .epoch_module_file(epoch_module)
-            .expect("epoch module type reverses to its current file");
-        let epoch_module_fact = bound
-            .epoch_module_fact(epoch_module)
-            .expect("epoch module type carries presentation facts");
-        let epoch_aggregate_module_fact = (
-            epoch_module_fact.0,
-            epoch_module_fact.1.clone(),
-            epoch_module_fact.2.clone(),
-        );
-        let epoch_point_render =
-            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_point));
-        let epoch_holder_render =
-            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_holder));
-        let epoch_color_render =
-            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_color));
-        // Holder's field displays are the LIVE epoch reference for the top-level
-        // structural / primitive arms (the same structural type, resolved as a
-        // field), and Point.x for the primitive-arm reference.
-        let epoch_holder_fields: HashMap<String, String> =
-            epoch_holder_render.members.iter().cloned().collect();
-        let epoch_point_fields: HashMap<String, String> =
-            epoch_point_render.members.iter().cloned().collect();
 
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
@@ -35229,6 +35004,7 @@ fn main() -> i32 {
         let adapter = DurableDeclSource::from_declarations(&decls);
         let call_adapter = DurableDeclSource::from_declarations(&decls);
         let aggregate_adapter = DurableDeclSource::from_declarations(&decls);
+        let durable_module_for_fact = durable_module.clone();
 
         let outcome = database.probe_ready_body_facts(
             revision,
@@ -35412,57 +35188,82 @@ fn main() -> i32 {
             provider_module_file,
         ) = endpoint_render;
 
-        // Named-nominal arm (struct): full metadata parity against the LIVE epoch.
+        // Named-nominal arms: the full index-independent render is pinned to the
+        // declared source shape.
         assert_eq!(
-            point_r, epoch_point_render,
-            "Point resolution matches the epoch"
+            point_r,
+            EndpointNominalRender {
+                display: "Point".to_owned(),
+                is_copy: false,
+                is_pub: true,
+                symbol: "Point$m_2erue".to_owned(),
+                members: vec![
+                    ("x".to_owned(), "i64".to_owned()),
+                    ("y".to_owned(), "i64".to_owned()),
+                ],
+            },
+            "Point resolution renders the declared struct"
         );
         assert_eq!(
-            holder_r, epoch_holder_render,
-            "Holder (nominal + structural fields) matches the epoch"
+            holder_r,
+            EndpointNominalRender {
+                display: "Holder".to_owned(),
+                is_copy: false,
+                is_pub: true,
+                symbol: "Holder$m_2erue".to_owned(),
+                members: vec![
+                    ("p".to_owned(), "Point".to_owned()),
+                    ("arr".to_owned(), "[i64; 3]".to_owned()),
+                    ("pc".to_owned(), "ptr const Point".to_owned()),
+                    ("pm".to_owned(), "ptr mut i64".to_owned()),
+                ],
+            },
+            "Holder (nominal + structural fields) renders the declared struct"
         );
-        // Named-nominal arm (enum).
-        assert_eq!(color_r, epoch_color_render, "Color enum matches the epoch");
+        assert_eq!(
+            color_r,
+            EndpointNominalRender {
+                display: "Color".to_owned(),
+                is_copy: true,
+                is_pub: true,
+                symbol: "Color$m_2erue".to_owned(),
+                members: vec![
+                    ("Red".to_owned(), String::new()),
+                    ("Green".to_owned(), String::new()),
+                ],
+            },
+            "Color enum renders the declared variants"
+        );
 
-        // Structural / primitive arms: each equals the SAME type resolved as a
-        // live epoch field (never a literal).
-        assert_eq!(
-            Some(&array_d),
-            epoch_holder_fields.get("arr"),
-            "array arm equals the epoch's `arr` field"
-        );
-        assert_eq!(
-            Some(&ptr_const_d),
-            epoch_holder_fields.get("pc"),
-            "ptr const arm equals the epoch's `pc` field"
-        );
-        assert_eq!(
-            Some(&ptr_mut_d),
-            epoch_holder_fields.get("pm"),
-            "ptr mut arm equals the epoch's `pm` field"
-        );
-        assert_eq!(
-            Some(&i64_d),
-            epoch_point_fields.get("x"),
-            "primitive arm equals the epoch's `x: i64` field"
-        );
-        // Builtin arm: `str` is pre-registered identically to the epoch's fresh
-        // import program, so it renders identically.
+        // Structural / primitive arms of the SHARED `resolve_instance_type`
+        // walk render their canonical spellings.
+        assert_eq!(array_d, "[i64; 3]", "array arm renders the declared array");
+        assert_eq!(ptr_const_d, "ptr const Point");
+        assert_eq!(ptr_mut_d, "ptr mut i64");
+        assert_eq!(i64_d, "i64", "primitive arm renders directly");
+        // Builtin arm: `str` is pre-registered in the pool.
         assert_eq!(
             str_d, "str",
             "builtin str renders as the pre-registered nominal"
         );
         assert_eq!(
-            provider_module_file, epoch_module_file,
-            "module endpoint + registry resolution matches the LIVE epoch"
+            provider_module_file, file,
+            "module endpoint + registry resolution reverses to the registered file"
         );
         assert_eq!(
-            call_module_fact, epoch_module_fact,
-            "call module_def matches the LIVE epoch"
+            call_module_fact,
+            (
+                file,
+                "/m.rue".to_owned(),
+                "m.rue".to_owned(),
+                durable_module_for_fact.as_str().to_owned(),
+            ),
+            "call module_def carries the registered module facts"
         );
         assert_eq!(
-            aggregate_module_fact, epoch_aggregate_module_fact,
-            "aggregate module facts match the LIVE epoch"
+            aggregate_module_fact,
+            (file, "/m.rue".to_owned(), "m.rue".to_owned()),
+            "aggregate module facts carry the registered paths"
         );
 
         // The P-op path consults the pool (durable source) + overlay, not the
@@ -35578,17 +35379,11 @@ fn main() -> i32 {
     }
 
     // RUE-1091 r6b: the anonymous arm mints once a caller seeds the durable
-    // identity, minting the producer-nominal anonymous struct byte-identically to
-    // the LIVE epoch's own `find_or_create_anon_struct` — the positive half of the
-    // deferral this slice flips (the r4b-2 anonymous-arm pin).
-    //
-    // Cross-path, no self-comparison: the epoch side is the LIVE bind's own
-    // anonymous materialization (`epoch_anonymous_types`, populated by the epoch's
-    // `find_or_create_anon_struct` during declaration binding), NOT the shared
-    // digest fn. The pool independently relocates the durable producer key to its
-    // stable content and spells the `__anon_struct_{digest}` name through the same
-    // shared computation; the digest name matching on both sides — plus the full
-    // metadata / display / member render — is the byte-equal-relocation proof.
+    // identity — the positive half of the deferral this slice flips (the r4b-2
+    // anonymous-arm pin). The pool relocates the durable producer key to its
+    // stable content, canonicalizes the producer wrapper on entry, and spells
+    // the `__anon_struct_{digest}` name; the render below pins that full
+    // materialization (digest name, symbol, flags, and field vocabulary).
     #[test]
     fn provider_endpoint_facts_anonymous_arm_mints_after_registration() {
         use rue_air::{
@@ -35627,7 +35422,7 @@ fn main() -> i32 {
         // The durable identity is fed to the pool RAW: the declaration-SIGNATURE
         // projection retains the empty-argument specialization wrapper
         // (`Function(Specialization { base, args: [] })`) that production
-        // body-export and the LIVE epoch collapse to `Function(base)`
+        // body-export collapses to `Function(base)`
         // (`canonical_function_producer`). The pool canonicalizes ON ENTRY
         // (`find_or_create_anon` collapses via `with_canonical_producer`, and the
         // adapter keys shapes canonically), so handing the non-collapsed form
@@ -35635,33 +35430,7 @@ fn main() -> i32 {
         // the entry-canonicalization proof, not a de-quirked input.
         let durable_identity = projection.anonymous_nominals[0].identity.clone();
 
-        // The LIVE epoch, bound through the production declaration path — the
-        // INDEPENDENT comparison side. Its anonymous materialization is the epoch's
-        // own `find_or_create_anon_struct`, populated during the same bind.
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
-        let epoch_anon = bound.epoch_anonymous_types();
-        assert_eq!(
-            epoch_anon.len(),
-            1,
-            "the epoch minted one anonymous nominal"
-        );
-        let epoch_render =
-            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_anon[0]));
-        assert!(
-            epoch_render.display.starts_with("__anon_struct_"),
-            "the epoch spells the digest name: {}",
-            epoch_render.display
-        );
-
         let rir_ref = rir.rir();
         let interner = rir.semantic_symbols().interner();
         let mut database = RevisionedQueryDatabase::default();
@@ -35690,6 +35459,17 @@ fn main() -> i32 {
                     .mint_anonymous(&identity_for_probe)
                     .expect("repeat consult re-resolves");
                 assert_eq!(minted, again, "the pool re-minted the anonymous nominal");
+                // Entry canonicalization: the RAW projected identity (with its
+                // empty-argument specialization wrapper) and its collapsed
+                // canonical-producer form dedup onto the same minted nominal.
+                let collapsed = identity_for_probe.with_canonical_producer().into_owned();
+                let canonical_mint = facts
+                    .mint_anonymous(&collapsed)
+                    .expect("the collapsed identity resolves by dedup");
+                assert_eq!(
+                    minted, canonical_mint,
+                    "the RAW identity must collapse onto the canonical producer form"
+                );
 
                 // The resolve_instance_type anonymous arm: seed the issued→durable
                 // map, then resolve an issued-domain anonymous key — the r4b-2
@@ -35712,25 +35492,37 @@ fn main() -> i32 {
         );
         let pool_render = outcome.result;
 
-        // The full materialization matches the LIVE epoch: the `__anon_struct_
-        // {digest}` name (byte-equal relocation), copyability, visibility, mangled
-        // symbol, and field vocabulary.
+        // The full materialization is pinned: the `__anon_struct_{digest}` name
+        // (stable digest over the durable identity), copyability, visibility,
+        // mangled symbol, and field vocabulary.
+        assert!(
+            pool_render.display.starts_with("__anon_struct_"),
+            "the pool spells the digest name: {}",
+            pool_render.display
+        );
         assert_eq!(
-            pool_render, epoch_render,
-            "the pool's anonymous mint diverged from the LIVE epoch"
+            pool_render.members,
+            vec![("a".to_owned(), "i32".to_owned())],
+            "the anonymous struct retains the produced field vocabulary"
+        );
+        assert_eq!(
+            pool_render.symbol, "__anon_struct_1b69917d6af6484829216c9eea0c652a",
+            "the mangled symbol is the stable digest spelling"
+        );
+        assert!(!pool_render.is_pub, "an anonymous nominal is not `pub`");
+        assert!(
+            pool_render.is_copy,
+            "a single-`i32` anonymous struct is copyable"
         );
     }
 
-    // RUE-1091 r6b: the ENUM analog of the anonymous cross-path differential. The
-    // epoch mints through `find_or_create_anon_enum` (spelling the
-    // `__anon_enum_{digest} { Variant(T), … }` payload-rendering name), the pool
-    // through `mint_anon_enum` from the durable shape — two independent
-    // materialization paths over the shared digest, compared through the full
-    // index-independent render. The pool is likewise fed the RAW projected
-    // identity (empty-argument specialization wrapper retained), so the enum path
-    // exercises entry canonicalization too.
+    // RUE-1091 r6b: the ENUM analog of the anonymous mint. The pool mints
+    // through `mint_anon_enum` from the durable shape, spelling the
+    // `__anon_enum_{digest} { Variant(T), … }` payload-rendering name. The pool
+    // is fed the RAW projected identity (empty-argument specialization wrapper
+    // retained), so the enum path exercises entry canonicalization too.
     #[test]
-    fn provider_endpoint_facts_anonymous_enum_mints_match_epoch() {
+    fn provider_endpoint_facts_anonymous_enum_mints_from_durable_identity() {
         use rue_air::{
             AnonymousNominalKey, AnonymousNominalKind, CanonicalArguments, NominalInstanceKey as N,
             SemanticDefinitionToken as DTok, StableProducerId, TypeInstanceKey as T,
@@ -35774,38 +35566,7 @@ fn main() -> i32 {
         // RAW identity — the wrapper collapse is the pool's entry obligation.
         let durable_identity = projection.anonymous_nominals[0].identity.clone();
 
-        // The LIVE epoch, bound through the production declaration path — the
-        // INDEPENDENT comparison side. Its anonymous materialization is the
-        // epoch's own `find_or_create_anon_enum`, populated during the same bind.
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
-        let epoch_anon = bound.epoch_anonymous_types();
-        assert_eq!(
-            epoch_anon.len(),
-            1,
-            "the epoch minted one anonymous nominal"
-        );
-        let epoch_render =
-            bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_anon[0]));
-        assert!(
-            epoch_render.display.starts_with("__anon_enum_"),
-            "the epoch spells the enum digest name: {}",
-            epoch_render.display
-        );
-        assert!(
-            epoch_render.display.ends_with(" { Some(i32), None }"),
-            "the epoch renders variant payloads into the name: {}",
-            epoch_render.display
-        );
-
         let rir_ref = rir.rir();
         let interner = rir.semantic_symbols().interner();
         let mut database = RevisionedQueryDatabase::default();
@@ -35833,6 +35594,16 @@ fn main() -> i32 {
                     .mint_anonymous(&identity_for_probe)
                     .expect("repeat consult re-resolves");
                 assert_eq!(minted, again, "the pool re-minted the anonymous enum");
+                // Entry canonicalization: the RAW projected identity and its
+                // collapsed canonical-producer form dedup onto the same mint.
+                let collapsed = identity_for_probe.with_canonical_producer().into_owned();
+                let canonical_mint = facts
+                    .mint_anonymous(&collapsed)
+                    .expect("the collapsed identity resolves by dedup");
+                assert_eq!(
+                    minted, canonical_mint,
+                    "the RAW identity must collapse onto the canonical producer form"
+                );
 
                 // The resolve_instance_type anonymous arm over an issued ENUM key.
                 let issued = AnonymousNominalKey {
@@ -35852,37 +35623,51 @@ fn main() -> i32 {
         );
         let pool_render = outcome.result;
 
-        // The full materialization matches the LIVE epoch: the payload-rendering
-        // `__anon_enum_{digest} { … }` name (byte-equal relocation through the
-        // shared digest), copyability, visibility, mangled symbol, and variant
-        // vocabulary.
+        // The full materialization is pinned: the payload-rendering
+        // `__anon_enum_{digest} { … }` name (stable digest over the durable
+        // identity), copyability, visibility, and variant vocabulary.
+        assert!(
+            pool_render.display.starts_with("__anon_enum_"),
+            "the pool spells the enum digest name: {}",
+            pool_render.display
+        );
+        assert!(
+            pool_render.display.ends_with(" { Some(i32), None }"),
+            "the pool renders variant payloads into the name: {}",
+            pool_render.display
+        );
         assert_eq!(
-            pool_render, epoch_render,
-            "the pool's anonymous enum mint diverged from the LIVE epoch"
+            pool_render
+                .members
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["Some", "None"],
+            "the anonymous enum retains the produced variant vocabulary"
+        );
+        assert!(!pool_render.is_pub, "an anonymous nominal is not `pub`");
+        assert!(
+            pool_render.is_copy,
+            "an `i32`-payload anonymous enum is copyable"
         );
     }
 
-    // RUE-1091 r6c: the well-known `Option` cross-path differential. The trusted
-    // std `Option(payload)` specializations a body's fallible intrinsics demand
-    // (RUE-1112) are produced through BOTH installs — the LIVE epoch's
-    // `install_well_known_option_types` (importing the projected registry and
-    // minting through `find_or_create_anon_enum`) and the provider-side pool's
-    // `install_well_known_option_types` (minting the same durable identities
-    // through `find_or_create_anon` via the real `DurableDeclSource` adapter) —
-    // and their full materializations are asserted equal: the shared-digest
-    // `__anon_enum_{digest} { … }` names, mangled symbols, copyability,
-    // visibility, and variant vocabulary. Both sides start from the SAME
-    // declaration-level durable truth (the nucleus `ComptimeCall` terminals the
-    // production demand loop roots), so agreement is a real cross-path proof.
+    // RUE-1091 r6c: the well-known `Option` install. The trusted std
+    // `Option(payload)` specializations a body's fallible intrinsics demand
+    // (RUE-1112) are minted by the provider-side pool's
+    // `install_well_known_option_types` through `find_or_create_anon` via the
+    // real `DurableDeclSource` adapter, starting from the declaration-level
+    // durable truth (the nucleus `ComptimeCall` terminals the production demand
+    // loop roots). The full materializations are pinned: the digest-spelled
+    // `__anon_enum_{digest} { … }` names, copyability, visibility, and variant
+    // vocabulary.
     //
-    // The export-as-produced ruling is asserted on both sides: the epoch records
-    // each installed identity in `well_known_option_identities`, while the
-    // provider pool records the identical canonical identities under
-    // `is_well_known_option_identity`. The body publication path treats those
-    // identities as produced by the analyzed body, never as pre-existing
-    // imports.
+    // The export-as-produced ruling: the pool records each installed canonical
+    // identity under `is_well_known_option_identity`, so the body publication
+    // path treats those identities as produced by the analyzed body, never as
+    // pre-existing imports.
     #[test]
-    fn provider_well_known_option_install_matches_epoch() {
+    fn provider_well_known_option_install_mints_the_demanded_payloads() {
         use crate::semantic_query_nucleus::{
             ComptimeCallResultProjection as ResultProjection, SemanticNucleusKey as Key,
             SemanticNucleusValue as V,
@@ -35933,7 +35718,6 @@ fn main() -> i32 {
         .unwrap();
 
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
 
         let configuration = semantic_configuration();
@@ -35991,87 +35775,10 @@ fn main() -> i32 {
         );
 
         // ------------------------------------------------------------------
-        // The LIVE epoch install path: bind through the production declaration
-        // recipe, project the registry against the SAME definition set that
-        // issued the epoch's endpoints, and install — exactly the production
-        // `body_transaction` sequence.
-        // ------------------------------------------------------------------
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let (bound, definitions) =
-            crate::canonical_semantic::bind_query_owned_declarations_with_definitions_for_test(
-                merged,
-                rir,
-                crate::PreviewFeatures::default(),
-                rue_target::Target::X86_64Linux,
-                &imports,
-            )
-            .expect("declarations bind");
-        let (nominal_exports, pair_exports) =
-            crate::durable_semantics::project_durable_option_registry(
-                merged,
-                &definitions,
-                &resolution,
-            )
-            .expect("the registry projects against the bound definition set");
-        let bound = bound
-            .install_well_known_option_types(&nominal_exports, &pair_exports)
-            .expect("the epoch installs the well-known registry");
-
-        // The export-as-produced ruling, epoch side: every installed identity is
-        // recorded for the baseline subtraction, so the single export funnel
-        // publishes it as a produced anonymous nominal.
-        let epoch_types = bound.epoch_well_known_option_types();
-        assert_eq!(
-            epoch_types.len(),
-            2,
-            "the epoch marked both Option enums for produced export"
-        );
-        let mut epoch_renders: Vec<EndpointNominalRender> = bound.with_type_pool(|pool| {
-            epoch_types
-                .iter()
-                .map(|ty| endpoint_nominal_render(pool, *ty))
-                .collect()
-        });
-        epoch_renders.sort_by(|a, b| a.display.cmp(&b.display));
-        for render in &epoch_renders {
-            assert!(
-                render.display.starts_with("__anon_enum_"),
-                "the epoch spells the digest name: {}",
-                render.display
-            );
-        }
-        // The epoch's demand registry answers each payload with its enum.
-        let epoch_registry = bound.epoch_well_known_option_registry();
-        assert_eq!(epoch_registry.len(), 2);
-        let epoch_option_for = |payload: rue_air::Type| {
-            epoch_registry
-                .iter()
-                .find(|(candidate, _)| *candidate == payload)
-                .map(|(_, option)| *option)
-                .unwrap_or_else(|| panic!("the epoch registry answers {payload:?}"))
-        };
-        let epoch_i64_render = bound.with_type_pool(|pool| {
-            endpoint_nominal_render(pool, epoch_option_for(rue_air::Type::I64))
-        });
-        let epoch_u32_render = bound.with_type_pool(|pool| {
-            endpoint_nominal_render(pool, epoch_option_for(rue_air::Type::U32))
-        });
-        assert!(
-            epoch_i64_render.display.ends_with(" { Some(i64), None }"),
-            "the i64 registry entry is the Option(i64) enum: {}",
-            epoch_i64_render.display
-        );
-        assert!(
-            epoch_u32_render.display.ends_with(" { Some(u32), None }"),
-            "the u32 registry entry is the Option(u32) enum: {}",
-            epoch_u32_render.display
-        );
-
-        // ------------------------------------------------------------------
-        // The provider-side pool install: the same durable identities and
+        // The provider-side pool install: the demanded durable identities and
         // registry pairs, minted through `BodyIdentityPool::
         // install_well_known_option_types` over the real `DurableDeclSource`
-        // adapter built from the independently produced durable declarations.
+        // adapter built from the production durable declarations.
         // ------------------------------------------------------------------
         let decls = production_declarations(&snapshot);
         let adapter = DurableDeclSource::from_declarations(&decls)
@@ -36142,61 +35849,59 @@ fn main() -> i32 {
         let (mut pool_renders, pool_i64_render, pool_u32_render) = outcome.result;
         pool_renders.sort_by(|a, b| a.display.cmp(&b.display));
 
-        // The crux: both installs materialized byte-identical identities — the
-        // shared-digest names, mangled symbols, shape, copyability, and
-        // visibility all agree across the two independent paths.
-        assert_eq!(
-            pool_renders, epoch_renders,
-            "the pool's well-known Option install diverged from the LIVE epoch"
+        // The install materialized exactly the demanded Option enums: digest
+        // names, variant vocabulary, copyability, and visibility are pinned.
+        for render in &pool_renders {
+            assert!(
+                render.display.starts_with("__anon_enum_"),
+                "the pool spells the digest name: {}",
+                render.display
+            );
+            assert_eq!(
+                render
+                    .members
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                ["Some", "None"],
+                "each Option enum retains the trusted variant vocabulary"
+            );
+            assert!(!render.is_pub, "an anonymous nominal is not `pub`");
+            assert!(render.is_copy, "an integer-payload Option enum is copyable");
+        }
+        assert!(
+            pool_i64_render.display.ends_with(" { Some(i64), None }"),
+            "the i64 registry entry is the Option(i64) enum: {}",
+            pool_i64_render.display
         );
-        assert_eq!(
-            pool_i64_render, epoch_i64_render,
-            "the i64 demand registry entries diverged"
+        assert!(
+            pool_u32_render.display.ends_with(" { Some(u32), None }"),
+            "the u32 registry entry is the Option(u32) enum: {}",
+            pool_u32_render.display
         );
+        let mut registry_renders = vec![pool_i64_render, pool_u32_render];
+        registry_renders.sort_by(|a, b| a.display.cmp(&b.display));
         assert_eq!(
-            pool_u32_render, epoch_u32_render,
-            "the u32 demand registry entries diverged"
+            pool_renders, registry_renders,
+            "the demand registry answers with the exact installed materializations"
         );
     }
 
     // RUE-1091 r6a: the `Slice` arm resolves once a caller seeds the generated
     // slice struct with `register_generated_slice`, minting the fat-pointer
-    // struct byte-identically to the LIVE epoch's generated slice — the positive
-    // half of the deferral this slice flips.
+    // struct — the positive half of the deferral this slice flips.
     #[test]
     fn provider_endpoint_facts_slice_arm_resolves_after_registration() {
         use rue_air::{SemanticImportType as D, TypeInstanceKey as T};
-        // The signature slice `[i64]` makes the epoch materialize its generated
-        // slice struct at declaration bind (slices are preview-gated, ADR-0043),
-        // so it is the LIVE comparison target.
+        // The signature slice `[i64]` names the generated slice struct the pool
+        // mints (slices are preview-gated, ADR-0043).
         let source = "fn take(s: [i64]) -> i64 { 0 }\n\
                       fn main() -> i32 { 0 }\n";
         let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
-        let slices = crate::PreviewFeatures::from_iter([crate::PreviewFeature::Slices]);
 
-        // The LIVE epoch, bound through the production declaration path with the
-        // slices preview enabled.
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            slices.clone(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let slice_sym = interner
-            .get("[i64]")
-            .expect("the epoch materialized the `[i64]` slice struct at bind");
-        let epoch_slice = bound
-            .epoch_generated_struct_type(slice_sym)
-            .expect("the epoch resolves the generated `[i64]` slice struct");
-        let epoch_render = bound.with_type_pool(|pool| endpoint_nominal_render(pool, epoch_slice));
-
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
@@ -36231,11 +35936,21 @@ fn main() -> i32 {
                 facts.with_type_pool(|pool| endpoint_nominal_render(pool, first))
             },
         );
-        // The provider-minted slice renders identically to the LIVE epoch's
-        // generated slice struct (name, copyability, visibility, symbol, fields).
+        // The provider-minted slice renders the generated fat-pointer struct
+        // (name, copyability, visibility, symbol, fields).
         assert_eq!(
-            outcome.result, epoch_render,
-            "the provider slice renders identically to the epoch generated slice"
+            outcome.result,
+            EndpointNominalRender {
+                display: "[i64]".to_owned(),
+                is_copy: true,
+                is_pub: true,
+                symbol: "[i64]".to_owned(),
+                members: vec![
+                    ("ptr".to_owned(), "ptr const i64".to_owned()),
+                    ("len".to_owned(), "u64".to_owned()),
+                ],
+            },
+            "the generated `[i64]` slice struct materialization is pinned"
         );
         // A pool-answered materialization records no provider query edge (edge
         // honesty — the slice identity is minted, not a boundary lookup).
@@ -36414,7 +36129,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_const_info_assembly_matches_live_epoch() {
+    fn provider_const_info_assembly_composes_durable_truth_with_exact_spans() {
         use crate::StableDefinitionKind as Kind;
 
         // Exercise scalar, nominal type-valued, function-valued, and string
@@ -36451,49 +36166,14 @@ fn main() -> i32 {
             _ => unreachable!(),
         };
 
-        // LIVE epoch side: production parsing/lowering/import registration and
-        // declaration binding, independent of the pool's durable adapter.
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::test_support::test_import_graph(&snapshot).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        // A function-valued constant names a declaration. The provider holds it
-        // as a source-name handle joined to a durable definition, while an epoch
-        // holds the internal symbol, which is module-qualified (RUE-1125), so
-        // the epoch side renders through the source-name projection to compare
-        // the same declaration rather than two symbol spaces.
-        let epoch_symbol = |symbol| {
-            interner
-                .resolve(&bound.function_source_name(symbol))
-                .to_owned()
+        // Expected declaration spans, derived from the fixture text.
+        let span_of = |text: &str| {
+            let start = u32::try_from(root.find(text).unwrap()).unwrap();
+            rue_span::Span::with_file(file, start, start + u32::try_from(text.len()).unwrap())
         };
-        let epoch = value_keys
-            .iter()
-            .map(|(name, _)| {
-                let symbol = interner.get(name).expect("const source name interned");
-                let info = bound
-                    .epoch_const_info(file, symbol)
-                    .unwrap_or_else(|| panic!("epoch resolves {name}"));
-                let rendered =
-                    bound.with_type_pool(|pool| render_const_info(&info, pool, epoch_symbol));
-                (*name, rendered)
-            })
-            .collect::<Vec<_>>();
-        let dep_symbol = interner.get("dep").expect("module binding interned");
-        let epoch_module = bound
-            .epoch_module_binding_info(file, dep_symbol)
-            .expect("the LIVE epoch resolves the module binding");
-        let epoch_module =
-            bound.with_type_pool(|pool| render_const_info(&epoch_module, pool, epoch_symbol));
 
         // Pool side: the production durable declaration adapter plus the real
         // ProviderEndpointFacts registration primitive, which composes the
@@ -36591,11 +36271,58 @@ fn main() -> i32 {
                 (rendered, module)
             },
         );
+        let expected = vec![
+            (
+                "LIMIT",
+                ConstInfoRender {
+                    is_pub: true,
+                    ty: "i64".to_owned(),
+                    value: "integer:7".to_owned(),
+                    span: span_of("pub const LIMIT: i64 = 7;"),
+                },
+            ),
+            (
+                "POINT_KIND",
+                ConstInfoRender {
+                    is_pub: false,
+                    ty: "type".to_owned(),
+                    value: "type:Point".to_owned(),
+                    span: span_of("const POINT_KIND: type = Point;"),
+                },
+            ),
+            (
+                "ALIAS",
+                ConstInfoRender {
+                    is_pub: false,
+                    ty: "type".to_owned(),
+                    value: "function:helper".to_owned(),
+                    span: span_of("const ALIAS = helper;"),
+                },
+            ),
+            (
+                "TEXT",
+                ConstInfoRender {
+                    is_pub: false,
+                    ty: "str".to_owned(),
+                    value: "string:hello".to_owned(),
+                    span: span_of("const TEXT: str = \"hello\";"),
+                },
+            ),
+        ];
         assert_eq!(
-            outcome.result.0, epoch,
-            "pool-assembled ConstInfo diverged from the LIVE epoch"
+            outcome.result.0, expected,
+            "pool-assembled ConstInfo must compose the durable record with the exact RIR span"
         );
-        assert_eq!(outcome.result.1, epoch_module);
+        assert_eq!(
+            outcome.result.1,
+            ConstInfoRender {
+                is_pub: false,
+                ty: "Module(ModuleId(0))".to_owned(),
+                value: "type:Module(ModuleId(0))".to_owned(),
+                span: span_of("const dep = @import(\"dep.rue\");"),
+            },
+            "the module binding joins its durable target to the shared registry"
+        );
         assert!(
             outcome.dependencies.is_empty(),
             "const assembly uses durable metadata + RIR only: {:?}",
@@ -36603,19 +36330,17 @@ fn main() -> i32 {
         );
     }
 
-    // ---- RUE-1091 r4b-3: aggregate ProviderFacts differentials ----------------
+    // ---- RUE-1091 r4b-3: aggregate ProviderFacts coverage --------------------
     //
     // These prove `rue_air::ProviderAggregateFacts` (the provider-driven
-    // realization of the family-1D `AggregateFacts` seam) selects the same
-    // aggregate/field/variant winner the epoch does. The selection ORDER lives in
-    // the provider-generic free functions the driver merely supplies facts to
+    // realization of the family-1D `AggregateFacts` seam) selects the declared
+    // aggregate/field/variant winner. The selection ORDER lives in the
+    // provider-generic free functions the driver merely supplies facts to
     // (`select_module_type_member`'s struct→enum→const short-circuit,
     // `select_qualified_type`'s enum→struct, `select_struct_literal_head`'s
-    // const→struct→builtin) — so the driver and the epoch replay the exact r1c
-    // candidate order. The driver reuses the shared `DurableDeclSource` (the r4b-1
-    // durable set) for its 2a pool; the comparison target is the LIVE epoch's own
-    // selection (`BoundSema::epoch_module_type_member` / `_qualified_type` /
-    // `_struct_literal_head` / `_is_accessible`), rendered index-independently.
+    // const→struct→builtin) — the exact r1c candidate order. The driver reuses
+    // the shared `DurableDeclSource` (the r4b-1 durable set) for its 2a pool;
+    // each winner is pinned through its index-independent render.
     //
     // Scope landed here: struct/enum-by-file-name (P, pool mint via the overlay
     // reverse), builtins (P, pool pre-registered set), `is_accessible` (O,
@@ -36654,7 +36379,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn provider_aggregate_facts_nominal_and_builtin_match_epoch() {
+    fn provider_aggregate_facts_resolve_nominals_and_builtins() {
         use crate::StableDefinitionKind as Kind;
         // A user struct and enum (minted through the pool's 2a machinery via the
         // `(file, name)` overlay reverse) plus the pool's pre-registered builtins.
@@ -36666,28 +36391,6 @@ fn main() -> i32 {
         let decls = production_declarations(&snapshot);
         let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
-
-        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
-        let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
-        let interner = rir.semantic_symbols().interner();
-        let point_sym = interner.get("Point").expect("Point interned");
-        let color_sym = interner.get("Color").expect("Color interned");
-        let epoch_point = bound.with_type_pool(|pool| {
-            endpoint_display(pool, bound.epoch_nominal_type(file, point_sym).unwrap())
-        });
-        let epoch_color = bound.with_type_pool(|pool| {
-            endpoint_display(pool, bound.epoch_nominal_type(file, color_sym).unwrap())
-        });
 
         let mut facts =
             rue_air::ProviderAggregateFacts::new(DurableDeclSource::from_declarations(&decls));
@@ -36724,26 +36427,16 @@ fn main() -> i32 {
         );
 
         facts.with_type_pool(|pool| {
-            assert_eq!(
-                endpoint_display(pool, point),
-                epoch_point,
-                "Point matches the epoch"
-            );
             assert_eq!(endpoint_display(pool, point), "Point");
-            assert_eq!(
-                endpoint_display(pool, color),
-                epoch_color,
-                "Color matches the epoch"
-            );
             assert_eq!(endpoint_display(pool, color), "Color");
-            // Builtins are pre-registered identically to a fresh import epoch.
+            // Builtins are pre-registered in the pool.
             assert_eq!(endpoint_display(pool, str_ty), "str");
             assert_eq!(endpoint_display(pool, arch_ty), "Arch");
         });
     }
 
     #[test]
-    fn provider_aggregate_facts_selection_order_matches_epoch() {
+    fn provider_aggregate_facts_selection_order_follows_the_candidate_ranking() {
         use crate::StableDefinitionKind as Kind;
         // A struct, an enum, and a value constant sharing one module exercise
         // the struct→enum→const short-circuit.
@@ -36759,29 +36452,13 @@ fn main() -> i32 {
         let limit_key = durable_decl(&decls, Kind::ValueConst, "LIMIT").key.clone();
 
         let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
-        let point_sym = interner.get("Point").expect("Point interned");
-        let color_sym = interner.get("Color").expect("Color interned");
-        let limit_sym = interner.get("LIMIT").expect("LIMIT interned");
-        let epoch_limit_info = bound
-            .epoch_const_info(file, limit_sym)
-            .expect("the LIVE epoch resolves LIMIT");
-        let epoch_limit_render = bound.with_type_pool(|pool| {
-            render_const_info(&epoch_limit_info, pool, |symbol| {
-                interner.resolve(&symbol).to_owned()
-            })
-        });
+        let expected_limit_span = {
+            let text = "pub const LIMIT: i64 = 7;";
+            let start = u32::try_from(source.find(text).unwrap()).unwrap();
+            rue_span::Span::with_file(file, start, start + u32::try_from(text.len()).unwrap())
+        };
 
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
@@ -36867,61 +36544,32 @@ fn main() -> i32 {
             endpoint_limit_render,
             aggregate_limit_render,
         ) = outcome.result;
-        assert_eq!(endpoint_limit_render, epoch_limit_render);
+        assert_eq!(
+            endpoint_limit_render,
+            ConstInfoRender {
+                is_pub: true,
+                ty: "i64".to_owned(),
+                value: "integer:7".to_owned(),
+                span: expected_limit_span,
+            },
+            "endpoint assembles LIMIT from durable truth plus the exact RIR span"
+        );
         assert_eq!(
             aggregate_limit_render, endpoint_limit_render,
             "aggregate const overlay preserves provider-assembled type, value, visibility, and span"
         );
 
-        // Epoch winners for the same members.
-        let epoch_point = bound.epoch_module_type_member(file, point_sym);
-        let epoch_color = bound.epoch_module_type_member(file, color_sym);
-        let epoch_limit = bound.epoch_module_type_member(file, limit_sym);
-        let (ep_tag, ep_disp) = bound.with_type_pool(|pool| describe_member(&epoch_point, pool));
-        let (ec_tag, ec_disp) = bound.with_type_pool(|pool| describe_member(&epoch_color, pool));
-        let (el_tag, _) = bound.with_type_pool(|pool| describe_member(&epoch_limit, pool));
-
-        // Struct arm: provider == epoch.
-        assert_eq!(
-            (mp_tag, &mp_disp),
-            (ep_tag, &ep_disp),
-            "struct member matches epoch"
-        );
+        // select_module_type_member winners: struct, enum, const, absent.
         assert_eq!(mp_tag, "struct");
         assert_eq!(mp_disp.as_deref(), Some("Point"));
-        // Enum arm: provider == epoch.
-        assert_eq!(
-            (mc_tag, &mc_disp),
-            (ec_tag, &ec_disp),
-            "enum member matches epoch"
-        );
         assert_eq!(mc_tag, "enum");
         assert_eq!(mc_disp.as_deref(), Some("Color"));
-        // Const arm: both select the installed const.
-        assert_eq!(el_tag, "const", "the epoch selects the const member");
-        assert_eq!(ml_tag, el_tag, "the provider selects the const member");
-        // Absent: both agree there is no member.
+        assert_eq!(ml_tag, "const", "the provider selects the const member");
         assert_eq!(ma_tag, "absent");
 
-        // Qualified selection: enum→struct order, matching the epoch's discriminant.
-        let epoch_q_color = bound.epoch_qualified_type(file, color_sym);
-        let epoch_q_point = bound.epoch_qualified_type(file, point_sym);
-        let (eqc_tag, eqc_disp) =
-            bound.with_type_pool(|pool| describe_qualified(&epoch_q_color, pool));
-        let (eqp_tag, eqp_disp) =
-            bound.with_type_pool(|pool| describe_qualified(&epoch_q_point, pool));
-        assert_eq!(
-            (qc_tag, &qc_disp),
-            (eqc_tag, &eqc_disp),
-            "qualified enum matches epoch"
-        );
-        assert_eq!(qc_tag, "enum");
-        assert_eq!(
-            (qp_tag, &qp_disp),
-            (eqp_tag, &eqp_disp),
-            "qualified struct matches epoch"
-        );
-        assert_eq!(qp_tag, "struct");
+        // Qualified selection: enum→struct order.
+        assert_eq!((qc_tag, qc_disp.as_deref()), ("enum", Some("Color")));
+        assert_eq!((qp_tag, qp_disp.as_deref()), ("struct", Some("Point")));
 
         // select_qualified_enum: enum resolves, struct does not.
         assert!(qenum_color, "Color qualified-enum resolves");
@@ -36929,21 +36577,15 @@ fn main() -> i32 {
 
         // select_struct_literal_head: unqualified struct head → Named.
         assert_eq!(head_point.as_deref(), Some("Point"));
-        // The epoch's head agrees.
-        match bound.epoch_struct_literal_head(file, point_sym) {
-            rue_air::ProviderStructHead::Named(_) => {}
-            _ => panic!("epoch Point head should be Named"),
-        }
     }
 
     #[test]
-    fn provider_aggregate_facts_is_accessible_matches_epoch() {
+    fn provider_aggregate_facts_is_accessible_follows_the_directory_domain() {
         // The visibility domain is the parent directory, so a private item is
         // visible within its own file and from a sibling file, but not across
-        // directories; a public item is visible either way. The driver reproduces
-        // the epoch's decision from the SAME registered physical paths (a
-        // request-local body-query input, not a durable fact — no seam-signature
-        // change), proving the visibility short-circuit.
+        // directories; a public item is visible either way. The driver decides
+        // from the registered physical paths (a request-local body-query input,
+        // not a durable fact), proving the visibility short-circuit.
         let root_src = "pub struct A { x: i32 }\n\
              fn main() -> i32 { 0 }\n";
         let leaf_src = "pub struct B { y: i32 }\n";
@@ -36977,18 +36619,6 @@ fn main() -> i32 {
         )
         .expect("three-file snapshot is valid");
 
-        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
-        let merged = &stages.merged;
-        let rir = &stages.rir;
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-        let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            merged,
-            rir,
-            crate::PreviewFeatures::default(),
-            rue_target::Target::X86_64Linux,
-            &imports,
-        )
-        .expect("declarations bind");
         let decls = production_declarations(&snapshot);
 
         // No K-typed argument pins the pool key here (is_accessible is path-only),
@@ -36996,20 +36626,35 @@ fn main() -> i32 {
         let mut facts = rue_air::ProviderAggregateFacts::<StableDefinitionKey, ModuleId, _>::new(
             DurableDeclSource::from_declarations(&decls),
         );
-        // Register the SAME physical paths the epoch's `get_file_path` returns.
-        facts.register_file_path(root_file, &bound.epoch_file_path(root_file).unwrap());
-        facts.register_file_path(leaf_file, &bound.epoch_file_path(leaf_file).unwrap());
-        facts.register_file_path(sibling_file, &bound.epoch_file_path(sibling_file).unwrap());
+        // Register the snapshot's physical paths — the request-local body-query
+        // input the visibility short-circuit consults.
+        let physical_paths = [
+            (root_file, "/project/main.rue"),
+            (leaf_file, "/project/std/leaf.rue"),
+            (sibling_file, "/project/helper.rue"),
+        ];
+        for (file, path) in physical_paths {
+            facts.register_file_path(file, path);
+        }
 
-        // Every combination of (accessing, defining, is_public) must match the
-        // epoch's decision from the same paths.
+        // Every combination of (accessing, defining, is_public) follows the
+        // parent-directory visibility rule: public is always visible, and a
+        // private item is visible exactly when both files share a directory.
+        let directory_of = |wanted: FileId| {
+            physical_paths
+                .iter()
+                .find(|(file, _)| *file == wanted)
+                .map(|(_, path)| &path[..path.rfind('/').unwrap()])
+                .unwrap()
+        };
         for &accessing in &[root_file, leaf_file, sibling_file] {
             for &defining in &[root_file, leaf_file, sibling_file] {
                 for &is_public in &[false, true] {
+                    let expected = is_public || directory_of(accessing) == directory_of(defining);
                     assert_eq!(
                         facts.is_accessible(accessing, defining, is_public),
-                        bound.epoch_is_accessible(accessing, defining, is_public),
-                        "is_accessible parity for accessing={accessing:?} defining={defining:?} pub={is_public}"
+                        expected,
+                        "is_accessible for accessing={accessing:?} defining={defining:?} pub={is_public}"
                     );
                 }
             }

@@ -839,6 +839,48 @@ mod tests {
         )
     }
 
+    /// The canonical graph's validated record order makes per-directive lookup
+    /// a binary search. A wide importer must stay within the logarithmic probe
+    /// budget while covering every directive.
+    #[test]
+    fn record_lookup_is_logarithmic_and_covers_every_directive() {
+        const DIRECTIVES: usize = 2_048;
+        let records = (0..DIRECTIVES)
+            .map(|index| {
+                let module = format!("module_{index:04}.rue");
+                resolved("main.rue", &module, &module)
+            })
+            .collect::<Vec<_>>();
+        let graph = CanonicalImportGraph::from_discovery_records(
+            ModuleId::from_logical_path("main.rue").unwrap(),
+            records,
+        );
+        let importer = ModuleId::from_logical_path("main.rue").unwrap();
+        let comparisons_per_lookup = (usize::BITS - (DIRECTIVES - 1).leading_zeros()) as usize + 1;
+        let mut comparisons = 0;
+        for index in 0..DIRECTIVES {
+            let specifier = format!("module_{index:04}.rue");
+            let (record, probes) = graph.record_for_with_comparison_count(&importer, &specifier);
+            let record = record.unwrap_or_else(|| panic!("graph covers directive {specifier}"));
+            assert_eq!(
+                record.resolution(),
+                &CanonicalImportResolution::Resolved(
+                    ModuleId::from_logical_path(&specifier).unwrap()
+                ),
+            );
+            comparisons += probes;
+        }
+        assert!(
+            graph.record_for(&importer, "missing.rue").is_none(),
+            "an uncovered specifier resolves to no record"
+        );
+        assert!(
+            comparisons <= DIRECTIVES * comparisons_per_lookup,
+            "{comparisons} comparisons exceeded {} logarithmic lookup probes",
+            DIRECTIVES * comparisons_per_lookup
+        );
+    }
+
     /// The incremental additive-successor validation must be identical to a full
     /// validation of the merged graph, so production can carry the predecessor
     /// validation and validate only the delta. This exercises the same code path

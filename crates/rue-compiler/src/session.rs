@@ -9862,35 +9862,34 @@ fn main() -> i32 { 0 }
     }
 
     #[test]
-    fn query_and_retired_air_paths_reject_the_same_declaration_failures() {
-        for text in [
-            "const value: i32 = 1; const value: i32 = 2; fn main() {}",
-            "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
-            "drop fn Missing(self) {} fn main() {}",
+    fn declaration_failures_surface_one_exact_diagnostic_per_fixture() {
+        for (text, expected) in [
+            (
+                "const value: i32 = 1; const value: i32 = 2; fn main() {}",
+                "duplicate constant 'value'",
+            ),
+            (
+                "struct Value {} drop fn Value(self) {} drop fn Value(self) {} fn main() {}",
+                "duplicate destructor for type 'Value'",
+            ),
+            (
+                "drop fn Missing(self) {} fn main() {}",
+                "unknown type 'Missing' in destructor",
+            ),
         ] {
             let source = snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
-            let stages = crate::test_support::test_frontend_stages(&source).unwrap();
-            let _merged = &stages.merged;
-            let rir = &stages.rir;
-            let retired = match rue_air::Sema::new_synthetic(
-                rir.rir(),
-                rir.semantic_symbols().interner(),
-                PreviewFeatures::new(),
-            )
-            .bind_declarations_for_test()
-            {
-                Err(errors) => errors,
-                Ok(_) => panic!("retired AIR path unexpectedly accepted failure fixture"),
-            };
             let mut session = CompilerSession::new();
             session.update(&source).into_result().unwrap();
             let query = match session.rooted_cfg(&CompileOptions::default()) {
                 Err(errors) => errors,
                 Ok(_) => panic!("query path unexpectedly accepted failure fixture"),
             };
-            let messages =
-                |errors: CompileErrors| errors.iter().map(ToString::to_string).collect::<Vec<_>>();
-            assert_eq!(messages(retired), messages(query));
+            let messages = query.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(
+                messages,
+                vec![expected.to_owned()],
+                "declaration failure diagnostics changed for fixture: {text}"
+            );
         }
     }
 
