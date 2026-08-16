@@ -28,6 +28,7 @@ mod measure;
 mod pins;
 mod runtime;
 mod scaling;
+mod staleness_inputs;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -103,6 +104,12 @@ Subcommands:
                        performance-data-v1 checkout; writes derived JSON.
                        --runtime-manifest additionally derives the ADR-0072
                        runtime record kind from the same store.
+
+  staleness-inputs --index <path>
+                       print the data-branch paths the staleness gate reads:
+                       every record of the epoch holding each platform's newest
+                       point. Lets that gate check out and parse the live epoch
+                       instead of the whole append-only history.
 
   check-pins --manifest <path> --compiler <path> [--repo-root <path>]
                        answer whether this tree still matches every collection
@@ -184,6 +191,15 @@ fn main() -> ExitCode {
             Err(message) => {
                 eprintln!("rue-bench runtime: {message}");
                 ExitCode::from(runtime::exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("staleness-inputs") {
+        return match staleness_inputs::run() {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench staleness-inputs: {message}");
+                ExitCode::from(exit::USAGE)
             }
         };
     }

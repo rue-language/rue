@@ -294,6 +294,11 @@ def validate(
         # The gate counts trunk commits back to the newest measured one, which
         # a depth-1 checkout cannot reach (RUE-1258).
         "fetch-depth: 0",
+        # The store is append-only and unbounded, while the question is about
+        # the live epoch alone. Checking out and parsing all of it made this
+        # job the run's long pole, and would again: the cost returns silently,
+        # as a slow job rather than a failing one (RUE-1542).
+        "staleness-inputs",
     ):
         if required not in staleness:
             errors.append(f"performance-staleness responsibility missing {required!r}")
