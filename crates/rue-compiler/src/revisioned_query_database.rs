@@ -15990,6 +15990,17 @@ impl RevisionedQueryDatabase {
     }
 
     #[cfg(test)]
+    pub(crate) fn cfg(
+        &self,
+        revision: Revision,
+        key: crate::cfg_query::CfgQueryKey,
+        cancellation: CancellationToken,
+    ) -> QueryRequestAttempt<crate::cfg_query::CfgValue> {
+        self.runtime
+            .request_registered(&self.cfgs, revision, key, cancellation)
+    }
+
+    #[cfg(test)]
     pub(crate) fn optimized_cfg(
         &self,
         revision: Revision,

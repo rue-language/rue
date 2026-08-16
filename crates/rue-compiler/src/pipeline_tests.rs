@@ -713,6 +713,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accessor_optimization_keeps_the_published_raw_cfg_interner_immutable() {
+        use lasso::Key as _;
+
+        let snapshot = SourceSnapshot::single(
+            "<accessor-interner-isolation>",
+            "struct P { x: i64, fn value(borrow self) -> borrow i64 { yield self.x; } } \
+             fn main() -> i32 { let p = P { x: 7 }; if p.value() == 7 { 0 } else { 1 } }",
+        )
+        .unwrap();
+        let mut options = CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let rooted = session.rooted_cfg(&options).unwrap();
+        let main = rooted
+            .cfgs
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .expect("main publishes one optimized CFG");
+        let optimized = main.record.clone();
+        let raw_key = main.optimized_cfg_key.cfg.clone();
+        drop(rooted);
+
+        let raw = session.raw_cfg_record_for_test(raw_key);
+        assert!(
+            !Arc::ptr_eq(&raw.interner, &optimized.interner),
+            "accessor optimization must own an isolated symbol universe"
+        );
+        assert!(optimized.interner.len() >= raw.interner.len());
+        for ordinal in 0..raw.interner.len() {
+            let symbol = lasso::Spur::try_from_usize(ordinal).unwrap();
+            assert_eq!(
+                raw.interner.resolve(&symbol),
+                optimized.interner.resolve(&symbol),
+                "base CFG Spur {ordinal} changed during accessor isolation"
+            );
+        }
+        let raw_len = raw.interner.len();
+        let raw_utf8_bytes = raw.interner.utf8_bytes();
+        let raw_charge = raw.frozen_interner_retained_charge_for_test();
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let raw = raw.clone();
+                scope.spawn(move || {
+                    for ordinal in 0..raw.interner.len() {
+                        let symbol = lasso::Spur::try_from_usize(ordinal).unwrap();
+                        assert!(raw.interner.try_resolve(&symbol).is_some());
+                    }
+                });
+            }
+        });
+        assert_eq!(raw.interner.len(), raw_len);
+        assert_eq!(raw.interner.utf8_bytes(), raw_utf8_bytes);
+        assert_eq!(raw.frozen_interner_retained_charge_for_test(), raw_charge);
+    }
+
+    #[test]
+    fn ordinary_optimization_reuses_the_immutable_raw_cfg_interner() {
+        let snapshot =
+            SourceSnapshot::single("<ordinary-interner-sharing>", "fn main() -> i32 { 1 + 2 }")
+                .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let rooted = session.rooted_cfg(&options).unwrap();
+        let main = rooted
+            .cfgs
+            .iter()
+            .find(|unit| unit.definition_source_name() == Some("main"))
+            .expect("main publishes one optimized CFG");
+        let optimized = main.record.clone();
+        let raw_key = main.optimized_cfg_key.cfg.clone();
+        drop(rooted);
+        let raw = session.raw_cfg_record_for_test(raw_key);
+
+        assert!(
+            Arc::ptr_eq(&raw.interner, &optimized.interner),
+            "ordinary optimization must not copy an interner that cannot grow"
+        );
+        assert_eq!(
+            raw.frozen_interner_retained_charge_for_test(),
+            optimized.frozen_interner_retained_charge_for_test()
+        );
+    }
+
     /// Opt-in Phase 12 latency witness. This deliberately has no pass/fail
     /// timing threshold: it emits release-build samples and medians together
     /// with the exact structural work that makes the samples comparable.

@@ -6,8 +6,10 @@
 //! type pool, symbols, strings, and local atoms required by their CFG.
 
 use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use lasso::Key as _;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
 
@@ -489,11 +491,8 @@ pub(crate) struct CfgRecord {
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
     pub(crate) type_pool: rue_air::FrozenTypeInternPool,
     pub(crate) interner: Arc<lasso::ThreadedRodeo>,
-    /// Current logical retained charge of the shared append-only `interner`.
-    /// `interner_retained_entries` records this CFG's publication width, so an
-    /// accessor import refreshes the shared charge only after actual growth.
-    interner_retained_charge: Arc<std::sync::atomic::AtomicU64>,
-    interner_retained_entries: u64,
+    /// Logical retained charge frozen with the immutable published interner.
+    interner_retained_charge: u64,
     pub(crate) strings: Arc<[String]>,
     pub(crate) local_atoms:
         Arc<[rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>]>,
@@ -514,6 +513,13 @@ pub(crate) struct CfgRecord {
     pub(crate) implicit_destructor_dependencies_complete: bool,
 }
 
+#[cfg(test)]
+impl CfgRecord {
+    pub(crate) fn frozen_interner_retained_charge_for_test(&self) -> u64 {
+        self.interner_retained_charge
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CfgCodegenDomain {
     pub(crate) defined_symbol: Arc<str>,
@@ -532,19 +538,16 @@ pub(crate) enum CfgValue {
 
 impl RetainedCharge for lasso::ThreadedRodeo {
     fn retained_charge(&self) -> u64 {
-        measure_interner_retained_charge(self).0
+        measure_interner_retained_charge(self)
     }
 }
 
-fn measure_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> (u64, u64) {
+fn measure_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> u64 {
     let entries = interner.len() as u64;
     let utf8_bytes = interner.utf8_bytes() as u64;
-    (
-        entries
-            .saturating_mul(std::mem::size_of::<lasso::Spur>() as u64)
-            .saturating_add(utf8_bytes),
-        entries,
-    )
+    entries
+        .saturating_mul(std::mem::size_of::<lasso::Spur>() as u64)
+        .saturating_add(utf8_bytes)
 }
 
 fn interner_header_retained_charge(interner: &lasso::ThreadedRodeo) -> u64 {
@@ -555,32 +558,77 @@ fn interner_header_retained_charge(interner: &lasso::ThreadedRodeo) -> u64 {
         .saturating_sub(std::mem::size_of::<std::sync::atomic::AtomicUsize>() as u64)
 }
 
-fn refresh_interner_retained_charge(
-    interner: &lasso::ThreadedRodeo,
-    charge: &std::sync::atomic::AtomicU64,
-    published_entries: u64,
-) -> bool {
-    if interner.len() as u64 == published_entries {
-        return false;
+fn frozen_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> u64 {
+    interner_header_retained_charge(interner)
+        .saturating_add(measure_interner_retained_charge(interner))
+}
+
+#[derive(Debug)]
+enum CfgInternerCopyFailure<E> {
+    Checkpoint(E),
+    InvalidSourceOrdinal(usize),
+    Capacity(lasso::LassoErrorKind),
+    OrdinalMismatch {
+        expected: lasso::Spur,
+        actual: lasso::Spur,
+    },
+    SourceChanged,
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for CfgInternerCopyFailure<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Checkpoint(error) => write!(formatter, "checkpoint failed: {error:?}"),
+            Self::InvalidSourceOrdinal(ordinal) => {
+                write!(formatter, "source has no symbol at ordinal {ordinal}")
+            }
+            Self::Capacity(kind) => write!(formatter, "interner allocation failed: {kind}"),
+            Self::OrdinalMismatch { expected, actual } => write!(
+                formatter,
+                "copied symbol ordinal changed from {expected:?} to {actual:?}"
+            ),
+            Self::SourceChanged => formatter.write_str("source changed while it was copied"),
+        }
     }
-    let (payload, _) = measure_interner_retained_charge(interner);
-    charge.fetch_max(
-        interner_header_retained_charge(interner).saturating_add(payload),
-        std::sync::atomic::Ordering::Relaxed,
+}
+
+/// Copy one published CFG symbol universe into a private accessor-import
+/// universe without changing any existing `Spur`. The source is observed at
+/// both ends so an unexpected external mutation fails closed instead of
+/// producing a mixed-generation copy.
+fn copy_interner_preserving_ordinals<E>(
+    source: &lasso::ThreadedRodeo,
+    mut checkpoint: impl FnMut() -> Result<(), E>,
+) -> Result<lasso::ThreadedRodeo, CfgInternerCopyFailure<E>> {
+    let expected_entries = source.len();
+    let expected_utf8_bytes = source.utf8_bytes();
+    let capacity = lasso::Capacity::new(
+        expected_entries,
+        NonZeroUsize::new(expected_utf8_bytes).unwrap_or(NonZeroUsize::MIN),
     );
-    true
-}
+    let copy = lasso::ThreadedRodeo::with_capacity(capacity);
 
-struct InternerChargeRefresh {
-    interner: Arc<lasso::ThreadedRodeo>,
-    charge: Arc<std::sync::atomic::AtomicU64>,
-    published_entries: u64,
-}
-
-impl Drop for InternerChargeRefresh {
-    fn drop(&mut self) {
-        refresh_interner_retained_charge(&self.interner, &self.charge, self.published_entries);
+    for ordinal in 0..expected_entries {
+        if ordinal % 64 == 0 {
+            checkpoint().map_err(CfgInternerCopyFailure::Checkpoint)?;
+        }
+        let expected = lasso::Spur::try_from_usize(ordinal)
+            .ok_or(CfgInternerCopyFailure::InvalidSourceOrdinal(ordinal))?;
+        let spelling = source
+            .try_resolve(&expected)
+            .ok_or(CfgInternerCopyFailure::InvalidSourceOrdinal(ordinal))?;
+        let actual = copy
+            .try_get_or_intern(spelling)
+            .map_err(|error| CfgInternerCopyFailure::Capacity(error.kind()))?;
+        if actual != expected {
+            return Err(CfgInternerCopyFailure::OrdinalMismatch { expected, actual });
+        }
     }
+    checkpoint().map_err(CfgInternerCopyFailure::Checkpoint)?;
+    if source.len() != expected_entries || source.utf8_bytes() != expected_utf8_bytes {
+        return Err(CfgInternerCopyFailure::SourceChanged);
+    }
+    Ok(copy)
 }
 
 impl RetainedCharge for rue_air::ValidatedAir {
@@ -707,11 +755,7 @@ impl RetainedCharge for CfgRecord {
             .saturating_add(self.cfg.retained_charge())
             .saturating_add(self.domains.retained_charge())
             .saturating_add(self.type_pool.retained_charge())
-            .saturating_add(
-                self.interner_retained_charge
-                    .load(std::sync::atomic::Ordering::Relaxed),
-            )
-            .saturating_add(std::mem::size_of::<std::sync::atomic::AtomicU64>() as u64)
+            .saturating_add(self.interner_retained_charge)
             .saturating_add(self.strings.retained_charge())
             .saturating_add(self.local_atoms.retained_charge())
             .saturating_add(self.codegen.retained_charge())
@@ -887,6 +931,19 @@ fn internal_failure(message: impl Into<String>, body_span: Span) -> CfgValue {
             body_span,
         )
         .into(),
+        body_span,
+    }
+}
+
+fn interner_copy_capacity_failure(kind: lasso::LassoErrorKind, body_span: Span) -> CfgValue {
+    let message = format!("CFG interner isolation failed: {kind}");
+    let kind = if kind.is_failed_alloc() {
+        rue_error::ErrorKind::CompilerResourceExhaustion(message)
+    } else {
+        rue_error::ErrorKind::CompilerResourceLimit(message)
+    };
+    CfgValue::Failure {
+        errors: crate::CompileError::new(kind, body_span).into(),
         body_span,
     }
 }
@@ -1315,14 +1372,9 @@ fn build_cfg(
         // the live type pool for same-named structs outside this CFG's domain.
         implicit_destructor_targets.insert(owner.clone());
     }
-    let (interner_payload_charge, interner_entries) =
-        measure_interner_retained_charge(&materialized.interner);
     let local_aggregate_type_aliases = materialized.aggregate_types.len();
     let local_materialized_type_handles = materialized.materialized_types.len();
-    let interner_retained_charge = Arc::new(std::sync::atomic::AtomicU64::new(
-        interner_header_retained_charge(materialized.interner.as_ref())
-            .saturating_add(interner_payload_charge),
-    ));
+    let interner_retained_charge = frozen_interner_retained_charge(&materialized.interner);
     let value = CfgValue::Available(Arc::new(CfgRecord {
         air: Arc::new(materialized.air),
         source_name: materialized.name.into(),
@@ -1335,7 +1387,6 @@ fn build_cfg(
         type_pool: materialized.type_pool,
         interner: materialized.interner,
         interner_retained_charge,
-        interner_retained_entries: interner_entries,
         strings: materialized.strings.into(),
         local_atoms: materialized.local_atoms.into(),
         local_aggregate_type_aliases,
@@ -1388,15 +1439,6 @@ pub(crate) fn evaluate_optimized_cfg(
     }
     let mut current = record.cfg.clone();
     let mut domains = record.domains.clone();
-    let interner = record.interner.clone();
-    // Accessor import is the sole operation that can extend this shared
-    // append-only symbol universe. Refresh on every exit, including partial
-    // import and optimization failures, before the returned terminal publishes.
-    let _interner_charge_refresh = InternerChargeRefresh {
-        interner: interner.clone(),
-        charge: record.interner_retained_charge.clone(),
-        published_entries: record.interner_retained_entries,
-    };
     let mut strings = record.strings.to_vec();
     let mut local_atoms = record.local_atoms.to_vec();
     let mut local_atom_identities = None;
@@ -1428,6 +1470,29 @@ pub(crate) fn evaluate_optimized_cfg(
         };
         accessor_cfgs.insert(dependency.function.clone(), (callee.clone(), body_span));
     }
+    let interner =
+        match copy_interner_preserving_ordinals(&record.interner, || context.check_canceled()) {
+            Ok(interner) => Arc::new(interner),
+            Err(CfgInternerCopyFailure::Checkpoint(abort)) => return Err(abort),
+            Err(CfgInternerCopyFailure::Capacity(kind)) => {
+                return Ok(QueryOutput::success(interner_copy_capacity_failure(
+                    kind,
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            }
+            Err(error) => {
+                return Ok(QueryOutput::success(internal_failure(
+                    format!("CFG interner isolation failed: {error}"),
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            }
+        };
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.accessor-interner-copy-symbols",
+        interner.len() as u64,
+    ));
     let mut accessor_calls: std::collections::VecDeque<_> =
         attached_accessor_calls(&current, 0, 0).into();
     let mut splice_block_redirects = std::collections::HashMap::new();
@@ -1548,7 +1613,7 @@ pub(crate) fn evaluate_optimized_cfg(
         accessor_calls.extend(introduced_calls);
         context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
     }
-    let interner_retained_entries = interner.len() as u64;
+    let interner_retained_charge = frozen_interner_retained_charge(&interner);
     Ok(finish_cfg_optimization(
         context,
         key,
@@ -1564,8 +1629,7 @@ pub(crate) fn evaluate_optimized_cfg(
             domains,
             type_pool: record.type_pool.clone(),
             interner,
-            interner_retained_charge: record.interner_retained_charge.clone(),
-            interner_retained_entries,
+            interner_retained_charge,
             strings: strings.into(),
             local_atoms: local_atoms.into(),
             local_aggregate_type_aliases: record.local_aggregate_type_aliases,
@@ -1613,8 +1677,7 @@ fn optimize_cfg_without_accessors(
             domains: record.domains.clone(),
             type_pool: record.type_pool.clone(),
             interner: record.interner.clone(),
-            interner_retained_charge: record.interner_retained_charge.clone(),
-            interner_retained_entries: record.interner_retained_entries,
+            interner_retained_charge: record.interner_retained_charge,
             strings: record.strings.clone(),
             local_atoms: record.local_atoms.clone(),
             local_aggregate_type_aliases: record.local_aggregate_type_aliases,
@@ -1708,30 +1771,77 @@ mod accessor_graph_tests {
     use super::*;
 
     #[test]
-    fn retained_interner_charge_refreshes_once_after_append() {
-        use std::sync::atomic::{AtomicU64, Ordering};
+    fn accessor_interner_copy_preserves_ordinals_without_mutating_the_source() {
+        let source = lasso::ThreadedRodeo::new();
+        let caller = source.get_or_intern("caller");
+        let shared = source.get_or_intern("shared");
+        let published_charge = frozen_interner_retained_charge(&source);
 
-        let interner = lasso::ThreadedRodeo::new();
-        interner.get_or_intern("caller");
-        let (payload, published_entries) = measure_interner_retained_charge(&interner);
-        let charge =
-            AtomicU64::new(interner_header_retained_charge(&interner).saturating_add(payload));
+        let copy =
+            copy_interner_preserving_ordinals(&source, || Ok::<_, std::convert::Infallible>(()))
+                .unwrap();
+        assert_eq!(copy.get("caller"), Some(caller));
+        assert_eq!(copy.get("shared"), Some(shared));
+        assert_eq!(copy.len(), source.len());
+        for ordinal in 0..source.len() {
+            let symbol = lasso::Spur::try_from_usize(ordinal).unwrap();
+            assert_eq!(copy.resolve(&symbol), source.resolve(&symbol));
+        }
 
-        interner.get_or_intern("callee-only");
-        assert!(refresh_interner_retained_charge(
-            &interner,
-            &charge,
-            published_entries
+        copy.get_or_intern("callee-only");
+        assert_eq!(source.len(), 2);
+        assert!(source.get("callee-only").is_none());
+        assert_eq!(frozen_interner_retained_charge(&source), published_charge);
+        assert!(frozen_interner_retained_charge(&copy) > published_charge);
+    }
+
+    #[test]
+    fn accessor_interner_copy_cancels_at_bounded_symbol_intervals() {
+        let source = lasso::ThreadedRodeo::new();
+        for ordinal in 0..130 {
+            source.get_or_intern(format!("symbol-{ordinal}"));
+        }
+        let published_charge = frozen_interner_retained_charge(&source);
+        let mut checkpoints = 0;
+        let result = copy_interner_preserving_ordinals(&source, || {
+            checkpoints += 1;
+            (checkpoints < 3).then_some(()).ok_or("canceled")
+        });
+
+        assert!(matches!(
+            result,
+            Err(CfgInternerCopyFailure::Checkpoint("canceled"))
         ));
-        let (payload, current_entries) = measure_interner_retained_charge(&interner);
-        assert_eq!(
-            charge.load(Ordering::Relaxed),
-            interner_header_retained_charge(&interner).saturating_add(payload)
-        );
-        assert!(!refresh_interner_retained_charge(
-            &interner,
-            &charge,
-            current_entries
+        assert_eq!(checkpoints, 3, "copy checks before symbols 0, 64, and 128");
+        assert_eq!(source.len(), 130);
+        assert_eq!(frozen_interner_retained_charge(&source), published_charge);
+    }
+
+    #[test]
+    fn accessor_interner_copy_preserves_resource_failure_classes() {
+        let body_span = Span::default();
+        for kind in [
+            lasso::LassoErrorKind::MemoryLimitReached,
+            lasso::LassoErrorKind::KeySpaceExhaustion,
+        ] {
+            let CfgValue::Failure { errors, .. } = interner_copy_capacity_failure(kind, body_span)
+            else {
+                panic!("resource limit must publish a typed CFG failure");
+            };
+            assert!(matches!(
+                errors.first().map(|error| &error.kind),
+                Some(rue_error::ErrorKind::CompilerResourceLimit(_))
+            ));
+        }
+
+        let CfgValue::Failure { errors, .. } =
+            interner_copy_capacity_failure(lasso::LassoErrorKind::FailedAllocation, body_span)
+        else {
+            panic!("allocation failure must publish a typed CFG failure");
+        };
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(rue_error::ErrorKind::CompilerResourceExhaustion(_))
         ));
     }
 
