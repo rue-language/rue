@@ -64,7 +64,13 @@ def contained(offset: int, spans: list[tuple[int, int]]) -> bool:
 
 
 def is_test_path(path: Path) -> bool:
-    return path.name in {"tests.rs", "pipeline_tests.rs", "integration_tests.rs"} or "tests" in path.parts
+    # `*_tests.rs` files are dedicated test modules registered under
+    # `#[cfg(test)]` in their parent module, which a per-file scan cannot see.
+    return (
+        path.name in {"tests.rs", "pipeline_tests.rs", "integration_tests.rs"}
+        or path.name.endswith("_tests.rs")
+        or "tests" in path.parts
+    )
 
 
 def allowed_production_literal(value: str) -> bool:
