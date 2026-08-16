@@ -93,12 +93,16 @@ jobs:
       - name: Check shell Bash 3.2 baseline
         run: scripts/validate-shell-bash-baseline.py
 
-      # The same failure in the other language: `tomllib` is stdlib only from
-      # 3.11, so //:cli-timeout-policy-validation was green on these runners
-      # (3.12 here, 3.14 on macos-15) and dead on any developer host with an
-      # older interpreter (RUE-1509). This runner cannot reproduce that, so the
-      # check is static: nothing above the documented floor, a version guard on
-      # everything between a stock host's 3.9 and the floor, and AGENTS.md's
+      # The same failure in the other language: the repository floor is a
+      # uniform 3.9 — exactly what a stock Mac's /usr/bin/python3 provides —
+      # while these runners sit comfortably above it (3.12 here, 3.14 on
+      # macos-15). A construct newer than 3.9 therefore stays green in CI and
+      # dies on a stock developer machine, which is what `tomllib` (stdlib
+      # only from 3.11) did to //:cli-timeout-policy-validation (RUE-1509;
+      # RUE-1524 retired the import — the gate now reads a Buck-materialized
+      # JSON twin — and with it the 3.11 floor). This runner cannot reproduce
+      # a stock host, so the check is static: nothing newer than the floor
+      # without a reviewed `# python-baseline-ok` annotation, and AGENTS.md's
       # stated floor matching the gate's.
       #
       # This step is the AUTHORITATIVE run, not a duplicate of the premerge

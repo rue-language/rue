@@ -7,49 +7,19 @@ first on PATH. CI's is generous -- `ubuntu-latest` provides 3.12.3 and
 `macos-15` provides 3.14.6 -- and a developer's is not: macOS ships
 `/usr/bin/python3` as 3.9.6. A construct newer than the host interpreter is
 therefore not a portability nicety, it is a traceback before the program does
-any of its work, on a machine CI cannot see.
+any of its work, on a machine CI cannot see. That is how `tomllib`, stdlib
+only from 3.11, killed the premerge suite on every stock Mac while CI stayed
+green (RUE-1509); the Bash analogue is `mapfile` in test.sh (RUE-1506).
 
-That is exactly how it failed. `scripts/cli-timeout-policy.py` imports
-`tomllib`, stdlib only from 3.11, and //:cli-timeout-policy-validation carries
-`rue_test_tier_premerge` -- so the premerge suite died with
-`ModuleNotFoundError: No module named 'tomllib'` on every host below 3.11 while
-CI stayed green, and the message named neither the version nor the remedy
-(RUE-1509). The Bash analogue is `mapfile` in test.sh (RUE-1506); this is the
-same failure in the other language, so it gets the same shape of gate.
-
-Two thresholds, one table:
-
-  FLOOR (3.11)      what the repository requires, documented in AGENTS.md.
-                    Nothing may need MORE than this. A construct above the
-                    floor is a finding with no escape but a portable spelling.
-
-  UNGUARDED (3.9)   what a contributor has WITHOUT installing anything, on the
-                    oldest host that plausibly shows up. A construct between
-                    UNGUARDED and FLOOR is allowed -- that is what the floor
-                    buys -- but the file must announce the requirement instead
-                    of crashing on it.
-
-The guard is one canonical spelling, checked before the construct's first use:
-
-    import sys
-
-    if sys.version_info < (3, 11):
-        raise SystemExit(
-            "error: scripts/x.py requires Python 3.11 or newer (this is ...)"
-        )
-
-    import tomllib
-
-The `raise` must be an unconditional statement in that `if`'s own body. A
-`raise` in the `else`, or nested inside a further condition, is not a guard --
-it is a file that still reaches the import on an old host, which is the
-original bug wearing the fix's clothes. The message must contain the version it
-demands, because naming the requirement is the entire point; a guard that exits
-without saying which version has only moved the mystery.
-
-An import inside `try:` with an `except ImportError`/`ModuleNotFoundError`
-handler is exempt: the whole objection is that the failure is unhandled, and
-that import handles it. That is the shape a vendored fallback takes.
+The floor is a uniform 3.9 -- exactly what a stock Mac provides, so meeting it
+costs a contributor nothing. It was briefly 3.11 for the `tomllib` consumers,
+with version-guard machinery holding everything else to 3.9; RUE-1524 pointed
+those consumers at a Buck-materialized JSON twin of the TOML instead, so no
+file needs more than 3.9 and the guard machinery is retired. A construct newer
+than the floor is simply an error. The only escape is a reviewed
+`# python-baseline-ok: <reason>` annotation -- it has to sit in a real comment,
+and it silences its whole line -- or raising the floor in AGENTS.md and here,
+deliberately.
 
 WHAT IS SCANNED. Every `.py` file, plus every extensionless file carrying a
 python shebang -- `scripts/ci-test-failure-report` is a 126-line program CI runs
@@ -64,23 +34,20 @@ WHAT THIS SCAN CANNOT SEE, stated plainly so the gate is not read as a proof:
     file is reported as unscanned rather than guessed at, and the authoritative
     run is the `fmt` job's CI step, which is at or above the floor.
   - Symmetrically, ABOVE the floor it is too permissive: a scanner on 3.14
-    parses a PEP 701 f-string that 3.11 would reject and calls the file clean.
+    parses a PEP 701 f-string that 3.9 would reject and calls the file clean.
     The Bash gate closes its version of that gap by parsing with a real 3.2 on
     ci.yml's macos-15 leg (RUE-1512). The Python counterpart is
-    `ast.parse(source, feature_version=(3, 11))`, which needs no 3.11 to be
-    installed -- it has existed since 3.8 and runs on whatever interpreter is
-    here. It is deliberately NOT used, and the reason is coverage rather than
-    availability: `feature_version` is documented best-effort, it gates only
-    what CPython's own parser gates by version, and it cannot manufacture
-    grammar the RUNNING interpreter lacks. Measured on 3.10.3: `(3, 9)`
-    correctly rejects a `match` statement, but `except*` (3.11, at the floor
-    and therefore legal) fails at every `feature_version`, because 3.10 cannot
-    parse it at all. So it would reject legal files on old hosts while still
-    missing what has no version gate. Pinning a real 3.11 in CI is the change
-    that would make a sound check possible; until then this is stated rather
-    than approximated. What the gate CAN see without any of that -- version-
-    gated imports, attributes, and grammar with a distinct AST node -- it sees
-    from any host, which is why the table is not redundant either.
+    `ast.parse(source, feature_version=(3, 9))`, which runs on whatever
+    interpreter is here -- it has existed since 3.8. It is deliberately NOT
+    used, and the reason is coverage rather than availability: `feature_version`
+    is documented best-effort, it gates only what CPython's own parser gates by
+    version, and it cannot manufacture grammar the RUNNING interpreter lacks --
+    so it would still pass PEP 701 f-strings and every method call while adding
+    a second, weaker parser's opinion. Parsing with a real 3.9 in CI is the
+    change that would make a sound check possible; until then this is stated
+    rather than approximated. What the gate CAN see without any of that --
+    version-gated imports, attributes, and grammar with a distinct AST node --
+    it sees from any host, which is why the table is not redundant either.
   - Grammar with no distinct AST node is invisible: PEP 701 f-strings (3.12)
     and PEP 696 TypeVar defaults (3.13) parse into the same nodes as their
     older spellings on an interpreter new enough to accept them.
@@ -118,15 +85,13 @@ from gatelib import prune_names
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# What the repository requires. AGENTS.md states this in prose and `check_docs`
-# holds the two copies together, so the gate cannot outlive the documentation
-# that tells a contributor what to install.
-FLOOR = (3, 11)
-
-# What a contributor has before installing anything. macOS ships
-# `/usr/bin/python3` as 3.9.6 and no newer interpreter out of the box, so 3.9
-# is the version a file must either run on or explain itself to.
-UNGUARDED = (3, 9)
+# The one floor: what the repository requires, which is also what a stock
+# Mac's `/usr/bin/python3` (3.9.6) provides. AGENTS.md states this in prose and
+# `check_docs` holds the two copies together, so the gate cannot outlive the
+# documentation that tells a contributor what runs the tooling. RUE-1524
+# retired the short-lived 3.11 floor and the version-guard machinery that a
+# split floor required.
+FLOOR = (3, 9)
 
 SCANNER = (sys.version_info[0], sys.version_info[1])
 
@@ -150,8 +115,7 @@ OTHER_DOCS = ("CONTRIBUTING.md", "README.md", "docs")
 
 # Stdlib modules by the version that introduced them. An import of one of these
 # is the failure that started this: it raises ModuleNotFoundError at import
-# time, before any of the program's own error handling exists -- unless the
-# import is handled, which `handled_imports` accounts for.
+# time, before any of the program's own error handling exists.
 MODULE_SINCE = {
     "graphlib": (3, 9),
     "zoneinfo": (3, 9),
@@ -229,39 +193,28 @@ class Finding(NamedTuple):
     path: str
     line: int
     construct: Construct
-    # A construct above FLOOR has no guard that would make it acceptable; one
-    # between UNGUARDED and FLOOR is merely unannounced. The two need different
-    # sentences, because "add a guard" is wrong advice for the first.
-    above_floor: bool
 
     def __str__(self) -> str:
         needs = version_text(self.construct.since)
-        if self.above_floor:
-            return (
-                f"{self.path}:{self.line}: {self.construct.description} needs "
-                f"Python {needs}, above the repository floor of "
-                f"{version_text(FLOOR)}. Instead, {self.construct.fix} -- or "
-                "raise the floor in AGENTS.md and here, deliberately."
-            )
         return (
             f"{self.path}:{self.line}: {self.construct.description} needs "
-            f"Python {needs}, and a stock host has {version_text(UNGUARDED)}, "
-            f"so this file must announce the requirement rather than crash on "
-            f"it. Add `if sys.version_info < {tuple(self.construct.since)}: "
-            f'raise SystemExit("...{needs}...")` above the first use -- or '
-            "annotate with `# python-baseline-ok: <reason>`."
+            f"Python {needs}, above the repository floor of "
+            f"{version_text(FLOOR)}. Instead, {self.construct.fix} -- annotate "
+            "a reviewed exception with `# python-baseline-ok: <reason>`, or "
+            "raise the floor in AGENTS.md and here, deliberately."
         )
 
 
 class Unscanned(NamedTuple):
     """A file this interpreter could not parse, and could not judge.
 
-    Below the floor, a parse error is ambiguous: `match` needs 3.10, which the
-    floor allows, so a 3.9 host cannot tell a policy violation from a file it is
-    simply too old to read. Guessing would produce a finding that is wrong about
-    the version, wrong about the floor, and backwards about the fix -- the very
-    CI-lenient/developer-strict split this policy exists to close, inverted. So
-    it says what it could not do and leaves the verdict to the CI step.
+    Below the floor, a parse error is ambiguous: PEP 614's relaxed decorator
+    grammar needs 3.9, which the floor allows, so a 3.8 host cannot tell a
+    policy violation from a file it is simply too old to read. Guessing would
+    produce a finding that is wrong about the version, wrong about the floor,
+    and backwards about the fix -- the very CI-lenient/developer-strict split
+    this policy exists to close, inverted. So it says what it could not do and
+    leaves the verdict to the CI step.
     """
 
     path: str
@@ -281,116 +234,6 @@ class Unscanned(NamedTuple):
 
 def version_text(version: tuple[int, int]) -> str:
     return f"{version[0]}.{version[1]}"
-
-
-def guard_versions(tree: ast.Module) -> list[tuple[int, tuple[int, int]]]:
-    """Line and demanded version of each `sys.version_info` guard.
-
-    Only the canonical spelling counts -- a module-level `if sys.version_info <
-    (X, Y)` whose OWN BODY unconditionally raises SystemExit, with the version
-    named in that raise. The strictness is the point: a `raise` in the `else`
-    branch, or nested under another condition, leaves the following import
-    reachable on an old host, so accepting it would certify the exact
-    ModuleNotFoundError this gate exists to prevent.
-    """
-    guards: list[tuple[int, tuple[int, int]]] = []
-    for node in tree.body:
-        if not isinstance(node, ast.If):
-            continue
-        version = compared_version(node.test)
-        if version is None:
-            continue
-        raised = next(
-            (statement for statement in node.body if raises_system_exit(statement)),
-            None,
-        )
-        if raised is None:
-            continue
-        # The message has to name the version, because a guard that exits with
-        # a bare SystemExit has replaced one unexplained failure with another.
-        text = " ".join(
-            value.value
-            for value in ast.walk(raised)
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        )
-        if version_text(version) not in text:
-            continue
-        guards.append((node.lineno, version))
-    return guards
-
-
-def compared_version(test: ast.expr) -> tuple[int, int] | None:
-    """The `(X, Y)` in `sys.version_info < (X, Y)`, or None."""
-    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
-        return None
-    if not isinstance(test.ops[0], ast.Lt):
-        return None
-    subject = test.left
-    # `sys.version_info[:2] < (3, 11)` is the same test, spelled defensively.
-    if isinstance(subject, ast.Subscript):
-        subject = subject.value
-    if not (
-        isinstance(subject, ast.Attribute)
-        and subject.attr == "version_info"
-        and isinstance(subject.value, ast.Name)
-        and subject.value.id == "sys"
-    ):
-        return None
-    bound = test.comparators[0]
-    if not isinstance(bound, ast.Tuple) or len(bound.elts) < 2:
-        return None
-    parts = [
-        element.value
-        for element in bound.elts[:2]
-        if isinstance(element, ast.Constant) and isinstance(element.value, int)
-    ]
-    return (parts[0], parts[1]) if len(parts) == 2 else None
-
-
-def raises_system_exit(statement: ast.stmt) -> bool:
-    """Whether this statement IS an unconditional `raise SystemExit`."""
-    if not isinstance(statement, ast.Raise) or statement.exc is None:
-        return False
-    call = statement.exc
-    if isinstance(call, ast.Call):
-        call = call.func
-    return isinstance(call, ast.Name) and call.id == "SystemExit"
-
-
-def handled_imports(tree: ast.Module) -> set[int]:
-    """`id()` of every import inside a `try` that catches an import failure.
-
-    The objection to a version-gated import is that it fails UNHANDLED, before
-    the program's own error handling exists. A `try: import tomllib / except
-    ModuleNotFoundError: ...` fallback -- the shape a vendored backport takes --
-    has already answered that, so the guard requirement does not apply to it.
-    """
-    exempt: set[int] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        if not any(catches_import_error(handler) for handler in node.handlers):
-            continue
-        for statement in node.body:
-            for inner in ast.walk(statement):
-                if isinstance(inner, (ast.Import, ast.ImportFrom)):
-                    exempt.add(id(inner))
-    return exempt
-
-
-def catches_import_error(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return True
-    names = (
-        handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-    )
-    for name in names:
-        if isinstance(name, ast.Name) and name.id in (
-            "ImportError",
-            "ModuleNotFoundError",
-        ):
-            return True
-    return False
 
 
 def module_aliases(tree: ast.Module) -> dict[str, str]:
@@ -416,15 +259,12 @@ def constructs(tree: ast.Module) -> list[tuple[int, Construct]]:
     """Every version-gated construct in one parsed module, with its line."""
     found: list[tuple[int, Construct]] = []
     aliases = module_aliases(tree)
-    exempt = handled_imports(tree)
 
     def record(line: int, description: str, since: tuple[int, int], fix: str) -> None:
         found.append((line, Construct(description, since, fix)))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            if id(node) in exempt:
-                continue
             for alias in node.names:
                 since = MODULE_SINCE.get(alias.name)
                 if since:
@@ -435,8 +275,6 @@ def constructs(tree: ast.Module) -> list[tuple[int, Construct]]:
                         "read the data with a module that predates the floor",
                     )
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            if id(node) in exempt:
-                continue
             since = MODULE_SINCE.get(node.module)
             if since:
                 record(
@@ -561,7 +399,8 @@ def scan(source: str, path: str) -> tuple[list[Finding], list[Unscanned]]:
         line = error.lineno or 1
         reason = error.msg
         if SCANNER < FLOOR:
-            # Ambiguous from here: `match` needs 3.10, which the floor allows.
+            # Ambiguous from here: the floor may allow grammar this interpreter
+            # cannot read.
             return [], [Unscanned(path, line, reason)]
         # At or above the floor, unparseable means newer than the floor, or
         # malformed. Either is a finding, and neither claims a version the
@@ -577,32 +416,21 @@ def scan(source: str, path: str) -> tuple[list[Finding], list[Unscanned]]:
                         FLOOR,
                         "use syntax the floor accepts, or fix the file",
                     ),
-                    above_floor=True,
                 )
             ],
             [],
         )
 
     lines = source.splitlines()
-    guards = guard_versions(tree)
     findings: dict[tuple[int, str], Finding] = {}
     for line, construct in constructs(tree):
-        if construct.since <= UNGUARDED:
+        if construct.since <= FLOOR:
             continue
         raw = lines[line - 1] if 0 < line <= len(lines) else ""
         _, comment = split_comment(raw)
         if ALLOW.search(comment):
             continue
-        above_floor = construct.since > FLOOR
-        # A guard cannot excuse a construct the floor does not reach: on a host
-        # AT the floor there is no interpreter for the guard to fall back to.
-        if not above_floor and any(
-            at < line and demanded >= construct.since for at, demanded in guards
-        ):
-            continue
-        findings[(line, construct.description)] = Finding(
-            path, line, construct, above_floor
-        )
+        findings[(line, construct.description)] = Finding(path, line, construct)
     return [findings[key] for key in sorted(findings)], []
 
 
@@ -666,7 +494,7 @@ def strip_fences(text: str) -> str:
     """Blank out fenced code blocks.
 
     A floor quoted inside an example is an example, not a claim, and the
-    section documents the guard's spelling in a fenced block.
+    section may quote spellings in fenced blocks.
     """
     kept = []
     fenced = False
