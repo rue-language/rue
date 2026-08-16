@@ -1,11 +1,5 @@
 load("//crates:defs.bzl", "rue_crate")
 
-filegroup(
-    name = "payload-ownership-inventory-sources",
-    srcs = glob(["src/**/*.rs"]),
-    visibility = ["PUBLIC"],
-)
-
 rue_crate(
     name = "rue-rir",
     deps = [

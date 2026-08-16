@@ -25,6 +25,23 @@ load("//:test_defs.bzl", "rue_test_labels")
 
 _RUSTFMT_CONFIG = "//:rustfmt-config"
 
+def _sources_filegroup(name, srcs):
+    """Emits `<name>-sources`: this crate's compiled sources as a PUBLIC filegroup.
+
+    Structural gates that live outside this package (the root-BUCK inventory
+    validators, RUE-1525) take a crate's sources as a `$(location ...)` input.
+    Emitting the filegroup from the macro every crate already calls replaces
+    the per-gate hand-written `*-inventory-sources` filegroups — one identical
+    `glob(["src/**/*.rs"])` copy per gate per crate — with a single sources
+    target that exists because the crate declares itself, and that new gates
+    can reuse without touching the crate's BUCK file.
+    """
+    native.filegroup(
+        name = name + "-sources",
+        srcs = srcs,
+        visibility = ["PUBLIC"],
+    )
+
 def _fmt_check(name, srcs):
     """Emits `<name>-fmt-check`: rustfmt --check over this crate's own sources.
 
@@ -97,6 +114,7 @@ def rue_crate(
     different srcs), use `tests = False` and write the rust_test by hand.
     """
     srcs = glob(["src/**/*.rs"])
+    _sources_filegroup(name, srcs)
     _fmt_check(name, srcs)
     _clippy_check(name)
     native.rust_library(
@@ -130,6 +148,7 @@ def rue_binary(
     build time).
     """
     srcs = glob(["src/**/*.rs"])
+    _sources_filegroup(name, srcs)
     _fmt_check(name, srcs)
     _clippy_check(name)
     native.rust_binary(
