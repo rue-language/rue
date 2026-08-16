@@ -2561,6 +2561,12 @@ pub struct QueryTerminal<V> {
     work: Arc<[(Arc<str>, u64)]>,
     dependencies: Arc<[Observation]>,
     inputs: Arc<[InputObservation]>,
+    /// Whether any input observation in this terminal's transitive cone
+    /// recorded a missing leaf (stamp 0). A strictly-additive successor
+    /// revision can change the meaning of a missing-leaf observation by
+    /// adding that leaf, so only terminals with a fully present-observing
+    /// cone may carry validation certificates across revisions (ADR-0073).
+    cone_missing_observation: bool,
     retained_charge: u64,
     dependency_pin_charge: u64,
     pins: AtomicUsize,
@@ -3989,9 +3995,35 @@ const REVISION_RETENTION_LIMIT: usize = 64;
 struct RevisionStore {
     entries: BTreeMap<u64, RevisionEntry>,
     retired_through: u64,
+    /// Next validation epoch to assign. Epochs are runtime-global and
+    /// monotone; equality is only ever compared, never ordered.
+    next_epoch: u64,
+    /// Per compatibility-namespace head of the current certificate-eligible
+    /// extension chain (ADR-0073). An overlay publication preserves its
+    /// parent's epoch only when the parent is this head and the delta is
+    /// strictly additive; every other publication starts a fresh epoch, so
+    /// same-epoch history is one linear chain by construction. Head ids may
+    /// name retired entries; they are compared, never dereferenced.
+    epoch_heads: BTreeMap<u64, EpochHead>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EpochHead {
+    epoch: u64,
+    head_id: u64,
 }
 
 impl RevisionStore {
+    fn fresh_epoch(&mut self) -> u64 {
+        let epoch = self.next_epoch;
+        self.next_epoch += 1;
+        epoch
+    }
+
+    fn epoch_of(&self, revision_id: u64) -> Option<u64> {
+        self.entries.get(&revision_id).map(|entry| entry.epoch)
+    }
+
     /// The stamp of `input` in `revision_id`, resolving through the revision's
     /// overlay chain. `None` means the leaf is absent (a recorded-absent optional
     /// leaf reads as absent here).
@@ -4010,6 +4042,8 @@ struct RevisionEntry {
     revision: Revision,
     inputs: Arc<RevisionInputs>,
     active_requests: usize,
+    /// Validation epoch this revision belongs to (ADR-0073).
+    epoch: u64,
 }
 
 /// Overlay chains longer than this are compacted into one complete map at the
@@ -4116,6 +4150,8 @@ impl QueryRuntime {
                 revisions: RwLock::new(RevisionStore {
                     entries: BTreeMap::new(),
                     retired_through: 0,
+                    next_epoch: 1,
+                    epoch_heads: BTreeMap::new(),
                 }),
                 nodes: RwLock::new(NodeRegistry::default()),
                 retention_families: Mutex::new(BTreeMap::new()),
@@ -4454,12 +4490,25 @@ impl QueryRuntime {
                 if revision.id <= revisions.retired_through {
                     return Err(RevisionError::Retired(revision));
                 }
+                // An independent full view starts a fresh certificate epoch
+                // and becomes its namespace's extension head (ADR-0073): it
+                // may re-stamp or drop any leaf, so no prior certificate can
+                // survive it, and no prior chain may extend past it.
+                let epoch = revisions.fresh_epoch();
+                revisions.epoch_heads.insert(
+                    revision.compatibility,
+                    EpochHead {
+                        epoch,
+                        head_id: revision.id,
+                    },
+                );
                 revisions.entries.insert(
                     revision.id,
                     RevisionEntry {
                         revision,
                         inputs: Arc::new(RevisionInputs::Full(inputs)),
                         active_requests: 0,
+                        epoch,
                     },
                 );
                 self.core.enforce_revision_retention(&mut revisions);
@@ -4521,7 +4570,24 @@ impl QueryRuntime {
         if revision.id <= parent.id {
             return Err(RevisionError::NonMonotonicOverlay(revision));
         }
+        let parent_epoch = parent_entry.epoch;
         let parent_inputs = parent_entry.inputs.clone();
+        // ADR-0073 epoch rule, decided mechanically at this boundary: the
+        // child continues its parent's certificate epoch only when the parent
+        // is the namespace's current extension head AND the delta strictly
+        // adds new leaf identities. A re-stamped identity or a non-head
+        // parent (an independent view or a sibling child) starts a fresh
+        // epoch, so certificate-eligible same-epoch history stays one linear
+        // additive chain by construction. The membership probes are bounded
+        // by OVERLAY_COMPACTION_DEPTH.
+        let parent_is_head = revisions
+            .epoch_heads
+            .get(&parent.compatibility)
+            .is_some_and(|head| head.epoch == parent_epoch && head.head_id == parent.id);
+        let strictly_additive = delta_map
+            .keys()
+            .all(|input| parent_inputs.stamp(input).is_none());
+        let extends_head = parent_is_head && strictly_additive;
         let inputs = if parent_inputs.depth() >= OVERLAY_COMPACTION_DEPTH {
             // Compact a deep chain into one complete map so lookup depth stays
             // bounded; the merged map is the same logical view.
@@ -4566,12 +4632,33 @@ impl QueryRuntime {
                 if revision.id <= revisions.retired_through {
                     return Err(RevisionError::Retired(revision));
                 }
+                let epoch = if extends_head {
+                    revisions.epoch_heads.insert(
+                        revision.compatibility,
+                        EpochHead {
+                            epoch: parent_epoch,
+                            head_id: revision.id,
+                        },
+                    );
+                    parent_epoch
+                } else {
+                    let epoch = revisions.fresh_epoch();
+                    revisions.epoch_heads.insert(
+                        revision.compatibility,
+                        EpochHead {
+                            epoch,
+                            head_id: revision.id,
+                        },
+                    );
+                    epoch
+                };
                 revisions.entries.insert(
                     revision.id,
                     RevisionEntry {
                         revision,
                         inputs,
                         active_requests: 0,
+                        epoch,
                     },
                 );
                 self.core.enforce_revision_retention(&mut revisions);
@@ -4730,7 +4817,7 @@ impl QueryRuntime {
         }
         let id = self.core.next_task.fetch_add(1, Ordering::Relaxed);
         let origin_request = origin_request.unwrap_or(id);
-        let Some(_revision_lease) = self.core.pin_revision(revision) else {
+        let Some((_revision_lease, revision_epoch)) = self.core.pin_revision(revision) else {
             return QueryRequestAttempt {
                 id,
                 origin_request,
@@ -4748,6 +4835,7 @@ impl QueryRuntime {
             id: TaskId(id),
             core: self.core.clone(),
             revision,
+            revision_epoch,
             cancellation,
             owns_permit: AtomicBool::new(false),
             permit_timing: Mutex::new(PermitTiming::default()),
@@ -5205,6 +5293,15 @@ struct ValidationCertificate {
     stamp: u64,
     terminal_revision: Revision,
     registered_only: bool,
+    /// Validation epoch of `revision` when this certificate was minted.
+    /// Within one epoch the certificate-eligible history is a single
+    /// strictly-additive extension chain, so the ADR-0073 gate may accept
+    /// this certificate at a later revision of the same epoch.
+    epoch: u64,
+    /// Whether the certified terminal's cone observed a missing leaf. Such
+    /// a certificate never crosses revisions: an added leaf in a later
+    /// strictly-additive revision would change what that cone observed.
+    cone_missing_observation: bool,
 }
 
 const INLINE_ACTIVE_VALIDATIONS: usize = 8;
@@ -5327,8 +5424,21 @@ where
         let mut proof_reacquisition_miss = false;
         {
             let state = lock(&self.state);
+            // ADR-0073 `extends_for_certificate`: a certificate is accepted at
+            // the exact revision it was minted for, or forward along the same
+            // certificate-eligible extension chain — equal validation epoch
+            // (same-epoch history is one strictly-additive linear chain, so
+            // equal epoch plus directional id order proves ancestry), same
+            // compatibility namespace, certificate not newer than the request,
+            // and only when the certified cone observed no missing leaf (an
+            // added leaf in a later additive revision would change what such
+            // a cone observed).
             if let Some(certificate) = &state.validated_at
-                && certificate.revision == task.revision
+                && (certificate.revision == task.revision
+                    || (!certificate.cone_missing_observation
+                        && certificate.epoch == task.revision_epoch
+                        && certificate.revision.is_compatible_with(task.revision)
+                        && certificate.revision.id < task.revision.id))
             {
                 // A registered-cone endorsement is also a retention proof. A
                 // memo may skip validation in that scope only when this task
@@ -6464,6 +6574,7 @@ where
                                 inputs,
                                 mut work,
                                 handoffs,
+                                cone_missing_observation,
                             } = frame;
                             let handoffs = handoffs.into_lifecycle();
                             let terminal = self.publish(
@@ -6474,6 +6585,7 @@ where
                                 output,
                                 dependencies,
                                 inputs,
+                                cone_missing_observation,
                                 &task,
                                 observe_result,
                                 handoffs.clone(),
@@ -6514,6 +6626,7 @@ where
                                 inputs,
                                 work,
                                 handoffs,
+                                cone_missing_observation: _,
                             } = frame;
                             task.observe_abort_prefix(&dependencies, &inputs, &work);
                             handoffs.abort();
@@ -6731,6 +6844,7 @@ where
         output: QueryOutput<V>,
         dependencies: Vec<Observation>,
         inputs: Vec<InputObservation>,
+        cone_missing_observation: bool,
         task: &Arc<Task>,
         lease: bool,
         handoffs: Arc<AttemptHandoffLifecycle>,
@@ -6793,6 +6907,7 @@ where
             work: work.into(),
             dependencies: dependencies.into(),
             inputs: inputs.into(),
+            cone_missing_observation,
             retained_charge,
             dependency_pin_charge,
             pins: AtomicUsize::new(0),
@@ -6820,6 +6935,8 @@ where
             stamp,
             terminal_revision: revision,
             registered_only: false,
+            epoch: task.revision_epoch,
+            cone_missing_observation,
         });
         // Acquire the request lease *under the node lock*, before the terminal is
         // enqueued for retention or made reachable to a concurrent enforcer. The
@@ -7084,6 +7201,13 @@ where
         revision: Revision,
         held: &Arc<QueryTerminal<V>>,
     ) -> Result<TerminalPin<K, V>, AdoptTerminalError> {
+        // Resolved before the node lock: the store guard and node locks are
+        // never held together on this path. A retired revision entry yields
+        // the never-assigned epoch 0, so such a certificate can only satisfy
+        // the exact-revision gate, never the cross-revision one.
+        let revision_epoch = read(&self.core.revisions)
+            .epoch_of(revision.id)
+            .unwrap_or(0);
         let (attempt_id, endorsed_pin) = {
             let mut state = lock(&node.state);
             // The endorsed stamp must still be retained on this node; a stale
@@ -7132,6 +7256,7 @@ where
                 work: held.work.clone(),
                 dependencies: Arc::from([]),
                 inputs: Arc::from([]),
+                cone_missing_observation: held.cone_missing_observation,
                 retained_charge: held.retained_charge,
                 dependency_pin_charge: 0,
                 pins: AtomicUsize::new(0),
@@ -7152,6 +7277,8 @@ where
                 stamp: held.stamp,
                 terminal_revision: revision,
                 registered_only: true,
+                epoch: revision_epoch,
+                cone_missing_observation: held.cone_missing_observation,
             });
             // Pin UNDER the node lock, before the endorsement is enqueued or
             // reachable to a concurrent enforcer: `pins > 0` is established
@@ -7249,7 +7376,7 @@ where
         RevisionPin {
             family: self.clone(),
             revision,
-            view: self.core.pin_revision(revision),
+            view: self.core.pin_revision(revision).map(|(lease, _)| lease),
         }
     }
 
@@ -8414,6 +8541,8 @@ struct Task {
     id: TaskId,
     core: Arc<RuntimeCore>,
     revision: Revision,
+    /// Validation epoch of `revision`, resolved once at pinning (ADR-0073).
+    revision_epoch: u64,
     cancellation: CancellationToken,
     owns_permit: AtomicBool,
     /// Task-local execution-permit intervals, published once when this task
@@ -9264,6 +9393,10 @@ struct TaskFrame {
     work: InlineOrderedMap<Arc<str>, u64>,
     handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
     observed_handoffs: Vec<Arc<AttemptHandoffLifecycle>>,
+    /// Whether any observed dependency's cone recorded a missing leaf
+    /// (ADR-0073). The frame's own missing-leaf inputs are derived from
+    /// `inputs` at publication; this bit carries the transitive part.
+    dependency_cone_missing: bool,
 }
 
 impl TaskFrame {
@@ -9277,6 +9410,9 @@ struct TaskFrameOutput {
     inputs: Vec<InputObservation>,
     work: Vec<(Arc<str>, u64)>,
     handoffs: AttemptHandoffs,
+    /// Whether the produced terminal's transitive cone observed a missing
+    /// leaf: the frame's own stamp-0 inputs or any dependency's carried bit.
+    cone_missing_observation: bool,
 }
 
 fn commit_handoff(
@@ -9678,6 +9814,7 @@ impl Task {
             id: TaskId(id),
             core: self.core.clone(),
             revision: self.revision,
+            revision_epoch: self.revision_epoch,
             cancellation: self.cancellation.clone(),
             owns_permit: AtomicBool::new(false),
             permit_timing: Mutex::new(PermitTiming::default()),
@@ -10318,6 +10455,7 @@ impl Task {
             work: InlineOrderedMap::default(),
             handoffs: Vec::new(),
             observed_handoffs: Vec::new(),
+            dependency_cone_missing: false,
         });
         let depth = self.ancestry.len().saturating_add(stack.len()) as u64;
         self.longest_query_dependency_chain
@@ -10330,12 +10468,14 @@ impl Task {
             .expect("query computation owns one dependency frame");
         assert_eq!(&frame.node, expected);
         let dependencies = frame.dependencies.into_observations();
-        let inputs = frame
+        let inputs: Vec<InputObservation> = frame
             .inputs
             .into_entries()
             .into_iter()
             .map(|(input, stamp)| InputObservation { input, stamp })
             .collect();
+        let cone_missing_observation = frame.dependency_cone_missing
+            || inputs.iter().any(|observation| observation.stamp == 0);
         TaskFrameOutput {
             dependencies,
             inputs,
@@ -10344,6 +10484,7 @@ impl Task {
                 pending: frame.handoffs,
                 observed: frame.observed_handoffs,
             },
+            cone_missing_observation,
         }
     }
 
@@ -10358,6 +10499,7 @@ impl Task {
     fn observe<V>(&self, terminal: &QueryTerminal<V>) {
         if let Some(frame) = lock(&self.stack).last_mut() {
             frame.observe_dependency(&terminal.node, terminal.node_incarnation, terminal.stamp);
+            frame.dependency_cone_missing |= terminal.cone_missing_observation;
         }
     }
 
@@ -10397,6 +10539,10 @@ impl Task {
         };
         for dependency in dependencies {
             frame.observe_dependency(&dependency.node, dependency.incarnation, dependency.stamp);
+            // A replayed abort-prefix dependency carries no terminal, so its
+            // cone purity is unknown; the enclosing frame stays conservative
+            // (ADR-0073) rather than risking a wrongly carried certificate.
+            frame.dependency_cone_missing = true;
         }
         for input in inputs {
             frame
@@ -10761,6 +10907,8 @@ impl RuntimeCore {
                 stamp: terminal.stamp,
                 terminal_revision: terminal.revision,
                 registered_only,
+                epoch: task.revision_epoch,
+                cone_missing_observation: terminal.cone_missing_observation,
             }) {
                 task.validation_work
                     .certificates_published
@@ -10859,17 +11007,24 @@ impl RuntimeCore {
         Ok(true)
     }
 
-    fn pin_revision(self: &Arc<Self>, revision: Revision) -> Option<RevisionLease> {
+    /// Pins `revision` against retention and returns its lease together with
+    /// the revision's validation epoch (ADR-0073), resolved under the same
+    /// store guard so tasks carry the epoch without a second lookup.
+    fn pin_revision(self: &Arc<Self>, revision: Revision) -> Option<(RevisionLease, u64)> {
         let mut revisions = write(&self.revisions);
         let entry = revisions
             .entries
             .get_mut(&revision.id)
             .filter(|entry| entry.revision == revision)?;
         entry.active_requests += 1;
-        Some(RevisionLease {
-            core: self.clone(),
-            revision,
-        })
+        let epoch = entry.epoch;
+        Some((
+            RevisionLease {
+                core: self.clone(),
+                revision,
+            },
+            epoch,
+        ))
     }
 
     fn enforce_revision_retention(&self, revisions: &mut RevisionStore) {
@@ -12463,6 +12618,7 @@ mod tests {
                 pending: vec![Box::new(RecordingHandoff::new(events.clone()))],
                 observed: Vec::new(),
             },
+            cone_missing_observation: false,
         }
         .abort_handoffs();
         assert_eq!(*lock(&events), ["abort"]);
@@ -13587,6 +13743,7 @@ mod tests {
             id: TaskId(43),
             core: runtime.core.clone(),
             revision: revision(1),
+            revision_epoch: 0,
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             permit_timing: Mutex::new(PermitTiming::default()),
@@ -13643,6 +13800,7 @@ mod tests {
             id: TaskId(44),
             core: runtime.core.clone(),
             revision: revision(1),
+            revision_epoch: 0,
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             permit_timing: Mutex::new(PermitTiming::default()),
@@ -13921,6 +14079,7 @@ mod tests {
             id: TaskId(99),
             core: runtime.core.clone(),
             revision: revision(1),
+            revision_epoch: 0,
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             permit_timing: Mutex::new(PermitTiming::default()),
@@ -15705,6 +15864,288 @@ mod tests {
         );
     }
 
+    /// One diamond over one present leaf plus the certificate-relevant
+    /// revisions for the ADR-0073 gate tests below.
+    fn certificate_epoch_fixture(
+        runtime: &QueryRuntime,
+    ) -> (
+        QueryFamily<Key, u64>,
+        QueryFamily<Key, u64>,
+        QueryFamily<Key, u64>,
+        QueryFamily<Key, u64>,
+    ) {
+        let input = InputIdentity::new("source", "epoch-diamond");
+        let leaf_input = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-leaf", 8, move |context, _, _| {
+                context.input(leaf_input.clone())?;
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_left = leaf.clone();
+        let left = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-left", 8, move |context, _, _| {
+                context.query_registered(&leaf_for_left, Key("leaf"))?;
+                Ok(QueryOutput::success(2))
+            })
+            .unwrap();
+        let leaf_for_right = leaf.clone();
+        let right = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-right", 8, move |context, _, _| {
+                context.query_registered(&leaf_for_right, Key("leaf"))?;
+                Ok(QueryOutput::success(3))
+            })
+            .unwrap();
+        let left_for_root = left.clone();
+        let right_for_root = right.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-root", 8, move |context, _, _| {
+                context.query_registered(&left_for_root, Key("left"))?;
+                context.query_registered(&right_for_root, Key("right"))?;
+                Ok(QueryOutput::success(4))
+            })
+            .unwrap();
+        (leaf, left, right, root)
+    }
+
+    #[test]
+    fn additive_overlay_carries_certificates_without_a_cone_walk() {
+        let runtime = QueryRuntime::new(1);
+        let base = Revision::new(30, 11);
+        let extended = Revision::new(31, 11);
+        let input = InputIdentity::new("source", "epoch-diamond");
+        runtime.publish_revision(base, [(input, 1)]).unwrap();
+        runtime
+            .publish_revision_overlay(
+                extended,
+                base,
+                [(InputIdentity::new("source", "appended"), 7)],
+            )
+            .unwrap();
+        let (_leaf, _left, _right, root) = certificate_epoch_fixture(&runtime);
+        assert_eq!(
+            runtime
+                .request_registered(&root, base, Key("root"), CancellationToken::new())
+                .execution(),
+            RequestExecution::Computed
+        );
+        let before = runtime.metrics();
+        let reused =
+            runtime.request_registered(&root, extended, Key("root"), CancellationToken::new());
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+        let validation = runtime
+            .metrics()
+            .validation
+            .saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert_eq!(
+            validation.certificate_misses, 0,
+            "a strictly additive head extension preserves the epoch, so every \
+             base-revision certificate is accepted forward without a re-walk"
+        );
+        assert_eq!(
+            validation.demands, 0,
+            "no dependency is re-demanded when its certificate carries"
+        );
+    }
+
+    #[test]
+    fn missing_leaf_observation_blocks_certificate_carry() {
+        let runtime = QueryRuntime::new(1);
+        let base = Revision::new(40, 12);
+        let still_absent = Revision::new(41, 12);
+        let satisfied = Revision::new(42, 12);
+        let probed = InputIdentity::new("candidate", "maybe.rue");
+        runtime
+            .publish_revision(base, [(InputIdentity::new("source", "present"), 1)])
+            .unwrap();
+        runtime
+            .publish_revision_overlay(
+                still_absent,
+                base,
+                [(InputIdentity::new("source", "unrelated"), 2)],
+            )
+            .unwrap();
+        runtime
+            .publish_revision_overlay(satisfied, still_absent, [(probed.clone(), 9)])
+            .unwrap();
+        let probe_input = probed.clone();
+        let prober = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-prober", 8, move |context, _, _| {
+                Ok(QueryOutput::success(
+                    context.optional_input(probe_input.clone()).unwrap_or(0),
+                ))
+            })
+            .unwrap();
+        let prober_for_parent = prober.clone();
+        let parent_over_prober = runtime
+            .family_with_evaluator::<Key, u64, _>("epoch-prober-parent", 8, move |context, _, _| {
+                let attempt = context.query_registered(&prober_for_parent, Key("probe"))?;
+                let QueryOutcome::Success(value) = attempt.outcome() else {
+                    panic!("prober publishes typed values");
+                };
+                Ok(QueryOutput::success(*value))
+            })
+            .unwrap();
+        assert_eq!(
+            runtime
+                .request_registered(
+                    &parent_over_prober,
+                    base,
+                    Key("parent"),
+                    CancellationToken::new(),
+                )
+                .execution(),
+            RequestExecution::Computed
+        );
+
+        // The appended unrelated leaf preserves the epoch, but the prober's
+        // cone observed a missing leaf, so its certificate must not carry:
+        // the parent's dependency validation re-demands the prober and
+        // re-proves the absence exactly instead of riding the gate.
+        let before = runtime.metrics();
+        let revalidated = runtime.request_registered(
+            &parent_over_prober,
+            still_absent,
+            Key("parent"),
+            CancellationToken::new(),
+        );
+        assert_eq!(revalidated.execution(), RequestExecution::Reused);
+        let validation = runtime
+            .metrics()
+            .validation
+            .saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert!(
+            validation.certificate_misses >= 1,
+            "a missing-leaf cone never rides the cross-revision certificate gate"
+        );
+        assert!(
+            validation.demands >= 1,
+            "the impure dependency is re-demanded rather than carried"
+        );
+
+        // Adding the probed leaf changes what the cone observed: recompute.
+        let recomputed = runtime.request_registered(
+            &parent_over_prober,
+            satisfied,
+            Key("parent"),
+            CancellationToken::new(),
+        );
+        assert_eq!(recomputed.execution(), RequestExecution::Computed);
+        let terminal = recomputed.terminal().unwrap();
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            panic!("parent republishes the prober's value");
+        };
+        assert_eq!(*value, 9, "the satisfied probe observes the added leaf");
+    }
+
+    #[test]
+    fn sibling_overlay_children_never_share_certificates() {
+        let runtime = QueryRuntime::new(1);
+        let parent = Revision::new(50, 13);
+        let first_child = Revision::new(51, 13);
+        let second_child = Revision::new(52, 13);
+        let input = InputIdentity::new("source", "epoch-diamond");
+        runtime.publish_revision(parent, [(input, 1)]).unwrap();
+        runtime
+            .publish_revision_overlay(
+                first_child,
+                parent,
+                [(InputIdentity::new("source", "first"), 5)],
+            )
+            .unwrap();
+        // The parent is no longer the extension head, so the second child of
+        // the same parent starts a fresh epoch even though its delta is
+        // strictly additive.
+        runtime
+            .publish_revision_overlay(
+                second_child,
+                parent,
+                [(InputIdentity::new("source", "second"), 6)],
+            )
+            .unwrap();
+        let (_leaf, _left, _right, root) = certificate_epoch_fixture(&runtime);
+        assert_eq!(
+            runtime
+                .request_registered(&root, first_child, Key("root"), CancellationToken::new())
+                .execution(),
+            RequestExecution::Computed
+        );
+        let before = runtime.metrics();
+        let sibling =
+            runtime.request_registered(&root, second_child, Key("root"), CancellationToken::new());
+        assert_eq!(sibling.execution(), RequestExecution::Reused);
+        let validation = runtime
+            .metrics()
+            .validation
+            .saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert!(
+            validation.certificate_misses >= 1,
+            "a certificate minted under one sibling child must not validate \
+             the other: the siblings never share an epoch"
+        );
+    }
+
+    #[test]
+    fn certificates_are_directional_across_the_epoch_chain() {
+        let runtime = QueryRuntime::new(1);
+        let base = Revision::new(60, 14);
+        let extended = Revision::new(61, 14);
+        let input = InputIdentity::new("source", "epoch-diamond");
+        runtime.publish_revision(base, [(input, 1)]).unwrap();
+        runtime
+            .publish_revision_overlay(
+                extended,
+                base,
+                [(InputIdentity::new("source", "appended"), 7)],
+            )
+            .unwrap();
+        let (_leaf, _left, _right, root) = certificate_epoch_fixture(&runtime);
+
+        // First demand under the NEWER revision: certificates are minted at
+        // the extension, so an older pinned request must reject them
+        // (a newer certificate can assert nothing about inputs the pin does
+        // not contain) and re-validate.
+        assert_eq!(
+            runtime
+                .request_registered(&root, extended, Key("root"), CancellationToken::new())
+                .execution(),
+            RequestExecution::Computed
+        );
+        let before = runtime.metrics();
+        let pinned = runtime.request_registered(&root, base, Key("root"), CancellationToken::new());
+        assert_eq!(pinned.execution(), RequestExecution::Reused);
+        let validation = runtime
+            .metrics()
+            .validation
+            .saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert!(
+            validation.certificate_misses >= 1,
+            "a newer-revision certificate is rejected at an older pin"
+        );
+
+        // The old-pin validation overwrote the slot with base-revision
+        // certificates; the newer revision then accepts them FORWARD along
+        // the same epoch without any re-walk.
+        let before = runtime.metrics();
+        let forward =
+            runtime.request_registered(&root, extended, Key("root"), CancellationToken::new());
+        assert_eq!(forward.execution(), RequestExecution::Reused);
+        let validation = runtime
+            .metrics()
+            .validation
+            .saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert_eq!(
+            validation.certificate_misses, 0,
+            "an older same-epoch certificate is accepted forward"
+        );
+        assert_eq!(validation.demands, 0);
+    }
+
     #[test]
     fn removing_a_terminal_invalidates_only_its_certificate() {
         let runtime = QueryRuntime::new(1);
@@ -15755,6 +16196,8 @@ mod tests {
                 stamp: second_terminal.stamp,
                 terminal_revision: second,
                 registered_only: false,
+                epoch: read(&runtime.core.revisions).epoch_of(second.id).unwrap(),
+                cone_missing_observation: false,
             })
         );
         family.detach_terminal_attempt(&node.node, attempt_id(first));
@@ -16222,6 +16665,8 @@ mod tests {
             stamp: leaf_first.stamp,
             terminal_revision: leaf_first.revision,
             registered_only: true,
+            epoch: read(&runtime.core.revisions).epoch_of(first.id).unwrap(),
+            cone_missing_observation: false,
         }));
         drop(leaf_node);
 
