@@ -22,7 +22,6 @@ The fix is to remove the pipe: `grep -q PATTERN <<<"$text"`, a `case`, or
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from pathlib import Path
@@ -31,7 +30,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # SKIP_DIRECTORIES is re-exported: the tool tests read the prune policy
 # through this module as the gate's own surface.
-from gatelib import SKIP_DIRECTORIES, prune_names, run_gate
+from gatelib import SKIP_DIRECTORIES, run_gate, walk_files
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -141,23 +140,21 @@ def split_pipeline(line: str) -> list[str]:
 
 def shell_scripts(root: Path) -> list[Path]:
     paths: list[Path] = []
-    # Prune while walking rather than filtering afterwards: `buck-out` alone
-    # holds enough build output to dominate the gate's runtime.
-    for directory, names, files in os.walk(root):
-        names[:] = prune_names(Path(directory), names)
-        for name in sorted(files):
-            path = Path(directory) / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            if path.suffix and path.suffix != ".sh":
-                continue
-            try:
-                with path.open("r", encoding="utf-8", errors="strict") as handle:
-                    first = handle.readline()
-            except (OSError, UnicodeDecodeError):
-                continue
-            if path.suffix == ".sh" or SHEBANG.match(first):
-                paths.append(path)
+    # walk_files prunes while walking rather than filtering afterwards:
+    # `buck-out` alone holds enough build output to dominate the gate's
+    # runtime.
+    for path in walk_files(root):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix and path.suffix != ".sh":
+            continue
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as handle:
+                first = handle.readline()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if path.suffix == ".sh" or SHEBANG.match(first):
+            paths.append(path)
     return sorted(paths)
 
 

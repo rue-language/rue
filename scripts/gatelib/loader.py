@@ -17,15 +17,21 @@ from types import ModuleType
 def load_script(name: str, relative_to: str) -> ModuleType:
     """Load ``name`` (e.g. ``"validate-payload-ownership.py"``) as a module.
 
-    ``relative_to`` is the caller's ``__file__``; the script is resolved as
-    its sibling, which is where every gate and its test live.
+    ``relative_to`` is the caller's ``__file__``; a bare ``name`` is resolved
+    as its sibling, which is where every gate and its test live. ``name`` may
+    also be a relative path for the few scripts a test loads from elsewhere
+    in the tree; it resolves against the caller's directory, and the module
+    name is then qualified with the script's directory so same-named scripts
+    (three generators are all ``generate.py``) do not collide in
+    ``sys.modules``.
     """
-    script = Path(relative_to).resolve().with_name(name)
+    script = (Path(relative_to).resolve().parent / name).resolve()
     if not script.is_file():
-        raise FileNotFoundError(f"no sibling script {name!r} next to {relative_to}")
-    spec = importlib.util.spec_from_file_location(
-        script.stem.replace("-", "_"), script
-    )
+        raise FileNotFoundError(f"no script {name!r} relative to {relative_to}")
+    module_name = script.stem.replace("-", "_")
+    if Path(name).name != name:
+        module_name = f"{script.parent.name}_{script.stem}".replace("-", "_")
+    spec = importlib.util.spec_from_file_location(module_name, script)
     if spec is None or spec.loader is None:
         raise ImportError(f"could not build an import spec for {script}")
     module = importlib.util.module_from_spec(spec)

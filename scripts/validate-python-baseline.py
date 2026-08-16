@@ -73,14 +73,13 @@ from __future__ import annotations
 
 import argparse
 import ast
-import os
 import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatelib import prune_names
+from gatelib import walk_files
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -468,25 +467,21 @@ def sources(root: Path) -> list[Path]:
     its scripts that way. A name is not a contract; `#!` is.
     """
     found: list[Path] = []
-    for directory, names, files in os.walk(root):
-        here = Path(directory)
-        names[:] = prune_names(here, names)
-        for name in sorted(files):
-            path = here / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            if path.suffix == ".py":
-                found.append(path)
-                continue
-            if path.suffix:
-                continue
-            try:
-                with path.open("r", encoding="utf-8", errors="strict") as handle:
-                    first = handle.readline()
-            except (OSError, UnicodeDecodeError):
-                continue
-            if PYTHON_SHEBANG.match(first):
-                found.append(path)
+    for path in walk_files(root):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix == ".py":
+            found.append(path)
+            continue
+        if path.suffix:
+            continue
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as handle:
+                first = handle.readline()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if PYTHON_SHEBANG.match(first):
+            found.append(path)
     return sorted(found)
 
 

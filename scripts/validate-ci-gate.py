@@ -4,16 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import re
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gatelib import job_blocks
+from gatelib import job_blocks, load_script
 
-RESULTS_SCRIPT = Path(__file__).with_name("ci-required-results.py")
 NATIVE_RUNNER_SCRIPT = Path(__file__).with_name("run-native-platform-corpus.sh")
 TEST_RUNNER_SOURCE = (
     Path(__file__).resolve().parents[1] / "crates/rue-test-runner/src/lib.rs"
@@ -78,25 +76,13 @@ def ci_executed_targets(runner_source: str) -> list[str]:
     return re.findall(r'"([^"]+)"', match.group("body"))
 
 
-SPEC = importlib.util.spec_from_file_location("ci_required_results", RESULTS_SCRIPT)
-RESULTS = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader is not None
-SPEC.loader.exec_module(RESULTS)
+RESULTS = load_script("ci-required-results.py", __file__)
 
 # RUE-1265: the duplication gate models these three steps as scheduled work, so
 # the filters have to be one fact. Importing them here means a filter added to
 # the workflow without teaching the gate about it fails this validator, rather
 # than quietly running a corpus slice the duplication comparison cannot see.
-DUPLICATION_SCRIPT = Path(__file__).with_name("validate-test-duplication.py")
-_DUP_SPEC = importlib.util.spec_from_file_location(
-    "validate_test_duplication", DUPLICATION_SCRIPT
-)
-DUPLICATION = importlib.util.module_from_spec(_DUP_SPEC)
-assert _DUP_SPEC.loader is not None
-# Registered before execution: the module defines dataclasses, and @dataclass
-# resolves annotations through sys.modules[cls.__module__].
-sys.modules["validate_test_duplication"] = DUPLICATION
-_DUP_SPEC.loader.exec_module(DUPLICATION)
+DUPLICATION = load_script("validate-test-duplication.py", __file__)
 
 ACTION_ID = r"[A-Za-z_][A-Za-z0-9_-]*"
 

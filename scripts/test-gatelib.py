@@ -168,6 +168,18 @@ class GateHelperTests(unittest.TestCase):
         self.assertTrue(hasattr(module, "Selector"))
         self.assertIs(sys.modules["validate_tier_ci_selectors"], module)
 
+    def test_load_script_accepts_a_relative_path(self) -> None:
+        # Non-sibling scripts resolve against the caller's directory, and the
+        # module name gains the directory qualifier so the tree's three
+        # same-named `generate.py` files do not collide in `sys.modules`.
+        module = load_script(
+            "../performance/workloads/scale_modules/generate.py", __file__
+        )
+        self.assertTrue(hasattr(module, "SIZES"))
+        self.assertIs(sys.modules["scale_modules_generate"], module)
+        with self.assertRaises(FileNotFoundError):
+            load_script("../performance/no-such-script.py", __file__)
+
 
 if __name__ == "__main__":
     unittest.main()

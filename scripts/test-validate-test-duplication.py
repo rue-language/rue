@@ -18,7 +18,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gatelib import load_script
 
-SCRIPT = Path(__file__).with_name("validate-test-duplication.py")
 GATE = load_script("validate-test-duplication.py", __file__)
 
 COMPILER = "//crates/rue-compiler:rue-compiler-test"
