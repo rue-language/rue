@@ -1877,6 +1877,19 @@ impl CompilerSession {
         self.parse_sources_materialized
     }
 
+    /// Cumulative red/green validation certificate misses in the canonical
+    /// query runtime. ADR-0073 makes fresh-build discovery preserve
+    /// certificates across its append-only frontier rounds, so this count
+    /// stays linear in module count on a deep import chain; a return toward
+    /// rounds-times-graph growth is a structural regression.
+    pub(crate) fn validation_certificate_misses(&self) -> u64 {
+        self.queries
+            .revisioned
+            .runtime_retention_metrics()
+            .validation
+            .certificate_misses
+    }
+
     /// See the field docs on `parse_key_entries_compared`.
     pub(crate) fn parse_key_entries_compared(&self) -> u64 {
         self.parse_key_entries_compared
