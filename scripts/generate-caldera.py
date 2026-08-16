@@ -19,13 +19,6 @@ from textwrap import dedent
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "examples" / "caldera"
 
-AUDIT_COUNT = 256
-SYSTEM_COUNT = 192
-BEHAVIOR_COUNT = 128
-RULE_COUNT = 96
-REPORT_COUNT = 64
-
-
 def clean(text: str) -> str:
     return dedent(text).strip() + "\n"
 

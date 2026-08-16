@@ -181,7 +181,7 @@ rue_sh_test(
         "--sources",
         "crates/rue-runtime-asan/src",
     ],
-    resources = _ASAN_GATE_SRCS + glob(["scripts/gatelib/*.py"]),
+    resources = _ASAN_GATE_SRCS + [":gatelib-sources"],
     # Excluded from quick iteration like every per-crate gate, so
     # `scripts/rue quick` keeps meaning "unit tests only".
     labels = ["rue_not_quick"],
@@ -916,7 +916,7 @@ rue_sh_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
     resources = ["scripts/validate-required-ci-container-pins.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -933,14 +933,14 @@ rue_sh_test(
         "--ledger-crates",
         "rust-project.json",
     ],
-    resources = ["rust-project.json"] + glob(["scripts/gatelib/*.py"]),
+    resources = ["rust-project.json"] + [":gatelib-sources"],
 )
 
 rue_sh_test(
     name = "debug-assert-policy-tool-tests",
     test = "scripts/test-debug-assert-policy.py",
     resources = ["scripts/validate-debug-assert-policy.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -950,7 +950,7 @@ rue_sh_test(
     name = "shell-pipefail-pipeline-tool-tests",
     test = "scripts/test-validate-shell-pipefail-pipelines.py",
     resources = ["scripts/validate-shell-pipefail-pipelines.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -960,7 +960,7 @@ rue_sh_test(
     name = "shell-bash-baseline-tool-tests",
     test = "scripts/test-validate-shell-bash-baseline.py",
     resources = ["scripts/validate-shell-bash-baseline.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -980,7 +980,7 @@ rue_sh_test(
     test = "scripts/test-validate-python-baseline.py",
     resources = [
         "scripts/validate-python-baseline.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -990,7 +990,7 @@ rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
     resources = ["scripts/validate-release-configuration.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1022,7 +1022,7 @@ rue_sh_test(
 rue_sh_test(
     name = "gatelib-tests",
     test = "scripts/test-gatelib.py",
-    resources = glob(["scripts/gatelib/*.py"]) + [
+    resources = [":gatelib-sources"] + [
         "scripts/validate-adrs.py",
     ],
     env = {
@@ -1071,7 +1071,7 @@ rue_sh_test(
     name = "cli-shard-coverage-tool-tests",
     test = "scripts/test-cli-shard-coverage.py",
     resources = ["scripts/validate-cli-shard-coverage.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1093,7 +1093,7 @@ rue_sh_test(
     resources = [
         "scripts/affected-targets",
         "scripts/validate-test-duplication.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1120,7 +1120,7 @@ filegroup(
 rue_sh_test(
     name = "tier-ci-selector-validation",
     test = "scripts/validate-tier-ci-selectors.py",
-    resources = glob(["scripts/gatelib/*.py"]),
+    resources = [":gatelib-sources"],
     args = [
         "--test-defs",
         "$(location :tier-ci-selector-inputs)/test_defs.bzl",
@@ -1137,7 +1137,7 @@ rue_sh_test(
     name = "tier-ci-selector-tool-tests",
     test = "scripts/test-validate-tier-ci-selectors.py",
     resources = ["scripts/validate-tier-ci-selectors.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TIER_VALIDATION_ROOT": "$(location :tier-ci-selector-inputs)",
@@ -1148,7 +1148,7 @@ rue_sh_test(
     name = "ci-required-results-tool-tests",
     test = "scripts/test-ci-required-results.py",
     resources = ["scripts/ci-required-results.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1178,7 +1178,7 @@ rue_sh_test(
         # cannot disagree about which `scripts/rue cli` steps the native lanes
         # run.
         "scripts/validate-test-duplication.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
 )
 
 # RUE-1258: the staleness rule, exercised without a repository or a data
@@ -1190,7 +1190,7 @@ rue_sh_test(
     test = "scripts/test-validate-performance-stall.py",
     resources = [
         "scripts/validate-performance-stall.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1206,7 +1206,7 @@ rue_sh_test(
     test = "scripts/test-generate-site-status.py",
     resources = [
         "scripts/generate-site-status.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1223,7 +1223,7 @@ rue_sh_test(
     test = "scripts/test-extract-source-excerpts.py",
     resources = [
         "scripts/extract-source-excerpts.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1239,7 +1239,7 @@ rue_sh_test(
     test = "scripts/test-annotate-performance-commits.py",
     resources = [
         "scripts/annotate-performance-commits.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1253,7 +1253,7 @@ rue_sh_test(
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
         "scripts/validate-test-duplication.py",
-    ] + glob(["scripts/gatelib/*.py"]),
+    ] + [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
@@ -1276,7 +1276,7 @@ rue_sh_test(
     name = "cli-shard-weight-tool-tests",
     test = "scripts/test-cli-shard-weights.py",
     resources = ["scripts/generate-cli-shard-weights.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1335,7 +1335,7 @@ rue_sh_test(
     name = "cli-timeout-policy-tool-tests",
     test = "scripts/test-cli-timeout-policy.py",
     resources = ["scripts/cli-timeout-policy.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1385,7 +1385,7 @@ rue_sh_test(
         "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
     },
     resources = ["scripts/fuzz-report-failure.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
 )
 
 # RUE-1507: the health check that notices a scheduled workflow which has never
@@ -1412,7 +1412,7 @@ rue_sh_test(
         "RUE_SCHEDULED_WORKFLOWS_ROOT": "$(location :scheduled-workflow-test-inputs)",
     },
     resources = ["scripts/check-scheduled-workflows.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
 )
 
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
@@ -1434,7 +1434,7 @@ rue_sh_test(
 rue_sh_test(
     name = "runtime-abi-inventory-validation",
     test = "scripts/validate-runtime-abi-inventory.py",
-    resources = glob(["scripts/gatelib/*.py"]),
+    resources = [":gatelib-sources"],
     args = [
         "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
         "--source", "rue-builtins=$(location //crates/rue-builtins:rue-builtins-sources)",
@@ -1450,7 +1450,7 @@ rue_sh_test(
     name = "runtime-abi-inventory-tool-tests",
     test = "scripts/test-runtime-abi-inventory.py",
     resources = ["scripts/validate-runtime-abi-inventory.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1459,7 +1459,7 @@ rue_sh_test(
 rue_sh_test(
     name = "type-architecture-inventory-validation",
     test = "scripts/validate-type-architecture.py",
-    resources = glob(["scripts/gatelib/*.py"]),
+    resources = [":gatelib-sources"],
     args = [
         "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
         "--source", "rue-cfg=$(location //crates/rue-cfg:rue-cfg-sources)",
@@ -1473,7 +1473,7 @@ rue_sh_test(
     name = "type-architecture-inventory-tool-tests",
     test = "scripts/test-type-architecture.py",
     resources = ["scripts/validate-type-architecture.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1482,7 +1482,7 @@ rue_sh_test(
 rue_sh_test(
     name = "payload-ownership-inventory-validation",
     test = "scripts/validate-payload-ownership.py",
-    resources = glob(["scripts/gatelib/*.py"]),
+    resources = [":gatelib-sources"],
     args = [
         "--source", "rue-rir=$(location //crates/rue-rir:rue-rir-sources)",
         "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
@@ -1495,7 +1495,7 @@ rue_sh_test(
     name = "payload-ownership-inventory-tool-tests",
     test = "scripts/test-payload-ownership.py",
     resources = ["scripts/validate-payload-ownership.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
@@ -1504,7 +1504,7 @@ rue_sh_test(
 rue_sh_test(
     name = "body-analysis-capability-inventory-validation",
     test = "scripts/validate-body-analysis-capabilities.py",
-    resources = glob(["scripts/gatelib/*.py"]),
+    resources = [":gatelib-sources"],
     args = [
         "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
         "--source", "rue-compiler=$(location //crates/rue-compiler:rue-compiler-sources)",
@@ -1515,7 +1515,7 @@ rue_sh_test(
     name = "body-analysis-capability-inventory-tool-tests",
     test = "scripts/test-body-analysis-capabilities.py",
     resources = ["scripts/validate-body-analysis-capabilities.py"] +
-        glob(["scripts/gatelib/*.py"]),
+        [":gatelib-sources"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },

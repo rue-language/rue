@@ -17,11 +17,13 @@ once, at commit time, and start failing for whoever touches it next.
 
 from __future__ import annotations
 
-import importlib.util
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from gatelib import load_script
 
 REPO = Path(__file__).resolve().parent.parent
 GENERATORS = [
@@ -32,11 +34,9 @@ GENERATORS = [
 
 
 def load(path: Path):
-    spec = importlib.util.spec_from_file_location(path.parent.name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # The generators are not siblings of this test; hand the loader their
+    # path relative to scripts/.
+    return load_script(str(Path("..") / path.relative_to(REPO)), __file__)
 
 
 class ScaleProbeGeneratorTests(unittest.TestCase):

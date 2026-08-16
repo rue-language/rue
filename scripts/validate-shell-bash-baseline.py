@@ -144,7 +144,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # SKIP_DIRECTORIES is re-exported: the tool tests read the prune policy
 # through this module as the gate's own surface.
-from gatelib import SKIP_DIRECTORIES, prune_names
+from gatelib import SKIP_DIRECTORIES, walk_files
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -724,33 +724,30 @@ def sources(root: Path) -> Sources:
     scripts: list[Path] = []
     shell: list[Path] = []
     workflows: list[Path] = []
-    for directory, names, files in os.walk(root):
-        here = Path(directory)
-        names[:] = prune_names(here, names)
-        for name in sorted(files):
-            path = here / name
-            if path.is_symlink() or not path.is_file():
-                continue
-            if path.suffix in (".yml", ".yaml") and (
-                here.name == "workflows" and here.parent.name == ".github"
-            ):
-                workflows.append(path)
-                continue
-            if path.suffix and path.suffix != ".sh":
-                continue
-            try:
-                with path.open("r", encoding="utf-8", errors="strict") as handle:
-                    first = handle.readline()
-            except (OSError, UnicodeDecodeError):
-                continue
-            # For the TABLE the shebang is the whole question: it decides which
-            # bash runs the file, so a `.sh` without one is not that policy's
-            # business. The parse check has no such dependence -- a syntax
-            # error is one in any shell -- so it takes the wider set.
-            if BASH_SHEBANG.match(first):
-                scripts.append(path)
-            elif path.suffix == ".sh" or SHELL_SHEBANG.match(first):
-                shell.append(path)
+    for path in walk_files(root):
+        here = path.parent
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix in (".yml", ".yaml") and (
+            here.name == "workflows" and here.parent.name == ".github"
+        ):
+            workflows.append(path)
+            continue
+        if path.suffix and path.suffix != ".sh":
+            continue
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as handle:
+                first = handle.readline()
+        except (OSError, UnicodeDecodeError):
+            continue
+        # For the TABLE the shebang is the whole question: it decides which
+        # bash runs the file, so a `.sh` without one is not that policy's
+        # business. The parse check has no such dependence -- a syntax
+        # error is one in any shell -- so it takes the wider set.
+        if BASH_SHEBANG.match(first):
+            scripts.append(path)
+        elif path.suffix == ".sh" or SHELL_SHEBANG.match(first):
+            shell.append(path)
     return Sources(sorted(scripts), sorted(shell), sorted(workflows))
 
 
