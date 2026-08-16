@@ -7,7 +7,7 @@
 //!
 //! The module provides target-independent types for liveness analysis:
 //! - [`LiveRange`]: Represents the instruction range where a vreg's value is needed
-//! - [`LivenessInfo`]: Holds all liveness information (ranges, live_at, clobbers)
+//! - [`LivenessInfo`]: Holds all liveness information (ranges, clobbers)
 //!
 //! Each backend implements its own `analyze()` function that populates these types
 //! based on its specific instruction set and control flow.
@@ -45,7 +45,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use fixedbitset::FixedBitSet;
 use rue_error::CompileResult;
 
 use crate::index_map::IndexMap;
@@ -378,10 +377,6 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
     /// Live range for each virtual register (indexed by vreg index).
     /// Uses dense Vec storage since VReg indices are contiguous.
     pub ranges: IndexMap<VReg, Option<LiveRange>>,
-    /// For each instruction, which vregs are live after it executes.
-    /// Uses FixedBitSet for O(n/64) bitwise operations instead of HashSet iteration.
-    /// This is useful for determining which registers are in use at any point.
-    pub live_at: Vec<FixedBitSet>,
     /// For each instruction index, the physical registers clobbered by that instruction.
     /// This is used to prevent allocating vregs to registers that would be clobbered.
     pub clobbers_at: Vec<Vec<Reg>>,
@@ -408,7 +403,6 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     pub fn new() -> Self {
         Self {
             ranges: IndexMap::new(),
-            live_at: Vec::new(),
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
             vreg_classes: VRegClasses::new(),
@@ -422,7 +416,6 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
         ranges.resize(vreg_count as usize, None);
         Self {
             ranges,
-            live_at: Vec::new(),
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
             vreg_classes: VRegClasses::all_gp(vreg_count),
@@ -435,9 +428,12 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
         self.vreg_classes.class_of(vreg)
     }
 
-    /// Get vregs that are live at a given instruction index.
-    pub fn live_at(&self, inst_idx: usize) -> &FixedBitSet {
-        &self.live_at[inst_idx]
+    /// The number of instructions this analysis covers.
+    ///
+    /// Every per-instruction table is this long; `clobbers_at` is simply the
+    /// one that is always populated.
+    pub fn instruction_count(&self) -> usize {
+        self.clobbers_at.len()
     }
 
     /// Get the live range for a vreg.
@@ -837,6 +833,18 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
     // Union-find structure for tracking coalesced vregs
     let mut parent: HashMap<VReg, VReg> = HashMap::new();
 
+    // Find the representative of a vreg in the union-find
+    fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
+        if let Some(&p) = parent.get(&vreg) {
+            if p != vreg {
+                let root = find(parent, p);
+                parent.insert(vreg, root);
+                return root;
+            }
+        }
+        vreg
+    }
+
     // Process each candidate
     for candidate in candidates {
         let dst = find(&mut parent, candidate.dst);
@@ -893,10 +901,7 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
             parent.insert(dst, src);
             result.coalesce_map.insert(dst, src);
 
-            // Update liveness: assign merged range to src, remove dst.
-            // These are O(1) and later candidates read `range()` to decide
-            // interference, so they stay eager; only the `live_at` rewrite is
-            // deferred (see `apply_merges_to_live_at`).
+            // Update liveness: assign merged range to src, remove dst
             liveness.ranges[src] = Some(merged_range);
             liveness.ranges[dst] = None;
 
@@ -905,72 +910,7 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
-    apply_merges_to_live_at(&mut parent, liveness);
-
     result
-}
-
-/// Find the representative of a vreg in the union-find, with path compression.
-fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
-    if let Some(&p) = parent.get(&vreg) {
-        if p != vreg {
-            let root = find(parent, p);
-            parent.insert(vreg, root);
-            return root;
-        }
-    }
-    vreg
-}
-
-/// Rewrite the `live_at` bitsets so every coalesced vreg reads as the
-/// representative its equivalence class settled on.
-///
-/// Substituting eagerly inside the candidate loop — one full sweep of `live_at`
-/// per successful merge — costs O(merges × instructions). Both factors scale
-/// with function size, so a single large straight-line body drove the backend
-/// phase quadratic. One sweep after the loop is equivalent: the eager form
-/// rewrote dst to src at each merge, so a chain a -> b -> c rewrote `a` twice
-/// and left it on the class's final root, which is exactly `find(a)`. Nothing
-/// in the candidate loop reads `live_at`, so deferring the rewrite cannot
-/// change which candidates coalesce.
-fn apply_merges_to_live_at<Reg: Copy + Eq + std::hash::Hash>(
-    parent: &mut HashMap<VReg, VReg>,
-    liveness: &mut LivenessInfo<Reg>,
-) {
-    if parent.is_empty() {
-        return;
-    }
-
-    // Resolve the merged vregs once so the sweep below is an array read per
-    // live bit rather than a union-find walk. Every vreg the merges touched is
-    // a key of `parent`; the rest are their own representatives.
-    let mut root_of: Vec<u32> = (0..liveness.ranges.len() as u32).collect();
-    let merged: Vec<VReg> = parent.keys().copied().collect();
-    for vreg in merged {
-        let idx = vreg.index() as usize;
-        if idx < root_of.len() {
-            root_of[idx] = find(parent, vreg).index();
-        }
-    }
-
-    // A bit cannot be cleared while `ones()` borrows the set, so each set's
-    // moves are collected first. The buffer is reused across sets.
-    let mut moves: Vec<(usize, usize)> = Vec::new();
-    for live_set in &mut liveness.live_at {
-        moves.extend(live_set.ones().filter_map(|idx| {
-            // An index past `root_of` cannot name a merged vreg, so it stays.
-            let root = *root_of.get(idx)? as usize;
-            (root != idx).then_some((idx, root))
-        }));
-
-        let len = live_set.len();
-        for (from, to) in moves.drain(..) {
-            live_set.set(from, false);
-            if to < len {
-                live_set.insert(to);
-            }
-        }
-    }
 }
 
 // ============================================================================
@@ -1768,7 +1708,7 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
         use_loop_aware_spilling: false,
         ..Default::default()
     };
-    let loop_info = LoopInfo::no_loops(liveness.live_at.len());
+    let loop_info = LoopInfo::no_loops(liveness.instruction_count());
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl(
         vreg_count,
         liveness,
@@ -1854,7 +1794,7 @@ pub fn linear_scan_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         use_loop_aware_spilling: false,
         ..Default::default()
     };
-    let loop_info = LoopInfo::no_loops(liveness.live_at.len());
+    let loop_info = LoopInfo::no_loops(liveness.instruction_count());
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
         vreg_count,
         liveness,
@@ -1888,7 +1828,7 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
         use_loop_aware_spilling: false,
         ..Default::default()
     };
-    let loop_info = LoopInfo::no_loops(liveness.live_at.len());
+    let loop_info = LoopInfo::no_loops(liveness.instruction_count());
     linear_scan_impl(
         vreg_count,
         liveness,
@@ -2657,15 +2597,13 @@ mod tests {
         // Find max vreg index and max instruction index
         let max_vreg = ranges.iter().map(|(v, _, _)| *v).max().unwrap_or(0);
         let max_inst = ranges.iter().map(|(_, _, e)| *e).max().unwrap_or(0);
-        let vreg_count = (max_vreg + 1) as usize;
 
         let mut info = LivenessInfo::with_vreg_capacity(max_vreg + 1);
         for (vreg_idx, start, end) in ranges {
             info.ranges[VReg::new(vreg_idx)] = Some(LiveRange::new(start, end));
         }
 
-        // Initialize live_at and clobbers_at based on max instruction index
-        info.live_at = vec![FixedBitSet::with_capacity(vreg_count); max_inst + 1];
+        // Initialize clobbers_at based on max instruction index
         info.clobbers_at = vec![Vec::new(); max_inst + 1];
         info
     }
@@ -2769,7 +2707,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0);
@@ -2811,7 +2749,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0, "neither interval had to spill");
@@ -2848,7 +2786,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(
@@ -2881,7 +2819,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         let slot = |vreg: u32| match allocation[VReg::new(vreg)] {
@@ -2971,7 +2909,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0);
@@ -3016,7 +2954,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0);
@@ -3053,7 +2991,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0);
@@ -3100,7 +3038,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 0);
@@ -3140,7 +3078,7 @@ mod tests {
             0,
             false,
             &CostModel::default(),
-            &LoopInfo::no_loops(liveness.live_at.len()),
+            &LoopInfo::no_loops(liveness.instruction_count()),
         );
 
         assert_eq!(num_spills, 3);
@@ -3712,64 +3650,6 @@ mod tests {
         assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
         assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
         assert_eq!(result.representative(VReg::new(2)), VReg::new(0));
-    }
-
-    #[test]
-    fn test_coalesce_rewrites_live_at_through_the_whole_chain() {
-        // The `live_at` rewrite is applied once after every candidate has been
-        // decided, so a vreg merged early and merged again later must still
-        // land on its class's final representative — v2 -> v1 -> v0 leaves
-        // every bit reading v0, and no bit for v1 or v2 survives.
-        let mut liveness = make_liveness(vec![(0, 0, 1), (1, 1, 2), (2, 2, 3)]);
-        liveness.live_at[0].insert(0);
-        liveness.live_at[1].insert(1);
-        liveness.live_at[2].insert(2);
-        // A point where both a merged vreg and its representative are live.
-        liveness.live_at[3].insert(0);
-        liveness.live_at[3].insert(2);
-
-        let candidates = vec![
-            CoalesceCandidate {
-                inst_idx: 1,
-                dst: VReg::new(1),
-                src: VReg::new(0),
-            },
-            CoalesceCandidate {
-                inst_idx: 2,
-                dst: VReg::new(2),
-                src: VReg::new(1),
-            },
-        ];
-
-        coalesce(&candidates, &mut liveness);
-
-        for (idx, live_set) in liveness.live_at.iter().enumerate() {
-            assert_eq!(
-                live_set.ones().collect::<Vec<_>>(),
-                vec![0],
-                "live_at[{idx}] should name only the representative v0"
-            );
-        }
-    }
-
-    #[test]
-    fn test_coalesce_leaves_live_at_alone_without_merges() {
-        // No candidate coalesces, so the bitsets must come back untouched.
-        let mut liveness = make_liveness(vec![(0, 0, 3), (1, 1, 4)]);
-        liveness.live_at[1].insert(0);
-        liveness.live_at[1].insert(1);
-
-        // v0 is still live at the move, so the ranges interfere.
-        let candidates = vec![CoalesceCandidate {
-            inst_idx: 3,
-            dst: VReg::new(1),
-            src: VReg::new(0),
-        }];
-
-        let result = coalesce(&candidates, &mut liveness);
-
-        assert_eq!(result.num_eliminated(), 0);
-        assert_eq!(liveness.live_at[1].ones().collect::<Vec<_>>(), vec![0, 1]);
     }
 
     #[test]

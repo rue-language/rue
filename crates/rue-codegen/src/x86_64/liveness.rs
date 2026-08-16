@@ -564,8 +564,8 @@ mod tests {
         let info = analyze(&mir);
 
         assert!(info.ranges.is_empty());
-        assert!(info.live_at.is_empty());
         assert!(info.clobbers_at.is_empty());
+        assert_eq!(info.instruction_count(), 0);
     }
 
     #[test]

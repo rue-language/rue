@@ -403,7 +403,6 @@ where
         return (
             LivenessInfo {
                 ranges: IndexMap::new(),
-                live_at: Vec::new(),
                 clobbers_at: Vec::new(),
                 non_returning_at: Vec::new(),
                 vreg_classes,
@@ -480,22 +479,13 @@ where
         }
     });
 
-    // Step 6: Compute live_at for each instruction (union of live_in and live_out)
-    let live_at = match dataflow {
-        DataflowSets::Acyclic { live_in } => {
-            compute_acyclic_live_at(live_in, &successors, vreg_count as usize)
-        }
-        DataflowSets::Cyclic { live_in, live_out } => compute_live_at(live_in, &live_out),
-    };
-
-    // Step 7: Collect clobbers and the never-returning call sites (RUE-1224)
+    // Step 6: Collect clobbers and the never-returning call sites (RUE-1224)
     let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
     let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
 
     (
         LivenessInfo {
             ranges,
-            live_at,
             clobbers_at,
             non_returning_at,
             vreg_classes,
@@ -783,32 +773,6 @@ fn build_live_ranges(
     ranges
 }
 
-/// Compute live_at sets (union of live_in and live_out for each instruction).
-fn compute_live_at(mut live_in: Vec<FixedBitSet>, live_out: &[FixedBitSet]) -> Vec<FixedBitSet> {
-    // `live_in` has no consumer after ranges are built. Turn it into the
-    // retained union in place instead of allocating a third full-width table.
-    for (live_at, live_out) in live_in.iter_mut().zip(live_out) {
-        live_at.union_with(live_out);
-    }
-    live_in
-}
-
-fn compute_acyclic_live_at(
-    mut live_in: Vec<FixedBitSet>,
-    successors: &[SuccessorList],
-    vreg_count: usize,
-) -> Vec<FixedBitSet> {
-    let mut live_out = FixedBitSet::with_capacity(vreg_count);
-    for idx in 0..live_in.len() {
-        live_out.clear();
-        for &successor in &successors[idx] {
-            live_out.union_with(&live_in[successor]);
-        }
-        live_in[idx].union_with(&live_out);
-    }
-    live_in
-}
-
 // ============================================================================
 // Loop Detection
 // ============================================================================
@@ -894,52 +858,6 @@ pub fn analyze_loops<I>(
     let successors = build_successor_lists(instructions, &label_to_idx, &get_successors);
 
     compute_loop_info(num_insts, &successors)
-}
-
-// ============================================================================
-// Pressure Analysis
-// ============================================================================
-
-/// Register pressure at each instruction.
-///
-/// This tracks how many virtual registers are live at each program point,
-/// which helps the register allocator make better spill decisions.
-#[derive(Debug, Clone)]
-pub struct PressureInfo {
-    /// Number of live vregs at each instruction index.
-    pub pressure: Vec<u32>,
-    /// Maximum pressure across all instructions.
-    pub max_pressure: u32,
-}
-
-impl PressureInfo {
-    /// Get the pressure at a specific instruction.
-    pub fn at(&self, inst_idx: usize) -> u32 {
-        self.pressure.get(inst_idx).copied().unwrap_or(0)
-    }
-
-    /// Find instructions where pressure exceeds a threshold.
-    pub fn high_pressure_points(&self, threshold: u32) -> Vec<usize> {
-        self.pressure
-            .iter()
-            .enumerate()
-            .filter(|&(_, &p)| p > threshold)
-            .map(|(idx, _)| idx)
-            .collect()
-    }
-}
-
-/// Compute register pressure from live_at sets.
-///
-/// Pressure is simply the count of live vregs at each instruction.
-pub fn compute_pressure(live_at: &[FixedBitSet]) -> PressureInfo {
-    let pressure: Vec<u32> = live_at.iter().map(|bs| bs.count_ones(..) as u32).collect();
-    let max_pressure = pressure.iter().copied().max().unwrap_or(0);
-
-    PressureInfo {
-        pressure,
-        max_pressure,
-    }
 }
 
 #[cfg(test)]
@@ -1136,7 +1054,6 @@ mod tests {
         );
 
         assert!(info.ranges.is_empty());
-        assert!(info.live_at.is_empty());
         assert!(info.clobbers_at.is_empty());
     }
 
@@ -1233,8 +1150,6 @@ mod tests {
         assert_eq!(ones(&live_out[0]), vec![0]);
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert!(live_out[2].is_clear());
-        let live_at = compute_acyclic_live_at(live_in.clone(), &successors, 1);
-        assert!(live_at.iter().all(|set| ones(set) == vec![0]));
         assert_eq!(sweeps, 1, "forward-only control flow is solved exactly");
     }
 
@@ -1354,64 +1269,5 @@ mod tests {
         assert_eq!(loop_info.depth(2), 1, "Loop body");
         assert_eq!(loop_info.depth(3), 1, "Loop back-edge");
         assert_eq!(loop_info.depth(4), 0, "After loop");
-    }
-
-    // ========================================
-    // Pressure analysis tests
-    // ========================================
-
-    #[test]
-    fn test_pressure_simple() {
-        let vreg_count = 3;
-        let mut live_at = vec![
-            FixedBitSet::with_capacity(vreg_count),
-            FixedBitSet::with_capacity(vreg_count),
-            FixedBitSet::with_capacity(vreg_count),
-        ];
-
-        // Instruction 0: 1 vreg live
-        live_at[0].insert(0);
-
-        // Instruction 1: 2 vregs live
-        live_at[1].insert(0);
-        live_at[1].insert(1);
-
-        // Instruction 2: 3 vregs live
-        live_at[2].insert(0);
-        live_at[2].insert(1);
-        live_at[2].insert(2);
-
-        let pressure = compute_pressure(&live_at);
-
-        assert_eq!(pressure.at(0), 1);
-        assert_eq!(pressure.at(1), 2);
-        assert_eq!(pressure.at(2), 3);
-        assert_eq!(pressure.max_pressure, 3);
-    }
-
-    #[test]
-    fn test_high_pressure_points() {
-        let vreg_count = 5;
-        let mut live_at = vec![
-            FixedBitSet::with_capacity(vreg_count),
-            FixedBitSet::with_capacity(vreg_count),
-            FixedBitSet::with_capacity(vreg_count),
-            FixedBitSet::with_capacity(vreg_count),
-        ];
-
-        // Low pressure at 0 and 3
-        live_at[0].insert(0);
-        live_at[3].insert(0);
-
-        // High pressure at 1 and 2
-        for i in 0..5 {
-            live_at[1].insert(i);
-            live_at[2].insert(i);
-        }
-
-        let pressure = compute_pressure(&live_at);
-        let high_points = pressure.high_pressure_points(3);
-
-        assert_eq!(high_points, vec![1, 2]);
     }
 }
