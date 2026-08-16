@@ -7,7 +7,6 @@
 //! module path and owned name alongside concrete kinds and the current
 //! request's diagnostic locations.
 
-#[cfg(test)]
 use std::sync::Arc;
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
