@@ -1,6 +1,6 @@
 //! The linker - combines object files and produces an executable.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use rue_target::Target;
 use tracing::info_span;
@@ -224,6 +224,44 @@ fn validate_defined_symbols(obj: &ObjectFile) -> Result<(), LinkError> {
         }
     }
     Ok(())
+}
+
+/// Whether `sym` is a definition that satisfies references to its name.
+///
+/// A definition is section-anchored, globally visible (strong or weak), and
+/// named; anonymous and local symbols never participate in cross-object
+/// resolution. Both `add_object` and archive extraction ask this question, so
+/// they ask it in one place.
+fn provides_definition(sym: &Symbol) -> bool {
+    sym.section_index.is_some()
+        && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
+        && !sym.name.is_empty()
+}
+
+/// Whether `sym` is an undefined reference that some definition must satisfy.
+///
+/// The counterpart of [`provides_definition`]: no section, strong global
+/// binding, and named. An undefined *weak* reference does not demand a
+/// definition — it resolves to address 0 (RUE-131 item 9) — so it must not pull
+/// an archive member in.
+fn references_undefined(sym: &Symbol) -> bool {
+    sym.section_index.is_none() && sym.binding == SymbolBinding::Global && !sym.name.is_empty()
+}
+
+/// Queue an undefined symbol name for archive resolution, at most once.
+///
+/// `queued` records every name ever pushed, so a symbol referenced by many
+/// objects is resolved once rather than once per reference; `pending` keeps the
+/// surviving names in insertion order, which is what makes extraction
+/// order-deterministic (see [`Linker::add_archive`]).
+fn enqueue_undefined<'a>(
+    name: &'a str,
+    pending: &mut VecDeque<&'a str>,
+    queued: &mut HashSet<&'a str>,
+) {
+    if queued.insert(name) {
+        pending.push_back(name);
+    }
 }
 
 /// Compose a final symbol address without permitting malformed object metadata
@@ -938,10 +976,7 @@ impl Linker {
 
         // Collect global symbols
         for sym in &obj.symbols {
-            if sym.section_index.is_some()
-                && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
-                && !sym.name.is_empty()
-            {
+            if provides_definition(sym) {
                 if let Some((_, existing)) = self.global_symbols.get(&sym.name) {
                     // Two strong definitions collide; weak symbols defer.
                     if existing.binding != SymbolBinding::Weak && sym.binding != SymbolBinding::Weak
@@ -989,92 +1024,80 @@ impl Linker {
     /// This path is object-format neutral, so it governs ELF and Mach-O archive
     /// members identically. Post-extraction weak/strong resolution among the
     /// members actually pulled in is still owned by [`Self::add_object`].
+    ///
+    /// # Resolution shape
+    ///
+    /// The rescan is a worklist rather than a scan of the whole link per round.
+    /// The already-linked objects do not change while members are being
+    /// selected, so their symbol tables are read exactly once; each extracted
+    /// member then contributes its own undefined symbols to the same worklist,
+    /// which is what a rescan round was for. The pipeline links roughly 1,280
+    /// single-function objects, so a per-round walk of every linked symbol table
+    /// was quadratic in the size of the link.
     pub fn add_archive(&mut self, archive: Archive) -> Result<(), LinkError> {
         // Convert to a Vec we can index into
         let archive_objects: Vec<ObjectFile> = archive.objects.into_iter().collect();
 
-        // Map each symbol to every member that defines it, in archive member
-        // order. A last-writer-wins `HashMap::insert` index would instead bind
-        // each symbol to its *last* provider, so selection could extract a later
-        // member over an earlier one and silently change weak/strong resolution
-        // when a user or foreign archive ships multiple providers (RUE-848).
-        // Retaining the ordered provider list keeps selection first-eligible and
-        // independent of hash iteration order.
-        let mut symbol_providers: HashMap<String, Vec<usize>> = HashMap::new();
-        for (obj_idx, obj) in archive_objects.iter().enumerate() {
-            for sym in &obj.symbols {
-                if sym.section_index.is_some()
-                    && (sym.binding == SymbolBinding::Global || sym.binding == SymbolBinding::Weak)
-                    && !sym.name.is_empty()
-                {
-                    symbol_providers
-                        .entry(sym.name.clone())
-                        .or_default()
-                        .push(obj_idx);
-                }
-            }
-        }
-
-        // Also build an index of undefined symbols in each archive object
-        let mut obj_undefined: Vec<Vec<String>> = Vec::with_capacity(archive_objects.len());
-        for obj in &archive_objects {
-            let mut undef = Vec::new();
-            for sym in &obj.symbols {
-                if sym.section_index.is_none()
-                    && sym.binding == SymbolBinding::Global
-                    && !sym.name.is_empty()
-                {
-                    undef.push(sym.name.clone());
-                }
-            }
-            obj_undefined.push(undef);
-        }
-
-        // Track which archive objects we've selected and which symbols are defined
-        let mut selected: Vec<bool> = vec![false; archive_objects.len()];
-        let mut defined_symbols: std::collections::HashSet<String> =
-            self.global_symbols.keys().cloned().collect();
-
-        // Iterate until we reach a fixed point
-        loop {
-            // Collect undefined symbols from currently linked objects and selected archive objects
-            let mut undefined: Vec<String> = Vec::new();
-
-            // Add required symbols (e.g., entry point) that aren't yet defined
-            for sym_name in &self.required_symbols {
-                if !defined_symbols.contains(sym_name) {
-                    undefined.push(sym_name.clone());
+        // Decide which members are needed. Every name below is borrowed from
+        // `self` or from `archive_objects` — both outlive this block — so
+        // resolution copies no symbol names; scoping the borrows here lets the
+        // selected members move into `self` afterwards.
+        let selected: Vec<bool> = {
+            // Map each symbol to every member that defines it, in archive member
+            // order. A last-writer-wins `HashMap::insert` index would instead bind
+            // each symbol to its *last* provider, so selection could extract a later
+            // member over an earlier one and silently change weak/strong resolution
+            // when a user or foreign archive ships multiple providers (RUE-848).
+            // Retaining the ordered provider list keeps selection first-eligible and
+            // independent of hash iteration order.
+            let mut symbol_providers: HashMap<&str, Vec<usize>> = HashMap::new();
+            for (obj_idx, obj) in archive_objects.iter().enumerate() {
+                for sym in &obj.symbols {
+                    if provides_definition(sym) {
+                        symbol_providers.entry(&sym.name).or_default().push(obj_idx);
+                    }
                 }
             }
 
-            // From already-linked objects
+            // Track which archive objects we've selected and which symbols are defined
+            let mut selected: Vec<bool> = vec![false; archive_objects.len()];
+            let mut defined: HashSet<&str> =
+                self.global_symbols.keys().map(String::as_str).collect();
+
+            // The undefined symbols still to resolve, in the order they were
+            // discovered. Deduplicating them is a correctness property and not
+            // only a size one: one symbol referenced by hundreds of objects used
+            // to enter a round's list once per reference, and because
+            // `find(|idx| !selected[idx])` skips the member it just pulled, the
+            // second lookup of an already-satisfied symbol extracted a *second*
+            // provider of it — a duplicate-symbol error, or a silently different
+            // weak/strong resolution. The worklist stays an ordered queue so
+            // extraction remains first-eligible in archive order and independent
+            // of hash iteration order.
+            let mut pending: VecDeque<&str> = VecDeque::new();
+            let mut queued: HashSet<&str> = HashSet::new();
+
+            // Required symbols (e.g. the entry point) are undefined by
+            // definition, followed by every reference the linked objects make.
+            for name in &self.required_symbols {
+                enqueue_undefined(name, &mut pending, &mut queued);
+            }
             for obj in &self.objects {
                 for sym in &obj.symbols {
-                    if sym.section_index.is_none()
-                        && sym.binding == SymbolBinding::Global
-                        && !sym.name.is_empty()
-                        && !defined_symbols.contains(&sym.name)
-                    {
-                        undefined.push(sym.name.clone());
+                    if references_undefined(sym) {
+                        enqueue_undefined(&sym.name, &mut pending, &mut queued);
                     }
                 }
             }
 
-            // From selected archive objects
-            for (idx, selected_flag) in selected.iter().enumerate() {
-                if *selected_flag {
-                    for sym_name in &obj_undefined[idx] {
-                        if !defined_symbols.contains(sym_name) {
-                            undefined.push(sym_name.clone());
-                        }
-                    }
+            while let Some(name) = pending.pop_front() {
+                // A member pulled in for an earlier reference may have defined
+                // this symbol in the meantime; an already-satisfied symbol
+                // extracts nothing (RUE-848).
+                if defined.contains(name) {
+                    continue;
                 }
-            }
-
-            // Try to resolve undefined symbols from the archive
-            let mut added_any = false;
-            for sym_name in undefined {
-                let Some(providers) = symbol_providers.get(&sym_name) else {
+                let Some(providers) = symbol_providers.get(name) else {
                     continue;
                 };
                 // First-eligible extraction: pull the earliest member (in
@@ -1085,24 +1108,22 @@ impl Linker {
                     continue;
                 };
                 selected[obj_idx] = true;
-                added_any = true;
 
-                // Add defined symbols from this object
+                // The member's own definitions satisfy later references, and its
+                // own references join the worklist — the transitive step the
+                // fixed-point rescan used to perform.
                 for sym in &archive_objects[obj_idx].symbols {
-                    if sym.section_index.is_some()
-                        && (sym.binding == SymbolBinding::Global
-                            || sym.binding == SymbolBinding::Weak)
-                        && !sym.name.is_empty()
-                    {
-                        defined_symbols.insert(sym.name.clone());
+                    if provides_definition(sym) {
+                        defined.insert(&sym.name);
+                    }
+                    if references_undefined(sym) {
+                        enqueue_undefined(&sym.name, &mut pending, &mut queued);
                     }
                 }
             }
 
-            if !added_any {
-                break;
-            }
-        }
+            selected
+        };
 
         // Now actually add the selected objects
         for (idx, obj) in archive_objects.into_iter().enumerate() {
@@ -1133,7 +1154,7 @@ impl Linker {
     /// after ad-hoc code signing with `codesign -s - <binary>`.
     fn link_macho(self, entry_point: &str) -> Result<Vec<u8>, LinkError> {
         use crate::constants::{VM_PROT_EXECUTE, VM_PROT_READ};
-        use crate::macho::{MachOBuilder, Section64, Segment64, VM_BASE};
+        use crate::macho::{ImageSizes, MachOBuilder, Section64, Segment64, VM_BASE};
 
         // The Mach-O path splits into the same three phases as `link_elf`.
         let layout_span = info_span!("link_layout").entered();
@@ -1265,10 +1286,11 @@ impl Linker {
         // same single-source-of-truth computation as build_dynamic(). __DATA
         // begins wherever the actual __TEXT layout ends.
         // (RUE-131 items 3 and 8)
-        let mut layout_builder = MachOBuilder::new()
-            .with_code(merged_text.clone(), 0) // only the length matters for layout
-            .with_data(merged_data.clone())
-            .with_bss(bss_size);
+        // Only the extents of the merged image matter here, so the pre-pass is
+        // measured rather than fed: handing the builder `merged_text` and
+        // `merged_data` copied the entire linked image for a computation that
+        // never reads a byte of it.
+        let mut layout_builder = MachOBuilder::new();
         layout_builder.add_segment(Segment64::pagezero());
         let mut text_segment =
             Segment64::new("__TEXT").with_protection(VM_PROT_READ | VM_PROT_EXECUTE);
@@ -1278,7 +1300,14 @@ impl Linker {
         // builder's command sizes identical (compute_dynamic_layout counts it
         // either way).
         layout_builder.add_segment(Segment64::new("__LINKEDIT").with_protection(VM_PROT_READ));
-        let layout = layout_builder.dynamic_layout();
+        let layout = layout_builder.dynamic_layout_for(ImageSizes {
+            code: merged_text.len(),
+            // __TEXT carries the rodata (merged into `merged_text` above), so
+            // the __DATA-side rodata region is empty on this path.
+            rodata: 0,
+            data: merged_data.len(),
+            bss: bss_size,
+        });
 
         let text_file_offset = layout.text_file_offset as u64;
         // Code+rodata are mapped at this virtual address
@@ -3043,6 +3072,135 @@ mod tests {
             linker.global_symbols.contains_key("helper"),
             "the later member providing the transitively undefined symbol is pulled on rescan"
         );
+    }
+
+    /// One symbol referenced by many linked objects must pull exactly one
+    /// provider, however many objects name it.
+    ///
+    /// The undefined list used to gain an entry per *reference* rather than per
+    /// symbol, and first-eligible extraction skips members it has already
+    /// selected — so the second object's reference to `shared` pulled the
+    /// archive's *second* provider of `shared`, colliding with the first. This
+    /// is the shape the pipeline actually links: ~1,280 single-function objects
+    /// calling a small set of shared runtime symbols.
+    #[test]
+    fn test_archive_symbol_referenced_by_many_objects_pulls_one_member() {
+        let mut linker = Linker::new(ELF_TARGET);
+        for i in 0..8 {
+            let caller = format!("caller{i}");
+            linker
+                .add_object(archive_member(
+                    &[(caller.as_str(), SymbolBinding::Global)],
+                    &["shared"],
+                ))
+                .unwrap();
+        }
+
+        let archive = Archive {
+            objects: vec![
+                archive_member(
+                    &[
+                        ("shared", SymbolBinding::Global),
+                        ("marker_a", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+                archive_member(
+                    &[
+                        ("shared", SymbolBinding::Global),
+                        ("marker_b", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+            ],
+        };
+        linker
+            .add_archive(archive)
+            .expect("repeated references to one symbol must not extract two providers");
+
+        assert!(
+            linker.global_symbols.contains_key("marker_a"),
+            "the first provider satisfies every reference"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker_b"),
+            "no reference may extract a second provider of an already-pulled symbol"
+        );
+    }
+
+    /// A reference satisfied by a member pulled in for an *earlier* reference
+    /// extracts nothing, even when the archive holds another provider of it.
+    #[test]
+    fn test_archive_reference_satisfied_by_earlier_extraction_pulls_nothing() {
+        let mut linker = Linker::new(ELF_TARGET);
+        linker
+            .add_object(archive_member(
+                &[("root", SymbolBinding::Global)],
+                &["entry", "shared"],
+            ))
+            .unwrap();
+
+        let archive = Archive {
+            objects: vec![
+                archive_member(
+                    &[
+                        ("entry", SymbolBinding::Global),
+                        ("shared", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+                archive_member(
+                    &[
+                        ("shared", SymbolBinding::Global),
+                        ("marker_b", SymbolBinding::Global),
+                    ],
+                    &[],
+                ),
+            ],
+        };
+        linker
+            .add_archive(archive)
+            .expect("an already-satisfied reference must not extract a second provider");
+
+        assert!(
+            linker.global_symbols.contains_key("entry"),
+            "the member satisfying the first reference is pulled"
+        );
+        assert!(
+            !linker.global_symbols.contains_key("marker_b"),
+            "`shared` was defined by that same member, so it pulls nothing"
+        );
+    }
+
+    /// RUE-848: the transitive step still reaches arbitrarily deep, including
+    /// when each provider sits *earlier* in the archive than its user, so the
+    /// chain is only reachable by following each newly pulled member's own
+    /// undefined symbols.
+    #[test]
+    fn test_archive_transitive_chain_walks_backwards() {
+        // Member i defines link{i} and references link{i-1}.
+        let names: Vec<String> = (0..5).map(|i| format!("link{i}")).collect();
+        let objects: Vec<ObjectFile> = (0..5)
+            .map(|i| {
+                let undefs: Vec<&str> = if i == 0 {
+                    Vec::new()
+                } else {
+                    vec![names[i - 1].as_str()]
+                };
+                archive_member(&[(names[i].as_str(), SymbolBinding::Global)], &undefs)
+            })
+            .collect();
+
+        let mut linker = Linker::new(ELF_TARGET);
+        linker.require_symbol("link4");
+        linker.add_archive(Archive { objects }).unwrap();
+
+        for name in &names {
+            assert!(
+                linker.global_symbols.contains_key(name.as_str()),
+                "{name} must be pulled transitively"
+            );
+        }
     }
 
     /// RUE-131 item 9: a relocation against an UNDEFINED weak symbol resolves

@@ -32,11 +32,31 @@ pub const PAGE_SIZE: u64 = Target::Aarch64Macos.page_size();
 /// Default VM base address for executables.
 pub const VM_BASE: u64 = Target::Aarch64Macos.default_base_addr();
 
+/// The image content sizes a dynamic layout depends on.
+///
+/// `compute_dynamic_layout` reads only the *lengths* of the code, rodata, and
+/// data buffers, never a byte of their contents. Passing the lengths lets the
+/// linker's pre-build layout pass measure the merged image it has already built
+/// instead of handing the builder a second copy of every linked byte
+/// (see [`MachOBuilder::dynamic_layout_for`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ImageSizes {
+    /// Bytes of code destined for `__TEXT,__text`.
+    pub(crate) code: usize,
+    /// Bytes of read-only data destined for `__DATA,__const`.
+    pub(crate) rodata: usize,
+    /// Bytes of initialized data destined for `__DATA,__data`.
+    pub(crate) data: usize,
+    /// Size of the zero-filled `__DATA,__bss` region.
+    pub(crate) bss: u64,
+}
+
 /// Computed file/VM layout for a dynamic executable — produced only by
 /// `compute_dynamic_layout` so relocation pre-pass and the actual build can
-/// never disagree. The linker consumes this (via [`MachOBuilder::dynamic_layout`])
-/// to place symbols before the binary is built, including a data segment whose
-/// address follows the actual extent of __TEXT. (RUE-131)
+/// never disagree. The linker consumes this (via
+/// [`MachOBuilder::dynamic_layout_for`]) to place symbols before the binary is
+/// built, including a data segment whose address follows the actual extent of
+/// __TEXT. (RUE-131)
 pub(crate) struct DynamicLayout {
     pub(crate) text_file_offset: usize,
     pub(crate) text_segment_file_size: usize,
@@ -747,13 +767,32 @@ impl MachOBuilder {
     /// including all present __const, __data, and __bss section commands, so
     /// their text and data offsets cannot diverge (RUE-131).
     fn compute_dynamic_layout(&self) -> DynamicLayout {
-        let has_data = !self.rodata.is_empty() || !self.data.is_empty() || self.bss_size > 0;
+        self.dynamic_layout_for(ImageSizes {
+            code: self.code.len(),
+            rodata: self.rodata.len(),
+            data: self.data.len(),
+            bss: self.bss_size,
+        })
+    }
+
+    /// The full pre-build layout (text offset, data segment address, …),
+    /// measured against `sizes` instead of the builder's own buffers.
+    ///
+    /// The linker needs the data segment's virtual address before building, so
+    /// data/bss symbols can be placed and relocations applied against the
+    /// addresses the binary will actually use. Nothing in the computation reads
+    /// image *contents*, only extents, so that pre-pass describes the merged
+    /// image by size rather than copying it into a throwaway builder.
+    /// Load-command sizes still come from the builder's own segments and
+    /// commands, which is what the pre-pass configures.
+    pub(crate) fn dynamic_layout_for(&self, sizes: ImageSizes) -> DynamicLayout {
+        let has_data = sizes.rodata > 0 || sizes.data > 0 || sizes.bss > 0;
 
         // Segment header + up to 3 sections (__const, __data, __bss)
         let data_segment_cmd_size = if has_data {
-            let num_sections = (!self.rodata.is_empty() as usize)
-                + (!self.data.is_empty() as usize)
-                + ((self.bss_size > 0) as usize);
+            let num_sections = ((sizes.rodata > 0) as usize)
+                + ((sizes.data > 0) as usize)
+                + ((sizes.bss > 0) as usize);
             MACHO64_SEGMENT_CMD_SIZE + MACHO64_SECTION_SIZE * num_sections
         } else {
             0
@@ -807,17 +846,16 @@ impl MachOBuilder {
         // declared segment — the data segment then overlapped it in the file
         // and dyld mapped garbage. (RUE-131 item 3)
         let text_segment_file_size =
-            align_up((text_file_offset + self.code.len()) as u64, PAGE_SIZE) as usize;
+            align_up((text_file_offset + sizes.code) as u64, PAGE_SIZE) as usize;
 
         let (data_file_offset, data_vm_addr, data_file_size, data_vm_size) = if has_data {
             // Data segment starts at the next page after __TEXT
             let offset = text_segment_file_size;
             let vm_addr = VM_BASE + offset as u64;
             // File size: rodata + data (not bss)
-            let file_size =
-                align_up(self.rodata.len() as u64, 8) + align_up(self.data.len() as u64, 8);
+            let file_size = align_up(sizes.rodata as u64, 8) + align_up(sizes.data as u64, 8);
             // VM size includes bss
-            let vm_size = align_up(file_size + self.bss_size, PAGE_SIZE);
+            let vm_size = align_up(file_size + sizes.bss, PAGE_SIZE);
             (offset, vm_addr, file_size as usize, vm_size)
         } else {
             (0, 0, 0, 0)
@@ -853,15 +891,6 @@ impl MachOBuilder {
     /// Delegates to the single shared layout computation.
     pub fn calculate_text_file_offset_for_dynamic(&self) -> u64 {
         self.compute_dynamic_layout().text_file_offset as u64
-    }
-
-    /// The full pre-build layout (text offset, data segment address, …).
-    ///
-    /// The linker needs the data segment's virtual address before building so
-    /// data/bss symbols can be placed and relocations applied against the
-    /// addresses the binary will actually use.
-    pub(crate) fn dynamic_layout(&self) -> DynamicLayout {
-        self.compute_dynamic_layout()
     }
 
     /// Build a dynamic executable (using LC_MAIN + dyld).
