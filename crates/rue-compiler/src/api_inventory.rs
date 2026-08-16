@@ -2323,7 +2323,30 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
             );
         }
     }
-    assert!(canonical.contains("predeclare_imported_declaration_shells"));
+    // The retired source-owned `Sema` plane is gone from rue-compiler entirely,
+    // tests included: nothing may construct a `Sema` or call its frozen test
+    // adapters in any build configuration.
+    for (name, source) in PRODUCTION_MODULES {
+        for retired in [
+            "Sema::new_synthetic(",
+            "Sema::new_for_target(",
+            ".bind_declarations_for_test()",
+            ".analyze_all_for_test()",
+            ".analyze_all_for_test_with_stable_endpoints(",
+            ".resolve_declarations_for_test()",
+            ".resolve_declarations_with_work_for_test()",
+            ".analyze_all_bodies_for_test()",
+        ] {
+            assert!(
+                !source.contains(retired),
+                "rue-compiler module {name} regained the retired Sema plane: {retired}"
+            );
+        }
+    }
+    assert!(
+        !canonical.contains("predeclare_imported_declaration_shells"),
+        "the retired shell-import recipe returned to canonical_semantic"
+    );
     assert!(!canonical.contains("fn analyze_canonical_program("));
     assert_eq!(runtime.matches(".evaluate_declaration_shell(").count(), 1);
     assert_eq!(parsed.matches("fn evaluate_declaration_shell(").count(), 1);
@@ -2601,25 +2624,12 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         canonical
             .matches("predeclare_imported_declaration_shells")
             .count(),
-        1,
-        "only canonical query preparation may import query-owned shells"
+        0,
+        "the retired shell-import recipe may not return to canonical_semantic"
     );
     for (name, source) in &production {
-        if *name == "canonical_semantic" {
-            continue;
-        }
-        let production_source = if *name == "bound_definitions" {
-            source
-                .split(
-                    "\n#[cfg(test)]\npub(crate) fn compare_canonical_durable_declaration_install",
-                )
-                .next()
-                .unwrap()
-        } else {
-            source
-        };
         assert!(
-            !production_source.contains("predeclare_imported_declaration_shells"),
+            !source.contains("predeclare_imported_declaration_shells"),
             "compiler production module {name} gained a peer shell importer"
         );
     }

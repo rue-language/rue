@@ -8,7 +8,6 @@
 //! request's diagnostic locations.
 
 #[cfg(test)]
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
@@ -131,12 +130,6 @@ pub struct DefinitionRecord {
 
 #[cfg(test)]
 impl DefinitionRecord {
-    /// This record's unique, snapshot-local ID.
-    #[inline]
-    pub fn id(&self) -> DefinitionId {
-        self.id
-    }
-
     /// The durable name-binding key shared by colliding candidates.
     #[inline]
     #[cfg(test)]
@@ -264,8 +257,6 @@ pub struct DefinitionSnapshot {
     root_module: ModuleId,
     #[cfg(test)]
     modules: Vec<ModuleDefinition>,
-    #[cfg(test)]
-    definitions_by_name: HashMap<DefinitionNameKey, Vec<DefinitionId>>,
     shards: Arc<[Arc<DefinitionShard>]>,
 }
 
@@ -299,12 +290,6 @@ impl DefinitionSnapshot {
             ..DefinitionShardWork::default()
         };
         let mut shards = Vec::with_capacity(program.modules().len());
-        #[cfg(test)]
-        let definition_count = indexes.iter().map(|index| index.definitions.len()).sum();
-        #[cfg(test)]
-        let mut definitions_by_name =
-            HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
-
         #[cfg(test)]
         let mut module_index = 0;
         for (module, index) in program.modules().iter().zip(indexes) {
@@ -359,10 +344,6 @@ impl DefinitionSnapshot {
                         candidate.namespace,
                         &candidate.name,
                     );
-                    definitions_by_name
-                        .entry(name_key.clone())
-                        .or_default()
-                        .push(id);
                     definitions.push(DefinitionRecord {
                         id,
                         name_key,
@@ -390,8 +371,6 @@ impl DefinitionSnapshot {
                 root_module: program.root().clone(),
                 #[cfg(test)]
                 modules,
-                #[cfg(test)]
-                definitions_by_name,
                 shards: shards.into(),
             },
             work,
@@ -440,42 +419,6 @@ impl DefinitionSnapshot {
         self.modules
             .iter()
             .flat_map(|module| module.definitions.iter())
-    }
-
-    /// Resolve a snapshot-local definition ID.
-    ///
-    /// IDs issued by another snapshot may coincidentally address a record here;
-    /// callers must use an ID only with its issuing snapshot.
-    #[cfg(test)]
-    pub fn definition(&self, id: DefinitionId) -> Option<&DefinitionRecord> {
-        let definition = self
-            .modules
-            .get(id.module_index)?
-            .definitions
-            .get(id.definition_index)?;
-        debug_assert_eq!(definition.id, id);
-        Some(definition)
-    }
-
-    /// Look up every candidate with a durable name-binding key.
-    ///
-    /// Occurrences are returned in the snapshot's deterministic module-path
-    /// then source-position order. Duplicate and cross-kind candidates are not
-    /// collapsed.
-    #[cfg(test)]
-    pub fn definitions_named<'a>(
-        &'a self,
-        name_key: &DefinitionNameKey,
-    ) -> impl DoubleEndedIterator<Item = &'a DefinitionRecord> + ExactSizeIterator + 'a {
-        self.definitions_by_name
-            .get(name_key)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .map(|&id| {
-                self.definition(id)
-                    .expect("name index contains only snapshot-issued definition IDs")
-            })
     }
 
     /// The number of modules, including empty modules.
