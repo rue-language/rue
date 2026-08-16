@@ -5,7 +5,6 @@ use lasso::{Key, Spur};
 use rue_air::{AirInstData, SemanticImportType, Type, TypeKind};
 use rue_span::Span;
 
-use crate::DurableAirInstData;
 use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
@@ -58,22 +57,6 @@ fn first_string_indices(strings: &[String]) -> Result<HashMap<&str, u32>, CfgDom
         indices.entry(value.as_str()).or_insert(index);
     }
     Ok(indices)
-}
-
-fn canonical_nominal(value: &crate::NominalInstanceKey) -> CanonicalType {
-    match value {
-        crate::NominalInstanceKey::Builtin { kind, name } => CanonicalType::BuiltinNominal {
-            kind: match kind {
-                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
-                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
-            },
-            name: name.clone(),
-        },
-        crate::NominalInstanceKey::Named(definition) => CanonicalType::Nominal(definition.clone()),
-        crate::NominalInstanceKey::Anonymous(identity) => {
-            CanonicalType::AnonymousNominal(identity.clone())
-        }
-    }
 }
 
 fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
@@ -142,14 +125,6 @@ fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
     }
 }
 
-pub(crate) fn canonical_type_from_live(
-    ty: Type,
-    pool: &rue_air::FrozenTypeInternPool,
-    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
-) -> Result<CanonicalType, CfgDomainFailure> {
-    canonical_type_from_live_cached(ty, pool, aggregates, &mut HashMap::new())
-}
-
 fn canonical_type_from_live_cached(
     ty: Type,
     pool: &rue_air::FrozenTypeInternPool,
@@ -198,34 +173,84 @@ fn canonical_type_from_live_cached(
             stable_by_live,
         )?)),
         K::Struct(_) | K::Enum(_) => {
-            let stable = aggregates.get(&ty).ok_or(CfgDomainFailure::Missing)?;
-            match stable {
-                crate::TypeInstanceKey::BuiltinNominal { kind, name } => {
-                    CanonicalType::BuiltinNominal {
-                        kind: match kind {
-                            crate::AnonymousNominalKind::Struct => {
-                                rue_air::SemanticImportNominalKind::Struct
-                            }
-                            crate::AnonymousNominalKind::Enum => {
-                                rue_air::SemanticImportNominalKind::Enum
-                            }
-                        },
-                        name: name.clone(),
-                    }
-                }
-                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition)) => {
-                    CanonicalType::Nominal(definition.clone())
-                }
-                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
-                    CanonicalType::AnonymousNominal(identity.clone())
-                }
-                _ => return Err(CfgDomainFailure::Shape),
-            }
+            canonical_type_from_instance(aggregates.get(&ty).ok_or(CfgDomainFailure::Missing)?)?
         }
         K::Module(_) | K::Error => return Err(CfgDomainFailure::Unsupported),
     };
     stable_by_live.insert(ty, stable.clone());
     Ok(stable)
+}
+
+fn canonical_type_from_instance(
+    value: &crate::TypeInstanceKey,
+) -> Result<CanonicalType, CfgDomainFailure> {
+    use crate::TypeInstanceKey as T;
+    Ok(match value {
+        T::I8 => CanonicalType::I8,
+        T::I16 => CanonicalType::I16,
+        T::I32 => CanonicalType::I32,
+        T::I64 => CanonicalType::I64,
+        T::U8 => CanonicalType::U8,
+        T::U16 => CanonicalType::U16,
+        T::U32 => CanonicalType::U32,
+        T::U64 => CanonicalType::U64,
+        T::Bool => CanonicalType::Bool,
+        T::Unit => CanonicalType::Unit,
+        T::Never => CanonicalType::Never,
+        T::ComptimeType => CanonicalType::ComptimeType,
+        T::BuiltinNominal { kind, name }
+        | T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => {
+            CanonicalType::BuiltinNominal {
+                kind: match kind {
+                    crate::AnonymousNominalKind::Struct => {
+                        rue_air::SemanticImportNominalKind::Struct
+                    }
+                    crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+                },
+                name: name.clone(),
+            }
+        }
+        T::Nominal(crate::NominalInstanceKey::Named(definition)) => {
+            CanonicalType::Nominal(definition.clone())
+        }
+        T::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
+            CanonicalType::AnonymousNominal(identity.clone())
+        }
+        T::Array { element, len } => CanonicalType::Array {
+            element: Box::new(canonical_type_from_instance(element)?),
+            len: *len,
+        },
+        T::Slice { element, name } => CanonicalType::Slice {
+            element: Box::new(canonical_type_from_instance(element)?),
+            name: name.clone(),
+        },
+        T::PtrConst(element) => {
+            CanonicalType::PtrConst(Box::new(canonical_type_from_instance(element)?))
+        }
+        T::PtrMut(element) => {
+            CanonicalType::PtrMut(Box::new(canonical_type_from_instance(element)?))
+        }
+        T::Module(module) => CanonicalType::Module(module.clone()),
+        T::GenericParameter(index) => CanonicalType::GenericParameter(*index),
+    })
+}
+
+fn record_cfg_type(
+    types: &mut Vec<(Type, CanonicalType)>,
+    ty: Type,
+    pool: &rue_air::FrozenTypeInternPool,
+    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+    stable_by_live: &mut HashMap<Type, CanonicalType>,
+) -> Result<(), CfgDomainFailure> {
+    match canonical_type_from_live_cached(ty, pool, aggregates, stable_by_live) {
+        Ok(stable) => types.push((ty, stable)),
+        // Module and error values are compile-time-only AIR facts. They do not
+        // survive CFG lowering and therefore do not belong to its relocation
+        // domain.
+        Err(CfgDomainFailure::Unsupported) => {}
+        Err(failure) => return Err(failure),
+    }
+    Ok(())
 }
 
 fn canonical_primitive(ty: Type) -> Option<CanonicalType> {
@@ -869,252 +894,176 @@ impl CfgDomainProjection {
             crate::StableDefinitionKey,
             crate::ModuleId,
         >,
-        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure> + Copy,
         stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
     ) -> Result<Self, CfgDomainFailure> {
-        let mut projection = Self::from_body_parts(
-            &materialization.air,
-            &materialization.identity,
-            &materialization.local_atoms,
-            &materialization.identity,
-            body,
-            materialization.body_span,
-            &materialization.strings,
-            &materialization.type_pool,
-            &materialization.interner,
-            stable_type,
-            stable_callable,
-        )?;
-        // The caller's materialization includes its transitive accessor
-        // closure. Preserve the complete reverse map so callee-only stable
-        // types resolve to caller-owned live handles during mandatory splice.
-        projection
-            .types
-            .extend(materialization.materialized_types.iter().cloned());
-        projection.types = deduplicate_type_mappings(projection.types)?;
-        Ok(projection)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn from_body_parts<D: PartialEq, M: PartialEq>(
-        air: &rue_air::ValidatedAir,
-        current_identity: &rue_air::FunctionInstanceKey<D, M>,
-        local_atoms: &[rue_air::LocalAtomRecord<D, M>],
-        stable_function: &crate::FunctionInstanceKey,
-        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
-        body_span: Span,
-        strings: &[String],
-        type_pool: &rue_air::FrozenTypeInternPool,
-        interner: &lasso::ThreadedRodeo,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
-        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
-    ) -> Result<Self, CfgDomainFailure> {
-        if air.instructions().len() != body.instructions.len() {
-            return Err(CfgDomainFailure::Shape);
-        }
-        let mut types = vec![
-            (air.return_type(), body.return_type.clone()),
-            (Type::I32, CanonicalType::I32),
-            (Type::UNIT, CanonicalType::Unit),
-        ];
-        let mut stable_strings = Vec::new();
-        let mut spans = Vec::new();
-        let mut symbols = Vec::new();
-        if local_atoms.len() != body.local_atoms.len() {
-            return Err(CfgDomainFailure::Shape);
-        }
-        if local_atoms
-            .iter()
-            .any(|atom| atom.identity.producer != *current_identity)
-            || body
-                .local_atoms
-                .iter()
-                .any(|atom| atom.identity.producer != *stable_function)
-        {
-            return Err(CfgDomainFailure::Shape);
-        }
-        let mut current_atoms = local_atoms
-            .iter()
-            .map(|atom| {
-                if strings.get(atom.dense_id as usize).map(String::as_str)
-                    != Some(atom.content.as_ref())
-                {
-                    return Err(CfgDomainFailure::Shape);
-                }
-                Ok((
-                    atom.identity.kind,
-                    atom.identity.anchor.clone(),
-                    atom.content.clone(),
-                ))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut stable_atoms = body
-            .local_atoms
-            .iter()
-            .map(|atom| {
-                (
-                    atom.identity.kind,
-                    atom.identity.anchor.clone(),
-                    atom.content.clone(),
-                )
-            })
-            .collect::<Vec<_>>();
-        current_atoms.sort();
-        stable_atoms.sort();
-        if current_atoms != stable_atoms || current_atoms.windows(2).any(|pair| pair[0] == pair[1])
-        {
-            return Err(CfgDomainFailure::Shape);
-        }
-        for ((_, current), durable) in air.iter().zip(body.instructions.iter()) {
-            let current_kind = live_instruction_kind(&current.data);
-            let durable_kind = durable.data.kind();
-            if current_kind != durable_kind
-                && !(current_kind == rue_air::SemanticBodyInstKind::Call
-                    && durable_kind == rue_air::SemanticBodyInstKind::CallSpecialized)
+        let type_pool = &materialization.type_pool;
+        let interner = &materialization.interner;
+        let air = &materialization.air;
+        let mut stable_by_live = HashMap::with_capacity(materialization.materialized_types.len());
+        let mut types = Vec::with_capacity(materialization.materialized_types.len() + 2);
+        types.push((Type::I32, CanonicalType::I32));
+        types.push((Type::UNIT, CanonicalType::Unit));
+        for (current, stable) in &materialization.materialized_types {
+            if matches!(current.kind(), TypeKind::Module(_) | TypeKind::Error) {
+                continue;
+            }
+            if let Some(previous) = stable_by_live.insert(*current, stable.clone())
+                && previous != *stable
             {
-                return Err(CfgDomainFailure::Shape);
-            }
-            types.push((current.ty, durable.ty.clone()));
-            spans.push((current.span, StableCfgSpan::new(current.span, body_span)));
-            match (&current.data, &durable.data) {
-                (AirInstData::StringConst(old), DurableAirInstData::StringConst(local)) => {
-                    let value = body
-                        .strings
-                        .get(*local as usize)
-                        .ok_or(CfgDomainFailure::Shape)?;
-                    if strings.get(*old as usize).map(String::as_str) != Some(value) {
-                        return Err(CfgDomainFailure::Shape);
-                    }
-                    stable_strings.push((*old, value.clone()));
-                }
-                (AirInstData::TypeConst(current), DurableAirInstData::TypeConst(stable)) => {
-                    types.push((*current, stable.clone()))
-                }
-                (
-                    AirInstData::IntCast { from_ty, .. },
-                    DurableAirInstData::IntCast {
-                        from_ty: stable, ..
-                    },
-                ) => types.push((*from_ty, stable.clone())),
-                (
-                    AirInstData::Call {
-                        runtime: None,
-                        name,
-                        ..
-                    },
-                    DurableAirInstData::Call { function, .. },
-                ) => symbols.push((*name, StableCfgSymbol::Callable(function.clone()))),
-                (
-                    AirInstData::AccessorCall { name, .. },
-                    DurableAirInstData::AccessorCall { function, .. },
-                ) => symbols.push((*name, StableCfgSymbol::Callable(function.clone()))),
-                (
-                    AirInstData::Call {
-                        runtime: None,
-                        name,
-                        ..
-                    },
-                    DurableAirInstData::CallSpecialized { identity, .. },
-                ) => symbols.push((*name, StableCfgSymbol::Specialization(identity.clone()))),
-                (
-                    AirInstData::Call {
-                        runtime: Some(current),
-                        name,
-                        ..
-                    },
-                    DurableAirInstData::RuntimeCall {
-                        runtime: stable, ..
-                    },
-                ) if current == stable
-                    && interner.resolve(name) == current.helper().helper().symbol =>
-                {
-                    symbols.push((
-                        *name,
-                        StableCfgSymbol::Runtime(Arc::from(stable.helper().helper().symbol)),
-                    ));
-                }
-                (
-                    AirInstData::Intrinsic { runtime, name, .. },
-                    DurableAirInstData::Intrinsic {
-                        runtime: stable_runtime,
-                        name: stable,
-                        ..
-                    },
-                ) if runtime == stable_runtime && interner.resolve(name) == stable.as_ref() => {
-                    symbols.push((*name, StableCfgSymbol::Intrinsic(stable.clone())));
-                }
-                (
-                    AirInstData::StructInit { struct_id, .. },
-                    DurableAirInstData::StructInit { struct_key, .. },
-                ) => types.push((Type::new_struct(*struct_id), canonical_nominal(struct_key))),
-                (
-                    AirInstData::EnumVariant { enum_id, .. },
-                    DurableAirInstData::EnumVariant { enum_key, .. },
-                )
-                | (
-                    AirInstData::EnumPayloadGet { enum_id, .. },
-                    DurableAirInstData::EnumPayloadGet { enum_key, .. },
-                ) => types.push((Type::new_enum(*enum_id), canonical_nominal(enum_key))),
-                (
-                    AirInstData::Match { arms, .. },
-                    DurableAirInstData::Match { arms: stable, .. },
-                ) => {
-                    let current = air.get_match_arms(arms).collect::<Vec<_>>();
-                    if current.len() != stable.len() {
-                        return Err(CfgDomainFailure::Shape);
-                    }
-                    for ((pattern, _), stable) in current.into_iter().zip(stable.iter()) {
-                        match (pattern, &stable.pattern) {
-                            (
-                                rue_air::AirPattern::EnumVariant { enum_id, .. },
-                                rue_air::SemanticBodyPattern::EnumVariant { enum_key, .. },
-                            ) => types.push((Type::new_enum(enum_id), canonical_nominal(enum_key))),
-                            (rue_air::AirPattern::EnumVariant { .. }, _)
-                            | (_, rue_air::SemanticBodyPattern::EnumVariant { .. }) => {
-                                return Err(CfgDomainFailure::Shape);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ if current_kind == durable_kind => {}
-                _ => return Err(CfgDomainFailure::Shape),
-            }
-        }
-        for (current, stable) in air.places().iter().zip(body.places.iter()) {
-            types.push((current.base_type, stable.base_type.clone()));
-            let current_projections = air.get_place_projections(current);
-            if current_projections.len() != stable.projections.len() {
-                return Err(CfgDomainFailure::Shape);
-            }
-            for (current, stable) in current_projections.iter().zip(stable.projections.iter()) {
-                match (current, stable) {
-                    (
-                        rue_air::AirProjection::Field { struct_id, .. },
-                        crate::DurableProjection::Field { struct_key, .. },
-                    ) => types.push((Type::new_struct(*struct_id), canonical_nominal(struct_key))),
-                    (
-                        rue_air::AirProjection::Index { array_type, .. },
-                        crate::DurableProjection::Index {
-                            array_type: stable, ..
-                        },
-                    ) => types.push((*array_type, stable.clone())),
-                    _ => return Err(CfgDomainFailure::Shape),
-                }
-            }
-        }
-        if air.param_drops().len() != body.param_drops.len() {
-            return Err(CfgDomainFailure::Shape);
-        }
-        for ((current_slot, current), (stable_slot, stable)) in
-            air.param_drops().iter().zip(body.param_drops.iter())
-        {
-            if current_slot != stable_slot {
                 return Err(CfgDomainFailure::Shape);
             }
             types.push((*current, stable.clone()));
         }
+        record_cfg_type(
+            &mut types,
+            air.return_type(),
+            type_pool,
+            &materialization.aggregate_types,
+            &mut stable_by_live,
+        )?;
+        let mut stable_strings = Vec::new();
+        let mut spans = Vec::with_capacity(air.len());
+        let mut symbols = Vec::new();
+        for (_, current) in air.iter() {
+            record_cfg_type(
+                &mut types,
+                current.ty,
+                type_pool,
+                &materialization.aggregate_types,
+                &mut stable_by_live,
+            )?;
+            spans.push((
+                current.span,
+                StableCfgSpan::new(current.span, materialization.body_span),
+            ));
+            match &current.data {
+                AirInstData::StringConst(index) => {
+                    let value = materialization
+                        .strings
+                        .get(*index as usize)
+                        .ok_or(CfgDomainFailure::Shape)?;
+                    stable_strings.push((*index, Arc::from(value.as_str())));
+                }
+                AirInstData::TypeConst(ty) => record_cfg_type(
+                    &mut types,
+                    *ty,
+                    type_pool,
+                    &materialization.aggregate_types,
+                    &mut stable_by_live,
+                )?,
+                AirInstData::IntCast { from_ty, .. } => {
+                    record_cfg_type(
+                        &mut types,
+                        *from_ty,
+                        type_pool,
+                        &materialization.aggregate_types,
+                        &mut stable_by_live,
+                    )?;
+                }
+                AirInstData::Call {
+                    runtime: None,
+                    name,
+                    ..
+                }
+                | AirInstData::AccessorCall { name, .. } => {
+                    let callable = stable_callable(*name).ok_or(CfgDomainFailure::MissingSymbol)?;
+                    symbols.push((*name, StableCfgSymbol::Callable(callable)));
+                }
+                AirInstData::Call {
+                    runtime: Some(runtime),
+                    name,
+                    ..
+                } => {
+                    let stable = runtime.helper().helper().symbol;
+                    if interner.resolve(name) != stable {
+                        return Err(CfgDomainFailure::Shape);
+                    }
+                    symbols.push((*name, StableCfgSymbol::Runtime(Arc::from(stable))));
+                }
+                AirInstData::Intrinsic { name, .. } => {
+                    symbols.push((
+                        *name,
+                        StableCfgSymbol::Intrinsic(Arc::from(interner.resolve(name))),
+                    ));
+                }
+                AirInstData::StructInit { struct_id, .. } => {
+                    let ty = Type::new_struct(*struct_id);
+                    record_cfg_type(
+                        &mut types,
+                        ty,
+                        type_pool,
+                        &materialization.aggregate_types,
+                        &mut stable_by_live,
+                    )?;
+                }
+                AirInstData::EnumVariant { enum_id, .. }
+                | AirInstData::EnumPayloadGet { enum_id, .. } => {
+                    let ty = Type::new_enum(*enum_id);
+                    record_cfg_type(
+                        &mut types,
+                        ty,
+                        type_pool,
+                        &materialization.aggregate_types,
+                        &mut stable_by_live,
+                    )?;
+                }
+                AirInstData::Match { arms, .. } => {
+                    for (pattern, _) in air.get_match_arms(arms) {
+                        if let rue_air::AirPattern::EnumVariant { enum_id, .. } = pattern {
+                            let ty = Type::new_enum(enum_id);
+                            record_cfg_type(
+                                &mut types,
+                                ty,
+                                type_pool,
+                                &materialization.aggregate_types,
+                                &mut stable_by_live,
+                            )?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for place in air.places() {
+            record_cfg_type(
+                &mut types,
+                place.base_type,
+                type_pool,
+                &materialization.aggregate_types,
+                &mut stable_by_live,
+            )?;
+            for projection in air.get_place_projections(place) {
+                let ty = match projection {
+                    rue_air::AirProjection::Field { struct_id, .. } => Type::new_struct(*struct_id),
+                    rue_air::AirProjection::Index { array_type, .. } => *array_type,
+                };
+                record_cfg_type(
+                    &mut types,
+                    ty,
+                    type_pool,
+                    &materialization.aggregate_types,
+                    &mut stable_by_live,
+                )?;
+            }
+        }
+        for (_, ty) in air.param_drops() {
+            record_cfg_type(
+                &mut types,
+                *ty,
+                type_pool,
+                &materialization.aggregate_types,
+                &mut stable_by_live,
+            )?;
+        }
+        let mut atoms = materialization
+            .local_atoms
+            .iter()
+            .map(|atom| rue_air::SemanticBodyLocalAtom {
+                identity: atom.identity.clone(),
+                content: atom.content.clone(),
+            })
+            .collect::<Vec<_>>();
+
         // CFG cleanup elaboration recursively reads aggregate fields, variant
         // payloads, arrays, and destructor symbols. Close the live type domain
         // over those facts so every emitted CFG handle can be relocated.
@@ -1186,7 +1135,12 @@ impl CfgDomainProjection {
                 if let std::collections::hash_map::Entry::Vacant(entry) =
                     type_positions.entry(child)
                 {
-                    match stable_type(child) {
+                    match canonical_type_from_live_cached(
+                        child,
+                        type_pool,
+                        &materialization.aggregate_types,
+                        &mut stable_by_live,
+                    ) {
                         Ok(stable) => {
                             entry.insert(types.len());
                             types.push((child, stable));
@@ -1212,12 +1166,11 @@ impl CfgDomainProjection {
         if symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(CfgDomainFailure::Shape);
         }
-        let mut atoms = body.local_atoms.to_vec();
         atoms.sort_by(|left, right| {
             (&left.identity, &left.content).cmp(&(&right.identity, &right.content))
         });
         Ok(Self {
-            body_span,
+            body_span: materialization.body_span,
             types,
             strings: stable_strings,
             atoms,

@@ -1149,33 +1149,38 @@ fn materialize_and_build_cfg(
     }
 
     let domain_projection_started = std::time::Instant::now();
-    let domains = match crate::durable_cfg::CfgDomainProjection::from_local_body(
-        &materialized,
-        body,
-        |ty| {
-            crate::durable_cfg::canonical_type_from_live(
-                ty,
-                &materialized.type_pool,
-                &materialized.aggregate_types,
-            )
-        },
-        |symbol| {
-            let name = materialized.interner.resolve(&symbol);
-            facts
-                .callables
-                .iter()
-                .find(|fact| fact.symbol.as_ref() == name)
-                .map(|fact| fact.identity.clone())
-        },
-    ) {
-        Ok(value) => value,
-        Err(error) => {
-            return Ok(internal_failure(
-                format!("canonical CFG domain projection failed: {error:?}"),
-                body_span,
-            ));
+    let mut callable_by_symbol = std::collections::HashMap::with_capacity(facts.callables.len());
+    for fact in facts.callables.iter() {
+        match callable_by_symbol.entry(fact.symbol.as_ref()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(&fact.identity);
+            }
+            std::collections::hash_map::Entry::Occupied(entry)
+                if *entry.get() != &fact.identity =>
+            {
+                return Ok(internal_failure(
+                    "canonical CFG callable facts contain conflicting symbols".to_string(),
+                    body_span,
+                ));
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
         }
-    };
+    }
+    let domains =
+        match crate::durable_cfg::CfgDomainProjection::from_local_body(&materialized, |symbol| {
+            let name = materialized.interner.resolve(&symbol);
+            callable_by_symbol
+                .get(name)
+                .map(|identity| (*identity).clone())
+        }) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(internal_failure(
+                    format!("canonical CFG domain projection failed: {error:?}"),
+                    body_span,
+                ));
+            }
+        };
     let domain_projection_ns = elapsed_ns(domain_projection_started);
 
     let prerequisite_collection_started = std::time::Instant::now();

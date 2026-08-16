@@ -192,7 +192,6 @@ pub(crate) use bound_definitions::{
 pub(crate) use canonical_lower::CanonicalRirOutput;
 pub(crate) use canonical_merge::CanonicalMergedProgram;
 pub(crate) use definition_snapshot::{DefinitionKind, DefinitionNamespace, DefinitionSnapshot};
-pub(crate) use durable_body::{DurableAirInstData, DurableProjection};
 #[cfg(test)]
 pub(crate) use durable_semantics::DurableDeclarationPayload;
 pub(crate) use durable_semantics::DurableDeclarationSemantic;
