@@ -498,20 +498,44 @@ re-encoded epoch-5 record claims suite revision 3, which declares
 decisions are **coupled**, and the legacy bytes cannot move at all without
 redefining what epochs 5 and 6 mean.
 
-But `RUN_SCHEMA_VERSION` is a second, independent versioning axis, carried in
-the record and enforced by `validate_run` before anything else is trusted. It is
-the natural axis for *how a run object is written* as opposed to *what was
-measured*. The evidence that the distinction is real here is the equivalence
-result: 0 of 1,188 records differ outside the evidence keys, so the series'
-meaning demonstrably does not change. Under that reading the encoding is a
-`schema_version` 1 → 2 change, needs no epoch turn and no headline gap, legacy
-records can be re-encoded under their existing epochs, and the two decisions are
-**independent** — either can be taken first, or alone.
+But `RUN_SCHEMA_VERSION` is a second versioning axis, carried in the record and
+checked by `validate_run` before anything else is trusted. It is the natural
+axis for *how a run object is written* as opposed to *what was measured*. The
+evidence that the distinction is real here is the equivalence result: 0 of 1,188
+records differ outside the evidence keys, so the series' meaning demonstrably
+does not change. Under that reading the encoding is a `schema_version` 1 → 2
+change, needs no epoch turn and no headline gap, and legacy records can be
+re-encoded under their existing epochs.
 
-The honest cost of the second reading: within one epoch, records written before
-and after the cutover carry different amounts of re-checkable evidence, so a
-reader auditing an epoch's admissibility retroactively gets different depth at
-different points. ADR-0067 Amendment 1 puts this to the maintainers.
+**An earlier version of this section concluded that the two decisions were
+therefore independent, and either could be taken first or alone. That was
+wrong**, and the correction came from review (Steve, on PR #2444).
+`RUN_SCHEMA_VERSION` is not a decoding axis today. `validate_run`
+(`validate.rs:401`) compares the record's version against the single current
+constant and returns `UnsupportedSchemaVersion` without evaluating anything
+else, and `lib.rs:139` states the intent: "there is no compatibility path, by
+design." Bumping the constant does not add a version, it replaces the only one
+readers accept.
+
+Measured consequence of getting this wrong: with v2 records written while the
+1,188 v1 records remain, `derive` routes all 1,188 to `rejected`, derives no
+platform, and the dashboard empties — and `validate-performance-stall.py` reads
+the empty `platforms` list as "no plotted points yet; nothing to stall" and
+**exits 0**. The gate that exists to catch a stopped series cannot see a totally
+rejected corpus.
+
+So the encoding change requires dual v1/v2 decoding and validation, and an
+amendment to the stated no-compatibility invariant, before either decision can
+be taken. With that in place the two are independent in outcome and ordered in
+execution; without it they are coupled and must be simultaneous, which is not
+achievable across a repository merge and a data-branch push. ADR-0067
+Amendment 1, Question 1a states the reader contract this implies.
+
+The honest cost of the `schema_version` reading, separate from the above: within
+one epoch, records written before and after the cutover carry different amounts
+of re-checkable evidence, so a reader auditing an epoch's admissibility
+retroactively gets different depth at different points. ADR-0067 Amendment 1
+puts this to the maintainers.
 
 ## Reproducing
 

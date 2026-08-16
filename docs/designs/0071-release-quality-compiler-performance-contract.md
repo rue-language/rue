@@ -496,6 +496,14 @@ needs a maintainer ruling before it means anything. ADR-0067 Amendment 1 is its
 companion and rules on the versioning and on the records already published;
 this one rules only on what the evidence must contain.
 
+**This amendment cannot be adopted on its own.** Changing what a record contains
+changes how it is written down, and readers today accept exactly one encoding:
+`validate_run` refuses any `schema_version` but the current constant, with no
+compatibility path. So ADR-0067 Amendment 1's Question 1a — dual v1/v2 decoding
+and validation, and the amendment of that invariant — is a prerequisite for
+anything here reaching the store. Accepting this amendment while declining that
+one would produce a producer whose records every reader rejects.
+
 ### Recommendation
 
 **Retain one complete boundary witness per workload observation, and one

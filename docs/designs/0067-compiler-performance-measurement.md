@@ -518,9 +518,11 @@ splicing via shared workloads.
 
 **Status: proposal. Not accepted, not implemented.** ADR-0071 Amendment 1
 proposes a run-object encoding that is 3.6% of today's size. This amendment
-rules on the two questions that proposal raises about *this* ADR: which
-versioning axis owns it, and what happens to the 1,481.2 MiB already published.
-Both need a maintainer ruling.
+rules on the three questions that proposal raises about *this* ADR: which
+versioning axis owns the change, what that axis must become before it can carry
+one, and what happens to the 1,481.2 MiB already published. All three need a
+maintainer ruling, and the second is a prerequisite for the other two rather
+than a preference among them.
 
 ### Question 1: which axis owns a change to the record encoding?
 
@@ -558,6 +560,67 @@ and after the cutover carry different amounts of re-checkable evidence, so a
 reader auditing an epoch's admissibility retroactively gets different depth at
 different points. That is a real weakening and it is the price of not turning
 three epochs.
+
+Naming `schema_version` as the axis is not sufficient on its own, because that
+field is not currently a decoding axis at all. Question 1a settles what it has
+to become.
+
+### Question 1a: what must the reader contract become?
+
+This amendment originally claimed the encoding could be adopted for new records
+without compacting anything. **That claim was wrong**, and the correction is
+Steve's on the pull request: `schema_version` today is a refusal marker, not a
+compatibility axis.
+
+`validate_run` (`crates/rue-perf-schema/src/validate.rs:401`) compares
+`run.schema_version` against the single constant `RUN_SCHEMA_VERSION` and, on
+any difference, returns `UnsupportedSchemaVersion` without evaluating anything
+else. `lib.rs:139` states the intent outright — "Readers refuse versions they do
+not implement rather than guessing: there is no compatibility path, by design" —
+and `validate.rs:34` repeats it. So bumping the constant to 2 does not add a
+version; it *replaces* the one version readers accept.
+
+The consequence, if new records were written at v2 while the 1,188 v1 records
+sat at the tip: `validate_run` rejects every one of them, `derive` routes all
+1,188 to `rejected` and derives no platform at all, the dashboard empties, and —
+worst of the three — `validate-performance-stall.py` sees an empty `platforms`
+list, prints "no plotted points yet; nothing to stall", and **exits 0**. The
+gate built to notice a stopped series reads a totally rejected corpus as the
+honest first state of a suite that has not collected yet. A botched rollout is
+therefore silent in exactly the way ADR-0067 §"A series may not stall silently"
+forbids.
+
+**Recommendation: amend the no-compatibility invariant, and make dual v1/v2
+decoding and validation part of this change rather than a follow-up.** The
+reader contract becomes:
+
+1. **Readers implement every schema version that can still be in the store.**
+   `RUN_SCHEMA_VERSION` stops being "the only version readers accept" and
+   becomes "the version the *producer* writes"; refusal applies to versions
+   ahead of the reader, not behind it. Both prose invariants
+   (`lib.rs:139`, `validate.rs:34`) are amended to say so.
+2. **Encoding shape dispatches on `schema_version`; what must be proven
+   dispatches on the suite's `protocol_version`.** These axes now cross, and
+   crossing them silently is the defect that would bite: `check_boundary_evidence`
+   keys the `len == batch_size` rule off protocol v2, so applied to a v2-encoded
+   record it must check `boundary_processes` against `batch_size` instead of
+   `boundary_evidence`. A v2 record of a suite revision declaring
+   `protocol_version = 2` is well-formed and must validate; the rule is the same
+   guarantee read off a different field.
+3. **v1 support may be dropped only after no v1 record can be reached by a
+   consumer.** That is: after a compaction that removes the last v1 record from
+   the tip, and never while the site build or the staleness gate can still read
+   one. If Question 2 is declined, v1 support is permanent — which is a genuine,
+   ongoing cost of declining, and belongs in that decision rather than in a
+   later surprise.
+
+The dual-reader is what makes the two decisions separable at all. Without it the
+only alternative is an atomic cutover — the reader flip and the corpus
+conversion landing at the same instant — which is not achievable across a
+repository merge and a data-branch push, and whose failure window is the silent
+one described above. Steve's review named both routes; this amendment takes the
+first, and says plainly that the second is not implementable rather than merely
+less attractive.
 
 ### Question 2: may published records be re-encoded?
 
@@ -670,17 +733,40 @@ GitHub's maintenance runs.
 
 ### Relationship to the other amendment
 
-If Question 1 is answered as recommended, the two amendments are
-**independent**: the encoding can be adopted for new records without compacting
-anything, or the legacy records can be compacted without waiting on an epoch
-turn, in either order. If Question 1 is answered literally — suite revision 5 —
-they are **coupled**, compaction is impossible without redefining epochs 5
-and 6, and the ADR-0071 Amendment 1 recommendation costs a headline gap on three
-platforms.
+An earlier draft of this section claimed the two amendments were independent and
+could land "in either order". They are not, and cannot. Corrected:
 
-Accepting ADR-0071 Amendment 1 and declining this one is coherent: it stops the
-growth and leaves the 1,481.2 MiB in place, which after RUE-1542 already sits
-outside the staleness gate's read path and burdens only the website build.
+**The dual-version reader of Question 1a is a prerequisite for both, and must
+land first.** Until readers implement v1 and v2 together, a v2 record and a v1
+record cannot coexist in the store, so neither the encoding nor the compaction
+can be adopted without the other arriving in the same instant.
+
+With that prerequisite in place, the two are independent *in outcome* and
+*ordered* in execution. The permitted sequences are:
+
+1. dual-version reader, then producer writes v2, then compaction — the legacy
+   records convert whenever it is convenient, or never;
+2. dual-version reader, then compaction, then producer writes v2 — the store is
+   uniformly v2 sooner, and records written between the two steps are v1 and
+   convert in a second sweep.
+
+Either order works because both encodings are readable throughout. No order
+works without the reader.
+
+If Question 1 is answered literally — suite revision 5 — they are **coupled**
+regardless: compaction is impossible without redefining epochs 5 and 6, because
+a re-encoded epoch-5 record claims a suite revision declaring
+`protocol_version = 2`, and the ADR-0071 Amendment 1 recommendation additionally
+costs a headline gap on three platforms.
+
+Accepting ADR-0071 Amendment 1 and declining Question 2 is coherent: it stops
+the growth and leaves the 1,481.2 MiB in place, which after RUE-1542 already
+sits outside the staleness gate's read path and burdens only the website build.
+The cost of that combination is now explicit: v1 decoding is retained
+permanently, because a v1 record remains reachable at the tip forever.
+
+Declining Question 1a is not coherent with accepting anything else here. It is
+the one part of this proposal that is a prerequisite rather than a preference.
 
 ## References
 
