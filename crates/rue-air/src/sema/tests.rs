@@ -1567,20 +1567,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_analyze_addition() {
-        let output = compile_to_air("fn main() -> i32 { 1 + 2 }").unwrap();
-
-        let air = &output.functions[0].air;
-        assert_eq!(air.return_type(), Type::I32);
-        // Const(1) + Const(2) + Add + Ret = 4 instructions
-        assert_eq!(air.len(), 4);
-
-        // Check that add instruction exists with correct type
-        let add_inst = air.get(AirRef::from_raw(2));
-        assert!(matches!(add_inst.data, AirInstData::Add(_, _)));
-        assert_eq!(add_inst.ty, Type::I32);
-    }
+    // Ordinary addition typing migrated to the production provider path:
+    // `provider_fixture_tests::provider_body_types_integer_addition`.
 
     #[test]
     fn test_analyze_all_binary_ops() {
@@ -1672,17 +1660,8 @@ mod tests {
         assert!(matches!(block_inst.data, AirInstData::Block { .. }));
     }
 
-    #[test]
-    fn test_undefined_variable() {
-        let result = compile_to_air("fn main() -> i32 { x }");
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert_eq!(errors.len(), 1);
-        assert!(matches!(
-            errors.iter().next().unwrap().kind,
-            ErrorKind::UndefinedVariable(_)
-        ));
-    }
+    // Undefined-variable rejection migrated to the production provider path:
+    // `provider_fixture_tests::provider_body_reports_undefined_variable_with_exact_span`.
 
     #[test]
     fn test_assign_to_immutable() {
@@ -2734,26 +2713,8 @@ mod tests {
     // =========================================================================
     // These tests verify move semantics work correctly through the full pipeline.
 
-    #[test]
-    fn test_use_after_move_error() {
-        // Using a moved value should error
-        let result = compile_to_air(
-            "struct NonCopy { x: i32 }
-             fn consume(n: NonCopy) -> i32 { n.x }
-             fn main() -> i32 {
-                 let n = NonCopy { x: 42 };
-                 let x = consume(n);
-                 n.x  // Error: n was moved
-             }",
-        );
-
-        assert!(result.is_err());
-        let errors = result.unwrap_err();
-        assert!(matches!(
-            errors.iter().next().unwrap().kind,
-            ErrorKind::UseAfterMove { .. }
-        ));
-    }
+    // Use-after-move rejection migrated to the production provider path:
+    // `provider_fixture_tests::provider_body_reports_use_after_move`.
 
     #[test]
     fn break_path_move_is_moved_after_loop() {
@@ -2827,23 +2788,8 @@ mod tests {
         assert_eq!(output.functions[0].air.return_type(), Type::I32);
     }
 
-    #[test]
-    fn test_copy_type_not_moved() {
-        // Copy types should not be moved, allowing multiple uses
-        let output = compile_to_air(
-            "@copy struct Point { x: i32, y: i32 }
-             fn use_point(p: Point) -> i32 { p.x }
-             fn main() -> i32 {
-                 let p = Point { x: 1, y: 2 };
-                 let a = use_point(p);
-                 let b = use_point(p);  // OK: Point is Copy
-                 a + b
-             }",
-        )
-        .unwrap();
-
-        assert_eq!(output.functions.len(), 2);
-    }
+    // Copy-type non-move behavior migrated to the production provider path:
+    // `provider_fixture_tests::provider_body_copy_type_is_not_moved`.
 
     // =========================================================================
     // Type inference tests

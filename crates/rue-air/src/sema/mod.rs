@@ -1523,4 +1523,6 @@ impl BodySema<'_> {
 #[cfg(test)]
 mod consistency_tests;
 #[cfg(test)]
+mod provider_fixture_tests;
+#[cfg(test)]
 mod tests;
