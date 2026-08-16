@@ -723,6 +723,24 @@ impl ImportDemandFrontier {
     pub fn speculative_blocked(&self) -> bool {
         self.speculative_blocked
     }
+
+    /// Every import occurrence whose projection emitted a request into this
+    /// frontier — the whole fanout, not just each host operation's deduplicated
+    /// representative.
+    ///
+    /// Within one request generation these are exactly the occurrences that can
+    /// still demand host input after this batch is answered. An occurrence that
+    /// emitted nothing is conclusive: its candidate observations are all
+    /// recorded, the ledger only grows and rejects conflicting re-observation,
+    /// and a projection over a fully-observed occurrence emits no request. So a
+    /// round that roots in the plan's new occurrences plus these reproduces the
+    /// whole-plan frontier's request set exactly.
+    pub fn demanded_occurrences(&self) -> impl Iterator<Item = &ImportOccurrenceKey> {
+        self.fanout
+            .iter()
+            .flat_map(|requests| requests.iter())
+            .map(ImportDiscoveryRequest::occurrence)
+    }
 }
 
 /// Exact parser-owned import occurrences demanded by canonical query
@@ -895,6 +913,26 @@ impl ImportDiscoveryPlan {
                 .map(|group| group[0].occurrence().clone()),
         )
     }
+
+    /// The demand roots for one ordinary discovery round that continues
+    /// `previous`: the occurrences this round's stage ADDED to the plan, plus
+    /// the occurrences `previous` actually demanded host answers for.
+    ///
+    /// Every other occurrence in the plan was already conclusive when `previous`
+    /// was built and stays conclusive — the ledger only grows within a request
+    /// generation — so rooting in this union emits exactly the request set a
+    /// whole-plan rooting would, in the same canonical order. Both halves are
+    /// compiler-derived: the plan's own delta segment and the frontier's own
+    /// fanout. The host chooses neither.
+    pub(crate) fn round_roots(&self, previous: &ImportDemandFrontier) -> ImportDemandRoots {
+        ImportDemandRoots::new(
+            self.delta_groups()
+                .iter()
+                .map(|group| group[0].occurrence().clone())
+                .chain(previous.demanded_occurrences().cloned()),
+        )
+    }
+
     /// Ordered candidate groups retained by the compiler-owned plan.
     pub fn groups(&self) -> &[Arc<[ImportDiscoveryRequest]>] {
         self.groups.as_slice()

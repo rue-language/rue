@@ -59,6 +59,20 @@ pub fn plan_delta_roots(plan: &crate::ImportDiscoveryPlan) -> ImportDemandRoots 
     plan.delta_roots()
 }
 
+/// The demand roots for one ordinary discovery round continuing `previous`: the
+/// occurrences the plan gained in this round's stage, plus the occurrences
+/// `previous` demanded host answers for. Rooting a round in this union emits the
+/// same requests, in the same canonical order, as rooting it in the whole plan —
+/// every occurrence outside it is already conclusive for the generation. The
+/// host supplies no membership of its own: both halves come from the
+/// compiler-owned plan and frontier values.
+pub fn plan_round_roots(
+    plan: &crate::ImportDiscoveryPlan,
+    previous: &ImportDemandFrontier,
+) -> ImportDemandRoots {
+    plan.round_roots(previous)
+}
+
 pub fn publish_import_observation_batch(
     session: &mut crate::CompilerSession,
     frontier: &ImportDemandFrontier,
