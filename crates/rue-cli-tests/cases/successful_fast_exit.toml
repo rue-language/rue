@@ -1,0 +1,39 @@
+# Successful one-shot native compilation commits all observable output before
+# the driver takes its bounded std::process::exit path (RUE-1473).
+
+[section]
+id = "cli.successful_fast_exit"
+name = "Successful one-shot fast exit"
+description = "Successful native compilation preserves text, benchmark, timing, warnings, and the published executable before exiting 0."
+
+[[case]]
+name = "normal_success_publishes_and_runs"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["main.rue", "-o", "prog"]
+compile_stdout_contains = ["Compiled"]
+compile_stderr_not_contains = ["internal compiler error"]
+exit_code = 0
+
+[[case]]
+name = "benchmark_json_is_complete_before_exit"
+files = [{ path = "main.rue", source = "fn main() -> i32 { 0 }\n" }]
+args = ["--benchmark-json", "-j1", "main.rue", "-o", "prog"]
+compile_stdout_contains = [
+  '"schema_version":16',
+  '"phase_accounting":',
+  '"compiler_work":',
+  '"compiler_boundary":',
+  '"emitted_output":',
+]
+compile_stdout_not_contains = ["Compiled"]
+compile_stderr_not_contains = ["internal compiler error"]
+exit_code = 0
+
+[[case]]
+name = "time_passes_and_warnings_survive_exit"
+files = [{ path = "main.rue", source = "fn main() -> i32 {\n    let unused = 42;\n    0\n}\n" }]
+args = ["--time-passes", "main.rue", "-o", "prog"]
+compile_stdout_contains = ["Compiled"]
+compile_stderr_contains = ["Compile", "Lexer", "unused variable"]
+compile_stderr_not_contains = ["internal compiler error"]
+exit_code = 0

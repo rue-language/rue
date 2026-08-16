@@ -1,4 +1,5 @@
 use std::env;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
@@ -960,6 +961,18 @@ fn print_timing_output(
     }
 }
 
+/// Finish a successful one-shot native compile after every observable
+/// commitment has completed. The compiler host owns only retained query and
+/// source state at this point; publication's temporary guard and all output
+/// reads have already completed. `std::process::exit` preserves the platform
+/// atexit path while avoiding a second full destruction walk of that retained
+/// state. This is deliberately not used for watch, emit, or any failure path.
+fn exit_successful_native_compile() -> ! {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(0);
+}
+
 fn compiler_build_profile() -> CompilerBuildProfile {
     #[cfg(rue_release_build)]
     {
@@ -1850,6 +1863,7 @@ fn main() {
                 compiler_boundary.as_ref(),
                 critical_path.as_ref(),
             );
+            exit_successful_native_compile();
         }
         Err(errors) => {
             diagnostics.print_errors(&errors);
