@@ -31,6 +31,7 @@
 //! again after all passes.
 
 use crate::PayloadError;
+use crate::dominators::DominatorTree;
 use crate::inst::{
     BlockId, Cfg, CfgInstData, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
 };
@@ -301,8 +302,13 @@ struct Verifier<'a> {
     require_complete_attachments: bool,
     skip_unreachable_blocks: bool,
     attachments: Vec<Option<Attachment>>,
-    reachable: Vec<bool>,
-    dominators: Vec<Vec<bool>>,
+    /// Reachability and dominance for the graph under verification.
+    ///
+    /// `None` until [`Verifier::verify`] has cleared the structural checks that
+    /// make terminator decoding safe — the tree walks every terminator, so it
+    /// may only be built once targets are known to be in bounds and payload
+    /// slices are known to be valid.
+    dominators: Option<DominatorTree>,
 }
 
 impl<'a> Verifier<'a> {
@@ -317,8 +323,7 @@ impl<'a> Verifier<'a> {
             require_complete_attachments,
             skip_unreachable_blocks: false,
             attachments: vec![None; cfg.value_count()],
-            reachable: vec![false; cfg.block_count()],
-            dominators: Vec::new(),
+            dominators: None,
         }
     }
 
@@ -338,6 +343,16 @@ impl<'a> Verifier<'a> {
             skip_unreachable_blocks: true,
             ..Self::new(cfg, type_pool, false)
         }
+    }
+
+    /// Reachability and dominance for the graph under verification.
+    ///
+    /// Only reachable from the per-block sweep in [`Self::verify`], which runs
+    /// after the tree is built.
+    fn dominators(&self) -> &DominatorTree {
+        self.dominators
+            .as_ref()
+            .expect("dominator tree is built before the per-block sweep queries it")
     }
 
     fn error(&self, message: impl std::fmt::Display) -> CfgVerificationError {
@@ -365,18 +380,19 @@ impl<'a> Verifier<'a> {
     fn verify(mut self) -> Result<(), CfgVerificationError> {
         self.verify_block_table_and_attachments()?;
         self.verify_targets_and_slices()?;
-        self.compute_reachability();
-        self.compute_dominators();
+        // Every target is in bounds and every payload slice is valid by this
+        // point, so the shared dominator tree can decode the terminators.
+        self.dominators = Some(DominatorTree::compute(self.cfg));
 
         for block in self.cfg.blocks() {
-            let block_index = block.id.as_u32() as usize;
+            let reachable = self.dominators().is_reachable(block.id);
             // Mid-pipeline materialization checks only reason about the live
             // graph: unreachable blocks may legitimately be pre-DCE husks with
             // stale terminators/edge arguments. Every other caller checks them.
-            if self.skip_unreachable_blocks && !self.reachable[block_index] {
+            if self.skip_unreachable_blocks && !reachable {
                 continue;
             }
-            if self.reachable[block_index] && matches!(block.terminator, Terminator::None) {
+            if reachable && matches!(block.terminator, Terminator::None) {
                 return Err(self.error(format_args!(
                     "reachable block {} has no terminator",
                     block.id
@@ -622,92 +638,6 @@ impl<'a> Verifier<'a> {
             )));
         }
         Ok(())
-    }
-
-    fn compute_reachability(&mut self) {
-        let mut stack = vec![self.cfg.entry];
-        while let Some(id) = stack.pop() {
-            let index = id.as_u32() as usize;
-            if self.reachable[index] {
-                continue;
-            }
-            self.reachable[index] = true;
-            self.for_each_successor(id, |successor| stack.push(successor));
-        }
-    }
-
-    fn for_each_successor(&self, block: BlockId, mut f: impl FnMut(BlockId)) {
-        match &self.cfg.get_block(block).terminator {
-            Terminator::Goto { target, .. } => f(*target),
-            Terminator::Branch {
-                then_block,
-                else_block,
-                ..
-            } => {
-                f(*then_block);
-                f(*else_block);
-            }
-            Terminator::Switch { cases, default, .. } => {
-                for &(_, target) in self.cfg.switch_cases(cases) {
-                    f(target);
-                }
-                f(*default);
-            }
-            Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
-        }
-    }
-
-    fn compute_dominators(&mut self) {
-        let count = self.cfg.block_count();
-        let mut predecessors = vec![Vec::new(); count];
-        for block in self.cfg.blocks() {
-            if self.reachable[block.id.as_u32() as usize] {
-                self.for_each_successor(block.id, |successor| {
-                    predecessors[successor.as_u32() as usize].push(block.id)
-                });
-            }
-        }
-        self.dominators = vec![vec![false; count]; count];
-        for block in self.cfg.blocks() {
-            let index = block.id.as_u32() as usize;
-            if !self.reachable[index] {
-                continue;
-            }
-            if block.id == self.cfg.entry {
-                self.dominators[index][index] = true;
-            } else {
-                for candidate in 0..count {
-                    self.dominators[index][candidate] = self.reachable[candidate];
-                }
-            }
-        }
-        loop {
-            let mut changed = false;
-            for block in self.cfg.blocks() {
-                let index = block.id.as_u32() as usize;
-                if !self.reachable[index] || block.id == self.cfg.entry {
-                    continue;
-                }
-                let mut next = vec![true; count];
-                if predecessors[index].is_empty() {
-                    next.fill(false);
-                } else {
-                    for pred in &predecessors[index] {
-                        for (candidate, present) in next.iter_mut().enumerate() {
-                            *present &= self.dominators[pred.as_u32() as usize][candidate];
-                        }
-                    }
-                }
-                next[index] = true;
-                if next != self.dominators[index] {
-                    self.dominators[index] = next;
-                    changed = true;
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
     }
 
     fn verify_inst(
@@ -1230,9 +1160,13 @@ impl<'a> Verifier<'a> {
             | Attachment::Inst {
                 block: def_block, ..
             } => {
-                let use_index = use_block.as_u32() as usize;
-                if self.reachable[use_index]
-                    && !self.dominators[use_index][def_block.as_u32() as usize]
+                // An unreachable use is exempt: no path reaches it, so no
+                // definition can dominate it and nothing it reads can be wrong
+                // at runtime. A reachable use must be dominated by its
+                // definition — including when the definition sits in a block
+                // the entry cannot reach, which never dominates anything.
+                let dominators = self.dominators();
+                if dominators.is_reachable(use_block) && !dominators.dominates(def_block, use_block)
                 {
                     return Err(self.error(format_args!(
                         "{} {} in reachable block {} is defined in block {}, which does not dominate the use",
@@ -1805,6 +1739,73 @@ mod tests {
         );
         cfg.set_terminator(left, Terminator::Return { value: Some(value) });
         cfg.set_terminator(right, Terminator::Return { value: Some(value) });
+        cfg.verify().unwrap();
+    }
+
+    /// A terminator-less reachable entry plus two *unreachable* blocks, where
+    /// the second reads a value defined in the first. Neither orphan dominates
+    /// the other, so this is the shape that separates "unreachable uses are
+    /// exempt" from "unreachable definitions dominate nothing". The caller
+    /// terminates the entry, which is what picks between the two.
+    fn cfg_with_unreachable_cross_block_use() -> (Cfg, CfgValue) {
+        let mut cfg = unit_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+
+        let orphan_def = cfg.new_block();
+        let orphaned = cfg.add_inst_to_block(
+            orphan_def,
+            CfgInst {
+                data: CfgInstData::Const(1),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(orphan_def, Terminator::Unreachable);
+
+        let orphan_use = cfg.new_block();
+        cfg.set_terminator(
+            orphan_use,
+            Terminator::Return {
+                value: Some(orphaned),
+            },
+        );
+        (cfg, orphaned)
+    }
+
+    #[test]
+    fn verify_exempts_uses_inside_unreachable_blocks() {
+        // No path reaches the use, so no definition can dominate it and there
+        // is nothing to get wrong at run time. The orphans' structural checks
+        // still run, per `verify_checks_slots_in_unreachable_blocks`.
+        let (mut cfg, _) = cfg_with_unreachable_cross_block_use();
+        let entry = cfg.entry;
+        let live = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        cfg.set_terminator(entry, Terminator::Return { value: Some(live) });
+        cfg.verify().unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "does not dominate the use")]
+    fn verify_rejects_reachable_use_of_unreachable_definition() {
+        // Same graph, except the entry returns the orphan's value. An
+        // unreachable definition dominates nothing, so a reachable use of it
+        // is rejected.
+        let (mut cfg, orphaned) = cfg_with_unreachable_cross_block_use();
+        let entry = cfg.entry;
+        cfg.set_terminator(
+            entry,
+            Terminator::Return {
+                value: Some(orphaned),
+            },
+        );
         cfg.verify().unwrap();
     }
 
