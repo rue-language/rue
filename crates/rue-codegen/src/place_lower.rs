@@ -406,12 +406,14 @@ enum ProjectedAccess {
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{Sema, SemaMetadata, StructDef, StructField, Type, TypeInternPool};
-    use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, PlaceBase, Projection};
-    use rue_error::PreviewFeatures;
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_air::{
+        AirEditor, AirPlaceBase, AirProjection, AirValidationContext, FrozenTypeInternPool,
+        ParamSlotModes, SourceParamAbi, StructDef, StructField, StructId, Type, TypeInternPool,
+    };
+    use rue_cfg::{
+        BlockId, Cfg, CfgArgMode, CfgBuilder, CfgCallArg, CfgInst, CfgInstData, CfgValue, Place,
+        PlaceBase, Projection,
+    };
     use rue_span::{FileId, Span};
     use rue_target::Target;
 
@@ -421,76 +423,515 @@ mod tests {
     };
     use crate::x86_64::{CfgLower as X86CfgLower, X86Inst};
 
+    fn span() -> Span {
+        Span::new(0, 0)
+    }
+
+    fn value(cfg: &mut Cfg, block: BlockId, data: CfgInstData, ty: Type) -> CfgValue {
+        cfg.append_inst(
+            block,
+            CfgInst {
+                data,
+                ty,
+                span: span(),
+            },
+        )
+    }
+
+    fn konst(cfg: &mut Cfg, block: BlockId, literal: u64, ty: Type) -> CfgValue {
+        value(cfg, block, CfgInstData::Const(literal), ty)
+    }
+
+    fn storage_live(cfg: &mut Cfg, block: BlockId, slot: u32, local_ty: Type) {
+        value(
+            cfg,
+            block,
+            CfgInstData::StorageLive { slot, local_ty },
+            Type::UNIT,
+        );
+    }
+
+    fn storage_dead(cfg: &mut Cfg, block: BlockId, slot: u32, local_ty: Type) {
+        value(
+            cfg,
+            block,
+            CfgInstData::StorageDead { slot, local_ty },
+            Type::UNIT,
+        );
+    }
+
+    fn alloc_slot(cfg: &mut Cfg, block: BlockId, slot: u32, init: CfgValue) {
+        value(cfg, block, CfgInstData::Alloc { slot, init }, Type::UNIT);
+    }
+
+    fn load_slot(cfg: &mut Cfg, block: BlockId, slot: u32, ty: Type) -> CfgValue {
+        value(cfg, block, CfgInstData::Load { slot }, ty)
+    }
+
+    /// Append a projected `PlaceWrite`. The projection payload is owner-issued,
+    /// so the write is appended projection-free and rewritten in place.
+    fn place_write(
+        cfg: &mut Cfg,
+        block: BlockId,
+        base: PlaceBase,
+        base_type: Type,
+        projections: impl IntoIterator<Item = Projection>,
+        stored: CfgValue,
+    ) {
+        let seed = match base {
+            PlaceBase::Local(slot) => Place::local(slot, base_type),
+            PlaceBase::Param(slot) => Place::param(slot, base_type),
+            PlaceBase::Accessor(_) => unreachable!("accessor places are spliced before lowering"),
+        };
+        let instruction = value(
+            cfg,
+            block,
+            CfgInstData::PlaceWrite {
+                place: seed,
+                value: stored,
+            },
+            Type::UNIT,
+        );
+        cfg.replace_place_write(instruction, base, base_type, projections, stored)
+            .unwrap();
+    }
+
+    fn register_struct(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        fields: &[(&str, Type)],
+    ) -> StructId {
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern(name),
+            StructDef {
+                name: name.into(),
+                fields: fields
+                    .iter()
+                    .map(|(field, ty)| StructField {
+                        name: (*field).to_string(),
+                        ty: *ty,
+                    })
+                    .collect(),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        id
+    }
+
+    /// One direct scalar ABI descriptor per parameter slot.
+    fn scalar_param_abi(count: u32) -> Vec<SourceParamAbi> {
+        (0..count)
+            .map(|slot| SourceParamAbi {
+                start_slot: slot,
+                slot_count: 1,
+                crossing_regs: 1,
+                ty: None,
+            })
+            .collect()
+    }
+
+    /// The shared type environment for the nested-projection fixtures:
+    /// `struct Grid { pad: i32, cells: [[i32; 2]; 2] }` and the zero-sized
+    /// `struct Empty { unit: () }` with its two-element array.
+    struct GridFixture {
+        pool: FrozenTypeInternPool,
+        interner: ThreadedRodeo,
+        grid_id: StructId,
+        empty_id: StructId,
+        grid_ty: Type,
+        empty_ty: Type,
+        inner_ty: Type,
+        outer_ty: Type,
+        empty_array_ty: Type,
+        ptr_i32_ty: Type,
+    }
+
+    fn grid_fixture() -> GridFixture {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let inner_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 2));
+        let outer_ty = Type::new_array(pool.intern_array_from_type(inner_ty, 2));
+        let grid_id = register_struct(
+            &pool,
+            &interner,
+            "Grid",
+            &[("pad", Type::I32), ("cells", outer_ty)],
+        );
+        let empty_id = register_struct(&pool, &interner, "Empty", &[("unit", Type::UNIT)]);
+        let empty_ty = Type::new_struct(empty_id);
+        let empty_array_ty = Type::new_array(pool.intern_array_from_type(empty_ty, 2));
+        let ptr_i32_ty = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::I32));
+        GridFixture {
+            pool: pool.freeze(),
+            interner,
+            grid_id,
+            empty_id,
+            grid_ty: Type::new_struct(grid_id),
+            empty_ty,
+            inner_ty,
+            outer_ty,
+            empty_array_ty,
+            ptr_i32_ty,
+        }
+    }
+
+    /// The two nested-index projections `grid.cells[i][j]` walk in every
+    /// fixture: `.cells`, then the outer index, then the inner index.
+    fn cells_projections(
+        fixture: &GridFixture,
+        outer_index: CfgValue,
+        inner_index: CfgValue,
+    ) -> [Projection; 3] {
+        [
+            Projection::Field {
+                struct_id: fixture.grid_id,
+                field_index: 1,
+            },
+            Projection::Index {
+                array_type: fixture.outer_ty,
+                index: outer_index,
+            },
+            Projection::Index {
+                array_type: fixture.inner_ty,
+                index: inner_index,
+            },
+        ]
+    }
+
+    /// Build the Grid `main` CFG the pipeline produces for:
+    ///
+    /// ```text
+    /// let mut scalar = 7;                                   // slot 0
+    /// let _borrow_read = read_borrow(borrow scalar);        // slot 1
+    /// let _scalar_read = read_inout(inout scalar);          // slot 2
+    /// let empty = Empty { unit: () };                       // slot 3 (0 slots)
+    /// read_unit(empty);
+    /// let mut empty_values = [Empty { unit: () }; 2];       // slot 3 (0 slots)
+    /// read_unit_index(borrow empty_values, 0);
+    /// write_unit_index(inout empty_values, 0);
+    /// let mut grid = Grid { pad: 9, cells: [[10,20],[30,40]] }; // slots 3..8
+    /// let i: u64 = 1;                                       // slot 8
+    /// let j: u64 = 0;                                       // slot 9
+    /// grid.cells[i][j] = grid.cells[i][j] + 1;
+    /// grid.cells[i][j]
+    /// ```
+    fn grid_main_cfg(fixture: &GridFixture) -> Cfg {
+        let mut cfg = Cfg::new(Type::I32, 10, 0, "main".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+
+        storage_live(&mut cfg, entry, 0, Type::I32);
+        let seven = konst(&mut cfg, entry, 7, Type::I32);
+        alloc_slot(&mut cfg, entry, 0, seven);
+
+        for (slot, callee, mode) in [
+            (1u32, "read_borrow", CfgArgMode::Borrow),
+            (2, "read_inout", CfgArgMode::Inout),
+        ] {
+            storage_live(&mut cfg, entry, slot, Type::I32);
+            let scalar = load_slot(&mut cfg, entry, 0, Type::I32);
+            let result = cfg
+                .append_call(
+                    entry,
+                    None,
+                    fixture.interner.get_or_intern(callee),
+                    [CfgCallArg {
+                        value: scalar,
+                        mode,
+                    }],
+                    Type::I32,
+                    span(),
+                )
+                .unwrap();
+            alloc_slot(&mut cfg, entry, slot, result);
+        }
+
+        storage_live(&mut cfg, entry, 3, fixture.empty_ty);
+        let unit = konst(&mut cfg, entry, 0, Type::UNIT);
+        let empty = cfg
+            .append_struct_init(entry, fixture.empty_id, [unit], fixture.empty_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 3, empty);
+        let empty = load_slot(&mut cfg, entry, 3, fixture.empty_ty);
+        cfg.append_call(
+            entry,
+            None,
+            fixture.interner.get_or_intern("read_unit"),
+            [CfgCallArg {
+                value: empty,
+                mode: CfgArgMode::Normal,
+            }],
+            Type::UNIT,
+            span(),
+        )
+        .unwrap();
+
+        storage_live(&mut cfg, entry, 3, fixture.empty_array_ty);
+        let elements: Vec<CfgValue> = (0..2)
+            .map(|_| {
+                let unit = konst(&mut cfg, entry, 0, Type::UNIT);
+                cfg.append_struct_init(entry, fixture.empty_id, [unit], fixture.empty_ty, span())
+                    .unwrap()
+            })
+            .collect();
+        let empty_values = cfg
+            .append_array_init(entry, elements, fixture.empty_array_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 3, empty_values);
+        for (callee, mode) in [
+            ("read_unit_index", CfgArgMode::Borrow),
+            ("write_unit_index", CfgArgMode::Inout),
+        ] {
+            let array = load_slot(&mut cfg, entry, 3, fixture.empty_array_ty);
+            let index = konst(&mut cfg, entry, 0, Type::U64);
+            cfg.append_call(
+                entry,
+                None,
+                fixture.interner.get_or_intern(callee),
+                [
+                    CfgCallArg { value: array, mode },
+                    CfgCallArg {
+                        value: index,
+                        mode: CfgArgMode::Normal,
+                    },
+                ],
+                Type::UNIT,
+                span(),
+            )
+            .unwrap();
+        }
+
+        storage_live(&mut cfg, entry, 3, fixture.grid_ty);
+        let pad = konst(&mut cfg, entry, 9, Type::I32);
+        let rows: Vec<CfgValue> = [[10u64, 20], [30, 40]]
+            .into_iter()
+            .map(|row| {
+                let cells: Vec<CfgValue> = row
+                    .into_iter()
+                    .map(|cell| konst(&mut cfg, entry, cell, Type::I32))
+                    .collect();
+                cfg.append_array_init(entry, cells, fixture.inner_ty, span())
+                    .unwrap()
+            })
+            .collect();
+        let cells = cfg
+            .append_array_init(entry, rows, fixture.outer_ty, span())
+            .unwrap();
+        let grid = cfg
+            .append_struct_init(
+                entry,
+                fixture.grid_id,
+                [pad, cells],
+                fixture.grid_ty,
+                span(),
+            )
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 3, grid);
+
+        storage_live(&mut cfg, entry, 8, Type::U64);
+        let one = konst(&mut cfg, entry, 1, Type::U64);
+        alloc_slot(&mut cfg, entry, 8, one);
+        storage_live(&mut cfg, entry, 9, Type::U64);
+        let zero = konst(&mut cfg, entry, 0, Type::U64);
+        alloc_slot(&mut cfg, entry, 9, zero);
+
+        let i = load_slot(&mut cfg, entry, 8, Type::U64);
+        let j = load_slot(&mut cfg, entry, 9, Type::U64);
+        let projections = cells_projections(fixture, i, j);
+        let element = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(3),
+                fixture.grid_ty,
+                projections,
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        let one = konst(&mut cfg, entry, 1, Type::I32);
+        let bumped = value(&mut cfg, entry, CfgInstData::Add(element, one), Type::I32);
+        let i = load_slot(&mut cfg, entry, 8, Type::U64);
+        let j = load_slot(&mut cfg, entry, 9, Type::U64);
+        let projections = cells_projections(fixture, i, j);
+        place_write(
+            &mut cfg,
+            entry,
+            PlaceBase::Local(3),
+            fixture.grid_ty,
+            projections,
+            bumped,
+        );
+        let i = load_slot(&mut cfg, entry, 8, Type::U64);
+        let j = load_slot(&mut cfg, entry, 9, Type::U64);
+        let projections = cells_projections(fixture, i, j);
+        let result = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(3),
+                fixture.grid_ty,
+                projections,
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+
+        storage_dead(&mut cfg, entry, 9, Type::U64);
+        storage_dead(&mut cfg, entry, 8, Type::U64);
+        storage_dead(&mut cfg, entry, 3, fixture.grid_ty);
+        storage_dead(&mut cfg, entry, 3, fixture.empty_array_ty);
+        storage_dead(&mut cfg, entry, 3, fixture.empty_ty);
+        storage_dead(&mut cfg, entry, 2, Type::I32);
+        storage_dead(&mut cfg, entry, 1, Type::I32);
+        storage_dead(&mut cfg, entry, 0, Type::I32);
+        cfg.set_return(entry, Some(result));
+        cfg
+    }
+
+    /// `fn read_borrow(borrow value: i32) -> i32 { value }` (and the `inout`
+    /// twin): one by-reference scalar parameter read and returned.
+    fn by_ref_scalar_read_cfg(fixture: &GridFixture, name: &str, writable: bool) -> Cfg {
+        let mut cfg = Cfg::new(
+            Type::I32,
+            0,
+            1,
+            name.to_string(),
+            ParamSlotModes::new(vec![true], vec![writable]),
+        );
+        cfg.set_source_param_abi(scalar_param_abi(1));
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let parameter = value(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        cfg.set_return(entry, Some(parameter));
+        let _ = fixture;
+        cfg
+    }
+
+    /// `fn read_unit(value: Empty) -> () { value.unit }`: a projected read of
+    /// a zero-sized field from a zero-slot by-value parameter. The parameter
+    /// occupies zero ABI slots, so the CFG is produced through the AIR
+    /// builder, exactly as the pipeline builds it.
+    fn read_unit_cfg(fixture: &GridFixture) -> rue_cfg::ValidatedCfg {
+        let mut air = AirEditor::new(Type::UNIT);
+        let place = air
+            .make_place(
+                AirPlaceBase::Param(0),
+                fixture.empty_ty,
+                [AirProjection::Field {
+                    struct_id: fixture.empty_id,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
+        let read = air.add_place_read(place, Type::UNIT, span());
+        air.add_ret(Some(read), Type::UNIT, span());
+        let air = air
+            .finish(AirValidationContext::Canonical(&fixture.pool))
+            .expect("test AIR must validate");
+        let output = CfgBuilder::build(
+            &air,
+            0,
+            0,
+            "read_unit",
+            &fixture.pool,
+            vec![],
+            &fixture.interner,
+            false,
+            rue_air::AnalyzedCallableKind::Ordinary,
+        );
+        output.cfg.expect("test CFG must build")
+    }
+
+    /// `fn read_unit_index(borrow arr: [Empty; 2], i: u64) -> () { arr[i].unit }`:
+    /// an indexed zero-sized read that must keep its bounds check.
+    fn read_unit_index_cfg(fixture: &GridFixture) -> Cfg {
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            2,
+            "read_unit_index".to_string(),
+            ParamSlotModes::new(vec![true, false], vec![false, false]),
+        );
+        cfg.set_source_param_abi(scalar_param_abi(2));
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let index = value(&mut cfg, entry, CfgInstData::Param { index: 1 }, Type::U64);
+        cfg.append_place_read(
+            entry,
+            PlaceBase::Param(0),
+            fixture.empty_array_ty,
+            [
+                Projection::Index {
+                    array_type: fixture.empty_array_ty,
+                    index,
+                },
+                Projection::Field {
+                    struct_id: fixture.empty_id,
+                    field_index: 0,
+                },
+            ],
+            Type::UNIT,
+            span(),
+        )
+        .unwrap();
+        cfg.set_return(entry, None);
+        cfg
+    }
+
+    /// `fn write_unit_index(inout arr: [Empty; 2], i: u64) { arr[i] = Empty { unit: () }; }`:
+    /// an indexed zero-sized write that must keep its bounds check.
+    fn write_unit_index_cfg(fixture: &GridFixture) -> Cfg {
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            2,
+            "write_unit_index".to_string(),
+            ParamSlotModes::new(vec![true, false], vec![true, false]),
+        );
+        cfg.set_source_param_abi(scalar_param_abi(2));
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let unit = konst(&mut cfg, entry, 0, Type::UNIT);
+        let element = cfg
+            .append_struct_init(entry, fixture.empty_id, [unit], fixture.empty_ty, span())
+            .unwrap();
+        let index = value(&mut cfg, entry, CfgInstData::Param { index: 1 }, Type::U64);
+        place_write(
+            &mut cfg,
+            entry,
+            PlaceBase::Param(0),
+            fixture.empty_array_ty,
+            [Projection::Index {
+                array_type: fixture.empty_array_ty,
+                index,
+            }],
+            element,
+        );
+        konst(&mut cfg, entry, 0, Type::UNIT);
+        cfg.set_return(entry, None);
+        cfg
+    }
+
     /// Exercise all three shared entry points with a field followed by two
     /// index projections. The outer index has a two-slot stride (multiply),
     /// while the inner scalar index has a one-slot stride (shift).
     #[test]
     fn nested_field_index_read_write_and_addr_lower_on_both_backends() {
-        let source = r#"
-            struct Grid { pad: i32, cells: [[i32; 2]; 2] }
-            struct Empty { unit: () }
-            fn read_borrow(borrow value: i32) -> i32 { value }
-            fn read_inout(inout value: i32) -> i32 { value }
-            fn read_unit(value: Empty) -> () { value.unit }
-            fn read_unit_index(borrow arr: [Empty; 2], i: u64) -> () { arr[i].unit }
-            fn write_unit_index(inout arr: [Empty; 2], i: u64) { arr[i] = Empty { unit: () }; }
-            fn main() -> i32 {
-                let mut scalar = 7;
-                let _borrow_read = read_borrow(borrow scalar);
-                let _scalar_read = read_inout(inout scalar);
-                let empty = Empty { unit: () };
-                read_unit(empty);
-                let mut empty_values: [Empty; 2] = [Empty { unit: () }, Empty { unit: () }];
-                read_unit_index(borrow empty_values, 0);
-                write_unit_index(inout empty_values, 0);
-                let mut grid = Grid { pad: 9, cells: [[10, 20], [30, 40]] };
-                let i: u64 = 1;
-                let j: u64 = 0;
-                grid.cells[i][j] = grid.cells[i][j] + 1;
-                grid.cells[i][j]
-            }
-        "#;
+        let fixture = grid_fixture();
+        let cfg = grid_main_cfg(&fixture);
 
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().expect("fixture should parse");
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .expect("fixture should analyze");
-        let build_cfg = |name: &str| {
-            let symbol = SemaMetadata::synthetic_root_function_symbol(name);
-            let function = output
-                .functions
-                .iter()
-                .find(|function| function.name == symbol)
-                .expect("fixture function should exist");
-            CfgBuilder::build(
-                &function.air,
-                function.num_locals,
-                function.num_param_slots,
-                &function.name,
-                &output.type_pool,
-                function.param_modes.clone(),
-                &interner,
-                function.allow_unreachable_code,
-                function.callable_kind,
-            )
-            .cfg
-            .unwrap()
-        };
-        let cfg = build_cfg("main");
-
-        let x86 = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
+        let x86 = X86CfgLower::new_unchecked(&cfg, &fixture.pool, &fixture.interner)
             .lower()
             .expect("x86 fixture should lower");
         let arm = Aarch64CfgLower::new_unchecked(
             &cfg,
-            &output.type_pool,
-            &interner,
+            &fixture.pool,
+            &fixture.interner,
             Target::Aarch64Linux,
         )
         .lower()
@@ -618,13 +1059,14 @@ mod tests {
             )
             .unwrap();
         indexed_cfg.set_return(indexed_entry, Some(read));
-        let pair_x86 = X86CfgLower::new_unchecked(&indexed_cfg, &synthetic_types, &interner)
-            .lower()
-            .expect("x86 indexed aggregate read should lower");
+        let pair_x86 =
+            X86CfgLower::new_unchecked(&indexed_cfg, &synthetic_types, &synthetic_interner)
+                .lower()
+                .expect("x86 indexed aggregate read should lower");
         let pair_arm = Aarch64CfgLower::new_unchecked(
             &indexed_cfg,
             &synthetic_types,
-            &interner,
+            &synthetic_interner,
             Target::Aarch64Linux,
         )
         .lower()
@@ -692,15 +1134,16 @@ mod tests {
         // LdrIndexed form,
         // while a projected ZST read must materialize zero without attempting
         // root-origin address arithmetic (and x86 keeps its 64-bit immediate).
-        for by_ref_fn in ["read_borrow", "read_inout"] {
-            let by_ref_cfg = build_cfg(by_ref_fn);
-            let by_ref_x86 = X86CfgLower::new_unchecked(&by_ref_cfg, &output.type_pool, &interner)
-                .lower()
-                .expect("x86 by-ref fixture should lower");
+        for (by_ref_fn, writable) in [("read_borrow", false), ("read_inout", true)] {
+            let by_ref_cfg = by_ref_scalar_read_cfg(&fixture, by_ref_fn, writable);
+            let by_ref_x86 =
+                X86CfgLower::new_unchecked(&by_ref_cfg, &fixture.pool, &fixture.interner)
+                    .lower()
+                    .expect("x86 by-ref fixture should lower");
             let by_ref_arm = Aarch64CfgLower::new_unchecked(
                 &by_ref_cfg,
-                &output.type_pool,
-                &interner,
+                &fixture.pool,
+                &fixture.interner,
                 Target::Aarch64Linux,
             )
             .lower()
@@ -725,14 +1168,14 @@ mod tests {
             ));
         }
 
-        let unit_cfg = build_cfg("read_unit");
-        let unit_x86 = X86CfgLower::new_unchecked(&unit_cfg, &output.type_pool, &interner)
+        let unit_cfg = read_unit_cfg(&fixture);
+        let unit_x86 = X86CfgLower::new_unchecked(&unit_cfg, &fixture.pool, &fixture.interner)
             .lower()
             .expect("x86 ZST fixture should lower");
         let unit_arm = Aarch64CfgLower::new_unchecked(
             &unit_cfg,
-            &output.type_pool,
-            &interner,
+            &fixture.pool,
+            &fixture.interner,
             Target::Aarch64Linux,
         )
         .lower()
@@ -749,15 +1192,15 @@ mod tests {
         // A zero-sized indexed place has no load/store, but it still has a
         // language-level bounds check. Both the value and address paths must
         // retain the shared trap edge even though they materialize no bytes.
-        let unit_index_cfg = build_cfg("read_unit_index");
+        let unit_index_cfg = read_unit_index_cfg(&fixture);
         let unit_index_x86 =
-            X86CfgLower::new_unchecked(&unit_index_cfg, &output.type_pool, &interner)
+            X86CfgLower::new_unchecked(&unit_index_cfg, &fixture.pool, &fixture.interner)
                 .lower()
                 .expect("x86 indexed ZST fixture should lower");
         let unit_index_arm = Aarch64CfgLower::new_unchecked(
             &unit_index_cfg,
-            &output.type_pool,
-            &interner,
+            &fixture.pool,
+            &fixture.interner,
             Target::Aarch64Linux,
         )
         .lower()
@@ -769,15 +1212,15 @@ mod tests {
             matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if unit_index_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
 
-        let unit_write_cfg = build_cfg("write_unit_index");
+        let unit_write_cfg = write_unit_index_cfg(&fixture);
         let unit_write_x86 =
-            X86CfgLower::new_unchecked(&unit_write_cfg, &output.type_pool, &interner)
+            X86CfgLower::new_unchecked(&unit_write_cfg, &fixture.pool, &fixture.interner)
                 .lower()
                 .expect("x86 indexed ZST write fixture should lower");
         let unit_write_arm = Aarch64CfgLower::new_unchecked(
             &unit_write_cfg,
-            &output.type_pool,
-            &interner,
+            &fixture.pool,
+            &fixture.interner,
             Target::Aarch64Linux,
         )
         .lower()
@@ -802,59 +1245,123 @@ mod tests {
     /// debug, a wild frame slot in release.
     #[test]
     fn zero_sized_place_addresses_are_canonical_on_both_backends() {
-        let source = r#"
-            struct Empty { unit: () }
-            struct Tail { value: i64, unit: () }
-            fn take_unit(borrow unit: ()) -> i32 { 0 }
-            fn main() -> i32 {
-                let empty = Empty { unit: () };
-                let _all_zst: ptr const () = checked { @raw(empty.unit) };
-                let tail = Tail { value: 7, unit: () };
-                let _tail_zst: ptr const () = checked { @raw(tail.unit) };
-                take_unit(borrow tail.unit)
-            }
-        "#;
-
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().expect("fixture should parse");
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .expect("fixture should analyze");
-        let function = output
-            .functions
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("fixture function should exist");
-        let cfg = CfgBuilder::build(
-            &function.air,
-            function.num_locals,
-            function.num_param_slots,
-            &function.name,
-            &output.type_pool,
-            function.param_modes.clone(),
+        // The CFG models:
+        //
+        //     let empty = Empty { unit: () };                  // slot 0 (0 slots)
+        //     let _all_zst: ptr const () = @raw(empty.unit);   // slot 0
+        //     let tail = Tail { value: 7, unit: () };          // slot 1
+        //     let _tail_zst: ptr const () = @raw(tail.unit);   // slot 2
+        //     take_unit(borrow tail.unit)
+        //
+        // Both `@raw` operands mark their roots address-taken, as the builder
+        // does.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let empty_id = register_struct(&pool, &interner, "Empty", &[("unit", Type::UNIT)]);
+        let tail_id = register_struct(
+            &pool,
             &interner,
-            function.allow_unreachable_code,
-            function.callable_kind,
-        )
-        .cfg
-        .unwrap();
+            "Tail",
+            &[("value", Type::I64), ("unit", Type::UNIT)],
+        );
+        let empty_ty = Type::new_struct(empty_id);
+        let tail_ty = Type::new_struct(tail_id);
+        let ptr_unit_ty = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::UNIT));
+        let pool = pool.freeze();
+        let raw = interner.get_or_intern("raw");
 
-        let x86 = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
+        let mut cfg = Cfg::new(Type::I32, 3, 0, "main".to_string(), Vec::new());
+        cfg.mark_address_taken(0);
+        cfg.mark_address_taken(1);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, empty_ty);
+        let unit = konst(&mut cfg, entry, 0, Type::UNIT);
+        let empty = cfg
+            .append_struct_init(entry, empty_id, [unit], empty_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 0, empty);
+        storage_live(&mut cfg, entry, 0, ptr_unit_ty);
+        let empty_unit = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                empty_ty,
+                [Projection::Field {
+                    struct_id: empty_id,
+                    field_index: 0,
+                }],
+                Type::UNIT,
+                span(),
+            )
+            .unwrap();
+        let all_zst = cfg
+            .append_intrinsic(entry, None, raw, [empty_unit], ptr_unit_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 0, all_zst);
+        storage_live(&mut cfg, entry, 1, tail_ty);
+        let seven = konst(&mut cfg, entry, 7, Type::I64);
+        let unit = konst(&mut cfg, entry, 0, Type::UNIT);
+        let tail = cfg
+            .append_struct_init(entry, tail_id, [seven, unit], tail_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 1, tail);
+        storage_live(&mut cfg, entry, 2, ptr_unit_ty);
+        let tail_unit = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(1),
+                tail_ty,
+                [Projection::Field {
+                    struct_id: tail_id,
+                    field_index: 1,
+                }],
+                Type::UNIT,
+                span(),
+            )
+            .unwrap();
+        let tail_zst = cfg
+            .append_intrinsic(entry, None, raw, [tail_unit], ptr_unit_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 2, tail_zst);
+        let borrow_operand = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(1),
+                tail_ty,
+                [Projection::Field {
+                    struct_id: tail_id,
+                    field_index: 1,
+                }],
+                Type::UNIT,
+                span(),
+            )
+            .unwrap();
+        let result = cfg
+            .append_call(
+                entry,
+                None,
+                interner.get_or_intern("take_unit"),
+                [CfgCallArg {
+                    value: borrow_operand,
+                    mode: CfgArgMode::Borrow,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        storage_dead(&mut cfg, entry, 2, ptr_unit_ty);
+        storage_dead(&mut cfg, entry, 1, tail_ty);
+        storage_dead(&mut cfg, entry, 0, ptr_unit_ty);
+        storage_dead(&mut cfg, entry, 0, empty_ty);
+        cfg.set_return(entry, Some(result));
+
+        let x86 = X86CfgLower::new_unchecked(&cfg, &pool, &interner)
             .lower()
             .expect("x86 zero-sized address fixture should lower");
-        let arm = Aarch64CfgLower::new_unchecked(
-            &cfg,
-            &output.type_pool,
-            &interner,
-            Target::Aarch64Linux,
-        )
-        .lower()
-        .expect("AArch64 zero-sized address fixture should lower");
+        let arm = Aarch64CfgLower::new_unchecked(&cfg, &pool, &interner, Target::Aarch64Linux)
+            .lower()
+            .expect("AArch64 zero-sized address fixture should lower");
 
         // Three zero-sized addresses, one canonical constant each, and no frame
         // address formed for any of them: the only `lea`/`add fp` in the
@@ -906,61 +1413,110 @@ mod tests {
     /// The sibling read/write projection test covers the paths that still lower.
     #[test]
     fn raw_pointer_into_frame_nested_array_is_refused_on_both_backends() {
-        let source = r#"
-            struct Grid { pad: i32, cells: [[i32; 2]; 2] }
-            fn main() -> i32 {
-                let mut grid = Grid { pad: 9, cells: [[10, 20], [30, 40]] };
-                let i: u64 = 1;
-                let j: u64 = 0;
-                let _address: ptr const i32 = checked { @raw(grid.cells[i][j]) };
-                grid.cells[i][j]
-            }
-        "#;
+        // The CFG models:
+        //
+        //     let mut grid = Grid { pad: 9, cells: [[10,20],[30,40]] }; // slots 0..5
+        //     let i: u64 = 1;                                          // slot 5
+        //     let j: u64 = 0;                                          // slot 6
+        //     let _address: ptr const i32 = @raw(grid.cells[i][j]);    // slot 7
+        //     grid.cells[i][j]
+        //
+        // `@raw` marks `grid` address-taken, as the builder does.
+        let fixture = grid_fixture();
+        let interner = &fixture.interner;
+        let ptr_i32_ty = fixture.ptr_i32_ty;
 
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().expect("fixture should parse");
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .expect("fixture should analyze");
-        let function = output
-            .functions
-            .iter()
-            .find(|function| function.name == "main")
-            .expect("fixture function should exist");
-        let cfg = CfgBuilder::build(
-            &function.air,
-            function.num_locals,
-            function.num_param_slots,
-            &function.name,
-            &output.type_pool,
-            function.param_modes.clone(),
-            &interner,
-            function.allow_unreachable_code,
-            function.callable_kind,
-        )
-        .cfg
-        .unwrap();
+        let mut cfg = Cfg::new(Type::I32, 8, 0, "main".to_string(), Vec::new());
+        cfg.mark_address_taken(0);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, fixture.grid_ty);
+        let pad = konst(&mut cfg, entry, 9, Type::I32);
+        let rows: Vec<CfgValue> = [[10u64, 20], [30, 40]]
+            .into_iter()
+            .map(|row| {
+                let cells: Vec<CfgValue> = row
+                    .into_iter()
+                    .map(|cell| konst(&mut cfg, entry, cell, Type::I32))
+                    .collect();
+                cfg.append_array_init(entry, cells, fixture.inner_ty, span())
+                    .unwrap()
+            })
+            .collect();
+        let cells = cfg
+            .append_array_init(entry, rows, fixture.outer_ty, span())
+            .unwrap();
+        let grid = cfg
+            .append_struct_init(
+                entry,
+                fixture.grid_id,
+                [pad, cells],
+                fixture.grid_ty,
+                span(),
+            )
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 0, grid);
+        storage_live(&mut cfg, entry, 5, Type::U64);
+        let one = konst(&mut cfg, entry, 1, Type::U64);
+        alloc_slot(&mut cfg, entry, 5, one);
+        storage_live(&mut cfg, entry, 6, Type::U64);
+        let zero = konst(&mut cfg, entry, 0, Type::U64);
+        alloc_slot(&mut cfg, entry, 6, zero);
+        storage_live(&mut cfg, entry, 7, ptr_i32_ty);
+        let i = load_slot(&mut cfg, entry, 5, Type::U64);
+        let j = load_slot(&mut cfg, entry, 6, Type::U64);
+        let projections = cells_projections(&fixture, i, j);
+        let element = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                fixture.grid_ty,
+                projections,
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        let address = cfg
+            .append_intrinsic(
+                entry,
+                None,
+                interner.get_or_intern("raw"),
+                [element],
+                ptr_i32_ty,
+                span(),
+            )
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 7, address);
+        let i = load_slot(&mut cfg, entry, 5, Type::U64);
+        let j = load_slot(&mut cfg, entry, 6, Type::U64);
+        let projections = cells_projections(&fixture, i, j);
+        let result = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                fixture.grid_ty,
+                projections,
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        storage_dead(&mut cfg, entry, 7, ptr_i32_ty);
+        storage_dead(&mut cfg, entry, 6, Type::U64);
+        storage_dead(&mut cfg, entry, 5, Type::U64);
+        storage_dead(&mut cfg, entry, 0, fixture.grid_ty);
+        cfg.set_return(entry, Some(result));
 
-        let x86_err = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
+        let x86_err = X86CfgLower::new_unchecked(&cfg, &fixture.pool, interner)
             .lower()
             .expect_err("x86 must refuse a raw pointer into a frame nested array");
         assert!(
             format!("{x86_err:?}").contains("frame-resident aggregate"),
             "unexpected x86 diagnostic: {x86_err:?}"
         );
-        let arm_err = Aarch64CfgLower::new_unchecked(
-            &cfg,
-            &output.type_pool,
-            &interner,
-            Target::Aarch64Linux,
-        )
-        .lower()
-        .expect_err("AArch64 must refuse a raw pointer into a frame nested array");
+        let arm_err =
+            Aarch64CfgLower::new_unchecked(&cfg, &fixture.pool, interner, Target::Aarch64Linux)
+                .lower()
+                .expect_err("AArch64 must refuse a raw pointer into a frame nested array");
         assert!(
             format!("{arm_err:?}").contains("frame-resident aggregate"),
             "unexpected AArch64 diagnostic: {arm_err:?}"
