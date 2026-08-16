@@ -71,10 +71,7 @@ pub fn generate_export_thunk(
 /// boundary consult the same authority (`TargetCCallAbi`), so the export thunk
 /// and the import call agree on every scalar extension.
 fn flavor_for(target: Target) -> TargetCAbiFlavor {
-    match target.arch() {
-        Arch::X86_64 => TargetCAbiFlavor::SysVAmd64,
-        Arch::Aarch64 => TargetCAbiFlavor::Aapcs64,
-    }
+    TargetCAbiFlavor::for_arch(target.arch())
 }
 
 /// The extension each argument register needs, in register order. Shared by both

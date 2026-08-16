@@ -5545,16 +5545,41 @@ fn stable_type_is_strbuf(ty: &crate::TypeInstanceKey) -> bool {
     )
 }
 
+/// The stable plane's projection of a scalar type key onto its target-C
+/// width-and-signedness class; the extension operation itself lives on
+/// [`rue_air::CAbiScalarKind::extension`], shared with the live classifier.
 fn c_scalar_extension(ty: &crate::TypeInstanceKey) -> rue_air::ScalarAbiExtension {
     use crate::TypeInstanceKey as T;
-    match ty {
-        T::I8 => rue_air::ScalarAbiExtension::Signed { from_bits: 8 },
-        T::I16 => rue_air::ScalarAbiExtension::Signed { from_bits: 16 },
-        T::I32 => rue_air::ScalarAbiExtension::Signed { from_bits: 32 },
-        T::U8 | T::Bool => rue_air::ScalarAbiExtension::Unsigned { from_bits: 8 },
-        T::U16 => rue_air::ScalarAbiExtension::Unsigned { from_bits: 16 },
-        T::U32 => rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 },
-        _ => rue_air::ScalarAbiExtension::None,
+    use rue_air::CAbiScalarKind as K;
+    let kind = match ty {
+        T::I8 => K::I8,
+        T::I16 => K::I16,
+        T::I32 => K::I32,
+        T::U8 => K::U8,
+        T::Bool => K::Bool,
+        T::U16 => K::U16,
+        T::U32 => K::U32,
+        // Register-width scalars (i64/u64, pointers) and every remaining key
+        // this projection can see need no extension.
+        _ => K::RegisterWidth,
+    };
+    kind.extension()
+}
+
+/// The stable plane's projection of one type onto the shared native
+/// classification kernel: the canonical layout supplies the slot count and
+/// slot-identity, the stable type keys supply the aggregate and `StrBuf`
+/// predicates. The decision tree itself lives on
+/// [`rue_air::NativeAbiTypeFacts`].
+fn stable_native_abi_facts(
+    layout: &crate::type_queries::CanonicalLayout,
+    ty: &crate::TypeInstanceKey,
+) -> rue_air::NativeAbiTypeFacts {
+    rue_air::NativeAbiTypeFacts {
+        abi_slots: layout.abi_slots,
+        aggregate: stable_type_is_aggregate(ty),
+        strbuf: stable_type_is_strbuf(ty),
+        slot_identical: layout.slot_identical,
     }
 }
 
@@ -5589,14 +5614,10 @@ fn evaluate_call_abi(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    let target_c_flavor = match key.configuration.target {
-        crate::Target::X86_64Linux => rue_air::TargetCAbiFlavor::SysVAmd64,
-        crate::Target::Aarch64Linux | crate::Target::Aarch64Macos => {
-            rue_air::TargetCAbiFlavor::Aapcs64
-        }
-    };
     let convention = if signature.target_c {
-        CallAbiConvention::TargetC(target_c_flavor)
+        CallAbiConvention::TargetC(rue_air::TargetCAbiFlavor::for_arch(
+            key.configuration.target.arch(),
+        ))
     } else {
         CallAbiConvention::Native
     };
@@ -5624,39 +5645,43 @@ fn evaluate_call_abi(
                     .with_terminal_kind(QueryTerminalKind::Failure));
             }
         };
-        let aggregate = stable_type_is_aggregate(ty);
         let class = match convention {
             CallAbiConvention::Native => {
-                if layout.abi_slots == 0 {
-                    A::Omitted
-                } else if aggregate && layout.abi_slots > 1 && !layout.slot_identical {
-                    A::NativeIndirect
-                } else {
-                    A::NativeDirect {
-                        slots: layout.abi_slots,
+                match stable_native_abi_facts(layout, ty)
+                    .classify_arg(rue_air::ArgConvention::ByValue)
+                {
+                    rue_air::ArgClass::Omitted => A::Omitted,
+                    rue_air::ArgClass::Direct { slot_count } => {
+                        A::NativeDirect { slots: slot_count }
                     }
+                    rue_air::ArgClass::Indirect => A::NativeIndirect,
                 }
             }
             CallAbiConvention::TargetC(flavor) => {
                 if layout.size == 0 {
                     A::Omitted
-                } else if !aggregate {
+                } else if !stable_type_is_aggregate(ty) {
                     A::CScalar {
                         extension: c_scalar_extension(ty),
                     }
-                } else if layout.size <= 16 {
-                    A::CIntegerRegisters {
-                        eightbytes: u32::try_from((layout.size + 7) / 8).unwrap_or(u32::MAX),
-                    }
                 } else {
-                    let size = u32::try_from(layout.size).unwrap_or(u32::MAX);
-                    let alignment = u32::try_from(layout.alignment).unwrap_or(u32::MAX);
-                    match flavor {
-                        rue_air::TargetCAbiFlavor::SysVAmd64 => {
-                            A::CByValueStack { size, alignment }
+                    match rue_air::TargetCCallAbi::new(flavor)
+                        .classify_aggregate_arg(layout.size, layout.alignment)
+                    {
+                        rue_air::AggregateArgClass::IntegerRegisters { eightbytes } => {
+                            A::CIntegerRegisters { eightbytes }
                         }
-                        rue_air::TargetCAbiFlavor::Aapcs64 => {
-                            A::CByReferenceCopy { size, alignment }
+                        rue_air::AggregateArgClass::ByValueStack { size, align } => {
+                            A::CByValueStack {
+                                size,
+                                alignment: align,
+                            }
+                        }
+                        rue_air::AggregateArgClass::ByReferenceCopy { size, align } => {
+                            A::CByReferenceCopy {
+                                size,
+                                alignment: align,
+                            }
                         }
                     }
                 }
@@ -5682,47 +5707,41 @@ fn evaluate_call_abi(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    let aggregate = stable_type_is_aggregate(&signature.result);
-    let return_class = if return_layout.abi_slots == 0 {
-        R::ZeroSized
-    } else {
-        match convention {
-            CallAbiConvention::Native => {
-                let budget = match key.configuration.target {
-                    crate::Target::X86_64Linux => 6,
-                    crate::Target::Aarch64Linux | crate::Target::Aarch64Macos => 8,
-                };
-                if stable_type_is_strbuf(&signature.result)
-                    || (aggregate && return_layout.abi_slots > budget)
-                    || (aggregate && return_layout.abi_slots > 1 && !return_layout.slot_identical)
-                {
-                    R::NativeIndirect {
-                        slots: return_layout.abi_slots,
-                    }
-                } else if aggregate {
-                    R::NativeRegisters {
-                        slots: return_layout.abi_slots,
-                    }
-                } else {
-                    R::Scalar {
-                        extension: rue_air::ScalarAbiExtension::None,
-                    }
+    let return_class = match convention {
+        CallAbiConvention::Native => {
+            let budget = rue_air::native_return_register_budget(key.configuration.target.arch());
+            match stable_native_abi_facts(return_layout, &signature.result).classify_return(budget)
+            {
+                rue_air::ReturnClass::ZeroSized => R::ZeroSized,
+                rue_air::ReturnClass::Scalar => R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::None,
+                },
+                rue_air::ReturnClass::Registers { slot_count } => {
+                    R::NativeRegisters { slots: slot_count }
+                }
+                rue_air::ReturnClass::Indirect { slot_count } => {
+                    R::NativeIndirect { slots: slot_count }
                 }
             }
-            CallAbiConvention::TargetC(_) => {
-                if !aggregate {
-                    R::Scalar {
-                        extension: c_scalar_extension(&signature.result),
+        }
+        CallAbiConvention::TargetC(flavor) => {
+            if return_layout.abi_slots == 0 {
+                R::ZeroSized
+            } else if !stable_type_is_aggregate(&signature.result) {
+                R::Scalar {
+                    extension: c_scalar_extension(&signature.result),
+                }
+            } else {
+                match rue_air::TargetCCallAbi::new(flavor)
+                    .classify_aggregate_return(return_layout.size, return_layout.alignment)
+                {
+                    rue_air::AggregateReturnClass::IntegerRegisters { eightbytes } => {
+                        R::CIntegerRegisters { eightbytes }
                     }
-                } else if return_layout.size <= 16 {
-                    R::CIntegerRegisters {
-                        eightbytes: u32::try_from((return_layout.size + 7) / 8).unwrap_or(u32::MAX),
-                    }
-                } else {
-                    R::CIndirect {
-                        size: u32::try_from(return_layout.size).unwrap_or(u32::MAX),
-                        alignment: u32::try_from(return_layout.alignment).unwrap_or(u32::MAX),
-                    }
+                    rue_air::AggregateReturnClass::Indirect { size, align } => R::CIndirect {
+                        size,
+                        alignment: align,
+                    },
                 }
             }
         }
