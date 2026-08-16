@@ -334,12 +334,13 @@ validity across transforms").
   `Normal`/`Inout`/`Borrow` source mode. The two can diverge: a slice `borrow
   s: [T]` is a two-word fat pointer passed **by value** through the multi-slot
   aggregate ABI, so `is_param_by_ref` is *false* for it even though the source
-  mode is `Borrow` (`crates/rue-air/src/sema/analysis/functions.rs:342-365`,
-  `is_slice_by_value`). Splicing off the logical mode would misclassify these.
+  mode is `Borrow` (`is_slice_by_value` in
+  `crates/rue-air/src/sema/ordinary_engine.rs`). Splicing off the logical mode
+  would misclassify these.
   - *Physically by-value (`is_param_by_ref == false`):* materialize each argument
     into a fresh caller local (`Alloc` + `StorageLive`), sized at the parameter's
     **full ABI slot width** — an aggregate/slice occupies
-    `require_layout_slots` slots (`functions.rs:372`), and the materialization
+    `require_layout_slots` slots (`crates/rue-air/src/sema/typeck.rs`), and the materialization
     must reserve every slot, not one. Rewrite `E`'s `Param { index }` reads to a
     `Load` of that slot. Ownership/drop of these materialized slots is §3.
   - *Physically by-reference (`is_param_by_ref == true`):* the call argument is a
@@ -379,9 +380,9 @@ and never sees un-elaborated drops.
 
 The subtle part is the **materialized by-value parameter**. The callee owns its
 by-value (`Normal`) parameters and drops them at exit unless they are moved out
-(RUE-61); `param_drops` records this obligation (set at
-`crates/rue-air/src/sema/analysis/functions.rs:387`, consulted by the CFG builder
-at `crates/rue-cfg/src/build.rs:329`). When the splice materializes a by-value
+(RUE-61); `param_drops` records this obligation (set in
+`crates/rue-air/src/sema/ordinary_engine.rs`, consulted by the CFG builder
+in `crates/rue-cfg/src/build.rs`). When the splice materializes a by-value
 argument into a fresh caller slot, that slot **is** the callee's parameter
 storage for the inlined body's lifetime. The correct rule is therefore **not**
 ordinary caller-scope drop treatment (the first draft's error), but:
