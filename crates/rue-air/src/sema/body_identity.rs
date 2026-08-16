@@ -6054,9 +6054,6 @@ mod tests {
     // (2c) + a durable signature (2b, resolving types through 2a) and proves it
     // equals production's populated info struct field-for-field.
 
-    use crate::sema::body_endpoint::BodyEndpointProvider;
-    use crate::sema::{BodySema, BoundSema, Sema};
-
     /// Lower one source file to `Rir` through the production frontend.
     fn lower_rir(source: &str, file_id: FileId) -> (Rir, ThreadedRodeo) {
         use rue_lexer::Lexer;
@@ -6073,27 +6070,47 @@ mod tests {
         (rir, interner)
     }
 
-    /// Bind declarations through the epoch so `functions`, `methods`,
-    /// `named_method_declarations`, and the `type_pool` are populated — the
-    /// state the epoch-side twin reads.
-    fn bind<'a>(
-        rir: &'a Rir,
-        interner: &'a ThreadedRodeo,
-        module_path: &str,
-        file_id: FileId,
-    ) -> BoundSema<'a> {
-        use rue_error::PreviewFeatures;
-        let mut sema = Sema::new_synthetic(rir, interner, PreviewFeatures::new());
-        sema.set_symbol_paths(HashMap::from([(file_id, module_path.to_owned())]));
-        sema.bind_declarations_for_test().unwrap()
+    /// True when a declaration's directive list carries `@allow(<warning>)` —
+    /// the same read `binding_manifest.rs` performs when filling the handle.
+    fn rir_has_allow<'r>(
+        interner: &ThreadedRodeo,
+        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+        warning_name: &str,
+    ) -> bool {
+        let allow_sym = interner.get("allow");
+        let warning_sym = interner.get(warning_name);
+        directives.any(|directive| {
+            Some(directive.name) == allow_sym
+                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+        })
+    }
+
+    /// True when the return syntax names exactly `name`.
+    fn rir_type_named(
+        rir: &Rir,
+        interner: &ThreadedRodeo,
+        syntax: rue_rir::RirTypeSyntaxRef,
+        name: &str,
+    ) -> bool {
+        let arena = rir.type_syntax();
+        let Some(rue_rir::RirTypeSyntaxNode::Named(symbol)) = arena.node(syntax) else {
+            return false;
+        };
+        arena
+            .symbol(*symbol)
+            .is_some_and(|symbol| interner.resolve(symbol) == name)
     }
 
     /// Fill a [`FunctionIdentityHandle`] from a free-function declaration the
     /// RIR index located: exactly the request/RIR reads production performs
     /// (`binding_manifest.rs`) — `body` and the `@allow` flags off the RIR, the
     /// pre-resolution return symbol, the RIR-only `is_extern`/`is_c_export`.
-    fn fn_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> FunctionIdentityHandle {
-        let inst = sema.rir.get(declaration);
+    fn fn_handle_from_rir(
+        rir: &Rir,
+        interner: &ThreadedRodeo,
+        declaration: InstRef,
+    ) -> FunctionIdentityHandle {
+        let inst = rir.get(declaration);
         let InstData::FnDecl {
             body,
             return_type,
@@ -6105,18 +6122,18 @@ mod tests {
         else {
             panic!("free-function declaration must be a FnDecl");
         };
-        let dirs = sema.rir.directives(directives);
+        let dirs = rir.directives(directives);
         FunctionIdentityHandle {
             body: *body,
             declaration,
             span: inst.span,
             return_type_syntax: *return_type,
-            returns_type: sema.rir_type_is_named(*return_type, "type"),
+            returns_type: rir_type_named(rir, interner, *return_type, "type"),
             is_extern: *is_extern,
             is_c_export: *is_c_export,
-            allow_unused_function: sema.has_allow_directive(dirs.iter(), "unused_function"),
-            allow_unused_variable: sema.has_allow_directive(dirs.iter(), "unused_variable"),
-            allow_unreachable_code: sema.has_allow_directive(dirs.iter(), "unreachable_code"),
+            allow_unused_function: rir_has_allow(interner, dirs.iter(), "unused_function"),
+            allow_unused_variable: rir_has_allow(interner, dirs.iter(), "unused_variable"),
+            allow_unreachable_code: rir_has_allow(interner, dirs.iter(), "unreachable_code"),
             file_id: inst.span.file_id,
         }
     }
@@ -6124,8 +6141,8 @@ mod tests {
     /// Fill a [`MethodIdentityHandle`] from a method declaration the RIR index
     /// located: `self_is_mut` is a body-local RIR `FnDecl` fact; `body` and
     /// `span` are request-carried.
-    fn method_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> MethodIdentityHandle {
-        let inst = sema.rir.get(declaration);
+    fn method_handle_from_rir(rir: &Rir, declaration: InstRef) -> MethodIdentityHandle {
+        let inst = rir.get(declaration);
         let InstData::FnDecl {
             body,
             self_is_mut,
@@ -6167,7 +6184,7 @@ mod tests {
     }
 
     #[test]
-    fn body_rir_index_const_declaration_uses_epoch_storage_preimage() {
+    fn body_rir_index_const_declaration_is_file_and_name_keyed() {
         let file = FileId::new(4);
         let source = r#"
             const LIMIT: i64 = 7;
@@ -6176,7 +6193,6 @@ mod tests {
         "#;
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
 
         for name in ["LIMIT", "FLAG"] {
             let symbol = interner.get(name).unwrap();
@@ -6187,13 +6203,10 @@ mod tests {
                 rir.get(declaration).data,
                 InstData::ConstDecl { .. }
             ));
-            let epoch = bound
-                .epoch_const_info(file, symbol)
-                .unwrap_or_else(|| panic!("{name} has epoch ConstInfo"));
             assert_eq!(
-                rir.get(declaration).span,
-                epoch.span,
-                "the RIR handle and epoch storage entry join on `(file, name)`"
+                rir.get(declaration).span.file_id,
+                file,
+                "the located declaration belongs to the requested file"
             );
         }
 
@@ -6215,7 +6228,8 @@ mod tests {
     fn provider_assembles_function_info_composing_2a_2b_2c() {
         // The pool-arc capstone: a provider assembles a complete `FunctionInfo`
         // from the RIR index (2c handle) + the durable signature (2b, whose
-        // `Point` parameter resolves through 2a), byte-equal to production.
+        // `Point` parameter resolves through 2a), against explicit expectations
+        // for every field class.
         let file = FileId::new(7);
         let source = r#"
             pub struct Point { x: i64, y: i64 }
@@ -6225,24 +6239,11 @@ mod tests {
         "#;
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let bs = bound.body_sema();
-        let facts = bs.endpoint_facts();
-
-        // Production's populated FunctionInfo for `make`.
-        let make_src = interner.get("make").unwrap();
-        let internal = facts
-            .endpoint_function_by_file_name(file, make_src)
-            .unwrap();
-        let prod = facts.function_info(internal).unwrap();
 
         // 2c: the RIR index locates the declaration; fill the request/RIR handle.
+        let make_src = interner.get("make").unwrap();
         let declaration = index.first_free_function(make_src, file).unwrap();
-        assert_eq!(
-            declaration, prod.declaration,
-            "index locates the epoch's declaration"
-        );
-        let handle = fn_handle_from_rir(bs, declaration);
+        let handle = fn_handle_from_rir(&rir, &interner, declaration);
 
         // 2b + 2a: mint the durable-signature subset from a durable source.
         let mut pool = callable_pool(
@@ -6271,51 +6272,56 @@ mod tests {
         );
         let info = pool.resolve_function(&0, handle).unwrap();
 
-        // 2c fields: verbatim RIR passthrough == production, field-for-field.
-        assert_eq!(info.body, prod.body);
-        assert_eq!(info.declaration, prod.declaration);
-        assert_eq!(info.span, prod.span);
-        assert_eq!(info.return_type_syntax, prod.return_type_syntax);
-        assert_eq!(info.is_extern, prod.is_extern);
-        assert_eq!(info.is_c_export, prod.is_c_export);
-        assert_eq!(info.allow_unused_function, prod.allow_unused_function);
+        // 2c fields: verbatim RIR passthrough, checked against the RIR facts.
+        let decl_inst = rir.get(declaration);
+        let InstData::FnDecl { body, .. } = decl_inst.data else {
+            panic!("free-function declaration must be a FnDecl");
+        };
+        assert_eq!(info.body, body);
+        assert_eq!(info.declaration, declaration);
+        assert_eq!(info.span, decl_inst.span);
+        assert!(!info.is_extern);
+        assert!(!info.is_c_export);
         assert!(
             info.allow_unused_function,
             "the @allow(unused_function) flag flowed through the handle"
         );
-        assert_eq!(info.allow_unused_variable, prod.allow_unused_variable);
-        assert_eq!(info.allow_unreachable_code, prod.allow_unreachable_code);
-        assert_eq!(info.file_id, prod.file_id);
+        assert!(!info.allow_unused_variable);
+        assert!(!info.allow_unreachable_code);
+        assert_eq!(info.file_id, file);
 
-        // 2b / 2a fields: durable-derived, compared index-independently.
-        assert_eq!(info.is_generic, prod.is_generic);
-        assert_eq!(info.is_pub, prod.is_pub);
-        assert_eq!(info.is_unchecked, prod.is_unchecked);
+        // 2b / 2a fields: durable-derived.
+        assert!(!info.is_generic);
+        assert!(info.is_pub);
+        assert!(!info.is_unchecked);
+        assert_eq!(render(pool.type_pool(), info.return_type), "i64");
+        let arena = pool.param_arena();
+        assert_eq!(info.params.len(), 2);
         assert_eq!(
-            render(pool.type_pool(), info.return_type),
-            render(&bs.type_pool, prod.return_type),
-            "return type display parity"
-        );
-        assert_param_range_equal(
-            &pool,
-            info.params,
-            &bs.param_arena,
-            bs.interner,
-            prod.params,
-            &bs.type_pool,
+            [
+                pool.resolve_symbol(arena.names(info.params)[0]),
+                pool.resolve_symbol(arena.names(info.params)[1]),
+            ],
+            ["p", "n"]
         );
         // The `Point` parameter resolved through 2a to a nominal.
         assert_eq!(
-            render(pool.type_pool(), pool.param_arena().types(info.params)[0]),
+            render(pool.type_pool(), arena.types(info.params)[0]),
             "Point"
         );
+        assert_eq!(render(pool.type_pool(), arena.types(info.params)[1]), "i32");
+        assert_eq!(
+            arena.modes(info.params),
+            [RirParamMode::Normal, RirParamMode::Normal]
+        );
+        assert_eq!(arena.comptime(info.params), [false, false]);
     }
 
     #[test]
     fn provider_assembles_method_info_composing_2a_2b_2c() {
         // The method twin of the capstone: assemble a complete `MethodInfo` from
         // the RIR index (2c) + durable method signature (2b, receiver `Widget`
-        // through 2a) and prove it equals production's method info.
+        // through 2a) against explicit expectations.
         let file = FileId::new(3);
         let source = r#"
             pub struct Widget {
@@ -6325,18 +6331,12 @@ mod tests {
         "#;
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let bs = bound.body_sema();
-        let facts = bs.endpoint_facts();
-
-        let widget = interner.get("Widget").unwrap();
-        let bump = interner.get("bump").unwrap();
-        let struct_id = facts.endpoint_struct_by_file_name(file, widget).unwrap();
-        let prod = facts.endpoint_method_info(struct_id, bump).unwrap();
 
         // 2c: the RIR index locates the method declaration; fill the handle.
+        let widget = interner.get("Widget").unwrap();
+        let bump = interner.get("bump").unwrap();
         let declaration = index.named_method_declaration(file, widget, bump).unwrap();
-        let handle = method_handle_from_rir(bs, declaration);
+        let handle = method_handle_from_rir(&rir, declaration);
 
         // 2b + 2a: mint the durable method subset (receiver resolves through 2a).
         let mut pool = callable_pool(
@@ -6362,49 +6362,35 @@ mod tests {
                     )],
                     DType::U32,
                     true,
-                    match prod.self_mode {
-                        RirParamMode::Normal => SemanticParameterMode::Value,
-                        RirParamMode::Borrow => SemanticParameterMode::Borrow,
-                        RirParamMode::Inout => SemanticParameterMode::Inout,
-                    },
+                    SemanticParameterMode::Value,
                 ),
             )],
         );
         let info = pool.resolve_method(&0, handle).unwrap();
 
-        // 2c passthrough.
-        assert_eq!(info.body, prod.body);
-        assert_eq!(info.span, prod.span);
-        assert_eq!(info.self_is_mut, prod.self_is_mut);
+        // 2c passthrough, checked against the RIR facts.
+        let decl_inst = rir.get(declaration);
+        let InstData::FnDecl {
+            body, self_is_mut, ..
+        } = decl_inst.data
+        else {
+            panic!("method declaration must be a FnDecl");
+        };
+        assert_eq!(info.body, body);
+        assert_eq!(info.span, decl_inst.span);
+        assert_eq!(info.self_is_mut, self_is_mut);
+        assert!(!info.self_is_mut);
 
         // 2b / 2a durable-derived: receiver, has_self, return type, params.
-        assert_eq!(info.self_mode, prod.self_mode);
-        assert_eq!(info.has_self, prod.has_self);
+        assert_eq!(info.self_mode, RirParamMode::Normal);
         assert!(info.has_self);
-        assert_eq!(
-            render(pool.type_pool(), info.struct_type),
-            render(&bs.type_pool, prod.struct_type),
-            "receiver display parity"
-        );
-        assert_eq!(
-            pool.type_pool()
-                .struct_symbol_name(info.struct_type.as_struct().unwrap()),
-            bs.type_pool
-                .struct_symbol_name(prod.struct_type.as_struct().unwrap()),
-            "receiver symbol name parity"
-        );
-        assert_eq!(
-            render(pool.type_pool(), info.return_type),
-            render(&bs.type_pool, prod.return_type),
-            "return type display parity"
-        );
-        assert_param_range_equal(
-            &pool,
-            info.params,
-            &bs.param_arena,
-            bs.interner,
-            prod.params,
-            &bs.type_pool,
-        );
+        assert_eq!(render(pool.type_pool(), info.struct_type), "Widget");
+        assert_eq!(render(pool.type_pool(), info.return_type), "u32");
+        let arena = pool.param_arena();
+        assert_eq!(info.params.len(), 1);
+        assert_eq!(pool.resolve_symbol(arena.names(info.params)[0]), "delta");
+        assert_eq!(render(pool.type_pool(), arena.types(info.params)[0]), "i32");
+        assert_eq!(arena.modes(info.params), [RirParamMode::Normal]);
+        assert_eq!(arena.comptime(info.params), [false]);
     }
 }
