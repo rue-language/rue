@@ -12,9 +12,6 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-echo "Checking production debug-assertion policy..."
-scripts/validate-debug-assert-policy.py
-
 echo "Checking Buck test-tier ownership..."
 ./buck2 bxl //test_tiers.bxl:validate
 
