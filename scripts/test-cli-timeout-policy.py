@@ -33,25 +33,85 @@ class TimeoutPolicyTests(unittest.TestCase):
             authority["contract"]["heavyweight_long"]["timeout_profile"], "slow"
         )
 
-    def test_shards_use_lpt_expected_cost_plus_headroom(self):
+    def test_shards_consume_reported_loads_plus_headroom(self):
+        # The packing itself lives in the harness (RUE_CLI_EMIT_SHARD_LOADS);
+        # this gate only applies policy arithmetic to the loads it reported.
+        loads = {
+            "version": 1,
+            "shard_count": 4,
+            "platforms": {
+                "macos": {
+                    "loads_ms": [1000, 800, 600, 600],
+                    "case_counts": [1, 1, 1, 1],
+                    "total_cases": 4,
+                }
+            },
+        }
+        policy = {
+            "expected_cost_multiplier_percent": 150,
+            "fixed_headroom_ms": 500,
+            "minimum_shard_timeout_ms": 1,
+            "minimum_monolith_timeout_ms": 1,
+            "minimum_slow_suite_timeout_ms": 9000,
+        }
+        timeout, expected = MODULE.timeout_for_target(
+            "//:cli-tests-shard-0", loads, "macos", policy
+        )
+        self.assertEqual(expected, 1000)
+        self.assertEqual(timeout, 2000)
+        # The monolith's expected cost is the whole reported inventory.
+        timeout, expected = MODULE.timeout_for_target(
+            "//:cli-tests", loads, "macos", policy
+        )
+        self.assertEqual(expected, 3000)
+        self.assertEqual(timeout, 5000)
+
+    def test_unmodeled_platform_and_bad_shard_index_are_rejected(self):
+        loads = {
+            "version": 1,
+            "shard_count": 2,
+            "platforms": {"linux-x64": {"loads_ms": [10, 10]}},
+        }
+        policy = {
+            "expected_cost_multiplier_percent": 100,
+            "fixed_headroom_ms": 0,
+            "minimum_shard_timeout_ms": 1,
+            "minimum_monolith_timeout_ms": 1,
+            "minimum_slow_suite_timeout_ms": 1,
+        }
+        with self.assertRaisesRegex(ValueError, "do not model platform"):
+            MODULE.timeout_for_target("//:cli-tests-shard-0", loads, "macos", policy)
+        with self.assertRaisesRegex(ValueError, "invalid CLI shard index"):
+            MODULE.timeout_for_target(
+                "//:cli-tests-shard-2", loads, "linux-x64", policy
+            )
+        with self.assertRaisesRegex(ValueError, "requires --shard-loads"):
+            MODULE.timeout_for_target("//:cli-tests", None, "linux-x64", policy)
+
+    def test_shard_loads_file_is_validated(self):
         with tempfile.TemporaryDirectory() as directory:
-            weights = Path(directory) / "weights.json"
-            weights.write_text(
-                '{"version":1,"default_ms":1,"common":{"a":1000,"b":800,"c":600},'
-                '"platforms":{"macos":{"c":1000}}}'
-            )
-            policy = {
-                "expected_cost_multiplier_percent": 150,
-                "fixed_headroom_ms": 500,
-                "minimum_shard_timeout_ms": 1,
-                "minimum_monolith_timeout_ms": 1,
-                "minimum_slow_suite_timeout_ms": 9000,
+            path = Path(directory) / "shard-loads.json"
+            good = {
+                "version": 1,
+                "shard_count": 2,
+                "platforms": {"linux-x64": {"loads_ms": [5, 5]}},
             }
-            timeout, expected = MODULE.timeout_for_target(
-                "//:cli-tests-shard-0", weights, "macos", policy
-            )
-            self.assertEqual(expected, 1000)
-            self.assertEqual(timeout, 2000)
+            path.write_text(json.dumps(good))
+            self.assertEqual(MODULE.load_shard_loads(path), good)
+            for mutation, message in [
+                ({"version": 2}, "unsupported shard-loads version"),
+                ({"shard_count": 0}, "shard_count must be a positive integer"),
+                ({"platforms": {}}, "platforms must be a non-empty object"),
+                (
+                    # One load per shard, or the report models a different
+                    # shard topology than the one BUCK declares.
+                    {"platforms": {"linux-x64": {"loads_ms": [5]}}},
+                    "must list 2 non-negative integer loads",
+                ),
+            ]:
+                path.write_text(json.dumps({**good, **mutation}))
+                with self.assertRaisesRegex(ValueError, message):
+                    MODULE.load_shard_loads(path)
 
     def test_minimum_prevents_sparse_weight_underbudget(self):
         policy = {
@@ -123,18 +183,13 @@ class BuckActionBoundTests(unittest.TestCase):
         "minimum_slow_suite_timeout_ms": 3000,
     }
 
+    LOADS = {
+        "version": 1,
+        "shard_count": 2,
+        "platforms": {"linux-x64": {"loads_ms": [1000, 1000]}},
+    }
+
     def fixture(self, directory, cli_seconds):
-        weights = Path(directory) / "shard-weights.json"
-        weights.write_text(
-            json.dumps(
-                {
-                    "version": 1,
-                    "default_ms": 1,
-                    "common": {"a": 1000, "b": 1000},
-                    "platforms": {"linux-x64": {}},
-                }
-            )
-        )
         buck = Path(directory) / "BUCK"
         buck.write_text(
             f"_CLI_TESTS_TIMEOUT_SECONDS = {cli_seconds}\n"
@@ -142,29 +197,29 @@ class BuckActionBoundTests(unittest.TestCase):
             'cached_corpus_suite(\n    name = "cli-tests-slow",\n'
             "    timeout_seconds = 9999,\n)\n"
         )
-        return buck, weights
+        return buck
 
     def test_bound_covering_the_deadline_passes(self):
         with tempfile.TemporaryDirectory() as directory:
-            buck, weights = self.fixture(directory, 9999)
+            buck = self.fixture(directory, 9999)
             self.assertEqual(
-                MODULE.check_buck_timeouts(buck, weights, self.POLICY), []
+                MODULE.check_buck_timeouts(buck, self.LOADS, self.POLICY), []
             )
 
     def test_bound_inside_the_deadline_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:
-            buck, weights = self.fixture(directory, 1)
-            errors = MODULE.check_buck_timeouts(buck, weights, self.POLICY)
+            buck = self.fixture(directory, 1)
+            errors = MODULE.check_buck_timeouts(buck, self.LOADS, self.POLICY)
             self.assertEqual(len(errors), 1, errors)
             self.assertIn("//:cli-tests", errors[0])
             self.assertIn("A healthy run would be killed", errors[0])
 
     def test_missing_bound_is_an_error_not_a_silent_pass(self):
         with tempfile.TemporaryDirectory() as directory:
-            buck, weights = self.fixture(directory, 9999)
+            buck = self.fixture(directory, 9999)
             buck.write_text("# no timeouts here\n")
             with self.assertRaisesRegex(ValueError, "no action timeout found"):
-                MODULE.check_buck_timeouts(buck, weights, self.POLICY)
+                MODULE.check_buck_timeouts(buck, self.LOADS, self.POLICY)
 
 
 if __name__ == "__main__":

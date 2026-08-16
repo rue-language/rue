@@ -1265,14 +1265,34 @@ genrule(
         "$(location //crates/rue-cli-tests:cases)/cases/examples_mosaic.toml > $OUT",
 )
 
+# RUE-1530: the packing authority for CLI shard deadlines. The harness's emit
+# mode performs the same case discovery the //:cli-tests-shard-* targets
+# perform (premerge tier, default all-platform selection) and packs it with
+# the same runtime LPT rule, once per platform modeled in shard-weights.json.
+# scripts/cli-timeout-policy.py applies its policy arithmetic to these
+# reported loads instead of reimplementing the packing; the declared inputs
+# (cases, examples, weights, harness) re-derive the report whenever the
+# corpus population or its measured costs change.
+genrule(
+    name = "cli-shard-loads-json",
+    out = "shard-loads.json",
+    cmd = "env " +
+        "RUE_CLI_EMIT_SHARD_LOADS={} ".format(CLI_TEST_SHARD_COUNT) +
+        "RUE_CLI_CASE_TIER=premerge " +
+        "RUE_CLI_CASES=$(location //crates/rue-cli-tests:cases)/cases " +
+        "RUE_EXAMPLES_DIR=$(location :examples)/examples " +
+        "RUE_CLI_SHARD_WEIGHTS=$(location //crates/rue-cli-tests:shard-weights) " +
+        "$(exe //crates/rue-cli-tests:rue-cli-tests) > $OUT",
+)
+
 rue_sh_test(
     name = "cli-timeout-policy-validation",
     test = "scripts/cli-timeout-policy.py",
     args = [
         "--policy",
         "$(location :cli-execution-contracts-json)",
-        "--weights",
-        "$(location //crates/rue-cli-tests:shard-weights)",
+        "--shard-loads",
+        "$(location :cli-shard-loads-json)",
         # RUE-1163: a corpus action gets no test-executor timeout, so the
         # `timeout_seconds` spelled here is the only bound on a wedged harness.
         # Declaring this file as an input makes the two sources of truth fail
