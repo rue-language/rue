@@ -7788,11 +7788,11 @@ impl QueryContext {
     /// Requests stable-ordered registered dependencies with concurrency-aware
     /// scheduling.
     ///
-    /// A one-permit runtime cannot execute batch siblings concurrently. In
-    /// that regime this keeps every request in the current task, preserving
-    /// the same dependency observations and result order without allocating
-    /// structured children or donating the sole permit. Wider runtimes use the
-    /// ordinary structured batch so independent evaluators can run in parallel.
+    /// When an enclosing batch has already reserved every nested worker slot,
+    /// this keeps every request in the current task, preserving the same
+    /// dependency observations and result order without allocating structured
+    /// children or donating a permit. Otherwise independent evaluators use the
+    /// ordinary structured batch and can run in parallel.
     pub fn query_registered_adaptive_batch<K, V>(
         &self,
         family: &QueryFamily<K, V>,
@@ -7810,12 +7810,46 @@ impl QueryContext {
             return Err(QueryAbort::ForeignRuntime);
         }
         if self.max_concurrency() == 1 {
-            keys.into_iter()
+            return keys
+                .into_iter()
                 .map(|key| self.query_registered(family, key))
-                .collect()
-        } else {
-            self.query_registered_batch(family, keys)
+                .collect();
         }
+        let keys = keys.into_iter().collect::<Vec<_>>();
+        if keys.len() <= 1 {
+            return keys
+                .into_iter()
+                .map(|key| self.query_registered(family, key))
+                .collect();
+        }
+
+        // Reserve the nested batch worker capacity before constructing any
+        // structured-batch state. An enclosing batch owns all of the
+        // `maximum - 1` worker slots while its children run, so a nested
+        // adaptive request would otherwise allocate wait-graph edges, an
+        // authority, and one child task per item despite having no worker to
+        // execute in parallel. A zero-count claim is a race-safe signal to
+        // preserve the same ordered dependency observations in this task.
+        let worker_claim =
+            BatchWorkerClaim::new(self.task.core.clone(), keys.len().saturating_sub(1));
+        if worker_claim.count == 0 {
+            return keys
+                .into_iter()
+                .map(|key| self.query_registered(family, key))
+                .collect();
+        }
+        let items = Arc::new(RegisteredBatchItems {
+            family: family.inner.name.clone(),
+            items: keys
+                .into_iter()
+                .map(|key| RegisteredBatchItem {
+                    request_id: self.task.next_nested_request(),
+                    key,
+                    ready_at: Instant::now(),
+                })
+                .collect(),
+        });
+        self.query_registered_batch_with_claim(family, items, worker_claim)
     }
 
     /// Requests a stable-ordered batch of dependencies through one registered
@@ -7874,6 +7908,24 @@ impl QueryContext {
         if items.items.is_empty() {
             return Ok(Vec::new());
         }
+        let worker_claim =
+            BatchWorkerClaim::new(self.task.core.clone(), items.items.len().saturating_sub(1));
+        self.query_registered_batch_with_claim(family, items, worker_claim)
+    }
+
+    fn query_registered_batch_with_claim<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        items: Arc<RegisteredBatchItems<K>>,
+        worker_claim: BatchWorkerClaim,
+    ) -> Result<Vec<Arc<QueryTerminal<V>>>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        if items.items.is_empty() {
+            return Ok(Vec::new());
+        }
 
         let wait_labels: Arc<dyn StructuredWaitLabels> = items.clone();
         let structured_waits = StructuredWaitGuard::new(
@@ -7887,8 +7939,6 @@ impl QueryContext {
                 .map(|(index, item)| (TaskId(item.request_id), index)),
         )
         .map_err(QueryAbort::Cycle)?;
-        let worker_claim =
-            BatchWorkerClaim::new(self.task.core.clone(), items.items.len().saturating_sub(1));
         let queue = Arc::new(Mutex::new(VecDeque::from_iter(0..items.items.len())));
         let batch_authority = Arc::new(BatchValidationAuthority::new(
             self.task.core.clone(),
@@ -14760,7 +14810,7 @@ mod tests {
     }
 
     #[test]
-    fn adaptive_registered_batch_stays_inline_only_when_parallelism_is_impossible() {
+    fn adaptive_registered_batch_stays_inline_when_parallelism_is_impossible() {
         fn run(workers: usize) -> (Arc<QueryTerminal<u64>>, RuntimeMetrics) {
             let runtime = QueryRuntime::new(workers);
             publish_empty(&runtime, [revision(1)]);
@@ -14814,6 +14864,102 @@ mod tests {
         assert_eq!(serial_metrics.ready_items, 0);
         assert_eq!(parallel_metrics.donated_permits, 1);
         assert_eq!(parallel_metrics.ready_items, 2);
+    }
+
+    #[test]
+    fn adaptive_registered_batch_stays_inline_when_nested_capacity_is_saturated() {
+        fn run(workers: usize) -> (Arc<QueryTerminal<u64>>, RuntimeMetrics) {
+            let runtime = QueryRuntime::new(workers);
+            publish_empty(&runtime, [revision(1)]);
+            let leaves = runtime
+                .family_with_evaluator::<Key, u64, _>("adaptive-saturated-leaf", 8, |_, _, key| {
+                    Ok(QueryOutput::success(key.0.len() as u64))
+                })
+                .unwrap();
+            let leaves_for_middle = leaves.clone();
+            let middle = runtime
+                .family_with_evaluator::<Key, u64, _>(
+                    "adaptive-saturated-middle",
+                    8,
+                    move |context, _, key| {
+                        let leaf_keys = match key.0 {
+                            "m0" => [Key("m0-aa"), Key("m0-bbb")],
+                            "m1" => [Key("m1-aa"), Key("m1-bbb")],
+                            "m2" => [Key("m2-aa"), Key("m2-bbb")],
+                            "m3" => [Key("m3-aa"), Key("m3-bbb")],
+                            _ => unreachable!("test root only requests known middle keys"),
+                        };
+                        let terminals = context
+                            .query_registered_adaptive_batch(&leaves_for_middle, leaf_keys)?;
+                        let sum = terminals
+                            .iter()
+                            .map(|terminal| match terminal.outcome() {
+                                QueryOutcome::Success(value) => *value,
+                                QueryOutcome::Failure(_) => unreachable!("leaf cannot fail"),
+                            })
+                            .sum();
+                        Ok(QueryOutput::success(sum))
+                    },
+                )
+                .unwrap();
+            let middle_for_root = middle.clone();
+            let root = runtime
+                .family_with_evaluator::<Key, u64, _>(
+                    "adaptive-saturated-root",
+                    8,
+                    move |context, _, _| {
+                        let terminals = context.query_registered_adaptive_batch(
+                            &middle_for_root,
+                            [Key("m0"), Key("m1"), Key("m2"), Key("m3")],
+                        )?;
+                        let sum = terminals
+                            .iter()
+                            .map(|terminal| match terminal.outcome() {
+                                QueryOutcome::Success(value) => *value,
+                                QueryOutcome::Failure(_) => unreachable!("middle cannot fail"),
+                            })
+                            .sum();
+                        Ok(QueryOutput::success(sum))
+                    },
+                )
+                .unwrap();
+            let terminal = runtime
+                .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+                .into_result()
+                .unwrap();
+            let metrics = runtime.metrics();
+            (terminal, metrics)
+        }
+
+        let (serial, serial_metrics) = run(1);
+        let (saturated, saturated_metrics) = run(4);
+        assert_eq!(serial.outcome(), &QueryOutcome::Success(44));
+        assert_eq!(saturated.outcome(), serial.outcome());
+        let stable_dependencies = |terminal: &QueryTerminal<u64>| {
+            terminal
+                .dependencies()
+                .iter()
+                .map(|dependency| {
+                    (
+                        dependency.node.family().to_owned(),
+                        dependency.node.key().to_owned(),
+                        dependency.stamp,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            stable_dependencies(&saturated),
+            stable_dependencies(&serial)
+        );
+        assert_eq!(saturated.work(), serial.work());
+        // The outer four-item batch consumes all three nested worker slots.
+        // Its four children are therefore the only structured items; each
+        // child's two leaf requests stay ordered in that child task.
+        assert_eq!(saturated_metrics.donated_permits, 1);
+        assert_eq!(saturated_metrics.ready_items, 4);
+        assert_eq!(serial_metrics.donated_permits, 0);
+        assert_eq!(serial_metrics.ready_items, 0);
     }
 
     #[test]

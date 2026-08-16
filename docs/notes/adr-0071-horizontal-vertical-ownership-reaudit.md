@@ -17,7 +17,7 @@ production owner for each of those computations. Presentation requests consume
 the same artifacts instead of selecting peer frontends, semantic engines, CFG
 builders, or backends.
 
-The re-audit found two real appendices and one retention question:
+The re-audit found three real appendices and one suspected retention appendix:
 
 1. CFG preparation imported a stable semantic body into a fresh local AIR/type/
    symbol epoch, then immediately walks the new AIR beside the stable body to
@@ -34,15 +34,25 @@ The re-audit found two real appendices and one retention question:
    thin views.
 3. The optimized `CfgRecord` retains the unoptimized record's AIR and other
    presentation domains even though ordinary codegen consumes CFG/type/codegen
-   domains. This is a plausible memory appendix, but it needs retained-size and
-   eviction evidence before changing the query boundary.
+   domains. Attribution showed that these values are Arc-shared with the
+   dependency cone rather than copied, and retained-edit tests reclaimed the
+   superseded generation. Removing the field would save only an Arc and weaken
+   the exact dependency boundary, so this is not an appendix to remove.
+4. Adaptive layout/drop query batches nested under the already-parallel
+   optimized-CFG batch usually had no worker reservation available, but still
+   built structured child tasks, queues, wait edges, and validation authorities
+   for every exact request. The adaptive API now reserves once and executes in
+   the current task when that reservation is saturated. It preserves every
+   exact query edge while removing scheduling work that cannot create
+   parallelism.
 
-The first two items are completed below without changing the query graph, phase
-ownership, or invalidation. The paired AIR clock and memory result was neutral,
-so it is an ownership and maintenance improvement rather than a claimed
-speedup. The CodegenUnit cleanup likewise has no post-change performance claim
-until the coordinator supplies a measurement. The third is measurement work,
-not yet an authorized representation change.
+The first two ownership items and the adaptive scheduling fix are completed
+below without coarsening the query graph, phase ownership, or invalidation. The
+paired AIR clock and memory result was neutral, so it is an ownership and
+maintenance improvement rather than a claimed speedup. The CodegenUnit cleanup
+is a measured retention improvement. Optimized-CFG attribution rejected the
+suspected representation change, while the nested-batch experiment produced a
+material wall-time and queueing improvement.
 
 ## Current vertical map
 
@@ -54,7 +64,7 @@ not yet an authorized representation change.
 | declaration semantics | `compiler.semantic-nucleus` and exact type/layout/ABI/drop-glue queries | stable definition/type/function keys and immutable fact payloads | Shared payload work is now effective; provider materialization is 97.2% shared on Lattice. |
 | body semantics | `compiler.body-transaction` | immutable stable semantic body plus exact dependency observations | Per-body scheduling is conventional and independently invalidated. No normal source reparse or alternate semantic engine. |
 | local AIR and CFG | `compiler.cfg` | a body-local AIR/type/symbol epoch, `CfgDomainProjection`, validated CFG, warnings, and codegen domains | One owner. AIR is the sole live body representation, and the projection derives from AIR plus its admitted stable identities. |
-| optimized CFG | `compiler.optimized-cfg` | cloned-and-optimized CFG plus Arc-shared local domains | The clone is an immutable-query tradeoff, not a peer optimizer. Retaining AIR through normal backend roots needs measurement. |
+| optimized CFG | `compiler.optimized-cfg` | cloned-and-optimized CFG plus Arc-shared local domains | The clone is an immutable-query tradeoff, not a peer optimizer. Attribution confirms that AIR/domain storage is shared with the exact dependency cone. |
 | target backend | `compiler.codegen-unit` | one per-function target-specific lowering, MIR, liveness, allocation, scheduling, emission, and requested artifacts | One target-selected owner. Shared planning modules make x86-64/AArch64 policy explicit without pretending their MIRs are identical. |
 | object generation | `compiler.object-projection` | serialized object bytes | Canonical query boundary; it projects borrowed `CodegenUnit` sections, ordered atoms, and relocations into transient linker-builder inputs. |
 | linking | `ProgramImagePlan` and the fresh linker | ordered object bytes and export thunks | Deliberately fresh under ADR-0063. The final owned-byte adapter is not a second codegen path. |
@@ -86,8 +96,9 @@ The same review across phases found the following owners:
   parse, semantic, RIR, CFG, codegen, and resource failures. Long candidate
   packing/materialization and body work have bounded checkpoints.
 - **Retention:** query families retain immutable values with explicit charges
-  and bounded history. Publication-time interner rescans are gone. The remaining
-  question is whether optimized CFG roots should retain presentation-only AIR.
+  and bounded history. Publication-time interner rescans are gone. Optimized
+  CFG roots Arc-share their AIR/domain values with the exact dependency cone;
+  they do not retain a second physical body representation.
 
 ## Current measurement
 
@@ -153,7 +164,9 @@ What is unusual in Rue is therefore not parse→RIR→AIR→CFG→MIR. The local
 boundary now follows the conventional shape: AIR is the sole live body
 representation, and CFG derives its relocation domain from AIR without
 consulting a parallel semantic body. The CodegenUnit object-projection
-appendix is also closed; only measured optimized-CFG retention remains open.
+appendix is also closed. Optimized-CFG retention is ordinary Arc sharing, and
+the measured query fanout problem was nested scheduling overhead rather than a
+second semantic computation.
 
 Primary references:
 
@@ -166,9 +179,9 @@ Primary references:
 
 ### Present
 
-- possible presentation-only AIR retention through optimized CFG roots;
-- large but exact layout/drop-glue and query-validation fanout, which needs
-  family-level profiling before it is called duplicate work.
+- large exact layout/drop-glue request fanout remains part of CFG invalidation,
+  but saturated nested requests no longer build child-task machinery that
+  cannot run in parallel.
 
 ### Historical and already removed
 
@@ -241,23 +254,51 @@ its contents. This is therefore a measured retention and ownership win, not a
 wall-time speedup; eliminating the retained aliases does not eliminate the
 linker-owned transient copies or the new fail-closed validation.
 
+### Optimized CFG retains shared domains, not a shadow body
+
+Disposable Lattice attribution measured 58,929,825 logical retained bytes
+across 52,605 unoptimized-CFG pins and 36,379,773 bytes across 1,280 optimized
+CFG pins. The optimized records' component accounting included 3,051,356 AIR
+bytes, 3,056,851 optimized-CFG bytes, 13,269,961 domain bytes, 4,306,650 type-
+pool bytes, 1,838,510 interner bytes, and 8,508,519 codegen-domain bytes. Those
+figures are logical reachability charges, not distinct physical allocations:
+the optimized terminal and its exact unoptimized dependency share the same
+Arcs. A retained-edit witness grew and then reclaimed both families' superseded
+generation (`cfg` 6,117→8,988→6,117; `optimized-cfg`
+5,653→8,430→5,653). Removing the AIR/domain fields would therefore save only
+Arc headers while weakening the terminal's self-contained typed boundary. The
+suspected retention appendix is rejected.
+
+### Saturated adaptive batches stay in the current task
+
+The outer optimized-CFG batch normally reserves all nested worker capacity.
+Inner adaptive layout/drop batches were consequently creating structured child
+tasks and donating permits even though they could not recruit another worker.
+`query_registered_adaptive_batch` now preserves the one-worker streaming path,
+atomically reserves wider-runtime capacity once, and runs stable-order exact
+queries in the current task when the reservation is zero. A nonzero reservation
+still uses the structured parallel path, and public exact-batch semantics are
+unchanged.
+
+Six order-balanced parent/current Lattice pairs at four workers produced the
+exact same 1,662,976-byte executable (`45784ce7…9a89e7`). Complete-root time
+improved by 50.81 ms paired median. Ready items fell from 64,720 to 11,174,
+permit donations from 5,362 to 1,542, summed ready wait by 34.72 seconds, and
+maximum ready wait by 49.45 ms; claims were unchanged. Peak RSS increased by
+about 1.88 MB externally and 1.85 MB in the compiler report. Six one-worker
+control pairs preserved identical work and output and favored the change by
+6.12 ms paired median, within run noise; their ready-item and donation counts
+remained zero. This is a scheduling speedup, not eliminated compiler
+computation: all exact layout/drop queries and their invalidation edges remain.
+
 ## Ranked next work
 
-### 1. Attribute optimized-CFG retention
-
-Measure per-family retained bytes for unoptimized CFG, optimized CFG, AIR,
-types, strings, atoms, and codegen domains on Lattice and retained-edit cases.
-Only then decide whether normal optimized roots can omit AIR while explicit AIR
-presentation retains the unoptimized terminal. A split that weakens dependency
-cones or creates a second CFG record builder is rejected.
-
-### 2. Reprofile graph fanout
-
-After the ownership changes, attribute the 25,141 layout/drop requests and
-283,413 dependency observations by family and critical path. Exact repeated
-query requests are often cheap reuse, not duplicate compiler computation. Act
-only on a measured construction, hashing, or validation owner; do not replace
-the query graph with a global mutable cache.
+The ownership and measured query-scheduling appendices identified by this
+re-audit are closed. Further work should start from a fresh profile rather than
+the rejected optimized-CFG split or aggregation of layout/drop facts. Exact
+repeated requests remain necessary invalidation edges; future changes must
+identify a measured computation, representation, or scheduling owner without a
+global cache or coarser body invalidation.
 
 ## Structural falsifiers
 
