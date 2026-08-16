@@ -57,6 +57,21 @@ def test_one_stalled_platform_is_enough() -> None:
     assert [entry[0] for entry in behind] == ["aarch64-macos"]
 
 
+def test_a_burst_with_a_recent_newest_commit_is_not_a_stall() -> None:
+    # RUE-1258 recency guard: multi-commit queue merges can outrun the
+    # per-push collector, but an actively collecting series always has a
+    # recent newest plotted commit. Only a count past the threshold AND an
+    # aged newest commit is a stall.
+    subject = data(("x86_64-linux", "a" * 40, "2026-08-08T00:00:00Z"))
+    young = lambda commit: 60
+    old = lambda commit: 3 * 60 * 60
+    assert stall.stalled(subject, fixed(40), commit_age=young) == []
+    behind = stall.stalled(subject, fixed(40), commit_age=old)
+    assert [entry[2] for entry in behind] == [40]
+    # Without an age source the count alone still decides, as before.
+    assert stall.stalled(subject, fixed(40)) != []
+
+
 def test_an_empty_dashboard_is_not_a_stall() -> None:
     # The honest first state of a suite that has not collected yet. Failing
     # here would block the repository the day collection is introduced.

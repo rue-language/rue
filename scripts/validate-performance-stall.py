@@ -11,7 +11,13 @@ purpose.
 "Stalled" is measured in merged trunk commits rather than wall-clock, because
 commit count degrades gracefully across quiet weekends while a clock does not.
 Collection legitimately lags trunk by minutes, and a single failed collection
-should not block the repository, so the threshold tolerates both.
+should not block the repository, so the threshold tolerates both. The count
+alone misreads one healthy situation: a merge burst, where multi-commit queue
+merges land faster than the per-push collector publishes and every open pull
+request fails on a series that is actively advancing (three retriggers in one
+night, 2026-08-16). A recency guard absorbs that case — a count past the
+threshold only fails when the newest plotted commit is also older than the
+grace window, which a burst never produces and a dead collector always does.
 
 Three things can stop, and all three are checked here. Points can stop arriving,
 which is what the commit-count rule catches. Points can also keep arriving while
@@ -38,6 +44,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Five merged trunk commits with no new plotted point, per platform (RUE-1258).
@@ -45,6 +52,11 @@ from pathlib import Path
 # enough that one failed collection, or collection simply lagging a merge, never
 # blocks a pull request.
 DEFAULT_MAX_COMMITS = 5
+
+# The recency guard: a series whose newest plotted commit is younger than this
+# is actively collecting, whatever the commit count says. Two hours covers the
+# slowest collection leg with margin; a dead collector blows through it.
+DEFAULT_GRACE_SECONDS = 2 * 60 * 60
 
 # Complete runs an epoch may collect before it must have pinned a baseline
 # (RUE-1533). Counted in the epoch's own collected points rather than in trunk
@@ -183,18 +195,25 @@ def unpinned(
 def stalled(
     data: dict,
     commits_since,
+    commit_age=None,
     max_commits: int = DEFAULT_MAX_COMMITS,
+    grace_seconds: int = DEFAULT_GRACE_SECONDS,
 ) -> list[tuple[str, str, int]]:
     """Return (platform, commit, commits_behind) for every stalled platform.
 
     `commits_since` maps a commit to the number of trunk commits merged after
-    it. Injected rather than called directly so the rule is testable without a
-    repository.
+    it; `commit_age` maps a commit to its age in seconds. Both are injected
+    rather than called directly so the rule is testable without a repository.
+    A count past the threshold fails only when the newest plotted commit has
+    also outlived the grace window: an actively collecting series always has
+    a recent newest commit, however fast trunk is moving.
     """
     behind = []
     for platform, commit, _ in newest_plotted(data):
         count = commits_since(commit)
         if count > max_commits:
+            if commit_age is not None and commit_age(commit) <= grace_seconds:
+                continue
             behind.append((platform, commit, count))
     return behind
 
@@ -219,6 +238,25 @@ def git_commits_since(repo: Path, ref: str):
         return int(result.stdout.strip())
 
     return count
+
+
+def git_commit_age(repo: Path):
+    """Age in seconds of a commit, from its committer timestamp."""
+
+    def age(commit: str) -> int:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "show", "-s", "--format=%ct", commit],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise HistoryUnavailable(
+                f"could not read the commit time of {commit[:12]}: "
+                f"{result.stderr.strip()}"
+            )
+        return max(0, int(time.time()) - int(result.stdout.strip()))
+
+    return age
 
 
 def report(behind: list[tuple[str, str, int]], max_commits: int) -> str:
@@ -329,6 +367,12 @@ def main() -> int:
     )
     parser.add_argument("--max-commits", type=int, default=DEFAULT_MAX_COMMITS)
     parser.add_argument(
+        "--grace-minutes",
+        type=int,
+        default=DEFAULT_GRACE_SECONDS // 60,
+        help="a newest plotted commit younger than this never counts as a stall",
+    )
+    parser.add_argument(
         "--max-unpinned-points",
         type=int,
         default=DEFAULT_MAX_UNPINNED_POINTS,
@@ -347,7 +391,13 @@ def main() -> int:
         return 0
 
     try:
-        behind = stalled(data, git_commits_since(args.repo, args.ref), args.max_commits)
+        behind = stalled(
+            data,
+            git_commits_since(args.repo, args.ref),
+            git_commit_age(args.repo),
+            args.max_commits,
+            args.grace_minutes * 60,
+        )
     except HistoryUnavailable as error:
         print(f"error: {error}", file=sys.stderr)
         print(
