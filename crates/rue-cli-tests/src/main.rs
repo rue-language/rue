@@ -96,6 +96,13 @@
 //! - `RUE_PLATFORM_CASE_SELECTION=native`: register every `only_on` case
 //!   applicable to the current host and no target-independent cases. Required
 //!   native CI uses this declarative selection.
+//! - `RUE_CLI_EMIT_SHARD_LOADS=<count>` (with `RUE_CLI_SHARD_WEIGHTS=<path>`):
+//!   instead of running tests, perform the same case discovery, pack it into
+//!   `<count>` shards once per platform modeled in the weights file, print the
+//!   JSON shard-loads report to stdout, and exit. Needs no compiler binary;
+//!   the `//:cli-shard-loads-json` genrule runs it at build time so
+//!   `scripts/cli-timeout-policy.py` consumes reported loads instead of
+//!   reimplementing the packing.
 //! - `differential_opt = true`: compile+run the case once per optimization
 //!   level (`-O0`/`-O1`/`-O2`/`-O3`) and assert identical exit code AND stdout
 //!   across all levels, catching optimizer miscompiles (RUE-236). The runner
@@ -3523,6 +3530,86 @@ fn example_trials(
     trials
 }
 
+/// The case-name inventory the current tier and platform selection register:
+/// declarative corpus cases plus (under `All` selection) automatic examples.
+///
+/// This is the single population rule for shard planning. `main` feeds it to
+/// the runtime [`CliShardPlan`]; [`emit_shard_loads`] feeds the same names to
+/// the per-platform packing report, so a derived shard deadline can never
+/// model a different inventory than the harness runs.
+fn discover_case_names(
+    corpus: &LoadedCorpus,
+    examples: &[DiscoveredExample],
+    automatic_contracts: &HashMap<String, AutomaticExampleMetadata>,
+    case_tier: CliCaseTierSelection,
+    platform_selection: PlatformCaseSelection,
+) -> Vec<String> {
+    let mut discovered_names = corpus
+        .files
+        .iter()
+        .flat_map(|(_, file)| {
+            file.cases
+                .iter()
+                .filter(|case| {
+                    case_tier.includes(file.section.tier)
+                        && platform_selection.includes(&case.only_on)
+                })
+                .map(|case| format!("{}::{}", file.section.id, case.name))
+        })
+        .collect::<Vec<_>>();
+    if platform_selection == PlatformCaseSelection::All {
+        discovered_names.extend(examples.iter().filter_map(|example| {
+            let tier = automatic_contracts
+                .get(&example.relative_path)
+                .map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
+            case_tier
+                .includes(tier)
+                .then(|| example_test_name(&example.relative_path))
+        }));
+    }
+    discovered_names
+}
+
+/// `RUE_CLI_EMIT_SHARD_LOADS=<count>` mode: run the same case discovery the
+/// test path performs, pack it once per platform modeled in
+/// `RUE_CLI_SHARD_WEIGHTS`, and return the JSON report for stdout.
+///
+/// This needs the cases and examples directories but deliberately nothing
+/// else — no compiler binary, no std, no staged programs — so the
+/// `//:cli-shard-loads-json` genrule can run it hermetically at build time.
+fn emit_shard_loads(
+    count: &str,
+    case_tier: CliCaseTierSelection,
+    platform_selection: PlatformCaseSelection,
+) -> Result<String, String> {
+    let shard_count: u64 = count.parse().map_err(|_| {
+        format!("invalid RUE_CLI_EMIT_SHARD_LOADS {count:?} (expected a shard count)")
+    })?;
+    let weights_path = std::env::var_os("RUE_CLI_SHARD_WEIGHTS").ok_or_else(|| {
+        "RUE_CLI_SHARD_WEIGHTS is required when RUE_CLI_EMIT_SHARD_LOADS is set".to_string()
+    })?;
+    let cases_dir = find_dir("RUE_CLI_CASES", CASES_DIR_PATHS, "cases");
+    let corpus = load_cases(&cases_dir);
+    let examples = discover_examples()?;
+    let discovered_example_paths = examples
+        .iter()
+        .map(|example| example.relative_path.clone())
+        .collect::<HashSet<_>>();
+    let automatic_contracts = validate_contract_metadata(&corpus, &discovered_example_paths)
+        .map_err(|error| format!("invalid CLI execution contract metadata: {error}"))?;
+    let names = discover_case_names(
+        &corpus,
+        &examples,
+        &automatic_contracts,
+        case_tier,
+        platform_selection,
+    );
+    let weights = sharding::ShardWeights::load(Path::new(&weights_path))?;
+    let report = sharding::shard_loads_report(shard_count, &names, &weights)?;
+    serde_json::to_string_pretty(&report)
+        .map_err(|error| format!("cannot serialize shard loads: {error}"))
+}
+
 fn main() {
     // An optional `INDEX/COUNT` spec selects one cost-balanced slice of the
     // corpus so CI can fan the work across parallel runners. Unset (the
@@ -3539,6 +3626,20 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(2);
     });
+    // Shard-loads emit mode short-circuits before anything that needs a
+    // compiler: the build-time genrule that runs it has no `RUE_BINARY`.
+    if let Ok(count) = std::env::var("RUE_CLI_EMIT_SHARD_LOADS") {
+        match emit_shard_loads(&count, case_tier, platform_selection) {
+            Ok(json) => {
+                println!("{json}");
+                return;
+            }
+            Err(error) => {
+                eprintln!("error: {error}");
+                std::process::exit(2);
+            }
+        }
+    }
     if shard_selector.is_some() && case_tier != CliCaseTierSelection::Premerge {
         eprintln!(
             "error: RUE_CLI_TEST_SHARD requires RUE_CLI_CASE_TIER=premerge \
@@ -3596,29 +3697,13 @@ fn main() {
         }
     }
 
-    let mut discovered_names = corpus
-        .files
-        .iter()
-        .flat_map(|(_, file)| {
-            file.cases
-                .iter()
-                .filter(|case| {
-                    case_tier.includes(file.section.tier)
-                        && platform_selection.includes(&case.only_on)
-                })
-                .map(|case| format!("{}::{}", file.section.id, case.name))
-        })
-        .collect::<Vec<_>>();
-    if platform_selection == PlatformCaseSelection::All {
-        discovered_names.extend(examples.iter().filter_map(|example| {
-            let tier = automatic_contracts
-                .get(&example.relative_path)
-                .map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
-            case_tier
-                .includes(tier)
-                .then(|| example_test_name(&example.relative_path))
-        }));
-    }
+    let discovered_names = discover_case_names(
+        &corpus,
+        &examples,
+        &automatic_contracts,
+        case_tier,
+        platform_selection,
+    );
     let selected_discovered = discovered_names.len();
     let shard = shard_selector.map(|selector| {
         let weights_path = std::env::var_os("RUE_CLI_SHARD_WEIGHTS").unwrap_or_else(|| {
@@ -3780,6 +3865,76 @@ mod tests {
             automatic_examples: file.automatic_example.clone(),
             files: vec![("inline.toml".to_string(), file)],
         }
+    }
+
+    #[test]
+    fn discovered_shard_population_filters_tier_and_platform_and_adds_examples() {
+        // The population rule main() and the shard-loads emit mode share:
+        // tier filtering, `only_on` platform selection, and (under `All`
+        // selection only) the automatic examples.
+        let host = rue_test_runner::get_host_target();
+        let other = KNOWN_TARGETS
+            .iter()
+            .find(|target| **target != host)
+            .expect("more than one known target");
+        let corpus = corpus_from_toml(&format!(
+            r#"
+                [section]
+                id = "cli.demo"
+                name = "demo"
+
+                [[case]]
+                name = "everywhere"
+
+                [[case]]
+                name = "host_scoped"
+                only_on = ["{host}"]
+
+                [[case]]
+                name = "foreign_scoped"
+                only_on = ["{other}"]
+            "#
+        ));
+        let examples = vec![DiscoveredExample {
+            path: PathBuf::from("examples/demo.rue"),
+            relative_path: "demo.rue".to_string(),
+        }];
+        let contracts = HashMap::new();
+
+        let all = discover_case_names(
+            &corpus,
+            &examples,
+            &contracts,
+            CliCaseTierSelection::Premerge,
+            PlatformCaseSelection::All,
+        );
+        assert_eq!(
+            all,
+            vec![
+                "cli.demo::everywhere",
+                "cli.demo::host_scoped",
+                "cli.demo::foreign_scoped",
+                "cli.examples::demo",
+            ]
+        );
+
+        let native = discover_case_names(
+            &corpus,
+            &examples,
+            &contracts,
+            CliCaseTierSelection::Premerge,
+            PlatformCaseSelection::Native,
+        );
+        assert_eq!(native, vec!["cli.demo::host_scoped"]);
+
+        let slow = discover_case_names(
+            &corpus,
+            &examples,
+            &contracts,
+            CliCaseTierSelection::Slow,
+            PlatformCaseSelection::All,
+        );
+        assert!(slow.is_empty(), "premerge inventory excluded: {slow:?}");
     }
 
     #[test]
