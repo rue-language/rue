@@ -220,7 +220,8 @@ pub struct Lexer {
         if word_eq(borrow key, "type") { return "TYPE(type)"; }
 
         if word_eq(borrow key, "size_of") || word_eq(borrow key, "align_of") ||
-            word_eq(borrow key, "require_droppable") || word_eq(borrow key, "require_trivially_droppable") {
+            word_eq(borrow key, "require_droppable") || word_eq(borrow key, "require_trivially_droppable") ||
+            word_eq(borrow key, "int_max") || word_eq(borrow key, "int_min") {
             self.last_aux = 1;
         } else if word_eq(borrow key, "offset_of") {
             self.last_aux = 2;
