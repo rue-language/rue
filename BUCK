@@ -1247,22 +1247,15 @@ rue_sh_test(
     },
 )
 
-# JSON twins of TOML-authored policy inputs, so the Python gates run on the
+# JSON twin of the TOML-authored policy input, so the Python gate runs on the
 # repository's 3.9 floor without `tomllib` (RUE-1524). The TOML stays the
-# authored source of truth next to the CLI cases; these artifacts are derived
-# every build and carry no independent content.
+# authored source of truth next to the CLI cases; this artifact is derived
+# every build and carries no independent content.
 genrule(
     name = "cli-execution-contracts-json",
     out = "execution_contracts.json",
     cmd = "$(exe //crates/rue-toml2json:rue-toml2json) " +
         "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml > $OUT",
-)
-
-genrule(
-    name = "cli-case-mosaic-json",
-    out = "examples_mosaic.json",
-    cmd = "$(exe //crates/rue-toml2json:rue-toml2json) " +
-        "$(location //crates/rue-cli-tests:cases)/cases/examples_mosaic.toml > $OUT",
 )
 
 # RUE-1530: the packing authority for CLI shard deadlines. The harness's emit
@@ -1310,8 +1303,6 @@ rue_sh_test(
         glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
-        "RUE_CLI_CONTRACTS_JSON": "$(location :cli-execution-contracts-json)",
-        "RUE_CLI_MOSAIC_JSON": "$(location :cli-case-mosaic-json)",
     },
 )
 
@@ -1538,7 +1529,6 @@ filegroup(
         "quick-test.sh": "quick-test.sh",
         "scripts/ci-corpus-inventory": "scripts/ci-corpus-inventory",
         "scripts/ci-heavy-suite": "scripts/ci-heavy-suite",
-        "scripts/cli-timeout-policy.py": "scripts/cli-timeout-policy.py",
         "scripts/ci-timed": "scripts/ci-timed",
         "scripts/check-cache-probe": "scripts/check-cache-probe",
         "scripts/rue": "scripts/rue",
@@ -1598,7 +1588,6 @@ filegroup(
         "buck2",
         "buck2-bin",
         "scripts/ci-heavy-suite",
-        "scripts/cli-timeout-policy.py",
         "scripts/provision-build-cache",
         "scripts/rue-storage",
         "test.sh",

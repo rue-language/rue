@@ -14,11 +14,15 @@ from gatelib import load_script
 coverage = load_script("validate-cli-shard-coverage.py", __file__)
 
 
-def buck(count: int, shard_targets: list[int]) -> str:
-    lines = [f"CLI_TEST_SHARD_COUNT = {count}", ""]
-    for shard in shard_targets:
-        lines.append(f'sh_test(name = "cli-tests-shard-{shard}")')
-    return "\n".join(lines) + "\n"
+def buck(count: int) -> str:
+    # The one BUCK spelling the gate recognizes: the range() generator the
+    # real BUCK file uses, exhaustive over CLI_TEST_SHARD_COUNT by
+    # construction.
+    return (
+        f"CLI_TEST_SHARD_COUNT = {count}\n\n"
+        '[sh_test(name = "cli-tests-shard-{}".format(_s)) '
+        "for _s in range(CLI_TEST_SHARD_COUNT)]\n"
+    )
 
 
 def workflow(shards_by_platform: dict[str, list[int]]) -> str:
@@ -42,22 +46,8 @@ class CliShardCoverageTests(unittest.TestCase):
     def test_valid_mirrored_shards_pass(self) -> None:
         platforms = ["linux-x64", "linux-arm64", "macos"]
         errors = self.validate(
-            buck(2, [0, 1]),
+            buck(2),
             workflow({p: [0, 1] for p in platforms}),
-        )
-        self.assertEqual(errors, [])
-
-    def test_loop_generated_shards_pass(self) -> None:
-        # The real BUCK generates shard targets with a range() comprehension
-        # rather than literal names; that form must validate.
-        buck_text = (
-            "CLI_TEST_SHARD_COUNT = 3\n"
-            '[sh_test(name = "cli-tests-shard-{}".format(_s)) '
-            "for _s in range(CLI_TEST_SHARD_COUNT)]\n"
-        )
-        errors = self.validate(
-            buck_text,
-            workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertEqual(errors, [])
 
@@ -68,45 +58,49 @@ class CliShardCoverageTests(unittest.TestCase):
         )
         self.assertTrue(any("found no cli-tests-shard targets" in e for e in errors), errors)
 
+    def test_literal_shard_targets_without_generator_fail(self) -> None:
+        # Fail-closed: literal "cli-tests-shard-<n>" spellings are not a
+        # recognized alternative to the generator, however complete they look.
+        errors = self.validate(
+            "CLI_TEST_SHARD_COUNT = 2\n"
+            'sh_test(name = "cli-tests-shard-0")\n'
+            'sh_test(name = "cli-tests-shard-1")\n',
+            workflow({"linux-x64": [0, 1]}),
+        )
+        self.assertTrue(any("found no cli-tests-shard targets" in e for e in errors), errors)
+
     def test_platform_prefix_is_captured_whole(self) -> None:
         # A multi-segment platform name (linux-arm64) must not be truncated.
         errors = self.validate(
-            buck(2, [0, 1]),
+            buck(2),
             workflow({"linux-arm64": [0, 1]}),
         )
         self.assertEqual(errors, [])
 
     def test_shard_missing_from_matrix_fails(self) -> None:
         errors = self.validate(
-            buck(4, [0, 1, 2, 3]),
+            buck(4),
             workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertTrue(any("missing shards [3]" in e for e in errors), errors)
 
     def test_extra_shard_in_matrix_fails(self) -> None:
         errors = self.validate(
-            buck(2, [0, 1]),
+            buck(2),
             workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertTrue(any("unexpected shards [2]" in e for e in errors), errors)
 
-    def test_buck_shard_targets_must_match_count(self) -> None:
-        errors = self.validate(
-            buck(4, [0, 1, 2]),  # count says 4 but only 3 targets defined
-            workflow({"linux-x64": [0, 1, 2, 3]}),
-        )
-        self.assertTrue(any("expected exactly 0..3" in e for e in errors), errors)
-
     def test_no_shard_jobs_fails(self) -> None:
         errors = self.validate(
-            buck(1, [0]),
+            buck(1),
             workflow({}),
         )
         self.assertTrue(any("no *-cli-shard-N jobs" in e for e in errors), errors)
 
     def test_missing_shard_count_is_reported(self) -> None:
         errors = self.validate(
-            'sh_test(name = "cli-tests-shard-0")\n',
+            '[sh_test(name = "cli-tests-shard-{}".format(_s)) for _s in range(2)]\n',
             workflow({"linux-x64": [0]}),
         )
         self.assertTrue(any("CLI_TEST_SHARD_COUNT is not defined" in e for e in errors), errors)

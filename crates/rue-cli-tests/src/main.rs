@@ -3955,6 +3955,37 @@ mod tests {
     }
 
     #[test]
+    fn mosaic_section_and_automatic_example_use_the_slow_profile() {
+        // The authored contract data itself, not harness behavior: mosaic is a
+        // maintained large example whose compiles are far too slow for the
+        // premerge tier, so both its automatic example and its explicit case
+        // section must stay on the slow tier under the heavyweight_long
+        // contract, and that contract must select the slow hang profile. The
+        // TOML is embedded at build time (mapped_srcs in BUCK), so this reads
+        // the same authored files the harness discovers at run time.
+        let authority = toml::from_str::<TestFile>(include_str!("execution_contracts.toml"))
+            .expect("execution_contracts.toml parses as a corpus file");
+        let mosaic = toml::from_str::<TestFile>(include_str!("examples_mosaic.toml"))
+            .expect("examples_mosaic.toml parses as a corpus file");
+
+        let automatic = authority
+            .automatic_example
+            .iter()
+            .find(|entry| entry.path == "mosaic/main.rue")
+            .expect("mosaic/main.rue must declare an automatic-example contract");
+        assert_eq!(automatic.tier, CliCaseTier::Slow);
+        assert_eq!(automatic.contract, "heavyweight_long");
+
+        assert_eq!(mosaic.section.tier, CliCaseTier::Slow);
+        assert_eq!(mosaic.section.contract.as_deref(), Some("heavyweight_long"));
+
+        assert_eq!(
+            authority.contracts["heavyweight_long"].timeout_profile,
+            TimeoutProfile::Slow
+        );
+    }
+
+    #[test]
     fn maintained_large_example_sections_share_their_automatic_contract() {
         for (section_id, example_path, tier_line, expected_tier) in [
             (

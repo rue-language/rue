@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -14,25 +13,6 @@ MODULE = load_script("cli-timeout-policy.py", __file__)
 
 
 class TimeoutPolicyTests(unittest.TestCase):
-    def test_mosaic_section_and_automatic_example_use_slow_profile(self):
-        # JSON twins materialized by //crates/rue-toml2json genrules (RUE-1524).
-        authority = json.loads(
-            Path(os.environ["RUE_CLI_CONTRACTS_JSON"]).read_text()
-        )
-        mosaic = json.loads(Path(os.environ["RUE_CLI_MOSAIC_JSON"]).read_text())
-        automatic = next(
-            entry
-            for entry in authority["automatic_example"]
-            if entry["path"] == "mosaic/main.rue"
-        )
-        self.assertEqual(automatic["tier"], "slow")
-        self.assertEqual(automatic["contract"], "heavyweight_long")
-        self.assertEqual(mosaic["section"]["tier"], "slow")
-        self.assertEqual(mosaic["section"]["contract"], "heavyweight_long")
-        self.assertEqual(
-            authority["contract"]["heavyweight_long"]["timeout_profile"], "slow"
-        )
-
     def test_shards_consume_reported_loads_plus_headroom(self):
         # The packing itself lives in the harness (RUE_CLI_EMIT_SHARD_LOADS);
         # this gate only applies policy arithmetic to the loads it reported.
