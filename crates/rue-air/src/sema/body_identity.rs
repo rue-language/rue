@@ -1329,6 +1329,18 @@ where
                         ty,
                     });
                 }
+                // The destructor symbol derives from declaration-time identity
+                // only — name, defining file, builtin and lang-item status —
+                // all fixed by the shell above, so it is spelled before
+                // completion and carried in the completing definition. Folding
+                // it in (instead of `set_struct_destructor` afterwards) keeps
+                // the completion eligible for incremental containment facts
+                // rather than marking the whole pool stale.
+                let destructor = has_destructor.then(|| {
+                    Arc::<str>::from(
+                        format!("{}.__drop", self.type_pool.struct_symbol_name(id)).as_str(),
+                    )
+                });
                 self.type_pool.complete_declared_struct(
                     id,
                     StructDef {
@@ -1336,16 +1348,12 @@ where
                         fields: resolved,
                         is_copy: is_copy && !has_destructor,
                         is_linear,
-                        destructor: None,
+                        destructor,
                         is_builtin,
                         is_pub: is_public,
                         file_id,
                     },
                 );
-                if has_destructor {
-                    let destructor = format!("{}.__drop", self.type_pool.struct_symbol_name(id));
-                    self.type_pool.set_struct_destructor(id, destructor);
-                }
                 Ok(Type::new_struct(id))
             }
             DurableNominalBody::Enum { variants } => {
@@ -1474,6 +1482,15 @@ where
                         ty,
                     });
                 }
+                // See `mint_named_provider`: the destructor symbol is fixed by
+                // declaration-time identity, so it is spelled before completion
+                // and folded into the completing definition to keep the
+                // completion eligible for incremental containment facts.
+                let destructor = has_destructor.then(|| {
+                    Arc::<str>::from(
+                        format!("{}.__drop", self.type_pool.struct_symbol_name(id)).as_str(),
+                    )
+                });
                 self.type_pool.complete_declared_struct(
                     id,
                     StructDef {
@@ -1481,16 +1498,12 @@ where
                         fields: resolved,
                         is_copy: is_copy && !has_destructor,
                         is_linear,
-                        destructor: None,
+                        destructor,
                         is_builtin,
                         is_pub: is_public,
                         file_id,
                     },
                 );
-                if has_destructor {
-                    let destructor = format!("{}.__drop", self.type_pool.struct_symbol_name(id));
-                    self.type_pool.set_struct_destructor(id, destructor);
-                }
                 Ok(Type::new_struct(id))
             }
             DurableNominalBody::Enum { variants } => {
@@ -3933,10 +3946,11 @@ mod tests {
 
     #[test]
     fn containment_freeze_hook_gates_drop_and_linearity_reads() {
-        // Drop/linearity reads answer `None` until the pool-side freeze runs,
-        // then answer the containment
-        // join over the pool's own registrations. Destructor metadata stays out
-        // of the pool's minting scope, so the join sees `destructor: None`.
+        // A completed declare/complete mint derives its containment facts
+        // incrementally, so drop/linearity reads answer exactly as soon as the
+        // pair settles — the pool-side freeze then finds nothing left to walk.
+        // Destructor metadata for this nominal is `None`, and the mint folds
+        // that into the completing definition.
         let mut pool = pool([(
             0,
             named(
@@ -3949,10 +3963,10 @@ mod tests {
         let ty = pool.resolve(&DType::Nominal(0)).unwrap();
         assert_eq!(
             pool.type_needs_drop(ty),
-            None,
-            "un-finalized before the freeze, as production leaves it"
+            Some(false),
+            "a settled mint carries exact facts before the freeze"
         );
-        assert_eq!(pool.type_carries_linear(ty), None);
+        assert_eq!(pool.type_carries_linear(ty), Some(false));
         pool.finalize_containment_metadata()
             .expect("no containment cycle");
         assert_eq!(pool.type_needs_drop(ty), Some(false));

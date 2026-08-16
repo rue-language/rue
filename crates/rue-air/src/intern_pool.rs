@@ -592,10 +592,29 @@ struct TypeInternPoolInner {
     /// metadata mutation await the next canonical containment pass.
     containment_facts: Vec<Option<TypeContainmentFacts>>,
 
-    /// Whether any containment fact may be stale or unavailable. This is the
-    /// O(1) clean-state authority: hot accessors never scan the pool to discover
-    /// whether finalization is needed.
-    containment_dirty: bool,
+    /// Number of entries in this universe whose containment facts are `None`:
+    /// declaration shells, reserved slots, and completions whose incremental
+    /// derivation had an unavailable child. Maintained exactly — `push_entry`
+    /// and `set_facts` track every `None`/`Some` transition, and the full pass
+    /// recomputes it from what remained unavailable — so the O(1) clean-state
+    /// check never scans the pool.
+    pending_facts: usize,
+
+    /// Whether facts that are *present* may be wrong. Set only by
+    /// [`Self::invalidate_containment_metadata`] (destructor mutation after
+    /// facts may already have propagated into ancestors); cleared only by the
+    /// canonical full pass. Unlike `pending_facts`, which fails closed
+    /// per-entry, a stale pool must refuse every derived read globally.
+    facts_stale: bool,
+
+    /// Whether any containment-fact slot changed availability since the last
+    /// full pass. A pass leaves incomplete shells (and, transitively, their
+    /// by-value ancestors) factless on purpose; re-running it before any
+    /// slot turned factless — or factful, which can unblock such an ancestor —
+    /// would recompute the identical result, so the full-pass trigger requires
+    /// this bit alongside `pending_facts > 0`. Reads of the surviving factless
+    /// entries keep failing closed per-entry.
+    unsettled_facts: bool,
     containment_metrics: TypeContainmentMetrics,
 
     /// Structs and enums the compiler generated for anonymous types, recorded
@@ -792,7 +811,9 @@ impl TypeInternPoolInner {
             ptr_const_map: HashMap::new(),
             ptr_mut_map: HashMap::new(),
             containment_facts: Vec::new(),
-            containment_dirty: false,
+            pending_facts: 0,
+            facts_stale: false,
+            unsettled_facts: false,
             containment_metrics: TypeContainmentMetrics::default(),
             anonymous_structs: HashSet::new(),
             anonymous_enums: HashSet::new(),
@@ -866,7 +887,10 @@ impl TypeInternPoolInner {
         let index = self.entry_count();
         self.types.push(entry);
         self.containment_facts.push(facts);
-        self.containment_dirty |= facts.is_none();
+        if facts.is_none() {
+            self.pending_facts += 1;
+            self.unsettled_facts = true;
+        }
         index
     }
 
@@ -885,7 +909,22 @@ impl TypeInternPoolInner {
     }
 
     fn set_facts(&mut self, index: usize, value: Option<TypeContainmentFacts>) {
-        self.containment_dirty |= value.is_none();
+        let previous = self
+            .facts_at(index)
+            .expect("set_facts targets an existing pool entry");
+        match (previous.is_some(), value.is_some()) {
+            (true, false) => self.pending_facts += 1,
+            (false, true) => {
+                self.pending_facts = self
+                    .pending_facts
+                    .checked_sub(1)
+                    .expect("pending containment-fact accounting underflow");
+            }
+            _ => {}
+        }
+        if value.is_none() || previous.is_none() {
+            self.unsettled_facts = true;
+        }
         if index >= self.base_len {
             self.containment_facts[index - self.base_len] = value;
         } else {
@@ -952,7 +991,16 @@ impl TypeInternPoolInner {
         flat.types.extend(self.types.iter().cloned());
         flat.containment_facts
             .extend(self.containment_facts.iter().copied());
-        flat.containment_dirty |= self.containment_dirty;
+        // Flattening already walks every entry, so the pending count is
+        // recomputed exactly instead of merging the two layers' counters
+        // (an override may have completed a base entry counted by the base).
+        flat.pending_facts = flat
+            .containment_facts
+            .iter()
+            .filter(|facts| facts.is_none())
+            .count();
+        flat.facts_stale |= self.facts_stale;
+        flat.unsettled_facts |= self.unsettled_facts;
         flat.containment_metrics.finalize_checks += self.containment_metrics.finalize_checks;
         flat.containment_metrics.nodes += self.containment_metrics.nodes;
         flat.containment_metrics.edges += self.containment_metrics.edges;
@@ -991,7 +1039,9 @@ impl TypeInternPoolInner {
             (Some(_), false) => Arc::new(self.flatten()),
             (None, _) => Arc::new(self.clone()),
         };
-        let containment_dirty = base.containment_dirty;
+        let pending_facts = base.pending_facts;
+        let facts_stale = base.facts_stale;
+        let unsettled_facts = base.unsettled_facts;
         let capacity_exceeded = base.capacity_exceeded;
         Self {
             base_len: base.entry_count(),
@@ -1003,7 +1053,9 @@ impl TypeInternPoolInner {
             ptr_const_map: HashMap::new(),
             ptr_mut_map: HashMap::new(),
             containment_facts: Vec::new(),
-            containment_dirty,
+            pending_facts,
+            facts_stale,
+            unsettled_facts,
             containment_metrics: TypeContainmentMetrics::default(),
             // Empty locally; `is_anonymous_*` consults the base for entries
             // below `base_len`, matching how `types` is layered.
@@ -1176,10 +1228,14 @@ impl TypeInternPoolInner {
         // New complete entries derive their facts incrementally from already
         // finalized children. If every entry is available, no containment edge
         // changed and a repeated endpoint finalization is a true O(1) no-op.
-        // Incomplete shells and destructor mutation clear facts, forcing the
-        // canonical full pass below exactly when graph-wide propagation may be
-        // required.
-        if !self.containment_dirty {
+        // Entries without facts (shells, reserved slots, completions with an
+        // unavailable child) and destructor mutation force the canonical full
+        // pass below exactly when graph-wide propagation may be required.
+        // Factless survivors of the last pass alone do not: the pass already
+        // proved them uncomputable, and nothing turned factless since
+        // (`unsettled_facts`), so re-walking the graph would change nothing.
+        let pass_required = self.facts_stale || (self.pending_facts > 0 && self.unsettled_facts);
+        if !pass_required {
             return Ok(TypeContainmentWork::default());
         }
         let edges = self.containment_edges();
@@ -1331,15 +1387,31 @@ impl TypeInternPoolInner {
                 Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
             }
         }
+        let mut still_pending = 0usize;
         for (index, value) in facts.into_iter().enumerate() {
-            self.set_facts(index, facts_available[index].then_some(value));
+            let available = facts_available[index];
+            if !available {
+                still_pending += 1;
+            }
+            self.set_facts(index, available.then_some(value));
         }
-        self.containment_dirty = false;
+        // The pass consumed every mutation recorded so far: present facts are
+        // exact again, and the pending count is exactly what the pass could
+        // not compute (incomplete shells and their by-value ancestors).
+        self.pending_facts = still_pending;
+        self.facts_stale = false;
+        self.unsettled_facts = false;
         Ok(work)
     }
 
     fn facts_for_type(&self, ty: Type) -> Option<TypeContainmentFacts> {
-        if self.containment_dirty
+        // A stale pool may hold facts that are present but wrong (a destructor
+        // was attached after they propagated), so it refuses every composite
+        // read until the full pass repairs it. A merely *incomplete* pool does
+        // not: a stored fact is exact the moment it is written — incremental
+        // derivation only consumes children whose own facts are available —
+        // and entries without facts fail closed individually below.
+        if self.facts_stale
             && matches!(
                 ty.kind(),
                 TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_)
@@ -1391,7 +1463,12 @@ impl TypeInternPoolInner {
     }
 
     fn stored_abi_slot_count(&self, ty: Type) -> Option<u32> {
-        if self.containment_dirty
+        // Same refusal shape as `facts_for_type`: a stale pool refuses
+        // globally. An entry's stored width is written together with its
+        // containment facts (by incremental derivation or the full pass), so
+        // fact availability is also the width's per-entry availability marker;
+        // without it the field still holds the meaningless placeholder `0`.
+        if self.facts_stale
             && matches!(
                 ty.kind(),
                 TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_)
@@ -1401,15 +1478,24 @@ impl TypeInternPoolInner {
         }
         match ty.kind() {
             TypeKind::Struct(id) => match self.try_entry(id.pool_index() as usize)? {
-                TypeData::Struct(data) => Some(data.abi_slots),
+                TypeData::Struct(data) => {
+                    self.facts_at(id.pool_index() as usize)??;
+                    Some(data.abi_slots)
+                }
                 _ => None,
             },
             TypeKind::Enum(id) => match self.try_entry(id.pool_index() as usize)? {
-                TypeData::Enum(data) => Some(data.abi_slots),
+                TypeData::Enum(data) => {
+                    self.facts_at(id.pool_index() as usize)??;
+                    Some(data.abi_slots)
+                }
                 _ => None,
             },
             TypeKind::Array(id) => match self.try_entry(id.pool_index() as usize)? {
-                TypeData::Array { abi_slots, .. } => Some(*abi_slots),
+                TypeData::Array { abi_slots, .. } => {
+                    self.facts_at(id.pool_index() as usize)??;
+                    Some(*abi_slots)
+                }
                 _ => None,
             },
             _ => Some(Self::leaf_derived_facts(ty).abi_slots),
@@ -1456,7 +1542,17 @@ impl TypeInternPoolInner {
     }
 
     fn incremental_facts(&self, entry: &TypeData) -> Option<TypeDerivedFacts> {
-        if self.containment_dirty {
+        // Only a stale pool refuses incremental derivation globally: its
+        // present facts may be wrong, and consuming one would launder the
+        // staleness into a fresh entry. Entries *without* facts do not poison
+        // the pool as a whole — every child fact consumed below goes through
+        // `derived_facts_for_type`, which returns `None` for a factless child
+        // (its containment facts and stored width are gated on the same
+        // per-entry availability), so a derivation over unavailable inputs
+        // fails closed here and the entry waits for the canonical full pass.
+        // This is what lets a declare→complete pair settle its own facts even
+        // while the entry being completed is itself still counted pending.
+        if self.facts_stale {
             return None;
         }
         let mut facts = match entry {
@@ -1519,7 +1615,7 @@ impl TypeInternPoolInner {
     }
 
     fn invalidate_containment_metadata(&mut self) {
-        self.containment_dirty = true;
+        self.facts_stale = true;
     }
 
     #[inline]
@@ -2807,10 +2903,10 @@ impl TypeInternPool {
             return;
         }
         let pool_index = struct_id.pool_index() as usize;
-        let entry = inner
-            .try_entry_mut(pool_index)
-            .unwrap_or_else(|| panic!("Invalid declared struct ID: {pool_index}"));
-        match entry {
+        let name = match inner
+            .try_entry(pool_index)
+            .unwrap_or_else(|| panic!("Invalid declared struct ID: {pool_index}"))
+        {
             TypeData::DeclaredStruct(data) => {
                 assert_eq!(
                     data.def.file_id, def.file_id,
@@ -2821,20 +2917,39 @@ impl TypeInternPool {
                     def.name.as_ref(),
                     "completed struct changed textual name"
                 );
-                *entry = TypeData::Struct(StructData {
-                    name: data.name,
-                    abi_slots: 0,
-                    def: Arc::new(StructDefEntry::new(def)),
-                });
+                data.name
             }
             other => panic!(
                 "pool index {} is not a declared struct entry: {:?}",
                 pool_index, other
             ),
+        };
+        // The completing definition carries the declaration's full metadata —
+        // fields, explicit linear marker, and (on paths that know it at
+        // completion time) the destructor symbol — so this is the earliest
+        // point exact facts can derive incrementally from already-available
+        // children, exactly as `complete_struct_registration` does. A child
+        // still awaiting facts (out-of-dependency-order completion) leaves
+        // this entry factless for the canonical full pass, and a destructor
+        // attached later goes through `set_struct_destructor`, which marks
+        // the whole pool stale.
+        let mut entry = TypeData::Struct(StructData {
+            name,
+            abi_slots: 0,
+            def: Arc::new(StructDefEntry::new(def)),
+        });
+        let facts = inner.incremental_facts(&entry);
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
         }
-        // Named declarations are still collecting explicit linear/destructor
-        // metadata. Keep their facts unknown until semantic finalization.
-        inner.set_facts(pool_index, None);
+        if facts.is_some_and(|facts| facts.containment.carries_linear) {
+            let TypeData::Struct(data) = &mut entry else {
+                unreachable!()
+            };
+            Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
+        }
+        *inner.entry_mut(pool_index) = entry;
+        inner.set_facts(pool_index, facts.map(|facts| facts.containment));
     }
 
     /// Register a new enum (nominal - no deduplication).
@@ -2934,10 +3049,10 @@ impl TypeInternPool {
             return;
         }
         let pool_index = enum_id.pool_index() as usize;
-        let entry = inner
-            .try_entry_mut(pool_index)
-            .unwrap_or_else(|| panic!("Invalid declared enum ID: {pool_index}"));
-        match entry {
+        let name = match inner
+            .try_entry(pool_index)
+            .unwrap_or_else(|| panic!("Invalid declared enum ID: {pool_index}"))
+        {
             TypeData::DeclaredEnum(data) => {
                 assert_eq!(
                     data.def.file_id, def.file_id,
@@ -2948,18 +3063,27 @@ impl TypeInternPool {
                     def.name.as_ref(),
                     "completed enum changed textual name"
                 );
-                *entry = TypeData::Enum(EnumData {
-                    name: data.name,
-                    abi_slots: 0,
-                    def: Arc::new(EnumDefEntry::new(def)),
-                });
+                data.name
             }
             other => panic!(
                 "pool index {} is not a declared enum entry: {:?}",
                 pool_index, other
             ),
+        };
+        // See `complete_declared_struct`: completion is the earliest point
+        // exact facts can derive incrementally; unavailable payload children
+        // leave the entry factless for the canonical full pass.
+        let mut entry = TypeData::Enum(EnumData {
+            name,
+            abi_slots: 0,
+            def: Arc::new(EnumDefEntry::new(def)),
+        });
+        let facts = inner.incremental_facts(&entry);
+        if let Some(facts) = facts {
+            entry.set_abi_slots(facts.abi_slots);
         }
-        inner.set_facts(pool_index, None);
+        *inner.entry_mut(pool_index) = entry;
+        inner.set_facts(pool_index, facts.map(|facts| facts.containment));
     }
 
     /// Intern an array after validating its canonical child in this pool.
@@ -3457,6 +3581,15 @@ impl TypeInternPool {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .containment_metrics
+    }
+
+    /// Test-only visibility into the exact count of factless entries.
+    #[cfg(test)]
+    pub(crate) fn pending_containment_facts(&self) -> usize {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending_facts
     }
 
     pub(crate) fn try_type_carries_linear(&self, ty: Type) -> Option<bool> {
@@ -4554,7 +4687,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_style_declare_complete_batches_one_linear_containment_join() {
+    fn provider_style_declare_complete_batches_settle_without_graph_work() {
         const COUNT: usize = 4_000;
         let declarations = ThreadedRodeo::default();
         let pool = TypeInternPool::new();
@@ -4570,9 +4703,9 @@ mod tests {
             .collect::<Vec<_>>();
 
         // Durable provider materialization declares recursive shells first,
-        // then completes them while unwinding. The first containment-dependent
-        // accessor joins the batch once; subsequent accessors take only the
-        // O(1) clean check.
+        // then completes them while unwinding, so every completion sees its
+        // by-value children already finalized. Each derives its facts
+        // incrementally at completion; no accessor ever pays a graph walk.
         for (index, &id) in ids.iter().enumerate().rev() {
             let name = format!("Imported{index}");
             let fields = ids
@@ -4587,9 +4720,11 @@ mod tests {
             pool.complete_declared_struct(id, struct_def(&name, fields));
         }
 
-        let work = pool.finalize_containment_metadata().unwrap();
-        assert_eq!(work.nodes, COUNT);
-        assert_eq!(work.edges, COUNT - 1);
+        assert_eq!(pool.pending_containment_facts(), 0);
+        assert_eq!(
+            pool.finalize_containment_metadata().unwrap(),
+            TypeContainmentWork::default()
+        );
         assert_eq!(
             pool.finalize_containment_metadata().unwrap(),
             TypeContainmentWork::default()
@@ -4598,10 +4733,190 @@ mod tests {
             pool.containment_metrics(),
             TypeContainmentMetrics {
                 finalize_checks: 2,
-                nodes: COUNT,
-                edges: COUNT - 1,
+                nodes: 0,
+                edges: 0,
+            },
+            "completed declare/complete pairs must not trigger a full pass"
+        );
+        assert!(!pool.type_needs_drop(Type::new_struct(ids[0])));
+    }
+
+    #[test]
+    fn out_of_dependency_order_completion_falls_back_to_the_full_pass() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (a, _) = pool.declare_struct(
+            declarations.get_or_intern("Outer"),
+            struct_def("Outer", Vec::new()),
+        );
+        let (b, _) = pool.declare_struct(
+            declarations.get_or_intern("Inner"),
+            struct_def("Inner", Vec::new()),
+        );
+        assert_eq!(pool.pending_containment_facts(), 2);
+
+        // Completing the parent while its by-value child is still a factless
+        // shell cannot derive facts incrementally; the parent stays factless
+        // and reads of it fail closed.
+        pool.complete_declared_struct(
+            a,
+            struct_def(
+                "Outer",
+                vec![StructField {
+                    name: "inner".into(),
+                    ty: Type::new_struct(b),
+                }],
+            ),
+        );
+        assert_eq!(pool.pending_containment_facts(), 2);
+        assert_eq!(pool.try_type_needs_drop(Type::new_struct(a)), None);
+
+        let mut inner_def = struct_def("Inner", Vec::new());
+        inner_def.destructor = Some("Inner.__drop".into());
+        pool.complete_declared_struct(b, inner_def);
+        assert_eq!(pool.pending_containment_facts(), 1);
+        assert_eq!(pool.try_type_needs_drop(Type::new_struct(b)), Some(true));
+        assert_eq!(pool.try_type_needs_drop(Type::new_struct(a)), None);
+
+        // The canonical full pass computes the out-of-order parent.
+        let work = pool.finalize_containment_metadata().unwrap();
+        assert_eq!(work.nodes, 2);
+        assert_eq!(work.edges, 1);
+        assert_eq!(pool.pending_containment_facts(), 0);
+        assert!(pool.type_needs_drop(Type::new_struct(a)));
+        assert_eq!(pool.abi_slot_count(Type::new_struct(a)), 0);
+        assert_eq!(
+            pool.finalize_containment_metadata().unwrap(),
+            TypeContainmentWork::default()
+        );
+    }
+
+    #[test]
+    fn destructor_in_completion_matches_late_destructor_metadata() {
+        // The mint paths fold a known destructor into the completing
+        // definition; the frontend attaches it after completion through
+        // `set_struct_destructor`. Both must derive identical facts.
+        fn build(pool: &TypeInternPool, declarations: &ThreadedRodeo, late: bool) -> (Type, Type) {
+            let (owner, _) = pool.declare_struct(
+                declarations.get_or_intern("Owner"),
+                struct_def("Owner", Vec::new()),
+            );
+            let mut def = struct_def(
+                "Owner",
+                vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+            );
+            if !late {
+                def.destructor = Some("Owner.__drop".into());
+            }
+            pool.complete_declared_struct(owner, def);
+            if late {
+                pool.set_struct_destructor(owner, "Owner.__drop".into());
+            }
+            let (wrapper, _) = pool.register_struct(
+                declarations.get_or_intern("Wrapper"),
+                struct_def(
+                    "Wrapper",
+                    vec![StructField {
+                        name: "owner".into(),
+                        ty: Type::new_struct(owner),
+                    }],
+                ),
+            );
+            pool.finalize_containment_metadata().unwrap();
+            (Type::new_struct(owner), Type::new_struct(wrapper))
+        }
+
+        let declarations = ThreadedRodeo::default();
+        let folded_pool = TypeInternPool::new();
+        let late_pool = TypeInternPool::new();
+        let (folded_owner, folded_wrapper) = build(&folded_pool, &declarations, false);
+        let (late_owner, late_wrapper) = build(&late_pool, &declarations, true);
+
+        for (folded, late) in [(folded_owner, late_owner), (folded_wrapper, late_wrapper)] {
+            assert_eq!(
+                folded_pool.type_needs_drop(folded),
+                late_pool.type_needs_drop(late)
+            );
+            assert_eq!(
+                folded_pool.type_carries_linear(folded),
+                late_pool.type_carries_linear(late)
+            );
+            assert_eq!(
+                folded_pool.abi_slot_count(folded),
+                late_pool.abi_slot_count(late)
+            );
+        }
+        let folded_def = folded_pool.struct_def(folded_owner.as_struct().unwrap());
+        let late_def = late_pool.struct_def(late_owner.as_struct().unwrap());
+        assert_eq!(folded_def.destructor, late_def.destructor);
+        assert_eq!(folded_def.is_copy, late_def.is_copy);
+        assert_eq!(folded_def.is_linear, late_def.is_linear);
+        assert!(folded_pool.type_needs_drop(folded_wrapper));
+
+        // The folded path needed no graph walk at all; the late path paid
+        // exactly one full pass for the staleness `set_struct_destructor`
+        // introduced.
+        assert_eq!(
+            folded_pool.containment_metrics(),
+            TypeContainmentMetrics {
+                finalize_checks: 1,
+                nodes: 0,
+                edges: 0,
             }
         );
+        assert_eq!(
+            late_pool.containment_metrics(),
+            TypeContainmentMetrics {
+                finalize_checks: 1,
+                nodes: 2,
+                edges: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn late_destructor_marks_facts_stale_and_updates_ancestors() {
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (owner, _) = pool.register_struct(
+            declarations.get_or_intern("Owner"),
+            struct_def("Owner", Vec::new()),
+        );
+        let (wrapper, _) = pool.register_struct(
+            declarations.get_or_intern("Wrapper"),
+            struct_def(
+                "Wrapper",
+                vec![StructField {
+                    name: "owner".into(),
+                    ty: Type::new_struct(owner),
+                }],
+            ),
+        );
+        assert_eq!(
+            pool.finalize_containment_metadata().unwrap(),
+            TypeContainmentWork::default()
+        );
+        assert_eq!(
+            pool.try_type_needs_drop(Type::new_struct(wrapper)),
+            Some(false)
+        );
+
+        // Present facts may now be wrong pool-wide, so reads fail closed even
+        // though no entry is factless, and the next finalization re-walks the
+        // graph to repropagate the destructor into ancestors.
+        pool.set_struct_destructor(owner, "Owner.__drop".into());
+        assert_eq!(pool.pending_containment_facts(), 0);
+        assert_eq!(pool.try_type_needs_drop(Type::new_struct(wrapper)), None);
+        assert_eq!(pool.try_type_needs_drop(Type::new_struct(owner)), None);
+
+        let work = pool.finalize_containment_metadata().unwrap();
+        assert_eq!(work.nodes, 2);
+        assert_eq!(work.edges, 1);
+        assert!(pool.type_needs_drop(Type::new_struct(owner)));
+        assert!(pool.type_needs_drop(Type::new_struct(wrapper)));
     }
 
     #[test]
