@@ -47,15 +47,17 @@ Rue `-O3`, x86_64 Linux run
 Lattice's median process time was 2,887.26 ms and compiler-root time was
 2,716.88 ms. The fixed scaling run used the same compiler commit and boundary.
 
-The scaling report's `toolchain_acquisition_ns` is an inclusive tracing span
-around `FilesystemCompilerHost::acquire_reached_toolchain_modules` in
-`crates/rue/src/source_loader.rs`. That operation calls
+The historical scaling report's `toolchain_acquisition_ns` was an inclusive
+tracing span around `FilesystemCompilerHost::acquire_reached_toolchain_modules`
+in `crates/rue/src/source_loader.rs`. That operation calls
 `rooted_or_toolchain_park`, so on the ordinary no-park path its 1,280.70 ms
-one-worker / 1,136.40 ms automatic-worker duration contains the semantic root
-attempt. It is not a separate 1.2-second filesystem or standard-library phase,
-must not be added to semantic time, and does not establish toolchain I/O as a
-bottleneck. The exclusive phase partition remains the authority for phase
-budgeting. The inclusive envelope proves only how long the host's park-aware
+one-worker / 1,136.40 ms automatic-worker duration contained the semantic root
+attempt. It was not a separate 1.2-second filesystem or standard-library phase
+and did not establish toolchain I/O as a bottleneck. The span now begins only
+after a semantic attempt parks and measures the host acquisition/re-close work;
+an ordinary no-park semantic probe contributes zero. Historical reports must
+still use the exclusive phase partition for phase budgeting. The old envelope
+proved only how long the host's park-aware
 operation remains active.
 
 The deterministic one-worker Lattice evidence used below is:

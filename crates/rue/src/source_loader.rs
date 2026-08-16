@@ -1189,7 +1189,6 @@ pub(crate) fn acquire_reached_toolchain_modules(
     if result.revision.status() != ImportDiscoveryStatus::ClosedValid {
         return Ok(());
     }
-    let _span = tracing::info_span!("toolchain_acquisition").entered();
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
         match rooted_or_toolchain_park(&mut result.session, options) {
             // Analysis satisfied every reached-body demand (or there were none).
@@ -1207,6 +1206,11 @@ pub(crate) fn acquire_reached_toolchain_modules(
             // revision. Satisfy exactly the parked demands, publish one successor,
             // and re-close so semantic can retry on it.
             RootedParkOutcome::Parked(park) => {
+                // Attribute only the host work which satisfies the park. The
+                // semantic request above already owns its own phase spans; wrapping
+                // the whole fixed-point loop here would misreport that cached
+                // semantic work as toolchain acquisition.
+                let _span = tracing::info_span!("toolchain_acquisition").entered();
                 for demand in park.demands() {
                     satisfy_toolchain_module_demand(
                         &mut result.assembler,
