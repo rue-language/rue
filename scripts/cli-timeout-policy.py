@@ -235,7 +235,7 @@ def main() -> int:
         )
         print(math.ceil(timeout_ms / 1000))
         return 0
-    except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
+    except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 

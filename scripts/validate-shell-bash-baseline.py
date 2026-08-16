@@ -142,6 +142,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+# SKIP_DIRECTORIES is re-exported: the tool tests read the prune policy
+# through this module as the gate's own surface.
 from gatelib import SKIP_DIRECTORIES, prune_names
 
 

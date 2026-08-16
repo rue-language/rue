@@ -31,7 +31,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # The sparkline's viewBox, matching the markup in `index.html`.
