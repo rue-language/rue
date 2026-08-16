@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -59,6 +60,30 @@ class TimeoutPolicyTests(unittest.TestCase):
             "minimum_shard_timeout_ms": 5000,
         }
         self.assertEqual(MODULE.derive_timeout_ms(10, 5000, policy), 5000)
+
+    def test_main_reports_a_malformed_policy_and_exits_two(self):
+        # The one test that enters main()'s error path. RUE-1524 left a
+        # stale tomllib name in the except tuple, and because Python only
+        # evaluates that tuple when an exception is raised, every failure
+        # of the gate died as a NameError traceback while the passing path
+        # stayed green. Exercising the path is what pins the contract:
+        # a diagnosable `error:` line and exit 2, not a traceback.
+        with tempfile.TemporaryDirectory() as directory:
+            policy = Path(directory) / "policy.json"
+            policy.write_text("{ not json")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("cli-timeout-policy.py")),
+                    "--policy",
+                    str(policy),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("error:", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
 
     def test_raw_contract_deadlines_are_rejected(self):
         # The gate reads the JSON twin the build derives from the authored
