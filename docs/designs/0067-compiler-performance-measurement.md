@@ -10,7 +10,7 @@ implemented:
 spec-sections: []
 superseded-by:
 supersedes: [0019, 0031]
-relates: ["ADR-0018", "crates/rue/src/timing.rs"]
+relates: ["ADR-0018", "RUE-1543", "crates/rue/src/timing.rs"]
 ---
 
 # ADR-0067: Compiler performance measurement, epochs, and dashboard
@@ -21,6 +21,15 @@ Proposal. This ADR accompanies the benchmarking reset: the previous runner
 (`bench.sh`), the `scripts/benchmark_*.py` package, the stored corpus and
 annotation file, and the old dashboard have been removed, and this document
 defines what replaces them. It is written against the post-reset tree.
+
+**Amendment 1 (RUE-1543) is a proposal and is not accepted.** It asks two
+questions this ADR's storage and versioning rules leave open once the store has
+grown: which versioning axis owns a change to *how* a run object is written as
+opposed to *what* it measured, and whether already-published records may be
+re-encoded. Everything above and below it remains the text as written; nothing
+in the amendment is implemented. Its companion, ADR-0071 Amendment 1, proposes
+the smaller representation whose versioning this one rules on. See
+[Amendment 1: versioning the record encoding, and compacting the store (RUE-1543)](#amendment-1-2026-08-16-versioning-the-record-encoding-and-compacting-the-store-rue-1543).
 
 ## Summary
 
@@ -505,6 +514,174 @@ generated-code performance; incremental and edit-scenario performance;
 comparisons against C or Rust; formal external performance claims; epoch
 splicing via shared workloads.
 
+## Amendment 1 (2026-08-16): versioning the record encoding, and compacting the store (RUE-1543)
+
+**Status: proposal. Not accepted, not implemented.** ADR-0071 Amendment 1
+proposes a run-object encoding that is 3.6% of today's size. This amendment
+rules on the two questions that proposal raises about *this* ADR: which
+versioning axis owns it, and what happens to the 1,481.2 MiB already published.
+Both need a maintainer ruling.
+
+### Question 1: which axis owns a change to the record encoding?
+
+§3 assigns "runner protocol semantics (what a sample is, how batching is
+defined, what a run object contains)" to the **suite revision**. Read literally,
+the ADR-0071 encoding is suite revision 5, and therefore new epochs on all three
+platforms.
+
+**Recommendation: treat a change to the record encoding that provably preserves
+every derived value as a `RUN_SCHEMA_VERSION` change, not a suite revision.**
+Amend §3 to say so: a suite revision pins what was measured and what a sample
+*means*; `schema_version` pins how a record is written down. The evidence that
+the distinction is real here is that with the boundary-evidence keys stripped
+from both sides, **0 of 1,188 published records differ** between the current
+encoding and the proposed one. Identity, pins, environment, phase accounting,
+`process_elapsed_ns`, `peak_memory_bytes`, `output_binary_bytes` and failure
+records are byte-identical, so no median, dispersion, ratio, index, ratchet or
+flag can move. The guarantee §3 exists to protect — that a series cannot change
+meaning silently — is not the guarantee at stake.
+
+The alternative, a suite revision, costs:
+
+- an epoch turn on `x86_64-linux`, `aarch64-linux` and `aarch64-macos`;
+- a headline-index gap on each platform until its baseline is pinned. Epoch 6
+  went fourteen complete runs and thirty trunk commits with no index on any
+  platform before RUE-1533 pinned it. RUE-1533's gate now holds that state to a
+  deadline, but the gap is real and would recur;
+- and, decisively, it makes Question 2 unanswerable: a re-encoded epoch-5
+  record claims suite revision 3, which declares `protocol_version = 2`, so
+  validation refuses it. Under the literal reading the legacy bytes cannot move
+  at all without also redefining what epochs 5 and 6 mean.
+
+The honest cost of the recommendation: within one epoch, records written before
+and after the cutover carry different amounts of re-checkable evidence, so a
+reader auditing an epoch's admissibility retroactively gets different depth at
+different points. That is a real weakening and it is the price of not turning
+three epochs.
+
+### Question 2: may published records be re-encoded?
+
+**Recommendation: yes, once, as an ordinary append — and do not rewrite
+history.**
+
+The decisive measurement is that the store's cost is a *checkout* cost, not a
+*storage* cost. The whole branch — 402 commits, 1,188 records — fetches in
+**53.69 MiB** and expands to **1,482.9 MiB** on disk, a ~28× ratio, because a
+16 MB macOS record is mostly repeated bytes. GitHub reports the entire
+repository at 115.8 MiB.
+
+So the two levers are not the same lever:
+
+- Rewriting history can reclaim at most ~49 MiB of pack, and only after
+  GitHub's own maintenance, which is not available on request. A force-push
+  leaves unreachable objects in place, still fetchable by SHA, with the reported
+  repository size unchanged. Measured: `git repack -adq --window=250
+  --depth=100` on the branch as fetched produces **no improvement at all**.
+- Changing the tip tree reclaims 1,428.6 MiB of checkout, and needs no rewrite.
+
+The recommended operation is therefore a single commit on `performance-data-v1`
+that adds 1,188 re-encoded records under their own new content addresses,
+removes the originals from the tip, and rewrites `index.json`. No history is
+rewritten, no address is ever reused for different bytes, and every original
+record stays reachable at `<pre-compaction-commit>:runs/<address>.json`. Tag
+that commit so the full evidence has a name a reader can quote. Measured
+result: the tip falls from 1,482.9 MiB to 54.3 MiB and parses in 0.34s instead
+of 18.48s.
+
+Only **311 of 1,188 addresses move**. Epochs 2 and 4 carry no boundary evidence
+and are byte-identical after re-encoding, as are six epoch-5 records. The
+required repository changes are exactly:
+
+| Site | Change |
+| --- | --- |
+| `performance/manifest.toml` | re-pin 6 `[epoch.baseline] run` values (epochs 5 and 6, three platforms) and the epoch-5 `reference_run`. Epoch 2's three pins are untouched. |
+| `docs/notes/adr-0071-phase-1-…md`, `adr-0071-phase-2-…md` | four prose citations of epoch-5 record addresses |
+| everything else | nothing. `website/static/performance-data.json` is generated and untracked; no test pins a record address; no committed derived data exists. |
+
+Two failure modes are worth naming because they differ sharply:
+
+- Getting the `reference_run` out of step with its baseline fails **loudly**:
+  `manifest.rs` rejects the manifest at parse.
+- Getting a baseline address wrong fails **silently for a retired epoch**.
+  `derive` resolves the baseline by address and, on a miss, publishes no index
+  and no workload ratios while still plotting every per-workload series.
+  `validate-performance-stall.py`'s `unindexed()` gate catches exactly this —
+  but iterates live epochs only, so epochs 2 and 5 are unguarded. **If this
+  amendment is accepted, that gate should be extended to every epoch that
+  declares a baseline**, not only the live one; otherwise the compaction's own
+  most likely mistake is the one nothing reports.
+
+### What immutability and content addressing are actually protecting
+
+§8 argues a stored record can be verified against its own name without trusting
+whoever wrote it. In the actual write path there is no untrusted writer: the
+only writer is the `publish` job in `performance-collect.yml` running with the
+repository's own token, the branch is not protected, and anyone who can make
+that job write a record can equally make it write one with a correct address.
+The properties in use are narrower and worth stating so a decision to spend one
+of them is deliberate:
+
+1. **Idempotent republication.** A re-run of a collection workflow produces
+   byte-identical records and the publisher skips them by name. Without this,
+   re-runs would double-count points.
+2. **Accident refusal.** Differing bytes under an existing name are refused
+   rather than clobbered.
+3. **Protection against a silent schema rename.** Record fields are additive,
+   so re-serializing a parsed record yields bytes — and a name — it never had,
+   which would unname whichever record a baseline pins, invisibly. This is what
+   `Stored` exists for, and it is a guarantee against our own future
+   carelessness rather than against an attacker.
+4. **A governance property.** A published measurement cannot be quietly edited
+   later to make a chart look better.
+
+A reviewed one-time re-encode spends (4) once, in the open, and touches none of
+(1)–(3): a re-encoded record is a *new* record with its own correct address, and
+the original keeps its name and its bytes in the branch's history. That is the
+whole argument for allowing it, and the reason the recommendation is "once, as
+an append" rather than "immutability was a mistake".
+
+One premise should not be assumed: the repository is public with 42 forks, and a
+default clone fetches every branch, so "nobody else has this data" is not
+verifiable. This does not affect the append-based recommendation, which breaks
+no clone; it is a reason not to choose the force-push variant.
+
+### Alternatives considered
+
+Measured. "Loses" is what becomes unavailable to a reader holding only the tip.
+
+| Option | Checkout after | Loses |
+| --- | ---: | --- |
+| do nothing | 1,482.9 MiB, +289/day | nothing; the trend continues |
+| new encoding for new records only | 1,482.9 MiB, +11/day | nothing |
+| **re-encode at the tip, no history rewrite** | **54.3 MiB** | per-process `critical_path` from the tip; still in history |
+| re-encode retired epochs only | 456.0 MiB | same, epochs 2–5 only; 242 addresses move |
+| delete retired-epoch records | 420.0 MiB | epochs 2/4/5 vanish from the dashboard |
+| summarize a retired epoch to one record | ~420 MiB | per-commit resolution; needs a new record kind and a dashboard path |
+| archive the pre-compaction tip as a tag | unchanged | nothing; costs zero bytes, composes with the above |
+| force-push a fresh orphan, same records | 1,482.9 MiB | history, for ~0 reclaimed |
+| force-push a fresh orphan, re-encoded | 54.3 MiB | all history including the full evidence, permanently |
+| git-level repacking, no content change | unchanged | nothing — and measured to reclaim nothing |
+
+A reader in six months re-derives any chart from the recommended option
+unchanged, because every value a chart is drawn from is byte-identical.
+Recovering a specific run's full per-process evidence means checking out the
+archived tag. Under either force-push variant, that recovery is impossible once
+GitHub's maintenance runs.
+
+### Relationship to the other amendment
+
+If Question 1 is answered as recommended, the two amendments are
+**independent**: the encoding can be adopted for new records without compacting
+anything, or the legacy records can be compacted without waiting on an epoch
+turn, in either order. If Question 1 is answered literally — suite revision 5 —
+they are **coupled**, compaction is impossible without redefining epochs 5
+and 6, and the ADR-0071 Amendment 1 recommendation costs a headline gap on three
+platforms.
+
+Accepting ADR-0071 Amendment 1 and declining this one is coherent: it stops the
+growth and leaves the 1,481.2 MiB in place, which after RUE-1542 already sits
+outside the staleness gate's read path and burdens only the website build.
+
 ## References
 
 - ADR-0019 (performance dashboard) and ADR-0031 (robust performance testing)
@@ -514,3 +691,5 @@ splicing via shared workloads.
   semantics, schema versioning.
 - GitHub hosted-runner documentation and `actions/runner-images` — source of
   runner image version identity.
+- [Boundary evidence and the size of performance-data-v1](../notes/performance-boundary-evidence-size.md)
+  — Amendment 1's measurements, breakage inventory, and option space.
