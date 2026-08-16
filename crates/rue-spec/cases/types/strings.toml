@@ -826,6 +826,21 @@ fn main() -> i32 {
 runtime_error = "index out of bounds"
 
 [[case]]
+name = "string_index_return_type_mismatch_is_diagnostic"
+spec = ["3.7:15", "3.7:16"]
+description = "A string byte index has type u8, so returning it as i8 is a normal type error rather than a CFG ICE."
+source = """
+fn first(s: str) -> i8 {
+    s[0]
+}
+fn main() -> i32 {
+    @intCast(first("hello"))
+}
+"""
+compile_fail = true
+error_contains = ["E0206", "expected i8", "found u8"]
+
+[[case]]
 name = "string_substring_len"
 spec = ["3.7:19"]
 real_std = true

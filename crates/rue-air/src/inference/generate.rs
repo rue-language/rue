@@ -499,6 +499,25 @@ impl<'a> ConstraintGenerator<'a> {
         false
     }
 
+    /// Whether an already-known operand is one of Rue's packed string types.
+    /// String indexing is lowered by semantic analysis to a byte read, so its
+    /// result is always `u8`, unlike an array index whose element type comes
+    /// from the array itself. String literals are admitted here too: their
+    /// contextual type is finalized later, but indexing one has the same
+    /// result type regardless of whether it becomes `str` or `StrBuf`.
+    fn is_string_indexable_type(&self, ty: &InferType) -> bool {
+        if self.is_string_concrete(ty) || self.is_string_literal_candidate(ty) {
+            return true;
+        }
+        let InferType::Concrete(t) = ty else {
+            return false;
+        };
+        let Some(id) = t.as_struct() else {
+            return false;
+        };
+        crate::types::is_string_view_struct_name(&self.type_pool.struct_def(id).name)
+    }
+
     /// The pointee of a pointer operand whose type is *already* concrete at
     /// constraint-generation time — an annotated binding, a parameter, a
     /// pointer-returning intrinsic with a fixed result type. Returns `None` for
@@ -2597,13 +2616,17 @@ impl<'a> ConstraintGenerator<'a> {
                 // Extract element type from array type.
                 // If base is InferType::Array, we can get the element type directly.
                 // Otherwise, we need a fresh variable that will be resolved later.
-                match &base_info.ty {
-                    InferType::Array { element, .. } => (**element).clone(),
-                    _ => {
-                        // Base might be a type variable that will resolve to an array.
-                        // Use a fresh variable for the element type.
-                        let result_var = self.fresh_var();
-                        InferType::Var(result_var)
+                if self.is_string_indexable_type(&base_info.ty) {
+                    InferType::Concrete(Type::U8)
+                } else {
+                    match &base_info.ty {
+                        InferType::Array { element, .. } => (**element).clone(),
+                        _ => {
+                            // Base might be a type variable that will resolve to an array.
+                            // Use a fresh variable for the element type.
+                            let result_var = self.fresh_var();
+                            InferType::Var(result_var)
+                        }
                     }
                 }
             }

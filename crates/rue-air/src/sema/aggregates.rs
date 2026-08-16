@@ -1119,8 +1119,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
 
-        // Get the array type from HM inference
-        let array_type = Self::get_resolved_type(ctx, inst_ref, span, "array literal")?;
+        // Get the array type from HM inference. An unresolved element
+        // variable can survive recovery around a malformed or partially
+        // specialized comptime construction; report the same actionable
+        // annotation diagnostic used for an unconstrained empty array rather
+        // than turning the missing map entry into an internal compiler error.
+        let Some(array_type) = ctx.resolved_type_of(inst_ref) else {
+            return Err(CompileError::new(ErrorKind::TypeAnnotationRequired, span));
+        };
 
         // If an element expression is itself ill-typed, HM inference collapses
         // the whole array to `<error>` rather than a real `[T; N]` (see
