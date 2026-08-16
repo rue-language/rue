@@ -46,7 +46,7 @@
 //!   (`try_evaluate_const` and friends) convert it to `None` and
 //!   defer to the runtime check.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 use std::sync::LazyLock;
 use std::time::Instant;
 
@@ -124,11 +124,11 @@ fn elapsed_ns(started: Instant) -> u64 {
 }
 
 /// Empty type substitution map for evaluation contexts without one.
-static EMPTY_TYPE_SUBST: LazyLock<HashMap<Spur, Type>> = LazyLock::new(HashMap::new);
+static EMPTY_TYPE_SUBST: LazyLock<AHashMap<Spur, Type>> = LazyLock::new(AHashMap::new);
 /// Empty value substitution map for evaluation contexts without one.
-static EMPTY_VALUE_SUBST: LazyLock<HashMap<Spur, ConstValue>> = LazyLock::new(HashMap::new);
+static EMPTY_VALUE_SUBST: LazyLock<AHashMap<Spur, ConstValue>> = LazyLock::new(AHashMap::new);
 /// Empty module-member map for evaluation contexts without one.
-static EMPTY_MODULE_MEMBERS: LazyLock<HashMap<InstRef, ConstValue>> = LazyLock::new(HashMap::new);
+static EMPTY_MODULE_MEMBERS: LazyLock<AHashMap<InstRef, ConstValue>> = LazyLock::new(AHashMap::new);
 
 /// The environment a compile-time expression is evaluated in.
 pub(crate) struct ComptimeEnv<'a> {
@@ -139,19 +139,19 @@ pub(crate) struct ComptimeEnv<'a> {
         super::anon_structs::IssuedCanonicalArguments,
     )>,
     /// Comptime type parameters in scope (e.g. `T` -> `i32`).
-    type_subst: &'a HashMap<Spur, Type>,
+    type_subst: &'a AHashMap<Spur, Type>,
     /// Comptime value parameters in scope (e.g. `N` -> `42`).
-    value_subst: &'a HashMap<Spur, ConstValue>,
+    value_subst: &'a AHashMap<Spur, ConstValue>,
     /// Resolved types from HM inference for the function being analyzed.
     /// `None` when evaluating expressions outside a typed function context
     /// (comptime function bodies before specialization, const initializers).
-    resolved_types: Option<&'a HashMap<InstRef, Type>>,
+    resolved_types: Option<&'a AHashMap<InstRef, Type>>,
     /// Runtime locals in scope at the point being evaluated. A runtime local
     /// shadows same-named comptime parameters and file-level constants, so a
     /// reference to it makes the expression non-evaluable — without this,
     /// `let n = x; g(n)` inside a body with `comptime n` in scope would
     /// wrongly evaluate `n` to the parameter's value (spec 4.14:6).
-    runtime_locals: Option<&'a HashMap<Spur, LocalVar>>,
+    runtime_locals: Option<&'a AHashMap<Spur, LocalVar>>,
     /// Runtime parameters in scope. They shadow same-named type values and
     /// constants just like locals; comptime parameters resolve through the
     /// substitution maps before this guard is consulted.
@@ -160,16 +160,16 @@ pub(crate) struct ComptimeEnv<'a> {
     /// type-alias walk. This lightweight lexical view prevents ordinary
     /// parameters and earlier `let` bindings from falling through to global
     /// constant/type lookup before `AnalysisContext` exists.
-    runtime_binding_names: Option<&'a HashSet<Spur>>,
+    runtime_binding_names: Option<&'a AHashSet<Spur>>,
     /// `let` bindings introduced by blocks inside the comptime expression.
-    locals: HashMap<Spur, ConstValue>,
+    locals: AHashMap<Spur, ConstValue>,
     /// Values of module-member accesses (`m.CONST`) appearing in this
     /// expression, pre-resolved from the module's file (with privacy checks)
     /// before evaluation. The engine has no file/collector context of its own,
     /// so a `FieldGet` on a module is only evaluable as a sub-expression
     /// operand (`1 + m.CONST`) by looking its value up here (RUE-267). Keyed by
     /// the `FieldGet` instruction. Empty outside const-initializer evaluation.
-    const_module_members: &'a HashMap<InstRef, ConstValue>,
+    const_module_members: &'a AHashMap<InstRef, ConstValue>,
     /// The file whose code is currently being reduced (RUE-511). A
     /// module-qualified comptime call written in a `-> type` constructor body
     /// (`let O = b.Mk(T)`) names an import (`b`) of *this* file's import graph,
@@ -190,7 +190,7 @@ impl<'a> ComptimeEnv<'a> {
     /// parameter, wherever the anonymous-type arms resolve field, payload,
     /// and method-signature types. Locals are inserted last, so an alias
     /// shadows a same-named enclosing parameter (lexical scoping).
-    fn substs_with_locals(&self) -> (HashMap<Spur, Type>, HashMap<Spur, ConstValue>) {
+    fn substs_with_locals(&self) -> (AHashMap<Spur, Type>, AHashMap<Spur, ConstValue>) {
         let mut type_subst = self.type_subst.clone();
         let mut value_subst = self.value_subst.clone();
         for (name, val) in &self.locals {
@@ -217,7 +217,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             runtime_params: None,
             runtime_binding_names: None,
-            locals: HashMap::new(),
+            locals: AHashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
         }
@@ -226,8 +226,8 @@ impl<'a> ComptimeEnv<'a> {
     /// An environment with comptime parameter substitutions but no resolved
     /// types (used when evaluating a comptime function body at a call site).
     pub(crate) fn with_subst(
-        type_subst: &'a HashMap<Spur, Type>,
-        value_subst: &'a HashMap<Spur, ConstValue>,
+        type_subst: &'a AHashMap<Spur, Type>,
+        value_subst: &'a AHashMap<Spur, ConstValue>,
     ) -> Self {
         Self {
             producer: None,
@@ -238,7 +238,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: None,
             runtime_params: None,
             runtime_binding_names: None,
-            locals: HashMap::new(),
+            locals: AHashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: None,
         }
@@ -259,7 +259,7 @@ impl<'a> ComptimeEnv<'a> {
             runtime_locals: Some(&ctx.locals),
             runtime_params: Some((ctx.params, ctx.param_index)),
             runtime_binding_names: None,
-            locals: HashMap::new(),
+            locals: AHashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
             defining_file: Some(ctx.current_file_id),
         }
@@ -373,8 +373,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn try_evaluate_const_with_subst(
         &mut self,
         inst_ref: InstRef,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
         env.producer = Some(inst_ref);
@@ -1917,8 +1917,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `WrapA(WrapA(i32))`) and references to enclosing comptime
         // params/aliases both resolve. A non-const argument makes the whole
         // call non-evaluable.
-        let mut callee_types: HashMap<Spur, Type> = HashMap::new();
-        let mut callee_values: HashMap<Spur, ConstValue> = HashMap::new();
+        let mut callee_types: AHashMap<Spur, Type> = AHashMap::new();
+        let mut callee_values: AHashMap<Spur, ConstValue> = AHashMap::new();
         for (i, arg) in args.iter().enumerate() {
             let Some(v) = self.eval_const_expr(arg.value, env)? else {
                 return Ok(None);
@@ -1976,8 +1976,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         function_name: Spur,
         function: &crate::sema::info::FunctionCallInfo,
-        callee_types: &HashMap<Spur, Type>,
-        callee_values: &HashMap<Spur, ConstValue>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<()> {
         let params = function.params;
@@ -2063,8 +2063,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn reduce_type_ctor_body(
         &mut self,
         name: Spur,
-        callee_types: &HashMap<Spur, Type>,
-        callee_values: &HashMap<Spur, ConstValue>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
         if let Some(result) =
@@ -2142,8 +2142,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         ctor: Spur,
         ty: Type,
-        callee_types: &HashMap<Spur, Type>,
-        callee_values: &HashMap<Spur, ConstValue>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
     ) {
         // Membership in the pool's anonymous registry is the classifier, never
         // the name spelling (RUE-1050): a name-prefix test here silently broke
@@ -2212,19 +2212,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn precompute_comptime_type_locals(
         &mut self,
         body: InstRef,
-        type_subst: Option<&HashMap<Spur, Type>>,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
         runtime_params: &[Spur],
         attribution_enabled: bool,
-    ) -> (HashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+    ) -> (AHashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
         let mut attribution = ComptimePrecomputeAttribution {
             enabled: attribution_enabled,
             ..ComptimePrecomputeAttribution::default()
         };
-        let mut discovered: HashMap<InstRef, Type> = HashMap::new();
-        let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
-        let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
-        let mut runtime_bindings: HashSet<Spur> = runtime_params.iter().copied().collect();
+        let mut discovered: AHashMap<InstRef, Type> = AHashMap::new();
+        let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
+        let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        let mut runtime_bindings: AHashSet<Spur> = runtime_params.iter().copied().collect();
         let mut root_frame = Vec::new();
         self.walk_comptime_type_locals(
             body,
@@ -2250,10 +2250,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn walk_comptime_type_locals(
         &mut self,
         inst_ref: InstRef,
-        discovered: &mut HashMap<InstRef, Type>,
-        eval_types: &mut HashMap<Spur, Type>,
-        eval_values: &HashMap<Spur, ConstValue>,
-        runtime_bindings: &mut HashSet<Spur>,
+        discovered: &mut AHashMap<InstRef, Type>,
+        eval_types: &mut AHashMap<Spur, Type>,
+        eval_values: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: &mut AHashSet<Spur>,
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
         attribution: &mut ComptimePrecomputeAttribution,
     ) {
@@ -2407,9 +2407,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn try_eval_type_alias_init(
         &mut self,
         init: InstRef,
-        eval_types: &HashMap<Spur, Type>,
-        eval_values: &HashMap<Spur, ConstValue>,
-        runtime_bindings: &HashSet<Spur>,
+        eval_types: &AHashMap<Spur, Type>,
+        eval_values: &AHashMap<Spur, ConstValue>,
+        runtime_bindings: &AHashSet<Spur>,
     ) -> Option<Type> {
         // `eval_const_expr`'s `Call` arm reduces type-function calls
         // compositionally (including nested/delegating ones), so a single
@@ -2452,11 +2452,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn precompute_inline_ctor_head_types(
         &mut self,
         body: InstRef,
-        type_subst: Option<&HashMap<Spur, Type>>,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
-        comptime_local_types: &HashMap<Spur, Type>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+        comptime_local_types: &AHashMap<Spur, Type>,
         attribution_enabled: bool,
-    ) -> (HashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+    ) -> (AHashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
         // A head is the receiver of a `.NAME(..)` path whose receiver is
         // itself a call (`F(args).Ok(x)`, or module-qualified
         // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
@@ -2477,10 +2477,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             },
             ..ComptimePrecomputeAttribution::default()
         };
-        let mut eval_types: HashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
+        let mut eval_types: AHashMap<Spur, Type> = type_subst.cloned().unwrap_or_default();
         eval_types.extend(comptime_local_types);
-        let eval_values: HashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
-        let mut reduced = HashMap::new();
+        let eval_values: AHashMap<Spur, ConstValue> = value_subst.cloned().unwrap_or_default();
+        let mut reduced = AHashMap::new();
         for head in candidates {
             let started = attribution.enabled.then(Instant::now);
             if attribution.enabled {

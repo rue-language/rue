@@ -28,8 +28,7 @@
 //! specialized body. The compiler's query graph owns the cross-body fixed
 //! point and its expansion budget ([`MAX_SPECIALIZATION_ROUNDS`]).
 
-use std::collections::HashMap;
-use std::collections::HashSet;
+use ahash::{AHashMap, AHashSet};
 use std::collections::hash_map::Entry;
 
 use lasso::{Key, Spur, ThreadedRodeo};
@@ -84,7 +83,7 @@ pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 fn collect_specializations(
     air: &Air,
     interner: &ThreadedRodeo,
-    specializations: &mut HashMap<SpecializationKey, SpecializationInfo>,
+    specializations: &mut AHashMap<SpecializationKey, SpecializationInfo>,
     pending: &mut Vec<SpecializationKey>,
     work: &mut crate::BodyAnalysisWork,
 ) -> bool {
@@ -133,7 +132,7 @@ fn collect_specializations(
 
 fn rewrite_call_generic(
     air: &mut crate::AirEditor,
-    specializations: &HashMap<SpecializationKey, SpecializationInfo>,
+    specializations: &AHashMap<SpecializationKey, SpecializationInfo>,
     work: &mut crate::BodyAnalysisWork,
 ) {
     let mut rewrites: Vec<(usize, Spur)> = Vec::new();
@@ -230,7 +229,7 @@ pub(crate) fn select_provider_body_specializations<H>(
 where
     H: OrdinaryBodyAnalysisHost + SemanticBodyExportHost,
 {
-    let mut specializations = HashMap::new();
+    let mut specializations = AHashMap::new();
     let mut pending = Vec::new();
     let mut work = crate::BodyAnalysisWork::default();
     if collect_specializations(
@@ -324,8 +323,8 @@ pub(crate) struct OneSpecializedBody {
     pub(crate) function: AnalyzedFunction,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) local_strings: Vec<String>,
-    pub(crate) referenced_functions: HashSet<Spur>,
-    pub(crate) referenced_methods: HashSet<(StructId, Spur)>,
+    pub(crate) referenced_functions: AHashSet<Spur>,
+    pub(crate) referenced_methods: AHashSet<(StructId, Spur)>,
     pub(crate) dependencies: Vec<crate::SemanticDefinitionToken>,
     pub(crate) dependency_boundary_complete: bool,
     pub(crate) identity: crate::SemanticSpecializationIdentity<
@@ -360,8 +359,8 @@ where
         .map(|(name, ty, mode, is_comptime)| (*name, *ty, *mode, *is_comptime))
         .collect::<Vec<_>>();
 
-    let mut type_subst = HashMap::new();
-    let mut value_subst = HashMap::new();
+    let mut type_subst = AHashMap::new();
+    let mut value_subst = AHashMap::new();
     let mut type_arg_idx = 0;
     let mut value_arg_idx = 0;
     for (param_index, (name, _, _, is_comptime)) in base_params.iter().enumerate() {

@@ -5,7 +5,7 @@
 //! control-flow lowering does not introduce a peer analysis context.
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::sync::Arc;
 
 use lasso::Spur;
@@ -619,7 +619,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut wildcard_span: Option<Span> = None;
         let mut bool_true_span: Option<Span> = None;
         let mut bool_false_span: Option<Span> = None;
-        let mut seen_ints: HashMap<i64, Span> = HashMap::new();
+        let mut seen_ints: AHashMap<i64, Span> = AHashMap::new();
         for (pattern, _) in arms {
             let pattern_span = pattern.span();
 
@@ -935,12 +935,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut wildcard_span: Option<Span> = None;
         let mut bool_true_span: Option<Span> = None;
         let mut bool_false_span: Option<Span> = None;
-        let mut seen_ints: HashMap<i64, Span> = HashMap::new();
+        let mut seen_ints: AHashMap<i64, Span> = AHashMap::new();
         // Maps each covered enum-variant index to the span of its first arm, so a
         // second arm matching the same variant can be reported as unreachable
         // (mirroring seen_ints / bool_*_span). The map's len() still drives the
         // exhaustiveness check below, identically to the former HashSet.
-        let mut covered_variants: HashMap<u32, Span> = HashMap::new();
+        let mut covered_variants: AHashMap<u32, Span> = AHashMap::new();
         let mut pattern_enum_id: Option<crate::types::EnumId> = None;
 
         // Analyze each arm (each arm gets its own scope)

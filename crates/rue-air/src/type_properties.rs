@@ -4,7 +4,7 @@
 //! validation properties: a well-shaped `Type` can still be foreign to a
 //! pool, out of range, the wrong kind, incomplete, or recovery-only.
 
-use std::collections::HashSet;
+use ahash::AHashSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Barrier};
 
@@ -107,7 +107,7 @@ fn encoding_shape_is_exact_and_checked_round_trips_preserve_kind_metadata() {
                 TypeKind::PtrMut(PtrMutTypeId::from_pool_index(payload)),
             ),
         ];
-        let mut raw_values = HashSet::new();
+        let mut raw_values = AHashSet::new();
         for (ty, encoded_kind, decoded_kind) in composites {
             let expected = type_encoding::encode_composite(encoded_kind, payload).unwrap();
             assert_eq!(ty.raw_encoding(), expected);
@@ -270,7 +270,7 @@ fn bounded_composite_graphs_round_trip_through_canonical_pool_storage() {
         frontier = next;
     }
 
-    let mut unique = HashSet::new();
+    let mut unique = AHashSet::new();
     for graph in all {
         let raw = graph.ty.raw_encoding();
         let decoded = Type::try_from_u32(raw).expect("pool-issued encoding must decode");
@@ -330,7 +330,7 @@ fn pool_validation_rejects_wrong_kinds_ranges_and_illegal_children_without_alias
             Type::new_ptr_mut(PtrMutTypeId::from_pool_index(pool_index)),
         ];
         assert_eq!(
-            forged.into_iter().collect::<HashSet<_>>().len(),
+            forged.into_iter().collect::<AHashSet<_>>().len(),
             forged.len()
         );
         for (encoded_kind, ty) in forged.into_iter().enumerate() {

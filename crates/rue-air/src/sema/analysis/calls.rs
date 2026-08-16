@@ -433,8 +433,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // can accidentally accept it.
         let all_params_comptime = param_comptime.iter().all(|&flag| flag);
         if self.function_returns_type(&fn_info) && (args.is_empty() || all_params_comptime) {
-            let mut type_subst = std::collections::HashMap::new();
-            let mut value_subst = std::collections::HashMap::new();
+            let mut type_subst = AHashMap::new();
+            let mut value_subst = AHashMap::new();
             for (i, is_comptime) in param_comptime.iter().enumerate() {
                 if !*is_comptime {
                     continue;
@@ -565,13 +565,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut type_args: Vec<Type> = Vec::new();
             let mut value_args: Vec<ConstValue> = Vec::new();
             let mut runtime_args: Vec<AirCallArg> = Vec::new();
-            let mut type_subst: std::collections::HashMap<Spur, Type> =
-                std::collections::HashMap::new();
+            let mut type_subst: AHashMap<Spur, Type> = AHashMap::new();
             // Comptime VALUE parameters (`comptime N: i32`) map to their
             // captured constant so a runtime param type mentioning one — an
             // array length `arr: [i32; N]` — resolves at this call (RUE-16).
-            let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
-                std::collections::HashMap::new();
+            let mut value_subst: AHashMap<Spur, ConstValue> = AHashMap::new();
 
             for (i, (air_arg, is_comptime)) in
                 air_args.iter().zip(param_comptime.iter()).enumerate()
@@ -717,8 +715,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // The return type is literally `type`, not a type parameter that was substituted.
                 // Try to evaluate the function body at compile time with type substitutions.
                 // Also build value_subst from comptime VALUE parameters (e.g., comptime N: i32)
-                let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
-                    std::collections::HashMap::new();
+                let mut value_subst: AHashMap<Spur, ConstValue> = AHashMap::new();
                 for (i, is_comptime) in param_comptime.iter().enumerate() {
                     let argument_is_type = air_args.get(i).is_some_and(|argument| {
                         matches!(air.get(argument.value).data, AirInstData::TypeConst(_))

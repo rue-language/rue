@@ -5,7 +5,6 @@
 //! consulted; no declaration epoch or whole-program analyzer is reachable here.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -356,8 +355,8 @@ pub struct ProviderOrdinaryBody<K, M> {
     pub function: AnalyzedFunction,
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
-    pub referenced_functions: HashSet<Spur>,
-    pub referenced_methods: HashSet<(StructId, Spur)>,
+    pub referenced_functions: AHashSet<Spur>,
+    pub referenced_methods: AHashSet<(StructId, Spur)>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
     pub referenced_specializations:
@@ -854,26 +853,35 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     modules_by_file: RefCell<AHashMap<FileId, M>>,
     module_tokens: RefCell<AHashMap<ModuleId, (SemanticModuleToken, M)>>,
     next_module_file: Cell<u32>,
-    generated_structs: HashMap<Spur, StructId>,
-    generated_enums: HashMap<Spur, EnumId>,
+    generated_structs: AHashMap<Spur, StructId>,
+    generated_enums: AHashMap<Spur, EnumId>,
     anonymous_methods: RefCell<AHashMap<(StructId, Spur), MethodCallInfo>>,
     /// Anonymous method endpoints whose complete durable signature set has
     /// already been installed in this body request. Provider type resolution
     /// handles recursive nominal shells inside the type pool and does not call
     /// back into endpoint installation, so only successful walks are cached.
     anonymous_method_registrations: RefCell<AHashSet<Type>>,
-    anonymous_struct_ids: HashSet<StructId>,
-    anonymous_enum_ids: HashSet<EnumId>,
-    anon_struct_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
-    anon_enum_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>,
-    anonymous_digest_owners: HashMap<u128, super::anon_structs::IssuedAnonymousNominalKey>,
-    canonical_anonymous_types: HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
+    anonymous_struct_ids: AHashSet<StructId>,
+    anonymous_enum_ids: AHashSet<EnumId>,
+    anon_struct_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
+    anon_enum_identities: AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>,
+    anonymous_digest_owners: AHashMap<u128, super::anon_structs::IssuedAnonymousNominalKey>,
+    /// Kept on the std hasher, unlike its neighbours: `produced_anonymous_nominals`
+    /// walks this map into the exported nominal payload and sorts that payload by
+    /// identity alone, so two entries sharing an identity would keep whatever
+    /// order the table iterated in. The sort key is not total over the entries,
+    /// which makes the iteration order reachable from an emitted artifact.
+    canonical_anonymous_types:
+        std::collections::HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
+    /// Kept on the std hasher for the same class of reason: `anonymous_struct_id`
+    /// and `anonymous_enum_id` scan this map with `find_map`, which answers with
+    /// an arbitrary member of the matching set rather than a canonical one.
     consulted_anonymous_types:
-        RefCell<HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>,
-    durable_anonymous_types: HashMap<Type, crate::AnonymousNominalKey<K, M>>,
-    anon_struct_method_sigs: HashMap<StructId, Vec<super::AnonMethodSig>>,
-    anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
-    anon_struct_type_subst: HashMap<StructId, HashMap<Spur, Type>>,
+        RefCell<std::collections::HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>,
+    durable_anonymous_types: AHashMap<Type, crate::AnonymousNominalKey<K, M>>,
+    anon_struct_method_sigs: AHashMap<StructId, Vec<super::AnonMethodSig>>,
+    anon_struct_captured_values: AHashMap<StructId, AHashMap<Spur, ConstValue>>,
+    anon_struct_type_subst: AHashMap<StructId, AHashMap<Spur, Type>>,
     active_anonymous_producer: Option<(
         super::anon_structs::IssuedStableProducerId,
         super::anon_structs::IssuedCanonicalArguments,
@@ -883,7 +891,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     recovered_errors: Vec<CompileError>,
     comptime_depth: usize,
     deferred_ownership: Vec<super::DeferredOwnershipGate>,
-    ctor_displays: HashMap<Type, String>,
+    ctor_displays: AHashMap<Type, String>,
     current_anonymous_identity:
         Option<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
 }
@@ -996,28 +1004,28 @@ where
             modules_by_file: RefCell::new(AHashMap::new()),
             module_tokens: RefCell::new(AHashMap::new()),
             next_module_file: Cell::new(u32::MAX),
-            generated_structs: HashMap::new(),
-            generated_enums: HashMap::new(),
+            generated_structs: AHashMap::new(),
+            generated_enums: AHashMap::new(),
             anonymous_methods: RefCell::new(AHashMap::new()),
             anonymous_method_registrations: RefCell::new(AHashSet::new()),
-            anonymous_struct_ids: HashSet::new(),
-            anonymous_enum_ids: HashSet::new(),
-            anon_struct_identities: HashMap::new(),
-            anon_enum_identities: HashMap::new(),
-            anonymous_digest_owners: HashMap::new(),
-            canonical_anonymous_types: HashMap::new(),
-            consulted_anonymous_types: RefCell::new(HashMap::new()),
-            durable_anonymous_types: HashMap::new(),
-            anon_struct_method_sigs: HashMap::new(),
-            anon_struct_captured_values: HashMap::new(),
-            anon_struct_type_subst: HashMap::new(),
+            anonymous_struct_ids: AHashSet::new(),
+            anonymous_enum_ids: AHashSet::new(),
+            anon_struct_identities: AHashMap::new(),
+            anon_enum_identities: AHashMap::new(),
+            anonymous_digest_owners: AHashMap::new(),
+            canonical_anonymous_types: std::collections::HashMap::new(),
+            consulted_anonymous_types: RefCell::new(std::collections::HashMap::new()),
+            durable_anonymous_types: AHashMap::new(),
+            anon_struct_method_sigs: AHashMap::new(),
+            anon_struct_captured_values: AHashMap::new(),
+            anon_struct_type_subst: AHashMap::new(),
             active_anonymous_producer: None,
             body_work: BodyAnalysisWork::default(),
             expression_breakdown: None,
             recovered_errors: Vec::new(),
             comptime_depth: 0,
             deferred_ownership: Vec::new(),
-            ctor_displays: HashMap::new(),
+            ctor_displays: AHashMap::new(),
             current_anonymous_identity: None,
         };
         for identity in &well_known.nominals {
@@ -1930,7 +1938,7 @@ where
                 return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
             }
         };
-        self.install_anonymous_dependencies(&import, &mut HashSet::new())?;
+        self.install_anonymous_dependencies(&import, &mut AHashSet::new())?;
         let ty = self
             .state
             .identity_context()
@@ -1962,7 +1970,7 @@ where
     fn install_anonymous_dependencies(
         &mut self,
         value: &crate::SemanticImportType<K, M>,
-        visited_named: &mut HashSet<K>,
+        visited_named: &mut AHashSet<K>,
     ) -> Result<(), crate::SemanticBodyExportFailure> {
         use crate::SemanticImportType as T;
         match value {
@@ -2295,7 +2303,7 @@ where
 
     fn produced_anonymous_nominals(
         &self,
-        initial: &HashSet<super::anon_structs::IssuedAnonymousNominalKey>,
+        initial: &AHashSet<super::anon_structs::IssuedAnonymousNominalKey>,
     ) -> Result<Arc<[crate::SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure>
     {
         fn mode(value: RirParamMode) -> crate::SemanticParameterMode {
@@ -2963,8 +2971,8 @@ where
     M: Clone + Eq + Hash + Ord,
 {
     fn inference_generated_nominal_overlays(&self) -> InferenceGeneratedNominalOverlays {
-        let mut builtin_struct_types = HashMap::new();
-        let mut struct_types_by_file = HashMap::new();
+        let mut builtin_struct_types = AHashMap::new();
+        let mut struct_types_by_file = AHashMap::new();
         for (name, id) in &self.generated_structs {
             let def = self.type_pool.struct_def(*id);
             if def.is_builtin {
@@ -2972,7 +2980,7 @@ where
             }
             struct_types_by_file.insert((def.file_id, *name), Type::new_struct(*id));
         }
-        let mut enum_types_by_file = HashMap::new();
+        let mut enum_types_by_file = AHashMap::new();
         for (name, id) in &self.generated_enums {
             let def = self.type_pool.enum_def(*id);
             enum_types_by_file.insert((def.file_id, *name), Type::new_enum(*id));
@@ -3623,7 +3631,7 @@ where
     fn types_equivalent(&self, left: Type, right: Type) -> bool {
         left == right
     }
-    fn generated_structs(&self) -> &HashMap<Spur, StructId> {
+    fn generated_structs(&self) -> &AHashMap<Spur, StructId> {
         &self.generated_structs
     }
     fn body_interner(&self) -> &ThreadedRodeo {
@@ -3645,10 +3653,10 @@ where
                 .and_then(|ty| ty.as_struct())
         })
     }
-    fn generated_structs_mut(&mut self) -> &mut HashMap<Spur, StructId> {
+    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId> {
         &mut self.generated_structs
     }
-    fn generated_enums_mut(&mut self) -> &mut HashMap<Spur, EnumId> {
+    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId> {
         &mut self.generated_enums
     }
     fn anonymous_struct_id(
@@ -3691,12 +3699,12 @@ where
     }
     fn anonymous_struct_identities_mut(
         &mut self,
-    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
         &mut self.anon_struct_identities
     }
     fn anonymous_enum_identities_mut(
         &mut self,
-    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
         &mut self.anon_enum_identities
     }
     fn anonymous_digest_owner(
@@ -3728,18 +3736,18 @@ where
     }
     fn anonymous_struct_methods_mut(
         &mut self,
-    ) -> &mut HashMap<StructId, Vec<super::AnonMethodSig>> {
+    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>> {
         &mut self.anon_struct_method_sigs
     }
     fn anonymous_struct_captures_mut(
         &mut self,
-    ) -> &mut HashMap<StructId, HashMap<Spur, ConstValue>> {
+    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>> {
         &mut self.anon_struct_captured_values
     }
-    fn anonymous_struct_ids_mut(&mut self) -> &mut HashSet<StructId> {
+    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId> {
         &mut self.anonymous_struct_ids
     }
-    fn anonymous_enum_ids_mut(&mut self) -> &mut HashSet<EnumId> {
+    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId> {
         &mut self.anonymous_enum_ids
     }
     fn canonical_type_instance(
@@ -3946,8 +3954,8 @@ where
     fn reduce_external_comptime_call(
         &mut self,
         name: Spur,
-        callee_types: &HashMap<Spur, Type>,
-        callee_values: &HashMap<Spur, ConstValue>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<CompileResult<Option<ConstValue>>> {
         let definition = if name == self.function_symbol {
@@ -4078,8 +4086,8 @@ where
         &mut self,
         syntax: RirTypeSyntaxRef,
         span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
         let syntax = super::fact_mode::StructuredTypeSyntax {
             arena: self.rir.rir().type_syntax().clone(),
@@ -4225,16 +4233,16 @@ where
     fn well_known_option(&self, payload: Type) -> Option<Type> {
         self.endpoint.well_known_option_for_payload(payload)
     }
-    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: HashMap<Spur, Type>) {
+    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>) {
         self.anon_struct_type_subst.insert(struct_id, subst);
     }
-    fn anon_struct_type_subst(&self, struct_id: StructId) -> HashMap<Spur, Type> {
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type> {
         self.anon_struct_type_subst
             .get(&struct_id)
             .cloned()
             .unwrap_or_default()
     }
-    fn anon_struct_captured_values(&self, struct_id: StructId) -> HashMap<Spur, ConstValue> {
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue> {
         self.anon_struct_captured_values
             .get(&struct_id)
             .cloned()
@@ -4380,7 +4388,7 @@ where
         .canonical_anonymous_types
         .values()
         .cloned()
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
     let infer = InferenceContext::new(&host);
     let host_setup_ns = elapsed_ns(host_setup_started);
     let expression_engine_started = Instant::now();
@@ -4614,7 +4622,7 @@ where
             .zip(referenced_specializations.iter())
             .map(|((symbol, _), instance)| (*symbol, instance.clone())),
     );
-    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
     let specialization_selection_ns = elapsed_ns(specialization_selection_started);
     let body_export_started = Instant::now();
     let export = super::semantic_body_export::export_body(
@@ -4642,7 +4650,7 @@ where
                 .get(symbol)
                 .map(|(_, key)| key.clone())
         })
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
     referenced_definitions.extend(
         referenced_methods
             .iter()
@@ -4716,7 +4724,7 @@ fn anonymous_member_in_producer(
         .get(member.name.as_ref())
         .ok_or("anonymous member name is absent from its producer artifact")?;
     let mut pending = vec![producer_root];
-    let mut visited = HashSet::new();
+    let mut visited = AHashSet::new();
     let mut owner_found = false;
     let mut declaration = None;
     while let Some(reference) = pending.pop() {
@@ -4958,7 +4966,7 @@ where
         .insert(issued_owner.clone(), struct_id);
     host.anonymous_struct_ids.insert(struct_id);
     let type_captures = host.source.anonymous_type_captures(durable_owner);
-    let mut type_subst = HashMap::with_capacity(type_captures.len());
+    let mut type_subst = AHashMap::with_capacity(type_captures.len());
     for (name, durable_type) in type_captures {
         let ty = host
             .state
@@ -4998,7 +5006,7 @@ where
         host.anon_struct_type_subst.insert(struct_id, type_subst);
     }
     let value_captures = host.source.anonymous_value_captures(durable_owner);
-    let mut captured_values = HashMap::with_capacity(value_captures.len());
+    let mut captured_values = AHashMap::with_capacity(value_captures.len());
     for (name, durable_value) in value_captures {
         let value = host
             .materialize_durable_const_value(&durable_value)
@@ -5017,7 +5025,7 @@ where
         .canonical_anonymous_types
         .values()
         .cloned()
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
 
     let (params, body, has_self, self_mode, self_is_mut, span) =
         match &host.rir.rir().get(declaration).data {
@@ -5217,7 +5225,7 @@ where
             .zip(referenced_specializations.iter())
             .map(|((symbol, _), instance)| (*symbol, instance.clone())),
     );
-    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
     let body_span = host.rir.rir().get(body).span;
     let specialization_selection_ns = elapsed_ns(specialization_selection_started);
     let body_export_started = Instant::now();
@@ -5257,7 +5265,7 @@ where
                 .get(symbol)
                 .map(|(_, key)| key.clone())
         })
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
     referenced_definitions.extend(
         referenced_methods
             .iter()
@@ -5366,7 +5374,7 @@ where
         .canonical_anonymous_types
         .values()
         .cloned()
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
     let type_args = arguments
         .types
         .iter()
@@ -5431,7 +5439,7 @@ where
             .zip(referenced_specializations.iter())
             .map(|((symbol, _), instance)| (*symbol, instance.clone())),
     );
-    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let selected_calls = selected_calls.into_iter().collect::<AHashMap<_, _>>();
     let specialization_selection_ns = elapsed_ns(specialization_selection_started);
     let body_export_started = Instant::now();
     let body = super::semantic_body_export::export_body(
@@ -5461,7 +5469,7 @@ where
                 .get(symbol)
                 .map(|(_, key)| key.clone())
         })
-        .collect::<HashSet<_>>();
+        .collect::<AHashSet<_>>();
     referenced_definitions.extend(
         specialized
             .referenced_methods

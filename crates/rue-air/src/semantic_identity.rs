@@ -494,7 +494,8 @@ stable_definition_kind_schema!(define_stable_definition_kind_schema);
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashSet};
+    use ahash::AHashSet;
+    use std::collections::BTreeSet;
 
     use super::*;
 
@@ -552,6 +553,6 @@ mod tests {
             BTreeSet::from([baseline.clone(), same.clone(), moved.clone()]).len(),
             2
         );
-        assert_eq!(HashSet::from([baseline, same, moved]).len(), 2);
+        assert_eq!(AHashSet::from([baseline, same, moved]).len(), 2);
     }
 }

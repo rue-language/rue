@@ -5,6 +5,8 @@
 //! bounds, move, borrow, and reinitialization semantics to the canonical
 //! `analysis::ownership` API.
 
+use ahash::{AHashMap, AHashSet};
+
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, MissingFieldsError, OptionExt};
@@ -435,7 +437,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let struct_type = Type::new_struct(struct_id);
 
         // Build a map from field name to struct field index
-        let field_index_map: std::collections::HashMap<&str, usize> = struct_def
+        let field_index_map: AHashMap<&str, usize> = struct_def
             .fields
             .iter()
             .enumerate()
@@ -443,7 +445,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .collect();
 
         // Check for unknown or duplicate fields
-        let mut seen_fields = std::collections::HashSet::new();
+        let mut seen_fields = AHashSet::new();
         for &(init_field_name, _) in &field_inits {
             let init_name = self.body_interner().resolve(&init_field_name).to_owned();
 

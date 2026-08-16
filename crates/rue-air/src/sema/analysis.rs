@@ -7,7 +7,7 @@
 //! (`provider_body_host`); no whole-program driver lives here.
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{
@@ -304,8 +304,8 @@ where
     A: IntoIterator,
     A::Item: std::ops::Deref<Target = RirCallArg>,
 {
-    let mut inout_vars: HashSet<Spur> = HashSet::new();
-    let mut borrow_vars: HashSet<Spur> = HashSet::new();
+    let mut inout_vars: AHashSet<Spur> = AHashSet::new();
+    let mut borrow_vars: AHashSet<Spur> = AHashSet::new();
 
     for arg in args {
         let arg = &*arg;

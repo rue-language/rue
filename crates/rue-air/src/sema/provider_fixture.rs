@@ -22,7 +22,7 @@
 //!   panics; if body analysis ever starts consulting the provider object on
 //!   this path, fixture tests fail loudly instead of silently absorbing it.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -114,10 +114,10 @@ pub(crate) type FixtureBody = ProviderOrdinaryBody<FixtureKey, FixtureModule>;
 pub(crate) struct FixtureFacts {
     module_path: Arc<str>,
     file: FileId,
-    functions: HashMap<FixtureKey, DurableFunction<FixtureKey, FixtureModule>>,
-    methods: HashMap<FixtureKey, DurableMethod<FixtureKey, FixtureModule>>,
-    nominals: HashMap<FixtureKey, DurableNominal<FixtureKey, FixtureModule>>,
-    consts: HashMap<FixtureKey, DurableConst<FixtureKey, FixtureModule>>,
+    functions: AHashMap<FixtureKey, DurableFunction<FixtureKey, FixtureModule>>,
+    methods: AHashMap<FixtureKey, DurableMethod<FixtureKey, FixtureModule>>,
+    nominals: AHashMap<FixtureKey, DurableNominal<FixtureKey, FixtureModule>>,
+    consts: AHashMap<FixtureKey, DurableConst<FixtureKey, FixtureModule>>,
 }
 
 /// The in-memory durable fact source handed to the production body host. Facts

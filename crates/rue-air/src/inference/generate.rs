@@ -19,6 +19,8 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, RepeatCount, Rir, RirTypeSyntaxNode, RirTypeSyntaxRef};
 use rue_span::{FileId, Span};
 use std::collections::HashMap;
+
+use ahash::AHashMap;
 use std::rc::Rc;
 
 /// Information about a local variable during constraint generation.
@@ -138,9 +140,9 @@ pub(crate) trait LazyInferenceFacts {
 /// Context for constraint generation within a single function.
 pub struct ConstraintContext<'a> {
     /// Local variables in scope.
-    pub locals: HashMap<Spur, LocalVarInfo>,
+    pub locals: AHashMap<Spur, LocalVarInfo>,
     /// Function parameters.
-    pub params: &'a HashMap<Spur, ParamVarInfo>,
+    pub params: &'a AHashMap<Spur, ParamVarInfo>,
     /// Return type of the current function.
     pub return_type: Type,
     /// How many loops we're nested inside (for break/continue validation).
@@ -156,9 +158,9 @@ pub struct ConstraintContext<'a> {
 
 impl<'a> ConstraintContext<'a> {
     /// Create a new context for a function.
-    pub fn new(params: &'a HashMap<Spur, ParamVarInfo>, return_type: Type) -> Self {
+    pub fn new(params: &'a AHashMap<Spur, ParamVarInfo>, return_type: Type) -> Self {
         Self {
-            locals: HashMap::new(),
+            locals: AHashMap::new(),
             params,
             return_type,
             loop_depth: 0,
@@ -172,7 +174,7 @@ impl<'a> ConstraintContext<'a> {
 impl ScopedContext for ConstraintContext<'_> {
     type VarInfo = LocalVarInfo;
 
-    fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
+    fn locals_mut(&mut self) -> &mut AHashMap<Spur, Self::VarInfo> {
         &mut self.locals
     }
 
@@ -211,24 +213,31 @@ pub struct ConstraintGenerator<'a> {
     /// Collected constraints.
     constraints: Vec<Constraint>,
     /// Mapping from RIR instruction to its inferred type.
+    ///
+    /// Deliberately the std hasher while the rest of this generator uses
+    /// `AHashMap`: type inference walks this map to pre-create array types
+    /// (`pre_create_array_types_from_infer_type`), so its iteration order
+    /// decides the pool indices those array types receive, and those indices
+    /// are later a sort key (`sort_unstable_by_key(Type::as_u32)`). The order
+    /// is observable, so the hasher is not a free choice here.
     expr_types: HashMap<InstRef, InferType>,
     /// Function signatures (for call type checking). `None` when the generator
     /// is driven by a lazy provider (`lazy`), which materializes signatures on
     /// demand; unit tests still supply an eager map.
-    functions: Option<&'a HashMap<Spur, FunctionSig>>,
+    functions: Option<&'a AHashMap<Spur, FunctionSig>>,
     /// Built-in struct types, which have no defining source file. `None` under
     /// a lazy provider (see `functions`).
-    builtin_structs: Option<&'a HashMap<Spur, Type>>,
+    builtin_structs: Option<&'a AHashMap<Spur, Type>>,
     /// Module-local struct types ((defining file, source name) -> Type::new_struct(id)).
-    structs_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
+    structs_by_file_name: Option<&'a AHashMap<(FileId, Spur), Type>>,
     /// Built-in enum types, which have no defining source file. `None` under a
     /// lazy provider (see `functions`).
-    builtin_enums: Option<&'a HashMap<Spur, Type>>,
+    builtin_enums: Option<&'a AHashMap<Spur, Type>>,
     /// Module-local enum types ((defining file, source name) -> Type::new_enum(id)).
-    enums_by_file_name: Option<&'a HashMap<(FileId, Spur), Type>>,
+    enums_by_file_name: Option<&'a AHashMap<(FileId, Spur), Type>>,
     /// Method signatures: (struct_id, method_name) -> MethodSig. `None` under a
     /// lazy provider (see `functions`).
-    methods: Option<&'a HashMap<(StructId, Spur), MethodSig>>,
+    methods: Option<&'a AHashMap<(StructId, Spur), MethodSig>>,
     /// Demand-population provider (RUE-1091 slice r5b). When present, the
     /// thirteen declaration-universe families are materialized on first consult
     /// through this seam instead of read from eager maps. `None` in unit tests,
@@ -247,34 +256,34 @@ pub struct ConstraintGenerator<'a> {
     strbuf_type: Option<Type>,
     /// Type substitutions for Self and type parameters (used in method bodies).
     /// Maps type names (like "Self") to their concrete types.
-    type_subst: Option<&'a HashMap<Spur, Type>>,
+    type_subst: Option<&'a AHashMap<Spur, Type>>,
     /// File-level constant types (name -> declared type), resolved during
     /// declaration gathering. Consulted by `VarRef` after locals and params so
     /// a const reference infers to its declared type instead of `<error>`
     /// (RUE-142). `None` only in unit tests; production passes the map via
     /// [`Self::with_const_types`].
-    const_types: Option<&'a HashMap<(FileId, Spur), Type>>,
+    const_types: Option<&'a AHashMap<(FileId, Spur), Type>>,
     /// File-level type aliases (`const T = SomeType(...)`) resolved during
     /// declaration gathering. Consulted in type positions.
-    const_type_aliases: Option<&'a HashMap<(FileId, Spur), Type>>,
+    const_type_aliases: Option<&'a AHashMap<(FileId, Spur), Type>>,
     /// Module-binding types (`const utils = @import(...)`): (declaring file,
     /// name) -> module type. Per-file scoped (RUE-113), so `VarRef` consults
     /// this with the reference's own `span.file_id` before `const_types`.
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_binding_types`].
-    module_binding_types: Option<&'a HashMap<(FileId, Spur), Type>>,
+    module_binding_types: Option<&'a AHashMap<(FileId, Spur), Type>>,
     /// Source-level function lookup: (defining file, source name) -> internal
     /// function key. Same-named functions across files get module-qualified
     /// internal keys in `functions`, so module-member calls resolve through
     /// this map first — the bare source name misses for them (RUE-576).
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_functions_by_file_name`].
-    functions_by_file_name: Option<&'a HashMap<(FileId, Spur), Spur>>,
+    functions_by_file_name: Option<&'a AHashMap<(FileId, Spur), Spur>>,
     /// Module registry file identity for inference-time `module.Type` and
     /// `module.Enum` lookup.
     /// `None` only in unit tests; production passes the map via
     /// [`Self::with_module_file_ids`].
-    module_file_ids: Option<&'a HashMap<crate::types::ModuleId, FileId>>,
+    module_file_ids: Option<&'a AHashMap<crate::types::ModuleId, FileId>>,
     /// Compile-time type aliases bound by `let` in the current function body
     /// (`let P = F();` where `F` returns `type`), pre-resolved by sema before
     /// constraint generation and keyed by each binding's own Alloc
@@ -282,7 +291,7 @@ pub struct ConstraintGenerator<'a> {
     /// alias is brought into scope in [`Self::comptime_alias_types`] and
     /// unwound with its enclosing block (RUE-530). `None` only in unit tests;
     /// production passes the map via [`Self::with_comptime_local_bindings`].
-    comptime_local_bindings: Option<&'a HashMap<InstRef, Type>>,
+    comptime_local_bindings: Option<&'a AHashMap<InstRef, Type>>,
     /// The comptime type aliases currently in scope (name → aliased type),
     /// maintained live during the walk from [`Self::comptime_local_bindings`]
     /// via [`Self::enter_scope`]/[`Self::exit_scope`]. Consulted after
@@ -291,7 +300,7 @@ pub struct ConstraintGenerator<'a> {
     /// concrete paths as named structs (RUE-170), and lexically scoped like
     /// sema's `comptime_type_vars` so sibling-branch aliases don't collide
     /// and an alias doesn't outlive its block (RUE-530).
-    comptime_alias_types: HashMap<Spur, Type>,
+    comptime_alias_types: AHashMap<Spur, Type>,
     /// Per-scope undo frames for `comptime_alias_types`, parallel to the
     /// `ConstraintContext` scope stack (both are pushed/popped only by
     /// [`Self::enter_scope`]/[`Self::exit_scope`]): each frame records the
@@ -308,7 +317,7 @@ pub struct ConstraintGenerator<'a> {
     /// literal defaulted to `i32` and could not satisfy a wider declared type
     /// (RUE-599). `None` only in unit tests; production passes the map via
     /// [`Self::with_inline_ctor_head_types`].
-    inline_ctor_head_types: Option<&'a HashMap<InstRef, Type>>,
+    inline_ctor_head_types: Option<&'a AHashMap<InstRef, Type>>,
     /// Method signatures registered after the shared `InferenceContext` was
     /// built: anonymous-struct methods are registered lazily during comptime
     /// evaluation, so they're absent from `methods`. Consulted when a method
@@ -316,15 +325,15 @@ pub struct ConstraintGenerator<'a> {
     /// its declared return type instead of `<error>` (RUE-164). `None` only
     /// in unit tests; production passes the map via
     /// [`Self::with_extra_method_sigs`].
-    extra_method_sigs: Option<&'a HashMap<(StructId, Spur), MethodSig>>,
+    extra_method_sigs: Option<&'a AHashMap<(StructId, Spur), MethodSig>>,
     /// File-level integer constant values (name -> value), so an array length
     /// naming a `const` (`[i32; K]`) resolves to a concrete length during
     /// constraint generation (RUE-16). `None` only in unit tests; production
     /// passes the map via [`Self::with_const_values`].
-    const_values: Option<&'a HashMap<(FileId, Spur), i128>>,
+    const_values: Option<&'a AHashMap<(FileId, Spur), i128>>,
     /// Function-valued constants: alias name -> callee function name. These
     /// let constraint generation type `alias(...)` as a direct call.
-    const_function_aliases: Option<&'a HashMap<(FileId, Spur), Spur>>,
+    const_function_aliases: Option<&'a AHashMap<(FileId, Spur), Spur>>,
     /// Comptime *value* parameters known for the specialization currently being
     /// analyzed (`comptime n: i32` → `n = 0` for the call `f(0)`). Lets a
     /// `match` on a comptime-known scrutinee prune to its selected arm during
@@ -333,7 +342,7 @@ pub struct ConstraintGenerator<'a> {
     /// cross-constrains every arm and rejects a valid program whose statically
     /// unselected arm has a different type (RUE-268). `None` for ordinary
     /// (non-specialized) functions, where every match is treated as runtime.
-    comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
+    comptime_values: Option<&'a AHashMap<Spur, ConstValue>>,
     /// Type intern pool for creating pointer and array types during constraint generation.
     type_pool: &'a TypeInternPool,
 }
@@ -343,10 +352,10 @@ impl<'a> ConstraintGenerator<'a> {
     pub fn new(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
-        functions: &'a HashMap<Spur, FunctionSig>,
-        builtin_structs: &'a HashMap<Spur, Type>,
-        builtin_enums: &'a HashMap<Spur, Type>,
-        methods: &'a HashMap<(StructId, Spur), MethodSig>,
+        functions: &'a AHashMap<Spur, FunctionSig>,
+        builtin_structs: &'a AHashMap<Spur, Type>,
+        builtin_enums: &'a AHashMap<Spur, Type>,
+        methods: &'a AHashMap<(StructId, Spur), MethodSig>,
         type_pool: &'a TypeInternPool,
     ) -> Self {
         Self::with_type_subst(
@@ -370,12 +379,12 @@ impl<'a> ConstraintGenerator<'a> {
     pub fn with_type_subst(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
-        functions: &'a HashMap<Spur, FunctionSig>,
-        builtin_structs: &'a HashMap<Spur, Type>,
-        builtin_enums: &'a HashMap<Spur, Type>,
-        methods: &'a HashMap<(StructId, Spur), MethodSig>,
+        functions: &'a AHashMap<Spur, FunctionSig>,
+        builtin_structs: &'a AHashMap<Spur, Type>,
+        builtin_enums: &'a AHashMap<Spur, Type>,
+        methods: &'a AHashMap<(StructId, Spur), MethodSig>,
         type_pool: &'a TypeInternPool,
-        type_subst: Option<&'a HashMap<Spur, Type>>,
+        type_subst: Option<&'a AHashMap<Spur, Type>>,
     ) -> Self {
         let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
         let string_literal_default = Type::ERROR;
@@ -403,7 +412,7 @@ impl<'a> ConstraintGenerator<'a> {
             functions_by_file_name: None,
             module_file_ids: None,
             comptime_local_bindings: None,
-            comptime_alias_types: HashMap::new(),
+            comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
             extra_method_sigs: None,
@@ -426,7 +435,7 @@ impl<'a> ConstraintGenerator<'a> {
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         type_pool: &'a TypeInternPool,
-        type_subst: Option<&'a HashMap<Spur, Type>>,
+        type_subst: Option<&'a AHashMap<Spur, Type>>,
         lazy: &'a dyn LazyInferenceFacts,
     ) -> Self {
         let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
@@ -455,7 +464,7 @@ impl<'a> ConstraintGenerator<'a> {
             functions_by_file_name: None,
             module_file_ids: None,
             comptime_local_bindings: None,
-            comptime_alias_types: HashMap::new(),
+            comptime_alias_types: AHashMap::new(),
             alias_scope_stack: Vec::new(),
             inline_ctor_head_types: None,
             extra_method_sigs: None,
@@ -535,7 +544,7 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Provide file-level constant types (name -> declared type) for `VarRef`
     /// resolution. See the `const_types` field for details (RUE-142).
-    pub fn with_const_types(mut self, const_types: &'a HashMap<(FileId, Spur), Type>) -> Self {
+    pub fn with_const_types(mut self, const_types: &'a AHashMap<(FileId, Spur), Type>) -> Self {
         self.const_types = Some(const_types);
         self
     }
@@ -543,7 +552,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// Provide file-level type aliases for type-position resolution.
     pub fn with_const_type_aliases(
         mut self,
-        const_type_aliases: &'a HashMap<(FileId, Spur), Type>,
+        const_type_aliases: &'a AHashMap<(FileId, Spur), Type>,
     ) -> Self {
         self.const_type_aliases = Some(const_type_aliases);
         self
@@ -553,7 +562,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// for `VarRef` resolution. See the `module_binding_types` field (RUE-113).
     pub fn with_module_binding_types(
         mut self,
-        module_binding_types: &'a HashMap<(FileId, Spur), Type>,
+        module_binding_types: &'a AHashMap<(FileId, Spur), Type>,
     ) -> Self {
         self.module_binding_types = Some(module_binding_types);
         self
@@ -563,7 +572,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// for module-member call resolution (RUE-576).
     pub fn with_functions_by_file_name(
         mut self,
-        functions_by_file_name: &'a HashMap<(FileId, Spur), Spur>,
+        functions_by_file_name: &'a AHashMap<(FileId, Spur), Spur>,
     ) -> Self {
         self.functions_by_file_name = Some(functions_by_file_name);
         self
@@ -572,7 +581,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// Provide module registry file identities for `module.Type` lookup.
     pub fn with_module_file_ids(
         mut self,
-        module_file_ids: &'a HashMap<crate::types::ModuleId, FileId>,
+        module_file_ids: &'a AHashMap<crate::types::ModuleId, FileId>,
     ) -> Self {
         self.module_file_ids = Some(module_file_ids);
         self
@@ -584,7 +593,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// RUE-530).
     pub fn with_comptime_local_bindings(
         mut self,
-        comptime_local_bindings: &'a HashMap<InstRef, Type>,
+        comptime_local_bindings: &'a AHashMap<InstRef, Type>,
     ) -> Self {
         self.comptime_local_bindings = Some(comptime_local_bindings);
         self
@@ -595,7 +604,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// (RUE-599).
     pub fn with_inline_ctor_head_types(
         mut self,
-        inline_ctor_head_types: &'a HashMap<InstRef, Type>,
+        inline_ctor_head_types: &'a AHashMap<InstRef, Type>,
     ) -> Self {
         self.inline_ctor_head_types = Some(inline_ctor_head_types);
         self
@@ -606,7 +615,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// (RUE-164).
     pub fn with_extra_method_sigs(
         mut self,
-        extra_method_sigs: &'a HashMap<(StructId, Spur), MethodSig>,
+        extra_method_sigs: &'a AHashMap<(StructId, Spur), MethodSig>,
     ) -> Self {
         self.extra_method_sigs = Some(extra_method_sigs);
         self
@@ -615,7 +624,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// Provide file-level integer constant values (name -> value) so an array
     /// length naming a `const` resolves during constraint generation. See the
     /// `const_values` field (RUE-16).
-    pub fn with_const_values(mut self, const_values: &'a HashMap<(FileId, Spur), i128>) -> Self {
+    pub fn with_const_values(mut self, const_values: &'a AHashMap<(FileId, Spur), i128>) -> Self {
         self.const_values = Some(const_values);
         self
     }
@@ -627,7 +636,7 @@ impl<'a> ConstraintGenerator<'a> {
     /// runtime.
     pub fn with_comptime_values(
         mut self,
-        comptime_values: Option<&'a HashMap<Spur, ConstValue>>,
+        comptime_values: Option<&'a AHashMap<Spur, ConstValue>>,
     ) -> Self {
         self.comptime_values = comptime_values;
         self
@@ -662,7 +671,7 @@ impl<'a> ConstraintGenerator<'a> {
     fn resolve_infer_array_length_with_values(
         &self,
         len: &ArrayLen,
-        values: &HashMap<Spur, i128>,
+        values: &AHashMap<Spur, i128>,
         file_id: FileId,
     ) -> Option<u64> {
         match len {
@@ -1383,14 +1392,12 @@ impl<'a> ConstraintGenerator<'a> {
                             .collect();
 
                         // Build the type substitution map from comptime type arguments
-                        let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
-                            std::collections::HashMap::new();
+                        let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
                         // Comptime VALUE arguments (`comptime N: i32`) captured
                         // as their integer constant, so a return/param type
                         // sized by one — an array length `[i32; N]` — resolves
                         // at this call (RUE-252).
-                        let mut value_subst: std::collections::HashMap<lasso::Spur, i128> =
-                            std::collections::HashMap::new();
+                        let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                         for (i, arg) in args.iter().enumerate() {
                             if i >= func.param_comptime.len()
                                 || !func.param_comptime[i]
@@ -2823,10 +2830,8 @@ impl<'a> ConstraintGenerator<'a> {
                                     .iter()
                                     .map(|arg| self.generate(arg.value, ctx))
                                     .collect();
-                                let mut type_subst: std::collections::HashMap<lasso::Spur, Type> =
-                                    std::collections::HashMap::new();
-                                let mut value_subst: std::collections::HashMap<lasso::Spur, i128> =
-                                    std::collections::HashMap::new();
+                                let mut type_subst: AHashMap<lasso::Spur, Type> = AHashMap::new();
+                                let mut value_subst: AHashMap<lasso::Spur, i128> = AHashMap::new();
                                 for (i, arg) in call_args.iter().enumerate() {
                                     if i >= func.param_comptime.len()
                                         || !func.param_comptime[i]
@@ -3787,8 +3792,8 @@ impl<'a> ConstraintGenerator<'a> {
     fn infer_rir_type_hint_with_substitutions(
         &self,
         syntax: RirTypeSyntaxRef,
-        subst: Option<&HashMap<Spur, Type>>,
-        values: Option<&HashMap<Spur, i128>>,
+        subst: Option<&AHashMap<Spur, Type>>,
+        values: Option<&AHashMap<Spur, i128>>,
         file_id: FileId,
     ) -> Option<InferType> {
         self.infer_type_hint(self.rir.type_syntax(), syntax, subst, values, file_id)
@@ -3797,8 +3802,8 @@ impl<'a> ConstraintGenerator<'a> {
     fn infer_structured_type_hint(
         &self,
         syntax: &crate::sema::StructuredTypeSyntax,
-        subst: &HashMap<Spur, Type>,
-        values: &HashMap<Spur, i128>,
+        subst: &AHashMap<Spur, Type>,
+        values: &AHashMap<Spur, i128>,
         file_id: FileId,
     ) -> Option<InferType> {
         self.infer_type_hint(
@@ -3814,8 +3819,8 @@ impl<'a> ConstraintGenerator<'a> {
         &self,
         arena: &rue_rir::RirTypeSyntaxArena<Spur>,
         syntax: RirTypeSyntaxRef,
-        subst: Option<&HashMap<Spur, Type>>,
-        values: Option<&HashMap<Spur, i128>>,
+        subst: Option<&AHashMap<Spur, Type>>,
+        values: Option<&AHashMap<Spur, i128>>,
         file_id: FileId,
     ) -> Option<InferType> {
         match arena.node(syntax)? {
@@ -3955,10 +3960,10 @@ mod tests {
         );
         assert!(inserted);
 
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
@@ -4016,10 +4021,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_int_literal() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Add an integer constant to RIR
         let inst_ref = rir.add_inst(rue_rir::Inst {
@@ -4030,7 +4035,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(inst_ref, &mut ctx);
@@ -4046,10 +4051,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_bool_literal() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         let inst_ref = rir.add_inst(rue_rir::Inst {
             data: InstData::BoolConst(true),
@@ -4059,7 +4064,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(inst_ref, &mut ctx);
@@ -4079,10 +4084,10 @@ mod tests {
             ("assert", true, Type::UNIT),
         ] {
             let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-            let functions = HashMap::new();
-            let structs = HashMap::new();
-            let enums = HashMap::new();
-            let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+            let functions = AHashMap::new();
+            let structs = AHashMap::new();
+            let enums = AHashMap::new();
+            let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
             // Argument legality belongs to sema; this probe only pins HM's
             // result contract and verifies that an operand is still visited.
@@ -4099,7 +4104,7 @@ mod tests {
             let mut cgen = ConstraintGenerator::new(
                 &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
             );
-            let params = HashMap::new();
+            let params = AHashMap::new();
             let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
             let info = cgen.generate(intrinsic, &mut ctx);
@@ -4123,10 +4128,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_binary_add() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: 1 + 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -4145,7 +4150,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(add, &mut ctx);
@@ -4164,10 +4169,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_comparison() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: 1 < 2
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -4186,7 +4191,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(lt, &mut ctx);
@@ -4200,10 +4205,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_logical_and() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: true && false
         let lhs = rir.add_inst(rue_rir::Inst {
@@ -4222,7 +4227,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(and, &mut ctx);
@@ -4236,10 +4241,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_negation() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: -42
         let operand = rir.add_inst(rue_rir::Inst {
@@ -4254,7 +4259,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(neg, &mut ctx);
@@ -4273,10 +4278,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_return() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: return 42
         let value = rir.add_inst(rue_rir::Inst {
@@ -4291,7 +4296,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(ret, &mut ctx);
@@ -4305,10 +4310,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_if_else() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: if true { 1 } else { 2 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -4335,7 +4340,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(branch, &mut ctx);
@@ -4349,10 +4354,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_while_loop() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: while true { 0 }
         let cond = rir.add_inst(rue_rir::Inst {
@@ -4371,7 +4376,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(loop_inst, &mut ctx);
@@ -4384,7 +4389,7 @@ mod tests {
 
     #[test]
     fn test_constraint_context_scope() {
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         // Use an interner to create a symbol
@@ -4463,10 +4468,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_infinite_loop() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: loop { 0 }
         let body = rir.add_inst(rue_rir::Inst {
@@ -4484,7 +4489,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(loop_inst, &mut ctx);
@@ -4498,10 +4503,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_break_continue() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         let break_inst = rir.add_inst(rue_rir::Inst {
             data: InstData::Break { value: None },
@@ -4511,7 +4516,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(break_inst, &mut ctx);
@@ -4524,10 +4529,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_index_get() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: arr[0]
         let base = rir.add_inst(rue_rir::Inst {
@@ -4546,7 +4551,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(index_get, &mut ctx);
@@ -4564,10 +4569,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_index_set() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: arr[0] = 42
         let base = rir.add_inst(rue_rir::Inst {
@@ -4590,7 +4595,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(index_set, &mut ctx);
@@ -4608,10 +4613,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_empty_block() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: { } (empty block)
         let block = rir.add_block(&[], Span::new(0, 2)).unwrap();
@@ -4619,7 +4624,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::UNIT);
 
         let info = cgen.generate(block, &mut ctx);
@@ -4632,10 +4637,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_bitwise_not() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: !42 (bitwise NOT)
         let operand = rir.add_inst(rue_rir::Inst {
@@ -4650,7 +4655,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(bitnot, &mut ctx);
@@ -4668,10 +4673,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_function_call_arg_count_mismatch() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let mut functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let mut functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Register a function that takes 2 parameters
         let func_name = interner.get_or_intern("foo");
@@ -4685,7 +4690,7 @@ mod tests {
                 InferType::Concrete(Type::BOOL),
             ),
         );
-        let functions_by_file_name = HashMap::from([((FileId::DEFAULT, func_name), func_name)]);
+        let functions_by_file_name = AHashMap::from([((FileId::DEFAULT, func_name), func_name)]);
 
         // Create a call with only 1 argument (mismatch)
         let arg = rir.add_inst(rue_rir::Inst {
@@ -4707,7 +4712,7 @@ mod tests {
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         )
         .with_functions_by_file_name(&functions_by_file_name);
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::BOOL);
 
         let info = cgen.generate(call, &mut ctx);
@@ -4721,10 +4726,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_unknown_function() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new(); // Empty - no functions registered
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new(); // Empty - no functions registered
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create a call to an unknown function
         let unknown_func = interner.get_or_intern("unknown");
@@ -4746,7 +4751,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(call, &mut ctx);
@@ -4760,10 +4765,10 @@ mod tests {
     #[test]
     fn test_constraint_generator_match_multiple_arms() {
         let (mut rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
 
         // Create: match x { 1 => 10, 2 => 20, _ => 30 }
         let scrutinee = rir.add_inst(rue_rir::Inst {
@@ -4811,7 +4816,7 @@ mod tests {
         let mut cgen = ConstraintGenerator::new(
             &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
         );
-        let params = HashMap::new();
+        let params = AHashMap::new();
         let mut ctx = ConstraintContext::new(&params, Type::I32);
 
         let info = cgen.generate(match_inst, &mut ctx);
@@ -4850,13 +4855,13 @@ mod tests {
     #[test]
     fn array_length_bare_const_resolves_in_declaring_file_scope() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let k = interner.get_or_intern("K");
-        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
         const_values.insert((file_a, k), 4);
 
         let cgen = ConstraintGenerator::new(
@@ -4874,16 +4879,16 @@ mod tests {
     #[test]
     fn array_length_bare_const_out_of_scope_does_not_resolve() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let file_b = FileId::new(1);
         let k = interner.get_or_intern("K");
         // The only `K` lives in file_b; referencing it bare from file_a is out
         // of scope even though `K` is globally unique.
-        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
         const_values.insert((file_b, k), 4);
 
         let cgen = ConstraintGenerator::new(
@@ -4905,14 +4910,14 @@ mod tests {
     #[test]
     fn array_length_distant_same_named_const_cannot_perturb_local_resolution() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let file_b = FileId::new(1);
         let n = interner.get_or_intern("N");
-        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
         const_values.insert((file_a, n), 3);
         // An unrelated distant const of the same name.
         const_values.insert((file_b, n), 99);
@@ -4940,13 +4945,13 @@ mod tests {
     #[test]
     fn array_length_comptime_value_param_precedes_file_const() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let n = interner.get_or_intern("N");
-        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
         const_values.insert((file_a, n), 9);
 
         let cgen = ConstraintGenerator::new(
@@ -4956,7 +4961,7 @@ mod tests {
 
         // With a comptime value binding N=5, the value parameter wins over the
         // file-level const N=9.
-        let mut values: HashMap<Spur, i128> = HashMap::new();
+        let mut values: AHashMap<Spur, i128> = AHashMap::new();
         values.insert(n, 5);
         assert_eq!(
             cgen.resolve_infer_array_length_with_values(
@@ -4967,7 +4972,7 @@ mod tests {
             Some(5)
         );
         // With no value binding, the same-file const supplies the length.
-        let empty: HashMap<Spur, i128> = HashMap::new();
+        let empty: AHashMap<Spur, i128> = AHashMap::new();
         assert_eq!(
             cgen.resolve_infer_array_length_with_values(
                 &ArrayLen::Named("N".to_string()),
@@ -4981,14 +4986,14 @@ mod tests {
     #[test]
     fn alias_head_bare_name_resolves_in_declaring_file_scope_only() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let file_b = FileId::new(1);
         let alias = interner.get_or_intern("MyAlias");
-        let mut const_type_aliases: HashMap<(FileId, Spur), Type> = HashMap::new();
+        let mut const_type_aliases: AHashMap<(FileId, Spur), Type> = AHashMap::new();
         const_type_aliases.insert((file_a, alias), Type::I32);
 
         let cgen = ConstraintGenerator::new(
@@ -5012,16 +5017,16 @@ mod tests {
     #[test]
     fn scoped_lookups_keep_value_and_type_kinds_distinct() {
         let (rir, interner, type_pool) = cgen_fixture();
-        let functions = HashMap::new();
-        let structs = HashMap::new();
-        let enums = HashMap::new();
-        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let functions = AHashMap::new();
+        let structs = AHashMap::new();
+        let enums = AHashMap::new();
+        let methods: AHashMap<(StructId, Spur), MethodSig> = AHashMap::new();
         let file_a = FileId::new(0);
         let value_name = interner.get_or_intern("K");
         let type_name = interner.get_or_intern("T");
-        let mut const_values: HashMap<(FileId, Spur), i128> = HashMap::new();
+        let mut const_values: AHashMap<(FileId, Spur), i128> = AHashMap::new();
         const_values.insert((file_a, value_name), 4);
-        let mut const_type_aliases: HashMap<(FileId, Spur), Type> = HashMap::new();
+        let mut const_type_aliases: AHashMap<(FileId, Spur), Type> = AHashMap::new();
         const_type_aliases.insert((file_a, type_name), Type::I32);
 
         let cgen = ConstraintGenerator::new(

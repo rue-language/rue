@@ -74,7 +74,6 @@
 //!   `finalize_containment_metadata` at the same point production freezes.
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
-use std::collections::HashMap;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -474,10 +473,10 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
 /// handle rather than constructing peer pools.
 #[derive(Default)]
 struct ProviderMethodRegistry {
-    anonymous: HashMap<(StructId, Spur), MethodInfo>,
-    anonymous_by_owner: HashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
-    named: HashMap<(StructId, Spur), MethodInfo>,
-    named_by_owner: HashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
+    anonymous: AHashMap<(StructId, Spur), MethodInfo>,
+    anonymous_by_owner: AHashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
+    named: AHashMap<(StructId, Spur), MethodInfo>,
+    named_by_owner: AHashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
 }
 
 impl ProviderMethodRegistry {
@@ -2788,10 +2787,10 @@ pub(in crate::sema) struct BodyRirIndex {
     /// The one additive keyed surface: named-method declarations keyed by the
     /// durable-available `(owner_file, owner_type_name, method_name)` preimage
     /// of the epoch's `(StructId, method_name)` key.
-    named_methods_by_owner: HashMap<(FileId, Spur, Spur), InstRef>,
+    named_methods_by_owner: AHashMap<(FileId, Spur, Spur), InstRef>,
     /// Const declarations keyed by the exact storage preimage used by the
     /// epoch's `const_resolutions`: `(declaring_file, source_name)`.
-    const_declarations: HashMap<(FileId, Spur), InstRef>,
+    const_declarations: AHashMap<(FileId, Spur), InstRef>,
 }
 
 /// One request-local RIR universe shared by every provider fact facade for a
@@ -2942,8 +2941,8 @@ impl BodyRirIndex {
     ) -> (Self, BodyRirIndexAttribution) {
         let declarations = RirDeclarationIndex::new(rir);
         let declaration_index = declarations.work();
-        let mut named_methods_by_owner = HashMap::new();
-        let mut const_declarations = HashMap::new();
+        let mut named_methods_by_owner = AHashMap::new();
+        let mut const_declarations = AHashMap::new();
         let mut attribution = BodyRirIndexAttribution {
             declaration_index,
             ..BodyRirIndexAttribution::default()
@@ -3354,18 +3353,18 @@ mod tests {
     /// A durable nominal + callable source backed by fixed maps, standing in for
     /// r4b's stable-keyed provider.
     struct MapSource {
-        nominals: HashMap<Key, DurableNominal<Key, Module>>,
-        nominal_file_ids: HashMap<Key, FileId>,
-        functions: HashMap<Key, DurableFunction<Key, Module>>,
+        nominals: AHashMap<Key, DurableNominal<Key, Module>>,
+        nominal_file_ids: AHashMap<Key, FileId>,
+        functions: AHashMap<Key, DurableFunction<Key, Module>>,
         function_reads: Rc<Cell<usize>>,
-        methods: HashMap<Key, DurableMethod<Key, Module>>,
-        consts: HashMap<Key, DurableConst<Key, Module>>,
-        anonymous_shapes: HashMap<AnonKey, DurableAnonymousShape<Key, Module>>,
+        methods: AHashMap<Key, DurableMethod<Key, Module>>,
+        consts: AHashMap<Key, DurableConst<Key, Module>>,
+        anonymous_shapes: AHashMap<AnonKey, DurableAnonymousShape<Key, Module>>,
         /// Force a chosen definition relocation for a producer key, so a test can
         /// point two DISTINCT producer keys at one stable-content string (and thus
         /// one digest) and exercise the collision guard without a real 128-bit
         /// hash collision.
-        def_component_overrides: HashMap<Key, String>,
+        def_component_overrides: AHashMap<Key, String>,
     }
 
     impl DurableNominalSource<Key, Module> for MapSource {
@@ -3421,13 +3420,13 @@ mod tests {
     fn source(nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>) -> MapSource {
         MapSource {
             nominals: nominals.into_iter().collect(),
-            nominal_file_ids: HashMap::new(),
-            functions: HashMap::new(),
+            nominal_file_ids: AHashMap::new(),
+            functions: AHashMap::new(),
             function_reads: Rc::new(Cell::new(0)),
-            methods: HashMap::new(),
-            consts: HashMap::new(),
-            anonymous_shapes: HashMap::new(),
-            def_component_overrides: HashMap::new(),
+            methods: AHashMap::new(),
+            consts: AHashMap::new(),
+            anonymous_shapes: AHashMap::new(),
+            def_component_overrides: AHashMap::new(),
         }
     }
 
@@ -3447,13 +3446,13 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
-                nominal_file_ids: HashMap::new(),
+                nominal_file_ids: AHashMap::new(),
                 functions: functions.into_iter().collect(),
                 function_reads: Rc::new(Cell::new(0)),
                 methods: methods.into_iter().collect(),
-                consts: HashMap::new(),
-                anonymous_shapes: HashMap::new(),
-                def_component_overrides: HashMap::new(),
+                consts: AHashMap::new(),
+                anonymous_shapes: AHashMap::new(),
+                def_component_overrides: AHashMap::new(),
             },
             Rc::new(ThreadedRodeo::new()),
         )
@@ -3467,13 +3466,13 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
-                nominal_file_ids: HashMap::new(),
+                nominal_file_ids: AHashMap::new(),
                 functions: functions.into_iter().collect(),
                 function_reads: Rc::new(Cell::new(0)),
-                methods: HashMap::new(),
+                methods: AHashMap::new(),
                 consts: consts.into_iter().collect(),
-                anonymous_shapes: HashMap::new(),
-                def_component_overrides: HashMap::new(),
+                anonymous_shapes: AHashMap::new(),
+                def_component_overrides: AHashMap::new(),
             },
             Rc::new(ThreadedRodeo::new()),
         )
@@ -3489,11 +3488,11 @@ mod tests {
         BodyIdentityPool::new(
             MapSource {
                 nominals: nominals.into_iter().collect(),
-                nominal_file_ids: HashMap::new(),
-                functions: HashMap::new(),
+                nominal_file_ids: AHashMap::new(),
+                functions: AHashMap::new(),
                 function_reads: Rc::new(Cell::new(0)),
-                methods: HashMap::new(),
-                consts: HashMap::new(),
+                methods: AHashMap::new(),
+                consts: AHashMap::new(),
                 anonymous_shapes: anonymous_shapes.into_iter().collect(),
                 def_component_overrides: def_component_overrides.into_iter().collect(),
             },
@@ -3788,7 +3787,7 @@ mod tests {
     fn twin_pool(module_path: &str) -> (TypeInternPool, ThreadedRodeo) {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::new();
-        pool.set_symbol_paths(HashMap::from([(TWIN_FILE, module_path.to_owned())]));
+        pool.set_symbol_paths(AHashMap::from([(TWIN_FILE, module_path.to_owned())]));
         (pool, interner)
     }
 
@@ -5335,7 +5334,7 @@ mod tests {
                 ),
             ),
         ]);
-        provider.nominal_file_ids = HashMap::from([(0, FileId::new(41)), (1, FileId::new(41))]);
+        provider.nominal_file_ids = AHashMap::from([(0, FileId::new(41)), (1, FileId::new(41))]);
         let mut pool = BodyIdentityPool::new(provider, Rc::new(ThreadedRodeo::new()));
 
         pool.resolve_provider_type(&DType::Nominal(0)).unwrap();

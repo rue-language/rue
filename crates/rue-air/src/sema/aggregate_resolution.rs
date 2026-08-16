@@ -3,8 +3,8 @@
 //! Selection order lives here. Both body-analysis hosts implement the one
 //! [`AggregateFacts`] boundary directly.
 
+use ahash::AHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::hash::Hash;
 
 use lasso::Spur;
@@ -178,7 +178,7 @@ pub(crate) fn resolve_aggregate_module_ref<P: AggregateFacts>(
     rir: &Rir,
     inst_ref: InstRef,
     root_file: FileId,
-    locals: &std::collections::HashMap<Spur, LocalVar>,
+    locals: &AHashMap<Spur, LocalVar>,
 ) -> Option<ModuleId> {
     match rir.get(inst_ref).data {
         InstData::VarRef { name, .. } => {
@@ -206,7 +206,7 @@ pub(crate) fn resolve_visibility_module_ref<P: AggregateFacts>(
     facts: &P,
     rir: &Rir,
     inst_ref: InstRef,
-    locals: &std::collections::HashMap<Spur, LocalVar>,
+    locals: &AHashMap<Spur, LocalVar>,
 ) -> Option<ModuleId> {
     let inst = rir.get(inst_ref);
     let module_ty = match inst.data {
@@ -310,15 +310,15 @@ pub struct ProviderAggregateFacts<K, M, S> {
     /// populated on demand as a caller registers a nominal. The `Spur` is the
     /// pool's own interner symbol (the same one the `select_*` wrappers intern
     /// their name argument to), never the shared whole-program interner's.
-    by_file_name: HashMap<(u32, Spur), K>,
+    by_file_name: AHashMap<(u32, Spur), K>,
     /// Request-local file paths (a body-query input, exactly like the RIR — not a
     /// durable fact the pool mints), owned so [`AggregateFacts::file_path`] hands
     /// back a borrowed `&str` without a seam-signature change. A caller registers
     /// the same physical path the epoch's `get_file_path` returns, so
     /// [`is_accessible`]'s visibility-domain computation matches byte-for-byte.
-    file_paths: HashMap<FileId, String>,
-    value_consts: RefCell<HashMap<(u32, Spur), ConstInfo>>,
-    module_bindings: RefCell<HashMap<(u32, Spur), ConstInfo>>,
+    file_paths: AHashMap<FileId, String>,
+    value_consts: RefCell<AHashMap<(u32, Spur), ConstInfo>>,
+    module_bindings: RefCell<AHashMap<(u32, Spur), ConstInfo>>,
 }
 
 impl<K, M, S> ProviderAggregateFacts<K, M, S>
@@ -343,10 +343,10 @@ where
     fn with_overlay_identity(identity: ProviderIdentityContext<K, M, S>) -> Self {
         Self {
             identity,
-            by_file_name: HashMap::new(),
-            file_paths: HashMap::new(),
-            value_consts: RefCell::new(HashMap::new()),
-            module_bindings: RefCell::new(HashMap::new()),
+            by_file_name: AHashMap::new(),
+            file_paths: AHashMap::new(),
+            value_consts: RefCell::new(AHashMap::new()),
+            module_bindings: RefCell::new(AHashMap::new()),
         }
     }
 

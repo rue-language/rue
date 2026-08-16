@@ -25,7 +25,7 @@
 //! }
 //! ```
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use lasso::Spur;
 
@@ -46,7 +46,7 @@ pub trait ScopedContext {
     type VarInfo: Clone;
 
     /// Get a mutable reference to the locals map.
-    fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo>;
+    fn locals_mut(&mut self) -> &mut AHashMap<Spur, Self::VarInfo>;
 
     /// Get a mutable reference to the scope stack.
     fn scope_stack_mut(&mut self) -> &mut Vec<Vec<(Spur, Option<Self::VarInfo>)>>;
@@ -112,14 +112,14 @@ mod tests {
     /// A minimal implementation of ScopedContext for testing.
     #[derive(Debug)]
     struct TestContext {
-        locals: HashMap<Spur, i32>,
+        locals: AHashMap<Spur, i32>,
         scope_stack: Vec<Vec<(Spur, Option<i32>)>>,
     }
 
     impl TestContext {
         fn new() -> Self {
             Self {
-                locals: HashMap::new(),
+                locals: AHashMap::new(),
                 scope_stack: Vec::new(),
             }
         }
@@ -128,7 +128,7 @@ mod tests {
     impl ScopedContext for TestContext {
         type VarInfo = i32;
 
-        fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
+        fn locals_mut(&mut self) -> &mut AHashMap<Spur, Self::VarInfo> {
             &mut self.locals
         }
 

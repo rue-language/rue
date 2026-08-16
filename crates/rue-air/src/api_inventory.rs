@@ -18,7 +18,7 @@ fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     let typeck = include_str!("sema/typeck.rs");
 
     assert!(
-        typeck.contains("observed_type_dependency_index: Option<HashSet<ObservedTypeDependency>>")
+        typeck.contains("observed_type_dependency_index: Option<AHashSet<ObservedTypeDependency>>")
     );
     assert!(typeck.contains("const LINEAR_ADMISSION_LIMIT: usize = 8"));
     assert!(typeck.contains("if index.insert(dependency.clone())"));

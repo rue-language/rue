@@ -4,7 +4,7 @@
 //! analysis, including local variable tracking, scope management, and move
 //! state tracking for affine types.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 use std::sync::Arc;
 
 use lasso::Spur;
@@ -79,7 +79,7 @@ pub(crate) struct VariableMoveState {
     /// The element-wise linear array consumption check (RUE-186) needs
     /// MUST-move information: an element consumed in only one branch is
     /// still dropped on the other paths.
-    pub partial_moves_on_all_paths: HashSet<FieldPath>,
+    pub partial_moves_on_all_paths: AHashSet<FieldPath>,
 }
 
 impl VariableMoveState {
@@ -272,7 +272,7 @@ impl PartialEq for VariableMoveState {
 /// outer binding's state at the break is exactly the saved entry this
 /// restoration writes back.
 pub(crate) fn restore_scope_moves(
-    moves: &mut HashMap<Spur, VariableMoveState>,
+    moves: &mut AHashMap<Spur, VariableMoveState>,
     frame: &[(Spur, Option<VariableMoveState>)],
 ) {
     for (symbol, old_moves) in frame.iter().rev() {
@@ -304,9 +304,9 @@ pub(crate) struct LoopEdgeStates {
     /// A `break` targeting this loop exists: the loop is `()`-typed.
     pub broke: bool,
     /// One `moved_vars` snapshot per `break` targeting this loop.
-    pub break_snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+    pub break_snaps: Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
     /// One `moved_vars` snapshot per `continue` targeting this loop.
-    pub continue_snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+    pub continue_snaps: Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
 }
 
 /// Record one snapshot in a per-loop edge list, merging with an existing
@@ -321,8 +321,8 @@ pub(crate) struct LoopEdgeStates {
 /// the post-loop scope view. Eager same-depth merging keeps each list as
 /// small as the loop's live scope nesting.
 fn record_edge_snapshot(
-    snaps: &mut Vec<(HashMap<Spur, VariableMoveState>, usize)>,
-    moves: &HashMap<Spur, VariableMoveState>,
+    snaps: &mut Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
+    moves: &AHashMap<Spur, VariableMoveState>,
     depth: usize,
 ) {
     if let Some((existing, existing_depth)) = snaps.last_mut()
@@ -336,8 +336,8 @@ fn record_edge_snapshot(
 
 /// Union-merge a drained edge list, or `None` when the edge never fired.
 fn merged_edge_moves(
-    snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
-) -> Option<HashMap<Spur, VariableMoveState>> {
+    snaps: Vec<(AHashMap<Spur, VariableMoveState>, usize)>,
+) -> Option<AHashMap<Spur, VariableMoveState>> {
     let mut snaps = snaps.into_iter();
     let (mut merged, _) = snaps.next()?;
     for (snap, _) in snaps {
@@ -348,13 +348,13 @@ fn merged_edge_moves(
 
 impl LoopEdgeStates {
     /// Record one break's snapshot.
-    pub fn record_break(&mut self, moves: &HashMap<Spur, VariableMoveState>, depth: usize) {
+    pub fn record_break(&mut self, moves: &AHashMap<Spur, VariableMoveState>, depth: usize) {
         self.broke = true;
         record_edge_snapshot(&mut self.break_snaps, moves, depth);
     }
 
     /// Record one continue's snapshot.
-    pub fn record_continue(&mut self, moves: &HashMap<Spur, VariableMoveState>, depth: usize) {
+    pub fn record_continue(&mut self, moves: &AHashMap<Spur, VariableMoveState>, depth: usize) {
         record_edge_snapshot(&mut self.continue_snaps, moves, depth);
     }
 
@@ -364,8 +364,8 @@ impl LoopEdgeStates {
     pub fn merged_moves(
         self,
     ) -> (
-        Option<HashMap<Spur, VariableMoveState>>,
-        Option<HashMap<Spur, VariableMoveState>>,
+        Option<AHashMap<Spur, VariableMoveState>>,
+        Option<AHashMap<Spur, VariableMoveState>>,
     ) {
         (
             merged_edge_moves(self.break_snaps),
@@ -380,11 +380,11 @@ impl LoopEdgeStates {
 /// (no-moves) state, which correctly clears `full_move_on_all_paths`: the
 /// other branch did not move it.
 pub(crate) fn union_move_maps(
-    branch1: &HashMap<Spur, VariableMoveState>,
-    branch2: &HashMap<Spur, VariableMoveState>,
-) -> HashMap<Spur, VariableMoveState> {
+    branch1: &AHashMap<Spur, VariableMoveState>,
+    branch2: &AHashMap<Spur, VariableMoveState>,
+) -> AHashMap<Spur, VariableMoveState> {
     let default = VariableMoveState::default();
-    let mut merged = HashMap::new();
+    let mut merged = AHashMap::new();
     for symbol in branch1.keys().chain(branch2.keys()) {
         if merged.contains_key(symbol) {
             continue;
@@ -432,7 +432,7 @@ pub(crate) struct ParamInfo {
 /// one body-scoped index shared by every analysis pass.
 #[derive(Debug)]
 pub(crate) struct ParamIndex {
-    by_name: Option<HashMap<Spur, usize>>,
+    by_name: Option<AHashMap<Spur, usize>>,
 }
 
 impl ParamIndex {
@@ -440,7 +440,7 @@ impl ParamIndex {
 
     pub(crate) fn new(params: &[ParamInfo]) -> Self {
         let by_name = (params.len() > Self::LINEAR_LOOKUP_LIMIT).then(|| {
-            let mut by_name = HashMap::with_capacity(params.len());
+            let mut by_name = AHashMap::with_capacity(params.len());
             for (index, param) in params.iter().enumerate() {
                 let previous = by_name.insert(param.name, index);
                 assert!(
@@ -528,7 +528,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// File that owns the function body currently being analyzed.
     pub current_file_id: FileId,
     /// Local variables in scope
-    pub locals: HashMap<Spur, LocalVar>,
+    pub locals: AHashMap<Spur, LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
     pub params: &'a [ParamInfo],
     /// Body-scoped parameter-name index shared by every semantic consumer.
@@ -552,7 +552,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// (RUE-1293; formal core §5.7, (Loop-Break)) — see [`LoopEdgeStates`].
     pub loop_break_stack: Vec<LoopEdgeStates>,
     /// Local variables that have been read (for unused variable detection)
-    pub used_locals: HashSet<Spur>,
+    pub used_locals: AHashSet<Spur>,
     /// Return type of the current function (for explicit return validation)
     pub return_type: Type,
     /// Scope stack for efficient scope management.
@@ -582,10 +582,10 @@ pub(crate) struct AnalysisContext<'a> {
     /// Maps RIR instruction refs to their resolved concrete types.
     /// This is populated by running constraint generation and unification
     /// before AIR emission.
-    pub resolved_types: &'a HashMap<InstRef, Type>,
+    pub resolved_types: &'a AHashMap<InstRef, Type>,
     /// Variables that have been moved (for affine type checking).
     /// Maps variable symbol to move state (supports partial/field-level moves).
-    pub moved_vars: HashMap<Spur, VariableMoveState>,
+    pub moved_vars: AHashMap<Spur, VariableMoveState>,
     /// Warnings collected during this function's analysis.
     /// Finalization merges these per-function warnings into the global output.
     pub warnings: Vec<CompileWarning>,
@@ -595,7 +595,7 @@ pub(crate) struct AnalysisContext<'a> {
     pub allow_unused_variables: bool,
     /// Local string table: maps string content to local index (for deduplication within function).
     /// Finalization merges these strings globally after body analysis.
-    pub local_string_table: HashMap<String, u32>,
+    pub local_string_table: AHashMap<String, u32>,
     /// Local string data indexed by local string table index.
     /// After analysis, these are merged into the global string table with ID remapping.
     pub local_strings: Vec<String>,
@@ -606,19 +606,19 @@ pub(crate) struct AnalysisContext<'a> {
     /// When a variable is bound to a comptime type (e.g., `let P = make_point()` where
     /// `make_point() -> type`), this map stores the resolved type so it can be used
     /// as a type annotation (e.g., `let p: P = ...`).
-    pub comptime_type_vars: HashMap<Spur, Type>,
+    pub comptime_type_vars: AHashMap<Spur, Type>,
     /// Comptime value variables: maps variable symbols to their compile-time constant values.
     /// When an anonymous struct method captures comptime parameters from the enclosing function
     /// (e.g., `fn FixedBuffer(comptime N: i32)` creates a struct with methods that reference `N`),
     /// this map stores the captured values so method bodies can resolve them.
-    pub comptime_value_vars: HashMap<Spur, ConstValue>,
+    pub comptime_value_vars: AHashMap<Spur, ConstValue>,
     /// Functions referenced during analysis of this function.
     /// Used for demand-driven semantic analysis (ADR-0045) to track
     /// which functions need to be analyzed. Each entry is a function name symbol.
-    pub referenced_functions: HashSet<Spur>,
+    pub referenced_functions: AHashSet<Spur>,
     /// Methods referenced during analysis of this function.
     /// Each entry is (struct_id, method_name) matching the key format in methods map.
-    pub referenced_methods: HashSet<(StructId, Spur)>,
+    pub referenced_methods: AHashSet<(StructId, Spur)>,
     /// While analyzing the value of an `inout`/`borrow` call argument, the ROOT
     /// variable of the place being passed by reference (set by
     /// `analyze_call_args_coerced`; for `f(borrow o.f)` this is `o`). A by-ref argument
@@ -675,7 +675,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// root. Escape-shape checks (`return`/`let`/store/aggregate capture)
     /// consult this after analyzing an operand to reject binding a borrowed
     /// place beyond its full expression, naming the offending accessor.
-    pub accessor_call_insts: HashMap<InstRef, (Spur, Spur)>,
+    pub accessor_call_insts: AHashMap<InstRef, (Spur, Spur)>,
     /// Active accessor-result loans for the current full expression
     /// (ADR-0062): each entry is the receiver root of an expanded accessor
     /// call, shared mode, together with the call span. The statement loop
@@ -687,11 +687,11 @@ pub(crate) struct AnalysisContext<'a> {
     /// innermost last. `resolved_type_of` consults these before the body's
     /// own `resolved_types`, letting the caller's analysis walk accessor-body
     /// instructions that the caller's inference never visited.
-    pub inline_resolved_types: Vec<Arc<HashMap<InstRef, Type>>>,
+    pub inline_resolved_types: Vec<Arc<AHashMap<InstRef, Type>>>,
     /// Names bound to caller places during accessor inlining (`self` inside
     /// an inlined accessor body). Scoped save/restore is handled by the
     /// expansion itself.
-    pub place_aliases: HashMap<Spur, PlaceAlias>,
+    pub place_aliases: AHashMap<Spur, PlaceAlias>,
     /// True only while analyzing the operand of a `?` expression (RUE-318). The
     /// `?` site cannot supply an `expected_type` for a *bare* fallible intrinsic
     /// (`@read_line()?` / `@parse_i64(s)?`): the enclosing function's `Option(U)`
@@ -708,7 +708,7 @@ use rue_rir::InstRef;
 impl ScopedContext for AnalysisContext<'_> {
     type VarInfo = LocalVar;
 
-    fn locals_mut(&mut self) -> &mut HashMap<Spur, Self::VarInfo> {
+    fn locals_mut(&mut self) -> &mut AHashMap<Spur, Self::VarInfo> {
         &mut self.locals
     }
 
@@ -906,8 +906,8 @@ impl<'a> AnalysisContext<'a> {
             local_atoms: self.local_atoms.clone(),
             comptime_type_vars: self.comptime_type_vars.clone(),
             comptime_value_vars: self.comptime_value_vars.clone(),
-            referenced_functions: HashSet::new(),
-            referenced_methods: HashSet::new(),
+            referenced_functions: AHashSet::new(),
+            referenced_methods: AHashSet::new(),
             // A by-ref argument's value is a place — a variable or a
             // field/index projection chain (enforced in the call-argument analyzer) —
             // and index subexpressions are analyzed with the root cleared
@@ -960,8 +960,8 @@ impl<'a> AnalysisContext<'a> {
     /// - If both diverge, the whole if-else diverges and moves don't matter
     pub fn merge_branch_moves(
         &mut self,
-        then_moves: HashMap<Spur, VariableMoveState>,
-        else_moves: HashMap<Spur, VariableMoveState>,
+        then_moves: AHashMap<Spur, VariableMoveState>,
+        else_moves: AHashMap<Spur, VariableMoveState>,
         then_diverges: bool,
         else_diverges: bool,
     ) {
@@ -1008,7 +1008,7 @@ impl<'a> AnalysisContext<'a> {
     /// Each entry is the `moved_vars` snapshot after analyzing one arm
     /// (starting from the same pre-match state), paired with whether that
     /// arm's body diverges.
-    pub fn merge_arm_moves(&mut self, arm_moves: Vec<(HashMap<Spur, VariableMoveState>, bool)>) {
+    pub fn merge_arm_moves(&mut self, arm_moves: Vec<(AHashMap<Spur, VariableMoveState>, bool)>) {
         let mut live = arm_moves
             .iter()
             .filter(|(_, diverges)| !diverges)
@@ -1635,9 +1635,9 @@ mod tests {
 
         let mut then_state = VariableMoveState::default();
         then_state.mark_path_moved(&[], span);
-        let mut then_moves = HashMap::new();
+        let mut then_moves = AHashMap::new();
         then_moves.insert(var, then_state);
-        let else_moves = HashMap::new();
+        let else_moves = AHashMap::new();
 
         let merged = union_move_maps(&then_moves, &else_moves);
         let state = merged.get(&var).expect("var should be may-moved");

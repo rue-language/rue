@@ -5,6 +5,8 @@
 //! - [`UnificationError`] - Error with span for reporting
 //! - [`Unifier`] - The unification engine
 
+use ahash::AHashSet;
+
 use super::constraint::{Constraint, Substitution};
 use super::types::{InferType, TypeVarId};
 use crate::Type;
@@ -114,11 +116,11 @@ pub struct Unifier {
     /// points at the constraint that introduced the conflict (e.g. the
     /// offending match arm) instead of surfacing later at an unrelated, wider
     /// span like the whole function body (RUE-133).
-    int_literal_vars: std::collections::HashSet<TypeVarId>,
+    int_literal_vars: AHashSet<TypeVarId>,
     /// Variables rooted at string literals, plus variables joined with them.
-    string_literal_vars: std::collections::HashSet<TypeVarId>,
+    string_literal_vars: AHashSet<TypeVarId>,
     /// Concrete string types that may contextualize a literal.
-    string_literal_types: std::collections::HashSet<Type>,
+    string_literal_types: AHashSet<Type>,
 }
 
 impl Default for Unifier {
@@ -132,9 +134,9 @@ impl Unifier {
     pub fn new() -> Self {
         Unifier {
             substitution: Substitution::new(),
-            int_literal_vars: std::collections::HashSet::new(),
-            string_literal_vars: std::collections::HashSet::new(),
-            string_literal_types: std::collections::HashSet::new(),
+            int_literal_vars: AHashSet::new(),
+            string_literal_vars: AHashSet::new(),
+            string_literal_types: AHashSet::new(),
         }
     }
 
@@ -145,9 +147,9 @@ impl Unifier {
     pub fn with_capacity(type_var_count: u32) -> Self {
         Unifier {
             substitution: Substitution::with_capacity(type_var_count as usize),
-            int_literal_vars: std::collections::HashSet::new(),
-            string_literal_vars: std::collections::HashSet::new(),
-            string_literal_types: std::collections::HashSet::new(),
+            int_literal_vars: AHashSet::new(),
+            string_literal_vars: AHashSet::new(),
+            string_literal_types: AHashSet::new(),
         }
     }
 

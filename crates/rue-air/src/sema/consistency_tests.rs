@@ -10,7 +10,7 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use ahash::AHashSet;
 
     /// All InstData variants that exist in the RIR.
     ///
@@ -179,8 +179,8 @@ mod tests {
     ///
     /// Looks for patterns like `InstData::VariantName` and extracts `VariantName`.
     /// Excludes matches that are actually `AirInstData::` (which contains `InstData::` as substring).
-    fn extract_instdata_variants(source: &str) -> HashSet<String> {
-        let mut variants = HashSet::new();
+    fn extract_instdata_variants(source: &str) -> AHashSet<String> {
+        let mut variants = AHashSet::new();
 
         // Simple regex-like extraction using string matching
         // Looking for "InstData::" followed by variant name (alphanumeric)
@@ -682,7 +682,7 @@ mod tests {
         let analysis_variants = extract_instdata_variants(ANALYSIS_SOURCE);
 
         // Get all expected variants
-        let all_variants: HashSet<String> = ALL_INSTDATA_VARIANTS
+        let all_variants: AHashSet<String> = ALL_INSTDATA_VARIANTS
             .iter()
             .map(|s| s.to_string())
             .collect();
