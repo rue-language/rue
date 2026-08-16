@@ -1336,13 +1336,13 @@ rue_sh_test(
     test = "scripts/validate-runtime-abi-inventory.py",
     resources = glob(["scripts/gatelib/*.py"]),
     args = [
-        "--source", "rue-air=$(location //crates/rue-air:runtime-abi-inventory-sources)",
-        "--source", "rue-builtins=$(location //crates/rue-builtins:runtime-abi-inventory-sources)",
-        "--source", "rue-cfg=$(location //crates/rue-cfg:runtime-abi-inventory-sources)",
-        "--source", "rue-codegen=$(location //crates/rue-codegen:runtime-abi-inventory-sources)",
-        "--source", "rue-compiler=$(location //crates/rue-compiler:runtime-abi-inventory-sources)",
-        "--source", "rue-linker=$(location //crates/rue-linker:runtime-abi-inventory-sources)",
-        "--source", "rue-oracle=$(location //crates/rue-oracle:runtime-abi-inventory-sources)",
+        "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
+        "--source", "rue-builtins=$(location //crates/rue-builtins:rue-builtins-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:rue-cfg-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:rue-codegen-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:rue-compiler-sources)",
+        "--source", "rue-linker=$(location //crates/rue-linker:rue-linker-sources)",
+        "--source", "rue-oracle=$(location //crates/rue-oracle:rue-oracle-sources)",
     ],
 )
 
@@ -1361,11 +1361,11 @@ rue_sh_test(
     test = "scripts/validate-type-architecture.py",
     resources = glob(["scripts/gatelib/*.py"]),
     args = [
-        "--source", "rue-air=$(location //crates/rue-air:type-architecture-inventory-sources)",
-        "--source", "rue-cfg=$(location //crates/rue-cfg:type-architecture-inventory-sources)",
-        "--source", "rue-codegen=$(location //crates/rue-codegen:type-architecture-inventory-sources)",
-        "--source", "rue-compiler=$(location //crates/rue-compiler:type-architecture-inventory-sources)",
-        "--source", "rue-oracle=$(location //crates/rue-oracle:type-architecture-inventory-sources)",
+        "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:rue-cfg-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:rue-codegen-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:rue-compiler-sources)",
+        "--source", "rue-oracle=$(location //crates/rue-oracle:rue-oracle-sources)",
     ],
 )
 
@@ -1384,10 +1384,10 @@ rue_sh_test(
     test = "scripts/validate-payload-ownership.py",
     resources = glob(["scripts/gatelib/*.py"]),
     args = [
-        "--source", "rue-rir=$(location //crates/rue-rir:payload-ownership-inventory-sources)",
-        "--source", "rue-air=$(location //crates/rue-air:payload-ownership-inventory-sources)",
-        "--source", "rue-cfg=$(location //crates/rue-cfg:payload-ownership-inventory-sources)",
-        "--source", "rue-codegen=$(location //crates/rue-codegen:payload-ownership-inventory-sources)",
+        "--source", "rue-rir=$(location //crates/rue-rir:rue-rir-sources)",
+        "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
+        "--source", "rue-cfg=$(location //crates/rue-cfg:rue-cfg-sources)",
+        "--source", "rue-codegen=$(location //crates/rue-codegen:rue-codegen-sources)",
     ],
 )
 
@@ -1406,8 +1406,8 @@ rue_sh_test(
     test = "scripts/validate-body-analysis-capabilities.py",
     resources = glob(["scripts/gatelib/*.py"]),
     args = [
-        "--source", "rue-air=$(location //crates/rue-air:body-analysis-capability-inventory-sources)",
-        "--source", "rue-compiler=$(location //crates/rue-compiler:body-analysis-capability-inventory-sources)",
+        "--source", "rue-air=$(location //crates/rue-air:rue-air-sources)",
+        "--source", "rue-compiler=$(location //crates/rue-compiler:rue-compiler-sources)",
     ],
 )
 
