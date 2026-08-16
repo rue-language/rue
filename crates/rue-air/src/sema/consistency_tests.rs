@@ -101,14 +101,12 @@ mod tests {
     // those submodules, so scan the whole `analysis/` tree, not just the root.
     const ANALYSIS_SOURCE: &str = concat!(
         include_str!("analysis.rs"),
-        include_str!("analysis/functions.rs"),
         include_str!("analysis/type_inference.rs"),
         include_str!("analysis/instructions.rs"),
         include_str!("analysis/calls.rs"),
         include_str!("analysis/intrinsics.rs"),
         include_str!("analysis/builtin_ops.rs"),
         include_str!("analysis/ownership.rs"),
-        include_str!("analysis/anon_methods.rs"),
         include_str!("analysis/pointers.rs"),
         include_str!("aggregates.rs"),
         include_str!("control_flow.rs"),
@@ -141,9 +139,7 @@ mod tests {
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
         include_str!("analysis.rs"),
-        include_str!("analysis/anon_methods.rs"),
         include_str!("analysis/builtin_ops.rs"),
-        include_str!("analysis/functions.rs"),
         include_str!("analysis/instructions.rs"),
         include_str!("analysis/ownership.rs"),
         include_str!("analysis/pointers.rs"),
@@ -151,17 +147,14 @@ mod tests {
         include_str!("analyze_ops.rs"),
         include_str!("anon_structs.rs"),
         include_str!("binding_manifest.rs"),
-        include_str!("builtins.rs"),
         include_str!("comptime_eval.rs"),
         include_str!("context.rs"),
         include_str!("control_flow.rs"),
         include_str!("declaration_index.rs"),
         include_str!("declarations.rs"),
-        include_str!("file_paths.rs"),
         include_str!("inference_ctx.rs"),
         include_str!("info.rs"),
         include_str!("known_symbols.rs"),
-        include_str!("metadata.rs"),
         include_str!("output.rs"),
         include_str!("semantic_body_export.rs"),
         include_str!("typeck.rs"),
@@ -171,10 +164,8 @@ mod tests {
         ("analysis.rs", ANALYSIS_ROOT_SOURCE),
         ("aggregates.rs", AGGREGATES_SOURCE),
         ("analyze_ops.rs", ANALYZE_OPS_SOURCE),
-        ("anon_methods.rs", include_str!("analysis/anon_methods.rs")),
         ("builtin_ops.rs", include_str!("analysis/builtin_ops.rs")),
         ("calls.rs", include_str!("analysis/calls.rs")),
-        ("functions.rs", include_str!("analysis/functions.rs")),
         ("instructions.rs", include_str!("analysis/instructions.rs")),
         ("intrinsics.rs", include_str!("analysis/intrinsics.rs")),
         ("pointers.rs", include_str!("analysis/pointers.rs")),
@@ -263,36 +254,9 @@ mod tests {
 
     #[test]
     fn ordinary_engine_is_the_single_canonical_body_algorithm() {
-        fn function_body<'a>(source: &'a str, marker: &str) -> &'a str {
-            let item = source
-                .split(marker)
-                .nth(1)
-                .unwrap_or_else(|| panic!("missing adapter function: {marker}"));
-            let open = item.find('{').expect("adapter body opens");
-            let mut depth = 0;
-            for (offset, ch) in item[open..].char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return &item[open + 1..open + offset];
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            panic!("adapter body closes")
-        }
-
-        fn normalize_whitespace(source: &str) -> String {
-            source.chars().filter(|ch| !ch.is_whitespace()).collect()
-        }
-
         let engine = include_str!("ordinary_engine.rs");
         assert!(engine.contains("pub(crate) trait OrdinaryBodyAnalysisHost"));
         assert!(engine.contains("pub(crate) struct OrdinaryBodyEngine"));
-        assert!(engine.contains("pub(crate) fn analyze_single_function"));
         assert!(engine.contains("pub(crate) fn analyze_single_function_resolved"));
         assert!(engine.contains("pub(crate) fn analyze_named_method_resolved"));
         assert!(engine.contains("pub(crate) fn analyze_function_internal"));
@@ -316,48 +280,6 @@ mod tests {
                 "C0 canonical engine retains provider/legacy escape hatch: {forbidden}"
             );
         }
-        let functions = include_str!("analysis/functions.rs");
-        assert_eq!(functions.matches("fn analyze_single_function").count(), 1);
-        assert_eq!(functions.matches("fn analyze_function_internal").count(), 1);
-        let single = function_body(functions, "fn analyze_single_function<P>");
-        let internal = function_body(functions, "fn analyze_function_internal(");
-        assert_eq!(
-            normalize_whitespace(single),
-            normalize_whitespace(
-                "super::super::ordinary_engine::OrdinaryBodyEngine::new(self)
-                    .analyze_single_function(
-                        infer_ctx,
-                        fn_name,
-                        return_type,
-                        params,
-                        body,
-                        span,
-                        allow_unused_variable,
-                        allow_unreachable_code,
-                    )"
-            ),
-            "analyze_single_function must be exactly one forwarding expression"
-        );
-        assert_eq!(
-            normalize_whitespace(internal),
-            normalize_whitespace(
-                "super::super::ordinary_engine::OrdinaryBodyEngine::new(self)
-                    .analyze_function_internal(
-                        infer_ctx,
-                        return_type,
-                        params,
-                        body,
-                        type_subst,
-                        value_subst,
-                        is_destructor,
-                        allow_unused_variable,
-                        self_is_mut,
-                        is_accessor,
-                    )"
-            ),
-            "analyze_function_internal must be exactly one forwarding expression"
-        );
-
         let provider = include_str!("provider_body_host.rs");
         assert!(provider.contains(".analyze_single_function_resolved("));
         assert!(provider.contains(".analyze_named_method_resolved("));
@@ -451,63 +373,6 @@ mod tests {
         let mut expected_methods = classification_methods.to_vec();
         expected_methods.sort_unstable();
         assert_eq!(actual_methods, expected_methods);
-
-        for item in typeck_impls.iter().filter(|item| {
-            let header = item.lines().next().expect("impl has a header");
-            header.contains("DeclarationPhase") && header.contains("Sema<")
-        }) {
-            for method in classification_methods {
-                assert!(
-                    !item.contains(&format!("fn {method}(")),
-                    "{method} must not remain generically available"
-                );
-            }
-        }
-
-        let constructor_owners = typeck_impls
-            .iter()
-            .filter(|item| item.contains("fn get_or_create_str_fixed_struct("))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            constructor_owners.len(),
-            1,
-            "fixed-string constructor has one implementation"
-        );
-        assert!(
-            constructor_owners[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
-            "fixed-string construction remains declaration-phase generic"
-        );
-
-        let type_syntax_call_owners = typeck_impls
-            .iter()
-            .filter(|item| item.contains("self.get_or_create_str_fixed_struct(capacity, span)"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            type_syntax_call_owners.len(),
-            1,
-            "type-syntax fixed-string construction has one generic owner"
-        );
-        assert!(
-            type_syntax_call_owners[0]
-                .starts_with("impl<'source, D: DeclarationPhase> TypeSyntaxHost")
-        );
-
-        let binding_impls = impl_items(BINDING_MANIFEST_SOURCE);
-        let declaration_install_owners = binding_impls
-            .iter()
-            .filter(|item| {
-                item.contains(".get_or_create_str_fixed_struct(capacity, Span::default())")
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            declaration_install_owners.len(),
-            1,
-            "declaration installation has one fixed-string construction call"
-        );
-        assert!(
-            declaration_install_owners[0].starts_with("impl<'a> DeclarationShells<'a>"),
-            "declaration installation owns its generic-constructor call"
-        );
 
         for (name, source, anchor) in [
             (
@@ -657,31 +522,6 @@ mod tests {
         expected_methods.sort_unstable();
         assert_eq!(actual_methods, expected_methods);
 
-        for item in typeck_impls.iter().filter(|item| {
-            let header = item.lines().next().expect("impl has a header");
-            header.contains("DeclarationPhase") && header.contains("Sema<")
-        }) {
-            for method in layout_methods {
-                assert!(
-                    !item.contains(&format!("fn {method}(")),
-                    "{method} must not remain generically available"
-                );
-            }
-        }
-
-        let array_constructor = typeck_impls
-            .iter()
-            .filter(|item| item.contains("fn get_or_create_array_type("))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            array_constructor.len(),
-            1,
-            "declaration-phase array construction has one implementation"
-        );
-        assert!(
-            array_constructor[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
-            "declaration-phase array construction remains generic"
-        );
         for method in [
             "pre_create_array_types_from_infer_type",
             "infer_type_to_concrete_type_for_key",
@@ -798,11 +638,7 @@ mod tests {
         }
 
         let impls = impl_items(VISIBILITY_SOURCE);
-        assert_eq!(impls.len(), 2, "visibility has exactly two receiver blocks");
-        let generic = impls
-            .iter()
-            .find(|item| item.starts_with("impl<D: DeclarationPhase> Sema<'_, D>"))
-            .expect("shared visibility receiver exists");
+        assert_eq!(impls.len(), 1, "visibility has exactly one receiver block");
         let engine = impls
             .iter()
             .find(|item| {
@@ -810,12 +646,6 @@ mod tests {
             })
             .expect("ordinary-engine visibility receiver exists");
 
-        let mut generic_methods = method_names(generic);
-        generic_methods.sort_unstable();
-        assert_eq!(
-            generic_methods,
-            ["check_unqualified_visibility", "is_accessible"]
-        );
         let mut engine_methods = method_names(engine);
         engine_methods.sort_unstable();
         assert_eq!(
@@ -833,10 +663,6 @@ mod tests {
             assert!(
                 engine.contains(&needle),
                 "{method} belongs to the ordinary engine"
-            );
-            assert!(
-                !generic.contains(&needle),
-                "{method} has no generic forwarding shim"
             );
         }
         for forbidden in ["Deref", "\ntrait "] {
@@ -963,76 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_type_syntax_uses_only_the_declaration_phase_extension() {
-        fn item<'source>(source: &'source str, header: &str) -> &'source str {
-            let start = source.find(header).expect("item header is present");
-            let rest = &source[start..];
-            let open = rest.find('{').expect("item body opens");
-            let mut depth = 0;
-            for (offset, ch) in rest[open..].char_indices() {
-                match ch {
-                    '{' => depth += 1,
-                    '}' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            return &rest[..open + offset + 1];
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            panic!("item body closes");
-        }
-
-        for (extension, count) in [
-            ("D::resolve_indexed_const", 3),
-            ("D::collect_free_function_signature", 2),
-        ] {
-            assert_eq!(
-                TYPECK_SOURCE.matches(extension).count(),
-                count,
-                "type syntax must use {extension} at its exact recovery sites"
-            );
-        }
-        for forbidden in [
-            "binding_impl",
-            "declaration_index",
-            "during_binding",
-            "declaration_binding_active",
-        ] {
-            assert!(
-                !TYPECK_SOURCE.contains(forbidden),
-                "type syntax must not select binding recovery with {forbidden}"
-            );
-        }
-
-        let source_phase = item(
-            SEMA_ROOT_SOURCE,
-            "impl DeclarationPhase for SourceDeclarations",
-        );
-        for method_name in ["resolve_indexed_const", "collect_free_function_signature"] {
-            let method = item(source_phase, &format!("fn {method_name}("));
-            let normalized = method
-                .chars()
-                .filter(|ch| !ch.is_whitespace())
-                .collect::<String>();
-            assert!(
-                normalized.contains("_sema:&mutSema<'_,Self>"),
-                "frozen {method_name} must receive but not use the analyzer"
-            );
-            let open = method.find('{').expect("method body opens");
-            let body = &method[open + 1..method.len() - 1];
-            assert!(
-                body.chars()
-                    .filter(|ch| !ch.is_whitespace())
-                    .eq("Ok(None)".chars()),
-                "frozen {method_name} must make misses authoritative"
-            );
-        }
-    }
-
-    #[test]
-    fn structured_type_syntax_has_one_policy_and_two_fact_hosts() {
+    fn structured_type_syntax_has_one_policy_and_one_fact_host() {
         fn item<'source>(source: &'source str, header: &str) -> &'source str {
             let start = source.find(header).expect("item header is present");
             let rest = &source[start..];
@@ -1069,12 +826,9 @@ mod tests {
                 "the type-syntax host exposes no full analyzer accessor: {forbidden}"
             );
         }
-        assert_eq!(
-            TYPECK_SOURCE
-                .matches("impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<")
-                .count(),
-            1,
-            "the epoch implements the shared fact host exactly once"
+        assert!(
+            !TYPECK_SOURCE.contains("TypeSyntaxHost for"),
+            "typeck hosts the fact vocabulary, not a fact-host implementation"
         );
         assert_eq!(
             PROVIDER_BODY_HOST_SOURCE
@@ -1085,22 +839,20 @@ mod tests {
         );
         assert!(TYPECK_SOURCE.contains("pub(super) trait TypeSyntaxHost"));
         assert!(TYPECK_SOURCE.contains("pub(super) struct TypeSyntaxProvider"));
-        assert!(TYPECK_SOURCE.contains("pub(super) struct DeferredTypeSyntaxProvider"));
         assert!(TYPECK_SOURCE.contains("pub(super) enum SemaTypeResolutionContext"));
         assert!(TYPECK_SOURCE.contains("pub(super) fn resolve_array_length_fact("));
         assert_eq!(
             TYPECK_SOURCE
                 .matches("pub(super) fn flush_observed_type_dependencies(")
                 .count(),
-            2,
-            "both generic evaluators expose exact dependency flushing to sibling hosts"
+            1,
+            "the generic evaluator exposes exact dependency flushing to sibling hosts"
         );
         assert!(!TYPECK_SOURCE.contains("type_syntax_deferred_array_length"));
         assert!(!TYPECK_SOURCE.contains("type_syntax_deferred_value_argument"));
 
         for evaluator in [
             item(TYPECK_SOURCE, "struct TypeSyntaxProvider<"),
-            item(TYPECK_SOURCE, "struct DeferredTypeSyntaxProvider<"),
             item(
                 TYPECK_SOURCE,
                 "impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for TypeSyntaxProvider",
@@ -1112,18 +864,6 @@ mod tests {
             item(
                 TYPECK_SOURCE,
                 "impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H>",
-            ),
-            item(
-                TYPECK_SOURCE,
-                "impl<H: DeferredTypeSyntaxHost>\n    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for DeferredTypeSyntaxProvider",
-            ),
-            item(
-                TYPECK_SOURCE,
-                "impl<H: DeferredTypeSyntaxHost>\n    crate::SemanticTypeSyntaxProvider<\n        FileId,\n        crate::types::ModuleId,\n        FileId,\n        Spur,\n        Spur,\n        DeferredTypeResolution,\n        DeferredValueResolution,\n    > for DeferredTypeSyntaxProvider",
-            ),
-            item(
-                TYPECK_SOURCE,
-                "impl<'s, 'c, 'p, H: DeferredTypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
             ),
         ] {
             for forbidden in [
@@ -1146,50 +886,21 @@ mod tests {
             }
         }
 
-        let deferred = item(
-            TYPECK_SOURCE,
-            "impl<'s, 'c, 'p, H: DeferredTypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
-        );
-        for required in [
-            "fn deferred_argument_expected(",
-            "fn validate_value_position(",
-            "type_syntax_signature_substitutions_are_ready(",
-            "type_syntax_resolve_substituted_parameter_type(",
-            "type_syntax_validate_deferred_value(",
-        ] {
-            assert!(
-                deferred.contains(required),
-                "generic deferred evaluator owns {required}"
-            );
-        }
-
         for (method, provider) in [
             (
-                "resolve_structured_type_syntax_with_epoch_facts",
+                "fn resolve_structured_type_syntax(",
                 "TypeSyntaxProvider::new",
             ),
-            (
-                "resolve_type_module_prefix_with_epoch_facts",
-                "TypeSyntaxProvider::new",
-            ),
-            (
-                "resolve_array_length_with_epoch_facts",
-                "TypeSyntaxProvider::new",
-            ),
-            (
-                "validate_deferred_rir_type",
-                "DeferredTypeSyntaxProvider::new",
-            ),
+            ("fn resolve_type_module_prefix(", "TypeSyntaxProvider::new"),
+            ("fn resolve_array_length(", "TypeSyntaxProvider::new"),
         ] {
-            let method = item(TYPECK_SOURCE, &format!("fn {method}("));
+            let method = item(PROVIDER_BODY_HOST_SOURCE, method);
             assert!(
                 method.contains(provider),
-                "{method} constructs the generic provider"
+                "the provider host constructs the generic evaluator"
             );
             assert!(!method.contains("SemaTypeSyntaxProvider"));
         }
-        let bare_value = deferred;
-        assert!(bare_value.contains("TypeSyntaxProvider::new"));
         assert!(!TYPECK_SOURCE.contains("SemaTypeSyntaxProvider"));
         assert!(!TYPECK_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
         assert_eq!(
@@ -1319,23 +1030,36 @@ mod tests {
             );
         }
 
-        assert_eq!(
-            AGGREGATE_RESOLUTION_SOURCE
-                .matches("AggregateFacts for Sema<'_, D>")
-                .count(),
-            1
-        );
+        // The query-backed host and the pool-backed provider drivers are the
+        // only implementations of the body-fact contracts; no epoch-owned
+        // analyzer implements them.
+        for (name, source, contract, provider_impl) in [
+            (
+                "aggregate_resolution.rs",
+                AGGREGATE_RESOLUTION_SOURCE,
+                "AggregateFacts for",
+                "AggregateFacts for ProviderAggregateFacts<",
+            ),
+            (
+                "body_endpoint.rs",
+                BODY_ENDPOINT_SOURCE,
+                "BodyEndpointProvider for",
+                "BodyEndpointProvider for ProviderEndpointFacts<",
+            ),
+        ] {
+            assert_eq!(
+                source.matches(contract).count(),
+                1,
+                "{name} hosts exactly the pool-backed provider driver"
+            );
+            assert_eq!(source.matches(provider_impl).count(), 1);
+        }
         assert_eq!(
             CALL_RESOLUTION_SOURCE
-                .matches("CallResolutionFacts for Sema<'_, D>")
+                .matches("CallResolutionFacts for")
                 .count(),
-            1
-        );
-        assert_eq!(
-            BODY_ENDPOINT_SOURCE
-                .matches("BodyEndpointProvider for Sema<'_, D>")
-                .count(),
-            1
+            0,
+            "call_resolution.rs defines the fact vocabulary without hosting an implementation"
         );
         for contract in [
             "BodyEndpointProvider for ProviderBodyHost<",
@@ -1420,10 +1144,6 @@ mod tests {
                 include_str!("provider_body_host.rs"),
             ),
             ("binding_manifest.rs", BINDING_MANIFEST_SOURCE),
-            (
-                "analysis/anon_methods.rs",
-                include_str!("analysis/anon_methods.rs"),
-            ),
             ("analysis/instructions.rs", INSTRUCTIONS_SOURCE),
             ("mod.rs", SEMA_ROOT_SOURCE),
         ];
@@ -1590,7 +1310,10 @@ mod tests {
         // Semantic export only decodes existing AIR, while tests inspect AIR
         // shapes; neither site emits ownership or storage-lifetime operations.
         assert!(include_str!("semantic_body_export.rs").contains("AirInstData::Alloc"));
-        assert!(include_str!("tests.rs").contains("AirInstData::StorageLive"));
+        assert!(
+            include_str!("provider_strings_ownership_tests.rs")
+                .contains("AirInstData::StorageLive")
+        );
     }
 
     #[test]

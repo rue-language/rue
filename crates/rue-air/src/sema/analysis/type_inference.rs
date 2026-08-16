@@ -124,12 +124,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // The provider holds an immutable borrow of `self`; it is dropped right
         // after Phase-1 constraint generation completes, before any `&mut self`
         // access resumes. This is the detached-context wiring: the shared
-        // `InferenceContext` cache carries no `Sema` borrow (it outlives every
+        // `InferenceContext` cache carries no host borrow (it outlives every
         // body's `&mut self`), while the fill source is threaded here per body,
-        // sound because constraint generation reads `Sema` only immutably.
+        // sound because constraint generation reads the host only immutably.
         // Phase 1 runs in its own scope so the provider's immutable borrow of
         // `self` ends before Phase 2 resumes `&mut self` access (RUE-1091 slice
-        // r5b): the shared `InferenceContext` cache holds no `Sema` borrow, and
+        // r5b): the shared `InferenceContext` cache holds no host borrow, and
         // the fill source is threaded here per body.
         let constraint_generation_started = Instant::now();
         let (

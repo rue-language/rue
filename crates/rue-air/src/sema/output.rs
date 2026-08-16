@@ -1,13 +1,8 @@
 //! Output types from semantic analysis.
 //!
-//! This module contains the final outputs produced by semantic analysis:
-//! - [`AnalyzedFunction`] - A single analyzed function with typed IR
-//! - [`SemaOutput`] - Complete output from analyzing a program
+//! This module contains the per-body outputs produced by semantic analysis,
+//! chiefly [`AnalyzedFunction`] - a single analyzed body with typed IR.
 
-use std::collections::HashMap;
-
-use crate::{SemanticBodyExport, SemanticSpecializedBodyExport, Type};
-use rue_error::CompileWarning;
 /// Opaque identity issued by the compiler for one supported ordinary body.
 ///
 /// Neither component has meaning to AIR.  The issuer prevents tokens from
@@ -382,61 +377,6 @@ impl AnalyzedCallableKind {
     }
 }
 
-/// Output from semantic analysis.
-///
-/// Contains all analyzed functions, struct definitions, enum definitions, and any warnings
-/// generated during analysis.
-#[derive(Debug)]
-pub struct SemaOutput {
-    /// Analyzed functions with typed IR.
-    pub functions: Vec<AnalyzedFunction>,
-    /// String literals indexed by their AIR string_const index.
-    pub strings: Vec<String>,
-    /// Warnings collected during analysis.
-    pub warnings: Vec<CompileWarning>,
-    /// Completed immutable type metadata (contains all types including arrays).
-    pub type_pool: crate::FrozenTypeInternPool,
-    /// Request-local anonymous nominal types mapped to identities issued before
-    /// their pool allocation. Consumers must project the opaque definition and
-    /// module tokens at the compiler retention boundary before persisting keys.
-    pub anonymous_nominal_identities_by_type: HashMap<
-        Type,
-        crate::AnonymousNominalKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
-    >,
-    /// Issuer-scoped canonical identities for every aggregate type that may
-    /// own synthesized drop glue. This lets the compiler name glue without
-    /// reconstructing semantic identity from display names or pool order.
-    pub aggregate_type_identities_by_type: HashMap<
-        Type,
-        crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
-    >,
-    /// Exact reverse index for demand-driven consumers.  Looking up one
-    /// reached glue owner must not scan either the complete type pool or the
-    /// complete active aggregate map.
-    pub aggregate_types_by_identity: HashMap<
-        crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
-        Type,
-    >,
-    /// Exact structural work performed while dispatching reachable bodies.
-    pub body_analysis_work: BodyAnalysisWork,
-    /// Pre-specialization durable candidates for supported ordinary bodies.
-    pub ordinary_body_exports: Vec<SemanticBodyExport>,
-    /// Completed post-fixed-point generic instances eligible for durable reuse.
-    pub specialized_body_exports: Vec<SemanticSpecializedBodyExport>,
-    /// Stable-capable provenance for every successfully analyzed source body.
-    pub analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
-    pub body_named_dependencies: Vec<BodyNamedDependencyEvent>,
-    pub declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
-    pub declaration_type_dependencies_complete: bool,
-    pub declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
-    pub declaration_type_call_head_dependencies_complete: bool,
-    pub declaration_builtin_type_call_head_dependencies:
-        Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
-    pub supported_type_call_heads_complete: bool,
-    pub named_const_dependencies: Vec<NamedConstDependencyEvent>,
-    pub named_value_const_dependencies_complete: bool,
-}
-
 /// Value-only workload counters for demand-driven body dispatch.
 ///
 /// These counters deliberately expose no request-local RIR instruction handles.
@@ -469,7 +409,7 @@ pub struct BodyAnalysisWork {
     /// when an anonymous representative changed and the in-flight closure was
     /// discarded and re-traversed from roots. Stays zero for programs without
     /// anonymous method producers. Populated only by the session coordinator;
-    /// the per-`Sema` analysis leaves it at zero.
+    /// per-body analysis leaves it at zero.
     pub closure_restarts: usize,
     /// Times the coordinator deferred a consumer body behind an as-yet-unreached
     /// anonymous producer and returned it to the dependency scheduler. Populated
@@ -567,26 +507,4 @@ pub struct BodyAnalysisWork {
     /// This excludes one-time implicit-root scans, unused-reference scans, and
     /// comptime evaluation. Indexed dispatch keeps this value at zero.
     pub reachable_declaration_rir_visits: usize,
-}
-
-/// Diagnostics and value-only structural work from a failed body-analysis
-/// request. Failed AIR artifacts remain private and are never published.
-#[derive(Debug, Clone)]
-pub struct BodyAnalysisFailure {
-    errors: rue_error::CompileErrors,
-    work: BodyAnalysisWork,
-}
-
-impl BodyAnalysisFailure {
-    pub(crate) fn new(errors: rue_error::CompileErrors, work: BodyAnalysisWork) -> Self {
-        Self { errors, work }
-    }
-
-    pub fn work(&self) -> BodyAnalysisWork {
-        self.work
-    }
-
-    pub fn into_errors(self) -> rue_error::CompileErrors {
-        self.errors
-    }
 }

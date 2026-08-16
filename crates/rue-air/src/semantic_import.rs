@@ -1,7 +1,7 @@
 //! Request-independent semantic values imported into a fresh AIR epoch.
 //!
-//! This module deliberately stops short of installing declarations into
-//! [`crate::Sema`]. Bodies, source spans, and RIR declaration handles belong to
+//! This module deliberately stops short of installing declarations into a
+//! live analyzer. Bodies, source spans, and RIR declaration handles belong to
 //! an exact semantic request. The importer reconstructs only values that AIR
 //! can represent without borrowing handles from the exporting request.
 
@@ -1873,7 +1873,7 @@ where
             SemanticImportConstValue::Unit => ConstValue::Unit,
             // The epoch owns an isolated interner, so the content round-trips
             // through it for validation; durable const payloads are never
-            // installed into a live Sema (install fails closed on consts).
+            // installed into a live analyzer (install fails closed on consts).
             SemanticImportConstValue::String(content) => {
                 ConstValue::String(self.interner.get_or_intern(content.as_ref()))
             }

@@ -633,8 +633,8 @@ pub(crate) struct AnalysisContext<'a> {
     /// the entire call, so recording a MOVE of any root on this stack while
     /// evaluating another argument of the same call (directly, or nested —
     /// `f(inout x, g(x))`) would leave the loan aliasing moved-from storage:
-    /// a double free in safe code. Move-record sites consult this via
-    /// `Sema::reject_move_of_call_loaned_root` (E0208, spec 6.1, RUE-523).
+    /// a double free in safe code. Move-record sites consult this via the
+    /// engine's `reject_move_of_call_loaned_root` (E0208, spec 6.1, RUE-523).
     /// Completed nested LOANS (`f(inout x, g(borrow x))`) do not conflict:
     /// the inner loan ends before the outer call begins.
     pub call_loaned_roots: Vec<Vec<(Spur, CallLoanKind)>>,

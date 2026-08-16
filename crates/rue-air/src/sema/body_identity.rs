@@ -28,8 +28,8 @@
 //! assembles the signature-derived subset of `FunctionInfo`/`MethodInfo` and
 //! the `ParamRange`s they carry from the durable signature vocabulary
 //! (`DurableFunction`/`DurableMethod` over `DurableSignatureParameter`), minting
-//! its parameters into a pool-owned [`ParamArena`] (the analog of
-//! `Sema::param_arena`, which lives *beside* the type pool, not inside it) and
+//! its parameters into a pool-owned [`ParamArena`] (which lives *beside* the
+//! type pool, not inside it) and
 //! resolving every parameter/return/receiver type through the same 2a `resolve`
 //! machinery. The request/RIR-carried remainder of each info struct is *not*
 //! minted: it is supplied by a caller-provided handle
@@ -308,9 +308,8 @@ pub(in crate::sema) enum IdentityMintError {
     /// An anonymous nominal key was consulted for minting but no durable shape
     /// (fields / variants) was supplied for it.
     MissingAnonymousShape,
-    /// Two distinct anonymous producer keys hashed to one presentation digest.
-    /// The pool analog of the epoch's fail-closed
-    /// [`Sema::guard_anonymous_digest_collision`] (RUE-1089, Theme 4b): the
+    /// Two distinct anonymous producer keys hashed to one presentation digest
+    /// (RUE-1089, Theme 4b, fail-closed): the
     /// 128-bit digest spells presentation names only and must never collapse two
     /// producer-distinct types onto one id, so the second colliding key is
     /// refused and neither its nominal nor its symbol is published. Carries the
@@ -381,8 +380,8 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// Monotonic candidate for pool-assigned ids. Occupied explicit ids are
     /// skipped once overall, so admitting all body modules remains linear.
     next_module_file: u32,
-    /// The pool's own parameter arena, the analog of `Sema::param_arena` (which
-    /// lives *beside* the type pool, not inside it). Callable identities intern
+    /// The pool's own parameter arena (which lives *beside* the type pool, not
+    /// inside it). Callable identities intern
     /// their durable parameter vocabulary here on first consult, returning a
     /// `ParamRange` that indexes this arena — never the epoch's.
     param_arena: ParamArena,
@@ -396,18 +395,16 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// rather than re-running the partial mint (whose parameters may already sit
     /// orphaned in the append-only arena) — the callable analog of `poisoned`.
     callable_poisoned: AHashMap<K, IdentityMintError>,
-    /// Per-body well-known `Option(payload)` registry (RUE-1112, ported for
-    /// RUE-1091 r6c): the pool analog of `Sema::well_known_option_by_payload`.
-    /// Maps an expected payload [`Type`] to the trusted standard-library
+    /// Per-body well-known `Option(payload)` registry (RUE-1112,
+    /// RUE-1091 r6c). Maps an expected payload [`Type`] to the trusted standard-library
     /// `Option` enum minted for that payload, populated narrowly by
     /// [`Self::install_well_known_option_types`] before body analysis — never
     /// from the body's own composition/import universe. The provider consumer
     /// is fallible-intrinsic resolution (`resolve_option_result_type`).
     well_known_option_by_payload: AHashMap<Type, Type>,
     /// Anonymous enum identities (canonical producer form) minted by the
-    /// well-known `Option` registry install for this body — the pool analog of
-    /// `Sema::well_known_option_identities`, which is THE export-as-produced
-    /// ruling: the export funnel (`provider_body_host.rs` /
+    /// well-known `Option` registry install for this body — THE
+    /// export-as-produced ruling: the export funnel (`provider_body_host.rs` /
     /// `produced_anonymous_nominals`) subtracts these identities from the
     /// initial anonymous baseline so the installing body EXPORTS them as
     /// produced anonymous nominals — exactly as a body materializing
@@ -418,12 +415,10 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// A `BTreeSet`, matching the epoch set's deterministic order.
     well_known_option_identities: std::collections::BTreeSet<AnonymousNominalKey<K, M>>,
     /// The recorded refusal of a FAILED well-known `Option` install — the
-    /// well-known analog of `poisoned` / `callable_poisoned`. The epoch's
-    /// install takes `self` by value and returns `Result<Self, _>`, so its
-    /// failure drops the whole mutated `BoundSema` and no partial effect is
-    /// ever observable; the pool's install mutates in place, so a mid-batch
-    /// refusal would otherwise leave earlier keys' rulings and already-recorded
-    /// demand pairs observable. This poison closes that gap: a repeat install
+    /// well-known analog of `poisoned` / `callable_poisoned`. The install
+    /// mutates the pool in place, so a mid-batch refusal would otherwise
+    /// leave earlier keys' rulings and already-recorded demand pairs
+    /// observable. This poison closes that gap: a repeat install
     /// re-errors with the recorded refusal (never re-running the partial
     /// install), and every well-known accessor
     /// ([`Self::is_well_known_option_identity`],
@@ -447,8 +442,7 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
 /// Pool-relative `Type`, `StructId`, `EnumId`, `ParamRange`, and `ModuleId`
 /// handles are meaningful only inside the pool/registry that minted them. The
 /// call, endpoint, and aggregate drivers therefore clone this lightweight
-/// handle rather than constructing peer pools. This is the provider-side
-/// equivalent of every epoch adapter borrowing the same `BodySema`.
+/// handle rather than constructing peer pools.
 #[derive(Default)]
 struct ProviderMethodRegistry {
     anonymous: HashMap<(StructId, Spur), MethodInfo>,
@@ -1581,9 +1575,7 @@ where
     /// Mint (on first consult) or dedup the producer-nominal anonymous
     /// struct / enum for a durable anonymous identity key.
     ///
-    /// The provider-driven analog of the epoch's
-    /// [`Sema::find_or_create_anon_struct`] / [`Sema::find_or_create_anon_enum`]
-    /// (`anon_structs.rs`). Identity is producer-nominal (ADR-0066): the
+    /// Identity is producer-nominal (ADR-0066): the
     /// `AnonymousNominalKey` alone owns the entity — there is no structural search
     /// across producers. The synthetic name is spelled from the SAME stable
     /// digest the epoch uses (the shared
@@ -1668,10 +1660,8 @@ where
         }
     }
 
-    /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
-    /// into this pool — the provider-driven port of the epoch's
-    /// `BoundSema::install_well_known_option_types` (`binding_manifest.rs`),
-    /// RUE-1091 slice r6c.
+    /// Install the per-body well-known `Option(payload)` registry (RUE-1112,
+    /// RUE-1091 slice r6c) into this pool.
     ///
     /// `nominals` are the durable identities of the trusted-std `Option` enum
     /// specializations the per-body demand loop resolved; each is minted through
@@ -1687,40 +1677,33 @@ where
     /// # The export-as-produced ruling
     ///
     /// Every installed identity is recorded (canonical producer form) in the
-    /// pool's well-known identity set. That set is the pool-side carrier of the
-    /// epoch's `well_known_option_identities` ruling: the export funnel
-    /// (`semantic_body_export.rs` via `provider_body_host.rs`'s baseline subtraction)
-    /// treats these identities as PRODUCED anonymous nominals of the analyzed
-    /// body — the body that binds a fallible intrinsic's `Option` is the body
-    /// that produces it — never as pre-existing imports with no producer. The
-    /// provider baseline computation consults
-    /// [`Self::is_well_known_option_identity`] to apply the same subtraction
-    /// the epoch applies at `body_analysis_initial_anonymous_identities` capture.
+    /// pool's well-known identity set. That set carries the export-as-produced
+    /// ruling: the export funnel (`semantic_body_export.rs` via
+    /// `provider_body_host.rs`'s baseline subtraction) treats these identities
+    /// as PRODUCED anonymous nominals of the analyzed body — the body that
+    /// binds a fallible intrinsic's `Option` is the body that produces it —
+    /// never as pre-existing imports with no producer. The provider baseline
+    /// computation consults [`Self::is_well_known_option_identity`] to apply
+    /// that subtraction.
     ///
     /// # Failure semantics
     ///
-    /// The refusals mirror the epoch install: a non-enum durable shape is
-    /// refused ([`IdentityMintError::WellKnownShapeMismatch`], the pool
-    /// spelling of `DeclarationInstallFailure::NominalShapeMismatch`) BEFORE
-    /// any id or symbol is minted for that key; an absent shape or
-    /// unresolvable registry type fails closed. A bounded fixpoint tolerates a
-    /// nominal whose payload references another not-yet-installed well-known
-    /// nominal (the trusted `Option` shapes are flat today, so one pass
-    /// suffices); a round with no progress returns the blocking refusal. Any
-    /// error is a fatal refusal for the requesting body — exactly as the
-    /// epoch's failed install fails the body query deterministically — never
-    /// an approximation.
+    /// A non-enum durable shape is refused
+    /// ([`IdentityMintError::WellKnownShapeMismatch`]) BEFORE any id or symbol
+    /// is minted for that key; an absent shape or unresolvable registry type
+    /// fails closed. A bounded fixpoint tolerates a nominal whose payload
+    /// references another not-yet-installed well-known nominal (the trusted
+    /// `Option` shapes are flat today, so one pass suffices); a round with no
+    /// progress returns the blocking refusal. Any error is a fatal refusal
+    /// for the requesting body, never an approximation.
     ///
-    /// The ATOMICITY shape differs and is closed by poisoning: the epoch's
-    /// install takes `self` by value and returns `Result<Self, _>`, so its
-    /// failure drops the whole mutated `BoundSema` — partial effects are
-    /// structurally unobservable. This install mutates in place, so ANY
-    /// failure instead POISONS the well-known registry (`well_known_poisoned`,
-    /// the well-known analog of the file's `poisoned` / `callable_poisoned`
+    /// Atomicity is closed by poisoning: the install mutates in place, so ANY
+    /// failure POISONS the well-known registry (`well_known_poisoned`, the
+    /// well-known analog of the file's `poisoned` / `callable_poisoned`
     /// discipline): a repeat install re-errors with the recorded refusal
     /// rather than re-running the partial install, and every well-known
-    /// accessor answers as if nothing was installed — restoring the epoch's
-    /// no-observable-partial-success guarantee.
+    /// accessor answers as if nothing was installed — no observable partial
+    /// success.
     pub(in crate::sema) fn install_well_known_option_types(
         &mut self,
         nominals: &[AnonymousNominalKey<K, M>],
@@ -1913,8 +1896,7 @@ where
         crate::stable_digest::stable_anonymous_identity_digest(&relocated)
     }
 
-    /// Fail-closed digest-collision gate, the pool analog of the epoch's
-    /// [`Sema::guard_anonymous_digest_collision`]. Re-presenting the SAME key is
+    /// Fail-closed digest-collision gate. Re-presenting the SAME key is
     /// legitimate reuse; a SECOND distinct key hashing to an owned digest is
     /// refused so a name-keyed pool dedup can never collapse two producer-distinct
     /// types onto one id.
@@ -2753,9 +2735,8 @@ where
 /// duplicating the arena walk.
 ///
 /// The one op the production index does not expose as a keyed point lookup is
-/// `named_method_declaration`: the epoch answers it from the *`Sema`-side*
-/// `named_method_declarations` map keyed by a pool-minted [`StructId`]
-/// (`declarations.rs`), which the pool-free RIR index cannot hold. But that
+/// `named_method_declaration`: it needs a map keyed by a pool-minted
+/// [`StructId`], which the pool-free RIR index cannot hold. But that
 /// `StructId` is only an *intermediate* the epoch computes from `struct_by_file_
 /// name(file, type_name)` — a bijection (duplicate `(file, name)` is E0418), so
 /// its durable-available preimage `(owner_file, owner_type_name)` is an exact
@@ -3701,8 +3682,8 @@ mod tests {
         }
     }
 
-    /// A local mirror of `Sema::format_type_name` (minus the body-local
-    /// `ctor_type_displays`, which is out of 2a) so display parity is asserted
+    /// A local mirror of the host's `format_type_name` (minus the body-local
+    /// constructor displays, which are out of 2a) so display parity is asserted
     /// through the same reads the analyzer performs. Recurses through pool
     /// indices, so it is index-independent and safe to compare across two pools.
     fn render(pool: &TypeInternPool, ty: Type) -> String {
@@ -3733,7 +3714,7 @@ mod tests {
         }
     }
 
-    /// A local mirror of `Sema::is_type_copy`, likewise index-independent.
+    /// A local mirror of the host's `is_type_copy`, likewise index-independent.
     fn is_copy(pool: &TypeInternPool, ty: Type) -> bool {
         use crate::types::TypeKind;
         match ty.kind() {
@@ -4948,10 +4929,8 @@ mod tests {
     /// install AND poisons the whole well-known registry, so the valid enum's
     /// mid-batch publication is unobservable — membership false, count zero,
     /// registry answers absent — and a repeat install re-errors with the
-    /// recorded refusal instead of re-running the partial install. This is the
-    /// pool's spelling of the epoch install's by-value atomicity (its failure
-    /// drops the whole mutated `BoundSema`), via the file's poisoning
-    /// discipline (`poisoned` / `callable_poisoned`).
+    /// recorded refusal instead of re-running the partial install, via the
+    /// file's poisoning discipline (`poisoned` / `callable_poisoned`).
     #[test]
     fn well_known_option_install_partial_failure_poisons_registry() {
         let good = anon_key(AnonymousNominalKind::Enum, 80, 0);

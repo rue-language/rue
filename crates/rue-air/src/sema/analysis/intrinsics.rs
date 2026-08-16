@@ -78,7 +78,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // `@require_droppable(T)` is the owning-container well-formedness gate
         // (RUE-388): it has no runtime value and evaluates to unit. It is
         // normally consumed at comptime while reducing a `-> type` constructor
-        // body (see `Sema::check_require_droppable`), but handle it here too so
+        // body (see the engine's `check_require_droppable`), but handle it here so
         // that if it ever reaches runtime analysis it performs the same
         // linear/destructor rejection instead of falling to E0700.
         if intrinsic_name == "require_droppable" {

@@ -2271,7 +2271,7 @@ impl TypeInternPoolInner {
             .get(&file_id)
             .map(|path| mangle_symbol_component(&normalize_module_path(path)))
             // Standalone TypeInternPool is a phase-local test/embedding API.
-            // Supported Sema construction installs complete logical paths
+            // Supported semantic construction installs complete logical paths
             // before nominal symbols can be requested.
             .unwrap_or_else(|| file_id.index().to_string())
     }
@@ -3440,35 +3440,6 @@ impl TypeInternPool {
         inner.invalidate_containment_metadata();
     }
 
-    /// Requalify an already-assigned destructor symbol after nominal-name
-    /// collisions are known.
-    ///
-    /// Requalification changes only symbol spelling and requires a distinct,
-    /// previously assigned destructor; it cannot create or remove one.
-    pub(crate) fn requalify_struct_destructor(&self, struct_id: StructId, symbol: String) {
-        assert!(
-            symbol.ends_with(".__drop"),
-            "destructor symbol must end with .__drop"
-        );
-        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
-        // See `set_struct_destructor`: inside the capacity-latch window the
-        // handle need not name the struct this call means.
-        if inner.capacity_exceeded() {
-            return;
-        }
-        let destructor = inner
-            .struct_def_mut(struct_id)
-            .destructor
-            .as_mut()
-            .expect("destructor requalification requires assigned metadata");
-        assert_ne!(
-            destructor.as_ref(),
-            symbol.as_str(),
-            "destructor requalification requires a different symbol"
-        );
-        *destructor = Arc::from(symbol);
-    }
-
     /// Finalize the canonical by-value graph after declaration fields,
     /// payloads, destructors, and explicit linear markers are known.
     pub(crate) fn finalize_containment_metadata(
@@ -4518,11 +4489,10 @@ mod tests {
         let (owner, _) = pool.register_struct(declarations.get_or_intern("Owner"), owner_def);
 
         pool.set_struct_destructor(owner, "Owner.__drop".into());
-        pool.requalify_struct_destructor(owner, "Owner$left.__drop".into());
 
         let def = pool.struct_def(owner);
         assert!(def.is_linear);
-        assert_eq!(def.destructor.as_deref(), Some("Owner$left.__drop"));
+        assert_eq!(def.destructor.as_deref(), Some("Owner.__drop"));
         assert_eq!(&*def.name, "Owner");
         assert_eq!(def.fields.len(), 1);
         assert_eq!(def.fields[0].ty, Type::I64);
@@ -4831,18 +4801,6 @@ mod tests {
         );
         pool.set_struct_destructor(owner, "Owner.__drop".into());
         pool.set_struct_destructor(owner, "Owner.__drop".into());
-    }
-
-    #[test]
-    #[should_panic(expected = "destructor requalification requires assigned metadata")]
-    fn struct_destructor_cannot_be_created_by_requalification() {
-        let declarations = ThreadedRodeo::default();
-        let pool = TypeInternPool::new();
-        let (owner, _) = pool.register_struct(
-            declarations.get_or_intern("Owner"),
-            struct_def("Owner", vec![]),
-        );
-        pool.requalify_struct_destructor(owner, "Owner$left.__drop".into());
     }
 
     #[test]

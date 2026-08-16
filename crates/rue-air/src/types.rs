@@ -890,11 +890,11 @@ impl Type {
     ///
     /// Non-Copy types (move types) are:
     /// - Struct types (unless marked @copy, checked via StructDef.is_copy)
-    /// - Array types (unless element type is Copy, checked via Sema.is_type_copy)
+    /// - Array types (unless element type is Copy, checked by the body host)
     ///
     /// Note: This method can't check struct's is_copy attribute or array element
     /// types since it doesn't have access to StructDefs or array type information.
-    /// Use Sema.is_type_copy() for full checking.
+    /// Use the body host's `is_type_copy` for full checking.
     pub fn is_copy(&self) -> bool {
         match type_encoding::decode(self.0) {
             Some(Decoded::Primitive(_)) => true,

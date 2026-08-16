@@ -11,9 +11,9 @@ use lasso::Spur;
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::FileId;
 
+use super::ConstInfo;
 use super::body_identity::{DurableNominalSource, ProviderIdentityContext};
 use super::context::{ConstValue, LocalVar};
-use super::{ConstInfo, DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{SemanticImportNominalKind, SemanticImportType};
@@ -49,49 +49,6 @@ impl AggregateModuleFact {
 
     pub(crate) fn import_path(&self) -> &str {
         &self.import_path
-    }
-}
-
-impl<D: DeclarationPhase> AggregateFacts for Sema<'_, D> {
-    fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.declarations.value_const(&(file, name)).cloned()
-    }
-
-    fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.declarations.module_binding(&(file, name)).cloned()
-    }
-
-    fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.structs_by_file_name.get(&(file, name)).copied()
-    }
-
-    fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.enums_by_file_name.get(&(file, name)).copied()
-    }
-
-    fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
-        self.resolve_builtin_struct_name(name)
-    }
-
-    fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.resolve_builtin_enum_name(name)
-    }
-
-    fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact {
-        let def = self.module_registry.get_def(module);
-        AggregateModuleFact {
-            file: def.file_id,
-            file_path: def.file_path,
-            import_path: def.import_path,
-        }
-    }
-
-    fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
-        self.get_file_path(file)
-    }
-
-    fn aggregate_source_path(&self, span: rue_span::Span) -> Option<&str> {
-        self.get_source_path(span)
     }
 }
 

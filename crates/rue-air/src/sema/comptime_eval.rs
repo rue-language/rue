@@ -35,7 +35,7 @@
 //!
 //! # Outcome encoding
 //!
-//! [`Sema::eval_const_expr`] returns `CompileResult<Option<ConstValue>>`:
+//! The engine's `eval_const_expr` returns `CompileResult<Option<ConstValue>>`:
 //!
 //! - `Ok(Some(v))` — fully evaluated.
 //! - `Ok(None)` — not compile-time evaluable (runtime variables, calls, ...).
@@ -43,7 +43,7 @@
 //! - `Err(e)` — the expression *is* constant but would panic at runtime
 //!   (overflow at the operand type, division by zero). Inside a `comptime`
 //!   block this is a compile error (spec 4.14:4); opportunistic callers
-//!   ([`Sema::try_evaluate_const`] and friends) convert it to `None` and
+//!   (`try_evaluate_const` and friends) convert it to `None` and
 //!   defer to the runtime check.
 
 use std::collections::{HashMap, HashSet};
@@ -264,45 +264,6 @@ impl<'a> ComptimeEnv<'a> {
             defining_file: Some(ctx.current_file_id),
         }
     }
-
-    /// The environment for a file-level const initializer: no comptime
-    /// parameters and no runtime locals, but a `resolved_types` map inferred
-    /// from the declared const type (see `infer_const_init_types`). Threading
-    /// these operand types lets `finish_arith` check arithmetic at the operand
-    /// type — the same operand-type overflow (E1200, including intermediate
-    /// results) the `comptime { }` block path gets from HM inference, instead
-    /// of the raw-`i64` fallback that only range-checked the final value
-    /// against the declared type (RUE-230).
-    ///
-    /// `defining_file` is the const's declaring file, so a type-constructor
-    /// call in the initializer can collect the same-file callee's signature on
-    /// demand (`const V = Vec(i32);` evaluated during struct-field resolution,
-    /// before the main declaration sweep collected `Vec`; RUE-603), and a
-    /// module-qualified comptime call nested in the initializer resolves its
-    /// receiver against that file's imports (RUE-511).
-    pub(crate) fn for_const_init(
-        resolved_types: &'a HashMap<InstRef, Type>,
-        const_module_members: &'a HashMap<InstRef, ConstValue>,
-        defining_file: FileId,
-        canonical_identity: Option<(
-            super::anon_structs::IssuedStableProducerId,
-            super::anon_structs::IssuedCanonicalArguments,
-        )>,
-    ) -> Self {
-        Self {
-            producer: None,
-            canonical_identity,
-            type_subst: &EMPTY_TYPE_SUBST,
-            value_subst: &EMPTY_VALUE_SUBST,
-            resolved_types: Some(resolved_types),
-            runtime_locals: None,
-            runtime_params: None,
-            runtime_binding_names: None,
-            locals: HashMap::new(),
-            const_module_members,
-            defining_file: Some(defining_file),
-        }
-    }
 }
 
 /// Decide whether a compile-time-known scrutinee value matches a match arm's
@@ -379,7 +340,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// analyzed: comptime parameters in scope (`ctx.comptime_*_vars`) resolve
     /// to their values, and arithmetic is checked at HM-resolved types.
     ///
-    /// [`try_evaluate_const`]: Sema::try_evaluate_const
+    /// [`try_evaluate_const`]: Self::try_evaluate_const
     pub(crate) fn try_evaluate_const_in_fn(
         &mut self,
         inst_ref: InstRef,
@@ -447,8 +408,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// - `Ok(None)`    — not a compile-time constant (runtime index);
     /// - `Err(..)`     — the index expression overflows at its operand type.
     ///
-    /// [`try_get_const_index`]: Sema::try_get_const_index
-    /// [`try_evaluate_const_in_fn`]: Sema::try_evaluate_const_in_fn
+    /// [`try_get_const_index`]: Self::try_get_const_index
+    /// [`try_evaluate_const_in_fn`]: Self::try_evaluate_const_in_fn
     pub(crate) fn try_get_const_index_checked(
         &mut self,
         inst_ref: InstRef,
@@ -1556,9 +1517,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             module_file_id
         };
-        // Declaration binding may reach this call before its source-order
-        // signature pass. Once `BoundSema` exists, membership is read-only and
-        // a missing signature is authoritative.
+        // Body analysis reads a closed declaration namespace: membership is
+        // read-only and a missing signature is authoritative.
         let Some(function_key) = self.resolve_function_name_local(method, module_file_id) else {
             return Ok(None);
         };
@@ -1854,22 +1814,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
     }
 
-    /// Discharge ownership gates after declaration binding has completed every
-    /// nominal payload, infectious-linearity fixpoint, and destructor.
-    pub(crate) fn validate_deferred_ownership_gates(&mut self) -> CompileResult<()> {
-        for gate in std::mem::take(self.deferred_ownership_gates_mut()) {
-            match gate.kind {
-                DeferredOwnershipGateKind::RequireDroppable => {
-                    self.check_require_droppable_finalized(gate.ty, gate.span)?
-                }
-                DeferredOwnershipGateKind::RequireTriviallyDroppable => {
-                    self.check_trivially_droppable_finalized(gate.ty, gate.span)?
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Reduce a call to a comptime-evaluable function to its resulting value,
     /// when every argument is compile-time known. Shared by
     /// [`eval_const_expr`]'s `Call` arm (so nested/delegating calls compose)
@@ -1896,7 +1840,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// reducing the body (arithmetic overflow, recursion-depth overrun);
     /// opportunistic callers swallow those errors.
     ///
-    /// [`eval_const_expr`]: Sema::eval_const_expr
+    /// [`eval_const_expr`]: Self::eval_const_expr
     fn eval_comptime_type_call(
         &mut self,
         name: Spur,
@@ -2191,7 +2135,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
     /// Record `Ctor(args...)` as the display name for an anonymous type just
     /// produced by reducing `ctor`'s body (RUE-610; see
-    /// `Sema::ctor_type_displays`). Named types keep their declared names;
+    /// the host's constructor-display registry). Named types keep their
+    /// declared names;
     /// a partial substitution records nothing rather than a wrong spelling.
     fn record_ctor_type_display(
         &mut self,
@@ -2503,7 +2448,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `comptime_local_types` carries the body's `let`-bound type aliases so a
     /// head like `Result(T, i32)` with `let T = i64;` reduces.
     ///
-    /// [`precompute_comptime_type_locals`]: Sema::precompute_comptime_type_locals
+    /// [`precompute_comptime_type_locals`]: Self::precompute_comptime_type_locals
     pub(crate) fn precompute_inline_ctor_head_types(
         &mut self,
         body: InstRef,
