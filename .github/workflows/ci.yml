@@ -632,8 +632,27 @@ jobs:
           git fetch --no-tags origin trunk
           git fetch --no-tags origin performance-data-v1
           DATA="$(mktemp -d)"
-          git --work-tree="$DATA" checkout origin/performance-data-v1 -- .
+          # Read the live epoch, not the whole store. performance-data-v1 is
+          # append-only and now grows by hundreds of megabytes a day, while
+          # every rule this gate applies is a property of the epoch holding each
+          # platform's newest point — so materializing and parsing the rest was
+          # work proportional to the project's whole history, asked on every
+          # pull request, about its present (RUE-1542).
+          #
+          # index.json carries each record's platform, epoch, and finish time,
+          # so the selection never opens a run object to decide whether to read
+          # it. A missing index.json here is a corrupt branch rather than a
+          # first collection — the fetch above already required the branch to
+          # exist — so this is deliberately not tolerant.
+          git --work-tree="$DATA" checkout origin/performance-data-v1 -- index.json
           git reset --quiet
+          SELECTED="$(mktemp)"
+          "$BENCH" staleness-inputs --index "$DATA/index.json" > "$SELECTED"
+          if [ -s "$SELECTED" ]; then
+            xargs git --work-tree="$DATA" checkout origin/performance-data-v1 -- < "$SELECTED"
+            git reset --quiet
+          fi
+          echo "reading $(wc -l < "$SELECTED") record(s) from the live epoch"
           DERIVED="$(mktemp)"
           "$BENCH" derive \
             --manifest performance/manifest.toml \

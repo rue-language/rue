@@ -228,6 +228,33 @@ overlap rather than from the work getting cheaper — median run wall time ~308s
 it is a p90 win first and a smaller p50 win. Do not re-derive a saving from an
 assumption that this job is free.
 
+**The job then grew to 350–400s, and the reason was not the gate** (RUE-1542).
+A step-level breakdown of a 338s run: 6s to build `rue-bench` (a 100% remote
+cache hit), 0.6s to fetch both branches, and ~330s to materialize and parse
+`performance-data-v1`. The store is append-only and was 1.5 GB across 1,188
+records on 2026-08-16, growing ~300 MB a day since protocol-v2 boundary
+evidence began collecting on 2026-08-13 — before that it grew ~2.5 MB a day.
+The gate's own rules are milliseconds.
+
+So the gate now reads the live epoch instead of the whole store.
+`rue-bench staleness-inputs` names each platform's newest-point epoch from
+`index.json` — which carries every record's platform, epoch, and finish time,
+so the selection never opens a run object — and the step checks out only those
+paths. `derive` is unchanged and still derives whatever the data root holds.
+Deriving the 69-record selection and the full 1,188-record branch produces
+byte-identical gate reports, on the passing case and on the failing one; local
+derive time was 197s against the whole branch and 57s against the selection.
+The CI contract pins `staleness-inputs` into the job, because this cost returns
+as a slow job rather than a failing one and would otherwise be re-added by
+anyone restoring the obvious `checkout -- .`.
+
+**This bought a constant, not a trend.** The live epoch grows at the same
+~300 MB a day — epoch 6 went from 42 records and 267 MB to 69 records and
+419 MB in a day — so the selection is worth less each day it is not paired with
+smaller records. The per-sample `boundary_evidence` that drives the growth is
+~37.9 KB, or 990 KB for one `startup` workload, and shrinking it is tracked
+separately.
+
 Production `debug_assert*` use is governed by
 `scripts/validate-debug-assert-policy.py`. The gate is structural (RUE-1525):
 `rue_crate`/`rue_binary` emit a premerge-tier `<name>-debug-assert-check` per
