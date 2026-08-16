@@ -1,25 +1,10 @@
 #!/usr/bin/env python3
 import json
 import os
-import platform
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-
-# RUE-1509: the same floor the tool under test carries, stated here too because
-# this file reads the case TOML itself. See AGENTS.md, "Repository tooling
-# baseline".
-if sys.version_info < (3, 11):
-    raise SystemExit(
-        "error: scripts/test-cli-timeout-policy.py requires Python 3.11 or "
-        f"newer (this interpreter is {platform.python_version()} at "
-        f"{sys.executable}). It reads the CLI case TOML with the stdlib "
-        "`tomllib` module, added in 3.11. Install a 3.11+ interpreter and put "
-        "it earlier on PATH; see AGENTS.md, \"Repository tooling baseline\"."
-    )
-
-import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gatelib import load_script
@@ -29,9 +14,11 @@ MODULE = load_script("cli-timeout-policy.py", __file__)
 
 class TimeoutPolicyTests(unittest.TestCase):
     def test_mosaic_section_and_automatic_example_use_slow_profile(self):
-        cases = Path(os.environ["RUE_CLI_CASES"])
-        authority = tomllib.loads((cases / "execution_contracts.toml").read_text())
-        mosaic = tomllib.loads((cases / "examples_mosaic.toml").read_text())
+        # JSON twins materialized by //crates/rue-toml2json genrules (RUE-1524).
+        authority = json.loads(
+            Path(os.environ["RUE_CLI_CONTRACTS_JSON"]).read_text()
+        )
+        mosaic = json.loads(Path(os.environ["RUE_CLI_MOSAIC_JSON"]).read_text())
         automatic = next(
             entry
             for entry in authority["automatic_example"]
@@ -74,29 +61,28 @@ class TimeoutPolicyTests(unittest.TestCase):
         self.assertEqual(MODULE.derive_timeout_ms(10, 5000, policy), 5000)
 
     def test_raw_contract_deadlines_are_rejected(self):
-        text = """
-[timeout_profile.ordinary]
-compile_hang_timeout_ms=1
-runtime_hang_timeout_ms=1
-[timeout_profile.slow]
-compile_hang_timeout_ms=2
-runtime_hang_timeout_ms=2
-[timeout_profile.stress]
-compile_hang_timeout_ms=3
-runtime_hang_timeout_ms=3
-[timeout_policy]
-expected_cost_multiplier_percent=100
-fixed_headroom_ms=1
-minimum_shard_timeout_ms=1
-minimum_monolith_timeout_ms=1
-minimum_slow_suite_timeout_ms=1
-[contract.bad]
-class="ordinary"
-compile_timeout_ms=10
-"""
+        # The gate reads the JSON twin the build derives from the authored
+        # TOML, so the fixture is that JSON shape directly (RUE-1524).
+        data = {
+            "timeout_profile": {
+                "ordinary": {"compile_hang_timeout_ms": 1, "runtime_hang_timeout_ms": 1},
+                "slow": {"compile_hang_timeout_ms": 2, "runtime_hang_timeout_ms": 2},
+                "stress": {"compile_hang_timeout_ms": 3, "runtime_hang_timeout_ms": 3},
+            },
+            "timeout_policy": {
+                "expected_cost_multiplier_percent": 100,
+                "fixed_headroom_ms": 1,
+                "minimum_shard_timeout_ms": 1,
+                "minimum_monolith_timeout_ms": 1,
+                "minimum_slow_suite_timeout_ms": 1,
+            },
+            "contract": {
+                "bad": {"class": "ordinary", "compile_timeout_ms": 10},
+            },
+        }
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "policy.toml"
-            path.write_text(text)
+            path = Path(directory) / "policy.json"
+            path.write_text(json.dumps(data))
             with self.assertRaisesRegex(ValueError, "raw deadlines are forbidden"):
                 MODULE.load_policy(path)
 

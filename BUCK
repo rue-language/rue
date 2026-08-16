@@ -877,20 +877,19 @@ rue_sh_test(
     },
 )
 
-# The interpreter-floor gate (RUE-1509). Unlike the Bash baseline's tests, these
-# need no particular interpreter to be INSTALLED to mean something, so premerge
-# is enough. They are not thereby host-independent, and the fixtures are written
-# to keep the difference small and asserted rather than assumed: every fixture is
-# 3.9 syntax, so the scan itself answers identically everywhere, and the two
-# cases that cannot -- what a parse error means, and what the shipped tool does
-# when run -- assert on both sides of the floor. The scan proper is only as
-# strict as the interpreter running it, which is why the authoritative run is
-# ci.yml's `fmt` step, at or above the floor.
+# The interpreter-floor gate (RUE-1509; floor made a uniform 3.9 by RUE-1524).
+# Unlike the Bash baseline's tests, these need no particular interpreter to be
+# INSTALLED to mean something, so premerge is enough. They are not thereby
+# host-independent, and the fixtures are written to keep the difference small
+# and asserted rather than assumed: every fixture is 3.9 syntax, so the scan
+# itself answers identically everywhere, and the one case that cannot -- what
+# a parse error means -- asserts on both sides of the floor. The scan proper is
+# only as strict as the interpreter running it, which is why the authoritative
+# run is ci.yml's `fmt` step, at or above the floor.
 rue_sh_test(
     name = "python-baseline-tool-tests",
     test = "scripts/test-validate-python-baseline.py",
     resources = [
-        "scripts/cli-timeout-policy.py",
         "scripts/validate-python-baseline.py",
     ] + glob(["scripts/gatelib/*.py"]),
     env = {
@@ -1194,12 +1193,30 @@ rue_sh_test(
     },
 )
 
+# JSON twins of TOML-authored policy inputs, so the Python gates run on the
+# repository's 3.9 floor without `tomllib` (RUE-1524). The TOML stays the
+# authored source of truth next to the CLI cases; these artifacts are derived
+# every build and carry no independent content.
+genrule(
+    name = "cli-execution-contracts-json",
+    out = "execution_contracts.json",
+    cmd = "$(exe //crates/rue-toml2json:rue-toml2json) " +
+        "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml > $OUT",
+)
+
+genrule(
+    name = "cli-case-mosaic-json",
+    out = "examples_mosaic.json",
+    cmd = "$(exe //crates/rue-toml2json:rue-toml2json) " +
+        "$(location //crates/rue-cli-tests:cases)/cases/examples_mosaic.toml > $OUT",
+)
+
 rue_sh_test(
     name = "cli-timeout-policy-validation",
     test = "scripts/cli-timeout-policy.py",
     args = [
         "--policy",
-        "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
+        "$(location :cli-execution-contracts-json)",
         "--weights",
         "$(location //crates/rue-cli-tests:shard-weights)",
         # RUE-1163: a corpus action gets no test-executor timeout, so the
@@ -1219,7 +1236,8 @@ rue_sh_test(
         glob(["scripts/gatelib/*.py"]),
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
-        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+        "RUE_CLI_CONTRACTS_JSON": "$(location :cli-execution-contracts-json)",
+        "RUE_CLI_MOSAIC_JSON": "$(location :cli-case-mosaic-json)",
     },
 )
 
