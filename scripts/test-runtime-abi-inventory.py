@@ -59,6 +59,10 @@ class InventoryTests(unittest.TestCase):
             [],
         )
         self.assertEqual(
+            self.validate('const FIXTURE: &str = "__rue_alloc";', "sema/provider_semantics_tests.rs"),
+            [],
+        )
+        self.assertEqual(
             self.validate(
                 '#[cfg(test)]\nmod checks {\n'
                 '  fn fixture() { let _ = "__rue_alloc"; }\n'
