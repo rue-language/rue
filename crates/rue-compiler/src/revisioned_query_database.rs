@@ -19022,15 +19022,26 @@ impl RevisionedQueryDatabase {
                 "import plan does not match its pinned granular input revision",
             ));
         }
-        if roots.occurrences().iter().any(|occurrence| {
-            !plan
+        // Membership is checked through one set built per call. On the ordinary
+        // path roots are exactly the plan's group leaders and the plan grows
+        // with every discovery round, so a nested scan here is quadratic in
+        // plan size over a deep import graph while proving a fact that almost
+        // always holds.
+        {
+            let group_occurrences: HashSet<_> = plan
                 .groups()
                 .iter()
-                .any(|group| group[0].occurrence() == occurrence)
-        }) {
-            return Err(import_input_error(
-                "import demand roots contain an occurrence outside the pinned plan",
-            ));
+                .map(|group| group[0].occurrence())
+                .collect();
+            if roots
+                .occurrences()
+                .iter()
+                .any(|occurrence| !group_occurrences.contains(occurrence))
+            {
+                return Err(import_input_error(
+                    "import demand roots contain an occurrence outside the pinned plan",
+                ));
+            }
         }
         let mut requests = Vec::new();
         let mut fanout = Vec::<Vec<ImportDiscoveryRequest>>::new();
@@ -29347,6 +29358,52 @@ fn main() -> i32 {
         let (program, _) = database.parse_program(runtime_revision, &root, modules);
         let plan = ImportDiscoveryPlan::new(&program.unwrap(), context).unwrap();
         (snapshot, reads, revision, plan)
+    }
+
+    #[test]
+    fn import_frontier_rejects_roots_outside_the_pinned_plan() {
+        let (_, mut assembler, context) =
+            import_fixture(313, "const selected = @import(\"dep\"); fn main() {}");
+        let mut database = RevisionedQueryDatabase::default();
+        let (_, _, revision, plan) = begin_database_plan(&mut database, &mut assembler, context);
+
+        // An occurrence from an unrelated program is definitionally outside the
+        // pinned plan: its specifier and spans exist in no plan group.
+        let (_, mut foreign_assembler, foreign_context) =
+            import_fixture(314, "const other = @import(\"elsewhere\"); fn main() {}");
+        let mut foreign_database = RevisionedQueryDatabase::default();
+        let (_, _, _, foreign_plan) = begin_database_plan(
+            &mut foreign_database,
+            &mut foreign_assembler,
+            foreign_context,
+        );
+        let foreign_occurrence = foreign_plan.demand_roots().occurrences()[0].clone();
+
+        let roots = ImportDemandRoots::new(
+            plan.demand_roots()
+                .occurrences()
+                .iter()
+                .cloned()
+                .chain([foreign_occurrence]),
+        );
+        assert!(
+            database
+                .import_frontier(revision, &plan, ImportDemandMode::Rooted, &roots)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the pinned plan"),
+            "a demand root absent from the pinned plan must be refused"
+        );
+
+        // The exact plan-derived roots remain accepted after the refusal.
+        database
+            .import_frontier(
+                revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
+            .unwrap();
     }
 
     #[test]
