@@ -233,7 +233,7 @@ oracle differentials become shardable without new machinery.
 JSON that the corpus jobs consume. Extend it to emit the lane plan, and have
 `platform-corpus` take `strategy.matrix: ${{ fromJSON(needs.affected-targets.outputs.lanes) }}`.
 
-The plan comes from `scripts/plan-ci-lanes.py`: read the live premerge test
+The plan comes from a new `plan-ci-lanes.py` script: read the live premerge test
 graph from `//test_tiers.bxl`, read measured per-target wall times from a
 checked-in timings file, LPT-pack into lanes, emit the matrix.
 

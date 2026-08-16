@@ -7,11 +7,13 @@
 //! terminators (no cached edges to fall out of sync after a pass rewrites
 //! control flow).
 //!
-//! This is shared analysis infrastructure, not a pass: nothing in the pipeline
-//! runs it directly today. Its first consumers are the copy-propagation pass
-//! (RUE-914), which uses [`DominatorTree::dominates`] under `debug_assertions`
-//! to turn sema's definite-initialization argument into a checked invariant,
-//! and future loop-invariant code motion (RUE-916) and a wider GVN.
+//! This is shared analysis infrastructure, not a pass: consumers recompute it
+//! on demand rather than caching it across mutations. The value-forwarding pass
+//! (RUE-914, `opt/forward.rs`) uses [`DominatorTree::dominates`] to turn sema's
+//! definite-initialization argument into an always-on checked invariant, and
+//! natural-loop analysis (RUE-926, `opt/loops.rs`) and LICM (RUE-927,
+//! `opt/licm.rs`, run at `-O3` from `opt/mod.rs`) build the loop forest and its
+//! hoisting decisions on it.
 //!
 //! ## Definitions
 //!
@@ -39,13 +41,10 @@
 //! advancing whichever finger has the smaller postorder number (i.e. is deeper,
 //! farther from the entry), until they meet at the common dominator.
 //!
-//! The only in-tree consumer today is copy propagation's `debug_assertions`-only
-//! dominance check, and the `idom` query is exercised solely by this module's
-//! tests; the wider consumers (RUE-916 LICM, GVN) are still pending. This
-//! shared infrastructure is therefore unused in a release, non-test build, so
-//! the module opts out of the toolchain's dead-code denial rather than pruning
-//! API the tracking issue explicitly requested.
-#![allow(dead_code)]
+//! The pipeline consumers are value forwarding's Rule 1 dominance check
+//! (`opt/forward.rs`), natural-loop detection (`opt/loops.rs`), and LICM
+//! (`opt/licm.rs`); the `idom` query itself is exercised only by this module's
+//! tests and carries a targeted allow below.
 
 use crate::{BlockId, Cfg, Terminator};
 
@@ -156,6 +155,9 @@ impl DominatorTree {
 
     /// The immediate dominator of `block`, or `None` when `block` is the entry
     /// or is unreachable.
+    // Every call site is this module's own tests; the query is kept as the
+    // tree's basic inspection API alongside `dominates`.
+    #[allow(dead_code)]
     pub(crate) fn idom(&self, block: BlockId) -> Option<BlockId> {
         let i = block.as_u32() as usize;
         match self.idom.get(i).copied().flatten() {

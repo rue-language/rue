@@ -30,14 +30,13 @@
 //!    into such a predecessor would run the hoisted work on the sibling arm's
 //!    path too.
 //!
-//! Nothing in the pipeline consumes this module yet (LICM and unrolling are
-//! later phases), so it is dead code in a release, non-test build and opts out
-//! of the toolchain's dead-code denial, exactly as the shared `dominators` and
-//! `classify` modules do for their pending consumers. Dominators and loops are
-//! **recomputed per pass, never cached** (ADR-0054): every mutation here
+//! LICM (RUE-927, `opt/licm.rs`) is the live pipeline consumer: it runs at
+//! `-O3` from `opt/mod.rs` and drives [`loops`] and [`ensure_preheader`].
+//! Constant-trip unrolling (RUE-928) is the tracked next consumer; the few
+//! items only it will need carry targeted allows below. Dominators and loops
+//! are **recomputed per pass, never cached** (ADR-0054): every mutation here
 //! invalidates the dominator tree, and recompute-per-pass is O(blocks) and
 //! trivially correct at Rue's scale.
-#![allow(dead_code)]
 
 use crate::dominators::DominatorTree;
 use crate::{BlockId, Cfg, CfgEditError, Terminator};
@@ -57,6 +56,9 @@ pub(crate) struct NaturalLoop {
     /// Back-edge sources: every block `u` with an edge `u -> header` where the
     /// header dominates `u`. Sorted and deduplicated. Several latches sharing
     /// one header are merged into this single loop (ADR-0054).
+    // Read today only by this module's tests; RUE-928 constant-trip unrolling
+    // is the tracked consumer (it rewrites the back edges).
+    #[allow(dead_code)]
     pub(crate) latches: Vec<BlockId>,
     /// Every block in the loop, including the header. Sorted by block index, so
     /// [`NaturalLoop::contains`] is a binary search.
@@ -68,6 +70,9 @@ pub(crate) struct NaturalLoop {
     /// Exit edges `(from, to)`: `from` is in the body, `to` is not. The header
     /// itself can be an exit source (a loop whose trip test branches straight
     /// out).
+    // Read today only by this module's tests; RUE-928 constant-trip unrolling
+    // is the tracked consumer (its trip-count shape check needs the exits).
+    #[allow(dead_code)]
     pub(crate) exits: Vec<(BlockId, BlockId)>,
 }
 
@@ -96,6 +101,9 @@ impl LoopForest {
     }
 
     /// The analyzed loops. Empty when the CFG is loop-free or irreducible.
+    // Called today only by this module's tests (LICM iterates by id via
+    // `len`/`get`); kept as the forest's slice view for RUE-928 unrolling.
+    #[allow(dead_code)]
     pub(crate) fn loops(&self) -> &[NaturalLoop] {
         &self.loops
     }

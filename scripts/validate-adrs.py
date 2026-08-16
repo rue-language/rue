@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +15,8 @@ START = "<!-- ADR-INDEX:START -->"
 END = "<!-- ADR-INDEX:END -->"
 ALLOWED_STATUSES = {"proposal", "accepted", "implemented", "stable", "superseded", "rejected"}
 RELATION_KEYS = {"supersedes", "superseded-by", "amends", "amended-by"}
+RATIFIED_STATUSES = {"accepted", "implemented"}
+DRAFT_DISCLAIMER = "nothing here is accepted"
 
 
 def unquote(value: str) -> str:
@@ -52,6 +55,50 @@ def parse_frontmatter(path: Path) -> dict[str, str]:
         key, value = match.groups()
         fields[key] = re.sub(r"\s+#.*$", "", value).strip()
     return fields
+
+
+def status_section(lines: list[str]) -> Optional[list[str]]:
+    """The body's ``## Status`` section lines, or ``None`` when absent."""
+    try:
+        start = lines.index("## Status")
+    except ValueError:
+        return None
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+    return section
+
+
+def status_body_errors(lines: list[str], status: str) -> list[str]:
+    """Errors for a ratified ADR whose body Status still reads as a draft.
+
+    Deliberately a narrow textual check, not prose analysis: a frontmatter
+    status of accepted/implemented is incoherent with a body ``## Status``
+    section that still opens with the literal draft marker ``Proposal`` or
+    still carries the draft disclaimer "nothing here is accepted". A ratified
+    ADR's Status body records the actual ratification and shipped-phases
+    history instead (the pattern ADR-0063 uses).
+    """
+    if status not in RATIFIED_STATUSES:
+        return []
+    section = status_section(lines)
+    if section is None:
+        return []
+    errors: list[str] = []
+    first = next((line.strip() for line in section if line.strip()), "")
+    if first == "Proposal":
+        errors.append(
+            f"frontmatter status is {status!r} but the body's Status section "
+            "still opens with 'Proposal'"
+        )
+    if any(DRAFT_DISCLAIMER in line.lower() for line in section):
+        errors.append(
+            f"frontmatter status is {status!r} but the body's Status section "
+            "still declares that nothing is accepted"
+        )
+    return errors
 
 
 def build_index(adrs: list[tuple[Path, dict[str, str]]]) -> str:
@@ -103,6 +150,8 @@ def main() -> int:
         fields["status"] = status
         if status not in ALLOWED_STATUSES:
             errors.append(f"{path.relative_to(ROOT)}: invalid status {status!r}")
+        for message in status_body_errors(path.read_text().splitlines(), status):
+            errors.append(f"{path.relative_to(display_root)}: {message}")
         if adr_id in ids:
             errors.append(f"duplicate ADR id {adr_id!r}: {ids[adr_id].name}, {path.name}")
         elif adr_id:

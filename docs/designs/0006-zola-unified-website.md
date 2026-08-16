@@ -169,7 +169,7 @@ The spec pages will inherit the existing dark mode toggle from `base.html`, elim
   - Remove `docs/spec/tools/mdbook-spec/`
   - Remove `docs/spec/theme/`
   - Update CLAUDE.md documentation
-  - Delete `docs/spec/book.toml`
+  - Delete the spec's `book.toml` (since removed from `docs/spec/`)
 
 ## Consequences
 
