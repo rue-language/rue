@@ -3082,8 +3082,18 @@ fn import_context_input() -> InputIdentity {
     InputIdentity::new("import-discovery-context", "current")
 }
 
-fn accepted_import_topology_input() -> InputIdentity {
-    InputIdentity::new("accepted-import-topology", "current")
+/// The aggregate accepted-import-topology leaf, keyed by the frontier round
+/// that produced it. Per-round keying makes a grown topology a NEW leaf
+/// identity instead of a re-stamp of one "current" identity, so a discovery
+/// overlay stays strictly additive at the runtime boundary and preserves its
+/// validation epoch (ADR-0073). Consumers that want the newest aggregate
+/// observe the exact round they were computed against; nothing in the
+/// production pipeline observes this leaf today.
+fn accepted_import_topology_input(frontier_round: u64) -> InputIdentity {
+    InputIdentity::new(
+        "accepted-import-topology",
+        format!("round-{frontier_round}"),
+    )
 }
 
 fn accepted_read_input(module: &ModuleId) -> InputIdentity {
@@ -3106,7 +3116,7 @@ fn import_observation_input(request: &ImportDiscoveryRequest) -> InputIdentity {
 
 #[cfg(test)]
 fn test_import_graph_input() -> InputIdentity {
-    accepted_import_topology_input()
+    accepted_import_topology_input(0)
 }
 
 fn import_input_error(message: impl Into<String>) -> CompileError {
@@ -19432,7 +19442,10 @@ impl RevisionedQueryDatabase {
             } = &mut *store;
             let accepted_topology_stamp =
                 exact_value_stamp(next_stamp, topology_stamps, &accepted_topology);
-            leaves.push((accepted_import_topology_input(), accepted_topology_stamp));
+            leaves.push((
+                accepted_import_topology_input(frontier_round),
+                accepted_topology_stamp,
+            ));
             retain_stamp_value(topology_stamps, &accepted_topology);
             leaves.push((
                 import_context_input(),
@@ -19689,7 +19702,7 @@ impl RevisionedQueryDatabase {
                 // the parent stamp plus this overlay's sorted fact delta, so
                 // lookup and retention stay O(delta) without a whole-ledger scan.
                 let stamp = exact_value_stamp(next_stamp, topology_stamps, &accepted_topology);
-                leaves.push((accepted_import_topology_input(), stamp));
+                leaves.push((accepted_import_topology_input(frontier_round), stamp));
                 retain_stamp_value(topology_stamps, &accepted_topology);
                 stamp
             } else {
