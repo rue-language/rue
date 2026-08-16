@@ -5724,6 +5724,30 @@ impl CompilerSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn raw_cfg_record_for_test(
+        &self,
+        key: crate::cfg_query::CfgQueryKey,
+    ) -> Arc<crate::cfg_query::CfgRecord> {
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("raw CFG inspection requires a published semantic revision");
+        let terminal = self
+            .queries
+            .revisioned
+            .cfg(revision, key, rue_query::CancellationToken::new())
+            .into_result()
+            .expect("retained raw CFG request must not abort");
+        let rue_query::QueryOutcome::Success(crate::cfg_query::CfgValue::Available(record)) =
+            terminal.outcome()
+        else {
+            panic!("raw CFG inspection requires a successful record")
+        };
+        record.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn object_projection_key_is_retained(
         &self,
         key: &crate::object_query::ObjectProjectionQueryKey,

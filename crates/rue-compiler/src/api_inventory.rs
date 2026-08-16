@@ -191,6 +191,30 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         !database.contains("live: Arc<crate::cfg_query::CfgLiveInput>"),
         "the registered request facade must not require caller-owned CFG live input"
     );
+
+    let production = cfg.rsplit_once("#[cfg(test)]").unwrap().0;
+    let optimization = production
+        .split_once("pub(crate) fn evaluate_optimized_cfg(")
+        .unwrap()
+        .1
+        .split_once("fn optimize_cfg_without_accessors(")
+        .unwrap()
+        .0;
+    assert!(
+        optimization.contains("copy_interner_preserving_ordinals(&record.interner"),
+        "accessor optimization must isolate the published CFG symbol universe"
+    );
+    for forbidden in [
+        "InternerChargeRefresh",
+        "refresh_interner_retained_charge",
+        "let interner = record.interner.clone()",
+        "record.interner.get_or_intern",
+    ] {
+        assert!(
+            !production.contains(forbidden),
+            "published CFG interners regained a mutation path: {forbidden}"
+        );
+    }
 }
 
 #[test]
