@@ -3771,6 +3771,16 @@ mod tests {
     use rue_parser::Parser;
     use rue_rir::AstGen;
 
+    #[test]
+    fn physical_return_register_roster_matches_the_abi_kernel_budget() {
+        assert_eq!(
+            RET_REGS.len() as u32,
+            rue_air::native_return_register_budget(rue_target::Arch::Aarch64),
+            "the backend's return-register roster and the classification \
+             kernel's budget must agree"
+        );
+    }
+
     fn lower_function_to_mir(source: &str, function_name: &str) -> Aarch64Mir {
         lower_function_to_mir_with_preview(source, function_name, PreviewFeatures::new())
     }

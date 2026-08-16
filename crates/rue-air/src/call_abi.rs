@@ -18,6 +18,19 @@
 //! ABI (RUE-742 / RUE-745, SysV / AAPCS) will add further variants to this
 //! authority rather than embedding a peer FFI calculator inside a backend.
 //!
+//! ## Two planes, one policy kernel
+//!
+//! Two walkers consume this module because their lifetimes differ: the live
+//! classifiers here walk the request-scoped [`FrozenTypeInternPool`], while the
+//! stable query plane (`compiler.call-abi` in `rue-compiler`) walks its own
+//! revision-stable type keys and canonical layout values and must not hold a
+//! live pool. Both project per-type facts and then consult the same pure
+//! kernel — [`NativeAbiTypeFacts`] for the native decision tree,
+//! [`TargetCCallAbi`] plus [`CAbiScalarKind`] for the target-C thresholds and
+//! extensions, [`native_return_register_budget`] and
+//! [`TargetCAbiFlavor::for_arch`] for the per-target numbers — so the
+//! classification policy itself has exactly one production home.
+//!
 //! ## Memory-first transitional rule (ADR-0052 ratified ruling 9)
 //!
 //! The preserved slot call convention stays in force unchanged while memory
@@ -32,6 +45,115 @@
 //! historical register classification byte-for-byte.
 
 use crate::{FrozenTypeInternPool, Type, TypeKind};
+use rue_target::Arch;
+
+/// The native return-register budget for a target architecture: how many
+/// flattened eight-byte slots an aggregate return may occupy before it must
+/// cross through caller storage (sret). This is the single policy home of the
+/// per-target number; each backend's physical return-register roster is pinned
+/// against it by that backend's tests, and the stable query plane consults it
+/// directly instead of restating the numbers.
+pub const fn native_return_register_budget(arch: Arch) -> u32 {
+    match arch {
+        Arch::X86_64 => 6,
+        Arch::Aarch64 => 8,
+    }
+}
+
+/// Target-independent facts about one value type at a native call boundary:
+/// the pure classification kernel both planes share.
+///
+/// The live classifier ([`NativeCallAbi`]) projects these facts from the
+/// [`FrozenTypeInternPool`]; the stable query plane projects them from its
+/// canonical layout value and stable type keys. The projections differ by
+/// representation, but the decision tree — zero-sized omission, the `StrBuf`
+/// sret rule, the return-register budget, and the compact memory-first
+/// indirectness rule — lives only here, so the two planes cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeAbiTypeFacts {
+    /// Flattened eight-byte ABI slot count (0 for a zero-sized type).
+    pub abi_slots: u32,
+    /// Whether the plane's own aggregate predicate holds for the type. The
+    /// planes project this differently on purpose: the live classifier keeps a
+    /// discriminant-only enum scalar, while the stable projection reports it as
+    /// its one register slot. Both crossings are physically identical; each
+    /// plane's projection is preserved by feeding its own predicate in.
+    pub aggregate: bool,
+    /// Whether the type is the canonical trusted standard-library `StrBuf`,
+    /// which always returns through sret.
+    pub strbuf: bool,
+    /// Whether the compact physical layout is byte-for-byte identical to the
+    /// flattened slot representation (see [`is_slot_identical_layout`]).
+    pub slot_identical: bool,
+}
+
+impl NativeAbiTypeFacts {
+    /// Classify a by-value return: zero-sized returns nothing; `StrBuf`, an
+    /// aggregate over the return-register budget, and a multi-slot aggregate
+    /// the compact layout cannot express slot-identically use sret; any other
+    /// aggregate returns in registers; everything else is a scalar.
+    pub const fn classify_return(self, ret_reg_budget: u32) -> ReturnClass {
+        if self.abi_slots == 0 {
+            return ReturnClass::ZeroSized;
+        }
+        if self.strbuf
+            || (self.aggregate && self.abi_slots > ret_reg_budget)
+            || self.crosses_indirectly_under_compact()
+        {
+            return ReturnClass::Indirect {
+                slot_count: self.abi_slots,
+            };
+        }
+        if self.aggregate {
+            ReturnClass::Registers {
+                slot_count: self.abi_slots,
+            }
+        } else {
+            ReturnClass::Scalar
+        }
+    }
+
+    /// Classify one argument: a by-reference `inout` / `borrow` is one pointer
+    /// slot; a by-value argument is omitted when zero-sized, forced indirect
+    /// when the compact layout cannot express it slot-identically, and passed
+    /// directly across its flattened slots otherwise.
+    pub const fn classify_arg(self, convention: ArgConvention) -> ArgClass {
+        match convention {
+            ArgConvention::ByReference => ArgClass::Indirect,
+            ArgConvention::ByValue => {
+                if self.abi_slots == 0 {
+                    ArgClass::Omitted
+                } else if self.crosses_indirectly_under_compact() {
+                    ArgClass::Indirect
+                } else {
+                    ArgClass::Direct {
+                        slot_count: self.abi_slots,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Physical parameter-slot width of one argument (ADR-0052
+    /// representation 2): one pointer slot by reference, the flattened slot
+    /// count by value. Deliberately independent of the compact transitional
+    /// classification — see [`NativeCallAbi::arg_slot_width`].
+    pub const fn arg_slot_width(self, convention: ArgConvention) -> u32 {
+        match convention {
+            ArgConvention::ByReference => 1,
+            ArgConvention::ByValue => self.abi_slots,
+        }
+    }
+
+    /// The memory-first rule (ADR-0052 ruling 9): a multi-slot aggregate whose
+    /// compact representation is not slot-identical cannot cross the preserved
+    /// register convention and must go indirect — *unless it occupies exactly
+    /// one ABI slot* (RUE-1035), where one register transports the compact
+    /// image losslessly and the one-slot path stays byte-for-byte correct.
+    const fn crosses_indirectly_under_compact(self) -> bool {
+        self.abi_slots > 1 && self.aggregate && !self.slot_identical
+    }
+}
 
 /// Which calling convention governs a boundary.
 ///
@@ -182,6 +304,22 @@ impl<'a> NativeCallAbi<'a> {
         CallAbi::Native
     }
 
+    /// Project the kernel facts for `ty` from the live type pool. This is the
+    /// live plane's representation-specific walk; the classification decision
+    /// itself lives on [`NativeAbiTypeFacts`].
+    fn facts(&self, ty: Type) -> NativeAbiTypeFacts {
+        let abi_slots = self.type_pool.abi_slot_count(ty);
+        NativeAbiTypeFacts {
+            abi_slots,
+            aggregate: self.is_multislot_aggregate(ty, abi_slots),
+            strbuf: matches!(
+                ty.kind(),
+                TypeKind::Struct(struct_id) if self.type_pool.is_strbuf(struct_id)
+            ),
+            slot_identical: is_slot_identical_layout(self.type_pool, ty),
+        }
+    }
+
     /// Classify how a by-value return of `ty` crosses the boundary.
     ///
     /// Reproduces the historical decision exactly: zero-sized returns nothing;
@@ -190,20 +328,7 @@ impl<'a> NativeCallAbi<'a> {
     /// registers; everything else is a scalar. Under the compact layout a
     /// non-slot-identical aggregate is forced indirect (memory-first rule).
     pub fn classify_return(&self, ty: Type) -> ReturnClass {
-        let slot_count = self.type_pool.abi_slot_count(ty);
-        if slot_count == 0 {
-            return ReturnClass::ZeroSized;
-        }
-        if self.return_uses_sret(ty, slot_count)
-            || self.crosses_indirectly_under_compact(ty, slot_count)
-        {
-            return ReturnClass::Indirect { slot_count };
-        }
-        if self.is_multislot_aggregate(ty, slot_count) {
-            ReturnClass::Registers { slot_count }
-        } else {
-            ReturnClass::Scalar
-        }
+        self.facts(ty).classify_return(self.ret_reg_budget)
     }
 
     /// Whether a by-value return of `ty` uses the sret convention. Thin
@@ -221,21 +346,10 @@ impl<'a> NativeCallAbi<'a> {
     /// identical aggregate is forced indirect (memory-first rule).
     pub fn classify_arg(&self, ty: Type, convention: ArgConvention) -> ArgClass {
         match convention {
+            // The kernel's by-reference rule is convention-only, so the facts
+            // projection (a pool walk) is skipped for it.
             ArgConvention::ByReference => ArgClass::Indirect,
-            ArgConvention::ByValue => {
-                let slot_count = self.type_pool.abi_slot_count(ty);
-                if slot_count == 0 {
-                    ArgClass::Omitted
-                } else if self.crosses_indirectly_under_compact(ty, slot_count) {
-                    // Memory-first transitional rule: the preserved slot
-                    // convention cannot pass this compact aggregate by value.
-                    // Code generation refuses it loudly until the indirect
-                    // marshaling lands; the authority still records the intent.
-                    ArgClass::Indirect
-                } else {
-                    ArgClass::Direct { slot_count }
-                }
-            }
+            ArgConvention::ByValue => self.facts(ty).classify_arg(ArgConvention::ByValue),
         }
     }
 
@@ -255,48 +369,14 @@ impl<'a> NativeCallAbi<'a> {
         }
     }
 
-    /// The historical `type_uses_sret_return` predicate: strbuf, or a
-    /// struct/array/payload-enum whose slot count exceeds the budget
-    /// (oversized enums route through the same slot-count policy per RUE-946;
-    /// discriminant-only enums are single-slot and stay scalar).
-    fn return_uses_sret(&self, ty: Type, slot_count: u32) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => {
-                self.type_pool.is_strbuf(struct_id) || slot_count > self.ret_reg_budget
-            }
-            TypeKind::Array(_) | TypeKind::Enum(_) => slot_count > self.ret_reg_budget,
-            _ => false,
-        }
-    }
-
-    /// Whether `ty` needs a complete aggregate slot representation rather than a
-    /// single primary vreg. Discriminant-only enums stay scalar.
+    /// The live plane's aggregate predicate: whether `ty` needs a complete
+    /// aggregate slot representation rather than a single primary vreg.
+    /// Discriminant-only enums stay scalar (oversized enums route through the
+    /// same slot-count policy per RUE-946). This is a facts *projection*; the
+    /// decisions consuming it live on [`NativeAbiTypeFacts`].
     fn is_multislot_aggregate(&self, ty: Type, slot_count: u32) -> bool {
         matches!(ty.kind(), TypeKind::Struct(_) | TypeKind::Array(_))
             || (ty.is_enum() && slot_count > 1)
-    }
-
-    /// The memory-first rule (ADR-0052 ruling 9): a multi-slot aggregate whose
-    /// compact representation is not slot-identical cannot cross the preserved
-    /// register convention and must go indirect (by-reference / sret) — *unless
-    /// it occupies exactly one ABI slot* (RUE-1035). Slot-identical aggregates
-    /// keep the historical register decision.
-    ///
-    /// A single-slot aggregate carries its whole value in one eight-byte slot: a
-    /// narrow leaf lives in that slot's low bytes under both the compact image
-    /// and the slot-based frame, so one register transports it losslessly and the
-    /// callee's one-slot decomposition view is identical either way. Forcing such
-    /// a value indirect gained nothing and drove the not-yet-correct single-slot
-    /// indirect marshalling (garbage by-value args, RUE-1035 M1); classifying it
-    /// Direct instead routes it through the proven one-slot path — byte-for-byte
-    /// the same classification the slot model produces for it, on both backends
-    /// and in the oracle. Returns stay consistent: a single-slot aggregate return
-    /// is `Registers { slot_count: 1 }` (never sret), so no caller-side image
-    /// read-back is implied.
-    fn crosses_indirectly_under_compact(&self, ty: Type, slot_count: u32) -> bool {
-        slot_count > 1
-            && self.is_multislot_aggregate(ty, slot_count)
-            && !is_slot_identical_layout(self.type_pool, ty)
     }
 }
 
@@ -359,6 +439,61 @@ pub enum TargetCAbiFlavor {
     SysVAmd64,
     /// The ARM 64-bit Procedure Call Standard (AArch64 Linux/macOS).
     Aapcs64,
+}
+
+impl TargetCAbiFlavor {
+    /// The psABI flavor a target architecture's C boundary follows. The single
+    /// home of the architecture-to-flavor mapping, consulted by the export
+    /// thunk, the import call lowering, and the stable query plane.
+    pub const fn for_arch(arch: Arch) -> Self {
+        match arch {
+            Arch::X86_64 => Self::SysVAmd64,
+            Arch::Aarch64 => Self::Aapcs64,
+        }
+    }
+}
+
+/// Width-and-signedness class of a target-C-passable scalar: the one fact the
+/// extension policy needs. Each plane projects its own type representation
+/// onto this class, so the sign/zero/`_Bool` extension table itself
+/// ([`Self::extension`]) has exactly one home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CAbiScalarKind {
+    /// 8-bit signed integer.
+    I8,
+    /// 16-bit signed integer.
+    I16,
+    /// 32-bit signed integer.
+    I32,
+    /// 8-bit unsigned integer.
+    U8,
+    /// 16-bit unsigned integer.
+    U16,
+    /// 32-bit unsigned integer.
+    U32,
+    /// The 1-byte C `_Bool` whose byte is 0/1 by contract.
+    Bool,
+    /// A value that already fills its 64-bit register: `i64`/`u64`, pointers,
+    /// and the recovery scalar.
+    RegisterWidth,
+}
+
+impl CAbiScalarKind {
+    /// The canonical 64-bit extension for this scalar at a target-C boundary.
+    /// Both psABIs agree on the operation; signed narrows sign-extend from
+    /// their declared width, unsigned narrows zero-extend, `_Bool`
+    /// zero-extends from its low byte, and register-width values need nothing.
+    pub const fn extension(self) -> ScalarAbiExtension {
+        match self {
+            Self::I8 => ScalarAbiExtension::Signed { from_bits: 8 },
+            Self::I16 => ScalarAbiExtension::Signed { from_bits: 16 },
+            Self::I32 => ScalarAbiExtension::Signed { from_bits: 32 },
+            Self::U8 | Self::Bool => ScalarAbiExtension::Unsigned { from_bits: 8 },
+            Self::U16 => ScalarAbiExtension::Unsigned { from_bits: 16 },
+            Self::U32 => ScalarAbiExtension::Unsigned { from_bits: 32 },
+            Self::RegisterWidth => ScalarAbiExtension::None,
+        }
+    }
 }
 
 /// How a narrow scalar is extended to fill its 64-bit integer register at a
@@ -580,9 +715,26 @@ impl TargetCCallAbi {
         16
     }
 
-    /// Number of eightbytes a `size`-byte aggregate occupies (ceil(size / 8)).
+    /// Number of eightbytes a `size`-byte aggregate occupies (ceil(size / 8)),
+    /// saturating at `u32::MAX` like every byte-count projection here; sema
+    /// rejects layouts anywhere near that bound before they reach a boundary.
     const fn eightbytes(size: u64) -> u32 {
-        ((size + 7) / 8) as u32
+        let eightbytes = size.div_ceil(8);
+        if eightbytes > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            eightbytes as u32
+        }
+    }
+
+    /// Saturating byte-count projection for the u32 fields of the memory
+    /// classes.
+    const fn saturate_u32(value: u64) -> u32 {
+        if value > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            value as u32
+        }
     }
 
     /// Classify how a C-classifiable aggregate of `size` bytes at `align`
@@ -601,8 +753,8 @@ impl TargetCCallAbi {
                 eightbytes: Self::eightbytes(size),
             };
         }
-        let size = size as u32;
-        let align = align as u32;
+        let size = Self::saturate_u32(size);
+        let align = Self::saturate_u32(align);
         match self.flavor {
             TargetCAbiFlavor::SysVAmd64 => AggregateArgClass::ByValueStack { size, align },
             TargetCAbiFlavor::Aapcs64 => AggregateArgClass::ByReferenceCopy { size, align },
@@ -624,8 +776,8 @@ impl TargetCCallAbi {
             }
         } else {
             AggregateReturnClass::Indirect {
-                size: size as u32,
-                align: align as u32,
+                size: Self::saturate_u32(size),
+                align: Self::saturate_u32(align),
             }
         }
     }
@@ -656,30 +808,30 @@ impl TargetCCallAbi {
         Self::canonical_extension(ty)
     }
 
-    /// The canonical 64-bit extension for a supported target-C scalar. Shared by
-    /// both directions; both psABIs agree on the operation.
+    /// The live plane's projection of a supported target-C scalar onto its
+    /// width-and-signedness class; the extension operation itself lives on
+    /// [`CAbiScalarKind::extension`], shared with the stable query plane.
     fn canonical_extension(ty: Type) -> ScalarAbiExtension {
-        match ty.kind() {
-            TypeKind::I8 => ScalarAbiExtension::Signed { from_bits: 8 },
-            TypeKind::I16 => ScalarAbiExtension::Signed { from_bits: 16 },
-            TypeKind::I32 => ScalarAbiExtension::Signed { from_bits: 32 },
-            TypeKind::U8 => ScalarAbiExtension::Unsigned { from_bits: 8 },
-            TypeKind::U16 => ScalarAbiExtension::Unsigned { from_bits: 16 },
-            TypeKind::U32 => ScalarAbiExtension::Unsigned { from_bits: 32 },
-            // The 1-byte `_Bool` with the 0/1 contract: zero-extend its byte.
-            TypeKind::Bool => ScalarAbiExtension::Unsigned { from_bits: 8 },
-            // Register-width scalars and pointers already fill the register.
+        let kind = match ty.kind() {
+            TypeKind::I8 => CAbiScalarKind::I8,
+            TypeKind::I16 => CAbiScalarKind::I16,
+            TypeKind::I32 => CAbiScalarKind::I32,
+            TypeKind::U8 => CAbiScalarKind::U8,
+            TypeKind::U16 => CAbiScalarKind::U16,
+            TypeKind::U32 => CAbiScalarKind::U32,
+            TypeKind::Bool => CAbiScalarKind::Bool,
             TypeKind::I64
             | TypeKind::U64
             | TypeKind::PtrConst(_)
             | TypeKind::PtrMut(_)
-            | TypeKind::Error => ScalarAbiExtension::None,
+            | TypeKind::Error => CAbiScalarKind::RegisterWidth,
             other => panic!(
                 "TargetCCallAbi scalar classification called on non-scalar type {other:?}; \
                  aggregates (P3) and unsupported types are gated by c_passable_by_value \
                  before lowering"
             ),
-        }
+        };
+        kind.extension()
     }
 }
 
@@ -859,6 +1011,178 @@ mod tests {
         assert!(!aapcs.sret_pointer_echoed_in_result_register());
         assert_eq!(sysv.max_aggregate_register_bytes(), 16);
         assert_eq!(aapcs.max_aggregate_register_bytes(), 16);
+    }
+
+    #[test]
+    fn per_arch_budget_and_flavor_have_one_home() {
+        assert_eq!(native_return_register_budget(Arch::X86_64), 6);
+        assert_eq!(native_return_register_budget(Arch::Aarch64), 8);
+        assert_eq!(
+            TargetCAbiFlavor::for_arch(Arch::X86_64),
+            TargetCAbiFlavor::SysVAmd64
+        );
+        assert_eq!(
+            TargetCAbiFlavor::for_arch(Arch::Aarch64),
+            TargetCAbiFlavor::Aapcs64
+        );
+    }
+
+    #[test]
+    fn native_facts_kernel_decision_table() {
+        let scalar = NativeAbiTypeFacts {
+            abi_slots: 1,
+            aggregate: false,
+            strbuf: false,
+            slot_identical: true,
+        };
+        let aggregate = |abi_slots: u32, slot_identical: bool| NativeAbiTypeFacts {
+            abi_slots,
+            aggregate: true,
+            strbuf: false,
+            slot_identical,
+        };
+        for budget in [6u32, 8] {
+            // Zero-sized values vanish in both positions.
+            let zero = NativeAbiTypeFacts {
+                abi_slots: 0,
+                aggregate: true,
+                strbuf: false,
+                slot_identical: true,
+            };
+            assert_eq!(zero.classify_return(budget), ReturnClass::ZeroSized);
+            assert_eq!(zero.classify_arg(ArgConvention::ByValue), ArgClass::Omitted);
+
+            assert_eq!(scalar.classify_return(budget), ReturnClass::Scalar);
+            assert_eq!(
+                scalar.classify_arg(ArgConvention::ByValue),
+                ArgClass::Direct { slot_count: 1 }
+            );
+            // By-reference is one pointer slot regardless of the facts.
+            assert_eq!(
+                aggregate(budget + 1, true).classify_arg(ArgConvention::ByReference),
+                ArgClass::Indirect
+            );
+            assert_eq!(
+                aggregate(budget + 1, true).arg_slot_width(ArgConvention::ByReference),
+                1
+            );
+
+            // The return-register budget boundary: budget - 1 and budget fit,
+            // budget + 1 goes through sret. Arguments ignore the budget.
+            assert_eq!(
+                aggregate(budget - 1, true).classify_return(budget),
+                ReturnClass::Registers {
+                    slot_count: budget - 1
+                }
+            );
+            assert_eq!(
+                aggregate(budget, true).classify_return(budget),
+                ReturnClass::Registers { slot_count: budget }
+            );
+            assert_eq!(
+                aggregate(budget + 1, true).classify_return(budget),
+                ReturnClass::Indirect {
+                    slot_count: budget + 1
+                }
+            );
+            assert_eq!(
+                aggregate(budget + 1, true).classify_arg(ArgConvention::ByValue),
+                ArgClass::Direct {
+                    slot_count: budget + 1
+                }
+            );
+
+            // The compact memory-first rule: a multi-slot non-slot-identical
+            // aggregate goes indirect in both positions; a single-slot one
+            // stays direct (RUE-1035).
+            assert_eq!(
+                aggregate(2, false).classify_return(budget),
+                ReturnClass::Indirect { slot_count: 2 }
+            );
+            assert_eq!(
+                aggregate(2, false).classify_arg(ArgConvention::ByValue),
+                ArgClass::Indirect
+            );
+            assert_eq!(
+                aggregate(1, false).classify_return(budget),
+                ReturnClass::Registers { slot_count: 1 }
+            );
+            assert_eq!(
+                aggregate(1, false).classify_arg(ArgConvention::ByValue),
+                ArgClass::Direct { slot_count: 1 }
+            );
+
+            // Canonical StrBuf always returns through sret, even under budget.
+            let strbuf = NativeAbiTypeFacts {
+                abi_slots: 3,
+                aggregate: true,
+                strbuf: true,
+                slot_identical: true,
+            };
+            assert_eq!(
+                strbuf.classify_return(budget),
+                ReturnClass::Indirect { slot_count: 3 }
+            );
+            assert_eq!(
+                strbuf.classify_arg(ArgConvention::ByValue),
+                ArgClass::Direct { slot_count: 3 }
+            );
+        }
+    }
+
+    #[test]
+    fn c_scalar_kind_extension_table_is_the_shared_authority() {
+        use CAbiScalarKind as K;
+        assert_eq!(
+            K::I8.extension(),
+            ScalarAbiExtension::Signed { from_bits: 8 }
+        );
+        assert_eq!(
+            K::I16.extension(),
+            ScalarAbiExtension::Signed { from_bits: 16 }
+        );
+        assert_eq!(
+            K::I32.extension(),
+            ScalarAbiExtension::Signed { from_bits: 32 }
+        );
+        assert_eq!(
+            K::U8.extension(),
+            ScalarAbiExtension::Unsigned { from_bits: 8 }
+        );
+        assert_eq!(
+            K::U16.extension(),
+            ScalarAbiExtension::Unsigned { from_bits: 16 }
+        );
+        assert_eq!(
+            K::U32.extension(),
+            ScalarAbiExtension::Unsigned { from_bits: 32 }
+        );
+        // The 1-byte `_Bool` 0/1 contract zero-extends from its byte.
+        assert_eq!(
+            K::Bool.extension(),
+            ScalarAbiExtension::Unsigned { from_bits: 8 }
+        );
+        assert!(K::RegisterWidth.extension().is_noop());
+    }
+
+    #[test]
+    fn oversized_aggregate_byte_counts_saturate() {
+        let sysv = TargetCCallAbi::sysv_amd64();
+        let huge = u64::from(u32::MAX) + 9;
+        assert_eq!(
+            sysv.classify_aggregate_arg(huge, 8),
+            AggregateArgClass::ByValueStack {
+                size: u32::MAX,
+                align: 8
+            }
+        );
+        assert_eq!(
+            sysv.classify_aggregate_return(huge, 8),
+            AggregateReturnClass::Indirect {
+                size: u32::MAX,
+                align: 8
+            }
+        );
     }
 
     #[test]
