@@ -1,11 +1,5 @@
 //! Body-query accounting retained by the canonical revisioned semantic runtime.
 
-use crate::StableDefinitionKey;
-
-/// Stable identity-domain aliases used by the revisioned CFG projection.
-pub type DurableProjection = rue_air::SemanticBodyProjection<StableDefinitionKey, crate::ModuleId>;
-pub type DurableAirInstData = rue_air::SemanticBodyInstData<StableDefinitionKey, crate::ModuleId>;
-
 /// Work performed while importing exact body facts into a revision-owned
 /// semantic transaction. The payload itself stays in the revisioned runtime;
 /// this is deliberately only observational accounting.

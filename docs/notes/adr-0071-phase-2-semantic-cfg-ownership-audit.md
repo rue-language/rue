@@ -1,6 +1,8 @@
 # ADR-0071 Phase 2 semantic-to-CFG ownership audit
 
-Status: current-source audit, 2026-08-13. This is the focused Phase 2
+Status: historical point-in-time audit, 2026-08-13. Superseded by the
+[horizontal and vertical ownership re-audit](adr-0071-horizontal-vertical-ownership-reaudit.md).
+This is the focused Phase 2
 extension of the
 [post-ADR-0063 architecture audit](post-adr-0063-cold-compiler-architecture-audit.md).
 It records the live owners and consumers between parsed declarations and

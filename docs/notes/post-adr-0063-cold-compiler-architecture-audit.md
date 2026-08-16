@@ -1,6 +1,8 @@
 # Post-ADR-0063 cold compiler architecture audit
 
-Status: current implementation audit, 2026-08-10. This note records the
+Status: historical implementation audit, 2026-08-10. Superseded by the
+[ADR-0071 horizontal and vertical ownership re-audit](adr-0071-horizontal-vertical-ownership-reaudit.md).
+This note records the
 implemented compiler architecture after ADR-0063 and the cold-performance work
 through RUE-1348. Current source and tests are authoritative; issue descriptions
 and the two pre-ADR completion audits are historical context only.

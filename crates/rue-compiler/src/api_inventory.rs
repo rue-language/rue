@@ -158,6 +158,7 @@ fn the_driver_reads_accessor_declaration_rules_from_the_shared_rule_module() {
 #[test]
 fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
     let cfg = include_str!("cfg_query.rs");
+    let domains = include_str!("durable_cfg.rs");
     let database = include_str!("revisioned_query_database.rs");
     for required in [
         "CfgSemanticInput::Body",
@@ -169,6 +170,7 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         "pub(crate) interner: Arc<lasso::ThreadedRodeo>",
         "pub(crate) local_atoms:",
         "&record.type_pool",
+        "callable_by_symbol",
     ] {
         assert!(
             cfg.contains(required),
@@ -191,6 +193,21 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
         !database.contains("live: Arc<crate::cfg_query::CfgLiveInput>"),
         "the registered request facade must not require caller-owned CFG live input"
     );
+    assert!(domains.contains("for (_, current) in air.iter()"));
+    assert!(domains.contains("stable_callable(*name)"));
+    assert!(domains.contains("for (current, stable) in &materialization.materialized_types"));
+    assert!(!cfg.contains(".find(|fact| fact.symbol.as_ref() == name)"));
+    for forbidden in [
+        "SemanticImportedBodyDomains",
+        "from_body_parts(",
+        "air.iter().zip(body.instructions.iter())",
+        "air.places().iter().zip(body.places.iter())",
+    ] {
+        assert!(
+            !domains.contains(forbidden),
+            "CFG domains regained a second AIR/body reconstruction pass: {forbidden}"
+        );
+    }
 
     let production = cfg.rsplit_once("#[cfg(test)]").unwrap().0;
     let optimization = production
@@ -778,9 +795,7 @@ const RUE_866_INTERNAL_VOCABULARY: &[&str] = &[
 ];
 
 const RUE_867_DURABLE_VOCABULARY: &[&str] = &[
-    "DurableAirInstData",
     "DurableBodyWork",
-    "DurableProjection",
     "DurableConstValue",
     "DurableDeclarationPayload",
     "DurableDeclarationSemantic",
@@ -2653,8 +2668,8 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
             "compiler-owned canonical body mirror returned: {removed}"
         );
     }
-    assert!(durable_body.contains("pub type DurableProjection"));
-    assert!(durable_body.contains("pub type DurableAirInstData"));
+    assert!(!durable_body.contains("pub type DurableProjection"));
+    assert!(!durable_body.contains("pub type DurableAirInstData"));
     for removed in [
         "DurableOrdinaryBodyPayload",
         "DurableSpecializedBodyPayload",
