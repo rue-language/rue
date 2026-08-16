@@ -10,10 +10,12 @@
 //! This is shared analysis infrastructure, not a pass: consumers recompute it
 //! on demand rather than caching it across mutations. The value-forwarding pass
 //! (RUE-914, `opt/forward.rs`) uses [`DominatorTree::dominates`] to turn sema's
-//! definite-initialization argument into an always-on checked invariant, and
+//! definite-initialization argument into an always-on checked invariant,
 //! natural-loop analysis (RUE-926, `opt/loops.rs`) and LICM (RUE-927,
 //! `opt/licm.rs`, run at `-O3` from `opt/mod.rs`) build the loop forest and its
-//! hoisting decisions on it.
+//! hoisting decisions on it, and the structural verifier (RUE-227,
+//! `verify.rs`) uses it for both reachability and the defined-before-use
+//! dominance check on every operand.
 //!
 //! ## Definitions
 //!
@@ -36,21 +38,32 @@
 //!    order at least one predecessor is always processed before a block is
 //!    visited, so the fixpoint is reached in a handful of sweeps for reducible
 //!    graphs.
+//! 4. Number the finished tree in preorder and record, for each block, the
+//!    largest preorder number in its subtree. `a` dominates `b` exactly when
+//!    `b`'s number lies inside `a`'s interval, so [`DominatorTree::dominates`]
+//!    is two integer comparisons rather than a walk up `b`'s `idom` chain.
 //!
 //! `intersect(a, b)` walks the two fingers up the partial tree, each time
 //! advancing whichever finger has the smaller postorder number (i.e. is deeper,
 //! farther from the entry), until they meet at the common dominator.
 //!
+//! Step 4 is what makes the query cheap enough to call once per operand. The
+//! verifier does exactly that, so an O(depth) chain walk there would be
+//! quadratic again on a deep CFG — the shape RUE-1544 removed from the
+//! verifier's own dominance computation.
+//!
 //! The pipeline consumers are value forwarding's Rule 1 dominance check
-//! (`opt/forward.rs`), natural-loop detection (`opt/loops.rs`), and LICM
-//! (`opt/licm.rs`); the `idom` query itself is exercised only by this module's
-//! tests and carries a targeted allow below.
+//! (`opt/forward.rs`), natural-loop detection (`opt/loops.rs`), LICM
+//! (`opt/licm.rs`), and the structural verifier (`verify.rs`); the `idom` query
+//! itself is exercised only by this module's tests and carries a targeted allow
+//! below.
 
 use crate::{BlockId, Cfg, Terminator};
 
 /// The immediate-dominator tree of a [`Cfg`].
 ///
-/// Query it with [`DominatorTree::idom`] and [`DominatorTree::dominates`].
+/// Query it with [`DominatorTree::idom`], [`DominatorTree::dominates`], and
+/// [`DominatorTree::is_reachable`].
 pub(crate) struct DominatorTree {
     /// Immediate dominator of each block by raw block index.
     ///
@@ -61,7 +74,17 @@ pub(crate) struct DominatorTree {
     idom: Vec<Option<BlockId>>,
     /// Postorder number of each block by raw index; `None` when unreachable.
     /// The entry holds the maximum among reachable blocks.
+    ///
+    /// This is the DFS from the entry over the current terminators, so it is
+    /// also the authority for [`Self::is_reachable`].
     post_num: Vec<Option<u32>>,
+    /// Dominator-tree preorder number of each block by raw index; `None` when
+    /// the block is unreachable and therefore absent from the tree.
+    pre_num: Vec<Option<u32>>,
+    /// Largest preorder number in each block's dominator subtree, so that `a`
+    /// dominates `b` exactly when `pre_num[a] <= pre_num[b] <= subtree_last[a]`.
+    /// Only meaningful where `pre_num` is `Some`.
+    subtree_last: Vec<u32>,
 }
 
 impl DominatorTree {
@@ -150,7 +173,27 @@ impl DominatorTree {
             }
         }
 
-        DominatorTree { idom, post_num }
+        let (pre_num, subtree_last) = preorder_intervals(&idom, entry, n);
+
+        DominatorTree {
+            idom,
+            post_num,
+            pre_num,
+            subtree_last,
+        }
+    }
+
+    /// Whether `block` is reachable from the entry along the current
+    /// terminators.
+    ///
+    /// This is the tree's own DFS, so a consumer that needs both reachability
+    /// and dominance pays for one traversal rather than two.
+    pub(crate) fn is_reachable(&self, block: BlockId) -> bool {
+        self.post_num
+            .get(block.as_u32() as usize)
+            .copied()
+            .flatten()
+            .is_some()
     }
 
     /// The immediate dominator of `block`, or `None` when `block` is the entry
@@ -171,29 +214,76 @@ impl DominatorTree {
     /// Whether `a` dominates `b` (every path from the entry to `b` passes
     /// through `a`). Reflexive: a block dominates itself. An unreachable `b` is
     /// dominated only by itself.
+    ///
+    /// Constant time: `a` dominates `b` iff `b` sits in `a`'s dominator-tree
+    /// subtree, and the preorder intervals make that a containment test.
     pub(crate) fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        let bi = b.as_u32() as usize;
-        if bi >= self.idom.len() {
-            return a == b;
-        }
-        // Unreachable blocks have no idom entry; only self-dominance holds.
-        if self.post_num[bi].is_none() {
-            return a == b;
-        }
-        // Walk up b's idom chain to the entry. The entry's self-loop terminates
-        // the walk.
-        let mut cur = b;
-        loop {
-            if cur == a {
-                return true;
-            }
-            match self.idom[cur.as_u32() as usize] {
-                Some(d) if d != cur => cur = d,
-                // Reached the entry sentinel (d == cur) without finding `a`.
-                _ => return false,
-            }
+        let (ai, bi) = (a.as_u32() as usize, b.as_u32() as usize);
+        match (
+            self.pre_num.get(ai).copied().flatten(),
+            self.pre_num.get(bi).copied().flatten(),
+        ) {
+            (Some(pre_a), Some(pre_b)) => pre_a <= pre_b && pre_b <= self.subtree_last[ai],
+            // A block outside the tree — unreachable, or an out-of-range id —
+            // dominates nothing but itself and is dominated by nothing else.
+            _ => a == b,
         }
     }
+}
+
+/// Number the dominator tree in preorder and record where each subtree ends.
+///
+/// Returns `(pre_num, subtree_last)`: a block's descendants are exactly the
+/// blocks whose preorder number lies in `pre_num[block] ..= subtree_last[block]`,
+/// which is the standard constant-time ancestor test.
+///
+/// The walk starts at the entry and follows `idom` edges outward, so it numbers
+/// exactly the reachable blocks: the fixpoint above gives every reachable block
+/// an immediate dominator, and leaves unreachable blocks with `None`.
+fn preorder_intervals(
+    idom: &[Option<BlockId>],
+    entry: BlockId,
+    n: usize,
+) -> (Vec<Option<u32>>, Vec<u32>) {
+    // Invert `idom` into child lists. The entry's self-loop sentinel is not an
+    // edge, so it is skipped rather than made a child of itself.
+    let mut children: Vec<Vec<BlockId>> = vec![Vec::new(); n];
+    for (index, parent) in idom.iter().enumerate() {
+        let block = BlockId::from_raw(index as u32);
+        match *parent {
+            Some(parent) if parent != block => children[parent.as_u32() as usize].push(block),
+            _ => {}
+        }
+    }
+
+    let mut pre_num: Vec<Option<u32>> = vec![None; n];
+    let mut subtree_last: Vec<u32> = vec![0; n];
+    if (entry.as_u32() as usize) >= n {
+        return (pre_num, subtree_last);
+    }
+
+    let mut next = 0_u32;
+    pre_num[entry.as_u32() as usize] = Some(next);
+    next += 1;
+    // Stack of (block, next child index to descend into).
+    let mut stack: Vec<(BlockId, usize)> = vec![(entry, 0)];
+    while let Some(&(block, cursor)) = stack.last() {
+        let block_children = &children[block.as_u32() as usize];
+        if cursor < block_children.len() {
+            let child = block_children[cursor];
+            stack.last_mut().unwrap().1 += 1;
+            pre_num[child.as_u32() as usize] = Some(next);
+            next += 1;
+            stack.push((child, 0));
+        } else {
+            stack.pop();
+            // Everything numbered since `block` was pushed is in its subtree,
+            // and `block` itself took a number, so `next` is never zero here.
+            subtree_last[block.as_u32() as usize] = next - 1;
+        }
+    }
+
+    (pre_num, subtree_last)
 }
 
 /// Intersect two nodes of the partial dominator tree, per Cooper–Harvey–Kennedy:
@@ -363,6 +453,164 @@ mod tests {
         // The body is inside the loop; it does not dominate the exit (the
         // header can branch straight to exit without entering the body).
         assert!(!dom.dominates(body, exit));
+    }
+
+    /// Whether `target` is reachable from the entry, optionally with `removed`
+    /// deleted from the graph.
+    fn reaches(cfg: &Cfg, target: BlockId, removed: Option<BlockId>) -> bool {
+        let entry = cfg.entry;
+        if removed == Some(entry) {
+            return false;
+        }
+        let mut seen = vec![false; cfg.block_count()];
+        seen[entry.as_u32() as usize] = true;
+        let mut stack = vec![entry];
+        while let Some(block) = stack.pop() {
+            if block == target {
+                return true;
+            }
+            for successor in successors_of(cfg, block) {
+                if removed == Some(successor) {
+                    continue;
+                }
+                let index = successor.as_u32() as usize;
+                if !seen[index] {
+                    seen[index] = true;
+                    stack.push(successor);
+                }
+            }
+        }
+        false
+    }
+
+    /// Dominance straight from the definition: `b` must stop being reachable
+    /// once `a` is deleted from the graph. This shares no code with the CHK
+    /// fixpoint or the preorder intervals, so it is a real oracle for both.
+    fn dominates_by_definition(cfg: &Cfg, a: BlockId, b: BlockId) -> bool {
+        if !reaches(cfg, b, None) {
+            // An unreachable block is dominated only by itself, which is the
+            // convention `DominatorTree::dominates` documents.
+            return a == b;
+        }
+        a == b || !reaches(cfg, b, Some(a))
+    }
+
+    /// Check every block pair of `cfg` against the definition, plus every
+    /// block's reachability.
+    fn assert_matches_definition(cfg: &Cfg) {
+        let dom = DominatorTree::compute(cfg);
+        for i in 0..cfg.block_count() {
+            let a = BlockId::from_raw(i as u32);
+            assert_eq!(
+                dom.is_reachable(a),
+                reaches(cfg, a, None),
+                "reachability of {a}"
+            );
+            for j in 0..cfg.block_count() {
+                let b = BlockId::from_raw(j as u32);
+                assert_eq!(
+                    dom.dominates(a, b),
+                    dominates_by_definition(cfg, a, b),
+                    "dominates({a}, {b})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_dominance_matches_the_definition_on_reducible_graphs() {
+        // Straight line with a diamond hanging off it, then a loop whose body
+        // has its own branch, then a dead island.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let t = cfg.new_block();
+        let e = cfg.new_block();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let body_alt = cfg.new_block();
+        let exit = cfg.new_block();
+        let island = cfg.new_block();
+
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, t, e));
+        cfg.set_terminator(t, goto(header));
+        cfg.set_terminator(e, goto(header));
+        let loop_cond = bool_const(&mut cfg, header);
+        cfg.set_terminator(header, branch(loop_cond, body, exit));
+        let body_cond = bool_const(&mut cfg, body);
+        cfg.set_terminator(body, branch(body_cond, body_alt, header));
+        cfg.set_terminator(body_alt, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        cfg.set_terminator(island, goto(exit));
+
+        assert_matches_definition(&cfg);
+    }
+
+    #[test]
+    fn test_dominance_matches_the_definition_on_an_irreducible_graph() {
+        // Two loop headers entered from outside, each branching into the other:
+        // no single back edge, so the CHK fixpoint needs more than one sweep.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let exit = cfg.new_block();
+
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, left, right));
+        let left_cond = bool_const(&mut cfg, left);
+        cfg.set_terminator(left, branch(left_cond, right, exit));
+        let right_cond = bool_const(&mut cfg, right);
+        cfg.set_terminator(right, branch(right_cond, left, exit));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        assert_matches_definition(&cfg);
+    }
+
+    #[test]
+    fn test_dominance_matches_the_definition_on_a_switch_fan_out() {
+        // The verifier's motivating shape (RUE-1544): one Switch over many arm
+        // blocks that all rejoin. Every arm is a child of the switch block, so
+        // the preorder intervals here are all singletons but the join's is not.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let join = cfg.new_block();
+        let arms: Vec<BlockId> = (0..6).map(|_| cfg.new_block()).collect();
+
+        let scrutinee = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I32,
+                span: Span::new(0, 0),
+            },
+        );
+        let cases = cfg
+            .push_switch_cases(
+                arms.iter()
+                    .enumerate()
+                    .skip(1)
+                    .map(|(index, &arm)| (index as i64, arm))
+                    .collect::<Vec<_>>(),
+            )
+            .expect("switch cases fit");
+        cfg.set_terminator(
+            entry,
+            Terminator::Switch {
+                scrutinee,
+                cases,
+                default: arms[0],
+            },
+        );
+        for &arm in &arms {
+            cfg.set_terminator(arm, goto(join));
+        }
+        cfg.set_terminator(join, Terminator::Return { value: None });
+
+        assert_matches_definition(&cfg);
     }
 
     #[test]
