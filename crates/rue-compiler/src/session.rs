@@ -554,6 +554,10 @@ pub(crate) enum ImportDiscoveryRevisionStatus {
 #[derive(Debug, Clone)]
 pub(crate) struct ImportDiscoveryRevisionArtifact {
     status: ImportDiscoveryRevisionStatus,
+    /// Exact immutable import-input view this stage consumed. Production
+    /// successor staging matches this against the next view's compiler-owned
+    /// parent transition instead of rescanning accumulated sources and ledgers.
+    input_revision: Option<crate::ImportInputRevision>,
     source_revision: SourceRevision,
     context: crate::ImportDiscoveryContext,
     snapshot: SourceSnapshot,
@@ -565,6 +569,10 @@ pub(crate) struct ImportDiscoveryRevisionArtifact {
     graph: Option<Arc<CanonicalImportGraphOutput>>,
     diagnostics: CompileErrors,
     diagnostic_snapshot: Option<Arc<FrontendDiagnosticSnapshot>>,
+    /// Exact parse terminal produced while staging this open revision. An
+    /// ordinary host batch extends this terminal, never an ambient selected
+    /// parse from another retained compilation.
+    staging_parse_terminal: Option<Arc<rue_query::QueryTerminal<ParseQueryRecord>>>,
     /// The exact successor parse record this stage computed (RUE-1112). The
     /// successor close adopts by re-selecting THIS terminal — same key, same
     /// revision — never by re-deriving an extension against the now-selected
@@ -1069,6 +1077,18 @@ struct SuccessorState {
     delta: Arc<[crate::ModuleRevision]>,
 }
 
+/// One compiler-proven incremental staging step. The host cannot construct this
+/// value: ordinary batches derive it from the immutable input view's private
+/// parent/delta transition, while trusted successors derive it from their
+/// existing capability protocol.
+struct IncrementalImportStage {
+    revision: crate::ImportInputRevision,
+    delta: Arc<[crate::ModuleRevision]>,
+    predecessor_plan: crate::ImportDiscoveryPlan,
+    predecessor_parse: Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
+    inherited_parse_work: ParsedModulesWork,
+}
+
 #[derive(Debug, Clone)]
 struct ContinuationState {
     nonce: u64,
@@ -1217,7 +1237,10 @@ impl ParseQueryKey {
 
 /// The reconciled inputs of one successor parse extension (RUE-1112), prepared
 /// without side effects so both the staging and adoption paths verify the
-/// predecessor binding before starting a metrics attempt.
+/// predecessor binding before starting a metrics attempt. The caller has
+/// already proven the exact compiler-owned input transition; this routine
+/// verifies the retained parse and its appended suffix without rescanning
+/// the accumulated source prefix.
 struct PreparedSuccessorParse {
     predecessor_program: Arc<ParsedProgram>,
     predecessor_order: crate::shared_segments::SharedList<crate::ModuleId>,
@@ -1755,7 +1778,7 @@ impl CompilerSession {
         &mut self,
         revision: crate::ImportInputRevision,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
-        let Some((current, snapshot, context, accepted_reads, ledger)) =
+        let Some((current, snapshot, context, accepted_reads, ledger, transition)) =
             self.queries.revisioned.current_import_view_state()
         else {
             return Err(CompileErrors::from(CompileError::without_span(
@@ -1772,7 +1795,65 @@ impl CompilerSession {
                 ),
             )));
         }
-        self.stage_import_discovery_inner(&snapshot, context, accepted_reads, ledger, None)
+        let incremental = match transition {
+            crate::revisioned_query_database::ImportInputTransition::Fresh => None,
+            crate::revisioned_query_database::ImportInputTransition::HostBatch {
+                parent,
+                added,
+            } => {
+                let Some(predecessor) = self.open_discovery.as_deref().filter(|artifact| {
+                    artifact.status == ImportDiscoveryRevisionStatus::Open
+                        && artifact.input_revision == Some(parent)
+                }) else {
+                    return Err(CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(
+                            "import staging cannot extend a host batch whose exact predecessor is not open"
+                                .into(),
+                        ),
+                    )));
+                };
+                let Some(predecessor_plan) = predecessor.plan.clone() else {
+                    return Err(CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(
+                            "import staging predecessor carries no import plan".into(),
+                        ),
+                    )));
+                };
+                let Some(predecessor_parse) = predecessor.staging_parse_terminal.clone() else {
+                    return Err(CompileErrors::from(CompileError::without_span(
+                        ErrorKind::InvalidCompilerInput(
+                            "import staging predecessor carries no exact parse terminal".into(),
+                        ),
+                    )));
+                };
+                Some(IncrementalImportStage {
+                    revision: current,
+                    delta: added,
+                    predecessor_plan,
+                    predecessor_parse,
+                    inherited_parse_work: predecessor.parse_work,
+                })
+            }
+            crate::revisioned_query_database::ImportInputTransition::TrustedSuccessor {
+                parent,
+                added,
+            } => {
+                return Err(CompileErrors::from(CompileError::without_span(
+                    ErrorKind::InvalidCompilerInput(format!(
+                        "ordinary import staging cannot consume trusted-toolchain successor from {parent:?} with {} additions",
+                        added.len()
+                    )),
+                )));
+            }
+        };
+        self.stage_import_discovery_inner(
+            &snapshot,
+            context,
+            accepted_reads,
+            ledger,
+            Some(current),
+            incremental,
+        )
     }
 
     /// Cumulative import occurrences the demand frontier has rooted (RUE-1112).
@@ -2074,6 +2155,7 @@ impl CompilerSession {
             crate::AcceptedReadManifest::from_shared(accepted_reads),
             carried_ledger,
             None,
+            None,
         )
     }
 
@@ -2106,7 +2188,7 @@ impl CompilerSession {
                 "the successor delta is stale (superseded by a newer publish, request, or close)",
             ));
         }
-        let Some((current, snapshot, context, accepted_reads, ledger)) =
+        let Some((current, snapshot, context, accepted_reads, ledger, _)) =
             self.queries.revisioned.current_import_view_state()
         else {
             return Err(reject(
@@ -2162,12 +2244,42 @@ impl CompilerSession {
         delta: &TrustedSuccessorDelta,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
         let state = self.derive_successor_state(delta)?;
+        let Some(predecessor) = self.last_good_discovery_artifact() else {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "trusted-toolchain successor has no committed predecessor".into(),
+                ),
+            )));
+        };
+        let Some(predecessor_plan) = predecessor.plan.clone() else {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "trusted-toolchain predecessor carries no import plan".into(),
+                ),
+            )));
+        };
+        let Some(predecessor_parse) = self.queries.revisioned.last_good_parse_terminal().cloned()
+        else {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InvalidCompilerInput(
+                    "trusted-toolchain predecessor carries no exact parse terminal".into(),
+                ),
+            )));
+        };
+        let revision = state.revision;
         self.stage_import_discovery_inner(
             &state.snapshot,
             state.context,
             state.accepted_reads,
             state.ledger,
-            Some((state.revision, state.delta)),
+            Some(revision),
+            Some(IncrementalImportStage {
+                revision,
+                delta: state.delta,
+                predecessor_plan,
+                predecessor_parse,
+                inherited_parse_work: predecessor.parse_work,
+            }),
         )
     }
 
@@ -2177,26 +2289,35 @@ impl CompilerSession {
         context: crate::ImportDiscoveryContext,
         accepted_reads: crate::AcceptedReadManifest,
         carried_ledger: crate::ImportObservationLedger,
-        successor: Option<(crate::ImportInputRevision, Arc<[crate::ModuleRevision]>)>,
+        input_revision: Option<crate::ImportInputRevision>,
+        incremental: Option<IncrementalImportStage>,
     ) -> Result<crate::ImportDiscoveryPlan, CompileErrors> {
-        let new_module_ids: Option<Vec<crate::ModuleId>> = successor.as_ref().map(|(_, delta)| {
+        let new_module_ids: Option<Vec<crate::ModuleId>> = incremental.as_ref().map(|stage| {
+            let delta = &stage.delta;
             delta
                 .iter()
                 .map(|revision| revision.module.clone())
                 .collect()
         });
         let new_modules: Option<&[crate::ModuleId]> = new_module_ids.as_deref();
-        let continuation = self.open_discovery.as_deref().filter(|attempt| {
-            continues_discovery_lifecycle(
-                attempt,
-                snapshot,
-                &context,
-                &accepted_reads,
-                &carried_ledger,
-            )
-        });
-        let mut parse_work =
-            continuation.map_or_else(ParsedModulesWork::default, |attempt| attempt.parse_work);
+        let continuation = incremental
+            .is_none()
+            .then(|| {
+                self.open_discovery.as_deref().filter(|attempt| {
+                    continues_discovery_lifecycle(
+                        attempt,
+                        snapshot,
+                        &context,
+                        &accepted_reads,
+                        &carried_ledger,
+                    )
+                })
+            })
+            .flatten();
+        let mut parse_work = incremental.as_ref().map_or_else(
+            || continuation.map_or_else(ParsedModulesWork::default, |attempt| attempt.parse_work),
+            |stage| stage.inherited_parse_work,
+        );
         // Reinstall protocol context only if staging reaches Open. Closed
         // attempts are retained as projections of the canonical frontier.
         self.open_discovery = None;
@@ -2212,6 +2333,7 @@ impl CompilerSession {
             );
             let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                 status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                input_revision,
                 source_revision: source_revision.clone(),
                 context: context.clone(),
                 snapshot: snapshot.clone(),
@@ -2223,6 +2345,7 @@ impl CompilerSession {
                 graph: None,
                 diagnostics: errors.clone(),
                 diagnostic_snapshot: Some(diagnostic_snapshot),
+                staging_parse_terminal: None,
                 successor_parse: None,
             });
             self.queries.record_discovery_attempt(attempted_artifact);
@@ -2232,12 +2355,17 @@ impl CompilerSession {
         // the import-plan construction over the resulting program. Both were
         // previously folded into the driver's unattributed region (RUE-786).
         let parse_staging_span = tracing::info_span!("import_parse_staging").entered();
-        let (parse_result, staged_work, staged_successor_parse) = self.parse_staging_snapshot(
-            snapshot,
-            successor
-                .as_ref()
-                .map(|(revision, delta)| (*revision, delta)),
-        );
+        let (parse_result, staged_work, staged_successor_parse, staging_parse_terminal) = self
+            .parse_staging_snapshot(
+                snapshot,
+                incremental.as_ref().map(|stage| {
+                    (
+                        stage.revision,
+                        &stage.delta,
+                        stage.predecessor_parse.clone(),
+                    )
+                }),
+            );
         drop(parse_staging_span);
         parse_work.accumulate(staged_work);
         let program = match parse_result {
@@ -2253,6 +2381,7 @@ impl CompilerSession {
                 );
                 let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                     status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    input_revision,
                     source_revision: source_revision.clone(),
                     context: context.clone(),
                     snapshot: snapshot.clone(),
@@ -2264,37 +2393,32 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
+                    staging_parse_terminal: None,
                     successor_parse: None,
                 });
                 self.queries.record_discovery_attempt(attempted_artifact);
                 return Err(errors);
             }
         };
-        // A trusted-toolchain successor stage reuses the committed predecessor
-        // plan's request groups and constructs groups only for the newly appended
-        // modules' occurrences; predecessor occurrences are never re-staged. When
-        // no predecessor plan is retained (an unexpected legacy state) it falls
-        // back to a full build so the plan is always complete.
-        let predecessor_plan = new_modules.and_then(|_| {
-            self.last_good_discovery_artifact()
-                .and_then(|artifact| artifact.plan.clone())
-        });
+        // A compiler-proven additive stage reuses the predecessor plan's request
+        // groups and constructs groups only for the newly appended modules'
+        // occurrences; predecessor occurrences are never re-staged. Ordinary
+        // host batches and capability-authorized successors reach this one path
+        // through private, exact parent/delta transitions.
         let plan_build_span = tracing::info_span!("import_plan_build").entered();
-        let plan_build = match (new_modules, predecessor_plan) {
-            (Some(new_modules), Some(predecessor)) => {
-                crate::ImportDiscoveryPlan::extend_trusted_successor(
-                    &predecessor,
-                    &program,
-                    context.clone(),
-                    new_modules,
-                )
-                .map(|(plan, constructed)| {
-                    self.import_plan_groups_constructed = self
-                        .import_plan_groups_constructed
-                        .saturating_add(constructed);
-                    plan
-                })
-            }
+        let plan_build = match (new_modules, incremental.as_ref()) {
+            (Some(new_modules), Some(stage)) => crate::ImportDiscoveryPlan::extend_successor(
+                &stage.predecessor_plan,
+                &program,
+                context.clone(),
+                new_modules,
+            )
+            .map(|(plan, constructed)| {
+                self.import_plan_groups_constructed = self
+                    .import_plan_groups_constructed
+                    .saturating_add(constructed);
+                plan
+            }),
             _ => crate::ImportDiscoveryPlan::new(&program, context.clone()).inspect(|plan| {
                 self.import_plan_groups_constructed = self
                     .import_plan_groups_constructed
@@ -2315,6 +2439,7 @@ impl CompilerSession {
                 );
                 let attempted_artifact = Arc::new(ImportDiscoveryRevisionArtifact {
                     status: ImportDiscoveryRevisionStatus::ClosedAttempted,
+                    input_revision,
                     source_revision: source_revision.clone(),
                     context: context.clone(),
                     snapshot: snapshot.clone(),
@@ -2326,6 +2451,7 @@ impl CompilerSession {
                     graph: None,
                     diagnostics: errors.clone(),
                     diagnostic_snapshot: Some(diagnostic_snapshot),
+                    staging_parse_terminal: None,
                     successor_parse: None,
                 });
                 self.queries.record_discovery_attempt(attempted_artifact);
@@ -2345,6 +2471,7 @@ impl CompilerSession {
         );
         self.open_discovery = Some(Arc::new(ImportDiscoveryRevisionArtifact {
             status: ImportDiscoveryRevisionStatus::Open,
+            input_revision,
             source_revision: program.source_revision().clone(),
             context,
             snapshot: snapshot.clone(),
@@ -2356,6 +2483,7 @@ impl CompilerSession {
             graph: None,
             diagnostics: CompileErrors::new(),
             diagnostic_snapshot: None,
+            staging_parse_terminal,
             successor_parse: staged_successor_parse,
         }));
         Ok(plan)
@@ -2377,7 +2505,8 @@ impl CompilerSession {
         &mut self,
         revision: crate::ImportInputRevision,
     ) -> Result<Arc<crate::ImportDiscoveryView>, CompileErrors> {
-        let Some((current, _, _, _, ledger)) = self.queries.revisioned.current_import_view_state()
+        let Some((current, _, _, _, ledger, _)) =
+            self.queries.revisioned.current_import_view_state()
         else {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(
@@ -3400,6 +3529,7 @@ impl CompilerSession {
         QueryAttemptExecution,
         ParsedModulesWork,
         ParseInvalidationSummary,
+        Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
     ) {
         // Keying, module parsing, and terminal publication are separate costs
         // inside the parse query. Timing them apart keeps the staging residual
@@ -3505,7 +3635,8 @@ impl CompilerSession {
         self.queries.revisioned.select_parse(&attempt);
         let terminal = attempt
             .terminal()
-            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()));
+            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()))
+            .clone();
         let record = match terminal.outcome() {
             rue_query::QueryOutcome::Success(record) => record.clone(),
             rue_query::QueryOutcome::Failure(_) => unreachable!("parse retains typed records"),
@@ -3538,39 +3669,33 @@ impl CompilerSession {
             QueryStructuralWork::Parse(work),
         );
         self.diagnostics.select(view.clone());
-        (record, view, execution, work, invalidation)
+        (record, view, execution, work, invalidation, terminal)
     }
 
     /// Reconcile one successor parse extension without side effects: the
-    /// retained parse artifact this stage extends (within one trusted re-close,
-    /// the committed predecessor for the first stage and the prior successor
-    /// stage after a frontier batch), its presentation order, and the appended
-    /// (module, file) pairs. The retained artifact must PROVE it is the
-    /// successor snapshot's direct structural ancestor — proven by lineage
-    /// pointer identity, same root, and its exact presentation order — so a
-    /// parse record from any other snapshot (an
-    /// intervening source or presentation update) can never be extended; the
-    /// capability is rejected instead. Everything here is O(appended); content
-    /// identity is pinned by the published revision, never re-hashed or
-    /// re-compared.
+    /// retained parse artifact this stage extends, its presentation order, and
+    /// the appended (module, file) pairs. The compiler-owned input transition
+    /// proves the exact parent revision and appended revisions; the retained
+    /// terminal must still be adoptable, rooted identically, and have the exact
+    /// predecessor presentation order. A record from an intervening update is
+    /// rejected. Everything here is O(appended); predecessor contents are
+    /// carried by the immutable revision rather than rescanned or re-hashed.
     fn prepare_successor_parse(
         &self,
         snapshot: &SourceSnapshot,
         delta: &Arc<[crate::ModuleRevision]>,
+        terminal: Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
     ) -> Result<PreparedSuccessorParse, CompileErrors> {
         let reject = |message: &str| {
             CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-                format!("trusted-toolchain successor parse rejected: {message}"),
+                format!("incremental import parse rejected: {message}"),
             )))
-        };
-        let Some(terminal) = self.queries.revisioned.last_good_parse_terminal() else {
-            return Err(reject("no predecessor parse artifact is retained"));
         };
         let Ok(predecessor_terminal) = self
             .queries
             .revisioned
             .parse_family()
-            .adoptable_terminal(terminal)
+            .adoptable_terminal(&terminal)
         else {
             return Err(reject(
                 "the retained predecessor parse terminal is not adoptable",
@@ -3592,24 +3717,17 @@ impl CompilerSession {
         };
         let predecessor_order = predecessor_order.clone();
         let predecessor_revision = record.runtime_revision;
-        // STRUCTURAL ANCESTRY: the successor source revision must name the
-        // retained revision as its direct lineage parent (or be the same
-        // revision for an empty source delta), with the same root. This remains
-        // a constant-time pointer proof when storage tiers compact.
+        // The private input transition already proves predecessor identity and
+        // unchanged carried sources. Snapshot assemblers may compact their
+        // persistent segments, so pointer ancestry is not a semantic
+        // requirement here; requiring it would reject an otherwise exact host
+        // batch after compaction. Root identity plus the exact appended segment
+        // is rechecked below without walking the predecessor prefix.
         let predecessor_snapshot = record.snapshot.clone();
-        {
-            let structural_delta = snapshot
-                .source_revision()
-                .module_segments()
-                .direct_delta_from(predecessor_snapshot.source_revision().module_segments());
-            if structural_delta.is_none()
-                || snapshot.source_revision().root()
-                    != predecessor_snapshot.source_revision().root()
-            {
-                return Err(reject(
-                    "the retained parse artifact is not the successor snapshot's structural ancestor",
-                ));
-            }
+        if snapshot.source_revision().root() != predecessor_snapshot.source_revision().root() {
+            return Err(reject(
+                "the retained parse artifact belongs to a different root module",
+            ));
         }
         let predecessor_len = predecessor_program.modules_len();
         if predecessor_len != predecessor_snapshot.len()
@@ -3690,6 +3808,7 @@ impl CompilerSession {
         QueryAttemptExecution,
         ParsedModulesWork,
         ParseInvalidationSummary,
+        Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
     ) {
         let PreparedSuccessorParse {
             predecessor_program,
@@ -3797,7 +3916,8 @@ impl CompilerSession {
         self.queries.revisioned.select_parse(&attempt);
         let terminal = attempt
             .terminal()
-            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()));
+            .unwrap_or_else(|| panic!("parse query aborted: {:?}", attempt.abort()))
+            .clone();
         let record = match terminal.outcome() {
             rue_query::QueryOutcome::Success(record) => record.clone(),
             rue_query::QueryOutcome::Failure(_) => unreachable!("parse retains typed records"),
@@ -3828,32 +3948,41 @@ impl CompilerSession {
             QueryStructuralWork::Parse(work),
         );
         self.diagnostics.select(view.clone());
-        (record, view, execution, work, invalidation)
+        (record, view, execution, work, invalidation, terminal)
     }
 
     fn parse_staging_snapshot(
         &mut self,
         snapshot: &SourceSnapshot,
-        successor: Option<(crate::ImportInputRevision, &Arc<[crate::ModuleRevision]>)>,
+        successor: Option<(
+            crate::ImportInputRevision,
+            &Arc<[crate::ModuleRevision]>,
+            Arc<rue_query::QueryTerminal<ParseQueryRecord>>,
+        )>,
     ) -> (
         Result<Arc<ParsedProgram>, CompileErrors>,
         ParsedModulesWork,
         Option<ParseQueryRecord>,
+        Option<Arc<rue_query::QueryTerminal<ParseQueryRecord>>>,
     ) {
         // A successor stage MUST extend its verified predecessor: a failed
         // predecessor binding rejects the stage rather than silently falling
         // back to a full content-keyed build under successor authority.
         let prepared_successor = match successor {
-            Some((revision, delta)) => match self.prepare_successor_parse(snapshot, delta) {
-                Ok(prepared) => Some((revision, prepared)),
-                Err(errors) => return (Err(errors), ParsedModulesWork::default(), None),
-            },
+            Some((revision, delta, terminal)) => {
+                match self.prepare_successor_parse(snapshot, delta, terminal) {
+                    Ok(prepared) => Some((revision, prepared)),
+                    Err(errors) => {
+                        return (Err(errors), ParsedModulesWork::default(), None, None);
+                    }
+                }
+            }
             None => None,
         };
         let staged_successor = prepared_successor.is_some();
         let mut guard = self.metrics.begin_unprojected("parse");
         let attempt_id = guard.id;
-        let (record, view, execution, work, _invalidation) = match prepared_successor {
+        let (record, view, execution, work, _invalidation, terminal) = match prepared_successor {
             Some((revision, prepared)) => {
                 self.execute_parse_query_successor(snapshot, revision, prepared, attempt_id)
             }
@@ -3878,7 +4007,7 @@ impl CompilerSession {
         guard.finish(execution, None, &result, QueryStructuralWork::None);
         self.metrics.synchronize();
         let retained = staged_successor.then(|| record.clone());
-        (result, work, retained)
+        (result, work, retained, Some(terminal))
     }
 
     fn run_parse_update(
@@ -3888,7 +4017,7 @@ impl CompilerSession {
     ) -> CompilerSessionUpdate {
         let mut guard = self.metrics.begin_unprojected("parse");
         let attempt_id = guard.id;
-        let (record, view, execution, parse_work, invalidation) =
+        let (record, view, execution, parse_work, invalidation, _) =
             self.execute_parse_query(snapshot, presentation, attempt_id);
         guard.started();
         self.metrics.update(parse_work, invalidation.clone());
