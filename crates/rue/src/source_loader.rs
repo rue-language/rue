@@ -12,8 +12,9 @@ use rue_compiler::unstable::{
     RootedParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
     close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
     discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
-    plan_delta_roots, publish_import_observation_batch, publish_trusted_toolchain_successor,
-    rooted_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
+    plan_delta_roots, plan_round_roots, publish_import_observation_batch,
+    publish_trusted_toolchain_successor, rooted_or_toolchain_park,
+    stage_import_discovery_successor, stage_import_input_request,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -766,8 +767,8 @@ struct ClosedDiscovery {
 /// witness.
 ///
 /// `continuation` selects the request generation. `None` begins a fresh
-/// external-input observation generation (the initial close) and roots discovery
-/// in the whole plan. `Some(revision)` is a SAME-GENERATION re-close on a
+/// external-input observation generation (the initial close) and roots its FIRST
+/// round in the whole plan. `Some(revision)` is a SAME-GENERATION re-close on a
 /// strictly-additive successor already published into `revision`: it never begins
 /// a new generation — doing so would defeat the same-generation guarantee the
 /// trusted-toolchain continuation relies on.
@@ -784,6 +785,14 @@ struct ClosedDiscovery {
 /// import occurrences are never re-rooted or re-resolved: the re-close continues
 /// from the verified closed predecessor graph rather than rebuilding it, so
 /// acquisition cost is O(new leaves), not O(existing import topology).
+///
+/// This loop is the owner of "which occurrences are still open", because it is
+/// the only place that knows the ROUND structure: it holds the plan sequence,
+/// the previous round's frontier, and the decision to stop. The compiler owns
+/// both halves of the answer as immutable derived values — the plan's own delta
+/// segment and the frontier's own fanout (`plan_round_roots`) — so the host
+/// contributes no membership claim of its own and the frontier's fail-closed
+/// plan-membership guard still checks every root it is handed.
 struct ReClose<'a> {
     delta: &'a TrustedSuccessorDelta,
 }
@@ -820,6 +829,12 @@ fn drive_import_discovery_to_close(
     };
     let final_plan;
     let witness;
+    // The previous round's frontier, once there is one. It names the exact
+    // occurrences whose host answers arrive this round and which may therefore
+    // demand another candidate; every other occurrence already in the plan was
+    // conclusive when that frontier was built and stays conclusive for the whole
+    // request generation.
+    let mut previous_frontier: Option<ImportDemandFrontier> = None;
     loop {
         // One frontier round: plan and frontier construction (which owns the
         // canonical parse of everything read so far), then the host reads that
@@ -864,20 +879,49 @@ fn drive_import_discovery_to_close(
         // occurrences — those owned by modules added since the predecessor close.
         // These come straight from the plan's delta segment, never by filtering the
         // merged predecessor plan.
-        let roots = match &reclose {
-            Some(_) => plan_delta_roots(&plan),
-            None => plan.demand_roots(),
+        //
+        // An ordinary round roots the same way once it has a predecessor round to
+        // continue: the occurrences this round's stage added to the plan, plus the
+        // ones the previous frontier demanded answers for. Rooting the WHOLE plan
+        // every round instead re-dispatches a top-level `ResolveImport` request per
+        // occurrence per round, which is quadratic in the depth of an import chain
+        // while re-proving conclusions the ledger already fixed. The first round has
+        // no predecessor, so it roots the whole plan.
+        let mut roots = match (&reclose, &previous_frontier) {
+            (Some(_), _) => plan_delta_roots(&plan),
+            (None, None) => plan.demand_roots(),
+            (None, Some(previous)) => plan_round_roots(&plan, previous),
         };
+        // A round rooted in the open set proves only that the open set is
+        // exhausted. The closure witness must mean more: it is what a
+        // trusted-toolchain continuation verifies to accept that the predecessor
+        // closed. So an ordinary discovery owes the whole plan exactly ONE more
+        // rooting, taken when its open set first comes back empty; that whole-plan
+        // frontier is the witness it closes on. A re-close owes nothing: its
+        // predecessor graph is already closed and carried, and re-rooting it is
+        // exactly the O(existing topology) work RUE-1112 removed.
+        let mut closing_reroot_owed = reclose.is_none() && previous_frontier.is_some();
         let frontier = {
             let _span = tracing::info_span!("import_frontier").entered();
-            import_demand_frontier_for_roots(
-                staging,
-                input_revision,
-                &plan,
-                ImportDemandMode::Rooted,
-                &roots,
-            )
-            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+            loop {
+                let frontier = import_demand_frontier_for_roots(
+                    staging,
+                    input_revision,
+                    &plan,
+                    ImportDemandMode::Rooted,
+                    &roots,
+                )
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                // Requests mean the round is not closing after all, so the debt
+                // stands for a later round. Should the whole-plan rooting disagree
+                // with the open set and produce requests, they are answered like
+                // any other round's rather than dropped.
+                if !frontier.requests().is_empty() || !closing_reroot_owed {
+                    break frontier;
+                }
+                closing_reroot_owed = false;
+                roots = plan.demand_roots();
+            }
         };
         drop(plan_span);
         if frontier.requests().is_empty() {
@@ -929,6 +973,7 @@ fn drive_import_discovery_to_close(
             observations,
         )
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        previous_frontier = Some(frontier);
     }
 
     let _close_span = tracing::info_span!("import_discovery_close").entered();
@@ -2078,6 +2123,43 @@ mod tests {
                 <= (MODULES as u64) * 8,
             "discovery certificate misses must stay linear in module count"
         );
+        // Each round roots only in the occurrences the plan just gained plus the
+        // ones the previous round demanded answers for, and the whole plan is
+        // rooted once more to witness closure: roughly two roots per round plus
+        // one final pass. Rooting the whole plan every round instead dispatched
+        // one top-level `ResolveImport` request per occurrence per round — 527 at
+        // this shape, and quadratic in chain depth.
+        assert!(
+            import_frontier_roots_requested(&result.session) <= (MODULES as u64) * 4,
+            "frontier dispatch must stay linear in chain depth, not rounds times plan"
+        );
+    }
+
+    /// A candidate that misses on its first group is answered but NOT concluded:
+    /// the occurrence still owes its next candidate a round. Here `sub/leaf.rue`
+    /// imports `shared.rue`, which is absent beside it and present at the project
+    /// root, so its occurrence spans two rounds while its module is new in
+    /// neither. A round that rooted only in the plan's newly staged occurrences
+    /// would drop it.
+    #[test]
+    fn import_occurrence_answered_but_still_open_is_rerooted_next_round() {
+        let dir = TestDir::new("open-occurrence-reroot");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("sub/leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        dir.write(
+            "sub/leaf.rue",
+            r#"const shared = @import("shared.rue"); pub fn value() -> i32 { shared.value() }"#,
+        );
+        dir.write("shared.rue", "pub fn value() -> i32 { 7 }");
+
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+
+        assert_eq!(result.read_manifest.len(), 3);
+        // Three published batches: the leaf, its missed sibling candidate, then
+        // the project-root `shared.rue` the second candidate resolves to.
+        assert_eq!(result.input_revision.frontier_round(), 3);
     }
 
     fn module_source_id(

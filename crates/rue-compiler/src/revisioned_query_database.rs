@@ -540,7 +540,11 @@ pub(crate) struct RevisionedQueryDatabase {
     /// per-round discovery-frontier breadth. The trusted-toolchain re-close roots
     /// only in the newly appended leaves and modules newly discovered from them,
     /// so a predecessor occurrence contributes to this counter exactly once — at
-    /// the initial close — and never again during acquisition.
+    /// the initial close — and never again during acquisition. An ordinary
+    /// acquisition is bounded the same way: after its first round each round
+    /// roots only in the occurrences the plan just gained plus those still open,
+    /// and the whole plan is rooted once more at the end to witness closure, so
+    /// this stays linear in the import graph rather than rounds times graph.
     import_frontier_roots_requested: u64,
     /// Cumulative count of occurrences the close-time exact-import projection has
     /// dispatched a `ResolveImport` query for through [`Self::exact_import_groups`]
@@ -19032,22 +19036,24 @@ impl RevisionedQueryDatabase {
                 "import plan does not match its pinned granular input revision",
             ));
         }
-        // Membership is checked through one set built per call. On the ordinary
-        // path roots are exactly the plan's group leaders and the plan grows
-        // with every discovery round, so a nested scan here is quadratic in
-        // plan size over a deep import graph while proving a fact that almost
-        // always holds.
+        // Membership is proven per root by binary search over the plan's shared,
+        // canonically ordered group segments, so the guard costs O(roots · log
+        // plan) and never materializes the merged plan. Groups are ordered by
+        // their first request, whose leading fields are the plan-wide discovery
+        // context and then the occurrence, so searching on that pair is exact.
+        // The search direction is also the safe one: a comparator disagreeing
+        // with the stored order could only fail to find a group and reject a
+        // legitimate root, never admit one the plan does not contain.
         {
-            let group_occurrences: HashSet<_> = plan
-                .groups()
-                .iter()
-                .map(|group| group[0].occurrence())
-                .collect();
-            if roots
-                .occurrences()
-                .iter()
-                .any(|occurrence| !group_occurrences.contains(occurrence))
-            {
+            let segments = plan.group_segments();
+            if roots.occurrences().iter().any(|occurrence| {
+                !segments.contains_by(|group| {
+                    group[0]
+                        .context()
+                        .cmp(plan.context())
+                        .then_with(|| group[0].occurrence().cmp(occurrence))
+                })
+            }) {
                 return Err(import_input_error(
                     "import demand roots contain an occurrence outside the pinned plan",
                 ));
