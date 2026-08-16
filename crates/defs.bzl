@@ -77,6 +77,47 @@ def _fmt_check(name, srcs):
         labels = rue_test_labels("premerge", ["rue_not_quick"]),
     )
 
+_DEBUG_ASSERT_GATE = "//:debug-assert-policy-script"
+_GATELIB = "//:gatelib-sources"
+
+def _debug_assert_check(name, srcs):
+    """Emits `<name>-debug-assert-check`: the reviewed debug-assertion ledger,
+    scoped to this crate's sources.
+
+    Coverage is structural, like `_fmt_check`: a crate is checked because it
+    declares the target, and only that crate's edit re-runs it. The gate
+    script is addressed cross-package through a root `export_file` (mode =
+    "reference", so it executes in place next to scripts/gatelib/); the
+    gatelib filegroup rides along as a resource so a helper change re-runs
+    the check rather than serving a stale pass. The sh_test runs from the
+    project root, so `--sources` is the package-relative src/ directory and
+    `srcs` are declared as resources for the same staleness reason.
+
+    The check is keyed by the crate DIRECTORY name — that is the path the
+    ledger's `crates/<name>/src/...` entries use — so a package defining
+    several macro targets from the same sources (crates/rue: rue-driver, rue,
+    rue-benchmark) emits exactly one check, from the target whose name
+    matches the directory. Orphaned ledger entries for a crate that stopped
+    emitting a check entirely are caught by //:debug-assert-ledger-check.
+    """
+    crate = package_name().split("/")[-1]
+    if name != crate:
+        return
+    native.sh_test(
+        name = name + "-debug-assert-check",
+        test = _DEBUG_ASSERT_GATE,
+        args = [
+            "--crate",
+            crate,
+            "--sources",
+            package_name() + "/src",
+        ],
+        resources = srcs + [_GATELIB],
+        # Premerge tier; excluded from quick iteration so `scripts/rue quick`
+        # keeps meaning "unit tests only" (see quick-test.sh).
+        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+    )
+
 def _clippy_check(name):
     """Emits `<name>-clippy`: fails when this crate's clippy diagnostics contain an error.
 
@@ -117,6 +158,7 @@ def rue_crate(
     _sources_filegroup(name, srcs)
     _fmt_check(name, srcs)
     _clippy_check(name)
+    _debug_assert_check(name, srcs)
     native.rust_library(
         name = name,
         srcs = srcs,
@@ -151,6 +193,7 @@ def rue_binary(
     _sources_filegroup(name, srcs)
     _fmt_check(name, srcs)
     _clippy_check(name)
+    _debug_assert_check(name, srcs)
     native.rust_binary(
         name = name,
         srcs = srcs,

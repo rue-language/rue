@@ -67,6 +67,27 @@ filegroup(
     visibility = ["PUBLIC"],
 )
 
+# The per-crate debug-assertion checks emitted by rue_crate/rue_binary
+# (RUE-1525) address the gate script and its gatelib helpers cross-package
+# through these targets. `mode = "reference"` is load-bearing: the script
+# resolves `from gatelib import ...` relative to its own location, so it must
+# execute in place under scripts/ rather than as an isolated buck-out copy.
+# The gatelib filegroup exists so the emitting macro can declare the helpers
+# as resources — a gatelib edit re-runs every crate's check instead of
+# serving a stale pass.
+export_file(
+    name = "debug-assert-policy-script",
+    src = "scripts/validate-debug-assert-policy.py",
+    mode = "reference",
+    visibility = ["PUBLIC"],
+)
+
+filegroup(
+    name = "gatelib-sources",
+    srcs = glob(["scripts/gatelib/*.py"]),
+    visibility = ["PUBLIC"],
+)
+
 # The two halves of a cached corpus suite: the action wrapper that runs a
 # harness and writes its stamp, and the thin check that asserts the stamp.
 sh_binary(
@@ -128,8 +149,9 @@ sh_binary(
 # ASan harness (RUE-560) has no BUCK file, so no macro emits its gates. Its
 # clippy runs as a dedicated `cargo clippy -D warnings` step in the CI asan
 # job; its format check lives here, where the root package can still name its
-# sources, so the file the old gate DID cover keeps its coverage.
-_ASAN_FMT_SRCS = glob(["crates/rue-runtime-asan/src/**/*.rs"])
+# sources, so the file the old gate DID cover keeps its coverage. The same
+# sources feed its explicit debug-assert check below.
+_ASAN_GATE_SRCS = glob(["crates/rue-runtime-asan/src/**/*.rs"])
 
 rue_sh_test(
     name = "rue-runtime-asan-fmt-check",
@@ -140,8 +162,26 @@ rue_sh_test(
         "--edition",
         "2024",
         "--check",
-    ] + _ASAN_FMT_SRCS,
-    resources = _ASAN_FMT_SRCS + [":rustfmt-config"],
+    ] + _ASAN_GATE_SRCS,
+    resources = _ASAN_GATE_SRCS + [":rustfmt-config"],
+    # Excluded from quick iteration like every per-crate gate, so
+    # `scripts/rue quick` keeps meaning "unit tests only".
+    labels = ["rue_not_quick"],
+)
+
+# The same exception for the per-crate debug-assertion checks (RUE-1525): no
+# BUCK file means no macro emits `rue-runtime-asan-debug-assert-check`, so the
+# root package, which can still name the sources, declares it explicitly.
+rue_sh_test(
+    name = "rue-runtime-asan-debug-assert-check",
+    test = "scripts/validate-debug-assert-policy.py",
+    args = [
+        "--crate",
+        "rue-runtime-asan",
+        "--sources",
+        "crates/rue-runtime-asan/src",
+    ],
+    resources = _ASAN_GATE_SRCS + glob(["scripts/gatelib/*.py"]),
     # Excluded from quick iteration like every per-crate gate, so
     # `scripts/rue quick` keeps meaning "unit tests only".
     labels = ["rue_not_quick"],
@@ -845,6 +885,20 @@ rue_sh_test(
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },
+)
+
+# The structural complement of the per-crate debug-assertion checks
+# (RUE-1525): those run only for crates that emit them, so deleting a crate
+# would leave its ledger entries permanently unchecked. This gate fails when
+# any ledger entry names a crate rust-project.json no longer lists.
+rue_sh_test(
+    name = "debug-assert-ledger-check",
+    test = "scripts/validate-debug-assert-policy.py",
+    args = [
+        "--ledger-crates",
+        "rust-project.json",
+    ],
+    resources = ["rust-project.json"] + glob(["scripts/gatelib/*.py"]),
 )
 
 rue_sh_test(

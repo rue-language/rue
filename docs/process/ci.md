@@ -229,12 +229,15 @@ it is a p90 win first and a smaller p50 win. Do not re-derive a saving from an
 assumption that this job is free.
 
 Production `debug_assert*` use is governed by
-`scripts/validate-debug-assert-policy.py`, run by required formatting CI and
-`scripts/rue quick`. Every surviving call has an exact per-file allowance and
-rationale; changing the count requires reviewing the ledger. CFG optimization,
-code generation, and linking have no allowances: an invariant whose violation
-could change emitted code must be an always-on assertion or a real compiler
-diagnostic.
+`scripts/validate-debug-assert-policy.py`. The gate is structural (RUE-1525):
+`rue_crate`/`rue_binary` emit a premerge-tier `<name>-debug-assert-check` per
+crate, scoped to that crate's sources, and `//:debug-assert-ledger-check`
+fails when a ledger entry names a crate `rust-project.json` no longer lists —
+so a deleted crate cannot leave allowances nothing enforces. Every surviving
+call has an exact per-file allowance and rationale; changing the count
+requires reviewing the ledger. CFG optimization, code generation, and linking
+have no allowances: an invariant whose violation could change emitted code
+must be an always-on assertion or a real compiler diagnostic.
 
 ## Test execution tiers
 
