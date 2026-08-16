@@ -1523,6 +1523,14 @@ impl BodySema<'_> {
 #[cfg(test)]
 mod consistency_tests;
 #[cfg(test)]
+mod provider_accessor_tests;
+#[cfg(test)]
+pub(crate) mod provider_fixture;
+#[cfg(test)]
 mod provider_fixture_tests;
+#[cfg(test)]
+mod provider_semantics_tests;
+#[cfg(test)]
+mod provider_strings_ownership_tests;
 #[cfg(test)]
 mod tests;
