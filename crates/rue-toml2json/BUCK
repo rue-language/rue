@@ -1,0 +1,14 @@
+load("//crates:defs.bzl", "rue_binary")
+
+# Re-emits a TOML document as JSON. Exists so repository tooling that must
+# run on the Python 3.9 floor can consume TOML-authored policy files through
+# a Buck-materialized JSON artifact instead of importing `tomllib` (3.11+);
+# the CLI execution contracts are the one such file (RUE-1524).
+rue_binary(
+    name = "rue-toml2json",
+    tests = False,
+    deps = [
+        "//third-party:serde_json",
+        "//third-party:toml",
+    ],
+)

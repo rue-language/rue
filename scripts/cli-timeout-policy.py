@@ -16,23 +16,6 @@ import re
 import sys
 from pathlib import Path
 
-# RUE-1509: `tomllib` is stdlib only from 3.11, and this target carries
-# `rue_test_tier_premerge`, so below the floor the premerge suite died with
-# `ModuleNotFoundError: No module named 'tomllib'` out of a timeout validator --
-# a message naming neither the version nor the remedy. CI never saw it: its
-# runners are 3.12 and newer. The repository floor is 3.11 for this import and
-# nothing else; see AGENTS.md, "Repository tooling baseline".
-if sys.version_info < (3, 11):
-    raise SystemExit(
-        "error: scripts/cli-timeout-policy.py requires Python 3.11 or newer "
-        f"(this interpreter is {platform.python_version()} at {sys.executable}). "
-        "It reads the CLI execution contracts with the stdlib `tomllib` module, "
-        "added in 3.11. Install a 3.11+ interpreter and put it earlier on PATH; "
-        "see AGENTS.md, \"Repository tooling baseline\"."
-    )
-
-import tomllib
-
 PROFILE_NAMES = ("ordinary", "slow", "stress")
 PROFILE_KEYS = {"compile_hang_timeout_ms", "runtime_hang_timeout_ms"}
 POLICY_KEYS = {
@@ -45,7 +28,10 @@ POLICY_KEYS = {
 
 
 def load_policy(path: Path) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
-    data = tomllib.loads(path.read_text())
+    # The contracts are authored as TOML next to the CLI cases; the build
+    # materializes this JSON twin via //crates/rue-toml2json so the gate runs
+    # on the repository's Python 3.9 floor without `tomllib` (RUE-1524).
+    data = json.loads(path.read_text())
     profiles = data.get("timeout_profile")
     policy = data.get("timeout_policy")
     if not isinstance(profiles, dict) or set(profiles) != set(PROFILE_NAMES):
@@ -204,7 +190,10 @@ def main() -> int:
     parser.add_argument(
         "--policy",
         type=Path,
-        default=Path("crates/rue-cli-tests/cases/execution_contracts.toml"),
+        required=True,
+        help="JSON twin of execution_contracts.toml; build "
+        "//:cli-execution-contracts-json or run this gate as "
+        "//:cli-timeout-policy-validation",
     )
     parser.add_argument(
         "--weights", type=Path, default=Path("crates/rue-cli-tests/shard-weights.json")
