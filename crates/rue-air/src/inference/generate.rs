@@ -2004,7 +2004,7 @@ impl<'a> ConstraintGenerator<'a> {
                     // sema stays authoritative for both the type and the
                     // diagnostic.
                     "int_max" | "int_min" => self
-                        .resolve_rir_type(*type_arg, span.file_id)
+                        .infer_rir_type_hint(*type_arg, span.file_id)
                         .filter(|ty| matches!(ty, InferType::Concrete(ty) if ty.is_integer()))
                         .unwrap_or_else(|| InferType::Var(self.fresh_var())),
                     // The remaining type intrinsics return i32 (the size or
