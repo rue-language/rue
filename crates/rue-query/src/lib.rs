@@ -14686,6 +14686,16 @@ mod tests {
             panic!("a body which transitively asks for itself is a true cycle");
         };
         assert_eq!(nodes.len(), 2);
+        // The rendered cycle names every memo node on it, in canonical order.
+        // Any future change to when a memo-node key is formatted has to keep
+        // this text exactly, because consumers match cycle members by name.
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| (node.family(), node.key()))
+                .collect::<Vec<_>>(),
+            vec![("ring", "a"), ("ring", "b")]
+        );
         assert_eq!(runtime.metrics().cycles, 1);
     }
 
