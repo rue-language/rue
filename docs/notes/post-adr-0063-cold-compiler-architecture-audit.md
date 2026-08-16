@@ -1853,6 +1853,40 @@ and executable byte remains identical. This is therefore an asymptotic and
 architectural win with no measured cold-time regression on the maintained
 workload.
 
+Deferring the memo-node display identity itself was then measured and rejected.
+Fixed one-worker cold Lattice materializes 32,912 memo-node identities holding
+7,999,794 formatted key bytes, one per incarnation, and the premise was that
+nothing reads that text unless a diagnostic, cycle render, or abort needs a
+name. A prototype kept the typed key behind a `OnceLock` and formatted on first
+demand, with shared-`Arc` shortcuts in identity equality and ordering and an
+incarnation-first comparison for exact frame identities. It changed no counter
+at all: the runtime still named all 32,912 nodes, because two readers demand
+every node's text on the ordinary path.
+
+Publication is the first. `retained_terminal_charge` counts the formatted key
+length of the published node and of each of its dependency observations, so the
+deterministic retained charge names every node that publishes a terminal and
+every node that is observed. Removing those two terms from the charge does
+leave the emitted executable and all 136 compiler-work counters identical, and
+drops the identity totals to 24,079 materializations and 5,086,634 bytes, but
+the formatted length was carrying real retention back-pressure: the same
+budget then holds a larger retained set, and median peak RSS rises from 295.12
+MB to 299.99 MB across five paired runs whose ranges do not overlap. Trading
+2.91 MB of formatted text for 4.87 MB of additional retained artifacts is a net
+memory regression, so the charge keeps counting presentation bytes.
+
+Frame publication is the second, and it bounds the idea independently. RUE-1381
+publishes each frame's dependency array in canonical family-then-key order, so
+completing a frame compares the display identities of sibling dependencies. Any
+two dependencies inside one family are separated by their key text alone, which
+is what the residual 24,079 materializations above are. Reaching a materially
+smaller number therefore requires changing the published dependency order, and
+that order is also the order validation walks and early-exits on, so it is a
+retention-and-validation policy decision rather than a presentation change. The
+prototype was not retained; `QueryKey::stable_identity` stays documented as
+presentation-only, and the display-identity counters continue to report one
+materialization per memo node.
+
 ## Next actions and decision boundary
 
 ADR-0071 Phase 2 extends this general architecture record with the current
