@@ -91,7 +91,7 @@ pub(crate) use crate::object_query::ObjectFormat as ProgramObjectFormat;
 /// Exact per-unit transition between two plans.  Linker placement/state is
 /// intentionally absent: a later incremental linker can consume these facts.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // retained as the Phase-11 handoff to a later incremental linker
+#[allow(dead_code)] // retained as the Phase-11 handoff to a later incremental linker (RUE-1096, RUE-1242 epic; ADR-0063 gates implementation)
 pub(crate) struct ProgramImagePlanDelta {
     pub(crate) added: Vec<ProgramImageUnit>,
     pub(crate) changed: Vec<ProgramImageUnit>,
@@ -105,7 +105,7 @@ pub(crate) struct ProgramImagePlanDelta {
 }
 
 impl ProgramImagePlan {
-    #[allow(dead_code)] // consumed by the later stateful-linking phase
+    #[allow(dead_code)] // consumed by the later stateful-linking phase (RUE-1096, RUE-1242 epic; ADR-0063 gates implementation)
     pub(crate) fn delta_from(&self, previous: &Self) -> MultiErrorResult<ProgramImagePlanDelta> {
         validate_program_image_plan(previous)?;
         validate_program_image_plan(self)?;
@@ -660,7 +660,7 @@ impl RuntimeArchiveIdentity {
 
     /// SHA-256 over the exact embedded archive bytes, memoized for the process
     /// because those bytes cannot change within one.
-    #[allow(dead_code)] // the durable identity a later incremental linker persists
+    #[allow(dead_code)] // the durable identity a later incremental linker persists (RUE-1096, RUE-1242 epic; ADR-0063 gates implementation)
     pub(crate) fn content_digest(self) -> ContentDigest {
         #[cfg(test)]
         RUNTIME_ARCHIVE_CONTENT_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

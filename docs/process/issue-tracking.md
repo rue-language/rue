@@ -96,7 +96,7 @@ Skip blocked issues when looking for ready work.
 
 For large features, the Linear epic and ADR reference each other:
 
-**In the ADR** (`docs/designs/NNNN-feature.md`):
+**In the ADR** (`docs/designs/<NNNN>-feature.md`):
 ```markdown
 ## Implementation Phases
 

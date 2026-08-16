@@ -19,11 +19,16 @@ superseded-by:
 
 ## Status
 
-Proposal
+Accepted on 2026-07-16, closing the RUE-915 design issue and filing the phase
+issues below. Phase 1 shipped in July 2026: the CFG splice primitive landed
+with RUE-929 (`crates/rue-cfg/src/inline.rs`) and is consumed today by the
+compiler's mandatory accessor splices
+(`crates/rue-compiler/src/cfg_query.rs`). The inlining driver phases (RUE-930
+through RUE-933) and the method/destructor extension remain tracked and
+unimplemented, so no general `-O2`/`-O3` inlining runs yet.
 
-This is a **draft design note for maintainer review**. It analyzes the
-architecture of function inlining and recommends a direction; it makes no
-commitment and nothing here is accepted. ADR-0044 already fixed the *level*
+This note analyzes the architecture of function inlining and records the
+accepted direction. ADR-0044 already fixed the *level*
 placement — conservative small/leaf-function inlining at `-O2`, aggressive
 thresholds at `-O3` — so this note answers the *architecture* questions that
 sit under that placement: where inlining runs, what it does mechanically to the
@@ -592,14 +597,12 @@ already synthesized.
 
 ## Implementation Phases
 
-Tracking placeholders; this draft implements none of them.
-
-- [ ] **Phase 1: Splice primitive** — CFG→CFG inline of one call given caller +
+- [x] **Phase 1: Splice primitive** — CFG→CFG inline of one call given caller +
   callee `Cfg`, with value/block/slot rebasing, physical-ABI parameter lowering
   (by-value materialization at full slot width; by-ref place redirection limited
   to simple local/parameter roots), callee-lifetime storage + copied
   parameter-drop handling (§3), and return→block-param wiring. Unit-tested in
-  `rue-cfg`. (file RUE-929)
+  `rue-cfg`. (landed, RUE-929, July 2026)
 - [ ] **Phase 2: Free-function driver at `-O2`** — two-phase construction; build
   the call-site graph by CFG scan (§5); conservative leaf/small thresholds;
   single-call-site inlining *without* callee removal; recursion refusal via

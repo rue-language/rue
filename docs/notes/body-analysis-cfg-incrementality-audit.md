@@ -130,8 +130,7 @@ discovery protocol. A historical module-axis study held the corpus and edit
 fixed and varied only the protocol: under the rooted import-demand
 protocol that every multi-module program must use, the same leaf edit reanalyzes
 every reached body rather than the leaf and its direct reverse caller. Module
-count is not the variable — one module and eight behave identically. See
-[`module-axis-locality-findings.md`](module-axis-locality-findings.md). The
+count is not the variable — one module and eight behave identically. The
 scenarios below remain accurate about the corpus they measure; they are not
 evidence of exact reverse invalidation for programs with imports.
 

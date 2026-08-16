@@ -14,8 +14,7 @@
 #     mechanical: delete `compile_fail`/`error_contains`, add the noted
 #     `exit_code`.
 #
-# Background: docs/notes/rue-1089-current-anonymous-type-behavior.md,
-# docs/notes/rue-1089-acceptance-ledger.md, SITE_INVENTORY_SCRATCH.md.
+# Background: docs/notes/rue-1089-acceptance-ledger.md.
 #
 # Every case below was compiled and (where it compiles) run with the debug
 # `//crates/rue:rue` binary built from this worktree before being encoded; the

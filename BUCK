@@ -865,6 +865,41 @@ rue_sh_test(
 )
 
 rue_sh_test(
+    name = "adr-registry-tool-tests",
+    test = "scripts/test-validate-adrs.py",
+    resources = [
+        "scripts/validate-adrs.py",
+        ":gatelib-sources",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+# RUE-1531: the notes index (docs/notes/README.md) must list every note, and
+# every relative link or bare docs/crates/scripts path reference under
+# docs/**/*.md must name a real file. The docs tree is a declared resource so
+# a docs edit re-runs the gate instead of being served a stale pass; docs/
+# holds no nested Buck packages, so the root glob reaches all of it.
+rue_sh_test(
+    name = "doc-link-validation",
+    test = "scripts/validate-doc-links.py",
+    resources = [":gatelib-sources"] + glob(["docs/**"]),
+)
+
+rue_sh_test(
+    name = "doc-link-tool-tests",
+    test = "scripts/test-validate-doc-links.py",
+    resources = [
+        "scripts/validate-doc-links.py",
+        ":gatelib-sources",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+rue_sh_test(
     name = "required-ci-container-pin-validation",
     test = "scripts/validate-required-ci-container-pins.py",
     args = [

@@ -182,7 +182,7 @@ website/
 
 - [x] **Phase 3: Runner & storage** - (historical bd ID rue-a5ah.3, pre-Linear)
   - Create `./bench.sh` script
-  - Create `scripts/append-benchmark.py` to manage history
+  - Create an `append-benchmark.py` script to manage history (since retired)
   - Set up `perf` branch structure
   - Document benchmark workflow
   - Add release/debug build modes via Buck2 modifiers

@@ -19,15 +19,21 @@ superseded-by:
 
 ## Status
 
-Proposal
+Accepted on 2026-07-16, closing the RUE-916 design issue and filing the phase
+issues below. Phases 1 and 2 shipped in July 2026: natural-loop analysis and
+preheader materialization landed with RUE-926
+(`crates/rue-cfg/src/opt/loops.rs`) and trap-free LICM landed with RUE-927
+(`crates/rue-cfg/src/opt/licm.rs`, run at `-O3` from `opt/mod.rs`), both built
+on the RUE-914 dominator tree. Constant-trip unrolling (RUE-928, Phase 3) and
+guarded trapping-op hoisting (RUE-934, Phase 4) remain tracked and
+unimplemented.
 
-This is a **draft design note for maintainer review**. Nothing here is accepted.
 ADR-0044 places loop-invariant code motion (LICM) and unrolling at `-O3` (the
 speculative, size-spending, speed-chasing tier). This note designs the shared
 loop-analysis infrastructure both need, then the two passes — with the central
 attention on LICM's trap-safety problem, which is the inverse of the RUE-57 bug
 class and the single most dangerous way a loop pass can violate the
-observable-behavior invariant. Tracks RUE-916.
+observable-behavior invariant.
 
 ## Summary
 
@@ -35,15 +41,15 @@ Both LICM and unrolling need to recognize natural loops, which needs a dominator
 tree. **The shared dominator tree already landed with RUE-914**
 (`crates/rue-cfg/src/dominators.rs`): a CFG-level `DominatorTree` computed via the
 **Cooper–Harvey–Kennedy iterative algorithm** over `Cfg::compute_predecessors()`,
-today consumed only by copy propagation's `debug_assertions` dominance check and
-awaiting its loop-analysis consumers. What loop optimization still needs to build
-on that base is **natural-loop detection** (back edges + loop bodies) and
-**preheader materialization** — neither exists yet. (The separate, per-backend
-post-lowering back-edge scan in `rue-codegen` used for register allocation stays
-unusable at the CFG level.) This note proposes extending the existing
-`rue-cfg` dominator module with natural-loop detection from back edges,
-recomputed per pass (not cached) initially. On
-that base: **LICM** hoists loop-invariant *pure* ops into the preheader, and its
+consumed by value forwarding's Rule 1 dominance check and by the loop analyses
+that followed. **Natural-loop detection** (back edges + loop bodies) and
+**preheader materialization** landed with RUE-926
+(`crates/rue-cfg/src/opt/loops.rs`), extending the dominator base with the
+loop forest this note designs, recomputed per pass (not cached). (The separate,
+per-backend post-lowering back-edge scan in `rue-codegen` used for register
+allocation stays unusable at the CFG level.) On
+that base: **LICM** (landed with RUE-927, `crates/rue-cfg/src/opt/licm.rs`)
+hoists loop-invariant *pure* ops into the preheader, and its
 governing rule is conservative — **trapping ops are never hoisted in the initial
 version** (only provably-trap-free ops move), because hoisting a possibly-trapping
 op onto a path the source never executed manufactures a trap out of thin air.
@@ -53,22 +59,20 @@ repository's work-counter discipline.
 
 ## Context
 
-### Dominators exist; natural-loop detection does not (ground truth)
+### Dominators, natural-loop detection, and preheaders all exist (ground truth)
 
 The shared dominator tree **landed with RUE-914** and lives at
 `crates/rue-cfg/src/dominators.rs`: a `pub(crate) struct DominatorTree` with
 `DominatorTree::compute(cfg)`, `idom`, and `dominates` queries, built by the
 Cooper–Harvey–Kennedy fixpoint over a reverse-postorder traversal and consuming
-`Cfg::compute_predecessors()` (`crates/rue-cfg/src/inst.rs:1137`). The module's
-own docs mark it "shared analysis infrastructure, not a pass": its only in-tree
-consumer today is copy propagation's `debug_assertions` dominance check
-(`crates/rue-cfg/src/opt/forward.rs:332`), and it explicitly names future LICM
-(RUE-916) and GVN as its pending consumers — so it opts out of dead-code denial
-(`#![allow(dead_code)]`). What is still **absent** is everything loop-specific:
-`crates/rue-cfg/src/dominators.rs` computes dominance but has **no natural-loop
-detection, no loop forest, and no preheader materialization**. That is precisely
-the gap this note fills — it builds on the existing dominator tree rather than
-introducing one.
+`Cfg::compute_predecessors()`. The module's own docs mark it "shared analysis
+infrastructure, not a pass"; its consumers are value forwarding's always-on
+Rule 1 dominance check (`crates/rue-cfg/src/opt/forward.rs:317`), natural-loop
+detection, and LICM. The loop-specific layer this note designed **shipped with
+RUE-926**: `crates/rue-cfg/src/opt/loops.rs` holds natural-loop detection, the
+`LoopForest`, and preheader materialization (`ensure_preheader`), built on the
+existing dominator tree rather than introducing one — exactly the gap this note
+set out to fill.
 
 The rest of `crates/rue-cfg/src/` is `build.rs`, `inst.rs`, `verify.rs`,
 `dominators.rs`, `lib.rs`, and `opt/`; the optimizer directory now holds
@@ -198,13 +202,14 @@ obtaining it is not simply "reuse the single non-back-edge predecessor":
   edges keep passing their own arguments to the header unchanged. The result must
   satisfy `cfg.verify()` (see Open Questions).
 
-**Where it lives, and reuse.** The dominator module is already a standalone
-`rue-cfg` module (`dominators.rs`), independent of `opt/`, and is **already
-shared**: value forwarding / copy propagation (RUE-914, `opt/forward.rs:332`)
-computes a `DominatorTree` to check under `debug_assertions` that a store's block
-dominates the loads it forwards to. LICM and unrolling become its next consumers.
-Putting dominators in one shared place is the "one canonical computation path"
-principle from AGENTS.md — realized here, not merely proposed; a second dominator
+**Where it lives, and reuse.** The dominator module is a standalone
+`rue-cfg` module (`dominators.rs`), independent of `opt/`, and is **shared**:
+value forwarding / copy propagation (RUE-914, `opt/forward.rs:317`) computes a
+`DominatorTree` for its always-on check that a store's block dominates the loads
+it forwards to, and the landed loop analysis (RUE-926) and LICM (RUE-927) are
+its loop consumers; unrolling (RUE-928) becomes the next one. Putting dominators
+in one shared place is the "one canonical computation path" principle from
+AGENTS.md — realized here, not merely proposed; a second dominator
 implementation would be exactly the duplicate-analysis smell that guidance warns
 against, and the landed module already avoids it.
 
@@ -409,16 +414,15 @@ implementation detail, but the *requirement* is not optional.
 
 ## Implementation Phases
 
-Tracking placeholders; this draft implements none of them.
-
 - [x] **Prerequisite (landed, RUE-914): CHK dominator tree** in
   `crates/rue-cfg/src/dominators.rs`, with unit tests; already consumed by copy
   propagation (`opt/forward.rs`).
-- [ ] **Phase 1: Natural-loop analysis** — natural-loop forest + preheader
+- [x] **Phase 1: Natural-loop analysis** — natural-loop forest + preheader
   materialization built on the existing `DominatorTree`, with unit tests.
-  (file RUE-926)
-- [ ] **Phase 2: LICM (trap-free only)** — hoist pure invariant ops; never hoist
-  trapping ops; differential trap-safety cases. `-O3`. (file RUE-927)
+  (landed, RUE-926, July 2026)
+- [x] **Phase 2: LICM (trap-free only)** — hoist pure invariant ops; never hoist
+  trapping ops; differential trap-safety cases. `-O3`. (landed, RUE-927,
+  July 2026)
 - [ ] **Phase 3: Constant-trip full unrolling** — canonical shape only (single
   header, single latch, recognized IV, no unsupported exits); full CFG-subgraph
   cloning; mandatory post-unroll const-fold/simplify/DCE cleanup; under the size

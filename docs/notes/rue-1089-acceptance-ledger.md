@@ -18,9 +18,6 @@ The corpus is valuable in two states:
   execution regression suite. Each flip point is marked
   `FLIPS-POST-ANCHOR-FIX` in the source with the exact mechanical edit.
 
-Background: `docs/notes/rue-1089-current-anonymous-type-behavior.md`,
-`docs/notes/rue-1089-site-inventory.md`.
-
 ## Test homes
 
 | Home | File | Why |
