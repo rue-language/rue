@@ -1,579 +1,18 @@
 //! Direct tests for the production provider body path.
 //!
 //! These tests drive [`analyze_provider_ordinary_body`] — the exact entry point
-//! the compiler's body transaction uses — through an in-memory durable fact
-//! source, so body analysis is exercised against the production
-//! `ProviderBodyHost`/`OrdinaryBodyEngine` seam rather than the retired
-//! whole-program `Sema` test drivers in `tests.rs`. A structural guard at the
-//! bottom of this file keeps the fixture off those drivers by name.
-//!
-//! The fixture mirrors the production topology exactly:
-//!
-//! - The analyzed body's RIR bundle contains only that body's declaration,
-//!   like the compiler's per-body plan materialization. Every other fact —
-//!   callee signatures, nominal shapes, constants, members — crosses the
-//!   provider boundary as explicit in-memory durable data.
-//! - The durable source implements the same five `Durable*Source` contracts
-//!   the compiler-side `CompilerBodyDurableSource` implements, with the same
-//!   fail-closed shape: a fact that was not seeded resolves to `None`, and
-//!   body analysis surfaces the miss as an ordinary spanned diagnostic.
-//! - The `BodyFactProvider` value is a guard stub. The ordinary body path
-//!   consults the durable source for every fact, so every stub operation
-//!   panics; if body analysis ever starts consulting the provider object on
-//!   this path, these tests fail loudly instead of silently absorbing it.
+//! the compiler's body transaction uses — through the in-memory durable fact
+//! source in [`super::provider_fixture`], so body analysis is exercised against
+//! the production `ProviderBodyHost`/`OrdinaryBodyEngine` seam. A structural
+//! guard at the bottom of this file keeps the fixture module and this file off
+//! the retired whole-program `Sema` drivers by name.
 
-use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
+use rue_error::ErrorKind;
 
-use rue_error::{CompileResult, ErrorKind, PreviewFeatures};
-use rue_lexer::Lexer;
-use rue_parser::Parser;
-use rue_rir::{AstGen, RirValidationContext, ValidatedRir};
-use rue_span::FileId;
-use rue_target::Target;
-
-use super::provider::{
-    DropCopyMetadata, ImportResolution, MemberCandidate, NameResolution, NominalWellFormedness,
-    OperatorMemberCandidate, OperatorName, ProviderNamespace,
+use super::provider_fixture::{
+    MethodShape, ProviderFixture, StructShape, error_source_slice, mode_param, value_param,
 };
-use super::{
-    BodyFactProvider, BodyRirBundle, DurableAnonymousShape, DurableAnonymousSource,
-    DurableBodyLookupSource, DurableCallableSource, DurableConst, DurableConstSource,
-    DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
-    DurableSignatureParameter, ProviderOrdinaryBody, ProviderWellKnownOptionFacts,
-    analyze_provider_ordinary_body,
-};
-use crate::types::LangItem;
-use crate::{
-    AnonymousNominalKey, SemanticImportConstValue, SemanticImportType, SemanticParameterMode,
-    StableDefinitionKind, stable_digest,
-};
-
-/// The one durable definition key vocabulary of the fixture: a name, an
-/// optional owner-type name, and the definition kind — the same identity parts
-/// the compiler's `StableDefinitionKey` carries for a single module.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-struct FixtureKey {
-    name: Arc<str>,
-    owner: Option<Arc<str>>,
-    kind: StableDefinitionKind,
-}
-
-impl FixtureKey {
-    fn function(name: &str) -> Self {
-        Self {
-            name: Arc::from(name),
-            owner: None,
-            kind: StableDefinitionKind::Function,
-        }
-    }
-
-    fn nominal(name: &str, kind: StableDefinitionKind) -> Self {
-        Self {
-            name: Arc::from(name),
-            owner: None,
-            kind,
-        }
-    }
-
-    fn member(owner: &str, name: &str, kind: StableDefinitionKind) -> Self {
-        Self {
-            name: Arc::from(name),
-            owner: Some(Arc::from(owner)),
-            kind,
-        }
-    }
-
-    fn value_const(name: &str) -> Self {
-        Self {
-            name: Arc::from(name),
-            owner: None,
-            kind: StableDefinitionKind::ValueConst,
-        }
-    }
-}
-
-/// The fixture's module identity: one logical module path.
-type FixtureModule = Arc<str>;
-
-type FixtureType = SemanticImportType<FixtureKey, FixtureModule>;
-type FixtureConstValue = SemanticImportConstValue<FixtureKey, FixtureModule>;
-
-/// Explicit in-memory declaration facts for one single-module program.
-#[derive(Clone, Default)]
-struct FixtureFacts {
-    module_path: Arc<str>,
-    file: FileId,
-    functions: HashMap<FixtureKey, DurableFunction<FixtureKey, FixtureModule>>,
-    methods: HashMap<FixtureKey, DurableMethod<FixtureKey, FixtureModule>>,
-    nominals: HashMap<FixtureKey, DurableNominal<FixtureKey, FixtureModule>>,
-    consts: HashMap<FixtureKey, DurableConst<FixtureKey, FixtureModule>>,
-}
-
-/// The in-memory durable fact source handed to the production body host. Facts
-/// that were never seeded answer `None`, matching the provider contract that a
-/// miss is authoritative — body analysis then reports the miss as an ordinary
-/// diagnostic instead of inventing a fact.
-#[derive(Clone)]
-struct FixtureFactSource(Rc<FixtureFacts>);
-
-impl DurableNominalSource<FixtureKey, FixtureModule> for FixtureFactSource {
-    fn nominal(&self, key: &FixtureKey) -> Option<DurableNominal<FixtureKey, FixtureModule>> {
-        self.0.nominals.get(key).cloned()
-    }
-
-    fn nominal_file_id(&self, key: &FixtureKey) -> Option<FileId> {
-        self.0.nominals.contains_key(key).then_some(self.0.file)
-    }
-}
-
-impl DurableAnonymousSource<FixtureKey, FixtureModule> for FixtureFactSource {
-    fn anonymous_shape(
-        &self,
-        _key: &AnonymousNominalKey<FixtureKey, FixtureModule>,
-    ) -> Option<DurableAnonymousShape<FixtureKey, FixtureModule>> {
-        // The fixture programs produce anonymous nominals inside the analyzed
-        // body; none are imported from another body's durable facts.
-        None
-    }
-
-    fn definition_symbol_component(&self, key: &FixtureKey) -> String {
-        stable_digest::stable_definition_component(
-            &self.0.module_path,
-            &key.name,
-            key.owner.as_deref(),
-            key.kind as u8,
-        )
-    }
-
-    fn module_symbol_component(&self, module: &FixtureModule) -> String {
-        stable_digest::stable_module_component(module)
-    }
-}
-
-impl DurableCallableSource<FixtureKey, FixtureModule> for FixtureFactSource {
-    fn function(&self, key: &FixtureKey) -> Option<DurableFunction<FixtureKey, FixtureModule>> {
-        self.0.functions.get(key).cloned()
-    }
-
-    fn method(&self, key: &FixtureKey) -> Option<DurableMethod<FixtureKey, FixtureModule>> {
-        self.0.methods.get(key).cloned()
-    }
-
-    fn uses_deferred_body_type_placeholders(&self) -> bool {
-        // Match the production source: comptime-typed signature slots are
-        // deferred placeholders, not concrete `type` values.
-        true
-    }
-}
-
-impl DurableConstSource<FixtureKey, FixtureModule> for FixtureFactSource {
-    fn constant(&self, key: &FixtureKey) -> Option<DurableConst<FixtureKey, FixtureModule>> {
-        self.0.consts.get(key).cloned()
-    }
-
-    fn function_name(&self, key: &FixtureKey) -> Option<Arc<str>> {
-        (key.kind == StableDefinitionKind::Function).then(|| key.name.clone())
-    }
-}
-
-impl DurableBodyLookupSource<FixtureKey, FixtureModule> for FixtureFactSource {
-    fn free_function(&self, _current: &FixtureKey, name: &str) -> Option<FixtureKey> {
-        let key = FixtureKey::function(name);
-        self.0.functions.contains_key(&key).then_some(key)
-    }
-
-    fn value_const(&self, _current: &FixtureKey, name: &str) -> Option<FixtureKey> {
-        let key = FixtureKey::value_const(name);
-        self.0.consts.contains_key(&key).then_some(key)
-    }
-
-    fn nominal(
-        &self,
-        _current: &FixtureKey,
-        name: &str,
-    ) -> Option<(FixtureKey, StableDefinitionKind)> {
-        [StableDefinitionKind::Struct, StableDefinitionKind::Enum]
-            .into_iter()
-            .find_map(|kind| {
-                let key = FixtureKey::nominal(name, kind);
-                self.0.nominals.contains_key(&key).then_some((key, kind))
-            })
-    }
-
-    fn named_member(
-        &self,
-        _current: &FixtureKey,
-        owner: &str,
-        name: &str,
-    ) -> Option<(FixtureKey, bool)> {
-        [
-            StableDefinitionKind::Method,
-            StableDefinitionKind::AssociatedFunction,
-        ]
-        .into_iter()
-        .find_map(|kind| {
-            let key = FixtureKey::member(owner, name, kind);
-            let method = self.0.methods.get(&key)?;
-            Some((key, method.has_self))
-        })
-    }
-
-    fn root_module_binding(
-        &self,
-        _current: &FixtureKey,
-        _name: &str,
-    ) -> Option<super::DurableBodyModuleBinding<FixtureKey, FixtureModule>> {
-        // The fixture is a single module with no `@import` bindings.
-        None
-    }
-
-    fn module_binding(
-        &self,
-        _module: &FixtureModule,
-        _name: &str,
-    ) -> Option<super::DurableBodyModuleBinding<FixtureKey, FixtureModule>> {
-        None
-    }
-
-    fn qualified_free_function(&self, _module: &FixtureModule, _name: &str) -> Option<FixtureKey> {
-        None
-    }
-
-    fn qualified_value_const(&self, _module: &FixtureModule, _name: &str) -> Option<FixtureKey> {
-        None
-    }
-
-    fn qualified_nominal(
-        &self,
-        _module: &FixtureModule,
-        _name: &str,
-    ) -> Option<(FixtureKey, StableDefinitionKind)> {
-        None
-    }
-
-    fn module_path(&self, module: &FixtureModule) -> String {
-        module.to_string()
-    }
-
-    fn definition_kind(&self, definition: &FixtureKey) -> Option<StableDefinitionKind> {
-        Some(definition.kind)
-    }
-
-    fn definition_name(&self, definition: &FixtureKey) -> Option<Arc<str>> {
-        Some(definition.name.clone())
-    }
-
-    fn definition_owner_name(&self, definition: &FixtureKey) -> Option<Arc<str>> {
-        definition.owner.clone()
-    }
-}
-
-/// Guard stub for the exact-fact provider boundary. The ordinary provider body
-/// path answers every fact through the durable source, so no operation here is
-/// reachable; a panic means body analysis grew a new provider consultation the
-/// fixture (and the production wiring in `revisioned_query_database.rs`) must
-/// learn about.
-struct UnconsultedFactProvider;
-
-macro_rules! unconsulted {
-    () => {
-        unreachable!("ordinary provider body analysis answers this fact through the durable source")
-    };
-}
-
-impl BodyFactProvider for UnconsultedFactProvider {
-    type ModuleRef = FixtureModule;
-    type DeclarationRef = FixtureKey;
-    type BodyInstanceRef = FixtureKey;
-    type ReceiverType = Arc<str>;
-
-    type DeclarationIdentity = ();
-    type Signature = ();
-    type ConstComptime = ();
-    type ComptimeType = ();
-    type ComptimeValue = ();
-    type ComptimeCall = ();
-    type AnonymousFacts = ();
-    type ProducerBodyFacts = ();
-    type ToolchainFacts = ();
-
-    fn lookup_unqualified(
-        &self,
-        _module: &Self::ModuleRef,
-        _namespace: ProviderNamespace,
-        _name: &str,
-    ) -> NameResolution {
-        unconsulted!()
-    }
-
-    fn lookup_qualified(
-        &self,
-        _module: &Self::ModuleRef,
-        _namespace: ProviderNamespace,
-        _name: &str,
-    ) -> NameResolution {
-        unconsulted!()
-    }
-
-    fn method_candidates(
-        &self,
-        _receiver: &Self::ReceiverType,
-        _name: &str,
-    ) -> Vec<MemberCandidate<Self::DeclarationRef>> {
-        unconsulted!()
-    }
-
-    fn operator_candidates(
-        &self,
-        _receiver: &Self::ReceiverType,
-        _operator: OperatorName,
-    ) -> Vec<OperatorMemberCandidate<Self::DeclarationRef>> {
-        unconsulted!()
-    }
-
-    fn declaration_identity(
-        &self,
-        _decl: &Self::DeclarationRef,
-    ) -> Option<Self::DeclarationIdentity> {
-        unconsulted!()
-    }
-
-    fn signature(&self, _decl: &Self::DeclarationRef) -> Option<Self::Signature> {
-        unconsulted!()
-    }
-
-    fn const_comptime(&self, _decl: &Self::DeclarationRef) -> Option<Self::ConstComptime> {
-        unconsulted!()
-    }
-
-    fn reduce_comptime_call(
-        &self,
-        _decl: &Self::DeclarationRef,
-        _type_arguments: &[(Arc<str>, Self::ComptimeType)],
-        _value_arguments: &[(Arc<str>, Self::ComptimeValue)],
-    ) -> Option<Self::ComptimeCall> {
-        unconsulted!()
-    }
-
-    fn nominal_well_formedness(
-        &self,
-        _decl: &Self::DeclarationRef,
-    ) -> Option<NominalWellFormedness> {
-        unconsulted!()
-    }
-
-    fn anonymous_facts(&self, _decl: &Self::DeclarationRef) -> Option<Self::AnonymousFacts> {
-        unconsulted!()
-    }
-
-    fn language_item(
-        &self,
-        _module: &Self::ModuleRef,
-        _namespace: ProviderNamespace,
-        _name: &str,
-    ) -> Option<LangItem> {
-        unconsulted!()
-    }
-
-    fn drop_copy_metadata(&self, _receiver: &Self::ReceiverType) -> Option<DropCopyMetadata> {
-        unconsulted!()
-    }
-
-    fn resolve_import(&self, _module: &Self::ModuleRef, _specifier: &str) -> ImportResolution {
-        unconsulted!()
-    }
-
-    fn producer_body_facts(
-        &self,
-        _instance: &Self::BodyInstanceRef,
-    ) -> Option<Self::ProducerBodyFacts> {
-        unconsulted!()
-    }
-
-    fn trusted_toolchain_facts(&self, _instance: &Self::BodyInstanceRef) -> Self::ToolchainFacts {
-        unconsulted!()
-    }
-}
-
-fn value_param(
-    name: &str,
-    ty: FixtureType,
-) -> DurableSignatureParameter<FixtureKey, FixtureModule> {
-    DurableSignatureParameter {
-        name: Arc::from(name),
-        ty,
-        mode: SemanticParameterMode::Value,
-        is_comptime: false,
-    }
-}
-
-/// Builder for one single-module provider fixture: explicit durable
-/// declaration facts plus the production analysis helper.
-struct ProviderFixture {
-    facts: FixtureFacts,
-}
-
-impl ProviderFixture {
-    fn new() -> Self {
-        Self {
-            facts: FixtureFacts {
-                module_path: Arc::from("fixture/main.rue"),
-                file: FileId::DEFAULT,
-                ..FixtureFacts::default()
-            },
-        }
-    }
-
-    fn declare_function(
-        &mut self,
-        name: &str,
-        parameters: Vec<DurableSignatureParameter<FixtureKey, FixtureModule>>,
-        result: FixtureType,
-    ) -> FixtureKey {
-        let key = FixtureKey::function(name);
-        self.facts.functions.insert(
-            key.clone(),
-            DurableFunction {
-                parameters: parameters.into(),
-                result,
-                type_syntax: None,
-                is_public: true,
-                is_unchecked: false,
-                is_extern: false,
-            },
-        );
-        key
-    }
-
-    fn declare_struct(
-        &mut self,
-        name: &str,
-        fields: Vec<(&str, FixtureType)>,
-        is_copy: bool,
-    ) -> FixtureKey {
-        let key = FixtureKey::nominal(name, StableDefinitionKind::Struct);
-        self.facts.nominals.insert(
-            key.clone(),
-            DurableNominal {
-                name: Arc::from(name),
-                module_path: self.facts.module_path.clone(),
-                is_public: true,
-                is_builtin: false,
-                lang_item: None,
-                is_repr_c: false,
-                has_destructor: false,
-                body: DurableNominalBody::Struct {
-                    fields: fields
-                        .into_iter()
-                        .map(|(field, ty)| (Arc::from(field), ty))
-                        .collect(),
-                    is_copy,
-                    is_linear: false,
-                },
-            },
-        );
-        key
-    }
-
-    fn declare_method(
-        &mut self,
-        owner: &FixtureKey,
-        name: &str,
-        parameters: Vec<DurableSignatureParameter<FixtureKey, FixtureModule>>,
-        result: FixtureType,
-    ) -> FixtureKey {
-        let key = FixtureKey::member(&owner.name, name, StableDefinitionKind::Method);
-        self.facts.methods.insert(
-            key.clone(),
-            DurableMethod {
-                receiver: SemanticImportType::Nominal(owner.clone()),
-                parameters: parameters.into(),
-                result,
-                type_syntax: None,
-                has_self: true,
-                self_mode: SemanticParameterMode::Value,
-                is_accessor: false,
-            },
-        );
-        key
-    }
-
-    fn declare_const(
-        &mut self,
-        name: &str,
-        ty: FixtureType,
-        value: FixtureConstValue,
-    ) -> FixtureKey {
-        let key = FixtureKey::value_const(name);
-        self.facts.consts.insert(
-            key.clone(),
-            DurableConst {
-                is_public: true,
-                ty,
-                value,
-            },
-        );
-        key
-    }
-
-    /// Run the production provider body path over `source`, which must contain
-    /// exactly the analyzed free function's declaration — mirroring the
-    /// compiler's per-body plan, whose RIR bundle carries one declaration and
-    /// nothing else. Every contextual fact must come from the seeded durable
-    /// data, exactly as it does across the production provider boundary.
-    fn analyze(
-        &self,
-        source: &str,
-        function: &str,
-    ) -> CompileResult<ProviderOrdinaryBody<FixtureKey, FixtureModule>> {
-        let (tokens, interner) = Lexer::new(source).tokenize().expect("fixture source lexes");
-        let (ast, interner) = Parser::new(tokens, interner)
-            .parse()
-            .expect("fixture source parses");
-        assert_eq!(
-            ast.items.len(),
-            1,
-            "the analyzed body plan carries exactly one declaration; \
-             seed further context as durable facts instead"
-        );
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let editor = astgen.finish_editor();
-        let source_lengths = [(self.facts.file, source.len() as u32)];
-        let rir = ValidatedRir::finish(
-            editor,
-            &RirValidationContext {
-                symbol_count: interner.len(),
-                source_lengths: &source_lengths,
-            },
-        )
-        .expect("fixture RIR validates");
-        let bundle = BodyRirBundle::new(rir, interner);
-        let facts = FixtureFactSource(Rc::new(self.facts.clone()));
-        analyze_provider_ordinary_body(
-            &UnconsultedFactProvider,
-            facts,
-            &bundle,
-            FixtureKey::function(function),
-            function,
-            StableDefinitionKind::Function,
-            None,
-            Target::host().expect("host target resolves"),
-            PreviewFeatures::new(),
-            &ProviderWellKnownOptionFacts {
-                nominals: Vec::new(),
-                option_by_payload: Vec::new(),
-            },
-        )
-    }
-}
-
-fn error_source_slice<'s>(source: &'s str, error: &rue_error::CompileError) -> &'s str {
-    let span = error.span().expect("diagnostic carries its source span");
-    &source[span.start as usize..span.end as usize]
-}
+use crate::{SemanticImportConstValue, SemanticImportType, StableDefinitionKind};
 
 // Migrated from `tests::test_analyze_addition`: ordinary expression typing on
 // the production provider path.
@@ -843,28 +282,30 @@ fn provider_body_records_referenced_callee_definitions() {
 }
 
 // Structural guard: the fixture helper drives the production provider entry
-// point and never re-enters the retired whole-program `Sema` test drivers,
-// and that entry point runs the one canonical ordinary-body engine.
+// point and never re-enters a retired whole-program `Sema` driver, and that
+// entry point runs the one canonical ordinary-body engine.
 #[test]
 fn fixture_helper_drives_only_the_production_provider_entry_point() {
-    let fixture_source = include_str!("provider_fixture_tests.rs");
+    let fixture_source = include_str!("provider_fixture.rs");
     let entry = concat!("analyze_provider_", "ordinary_body(");
     assert!(
         fixture_source.contains(entry),
         "the fixture helper must call the production provider entry point"
     );
-    for retired in [
-        concat!("Sema::", "new_synthetic"),
-        concat!("new_", "synthetic("),
-        concat!("bind_declarations", "_for_test"),
-        concat!("analyze_all", "_for_test"),
-        concat!("analyze_", "all("),
-        concat!("bind_", "declarations("),
-    ] {
-        assert!(
-            !fixture_source.contains(retired),
-            "the fixture must not re-enter the retired Sema driver: {retired}"
-        );
+    for source in [fixture_source, include_str!("provider_fixture_tests.rs")] {
+        for retired in [
+            concat!("Sema::", "new_synthetic"),
+            concat!("new_", "synthetic("),
+            concat!("bind_declarations", "_for_test"),
+            concat!("analyze_all", "_for_test"),
+            concat!("analyze_", "all("),
+            concat!("bind_", "declarations("),
+        ] {
+            assert!(
+                !source.contains(retired),
+                "the fixture must not re-enter a retired Sema driver: {retired}"
+            );
+        }
     }
     // The entry point the helper calls runs the one canonical ordinary-body
     // engine. Matching the constructor and the resolved-signature entry
@@ -879,3 +320,279 @@ fn fixture_helper_drives_only_the_production_provider_entry_point() {
         "the provider entry point must run the engine's resolved ordinary-body analysis"
     );
 }
+
+// A named method body analyzed directly: the single declaration is the owning
+// nominal, and the member is selected exactly as the compiler's member body
+// transaction selects it.
+#[test]
+fn provider_member_body_types_receiver_field_read() {
+    let mut fixture = ProviderFixture::new();
+    let point = fixture.declare_struct("Point", vec![("x", SemanticImportType::I32)], true);
+    fixture.declare_method(&point, "double", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze_member(
+            "struct Point {
+    x: i32,
+
+    fn double(self) -> i32 {
+        self.x + self.x
+    }
+}",
+            "Point",
+            "double",
+            StableDefinitionKind::Method,
+        )
+        .expect("method body analyzes");
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+}
+
+// A destructor body analyzed directly: the single declaration is the
+// `drop fn` item, and the owning nominal crosses as a durable fact.
+#[test]
+fn provider_destructor_body_analyzes_against_durable_owner() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_struct_with(
+        "Resource",
+        vec![("handle", SemanticImportType::I32)],
+        false,
+        StructShape {
+            has_destructor: true,
+            ..StructShape::default()
+        },
+    );
+    let body = fixture
+        .analyze_destructor("drop fn Resource(self) { let _open = self.handle; }", "Resource")
+        .expect("destructor body analyzes");
+    assert_eq!(body.function.air.return_type(), crate::types::Type::UNIT);
+}
+
+// A RIR edit between lowering and validation probes analysis behavior on
+// instruction shapes the frontend cannot produce: a malformed internal
+// intrinsic arity is diagnosed instead of panicking.
+#[test]
+fn provider_body_reports_malformed_internal_intrinsic_arity() {
+    use rue_rir::{InstData, InternalIntrinsic};
+
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let error = fixture
+        .analyze_edited("fn main() { @dbg(1); }", "main", |rir| {
+            let intrinsic_ref = rir
+                .iter()
+                .find_map(|(inst_ref, inst)| match inst.data {
+                    InstData::Intrinsic { .. } => Some(inst_ref),
+                    _ => None,
+                })
+                .expect("lowered body contains the probed intrinsic");
+            rir.replace_internal_intrinsic(intrinsic_ref, InternalIntrinsic::IterLen, &[])
+                .expect("intrinsic replacement applies");
+        })
+        .map(|_| ())
+        .expect_err("malformed compiler RIR must be diagnosed");
+    assert!(
+        matches!(
+            &error.kind,
+            ErrorKind::InternalError(message)
+                if message.contains("`__rue_iter_len` expects 1 argument, found 0")
+        ),
+        "unexpected diagnostic: {error:?}"
+    );
+}
+
+// An `inout` argument that names no place is rejected during body analysis;
+// the callee's parameter mode crosses the boundary as a durable signature
+// fact.
+#[test]
+fn provider_body_rejects_inout_argument_without_a_place() {
+    use crate::SemanticParameterMode;
+
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function(
+        "take",
+        vec![mode_param(
+            "x",
+            SemanticImportType::I32,
+            SemanticParameterMode::Inout,
+        )],
+        SemanticImportType::Unit,
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let error = fixture
+        .analyze("fn main() -> i32 { take(inout 1); 0 }", "main")
+        .map(|_| ())
+        .expect_err("non-place must fail in sema");
+    assert!(
+        matches!(&error.kind, ErrorKind::InoutNonLvalue),
+        "unexpected diagnostic: {error:?}"
+    );
+}
+
+// A declared enum's variant is constructed from its durable nominal fact.
+#[test]
+fn provider_body_constructs_declared_enum_variant() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_enum(
+        "Color",
+        vec![("Red", Vec::new()), ("Green", Vec::new())],
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let c = Color.Red;
+    0
+}",
+            "main",
+        )
+        .expect("enum construction analyzes");
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+}
+
+// A legal accessor body analyzed directly under the preview gate: the
+// accessor flag and receiver mode cross as durable method facts.
+#[test]
+fn provider_accessor_body_analyzes_under_preview_gate() {
+    use crate::SemanticParameterMode;
+    use rue_error::PreviewFeature;
+
+    let mut preview = rue_error::PreviewFeatures::new();
+    preview.insert(PreviewFeature::BorrowAccessors);
+    let mut fixture = ProviderFixture::with_preview(preview);
+    let holder = fixture.declare_struct("Holder", vec![("x", SemanticImportType::I64)], true);
+    fixture.declare_method_with(
+        &holder,
+        "xr",
+        Vec::new(),
+        SemanticImportType::I64,
+        MethodShape {
+            has_self: true,
+            self_mode: SemanticParameterMode::Borrow,
+            is_accessor: true,
+        },
+    );
+    let body = fixture
+        .analyze_member(
+            "struct Holder {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}",
+            "Holder",
+            "xr",
+            StableDefinitionKind::Method,
+        )
+        .expect("legal accessor body analyzes");
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I64);
+}
+
+// Durable body exports anchor spans relative to the body, so surrounding
+// source relocation leaves the exported body identical.
+#[test]
+fn provider_body_export_ignores_surrounding_source_relocation() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let original = fixture
+        .analyze("fn main() -> i32 { 42 }", "main")
+        .expect("original body analyzes");
+    let relocated = fixture
+        .analyze("\n\nfn main() -> i32 { 42 }\n", "main")
+        .expect("relocated body analyzes");
+    assert_eq!(original.export.body, relocated.export.body);
+}
+
+// A body that only warns still exports, with the warning preserved both in
+// the analysis result and inside the durable export.
+#[test]
+fn provider_body_with_warning_exports_and_keeps_the_warning() {
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::Unit);
+    let body = fixture
+        .analyze("fn main() { let unused = 1; }", "main")
+        .expect("warning-only body analyzes");
+    assert_eq!(body.export.body.warnings.len(), 1);
+    assert!(body.warnings.iter().any(|warning| {
+        matches!(warning.kind, rue_error::WarningKind::UnusedVariable(ref name) if name == "unused")
+    }));
+    assert_eq!(body.export.body.instructions.len(), body.function.air.len());
+    assert_eq!(
+        body.export.body.places.len(),
+        body.function.air.places().len()
+    );
+    assert!(body.export.body.strings.is_empty());
+}
+
+// The durable export of a supported body imports into a fresh AIR epoch
+// byte-for-byte: instruction stream, types, spans, places, projections,
+// param drops, slot counts, borrow slots, and strings all round-trip.
+#[test]
+fn provider_body_export_round_trips_through_a_fresh_air_epoch_exactly() {
+    use std::cell::Cell;
+
+    let mut fixture = ProviderFixture::new();
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let source = "fn main() -> i32 { if 1 < 2 { (3 + 4) * 5 } else { 6 - 7 } }";
+    let body_span = Cell::new(None);
+    let body = fixture
+        .analyze_edited(source, "main", |rir| {
+            body_span.set(rir.iter().find_map(|(_, inst)| match inst.data {
+                rue_rir::InstData::FnDecl { body, .. } => Some(rir.get(body).span),
+                _ => None,
+            }));
+        })
+        .expect("supported body analyzes");
+    let body_span = body_span.get().expect("main body span");
+
+    let epoch = crate::SemanticImportEpoch::<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >::new(vec![], vec![], vec![])
+    .expect("empty import epoch constructs");
+    let imported = epoch
+        .import_body(&body.export.body, body_span)
+        .expect("exported body imports");
+    let source_function = &body.function;
+
+    assert_eq!(
+        source_function.air.return_type(),
+        imported.air.return_type()
+    );
+    assert_eq!(source_function.air.len(), imported.air.len());
+    for ((source_ref, source_inst), (imported_ref, imported_inst)) in
+        source_function.air.iter().zip(imported.air.iter())
+    {
+        assert_eq!(source_ref.as_u32(), imported_ref.as_u32());
+        assert_eq!(
+            format!("{:?}", source_inst.data),
+            format!("{:?}", imported_inst.data)
+        );
+        assert_eq!(source_inst.ty, imported_inst.ty);
+        assert_eq!(source_inst.span, imported_inst.span);
+    }
+    assert_eq!(
+        format!("{:?}", source_function.air.places()),
+        format!("{:?}", imported.air.places())
+    );
+    assert_eq!(
+        format!("{:?}", source_function.air.projections()),
+        format!("{:?}", imported.air.projections())
+    );
+    assert_eq!(source_function.air.param_drops(), imported.air.param_drops());
+    assert_eq!(source_function.num_locals, imported.num_locals);
+    assert_eq!(source_function.num_param_slots, imported.num_param_slots);
+    assert_eq!(source_function.param_modes, imported.param_modes);
+    assert_eq!(
+        source_function.allow_unreachable_code,
+        imported.allow_unreachable_code
+    );
+    assert_eq!(body.strings, imported.strings);
+    assert!(imported.warnings.is_empty());
+    for slot in 0..source_function.num_locals {
+        assert_eq!(
+            source_function.air.is_borrow_slot(slot),
+            imported.air.is_borrow_slot(slot)
+        );
+    }
+}
+
