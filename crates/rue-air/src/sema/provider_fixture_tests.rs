@@ -361,7 +361,10 @@ fn provider_destructor_body_analyzes_against_durable_owner() {
         },
     );
     let body = fixture
-        .analyze_destructor("drop fn Resource(self) { let _open = self.handle; }", "Resource")
+        .analyze_destructor(
+            "drop fn Resource(self) { let _open = self.handle; }",
+            "Resource",
+        )
         .expect("destructor body analyzes");
     assert_eq!(body.function.air.return_type(), crate::types::Type::UNIT);
 }
@@ -431,10 +434,7 @@ fn provider_body_rejects_inout_argument_without_a_place() {
 #[test]
 fn provider_body_constructs_declared_enum_variant() {
     let mut fixture = ProviderFixture::new();
-    fixture.declare_enum(
-        "Color",
-        vec![("Red", Vec::new()), ("Green", Vec::new())],
-    );
+    fixture.declare_enum("Color", vec![("Red", Vec::new()), ("Green", Vec::new())]);
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let body = fixture
         .analyze(
@@ -578,7 +578,10 @@ fn provider_body_export_round_trips_through_a_fresh_air_epoch_exactly() {
         format!("{:?}", source_function.air.projections()),
         format!("{:?}", imported.air.projections())
     );
-    assert_eq!(source_function.air.param_drops(), imported.air.param_drops());
+    assert_eq!(
+        source_function.air.param_drops(),
+        imported.air.param_drops()
+    );
     assert_eq!(source_function.num_locals, imported.num_locals);
     assert_eq!(source_function.num_param_slots, imported.num_param_slots);
     assert_eq!(source_function.param_modes, imported.param_modes);
@@ -595,4 +598,3 @@ fn provider_body_export_round_trips_through_a_fresh_air_epoch_exactly() {
         );
     }
 }
-
