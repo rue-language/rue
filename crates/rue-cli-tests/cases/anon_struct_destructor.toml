@@ -224,3 +224,82 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 stdout = "100\n22\n11\n"
 exit_code = 0
+
+# A destructor declared on an anonymous type that is only created inside
+# ANOTHER anonymous type's method body stays rooted through composition: the
+# nested `Good` instance drops inside `A().get`, running its destructor and
+# the free function that destructor calls.
+[[case]]
+name = "nested_in_body_destructor_remains_rooted"
+description = "A drop fn on an anonymous type created inside another anonymous type's method runs at that body's scope exit."
+files = [{ path = "main.rue", source = """
+fn Good() -> type {
+    struct { x: i32, drop fn(self) { @dbg(77); } }
+}
+fn A() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 {
+            let T = Good();
+            let _kept: T = T { x: 0 };
+            10
+        }
+    }
+}
+fn B() -> type {
+    struct { x: i32, fn get(self) -> i32 { 1 } }
+}
+fn run(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let T = B();
+    let value: T = T { x: 0 };
+    value.get() + run(0)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "77\n"
+exit_code = 11
+
+# The same nested shape stays rooted when the destructor-owning type is also
+# reachable independently from main: both the direct instance and the one
+# created inside `B().get` run the destructor.
+[[case]]
+name = "abandoned_but_reachable_nested_destructor_remains_rooted"
+description = "A nested anonymous type's destructor survives composition when the type is reachable from two bodies."
+files = [{ path = "main.rue", source = """
+fn A() -> type {
+    struct { x: i32, fn get(self) -> i32 { 10 } }
+}
+fn Bad() -> type {
+    struct { x: i32, drop fn(self) { @dbg(88); } }
+}
+fn B() -> type {
+    struct {
+        x: i32,
+        fn get(self) -> i32 {
+            let T = Bad();
+            let _kept: T = T { x: 0 };
+            1
+        }
+    }
+}
+fn run(comptime n: i32) -> i32 {
+    let T = A();
+    let value: T = T { x: n };
+    value.get()
+}
+fn main() -> i32 {
+    let BadT = Bad();
+    let _bad: BadT = BadT { x: 0 };
+    let T = B();
+    let value: T = T { x: 0 };
+    value.get() + run(0)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "88\n88\n"
+exit_code = 11
