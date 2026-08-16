@@ -1710,6 +1710,8 @@ where
             .cloned()
             .or_else(|| self.endpoint.durable_anonymous_identity(owner_type))?;
         let issued = self.register_and_issue_anonymous_identity(&identity)?;
+        self.endpoint
+            .register_anonymous_nominal(issued.clone(), identity.clone());
         self.register_provider_anonymous_method_endpoints_with_issued(
             &identity, owner_type, issued,
         )?;
@@ -2665,8 +2667,6 @@ where
         owner_type: Type,
         issued_identity: super::anon_structs::IssuedAnonymousNominalKey,
     ) -> Option<()> {
-        self.endpoint
-            .register_anonymous_nominal(issued_identity.clone(), identity.clone());
         let Some(struct_id) = owner_type.as_struct() else {
             return Some(());
         };
