@@ -63,15 +63,39 @@ pub fn optimize(instructions: &mut Vec<X86Inst>) -> usize {
     // Pass 2: Adjacent instruction combining (add chains)
     changes += combine_adjacent(instructions);
 
-    // Pass 3: Remove identity instructions
-    let mut i = 0;
-    while i < instructions.len() {
-        if is_redundant(&instructions[i]) && removal_preserves_flags(instructions, i) {
-            instructions.remove(i);
-            changes += 1;
-        } else {
-            i += 1;
+    // Pass 3: Remove identity instructions.
+    //
+    // Mark against the pristine vector, then compact once. Deleting in place
+    // with `Vec::remove` shifts the whole tail per removal, and the FLAGS gate
+    // rescanned that tail per candidate, so a long run of redundant
+    // instructions cost O(removals × n) twice over. AArch64's pass 3 already
+    // compacts with `retain`; this matches it while keeping the FLAGS gate,
+    // which AArch64 does not need.
+    //
+    // Marking against the pristine vector is what the in-place loop already
+    // saw. It only ever removed instructions *before* the one it was
+    // examining, so the forward scan behind the gate never observed a removed
+    // instruction — the tail at each decision point was the pristine tail.
+    // Passes 1 and 2 rewrote the stream, so FLAGS-liveness is recomputed here
+    // rather than reusing the pass-1 snapshot.
+    let flags_dead = compute_flags_dead(instructions);
+    let mut doomed = vec![false; instructions.len()];
+    let mut removals = 0;
+    for (i, inst) in instructions.iter().enumerate() {
+        if is_redundant(inst) && removal_preserves_flags(inst, flags_dead[i]) {
+            doomed[i] = true;
+            removals += 1;
         }
+    }
+
+    if removals > 0 {
+        let mut i = 0;
+        instructions.retain(|_| {
+            let keep = !doomed[i];
+            i += 1;
+            keep
+        });
+        changes += removals;
     }
 
     changes
@@ -159,17 +183,20 @@ fn is_shift_by_zero(inst: &X86Inst) -> bool {
     )
 }
 
-/// Check that removing the (redundant) instruction at `idx` does not drop a
-/// FLAGS write that a later reader observes (RUE-152).
+/// Check that removing the (redundant) `inst` does not drop a FLAGS write that
+/// a later reader observes (RUE-152).
 ///
 /// `add r, 0` and `xor r, 0` are register no-ops but still set FLAGS;
-/// shift-by-zero and `mov r, r` touch no flags at all.
-fn removal_preserves_flags(instructions: &[X86Inst], idx: usize) -> bool {
-    let inst = &instructions[idx];
+/// shift-by-zero and `mov r, r` touch no flags at all, so they need no gate.
+///
+/// `flags_dead` must equal `flags_dead_after(instructions, idx)` for the
+/// instruction's own position (precomputed by the caller so a whole pass costs
+/// O(n), not O(n²)).
+fn removal_preserves_flags(inst: &X86Inst, flags_dead: bool) -> bool {
     if !writes_flags(inst) || is_shift_by_zero(inst) {
         return true;
     }
-    flags_dead_after(instructions, idx)
+    flags_dead
 }
 
 /// Transform the instruction at `idx` to a more efficient form.
@@ -978,6 +1005,73 @@ mod tests {
         optimize(&mut instructions);
 
         assert!(matches!(instructions[0], X86Inst::XorRR { .. }));
+    }
+
+    #[test]
+    fn test_redundant_mov_removed_before_flags_reader() {
+        // `mov rax, rax` touches no flags, so removing it cannot disturb the
+        // flags `jz` consumes: it goes even with a reader immediately after.
+        let mut instructions = vec![
+            X86Inst::CmpRI {
+                src: Operand::Physical(Reg::Rbx),
+                imm: 42,
+            },
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Physical(Reg::Rax),
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 1);
+        assert_eq!(instructions.len(), 3);
+        assert!(matches!(instructions[0], X86Inst::CmpRI { imm: 42, .. }));
+        assert!(matches!(instructions[1], X86Inst::Jz { .. }));
+        assert!(matches!(instructions[2], X86Inst::Ret));
+    }
+
+    #[test]
+    fn test_removals_gate_each_instruction_at_its_own_position() {
+        // Pass 3 marks against the pristine vector and compacts once, so every
+        // gate decision must still be read at that instruction's own position:
+        // the flags-writing `xor r, 0` in the middle stays because `jz` reads
+        // its flags, while the two flag-free movs around it go, and the
+        // trailing `add r, 0` goes because `ret` leaves its flags dead.
+        let mut instructions = vec![
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rax),
+                src: Operand::Physical(Reg::Rax),
+            },
+            X86Inst::XorRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rbx),
+                src: Operand::Physical(Reg::Rbx),
+            },
+            X86Inst::Jz {
+                label: LabelId::new(0),
+            },
+            X86Inst::AddRI {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 0,
+            },
+            X86Inst::Ret,
+        ];
+
+        let changes = optimize(&mut instructions);
+
+        assert_eq!(changes, 3);
+        assert_eq!(instructions.len(), 3);
+        assert!(matches!(instructions[0], X86Inst::XorRI { imm: 0, .. }));
+        assert!(matches!(instructions[1], X86Inst::Jz { .. }));
+        assert!(matches!(instructions[2], X86Inst::Ret));
     }
 
     #[test]
