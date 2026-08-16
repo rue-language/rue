@@ -1,6 +1,6 @@
 //! In-process canonical parse, merge, and RIR query orchestration.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use crate::{
@@ -5281,28 +5281,35 @@ impl CompilerSession {
                 .cmp(&right.record.codegen.defined_symbol)
         });
 
-        warnings.sort_by(|left, right| {
-            let key = |warning: &CompileWarning| {
+        // Presentation order for warnings is module path, then span, then the
+        // rendered text. Building that key costs a module lookup and two
+        // rendered strings, so it is decorated once per warning rather than
+        // twice per comparison. The first module wins a duplicated file id,
+        // matching the linear scan this replaces.
+        let mut module_ids: HashMap<rue_span::FileId, &str> =
+            HashMap::with_capacity(graph.modules.len());
+        for module in graph.modules.iter() {
+            module_ids
+                .entry(module.file_id())
+                .or_insert_with(|| module.module_id().as_str());
+        }
+        let mut keyed = warnings
+            .drain(..)
+            .map(|warning| {
                 let span = warning.span();
-                let module = span
-                    .and_then(|span| {
-                        graph
-                            .modules
-                            .iter()
-                            .find(|module| module.file_id() == span.file_id)
-                    })
-                    .map(|module| module.module_id().as_str())
-                    .unwrap_or("");
-                (
-                    module,
+                let key = (
+                    span.and_then(|span| module_ids.get(&span.file_id).copied())
+                        .unwrap_or(""),
                     span.map(|span| span.start).unwrap_or(0),
                     span.map(|span| span.end).unwrap_or(0),
                     warning.to_string(),
                     format!("{:?}", warning.diagnostic()),
-                )
-            };
-            key(left).cmp(&key(right))
-        });
+                );
+                (key, warning)
+            })
+            .collect::<Vec<_>>();
+        keyed.sort_by(|left, right| left.0.cmp(&right.0));
+        warnings.extend(keyed.into_iter().map(|(_, warning)| warning));
         warnings.dedup();
 
         let source = self
@@ -5986,62 +5993,90 @@ fn rooted_unused_function_warnings(
     );
     referenced.extend(warning_references.iter().cloned());
 
-    graph
-        .declarations
-        .iter()
-        .filter_map(|declaration| {
-            let name = declaration.key.name();
-            if declaration.key.kind() != crate::StableDefinitionKind::Function
-                || name == "main"
-                || declaration.key.module().is_trusted_standard_library()
-                || declaration.is_public
-                || name.starts_with('_')
-                || referenced.contains(&declaration.key)
-            {
-                return None;
-            }
-            let module = graph
-                .modules
-                .iter()
-                .find(|module| module.module_id() == declaration.key.module())?;
-            let candidate = crate::declaration_candidate::DeclarationCandidateKey {
-                module: declaration.key.module().clone(),
-                category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
-                name: Arc::from(name),
-                owner: None,
-                duplicate_discriminator: 0,
-            };
-            let locator = module.definitions().declaration_locator(&candidate)?;
-            let function = module.ast().items.iter().find_map(|item| match item {
-                rue_parser::ast::Item::Function(function)
-                    if function.span == locator.declaration_span =>
-                {
-                    Some(function)
-                }
-                _ => None,
-            })?;
-            let allows_unused = function.directives.iter().any(|directive| {
-                module.resolve_raw_symbol(directive.name.name) == "allow"
-                    && directive.args.iter().any(|argument| match argument {
-                        rue_parser::ast::DirectiveArg::Ident(argument) => {
-                            module.resolve_raw_symbol(argument.name) == "unused_function"
-                        }
-                    })
+    /// One module's warning-collection lookups: the module itself, plus the
+    /// span index of its function items, built on first use so a program whose
+    /// candidates touch one module never indexes the rest.
+    struct CandidateModule<'a> {
+        module: &'a crate::parsed_modules::ParsedModule,
+        functions: Option<HashMap<rue_span::Span, &'a rue_parser::ast::Function>>,
+    }
+
+    // Candidate declarations are keyed by module and located by declaration
+    // span, so both lookups are indexed rather than scanned per candidate. The
+    // first module and the first item win a duplicated key, matching the linear
+    // scans these replace.
+    let mut modules: HashMap<&crate::ModuleId, CandidateModule<'_>> =
+        HashMap::with_capacity(graph.modules.len());
+    for module in graph.modules.iter() {
+        modules
+            .entry(module.module_id())
+            .or_insert_with(|| CandidateModule {
+                module,
+                functions: None,
             });
-            if allows_unused {
-                return None;
+    }
+
+    let mut warnings = Vec::new();
+    for declaration in graph.declarations.iter() {
+        let name = declaration.key.name();
+        if declaration.key.kind() != crate::StableDefinitionKind::Function
+            || name == "main"
+            || declaration.key.module().is_trusted_standard_library()
+            || declaration.is_public
+            || name.starts_with('_')
+            || referenced.contains(&declaration.key)
+        {
+            continue;
+        }
+        let Some(entry) = modules.get_mut(declaration.key.module()) else {
+            continue;
+        };
+        let module = entry.module;
+        let candidate = crate::declaration_candidate::DeclarationCandidateKey {
+            module: declaration.key.module().clone(),
+            category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+            name: Arc::from(name),
+            owner: None,
+            duplicate_discriminator: 0,
+        };
+        let Some(locator) = module.definitions().declaration_locator(&candidate) else {
+            continue;
+        };
+        let functions = entry.functions.get_or_insert_with(|| {
+            let items = &module.ast().items;
+            let mut spans = HashMap::with_capacity(items.len());
+            for item in items.iter() {
+                if let rue_parser::ast::Item::Function(function) = item {
+                    spans.entry(function.span).or_insert(function);
+                }
             }
-            Some(
-                CompileWarning::new(
-                    rue_error::WarningKind::UnusedFunction(name.to_owned()),
-                    locator.declaration_span,
-                )
-                .with_help(format!(
-                    "if this is intentional, prefix it with an underscore: `_{name}`"
-                )),
+            spans
+        });
+        let Some(function) = functions.get(&locator.declaration_span).copied() else {
+            continue;
+        };
+        let allows_unused = function.directives.iter().any(|directive| {
+            module.resolve_raw_symbol(directive.name.name) == "allow"
+                && directive.args.iter().any(|argument| match argument {
+                    rue_parser::ast::DirectiveArg::Ident(argument) => {
+                        module.resolve_raw_symbol(argument.name) == "unused_function"
+                    }
+                })
+        });
+        if allows_unused {
+            continue;
+        }
+        warnings.push(
+            CompileWarning::new(
+                rue_error::WarningKind::UnusedFunction(name.to_owned()),
+                locator.declaration_span,
             )
-        })
-        .collect()
+            .with_help(format!(
+                "if this is intentional, prefix it with an underscore: `_{name}`"
+            )),
+        );
+    }
+    warnings
 }
 
 fn semantic_nucleus_failure_diagnostics(
@@ -10201,6 +10236,107 @@ fn main() -> i32 { 0 }
         assert_eq!(
             format!("{:?}", warm.warnings()),
             format!("{:?}", cold.warnings())
+        );
+    }
+
+    /// Warnings are presented in module-path order, then by span, then by
+    /// rendered text — never in file-id, import, or query-scheduling order.
+    ///
+    /// The fixture crosses all three sources of warnings that reach a rooted
+    /// CFG: imported body warnings from a called module, imported body
+    /// warnings from the root, and unused-function warnings collected from the
+    /// declaration set.
+    #[test]
+    fn warnings_are_ordered_by_module_then_span_across_modules() {
+        const ROOT: &str = "const zeta = @import(\"zeta.rue\");\n\
+             const alpha = @import(\"alpha.rue\");\n\
+             fn main() -> i32 {\n\
+             let unused_main = 1;\n\
+             zeta.z() + alpha.a()\n\
+             }\n";
+        const ALPHA: &str = "pub fn a() -> i32 {\n\
+             let unused_alpha = 2;\n\
+             3\n\
+             }\n\
+             fn dead_alpha() -> i32 { 4 }\n";
+        const ZETA: &str = "pub fn z() -> i32 {\n\
+             let unused_zeta = 5;\n\
+             6\n\
+             }\n\
+             fn dead_zeta() -> i32 { 7 }\n";
+        // The root module's own path sorts between its two imports, so
+        // module-path order (alpha, main, zeta) and the root-first order that
+        // discovery and file ids follow (main, alpha, zeta) disagree.
+        let source = snapshot(
+            &[
+                (1, "/p/main.rue", "main.rue", ROOT),
+                (2, "/p/zeta.rue", "zeta.rue", ZETA),
+                (3, "/p/alpha.rue", "alpha.rue", ALPHA),
+            ],
+            1,
+        );
+
+        let observe = || {
+            let mut session = CompilerSession::new();
+            publish_with_test_imports(&mut session, &source);
+            let rooted = session.rooted_cfg(&CompileOptions::default()).unwrap();
+            let published = session
+                .published_snapshot
+                .clone()
+                .expect("the rooted CFG published its program");
+            rooted
+                .warnings()
+                .iter()
+                .map(|warning| {
+                    let span = warning.span().expect("every fixture warning is located");
+                    let module = published
+                        .metadata()
+                        .logical_path(span.file_id)
+                        .expect("every fixture warning names a published module")
+                        .to_owned();
+                    (module, span.start, warning.to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        let observed = observe();
+
+        let placement = observed
+            .iter()
+            .map(|(module, start, _)| (module.clone(), *start))
+            .collect::<Vec<_>>();
+        let modules = placement
+            .iter()
+            .map(|(module, _)| module.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            modules,
+            ["alpha.rue", "alpha.rue", "main.rue", "zeta.rue", "zeta.rue"],
+            "warnings group by module path, not by file id: {observed:?}"
+        );
+        for window in placement.windows(2) {
+            let (left, right) = (&window[0], &window[1]);
+            assert!(
+                left.0 != right.0 || left.1 < right.1,
+                "warnings within one module ascend by span: {observed:?}"
+            );
+        }
+
+        let named = |index: usize, needle: &str| {
+            assert!(
+                observed[index].2.contains(needle),
+                "warning {index} should name `{needle}`: {observed:?}"
+            );
+        };
+        named(0, "unused_alpha");
+        named(1, "dead_alpha");
+        named(2, "unused_main");
+        named(3, "unused_zeta");
+        named(4, "dead_zeta");
+
+        assert_eq!(
+            observe(),
+            observed,
+            "the same program must present the same warnings in the same order"
         );
     }
 
