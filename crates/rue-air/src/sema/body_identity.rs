@@ -246,6 +246,18 @@ pub trait DurableAnonymousSource<K, M> {
         _key: &AnonymousNominalKey<K, M>,
     ) -> Option<DurableAnonymousShape<K, M>>;
 
+    /// Return the durable shape and its canonical presentation digest from one
+    /// source operation. The default composes the two legacy hooks for small
+    /// test sources; compiler-owned sources should override this to perform a
+    /// single durable-record lookup.
+    fn anonymous_shape_and_digest(
+        &self,
+        key: &AnonymousNominalKey<K, M>,
+    ) -> Option<(DurableAnonymousShape<K, M>, u128)> {
+        let shape = self.anonymous_shape(key)?;
+        Some((shape, self.anonymous_identity_digest(key)))
+    }
+
     /// Callable signatures declared by an anonymous struct. Implementations
     /// that only provide shape identity may leave this empty.
     fn anonymous_methods(
@@ -272,6 +284,23 @@ pub trait DurableAnonymousSource<K, M> {
         _key: &AnonymousNominalKey<K, M>,
     ) -> Vec<(Arc<str>, SemanticImportConstValue<K, M>)> {
         Vec::new()
+    }
+
+    /// Return the canonical presentation digest for an anonymous identity.
+    ///
+    /// The default is deliberately the same relocation and hash used by the
+    /// semantic epoch, so small test sources need no extra bookkeeping. A
+    /// compiler-owned source may override this with a digest retained by its
+    /// durable anonymous fact; the structured key remains the semantic
+    /// authority and this value is presentation-only.
+    fn anonymous_identity_digest(&self, key: &AnonymousNominalKey<K, M>) -> u128 {
+        let relocated: AnonymousNominalKey<String, String> = key
+            .try_map_identities::<String, String, std::convert::Infallible>(
+                &|definition| Ok(self.definition_symbol_component(definition)),
+                &|module| Ok(self.module_symbol_component(module)),
+            )
+            .expect("anonymous identity relocation to stable content is infallible");
+        crate::stable_digest::stable_anonymous_identity_digest(&relocated)
     }
 
     /// Relocate a durable definition key to the exact stable-symbol content the
@@ -1619,9 +1648,9 @@ where
             return Err(error.clone());
         }
 
-        let shape = self
+        let (shape, digest) = self
             .source
-            .anonymous_shape(key)
+            .anonymous_shape_and_digest(key)
             .ok_or(IdentityMintError::MissingAnonymousShape)?;
 
         // The presentation digest is a pure function of the producer identity,
@@ -1629,7 +1658,6 @@ where
         // is spelled into the name only; guard a distinct key colliding on it
         // BEFORE reserving or registering, so no colliding entity or symbol is
         // ever published (RUE-1089, Theme 4b).
-        let digest = self.anonymous_identity_digest(key);
         self.guard_anonymous_digest_collision(digest, key)?;
 
         let minted = match shape {
@@ -1879,21 +1907,6 @@ where
             return self.enum_identities.get(&id).cloned();
         }
         None
-    }
-
-    /// The stable presentation digest of an anonymous producer identity: relocate
-    /// every embedded definition / module key to its request-independent stable
-    /// content through the [`DurableAnonymousSource`] adapter, then hash through
-    /// the ONE shared computation the epoch also uses (the ratified single
-    /// digest path, RUE-1089 / RUE-1091).
-    fn anonymous_identity_digest(&self, key: &AnonymousNominalKey<K, M>) -> u128 {
-        let relocated: AnonymousNominalKey<String, String> = key
-            .try_map_identities::<String, String, std::convert::Infallible>(
-                &|definition| Ok(self.source.definition_symbol_component(definition)),
-                &|module| Ok(self.source.module_symbol_component(module)),
-            )
-            .expect("anonymous identity relocation to stable content is infallible");
-        crate::stable_digest::stable_anonymous_identity_digest(&relocated)
     }
 
     /// Fail-closed digest-collision gate. Re-presenting the SAME key is
@@ -4486,6 +4499,7 @@ mod tests {
             )
             .unwrap();
         let digest = crate::stable_digest::stable_anonymous_identity_digest(&relocated);
+        assert_eq!(pool.source.anonymous_identity_digest(&key), digest);
         assert_eq!(
             render(pool.type_pool(), ty),
             format!("__anon_struct_{digest:032x}"),

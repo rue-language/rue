@@ -1745,6 +1745,10 @@ mod tests {
         );
         let expected_symbol = crate::semantic_identity::anonymous_nominal_source_symbol(&identity);
         assert_eq!(nominal.source_symbol().as_ref(), expected_symbol);
+        assert_eq!(
+            nominal.anonymous_identity_digest(),
+            crate::semantic_identity::anonymous_nominal_digest(&identity)
+        );
         let shared = SharedDeclarationFactIndex::new(&[]);
         let (index, _) = LocalFactSelectionIndex::new(&shared, &[], std::slice::from_ref(&nominal));
         let symbols = std::collections::BTreeMap::from([(

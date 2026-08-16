@@ -28,6 +28,11 @@ pub struct DurableAnonymousNominal {
     /// The structured identity remains the semantic authority; this cache only
     /// avoids repeatedly rendering and hashing it in body-local type pools.
     source_symbol: Arc<str>,
+    /// Canonical digest retained alongside the source symbol so body-local
+    /// pools can use the exact durable computation without relocating the key.
+    /// This is presentation-only; semantic equality, ordering, and hashing
+    /// intentionally ignore it below.
+    anonymous_digest: u128,
     pub shape: DurableAnonymousNominalShape,
     pub type_captures: Arc<[(Arc<str>, DurableType)]>,
     pub value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
@@ -56,12 +61,17 @@ impl DurableAnonymousNominal {
         type_captures: Arc<[(Arc<str>, DurableType)]>,
         value_captures: Arc<[(Arc<str>, DurableConstValue)]>,
     ) -> Self {
-        let source_symbol = Arc::from(crate::semantic_identity::anonymous_nominal_source_symbol(
-            &identity,
-        ));
+        let anonymous_digest = crate::semantic_identity::anonymous_nominal_digest(&identity);
+        let source_symbol = Arc::from(
+            crate::semantic_identity::anonymous_nominal_source_symbol_from_digest(
+                &identity,
+                anonymous_digest,
+            ),
+        );
         Self {
             identity,
             source_symbol,
+            anonymous_digest,
             shape,
             type_captures,
             value_captures,
@@ -72,6 +82,7 @@ impl DurableAnonymousNominal {
         Self {
             identity: self.identity.clone(),
             source_symbol: self.source_symbol.clone(),
+            anonymous_digest: self.anonymous_digest,
             shape,
             type_captures: self.type_captures.clone(),
             value_captures: self.value_captures.clone(),
@@ -80,6 +91,10 @@ impl DurableAnonymousNominal {
 
     pub(crate) fn source_symbol(&self) -> &Arc<str> {
         &self.source_symbol
+    }
+
+    pub(crate) fn anonymous_identity_digest(&self) -> u128 {
+        self.anonymous_digest
     }
 }
 
@@ -268,5 +283,63 @@ impl RetainedCharge for DurableDeclarationSemantic {
         self.key
             .retained_charge()
             .saturating_add(self.payload.retained_charge())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+
+    fn identity() -> crate::AnonymousNominalKey {
+        let module = crate::ModuleId::from_logical_path("digest-test.rue").unwrap();
+        let definition = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            Arc::from("probe"),
+            None,
+        );
+        crate::AnonymousNominalKey {
+            kind: rue_air::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(definition),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        }
+    }
+
+    #[test]
+    fn cached_digest_matches_canonical_digest_without_changing_semantic_equality() {
+        let identity = identity();
+        let shape = DurableAnonymousNominalShape::Struct {
+            fields: Arc::from([]),
+            methods: Arc::from([]),
+        };
+        let nominal = DurableAnonymousNominal::new(
+            identity.clone(),
+            shape.clone(),
+            Arc::from([]),
+            Arc::from([]),
+        );
+        assert_eq!(
+            nominal.anonymous_identity_digest(),
+            crate::semantic_identity::anonymous_nominal_digest(&identity)
+        );
+
+        // The cache is not a durable semantic fact: even deliberately stale
+        // presentation caches compare and hash exactly like the original.
+        let mut stale = nominal.clone();
+        stale.source_symbol = Arc::from("stale");
+        stale.anonymous_digest = 0;
+        assert_eq!(nominal, stale);
+        let mut nominal_hash = DefaultHasher::new();
+        nominal.hash(&mut nominal_hash);
+        let mut stale_hash = DefaultHasher::new();
+        stale.hash(&mut stale_hash);
+        assert_eq!(nominal_hash.finish(), stale_hash.finish());
     }
 }

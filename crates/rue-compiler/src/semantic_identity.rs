@@ -208,14 +208,38 @@ pub(crate) fn anonymous_nominal_source_symbol_in(
     plan: &AnonymousSymbolPlan,
     identity: &AnonymousNominalKey,
 ) -> String {
+    anonymous_nominal_source_symbol_with_plan_and_digest(
+        plan,
+        identity,
+        anonymous_nominal_digest(identity),
+    )
+}
+
+/// Spell an anonymous nominal when the canonical digest was already retained
+/// by its durable fact. The identity still supplies the kind and collision-plan
+/// lookup; the digest is never recovered from presentation text.
+pub(crate) fn anonymous_nominal_source_symbol_from_digest(
+    identity: &AnonymousNominalKey,
+    digest: u128,
+) -> String {
+    anonymous_nominal_source_symbol_with_plan_and_digest(
+        &AnonymousSymbolPlan::EMPTY,
+        identity,
+        digest,
+    )
+}
+
+fn anonymous_nominal_source_symbol_with_plan_and_digest(
+    plan: &AnonymousSymbolPlan,
+    identity: &AnonymousNominalKey,
+    digest: u128,
+) -> String {
     let kind = match identity.kind {
         AnonymousNominalKind::Struct => "struct",
         AnonymousNominalKind::Enum => "enum",
     };
-    let component = rue_air::stable_digest::stable_anonymous_symbol_component(
-        anonymous_nominal_digest(identity),
-        plan.ordinal(identity),
-    );
+    let component =
+        rue_air::stable_digest::stable_anonymous_symbol_component(digest, plan.ordinal(identity));
     format!("__anon_{kind}_{component}")
 }
 

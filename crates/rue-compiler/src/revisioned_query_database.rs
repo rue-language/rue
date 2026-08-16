@@ -21833,6 +21833,20 @@ impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
             .map(|nominal| project_provider_anonymous_shape(nominal))
     }
 
+    fn anonymous_shape_and_digest(
+        &self,
+        key: &crate::AnonymousNominalKey,
+    ) -> Option<(
+        rue_air::DurableAnonymousShape<crate::StableDefinitionKey, ModuleId>,
+        u128,
+    )> {
+        let nominal = self.anonymous_nominal(key)?;
+        Some((
+            project_provider_anonymous_shape(&nominal),
+            nominal.anonymous_identity_digest(),
+        ))
+    }
+
     fn anonymous_methods(
         &self,
         key: &crate::AnonymousNominalKey,
@@ -24135,6 +24149,20 @@ pub(crate) mod test_support {
             self.anon_by_identity
                 .get(key)
                 .map(|nominal| durable_anonymous_shape(&nominal.shape))
+        }
+
+        fn anonymous_shape_and_digest(
+            &self,
+            key: &crate::AnonymousNominalKey,
+        ) -> Option<(
+            rue_air::DurableAnonymousShape<StableDefinitionKey, ModuleId>,
+            u128,
+        )> {
+            let nominal = self.anon_by_identity.get(key)?;
+            Some((
+                durable_anonymous_shape(&nominal.shape),
+                nominal.anonymous_identity_digest(),
+            ))
         }
 
         fn definition_symbol_component(&self, key: &StableDefinitionKey) -> String {
