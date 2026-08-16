@@ -5,20 +5,12 @@ Every fixture here is 3.9 syntax, so the scan means the same thing on every
 interpreter that can run this file. That is deliberate: the one part of the
 policy that is NOT host-independent -- what happens to a file the scanner
 cannot parse -- is asserted on both sides of the floor instead of assumed away.
-
-What needed the most care is that these fail when the thing they describe
-breaks. Asserting the tree is clean passes just as well when the gate has
-stopped looking, so the shipped guard is tested by deleting it from a copy of
-the real file and requiring the finding to come back.
 """
 
 from __future__ import annotations
 
-import re
-import subprocess
 import sys
 import tempfile
-import textwrap
 import unittest
 from pathlib import Path
 
@@ -27,17 +19,6 @@ from gatelib import load_script
 
 SCRIPT = Path(__file__).with_name("validate-python-baseline.py")
 policy = load_script("validate-python-baseline.py", __file__)
-
-TOOL = Path(__file__).with_name("cli-timeout-policy.py")
-
-GUARD = textwrap.dedent(
-    """
-    import sys
-
-    if sys.version_info < (3, 11):
-        raise SystemExit("needs Python 3.11 or newer")
-    """
-)
 
 
 def descriptions(source: str) -> list[str]:
@@ -61,121 +42,35 @@ class ScanTests(unittest.TestCase):
     def test_flags_the_import_that_caused_rue_1509(self) -> None:
         self.assertEqual(descriptions("import tomllib\n"), ["the `tomllib` module"])
 
-    def test_a_guard_above_the_import_settles_it(self) -> None:
-        self.assertEqual(descriptions(GUARD + "import tomllib\n"), [])
-
-    def test_a_guard_below_the_import_does_not(self) -> None:
-        # The program has already died by then, so ordering is the whole point.
-        self.assertEqual(
-            descriptions("import tomllib\n" + GUARD), ["the `tomllib` module"]
-        )
-
-    def test_a_raise_in_the_else_branch_is_not_a_guard(self) -> None:
-        # This one runs the import on 3.10 and reproduces RUE-1509 verbatim, so
-        # accepting it would certify the bug the gate exists to prevent.
-        inverted = (
+    def test_a_version_guard_no_longer_exempts(self) -> None:
+        # RUE-1524 retired the split floor and its guard idiom. A guard above
+        # the import announced a requirement the repository no longer grants,
+        # so it must not silence the finding.
+        guarded = (
             "import sys\n\n"
             "if sys.version_info < (3, 11):\n"
-            "    pass\n"
-            "else:\n"
-            '    raise SystemExit("needs Python 3.11 or newer")\n'
+            '    raise SystemExit("needs Python 3.11 or newer")\n\n'
+            "import tomllib\n"
         )
-        self.assertEqual(
-            descriptions(inverted + "import tomllib\n"), ["the `tomllib` module"]
-        )
+        self.assertEqual(descriptions(guarded), ["the `tomllib` module"])
 
-    def test_a_conditional_raise_is_not_a_guard(self) -> None:
-        # Reachability is the claim; a raise under another condition does not
-        # make it.
-        nested = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 11):\n"
-            "    if False:\n"
-            '        raise SystemExit("needs Python 3.11 or newer")\n'
-        )
-        self.assertEqual(
-            descriptions(nested + "import tomllib\n"), ["the `tomllib` module"]
-        )
-
-    def test_a_guard_that_does_not_name_the_version_does_not_count(self) -> None:
-        silent = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 11):\n"
-            '    raise SystemExit("unsupported")\n'
-        )
-        self.assertEqual(
-            descriptions(silent + "import tomllib\n"), ["the `tomllib` module"]
-        )
-
-    def test_a_version_named_outside_the_raise_does_not_count(self) -> None:
-        # The message the user sees is the one in the raise, not a nearby
-        # string that happens to contain the number.
-        decoy = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 11):\n"
-            '    note = "3.11"\n'
-            '    raise SystemExit("unsupported")\n'
-        )
-        self.assertEqual(
-            descriptions(decoy + "import tomllib\n"), ["the `tomllib` module"]
-        )
-
-    def test_a_guard_that_does_not_exit_does_not_count(self) -> None:
-        warning = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 11):\n"
-            '    print("needs Python 3.11 or newer")\n'
-        )
-        self.assertEqual(
-            descriptions(warning + "import tomllib\n"), ["the `tomllib` module"]
-        )
-
-    def test_a_guard_demanding_too_little_does_not_count(self) -> None:
-        weak = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 10):\n"
-            '    raise SystemExit("needs Python 3.10 or newer")\n'
-        )
-        self.assertEqual(
-            descriptions(weak + "import tomllib\n"), ["the `tomllib` module"]
-        )
-
-    def test_subscripted_version_info_is_the_same_guard(self) -> None:
-        subscripted = (
-            "import sys\n\n"
-            "if sys.version_info[:2] < (3, 11):\n"
-            '    raise SystemExit("needs Python 3.11 or newer")\n'
-        )
-        self.assertEqual(descriptions(subscripted + "import tomllib\n"), [])
-
-    def test_a_handled_import_needs_no_guard(self) -> None:
-        # The vendored-backport idiom. The objection to a bare `import tomllib`
-        # is that it fails unhandled; this one does not, so the rule does not
-        # apply -- and it must not, or the gate would reject the fallback on the
-        # day someone adopts it.
-        for handler in ("ModuleNotFoundError", "ImportError", ""):
-            source = (
-                "try:\n"
-                "    import tomllib\n"
-                f"except {handler}:\n".replace("except :", "except:")
-                + "    import tomli as tomllib\n"
-            )
-            self.assertEqual(descriptions(source), [], handler)
-
-    def test_a_try_that_catches_something_else_is_not_a_handled_import(self) -> None:
+    def test_a_handled_import_is_no_exemption_either(self) -> None:
+        # The vendored-backport idiom would run on 3.9, but since RUE-1524 the
+        # annotation is the one reviewed escape; an unannotated fallback is
+        # still a finding rather than a silent allowance.
         source = (
             "try:\n"
             "    import tomllib\n"
-            "except ValueError:\n"
-            "    tomllib = None\n"
+            "except ImportError:\n"
+            "    import tomli as tomllib\n"
         )
         self.assertEqual(descriptions(source), ["the `tomllib` module"])
 
-    def test_constructs_at_or_below_the_stock_host_are_silent(self) -> None:
+    def test_constructs_at_or_below_the_floor_are_silent(self) -> None:
         for source in ("import graphlib\n", "import zoneinfo\n", "import json\n"):
             self.assertEqual(descriptions(source), [], source)
 
-    def test_flags_the_apis_between_the_stock_host_and_the_floor(self) -> None:
+    def test_flags_constructs_newer_than_the_floor(self) -> None:
         cases = {
             "from datetime import UTC\n": "`datetime.UTC`",
             "from typing import Self\n": "`typing.Self`",
@@ -198,16 +93,14 @@ class ScanTests(unittest.TestCase):
             descriptions("import dataclasses\n@dataclasses.dataclass(slots=True)\nclass C: pass\n"),
         )
 
-    def test_above_the_floor_is_a_finding_a_guard_cannot_answer(self) -> None:
+    def test_a_finding_names_the_floor_and_the_annotation(self) -> None:
         findings, _ = policy.scan("import itertools\nitertools.batched([], 1)\n", "p.py")
         self.assertEqual(len(findings), 1)
-        self.assertTrue(findings[0].above_floor)
-        self.assertIn("above the repository floor", str(findings[0]))
-        self.assertNotIn("sys.version_info", str(findings[0]))
-        guarded, _ = policy.scan(
-            GUARD + "import itertools\nitertools.batched([], 1)\n", "p.py"
-        )
-        self.assertEqual(len(guarded), 1)
+        message = str(findings[0])
+        self.assertIn("above the repository floor of 3.9", message)
+        self.assertIn("python-baseline-ok", message)
+        # The retired guard idiom must not be recommended.
+        self.assertNotIn("sys.version_info", message)
 
     def test_an_alias_does_not_hide_the_construct(self) -> None:
         self.assertIn(
@@ -233,10 +126,11 @@ class ScanTests(unittest.TestCase):
 class UnparseableTests(unittest.TestCase):
     """The one host-dependent behaviour, asserted on whichever side we are on.
 
-    Below the floor a parse error is ambiguous -- `match` needs 3.10, which the
-    floor allows -- so guessing would produce a finding wrong about the version,
-    wrong about the floor, and backwards about the fix. At or above the floor it
-    is unambiguous. Both branches assert, so neither can quietly become a no-op.
+    Below the floor a parse error is ambiguous -- PEP 614 decorator grammar
+    needs 3.9, which the floor allows -- so guessing would produce a finding
+    wrong about the version, wrong about the floor, and backwards about the
+    fix. At or above the floor it is unambiguous. Both branches assert, so
+    neither can quietly become a no-op.
     """
 
     def test_a_parse_error_is_judged_only_from_at_or_above_the_floor(self) -> None:
@@ -249,28 +143,6 @@ class UnparseableTests(unittest.TestCase):
         else:
             self.assertEqual(unscanned, [])
             self.assertEqual(len(findings), 1)
-            self.assertTrue(findings[0].above_floor)
-
-    def test_a_guarded_construct_above_this_host_is_never_a_false_finding(self) -> None:
-        # A correctly guarded `match` is legal at the floor. On 3.9 it does not
-        # parse; the answer must be silence plus a note, never a finding that
-        # tells the author to remove something the floor allows.
-        source = (
-            "import sys\n\n"
-            "if sys.version_info < (3, 10):\n"
-            '    raise SystemExit("needs Python 3.10 or newer")\n\n'
-            "def f(x):\n"
-            "    match x:\n"
-            "        case 1:\n"
-            "            return 2\n"
-            "    return 0\n"
-        )
-        findings, unscanned = policy.scan(source, "p.py")
-        self.assertEqual([str(finding) for finding in findings], [])
-        if policy.SCANNER < (3, 10):
-            self.assertEqual(len(unscanned), 1)
-        else:
-            self.assertEqual(unscanned, [])
 
 
 class DiscoveryTests(unittest.TestCase):
@@ -325,7 +197,7 @@ class DocumentationTests(unittest.TestCase):
             (root / "AGENTS.md").write_text(text, encoding="utf-8")
             return policy.check_docs(root)
 
-    SECTION = policy.FLOOR_SECTION + "\n\nThe tooling requires Python 3.11 or newer.\n"
+    SECTION = policy.FLOOR_SECTION + "\n\nThe tooling requires Python 3.9 or newer.\n"
 
     def test_the_repository_documents_the_floor_this_gate_enforces(self) -> None:
         root = repository_root()
@@ -337,14 +209,14 @@ class DocumentationTests(unittest.TestCase):
         self.assertEqual(self.check(self.SECTION), [])
 
     def test_a_missing_section_is_a_finding(self) -> None:
-        problems = self.check("# Rue\n\nThe tooling requires Python 3.11 or newer.\n")
+        problems = self.check("# Rue\n\nThe tooling requires Python 3.9 or newer.\n")
         self.assertEqual(len(problems), 1)
         self.assertIn("no \"## Repository tooling baseline\" section", problems[0])
 
     def test_the_claim_must_be_inside_the_section(self) -> None:
         # An unrelated sentence elsewhere in a long file is not the floor.
         text = (
-            "# Rue\n\nThe tooling requires Python 3.11 or newer.\n\n"
+            "# Rue\n\nThe tooling requires Python 3.9 or newer.\n\n"
             + policy.FLOOR_SECTION
             + "\n\nSee elsewhere.\n\n## Next\n"
         )
@@ -355,14 +227,16 @@ class DocumentationTests(unittest.TestCase):
     def test_the_claim_must_be_outside_a_code_fence(self) -> None:
         text = (
             policy.FLOOR_SECTION
-            + "\n\n```\nrequires Python 3.11 or newer\n```\n"
+            + "\n\n```\nrequires Python 3.9 or newer\n```\n"
         )
         problems = self.check(text)
         self.assertEqual(len(problems), 1)
         self.assertIn("outside a code fence", problems[0])
 
     def test_a_documented_floor_that_disagrees_is_a_finding(self) -> None:
-        text = policy.FLOOR_SECTION + "\n\nrequires Python 3.9 or newer\n"
+        # 3.11 is exactly the number RUE-1524 retired, so it is the mismatch a
+        # stale document would most plausibly state.
+        text = policy.FLOOR_SECTION + "\n\nrequires Python 3.11 or newer\n"
         problems = self.check(text)
         self.assertEqual(len(problems), 1)
         self.assertIn("Move both together", problems[0])
@@ -390,45 +264,6 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual([str(note) for note in unscanned], [])
         # A real lower bound: a handful of sandboxed files must not satisfy it.
         self.assertGreater(scanned, 50)
-
-    def test_the_shipped_tool_is_clean_only_because_it_is_guarded(self) -> None:
-        # The bug this whole change answers, pinned by removing its fix: with
-        # the guard deleted, scripts/cli-timeout-policy.py is a bare `import
-        # tomllib` again and the gate must say so.
-        source = TOOL.read_text(encoding="utf-8")
-        findings, unscanned = policy.scan(source, "cli-timeout-policy.py")
-        self.assertEqual([str(finding) for finding in findings], [])
-        self.assertEqual(unscanned, [])
-        stripped = re.sub(
-            r"\nif sys\.version_info < \(3, 11\):\n(?:    .*\n|\n)*?    \)\n",
-            "\n",
-            source,
-        )
-        self.assertNotEqual(stripped, source, "the guard was not found to remove")
-        self.assertEqual(descriptions(stripped), ["the `tomllib` module"])
-
-
-class HostTests(unittest.TestCase):
-    def test_the_tool_reports_the_floor_rather_than_a_missing_module(self) -> None:
-        """Run the real tool and check which failure this host gets.
-
-        Both branches assert something real, so this case cannot quietly become
-        a no-op on either side of the floor -- which is how the RUE-1506
-        mechanism tests first went wrong.
-        """
-        result = subprocess.run(
-            [sys.executable, str(TOOL), "--help"],
-            capture_output=True,
-            text=True,
-        )
-        if sys.version_info < policy.FLOOR:
-            self.assertNotEqual(result.returncode, 0)
-            self.assertNotIn("ModuleNotFoundError", result.stderr)
-            self.assertIn("requires Python 3.11 or newer", result.stderr)
-            self.assertIn("AGENTS.md", result.stderr)
-        else:
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("--policy", result.stdout)
 
 
 if __name__ == "__main__":
