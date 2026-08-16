@@ -5,7 +5,7 @@
 //! storage strategy. The provider body host supplies these facts to executable
 //! body analysis.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 
 use lasso::Spur;
 use rue_span::{FileId, Span};
@@ -30,8 +30,8 @@ pub(crate) struct StructuredTypeSyntaxRequest<'a> {
     pub(crate) syntax: &'a StructuredTypeSyntax,
     pub(crate) root_file: FileId,
     pub(crate) span: Span,
-    pub(crate) type_substitutions: Option<&'a HashMap<Spur, Type>>,
-    pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
+    pub(crate) type_substitutions: Option<&'a AHashMap<Spur, Type>>,
+    pub(crate) value_substitutions: Option<&'a AHashMap<Spur, ConstValue>>,
 }
 
 /// Exact input for resolving a module-qualified type prefix.
@@ -45,7 +45,7 @@ pub(crate) struct ModulePrefixRequest<'a> {
 pub(crate) struct ArrayLengthRequest<'a> {
     pub(crate) length: &'a ArrayLen,
     pub(crate) span: Span,
-    pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
+    pub(crate) value_substitutions: Option<&'a AHashMap<Spur, ConstValue>>,
 }
 
 pub(crate) type TypeSyntaxResult = Result<

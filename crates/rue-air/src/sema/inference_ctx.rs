@@ -6,8 +6,8 @@
 //! function/struct/enum/method/const family on first lookup instead of eagerly
 //! projecting the whole declaration universe (RUE-1091 slice r5b).
 
+use ahash::AHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use lasso::Spur;
@@ -20,9 +20,9 @@ use crate::types::{ModuleId, StructId, Type};
 /// The generated-nominal overlay snapshot consumed by [`InferenceContext`].
 /// It is a construction-time input, not a replay cache for semantic results.
 pub(crate) struct InferenceGeneratedNominalOverlays {
-    pub(crate) builtin_struct_types: HashMap<Spur, Type>,
-    pub(crate) struct_types_by_file: HashMap<(FileId, Spur), Type>,
-    pub(crate) enum_types_by_file: HashMap<(FileId, Spur), Type>,
+    pub(crate) builtin_struct_types: AHashMap<Spur, Type>,
+    pub(crate) struct_types_by_file: AHashMap<(FileId, Spur), Type>,
+    pub(crate) enum_types_by_file: AHashMap<(FileId, Spur), Type>,
 }
 
 /// Immutable declaration reads required by the inference fact facade.
@@ -82,19 +82,19 @@ pub(super) trait InferenceFactSource {
 /// reconciliation (RUE-164) with no behavior change.
 #[derive(Debug, Default)]
 pub struct InferenceContext {
-    func_sigs: RefCell<HashMap<Spur, Rc<FunctionSig>>>,
-    method_sigs: RefCell<HashMap<(StructId, Spur), Rc<MethodSig>>>,
+    func_sigs: RefCell<AHashMap<Spur, Rc<FunctionSig>>>,
+    method_sigs: RefCell<AHashMap<(StructId, Spur), Rc<MethodSig>>>,
     /// Generated builtin struct nominals present when the context was built,
     /// keyed by source name. In the eager projection these *overwrote* the base
     /// builtin table, so they win over `builtin_structs` at lookup.
-    gen_builtin_struct_types: HashMap<Spur, Type>,
+    gen_builtin_struct_types: AHashMap<Spur, Type>,
     /// Generated struct nominals keyed by (defining file, source name). In the
     /// eager projection the base `structs_by_file_name` was inserted first and
     /// these only filled gaps (`or_insert`), so the base wins at lookup.
-    gen_struct_types_by_file: HashMap<(FileId, Spur), Type>,
+    gen_struct_types_by_file: AHashMap<(FileId, Spur), Type>,
     /// Generated enum nominals keyed by (defining file, source name). Base wins,
     /// as for `gen_struct_types_by_file`.
-    gen_enum_types_by_file: HashMap<(FileId, Spur), Type>,
+    gen_enum_types_by_file: AHashMap<(FileId, Spur), Type>,
 }
 
 impl InferenceContext {
@@ -108,8 +108,8 @@ impl InferenceContext {
             enum_types_by_file: gen_enum_types_by_file,
         } = host.inference_generated_nominal_overlays();
         Self {
-            func_sigs: RefCell::new(HashMap::new()),
-            method_sigs: RefCell::new(HashMap::new()),
+            func_sigs: RefCell::new(AHashMap::new()),
+            method_sigs: RefCell::new(AHashMap::new()),
             gen_builtin_struct_types,
             gen_struct_types_by_file,
             gen_enum_types_by_file,

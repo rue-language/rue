@@ -1,7 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::sync::Arc;
+
+use ahash::{AHashMap, AHashSet};
 
 use lasso::Spur;
 use rue_error::CompileWarning;
@@ -56,12 +55,12 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
     strings: &[String],
     warnings: &[CompileWarning],
     specialized_calls: Option<
-        &HashMap<
+        &AHashMap<
             Spur,
             SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
         >,
     >,
-    method_references: &HashSet<(crate::StructId, Spur)>,
+    method_references: &AHashSet<(crate::StructId, Spur)>,
 ) -> Result<SemanticBodyExport, F> {
     let warning_anchor = |span: Span| {
         if span.file_id != body_span.file_id

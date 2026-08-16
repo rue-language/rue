@@ -1,6 +1,6 @@
 //! Body-local module registry assembled from durable module facts.
 
-use std::collections::HashMap;
+use ahash::AHashMap;
 use std::hash::Hash;
 
 use rue_span::FileId;
@@ -13,16 +13,16 @@ use crate::{ModuleDef, ModuleId};
 /// the current request's file handle are registered alongside it because they
 /// are request-local facts, not properties reconstructible from a compact id.
 pub(in crate::sema) struct ProviderModuleRegistry<M> {
-    by_durable: HashMap<M, ModuleId>,
-    by_file: HashMap<FileId, ModuleId>,
+    by_durable: AHashMap<M, ModuleId>,
+    by_file: AHashMap<FileId, ModuleId>,
     defs: Vec<ModuleDef>,
 }
 
 impl<M> Default for ProviderModuleRegistry<M> {
     fn default() -> Self {
         Self {
-            by_durable: HashMap::new(),
-            by_file: HashMap::new(),
+            by_durable: AHashMap::new(),
+            by_file: AHashMap::new(),
             defs: Vec::new(),
         }
     }

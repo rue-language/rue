@@ -14,8 +14,8 @@
 //! anonymous-then-named fallback) stays inside that point query, matching the
 //! `body_endpoint` convention.
 
+use ahash::AHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::hash::Hash;
 
 use lasso::Spur;
@@ -98,8 +98,8 @@ pub struct ProviderCallFacts<'a, P, S, K, M> {
     provider: &'a P,
     identity: ProviderIdentityContext<K, M, S>,
     rir: BodyRirView<'a>,
-    value_consts: RefCell<HashMap<(u32, Spur), ConstInfo>>,
-    module_bindings: RefCell<HashMap<(u32, Spur), ConstInfo>>,
+    value_consts: RefCell<AHashMap<(u32, Spur), ConstInfo>>,
+    module_bindings: RefCell<AHashMap<(u32, Spur), ConstInfo>>,
 }
 
 impl<'a, P, S, K, M> ProviderCallFacts<'a, P, S, K, M>
@@ -149,8 +149,8 @@ where
             provider,
             identity,
             rir,
-            value_consts: RefCell::new(HashMap::new()),
-            module_bindings: RefCell::new(HashMap::new()),
+            value_consts: RefCell::new(AHashMap::new()),
+            module_bindings: RefCell::new(AHashMap::new()),
         }
     }
 

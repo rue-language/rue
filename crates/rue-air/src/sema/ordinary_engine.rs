@@ -5,7 +5,7 @@
 //! inherent-method receiver, which stable Rust cannot define on a trait. It
 //! owns no state, representation conversion, cache, or alternative policy.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -108,13 +108,13 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn strbuf_type(&self) -> Option<Type>;
     fn is_strbuf(&self, ty: Type) -> bool;
     fn types_equivalent(&self, left: Type, right: Type) -> bool;
-    fn generated_structs(&self) -> &HashMap<Spur, StructId>;
+    fn generated_structs(&self) -> &AHashMap<Spur, StructId>;
 
     fn body_interner(&self) -> &ThreadedRodeo;
     fn body_type_pool(&self) -> &TypeInternPool;
     fn struct_id_for_name(&self, name: Spur) -> Option<StructId>;
-    fn generated_structs_mut(&mut self) -> &mut HashMap<Spur, StructId>;
-    fn generated_enums_mut(&mut self) -> &mut HashMap<Spur, EnumId>;
+    fn generated_structs_mut(&mut self) -> &mut AHashMap<Spur, StructId>;
+    fn generated_enums_mut(&mut self) -> &mut AHashMap<Spur, EnumId>;
     fn anonymous_struct_id(
         &self,
         identity: &super::anon_structs::IssuedAnonymousNominalKey,
@@ -125,10 +125,10 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     ) -> Option<EnumId>;
     fn anonymous_struct_identities_mut(
         &mut self,
-    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>;
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>;
     fn anonymous_enum_identities_mut(
         &mut self,
-    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>;
+    ) -> &mut AHashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>;
     fn anonymous_digest_owner(
         &self,
         digest: u128,
@@ -148,13 +148,14 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
         ty: Type,
         identity: super::anon_structs::IssuedAnonymousNominalKey,
     );
-    fn anonymous_struct_methods_mut(&mut self)
-    -> &mut HashMap<StructId, Vec<super::AnonMethodSig>>;
+    fn anonymous_struct_methods_mut(
+        &mut self,
+    ) -> &mut AHashMap<StructId, Vec<super::AnonMethodSig>>;
     fn anonymous_struct_captures_mut(
         &mut self,
-    ) -> &mut HashMap<StructId, HashMap<Spur, ConstValue>>;
-    fn anonymous_struct_ids_mut(&mut self) -> &mut HashSet<StructId>;
-    fn anonymous_enum_ids_mut(&mut self) -> &mut HashSet<EnumId>;
+    ) -> &mut AHashMap<StructId, AHashMap<Spur, ConstValue>>;
+    fn anonymous_struct_ids_mut(&mut self) -> &mut AHashSet<StructId>;
+    fn anonymous_enum_ids_mut(&mut self) -> &mut AHashSet<EnumId>;
     fn canonical_type_instance(
         &self,
         ty: Type,
@@ -193,8 +194,8 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn reduce_external_comptime_call(
         &mut self,
         _name: Spur,
-        _callee_types: &HashMap<Spur, Type>,
-        _callee_values: &HashMap<Spur, ConstValue>,
+        _callee_types: &AHashMap<Spur, Type>,
+        _callee_values: &AHashMap<Spur, ConstValue>,
         _span: Span,
     ) -> Option<CompileResult<Option<ConstValue>>> {
         None
@@ -206,8 +207,8 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
         &mut self,
         syntax: RirTypeSyntaxRef,
         span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type>;
     fn replace_active_anonymous_producer(
         &mut self,
@@ -249,9 +250,9 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
     fn destructor_span(&self, struct_id: StructId) -> Option<Span>;
     fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)>;
     fn well_known_option(&self, payload: Type) -> Option<Type>;
-    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: HashMap<Spur, Type>);
-    fn anon_struct_type_subst(&self, struct_id: StructId) -> HashMap<Spur, Type>;
-    fn anon_struct_captured_values(&self, struct_id: StructId) -> HashMap<Spur, ConstValue>;
+    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: AHashMap<Spur, Type>);
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> AHashMap<Spur, Type>;
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> AHashMap<Spur, ConstValue>;
 
     fn body_dependency_observer(&self) -> Option<AnalyzedBodyOwnerEvent>;
     fn record_body_named_dependency(&mut self, target: super::NamedConstDependencyTargetEvent);
@@ -374,7 +375,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn set_anon_struct_type_subst(
         &mut self,
         struct_id: StructId,
-        subst: HashMap<Spur, Type>,
+        subst: AHashMap<Spur, Type>,
     ) {
         self.storage.set_anon_struct_type_subst(struct_id, subst)
     }
@@ -442,8 +443,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn reduce_external_comptime_call(
         &mut self,
         name: Spur,
-        callee_types: &HashMap<Spur, Type>,
-        callee_values: &HashMap<Spur, ConstValue>,
+        callee_types: &AHashMap<Spur, Type>,
+        callee_values: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<CompileResult<Option<ConstValue>>> {
         self.storage
@@ -516,8 +517,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn resolve_rir_type_for_comptime_with_subst_and_values_at_span(
         &mut self,
         syntax: RirTypeSyntaxRef,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> Option<Type> {
         self.storage
@@ -527,14 +528,14 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn extract_anon_method_sigs(
         &mut self,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
     ) -> Vec<super::AnonMethodSig> {
         fn resolve<H: OrdinaryBodyAnalysisHost>(
             engine: &mut OrdinaryBodyEngine<'_, H>,
             syntax: RirTypeSyntaxRef,
-            type_subst: &HashMap<Spur, Type>,
-            value_subst: &HashMap<Spur, ConstValue>,
+            type_subst: &AHashMap<Spur, Type>,
+            value_subst: &AHashMap<Spur, ConstValue>,
             span: Span,
         ) -> super::AnonMethodType {
             use super::AnonMethodType as T;
@@ -630,11 +631,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         struct_id: StructId,
         struct_type: Type,
         methods: &rue_rir::RirAnonStructMethodsRange,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
     ) -> Option<()> {
         let method_refs = self.body_rir_ref().anon_struct_methods(methods).to_vec();
-        let mut seen_methods = HashSet::new();
+        let mut seen_methods = AHashSet::new();
         let mut staged = Vec::with_capacity(method_refs.len());
         for method_ref in method_refs {
             let method_inst = {
@@ -721,8 +722,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         &mut self,
         type_sym: Spur,
         span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
         self.resolve_type_with_substitutions_in_file(
             type_sym,
@@ -738,8 +739,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         type_sym: Spur,
         root_file: FileId,
         span: Span,
-        type_substitutions: Option<&HashMap<Spur, Type>>,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&AHashMap<Spur, Type>>,
+        value_substitutions: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
         let mut builder = rue_rir::RirTypeSyntaxBuilder::default();
         let root = builder.push_named_type(type_sym).map_err(|failure| {
@@ -858,8 +859,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         function: &FunctionCallInfo,
         param_index: usize,
         declared: Type,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<Type> {
         if declared != Type::COMPTIME_TYPE {
@@ -900,8 +901,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn resolve_substituted_return_type(
         &mut self,
         function: &FunctionCallInfo,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<Type> {
         if function.return_type != Type::COMPTIME_TYPE {
@@ -940,7 +941,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         &mut self,
         length: &crate::types::ArrayLen,
         span: Span,
-        values: Option<&HashMap<Spur, ConstValue>>,
+        values: Option<&AHashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
         OrdinaryBodyAnalysisHost::resolve_array_length(
             self.storage,
@@ -1029,8 +1030,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn canonical_function_producer(
         &self,
         name: Spur,
-        tys: &HashMap<Spur, Type>,
-        vals: &HashMap<Spur, ConstValue>,
+        tys: &AHashMap<Spur, Type>,
+        vals: &AHashMap<Spur, ConstValue>,
     ) -> Result<(IssuedStableProducerId, IssuedCanonicalArguments), crate::SemanticBodyExportFailure>
     {
         use crate::SemanticBodyExportFailure as F;
@@ -1081,7 +1082,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         identity: super::anon_structs::IssuedAnonymousNominalKey,
         fields: &[crate::types::StructField],
         sigs: &[super::AnonMethodSig],
-        captured: &HashMap<Spur, ConstValue>,
+        captured: &AHashMap<Spur, ConstValue>,
     ) -> CompileResult<(Type, bool)> {
         if let Some(id) = self.storage.anonymous_struct_id(&identity) {
             return Ok((Type::new_struct(id), false));
@@ -1272,7 +1273,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn set_comptime_type_call_depth(&mut self, depth: usize) {
         self.storage.set_comptime_type_call_depth(depth)
     }
-    pub(crate) fn generated_structs(&self) -> &HashMap<Spur, StructId> {
+    pub(crate) fn generated_structs(&self) -> &AHashMap<Spur, StructId> {
         self.storage.generated_structs()
     }
     pub(crate) fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
@@ -1542,15 +1543,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AnalyzedFunction,
         Vec<CompileWarning>,
         Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         for (_, ty, _, is_comptime) in &param_info {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
         }
         let function_symbol = self.storage.body_interner().get_or_intern(fn_name);
         let producer = self
-            .canonical_function_producer(function_symbol, &HashMap::new(), &HashMap::new())
+            .canonical_function_producer(function_symbol, &AHashMap::new(), &AHashMap::new())
             .map_err(|failure| {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
@@ -1630,8 +1631,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AnalyzedFunction,
         Vec<CompileWarning>,
         Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         let symbol = self.storage.body_interner().get_or_intern(full_name);
         let identity = crate::FunctionInstanceKey::Definition(
@@ -1686,8 +1687,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AnalyzedFunction,
         Vec<CompileWarning>,
         Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         for (_, ty, _, is_comptime) in &resolved_params {
             reject_runtime_type_value(*ty, *is_comptime, span)?;
@@ -1777,8 +1778,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         AnalyzedFunction,
         Vec<CompileWarning>,
         Vec<String>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         let self_name = self.storage.body_interner().get_or_intern("self");
         let params = [(self_name, struct_type, RirParamMode::Normal, false)];
@@ -1868,8 +1869,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         self.analyze_function_internal(
             infer_ctx,
@@ -1891,8 +1892,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
-        type_subst: &HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
+        type_subst: &AHashMap<Spur, Type>,
+        value_subst: &AHashMap<Spur, ConstValue>,
     ) -> CompileResult<(
         Air,
         u32,
@@ -1901,8 +1902,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         self.analyze_function_internal(
             infer_ctx,
@@ -1924,8 +1925,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
-        type_subst: Option<&std::collections::HashMap<Spur, Type>>,
-        value_subst: Option<&std::collections::HashMap<Spur, ConstValue>>,
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
         is_destructor: bool,
         allow_unused_variable: bool,
         self_is_mut: bool,
@@ -1938,8 +1939,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         Vec<CompileWarning>,
         Vec<String>,
         Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
-        HashSet<Spur>,
-        HashSet<(StructId, Spur)>,
+        AHashSet<Spur>,
+        AHashSet<(StructId, Spur)>,
     )> {
         let expression_setup_started = Instant::now();
         let mut air = Air::new(return_type);
@@ -2079,8 +2080,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // Create analysis context with resolved types
         // If type_subst is provided, initialize comptime_type_vars with the substitutions
         // so that type parameters can be resolved during struct initialization.
-        let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
-        let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(HashMap::new);
+        let comptime_type_vars = type_subst.map(|s| s.clone()).unwrap_or_else(AHashMap::new);
+        let comptime_value_vars = value_subst.map(|s| s.clone()).unwrap_or_else(AHashMap::new);
         let (canonical_producer, canonical_producer_arguments) =
             self.active_anonymous_producer().cloned().ok_or_else(|| {
                 CompileError::new(
@@ -2106,29 +2107,29 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             canonical_producer_arguments,
             canonical_function_identity,
             current_file_id: self.body_rir_ref().get(body).span.file_id,
-            locals: HashMap::new(),
+            locals: AHashMap::new(),
             params: &param_vec,
             param_index: &param_index,
             next_slot: 0,
             loop_depth: 0,
             checked_depth: 0,
             loop_break_stack: Vec::new(),
-            used_locals: HashSet::new(),
+            used_locals: AHashSet::new(),
             return_type,
             scope_stack: Vec::new(),
             moved_scope_stack: Vec::new(),
             comptime_type_scope_stack: Vec::new(),
             resolved_types: &resolved_types,
-            moved_vars: HashMap::new(),
+            moved_vars: AHashMap::new(),
             warnings: Vec::new(),
             allow_unused_variables: allow_unused_variable,
-            local_string_table: HashMap::new(),
+            local_string_table: AHashMap::new(),
             local_strings: Vec::new(),
             local_atoms: Vec::new(),
             comptime_type_vars,
             comptime_value_vars,
-            referenced_functions: HashSet::new(),
-            referenced_methods: HashSet::new(),
+            referenced_functions: AHashSet::new(),
+            referenced_methods: AHashSet::new(),
             byref_arg_root: None,
             call_loaned_roots: Vec::new(),
             in_loop_move_recheck: false,
@@ -2136,10 +2137,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             expected_type: None,
             infer_ctx,
             accessor_trailing_yield: None,
-            accessor_call_insts: HashMap::new(),
+            accessor_call_insts: AHashMap::new(),
             expression_loans: Vec::new(),
             inline_resolved_types: Vec::new(),
-            place_aliases: HashMap::new(),
+            place_aliases: AHashMap::new(),
             try_operand: false,
         };
 

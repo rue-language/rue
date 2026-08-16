@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use ahash::AHashMap;
 
     use lasso::ThreadedRodeo;
     use rue_lexer::Lexer;
@@ -126,7 +126,7 @@ mod tests {
             }
         "#;
         let (rir, interner) = lower_files(&[(source, FileId::DEFAULT)]);
-        let mut candidates = HashMap::new();
+        let mut candidates = AHashMap::new();
         for (_, inst) in rir.iter() {
             if let InstData::Alloc {
                 name: Some(name),

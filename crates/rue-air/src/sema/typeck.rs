@@ -7,7 +7,7 @@
 //! - Type conversions between AIR types and inference types
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 use std::convert::Infallible;
 
 use lasso::Spur;
@@ -122,12 +122,12 @@ pub(super) struct TypeSyntaxProvider<'host, 'c, H: TypeSyntaxHost> {
     span: Span,
     root_authority: TypeRootAuthority,
     resolution_context: SemaTypeResolutionContext,
-    type_substitutions: Option<&'c HashMap<Spur, Type>>,
-    value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
+    type_substitutions: Option<&'c AHashMap<Spur, Type>>,
+    value_substitutions: Option<&'c AHashMap<Spur, ConstValue>>,
     // Preserve observation order for the host while using a lazy membership
     // index once a resolution grows beyond the allocation-free small case.
     observed_type_dependencies: Vec<ObservedTypeDependency>,
-    observed_type_dependency_index: Option<HashSet<ObservedTypeDependency>>,
+    observed_type_dependency_index: Option<AHashSet<ObservedTypeDependency>>,
 }
 
 /// The lexical root a type-syntax resolution walks from.
@@ -569,8 +569,8 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         span: Span,
         root_authority: TypeRootAuthority,
         resolution_context: SemaTypeResolutionContext,
-        type_substitutions: Option<&'c HashMap<Spur, Type>>,
-        value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
+        type_substitutions: Option<&'c AHashMap<Spur, Type>>,
+        value_substitutions: Option<&'c AHashMap<Spur, ConstValue>>,
     ) -> Self {
         Self {
             host,

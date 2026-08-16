@@ -9,7 +9,7 @@
 //! - Collecting method signatures from impl blocks
 //! - Validating @copy structs
 
-use std::collections::HashSet;
+use ahash::AHashSet;
 use std::sync::Arc;
 
 use rue_error::{CompileError, CompileResult};
@@ -175,7 +175,7 @@ fn accessor_body_verdict(
 /// here is answered about this body alone.
 fn body_instructions(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
     let mut pending = vec![body];
-    let mut seen = HashSet::new();
+    let mut seen = AHashSet::new();
     let mut contained = Vec::new();
     let mut children = Vec::new();
     while let Some(current) = pending.pop() {

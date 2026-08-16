@@ -40,9 +40,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         return_type: Type,
         params: &[(Spur, Type, RirParamMode, bool)],
         body: InstRef,
-        type_subst: Option<&HashMap<Spur, Type>>,
-        value_subst: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<(HashMap<InstRef, Type>, InferenceBreakdown)> {
+        type_subst: Option<&AHashMap<Spur, Type>>,
+        value_subst: Option<&AHashMap<Spur, ConstValue>>,
+    ) -> CompileResult<(AHashMap<InstRef, Type>, InferenceBreakdown)> {
         let precompute_started = Instant::now();
         // Pre-resolve `let`-bound comptime type aliases (`let P = F();` where
         // `F` returns `type`) so inference can see the concrete anonymous
@@ -81,7 +81,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .map(|(inst_ref, ty)| (*inst_ref, *ty))
             .collect();
         flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
-        let comptime_local_types: HashMap<Spur, Type> = flat_bindings
+        let comptime_local_types: AHashMap<Spur, Type> = flat_bindings
             .into_iter()
             .filter_map(
                 |(inst_ref, ty)| match self.body_rir_ref().get(inst_ref).data {
@@ -166,7 +166,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Build parameter map for constraint context.
             // Convert Type to InferType so arrays are represented structurally.
-            let mut param_vars: HashMap<Spur, ParamVarInfo> = params
+            let mut param_vars: AHashMap<Spur, ParamVarInfo> = params
                 .iter()
                 .map(|(name, ty, mode, _is_comptime)| {
                     (
@@ -376,7 +376,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Build the resolved types map, converting InferType to Type.
         // Since we pre-created all array types above, infer_type_to_type only
         // performs lookups (no mutation).
-        let mut resolved_types = HashMap::new();
+        let mut resolved_types = AHashMap::new();
         for (inst_ref, infer_ty) in &expr_types {
             let resolved = unifier.resolve_infer_type(infer_ty);
             let concrete_ty = self.infer_type_to_type(&resolved);

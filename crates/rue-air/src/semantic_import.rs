@@ -5,7 +5,7 @@
 //! an exact semantic request. The importer reconstructs only values that AIR
 //! can represent without borrowing handles from the exporting request.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -547,6 +547,9 @@ pub struct SemanticLocalMaterialization<K, M> {
     pub allow_unreachable_code: bool,
     pub type_pool: crate::FrozenTypeInternPool,
     pub interner: Arc<ThreadedRodeo>,
+    /// Kept on the std hasher: `rue-compiler` reads this field directly and
+    /// passes it on by reference, so its hasher is part of AIR's public surface
+    /// rather than an internal choice.
     pub aggregate_types: std::collections::HashMap<crate::Type, TypeInstanceKey<K, M>>,
     /// Exact caller-owned handles explicitly pre-materialized for a mandatory
     /// accessor splice, paired with their stable type identities.
@@ -608,10 +611,10 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     functions: AHashMap<FunctionInstanceKey<K, M>, Spur>,
     modules: BTreeMap<M, ModuleId>,
     builtins: BTreeMap<(Arc<str>, SemanticImportNominalKind), LocalNominal>,
-    nominal_exports: HashMap<LocalNominal, NominalInstanceKey<K, M>>,
-    function_exports: HashMap<Spur, FunctionInstanceKey<K, M>>,
-    module_exports: HashMap<ModuleId, M>,
-    builtin_exports: HashMap<LocalNominal, (Arc<str>, SemanticImportNominalKind)>,
+    nominal_exports: AHashMap<LocalNominal, NominalInstanceKey<K, M>>,
+    function_exports: AHashMap<Spur, FunctionInstanceKey<K, M>>,
+    module_exports: AHashMap<ModuleId, M>,
+    builtin_exports: AHashMap<LocalNominal, (Arc<str>, SemanticImportNominalKind)>,
     local_completeness: Option<SemanticLocalCompleteness>,
 }
 
@@ -1115,7 +1118,7 @@ where
             && body.strings.len() > 1
             && estimated_scan_comparisons >= LOCAL_ATOM_STRING_INDEX_MIN_COMPARISONS)
             .then(|| {
-                let mut positions = std::collections::HashMap::with_capacity(body.strings.len());
+                let mut positions = AHashMap::with_capacity(body.strings.len());
                 for (index, content) in body.strings.iter().enumerate() {
                     if let Ok(dense_id) = u32::try_from(index) {
                         // Match `position`: malformed duplicate entries resolve
@@ -1324,10 +1327,10 @@ where
             functions,
             modules,
             builtins,
-            nominal_exports: HashMap::new(),
-            function_exports: HashMap::new(),
-            module_exports: HashMap::new(),
-            builtin_exports: HashMap::new(),
+            nominal_exports: AHashMap::new(),
+            function_exports: AHashMap::new(),
+            module_exports: AHashMap::new(),
+            builtin_exports: AHashMap::new(),
             local_completeness: None,
         };
         epoch.rebuild_export_indexes();

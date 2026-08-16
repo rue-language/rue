@@ -26,7 +26,7 @@
 //! - Read lock for lookups (common case)
 //! - Write lock for insertions (rare, during declaration gathering)
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 use std::ops::Deref;
 use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
@@ -196,7 +196,7 @@ enum ValidationMode {
 struct TypeVisitSet {
     inline: [Type; 64],
     len: usize,
-    overflow: Option<HashSet<Type>>,
+    overflow: Option<AHashSet<Type>>,
 }
 
 impl TypeVisitSet {
@@ -220,7 +220,7 @@ impl TypeVisitSet {
             self.len += 1;
             return true;
         }
-        let mut overflow = HashSet::with_capacity(self.len + 1);
+        let mut overflow = AHashSet::with_capacity(self.len + 1);
         overflow.extend(self.inline);
         let inserted = overflow.insert(ty);
         self.overflow = Some(overflow);
@@ -570,22 +570,22 @@ struct TypeInternPoolInner {
 
     /// Base entries this epoch rewrote, keyed by pool index. Empty unless a
     /// mutation reached below `base_len`.
-    overrides: HashMap<usize, TypeData>,
+    overrides: AHashMap<usize, TypeData>,
 
     /// Base containment facts this epoch rewrote, keyed by pool index.
-    override_facts: HashMap<usize, Option<TypeContainmentFacts>>,
+    override_facts: AHashMap<usize, Option<TypeContainmentFacts>>,
 
     /// Composite type data this epoch interned itself, from `base_len` up.
     types: Vec<TypeData>,
 
     /// Structural type deduplication: (element, len) -> canonical array `Type`.
-    array_map: HashMap<(Type, u64), Type>,
+    array_map: AHashMap<(Type, u64), Type>,
 
     /// Structural type deduplication: pointee -> canonical ptr const `Type`.
-    ptr_const_map: HashMap<Type, Type>,
+    ptr_const_map: AHashMap<Type, Type>,
 
     /// Structural type deduplication: pointee -> canonical ptr mut `Type`.
-    ptr_mut_map: HashMap<Type, Type>,
+    ptr_mut_map: AHashMap<Type, Type>,
 
     /// Ownership facts indexed in lockstep with `types` (so also from
     /// `base_len` up). `None` is permitted only while declaration shells or a
@@ -633,24 +633,24 @@ struct TypeInternPoolInner {
     /// provider boundary. A pool that carries the type but not the mark spells
     /// a generated anonymous type as if it were a user nominal and desyncs the
     /// callable symbols joined across that boundary (RUE-1193).
-    anonymous_structs: HashSet<StructId>,
-    anonymous_enums: HashSet<EnumId>,
+    anonymous_structs: AHashSet<StructId>,
+    anonymous_enums: AHashSet<EnumId>,
 
     /// Nominal struct lookup: (defining file, source name) -> canonical `Type`.
-    struct_by_file_name: HashMap<(FileId, Spur), Type>,
+    struct_by_file_name: AHashMap<(FileId, Spur), Type>,
 
     /// Nominal enum lookup: (defining file, source name) -> canonical `Type`.
-    enum_by_file_name: HashMap<(FileId, Spur), Type>,
+    enum_by_file_name: AHashMap<(FileId, Spur), Type>,
 
     /// Relocation-stable logical identity for each defining source file.
-    symbol_paths: Arc<HashMap<FileId, String>>,
+    symbol_paths: Arc<AHashMap<FileId, String>>,
 
     /// Explicit language-item assignments issued by a trusted frontend or
     /// durable semantic import boundary.
-    struct_lang_items: Arc<HashMap<StructId, LangItem>>,
+    struct_lang_items: Arc<AHashMap<StructId, LangItem>>,
 
     /// Reverse index enforcing one canonical nominal for each language item.
-    lang_item_structs: Arc<HashMap<LangItem, StructId>>,
+    lang_item_structs: Arc<AHashMap<LangItem, StructId>>,
 
     /// Structs carrying the `@repr(c)` guarantee marker (ADR-0064 Amendment 1,
     /// RUE-1063). A side map, like `struct_lang_items`, so the marker travels
@@ -658,7 +658,7 @@ struct TypeInternPoolInner {
     /// classifier consult) without widening `StructDef` or its durable form. A
     /// layout no-op today; the guarantee that pins C representation and anchors
     /// FFI-safety.
-    repr_c_structs: Arc<HashSet<StructId>>,
+    repr_c_structs: Arc<AHashSet<StructId>>,
 
     /// Latched once a registration asked for a pool index past the published
     /// 24-bit `Type` payload ceiling (spec Appendix C.6:1,
@@ -804,21 +804,21 @@ impl TypeInternPoolInner {
         Self {
             base: None,
             base_len: 0,
-            overrides: HashMap::new(),
-            override_facts: HashMap::new(),
+            overrides: AHashMap::new(),
+            override_facts: AHashMap::new(),
             types: Vec::new(),
-            array_map: HashMap::new(),
-            ptr_const_map: HashMap::new(),
-            ptr_mut_map: HashMap::new(),
+            array_map: AHashMap::new(),
+            ptr_const_map: AHashMap::new(),
+            ptr_mut_map: AHashMap::new(),
             containment_facts: Vec::new(),
             pending_facts: 0,
             facts_stale: false,
             unsettled_facts: false,
             containment_metrics: TypeContainmentMetrics::default(),
-            anonymous_structs: HashSet::new(),
-            anonymous_enums: HashSet::new(),
-            struct_by_file_name: HashMap::new(),
-            enum_by_file_name: HashMap::new(),
+            anonymous_structs: AHashSet::new(),
+            anonymous_enums: AHashSet::new(),
+            struct_by_file_name: AHashMap::new(),
+            enum_by_file_name: AHashMap::new(),
             symbol_paths: Arc::default(),
             struct_lang_items: Arc::default(),
             lang_item_structs: Arc::default(),
@@ -1046,12 +1046,12 @@ impl TypeInternPoolInner {
         Self {
             base_len: base.entry_count(),
             base: Some(base),
-            overrides: HashMap::new(),
-            override_facts: HashMap::new(),
+            overrides: AHashMap::new(),
+            override_facts: AHashMap::new(),
             types: Vec::new(),
-            array_map: HashMap::new(),
-            ptr_const_map: HashMap::new(),
-            ptr_mut_map: HashMap::new(),
+            array_map: AHashMap::new(),
+            ptr_const_map: AHashMap::new(),
+            ptr_mut_map: AHashMap::new(),
             containment_facts: Vec::new(),
             pending_facts,
             facts_stale,
@@ -1059,10 +1059,10 @@ impl TypeInternPoolInner {
             containment_metrics: TypeContainmentMetrics::default(),
             // Empty locally; `is_anonymous_*` consults the base for entries
             // below `base_len`, matching how `types` is layered.
-            anonymous_structs: HashSet::new(),
-            anonymous_enums: HashSet::new(),
-            struct_by_file_name: HashMap::new(),
-            enum_by_file_name: HashMap::new(),
+            anonymous_structs: AHashSet::new(),
+            anonymous_enums: AHashSet::new(),
+            struct_by_file_name: AHashMap::new(),
+            enum_by_file_name: AHashMap::new(),
             symbol_paths: Arc::clone(&self.symbol_paths),
             struct_lang_items: Arc::clone(&self.struct_lang_items),
             lang_item_structs: Arc::clone(&self.lang_item_structs),
@@ -2566,7 +2566,7 @@ impl TypeInternPool {
     }
 
     /// Set relocation-stable source identities for type-derived symbols.
-    pub(crate) fn set_symbol_paths(&self, symbol_paths: HashMap<FileId, String>) {
+    pub(crate) fn set_symbol_paths(&self, symbol_paths: AHashMap<FileId, String>) {
         self.inner
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -5891,7 +5891,7 @@ mod tests {
         let interner = ThreadedRodeo::default();
         let left_id = FileId::new(42);
         let right_id = FileId::new(7);
-        pool.set_symbol_paths(HashMap::from([
+        pool.set_symbol_paths(AHashMap::from([
             (left_id, "left/shared.rue".to_string()),
             (right_id, "right/shared.rue".to_string()),
         ]));

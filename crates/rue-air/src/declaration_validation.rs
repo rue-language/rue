@@ -4,7 +4,7 @@
 //! deterministic policy over canonical declaration facts, so the one-shot AIR
 //! adapter and the keyed semantic graph cannot drift on the rule itself.
 
-use std::collections::HashSet;
+use ahash::AHashSet;
 
 use rue_error::ErrorKind;
 
@@ -15,7 +15,7 @@ pub fn duplicate_parameter(names: impl IntoIterator<Item = impl AsRef<str>>) -> 
 pub fn duplicate_parameter_with_ordinal(
     names: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Option<(ErrorKind, usize)> {
-    let mut seen = HashSet::new();
+    let mut seen = AHashSet::new();
     for (ordinal, name) in names.into_iter().enumerate() {
         let name = name.as_ref();
         if !seen.insert(name.to_owned()) {
@@ -57,7 +57,7 @@ pub fn duplicate_field(
     struct_name: &str,
     fields: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Option<ErrorKind> {
-    let mut seen = HashSet::new();
+    let mut seen = AHashSet::new();
     for field in fields {
         let field = field.as_ref();
         if !seen.insert(field.to_owned()) {
@@ -74,7 +74,7 @@ pub fn duplicate_variant(
     enum_name: &str,
     variants: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Option<ErrorKind> {
-    let mut seen = HashSet::new();
+    let mut seen = AHashSet::new();
     for variant in variants {
         let variant = variant.as_ref();
         if !seen.insert(variant.to_owned()) {

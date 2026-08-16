@@ -373,7 +373,7 @@ pub fn repr_c_marker_eligible<P: FfiTypePool>(
 mod tests {
     use super::*;
     use crate::{EnumId, PtrConstTypeId, PtrMutTypeId};
-    use std::collections::HashMap;
+    use ahash::AHashMap;
 
     /// A tiny hand-built pool so the predicate algebra can be exercised without
     /// the full type-intern-pool completion protocol. Struct/array IDs are just
@@ -381,8 +381,8 @@ mod tests {
     /// pointer's pointee or read an enum body).
     #[derive(Default)]
     struct MockPool {
-        structs: HashMap<u32, MockStruct>,
-        arrays: HashMap<u32, Type>,
+        structs: AHashMap<u32, MockStruct>,
+        arrays: AHashMap<u32, Type>,
     }
 
     #[derive(Default, Clone)]

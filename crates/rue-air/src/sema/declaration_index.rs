@@ -5,7 +5,7 @@
 //! only with the exact RIR and interner epoch from which it was built. They are
 //! arena locators, not durable semantic or tooling identities.
 
-use std::collections::{HashMap, HashSet};
+use ahash::{AHashMap, AHashSet};
 
 use lasso::Spur;
 use rue_rir::{InstData, InstRef, Rir};
@@ -68,8 +68,8 @@ pub(super) struct RirShellDeclaration {
 #[derive(Debug)]
 pub(super) struct RirDeclarationIndex {
     free_functions: Vec<InstRef>,
-    free_functions_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
-    free_functions_by_name: HashMap<Spur, Vec<InstRef>>,
+    free_functions_by_file_name: AHashMap<(FileId, Spur), Vec<InstRef>>,
+    free_functions_by_name: AHashMap<Spur, Vec<InstRef>>,
     named_methods: Vec<InstRef>,
     anonymous_methods: Vec<InstRef>,
     destructors: Vec<RirDestructorDeclaration>,
@@ -80,10 +80,10 @@ pub(super) struct RirDeclarationIndex {
 impl RirDeclarationIndex {
     pub(super) fn new(rir: &Rir) -> Self {
         let mut function_candidates = Vec::new();
-        let mut named_method_refs = HashSet::new();
-        let mut named_method_owners = HashMap::new();
-        let mut anonymous_method_refs = HashSet::new();
-        let mut declaration_source_orders = HashMap::new();
+        let mut named_method_refs = AHashSet::new();
+        let mut named_method_owners = AHashMap::new();
+        let mut anonymous_method_refs = AHashSet::new();
+        let mut declaration_source_orders = AHashMap::new();
         let mut destructors = Vec::new();
         let mut const_shell_declarations = Vec::new();
         let mut work = RirDeclarationIndexWork {
@@ -148,8 +148,8 @@ impl RirDeclarationIndex {
         }
 
         let mut free_functions = Vec::new();
-        let mut free_functions_by_file_name = HashMap::<(FileId, Spur), Vec<InstRef>>::new();
-        let mut free_functions_by_name = HashMap::<Spur, Vec<InstRef>>::new();
+        let mut free_functions_by_file_name = AHashMap::<(FileId, Spur), Vec<InstRef>>::new();
+        let mut free_functions_by_name = AHashMap::<Spur, Vec<InstRef>>::new();
         let mut named_methods = Vec::new();
         let mut anonymous_methods = Vec::new();
         let mut shell_declarations = nominal_candidates
