@@ -58,3 +58,17 @@ files = [{ path = "main.rue", source = "fn main(value: i32) -> i32 { value }" }]
 args = ["--emit", "asm", "--target", "x86-64-linux", "main.rue"]
 compile_fail = true
 error_contains = ["E0211", "`main` must not declare parameters"]
+
+[[case]]
+name = "aggregate_return_is_rejected_before_codegen"
+files = [{ path = "main.rue", source = "struct Pair { a: i32, b: i32 }\nfn main() -> Pair { Pair { a: 1, b: 2 } }" }]
+compile_fail = true
+error_contains = ["E0211", "main.rue:", "`main` must return `i32` or `()`"]
+
+[[case]]
+name = "non_root_main_is_ordinary_and_module_qualified"
+files = [
+    { path = "main.rue", source = "const helpers = @import(\"helpers.rue\");\n\nfn main() -> i32 { helpers.main() }" },
+    { path = "helpers.rue", source = "pub fn main() -> i32 { 7 }" },
+]
+exit_code = 7
