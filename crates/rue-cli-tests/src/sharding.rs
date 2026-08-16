@@ -1,13 +1,17 @@
 use rue_test_runner::ShardSelector;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 const WEIGHTS_VERSION: u64 = 1;
+const SHARD_LOADS_VERSION: u64 = 1;
 
+/// The measured per-case weight file, `shard-weights.json`: a `common`
+/// baseline, per-platform overlays, and a `default_ms` fallback for any
+/// discovered case the file does not name.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ShardWeights {
+pub struct ShardWeights {
     version: u64,
     default_ms: u64,
     #[serde(default)]
@@ -16,21 +20,8 @@ struct ShardWeights {
     platforms: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
-/// A deterministic, cost-balanced assignment of every discovered CLI case.
-pub struct CliShardPlan {
-    selector: ShardSelector,
-    assignments: HashMap<String, u64>,
-    estimated_load_ms: Vec<u64>,
-    case_counts: Vec<usize>,
-    platform: String,
-}
-
-impl CliShardPlan {
-    pub fn load(
-        selector: ShardSelector,
-        names: impl IntoIterator<Item = String>,
-        path: &Path,
-    ) -> Result<Self, String> {
+impl ShardWeights {
+    pub fn load(path: &Path) -> Result<Self, String> {
         let contents = std::fs::read_to_string(path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let weights: ShardWeights = serde_json::from_str(&contents)
@@ -58,18 +49,65 @@ impl CliShardPlan {
                 ));
             }
         }
+        Ok(weights)
+    }
 
-        let platform = host_platform().to_string();
-        let platform_weights = weights.platforms.get(&platform);
+    /// The platforms this file models with a dedicated overlay — the set the
+    /// shard-loads report covers, matching what the timeout-policy gate checks.
+    pub fn platform_names(&self) -> impl Iterator<Item = &str> {
+        self.platforms.keys().map(String::as_str)
+    }
+
+    /// The expected cost of `name` on `platform`: the platform overlay first,
+    /// then the common baseline, then `default_ms` for an unmeasured case.
+    fn weight_for(&self, platform: &str, name: &str) -> u64 {
+        self.platforms
+            .get(platform)
+            .and_then(|platform| platform.get(name))
+            .or_else(|| self.common.get(name))
+            .copied()
+            .unwrap_or(self.default_ms)
+    }
+}
+
+/// A deterministic, cost-balanced assignment of every discovered CLI case.
+pub struct CliShardPlan {
+    selector: ShardSelector,
+    assignments: HashMap<String, u64>,
+    estimated_load_ms: Vec<u64>,
+    case_counts: Vec<usize>,
+    platform: String,
+}
+
+impl CliShardPlan {
+    pub fn load(
+        selector: ShardSelector,
+        names: impl IntoIterator<Item = String>,
+        path: &Path,
+    ) -> Result<Self, String> {
+        let weights = ShardWeights::load(path)?;
+        Self::for_platform(selector, host_platform(), names, &weights)
+    }
+
+    /// The single population-and-packing rule, parameterized by platform name.
+    ///
+    /// The runtime path calls this through [`CliShardPlan::load`] with the
+    /// detected host; the shard-loads emit mode calls it once per platform the
+    /// weights file models. Keeping one body is the point: every discovered
+    /// name is weighted (overlay, then common, then `default_ms`) and packed
+    /// LPT-style, so a derived deadline can never model a different corpus
+    /// than the one the harness runs.
+    pub fn for_platform(
+        selector: ShardSelector,
+        platform: &str,
+        names: impl IntoIterator<Item = String>,
+        weights: &ShardWeights,
+    ) -> Result<Self, String> {
         let weighted_names = names.into_iter().map(|name| {
-            let weight = platform_weights
-                .and_then(|platform| platform.get(&name))
-                .or_else(|| weights.common.get(&name))
-                .copied()
-                .unwrap_or(weights.default_ms);
+            let weight = weights.weight_for(platform, &name);
             (name, weight)
         });
-        Self::from_weighted_names(selector, &platform, weighted_names)
+        Self::from_weighted_names(selector, platform, weighted_names)
     }
 
     fn from_weighted_names(
@@ -131,6 +169,14 @@ impl CliShardPlan {
         &self.platform
     }
 
+    pub fn estimated_load_ms(&self) -> &[u64] {
+        &self.estimated_load_ms
+    }
+
+    pub fn case_counts(&self) -> &[usize] {
+        &self.case_counts
+    }
+
     fn validate_skew(&self) -> Result<(), String> {
         let total: u128 = self
             .estimated_load_ms
@@ -150,6 +196,62 @@ impl CliShardPlan {
         }
         Ok(())
     }
+}
+
+/// The machine-readable shard-loads report the emit mode prints: for every
+/// platform the weights file models, the per-shard expected costs the runtime
+/// packing would produce there. `scripts/cli-timeout-policy.py` consumes this
+/// (via the `//:cli-shard-loads-json` genrule) instead of re-deriving the
+/// packing, so the packing exists exactly once — here.
+#[derive(Debug, Serialize)]
+pub struct ShardLoadsReport {
+    version: u64,
+    shard_count: u64,
+    platforms: BTreeMap<String, PlatformShardLoads>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlatformShardLoads {
+    loads_ms: Vec<u64>,
+    case_counts: Vec<usize>,
+    total_cases: usize,
+}
+
+/// Pack `names` into `shard_count` shards once per modeled platform.
+///
+/// Every platform reuses the exact runtime packing ([`CliShardPlan`]),
+/// including its skew validation, so a weights update that would break a CI
+/// platform's shard balance fails here at build time rather than on that
+/// platform's lane.
+pub fn shard_loads_report(
+    shard_count: u64,
+    names: &[String],
+    weights: &ShardWeights,
+) -> Result<ShardLoadsReport, String> {
+    // The packing is index-independent; selector index 0 is arbitrary.
+    let selector = ShardSelector::parse(Some(&format!("0/{shard_count}")))
+        .map_err(|error| format!("invalid shard count {shard_count}: {error}"))?
+        .expect("a spelled-out spec is never the unset case");
+    let mut platforms = BTreeMap::new();
+    for platform in weights.platform_names() {
+        let plan = CliShardPlan::for_platform(selector, platform, names.iter().cloned(), weights)?;
+        platforms.insert(
+            platform.to_string(),
+            PlatformShardLoads {
+                loads_ms: plan.estimated_load_ms().to_vec(),
+                case_counts: plan.case_counts().to_vec(),
+                total_cases: plan.case_counts().iter().sum(),
+            },
+        );
+    }
+    if platforms.is_empty() {
+        return Err("shard weights model no platforms; nothing to report".to_string());
+    }
+    Ok(ShardLoadsReport {
+        version: SHARD_LOADS_VERSION,
+        shard_count,
+        platforms,
+    })
 }
 
 fn host_platform() -> &'static str {
@@ -244,6 +346,77 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.contains("25% skew"));
+    }
+
+    fn weights_from_json(json: &str) -> ShardWeights {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), json).unwrap();
+        ShardWeights::load(file.path()).unwrap()
+    }
+
+    #[test]
+    fn unweighted_names_fall_back_to_default_ms_per_platform() {
+        // The population rule the emit mode must share with the runtime path:
+        // a discovered case absent from the weights file still costs
+        // `default_ms`, and a platform overlay beats the common baseline.
+        let weights = weights_from_json(
+            r#"{
+                "version": 1,
+                "default_ms": 7,
+                "common": {"a": 100},
+                "platforms": {"fast": {"a": 10}, "slow": {}}
+            }"#,
+        );
+        let names = ["a", "unmeasured"].map(str::to_string);
+        let fast =
+            CliShardPlan::for_platform(selector(0, 1), "fast", names.clone(), &weights).unwrap();
+        assert_eq!(fast.estimated_load_ms(), &[17]);
+        let slow = CliShardPlan::for_platform(selector(0, 1), "slow", names, &weights).unwrap();
+        assert_eq!(slow.estimated_load_ms(), &[107]);
+    }
+
+    #[test]
+    fn shard_loads_report_covers_every_modeled_platform() {
+        let weights = weights_from_json(
+            r#"{
+                "version": 1,
+                "default_ms": 10,
+                "common": {"a": 80, "b": 40, "c": 40},
+                "platforms": {"fast": {"a": 40, "b": 40, "c": 40}, "slow": {}}
+            }"#,
+        );
+        let names: Vec<String> = ["a", "b", "c", "d"].map(str::to_string).into();
+        let report = shard_loads_report(2, &names, &weights).unwrap();
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["shard_count"], 2);
+        // fast overlay: a=b=c=40, unweighted d=10 -> a:0, b:1, c:0 (load tie,
+        // index breaks it), d:1. slow (common only): a=80, b=c=40, d=10 ->
+        // a:0, b:1, c:1, d:0 (load tie at 80/80, case-count breaks it).
+        assert_eq!(
+            value["platforms"]["fast"]["loads_ms"],
+            serde_json::json!([80, 50])
+        );
+        assert_eq!(
+            value["platforms"]["slow"]["loads_ms"],
+            serde_json::json!([90, 80])
+        );
+        assert_eq!(value["platforms"]["slow"]["total_cases"], 4);
+        assert_eq!(
+            value["platforms"]["fast"]["case_counts"],
+            serde_json::json!([2, 2])
+        );
+    }
+
+    #[test]
+    fn shard_loads_report_rejects_a_zero_shard_count() {
+        let weights = weights_from_json(
+            r#"{"version": 1, "default_ms": 1, "common": {"a": 1}, "platforms": {"p": {}}}"#,
+        );
+        let error = shard_loads_report(0, &["a".to_string()], &weights)
+            .err()
+            .unwrap();
+        assert!(error.contains("invalid shard count"));
     }
 
     #[test]
