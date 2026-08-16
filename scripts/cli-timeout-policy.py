@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """Validate CLI hang guards and derive whole-suite executor deadlines.
 
+The packing authority is the CLI harness itself: its
+`RUE_CLI_EMIT_SHARD_LOADS` mode performs the real case discovery (tier and
+platform filtering, `default_ms` fallback for unmeasured cases) and packs it
+with the runtime LPT rule, and Buck materializes the per-platform result as
+//:cli-shard-loads-json. This gate applies the declarative policy arithmetic
+(multiplier, headroom, minimums) to those reported loads; it does not model
+the corpus or the packing itself.
+
 The result is correctness plumbing, not a performance threshold. Shard
 deadlines deliberately combine measured expected cost with proportional and
 fixed headroom so a loaded worker does not turn a healthy case into a flake.
@@ -77,24 +85,39 @@ def host_platform() -> str:
     return "other"
 
 
-def shard_loads(path: Path, platform_name: str, count: int) -> list[int]:
+def load_shard_loads(path: Path) -> dict:
+    """The harness-reported per-platform shard loads (//:cli-shard-loads-json)."""
     data = json.loads(path.read_text())
     if data.get("version") != 1:
-        raise ValueError(f"{path}: unsupported weights version")
-    common = data.get("common", {})
-    platform_weights = data.get("platforms", {}).get(platform_name, {})
-    names = set(common) | set(platform_weights)
-    weighted = [(name, platform_weights.get(name, common.get(name))) for name in names]
-    if not weighted or any(type(weight) is not int or weight <= 0 for _, weight in weighted):
-        raise ValueError(f"{path}: weights must be non-empty positive integers")
-    weighted.sort(key=lambda item: (-item[1], item[0]))
-    loads = [0] * count
-    case_counts = [0] * count
-    for _, weight in weighted:
-        index = min(range(count), key=lambda i: (loads[i], case_counts[i], i))
-        loads[index] += weight
-        case_counts[index] += 1
-    return loads
+        raise ValueError(f"{path}: unsupported shard-loads version")
+    shard_count = data.get("shard_count")
+    if type(shard_count) is not int or shard_count <= 0:
+        raise ValueError(f"{path}: shard_count must be a positive integer")
+    platforms = data.get("platforms")
+    if not isinstance(platforms, dict) or not platforms:
+        raise ValueError(f"{path}: platforms must be a non-empty object")
+    for name, entry in platforms.items():
+        loads = entry.get("loads_ms") if isinstance(entry, dict) else None
+        if (
+            not isinstance(loads, list)
+            or len(loads) != shard_count
+            or any(type(load) is not int or load < 0 for load in loads)
+        ):
+            raise ValueError(
+                f"{path}: platforms.{name}.loads_ms must list {shard_count} "
+                "non-negative integer loads"
+            )
+    return data
+
+
+def platform_loads(loads: dict, platform_name: str) -> list[int]:
+    platforms = loads["platforms"]
+    if platform_name not in platforms:
+        raise ValueError(
+            f"shard loads do not model platform {platform_name!r} "
+            f"(modeled: {', '.join(sorted(platforms))})"
+        )
+    return platforms[platform_name]["loads_ms"]
 
 
 def derive_timeout_ms(expected_ms: int, minimum_ms: int, policy: dict[str, int]) -> int:
@@ -105,21 +128,25 @@ def derive_timeout_ms(expected_ms: int, minimum_ms: int, policy: dict[str, int])
 
 
 def timeout_for_target(
-    target: str, weights_path: Path, platform_name: str, policy: dict[str, int]
+    target: str, loads: dict | None, platform_name: str, policy: dict[str, int]
 ) -> tuple[int, int | None]:
     match = re.fullmatch(r"//:cli-tests-shard-(\d+)", target)
     if match:
+        if loads is None:
+            raise ValueError(f"{target} requires --shard-loads")
         index = int(match.group(1))
-        count = 4
+        count = loads["shard_count"]
         if index >= count:
-            raise ValueError(f"invalid CLI shard index {index}")
-        expected = shard_loads(weights_path, platform_name, count)[index]
+            raise ValueError(f"invalid CLI shard index {index} (shard count {count})")
+        expected = platform_loads(loads, platform_name)[index]
         return (
             derive_timeout_ms(expected, policy["minimum_shard_timeout_ms"], policy),
             expected,
         )
     if target == "//:cli-tests":
-        expected = sum(shard_loads(weights_path, platform_name, 1))
+        if loads is None:
+            raise ValueError(f"{target} requires --shard-loads")
+        expected = sum(platform_loads(loads, platform_name))
         return (
             derive_timeout_ms(expected, policy["minimum_monolith_timeout_ms"], policy),
             expected,
@@ -159,22 +186,20 @@ def buck_timeouts(buck_path: Path) -> dict[str, int]:
 
 
 def check_buck_timeouts(
-    buck_path: Path, weights_path: Path, policy: dict[str, int]
+    buck_path: Path, loads: dict, policy: dict[str, int]
 ) -> list[str]:
     """Report action bounds that cut inside the derived correctness deadline.
 
-    Every platform in the weights file is checked, because the BUCK value is one
-    static number while the derived deadline is per-platform: a bound that is
-    generous on the fastest runner and short on the slowest is still a bound
-    that kills healthy runs.
+    Every platform the shard-loads report models is checked, because the BUCK
+    value is one static number while the derived deadline is per-platform: a
+    bound that is generous on the fastest runner and short on the slowest is
+    still a bound that kills healthy runs.
     """
-    platforms = sorted(json.loads(weights_path.read_text()).get("platforms", {}))
+    platforms = sorted(loads["platforms"])
     errors = []
     for target, declared_seconds in buck_timeouts(buck_path).items():
         for platform_name in platforms:
-            required_ms, _ = timeout_for_target(
-                target, weights_path, platform_name, policy
-            )
+            required_ms, _ = timeout_for_target(target, loads, platform_name, policy)
             required_seconds = math.ceil(required_ms / 1000)
             if declared_seconds < required_seconds:
                 errors.append(
@@ -196,7 +221,11 @@ def main() -> int:
         "//:cli-timeout-policy-validation",
     )
     parser.add_argument(
-        "--weights", type=Path, default=Path("crates/rue-cli-tests/shard-weights.json")
+        "--shard-loads",
+        type=Path,
+        help="harness-reported per-platform shard loads; build "
+        "//:cli-shard-loads-json (the harness's RUE_CLI_EMIT_SHARD_LOADS "
+        "mode is the packing authority)",
     )
     parser.add_argument("--platform", default=host_platform())
     parser.add_argument("--target")
@@ -209,9 +238,16 @@ def main() -> int:
     args = parser.parse_args()
     try:
         _, policy = load_policy(args.policy)
+        loads = (
+            load_shard_loads(args.shard_loads)
+            if args.shard_loads is not None
+            else None
+        )
         if args.target is None:
             if args.buck is not None:
-                errors = check_buck_timeouts(args.buck, args.weights, policy)
+                if loads is None:
+                    raise ValueError("--buck requires --shard-loads")
+                errors = check_buck_timeouts(args.buck, loads, policy)
                 if errors:
                     for error in errors:
                         print(f"error: {error}", file=sys.stderr)
@@ -221,7 +257,7 @@ def main() -> int:
             print("CLI timeout policy valid")
             return 0
         timeout_ms, expected_ms = timeout_for_target(
-            args.target, args.weights, args.platform, policy
+            args.target, loads, args.platform, policy
         )
         detail = (
             "fixed slow-suite guard"
