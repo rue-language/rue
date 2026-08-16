@@ -26,7 +26,7 @@ use rue_cfg::{BlockId, Cfg, CfgValue, Type};
 use crate::types;
 
 /// A single lowering decision: maps one CFG instruction to its MIR expansion.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweringDecision {
     /// The CFG value (instruction) being lowered.
     pub cfg_value: CfgValue,
@@ -41,7 +41,7 @@ pub struct LoweringDecision {
 }
 
 /// A lowering decision for a block terminator.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminatorLoweringDecision {
     /// Human-readable description of the terminator.
     pub terminator_desc: String,
@@ -56,7 +56,7 @@ pub struct TerminatorLoweringDecision {
 }
 
 /// Debug information for a single basic block's lowering.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockLoweringInfo {
     /// The block ID.
     pub block_id: BlockId,
@@ -70,7 +70,7 @@ pub struct BlockLoweringInfo {
 ///
 /// This captures how each CFG instruction is expanded into MIR instructions,
 /// including the rationale for instruction selection decisions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoweringDebugInfo {
     /// Function name.
     pub fn_name: String,

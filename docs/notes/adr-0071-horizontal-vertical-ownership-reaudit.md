@@ -25,23 +25,24 @@ The re-audit found two real appendices and one retention question:
    were two traversals of the same boundary. This patch removes the parallel
    body walk: the issuing AIR and its admitted identity mappings now own the
    projection.
-2. `CodegenUnit` normalizes machine code into sections, atoms, relocations, and
-   symbols, but object generation reconstructs an owned legacy
-   `FunctionBackendProduct` from those fields. Ordinary codegen also retains
-   flattened and atomized rodata simultaneously and eagerly formats backend
-   presentation text. The terminal should own one link-ready representation,
-   while object and presentation consumers borrow thin views.
+2. `CodegenUnit` normalized machine code into sections, atoms, relocations, and
+   symbols, but object generation reconstructed an owned legacy
+   `FunctionBackendProduct` from those fields. Ordinary codegen also retained
+   flattened and atomized rodata simultaneously and eagerly formatted backend
+   presentation text. This appendix is now complete: the terminal owns one
+   link-ready representation, while object and presentation consumers borrow
+   thin views.
 3. The optimized `CfgRecord` retains the unoptimized record's AIR and other
    presentation domains even though ordinary codegen consumes CFG/type/codegen
    domains. This is a plausible memory appendix, but it needs retained-size and
    eviction evidence before changing the query boundary.
 
-The first item is completed below without changing the query graph, phase
-ownership, or invalidation. Its paired clock and memory result was neutral, so
-it is an ownership and maintenance improvement rather than a claimed speedup.
-The second is the strongest remaining cleanup, although its measured object
-serialization time is modest. The third is measurement work, not yet an
-authorized representation change.
+The first two items are completed below without changing the query graph, phase
+ownership, or invalidation. The paired AIR clock and memory result was neutral,
+so it is an ownership and maintenance improvement rather than a claimed
+speedup. The CodegenUnit cleanup likewise has no post-change performance claim
+until the coordinator supplies a measurement. The third is measurement work,
+not yet an authorized representation change.
 
 ## Current vertical map
 
@@ -52,10 +53,10 @@ authorized representation change.
 | candidate RIR | `compiler.declaration-body-plan-artifacts` | one packed, candidate-local, file-independent RIR envelope | One candidate AstGen owner. Normal compilation demands reached candidates; whole-RIR presentation composes the same candidates. |
 | declaration semantics | `compiler.semantic-nucleus` and exact type/layout/ABI/drop-glue queries | stable definition/type/function keys and immutable fact payloads | Shared payload work is now effective; provider materialization is 97.2% shared on Lattice. |
 | body semantics | `compiler.body-transaction` | immutable stable semantic body plus exact dependency observations | Per-body scheduling is conventional and independently invalidated. No normal source reparse or alternate semantic engine. |
-| local AIR and CFG | `compiler.cfg` | a body-local AIR/type/symbol epoch, `CfgDomainProjection`, validated CFG, warnings, and codegen domains | One owner, but the import and projection traversals duplicate boundary work. |
+| local AIR and CFG | `compiler.cfg` | a body-local AIR/type/symbol epoch, `CfgDomainProjection`, validated CFG, warnings, and codegen domains | One owner. AIR is the sole live body representation, and the projection derives from AIR plus its admitted stable identities. |
 | optimized CFG | `compiler.optimized-cfg` | cloned-and-optimized CFG plus Arc-shared local domains | The clone is an immutable-query tradeoff, not a peer optimizer. Retaining AIR through normal backend roots needs measurement. |
 | target backend | `compiler.codegen-unit` | one per-function target-specific lowering, MIR, liveness, allocation, scheduling, emission, and requested artifacts | One target-selected owner. Shared planning modules make x86-64/AArch64 policy explicit without pretending their MIRs are identical. |
-| object generation | `compiler.object-projection` | serialized object bytes | Canonical query boundary, but it currently rebuilds an owned legacy backend product from `CodegenUnit`. |
+| object generation | `compiler.object-projection` | serialized object bytes | Canonical query boundary; it projects borrowed `CodegenUnit` sections, ordered atoms, and relocations into transient linker-builder inputs. |
 | linking | `ProgramImagePlan` and the fresh linker | ordered object bytes and export thunks | Deliberately fresh under ADR-0063. The final owned-byte adapter is not a second codegen path. |
 
 ## Current horizontal map
@@ -79,8 +80,8 @@ The same review across phases found the following owners:
   requests exact layout and drop-glue prerequisites through stable keys.
 - **Presentation:** AST/RIR/AIR/CFG/backend presentation consumes canonical
   artifacts. It does not choose a different compiler. Backend artifact text is
-  nevertheless eagerly formatted inside ordinary `CodegenUnit`, which is an
-  ownership smell rather than a second computation path.
+  retained only when explicitly requested; ordinary `CodegenUnit` values carry
+  typed artifact fields rather than an eager formatted presentation string.
 - **Cancellation and failure:** query cancellation remains distinct from typed
   parse, semantic, RIR, CFG, codegen, and resource failures. Long candidate
   packing/materialization and body work have bounded checkpoints.
@@ -124,9 +125,9 @@ approximately 41.7 ms import had already translated the same instructions,
 types, symbols, and spans. Source review established duplicated boundary
 ownership, although the completed paired experiment below showed that its
 lockstep validation was not the counter's dominant clock cost. By contrast,
-object serialization's 2.8 ms bounds the likely
-clock benefit of the codegen ownership cleanup even though its memory and
-maintainability result may still be worthwhile.
+the recorded object-serialization value is only a pre-cleanup baseline. It
+does not establish a post-cleanup performance result; the coordinator must
+measure the current ownership boundary before reporting one.
 
 ## Comparison with established query compilers
 
@@ -148,11 +149,11 @@ The comparison does not justify collapsing Rue to one IR or one global arena.
   retaining dependency information. Rue implements the corresponding concepts
   with stable keys, explicit terminal leases, and family retention policies.
 
-What is unusual in Rue is therefore not parse→RIR→AIR→CFG→MIR. The
-remaining clear appendix is the normalized-codegen-terminal-to-owned-legacy-
-product reconstruction. The local AIR boundary now follows the conventional
-shape: AIR is the sole live body representation, and CFG derives its relocation
-domain from AIR without consulting a parallel semantic body.
+What is unusual in Rue is therefore not parse→RIR→AIR→CFG→MIR. The local AIR
+boundary now follows the conventional shape: AIR is the sole live body
+representation, and CFG derives its relocation domain from AIR without
+consulting a parallel semantic body. The CodegenUnit object-projection
+appendix is also closed; only measured optimized-CFG retention remains open.
 
 Primary references:
 
@@ -165,8 +166,6 @@ Primary references:
 
 ### Present
 
-- codegen section/atom normalization followed by owned backend-product
-  reconstruction, duplicate rodata forms, and eager presentation formatting;
 - possible presentation-only AIR retention through optimized CFG roots;
 - large but exact layout/drop-glue and query-validation fanout, which needs
   family-level profiling before it is called duplicate work.
@@ -218,17 +217,33 @@ slower. The result is an ownership and maintainability win. It also identifies
 canonical type and callable projection, rather than schema lockstep validation,
 as the remaining measured cost at this boundary.
 
+### CodegenUnit owns the object-generation input
+
+`CodegenUnit` is the canonical typed link-ready terminal: its defined symbol,
+section metadata, ordered text/rodata atoms, normalized relocations, requested
+typed backend artifacts, and content fingerprint are retained exactly once.
+Text is one atom; rodata atom boundaries, order, duplicates, empty values, and
+UTF-8 bytes are preserved. Object projection now accepts `&CodegenUnit`
+directly, validates section shape and target relocation compatibility with
+typed failures, and makes only transient `Vec`/`String` copies required by the
+linker-owned `ObjectBuilder`. Those builder copies are not retained compiler
+shadow state. Runtime-symbol discovery derives from ordered relocations, and
+exact query equality compares all retained typed fields rather than a Debug
+presentation string or hash alone.
+
+Six order-balanced parent/current release Lattice pairs produced the exact same
+1,662,976-byte executable (`45784ce7…9a89e7`). Peak RSS favored the canonical
+terminal by 5,767,168 bytes paired median externally and 5,840,896 bytes in the
+compiler report. Complete-root time was effectively neutral at -0.77 ms paired
+median. Object serialization itself regressed by 1.09 ms paired median because
+the direct projector now validates the typed section contract before borrowing
+its contents. This is therefore a measured retention and ownership win, not a
+wall-time speedup; eliminating the retained aliases does not eliminate the
+linker-owned transient copies or the new fail-closed validation.
+
 ## Ranked next work
 
-### 1. Make `CodegenUnit` the object writer's native input
-
-Move or retain machine bytes exactly once. Let object serialization borrow the
-terminal's text, rodata atoms, and relocations without recreating
-`FunctionBackendProduct`. Do not retain both flattened and atomized rodata
-unless the object format requires both; derive presentation text only for an
-explicit artifact request. Keep one target backend owner and exact output bytes.
-
-### 2. Attribute optimized-CFG retention
+### 1. Attribute optimized-CFG retention
 
 Measure per-family retained bytes for unoptimized CFG, optimized CFG, AIR,
 types, strings, atoms, and codegen domains on Lattice and retained-edit cases.
@@ -236,7 +251,7 @@ Only then decide whether normal optimized roots can omit AIR while explicit AIR
 presentation retains the unoptimized terminal. A split that weakens dependency
 cones or creates a second CFG record builder is rejected.
 
-### 3. Reprofile graph fanout
+### 2. Reprofile graph fanout
 
 After the ownership changes, attribute the 25,141 layout/drop requests and
 283,413 dependency observations by family and critical path. Exact repeated

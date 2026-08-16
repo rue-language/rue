@@ -1968,9 +1968,24 @@ fn orphaned_backend_inspection_exports_cannot_return() {
             "unstable presentation regained a parallel backend path: {name}"
         );
     }
+    for (module, source) in PRODUCTION_MODULES {
+        for retired in [
+            "FunctionBackendProduct",
+            "backend_product",
+            "generate_backend_products",
+            "codegen_products",
+            "SectionContents",
+            "presentation_fingerprint",
+        ] {
+            assert!(
+                !code_identifiers(source).contains(&retired),
+                "retired CodegenUnit ownership identifier remains in {module}: {retired}"
+            );
+        }
+    }
     assert!(
-        code_identifiers(unstable).contains(&"codegen_products"),
-        "unstable presentation must project the canonical CodegenUnit terminal"
+        code_identifiers(backend).contains(&"project_backend_object"),
+        "object projection must accept the canonical CodegenUnit"
     );
 }
 

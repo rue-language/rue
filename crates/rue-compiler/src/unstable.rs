@@ -892,66 +892,69 @@ impl crate::CompilerSession {
                     let rooted = self.rooted_codegen(request.options, backend_request)?;
                     warnings = rooted.warnings;
                     for collected in rooted.units {
-                        let product = collected.unit.backend_product();
+                        let unit = collected.unit;
                         match stage {
                             PresentationStage::Lowering => {
                                 write!(
                                     &mut text,
                                     "{}",
-                                    product
-                                        .artifacts
+                                    unit.artifacts
                                         .lowering
+                                        .as_ref()
                                         .expect("lowering projection was requested")
                                 )
                                 .expect("write to String");
                             }
                             PresentationStage::Mir => {
-                                writeln!(&mut text, "function {}:", product.machine_name)
+                                writeln!(&mut text, "function {}:", unit.defined_symbol)
                                     .expect("write to String");
                                 writeln!(
                                     &mut text,
                                     "{}",
-                                    product.artifacts.mir.expect("MIR projection was requested")
+                                    unit.artifacts
+                                        .mir
+                                        .as_deref()
+                                        .expect("MIR projection was requested")
                                 )
                                 .expect("write to String");
                             }
                             PresentationStage::Liveness => {
-                                writeln!(&mut text, "function {}:", product.machine_name)
+                                writeln!(&mut text, "function {}:", unit.defined_symbol)
                                     .expect("write to String");
                                 writeln!(
                                     &mut text,
                                     "{}",
-                                    product
-                                        .artifacts
+                                    unit.artifacts
                                         .liveness
+                                        .as_deref()
                                         .expect("liveness projection was requested")
                                 )
                                 .expect("write to String");
                             }
                             PresentationStage::RegAlloc => {
-                                writeln!(&mut text, "function {}:", product.machine_name)
+                                writeln!(&mut text, "function {}:", unit.defined_symbol)
                                     .expect("write to String");
                                 write!(
                                     &mut text,
                                     "{}",
-                                    product
-                                        .artifacts
+                                    unit.artifacts
                                         .regalloc
+                                        .as_deref()
                                         .expect("regalloc projection was requested")
                                 )
                                 .expect("write to String");
                             }
                             PresentationStage::Asm => {
-                                writeln!(&mut text, ".globl {}", product.machine_name)
+                                writeln!(&mut text, ".globl {}", unit.defined_symbol)
                                     .expect("write to String");
-                                writeln!(&mut text, "{}:", product.machine_name)
+                                writeln!(&mut text, "{}:", unit.defined_symbol)
                                     .expect("write to String");
                                 write!(
                                     &mut text,
                                     "{}",
-                                    product
-                                        .artifacts
+                                    unit.artifacts
                                         .asm
+                                        .as_deref()
                                         .expect("assembly projection was requested")
                                 )
                                 .expect("write to String");
@@ -1021,58 +1024,63 @@ mod codegen_unit_tests {
     #[test]
     fn codegen_presentation_is_available_before_and_after_normal_codegen() {
         let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 7 }").unwrap();
+        let edited = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn main() -> i32 { let value = 7; value + value }",
+        )
+        .unwrap();
         let options = crate::CompileOptions::default();
-        let order = snapshot
-            .files()
-            .map(|file| file.file_id)
-            .collect::<Vec<_>>();
-        let mut first_emit = crate::CompilerSession::new();
-        crate::publish_test_snapshot(&mut first_emit, &snapshot).unwrap();
-        let emitted_first = first_emit
-            .unstable_present(PresentationRequest {
-                stage: PresentationStage::Asm,
-                options: &options,
-                file_order: &order,
-            })
-            .unwrap();
-        let semantic = first_emit.rooted_cfg(&options).unwrap();
-        first_emit
-            .codegen_products(
-                &semantic,
-                &options,
-                rue_codegen::BackendArtifactRequest::default(),
-            )
-            .unwrap();
-        let emitted_after = first_emit
-            .unstable_present(PresentationRequest {
-                stage: PresentationStage::Asm,
-                options: &options,
-                file_order: &order,
-            })
-            .unwrap();
-        assert_eq!(emitted_first.text, emitted_after.text);
-
-        let mut first_link = crate::CompilerSession::new();
-        crate::publish_test_snapshot(&mut first_link, &snapshot).unwrap();
-        let semantic = first_link.rooted_cfg(&options).unwrap();
-        first_link
-            .codegen_products(
-                &semantic,
-                &options,
-                rue_codegen::BackendArtifactRequest::default(),
-            )
-            .unwrap();
-        assert_eq!(
-            emitted_first.text,
-            first_link
+        for stage in [
+            PresentationStage::Lowering,
+            PresentationStage::Mir,
+            PresentationStage::Liveness,
+            PresentationStage::RegAlloc,
+            PresentationStage::Asm,
+        ] {
+            let order = snapshot
+                .files()
+                .map(|file| file.file_id)
+                .collect::<Vec<_>>();
+            let mut session = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let before = session
                 .unstable_present(PresentationRequest {
-                    stage: PresentationStage::Asm,
+                    stage,
                     options: &options,
-                    file_order: &order
+                    file_order: &order,
                 })
-                .unwrap()
-                .text
-        );
+                .unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
+            session
+                .codegen_units(
+                    &semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            let after = session
+                .unstable_present(PresentationRequest {
+                    stage,
+                    options: &options,
+                    file_order: &order,
+                })
+                .unwrap();
+            assert_eq!(before.text, after.text, "{stage:?}");
+
+            session
+                .update_for_presentation(&edited)
+                .into_result()
+                .unwrap();
+            let edited_order = edited.files().map(|file| file.file_id).collect::<Vec<_>>();
+            let after_edit = session
+                .unstable_present(PresentationRequest {
+                    stage,
+                    options: &options,
+                    file_order: &edited_order,
+                })
+                .unwrap();
+            assert_ne!(after.text, after_edit.text, "{stage:?} edit was stale");
+        }
     }
 
     #[test]
@@ -1084,7 +1092,7 @@ mod codegen_unit_tests {
         let semantic = session.rooted_cfg(&options).unwrap();
         let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
             session
-                .codegen_products(
+                .codegen_units(
                     &semantic,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
@@ -1165,7 +1173,7 @@ mod codegen_unit_tests {
         crate::publish_test_snapshot(&mut session, &first).unwrap();
         let semantic = session.rooted_cfg(&options).unwrap();
         let before = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1178,15 +1186,15 @@ mod codegen_unit_tests {
         );
         let caller = before
             .iter()
-            .find(|product| product.machine_name == "main")
+            .find(|product| product.unit.defined_symbol.as_ref() == "main")
             .unwrap()
-            .machine_code
-            .code
-            .clone();
+            .unit
+            .text_atom()
+            .unwrap();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
         let semantic = session.rooted_cfg(&options).unwrap();
         let after = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1204,10 +1212,11 @@ mod codegen_unit_tests {
             caller,
             after
                 .iter()
-                .find(|product| product.machine_name == "main")
+                .find(|product| product.unit.defined_symbol.as_ref() == "main")
                 .unwrap()
-                .machine_code
-                .code
+                .unit
+                .text_atom()
+                .unwrap()
         );
     }
 
@@ -1281,7 +1290,7 @@ mod codegen_unit_tests {
         session.update(&source(7)).into_result().unwrap();
         let semantic = session.rooted_cfg(&options).unwrap();
         let cold = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1290,7 +1299,7 @@ mod codegen_unit_tests {
         assert_eq!(cold.len(), 2, "accessors have no out-of-line ABI unit");
         assert!(
             cold.iter()
-                .all(|unit| !unit.machine_name.contains(".value"))
+                .all(|unit| !unit.unit.defined_symbol.contains(".value"))
         );
         let cold_rooted = session.rooted_cfg(&options).unwrap();
         let cold_helper_key = cold_rooted
@@ -1335,7 +1344,7 @@ mod codegen_unit_tests {
         }));
         let semantic = session.rooted_cfg(&options).unwrap();
         let warm = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1345,7 +1354,7 @@ mod codegen_unit_tests {
         fresh.update(&source(8)).into_result().unwrap();
         let semantic = fresh.rooted_cfg(&options).unwrap();
         let fresh = fresh
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1353,11 +1362,21 @@ mod codegen_unit_tests {
             .unwrap();
         let warm = warm
             .iter()
-            .map(|product| (&product.machine_name, &product.machine_code.code))
+            .map(|product| {
+                (
+                    &product.unit.defined_symbol,
+                    product.unit.text_atom().unwrap(),
+                )
+            })
             .collect::<Vec<_>>();
         let fresh = fresh
             .iter()
-            .map(|product| (&product.machine_name, &product.machine_code.code))
+            .map(|product| {
+                (
+                    &product.unit.defined_symbol,
+                    product.unit.text_atom().unwrap(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(warm, fresh);
     }
@@ -1409,14 +1428,14 @@ mod codegen_unit_tests {
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
             let semantic = session.rooted_cfg(&options).unwrap();
             let first = session
-                .codegen_products(
+                .codegen_units(
                     &semantic,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
                 .unwrap();
             let second = session
-                .codegen_products(
+                .codegen_units(
                     &semantic,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
@@ -1425,24 +1444,18 @@ mod codegen_unit_tests {
             assert_eq!(
                 first
                     .iter()
-                    .map(|product| (
-                        &product.machine_code.code,
-                        &product.machine_code.relocations
-                    ))
+                    .map(|product| (product.unit.text_atom().unwrap(), &product.unit.relocations))
                     .collect::<Vec<_>>(),
                 second
                     .iter()
-                    .map(|product| (
-                        &product.machine_code.code,
-                        &product.machine_code.relocations
-                    ))
+                    .map(|product| (product.unit.text_atom().unwrap(), &product.unit.relocations))
                     .collect::<Vec<_>>()
             );
             let relocs = &first
                 .iter()
-                .find(|product| product.machine_name == "main")
+                .find(|product| product.unit.defined_symbol.as_ref() == "main")
                 .unwrap()
-                .machine_code
+                .unit
                 .relocations;
             assert!(relocs.iter().any(|relocation| matches!(
                 (target.arch(), relocation.kind),
@@ -1469,8 +1482,8 @@ mod codegen_unit_tests {
             let mut session = crate::CompilerSession::with_query_concurrency(workers);
             crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
             let semantic = session.rooted_cfg(&options).unwrap();
-            let products = session
-                .codegen_products(
+            let units = session
+                .codegen_units(
                     &semantic,
                     &options,
                     rue_codegen::BackendArtifactRequest {
@@ -1479,18 +1492,24 @@ mod codegen_unit_tests {
                     },
                 )
                 .unwrap();
-            let units = products
+            let unit_identity = units
                 .iter()
-                .map(|product| format!("{:?}", product))
+                .map(|unit| {
+                    (
+                        unit.unit.defined_symbol.clone(),
+                        unit.unit.content_fingerprint,
+                        unit.unit.sections.clone(),
+                        unit.unit.relocations.clone(),
+                    )
+                })
                 .collect::<Vec<_>>();
-            let objects = crate::backend::generate_pre_link_objects_from_products(
-                semantic.functions(),
-                products,
-                &options,
-                &[],
-            )
-            .unwrap();
-            (units, objects)
+            let objects = units
+                .iter()
+                .map(|unit| {
+                    crate::backend::project_backend_object(&unit.unit, options.target).unwrap()
+                })
+                .collect::<Vec<_>>();
+            (unit_identity, objects)
         };
         assert_eq!(run(1), run(4));
     }
@@ -1513,7 +1532,7 @@ mod codegen_unit_tests {
             .defined_symbol
             .to_string();
         let before = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1521,18 +1540,18 @@ mod codegen_unit_tests {
             .unwrap();
         let consume_before = before
             .iter()
-            .find(|product| product.machine_name == consume_name)
+            .find(|product| product.unit.defined_symbol.as_ref() == consume_name)
             .map(|product| {
                 (
-                    product.machine_code.code.clone(),
-                    product.machine_code.relocations.clone(),
+                    product.unit.text_atom().unwrap().to_vec(),
+                    product.unit.relocations.clone(),
                 )
             })
             .unwrap();
         crate::publish_test_snapshot(&mut session, &second).unwrap();
         let semantic = session.rooted_cfg(&options).unwrap();
         let after = session
-            .codegen_products(
+            .codegen_units(
                 &semantic,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
@@ -1540,11 +1559,11 @@ mod codegen_unit_tests {
             .unwrap();
         let consume_after = after
             .iter()
-            .find(|product| product.machine_name == consume_name)
+            .find(|product| product.unit.defined_symbol.as_ref() == consume_name)
             .map(|product| {
                 (
-                    product.machine_code.code.clone(),
-                    product.machine_code.relocations.clone(),
+                    product.unit.text_atom().unwrap().to_vec(),
+                    product.unit.relocations.clone(),
                 )
             })
             .unwrap();
