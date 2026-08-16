@@ -128,15 +128,35 @@ must record a proof that whatever fields `extends_for_certificate` consults
   successor of T, then `extends_for_certificate(C, T′)`;
 - false across any epoch bump.
 
-Because publication history is linear (retained old revisions are pins, not
-branches, and frontier publication refuses non-current revisions), the
-expected implementation is a directional revision comparison plus epoch
-equality within one compatibility namespace. Transitivity then needs no
-separate argument: epoch-preserving publications are mechanically restricted
-to extension-validated appends (section 3), so within one epoch the history
-is a pure extension chain by construction. If a future revision model
-introduces branching, `extends_for_certificate` must become a real lineage
-relation before certificates may cross those publications.
+The runtime does not make publication history globally linear, and this ADR
+does not pretend it does. `publish_revision` accepts independent full input
+views, and `publish_revision_overlay` admits more than one newer child of
+the same retained parent: it checks parent availability, compatibility
+equality, and `child.id > parent.id`, but not unique descent. Sibling
+revisions are therefore representable at the runtime boundary, and numeric
+ordering alone is not a proof of ancestry — `C.id <= T.id` can mistake a
+sibling for an ancestor.
+
+The property this design requires and enforces is narrower:
+**certificate-eligible same-epoch history is linear.** Each
+`(compatibility namespace, epoch)` pair has one extension head — the newest
+revision of its chain. A publication is accepted as epoch-preserving only
+when it is a constrained-class extension (section 3) whose parent is the
+current head; the head then advances to the child. Every other publication —
+an independent full view, an overlay whose parent is not the head, or a
+second child of an already-extended parent — receives a fresh or bumped
+epoch. This is enforced at the runtime publication boundary, in release
+builds, alongside the class checks of section 3.
+
+Within one epoch the history is then a single extension chain by
+construction, so `extends_for_certificate` reduces to epoch equality plus
+directional revision comparison inside one compatibility namespace, and its
+transitivity follows from the head-extension rule rather than from any
+global assumption. Clause 3 of the invariant also does real work in the
+sibling case: two children of one parent never share an epoch, so a
+certificate minted under one can never validate the other. If a future
+design wants certificates to cross a genuinely branching structure, it must
+replace this reduction with a real lineage relation first.
 
 ### 3. Publication classes are mechanically enforced in release builds
 
@@ -204,25 +224,31 @@ practice:
 - Toolchain-acquisition rounds still expire certificates (bounded four-round
   cost is expected and correct).
 
-Gate-targeted tests, both directions of the single slot:
+Gate-targeted tests, both directions of the single slot and the sibling
+case:
 
 1. Mint a certificate in a newer append-only revision, then demand the same
    terminal at an older pinned revision: the newer certificate is rejected
    and the pin re-validates.
 2. Validate at the old pin so its certificate overwrites the slot, then
    demand the newer revision: the older certificate is accepted forward.
+3. Publish two overlay children of one retained parent, mint a certificate
+   under the first child, then demand the same terminal under the second:
+   the certificate is rejected because the siblings do not share an epoch,
+   and the head-extension rule assigns epoch-preservation to at most one of
+   them.
 
 Class and shadowing tests:
 
-3. A discovery append that satisfies a recorded absent observation (a
+4. A discovery append that satisfies a recorded absent observation (a
    shadowing candidate) bumps the epoch or is rejected — proven by a test
    that would carry a stale resolution if the rule were wrong.
-4. Toolchain acquisition bumps; parked-then-satisfied semantic attempts
+5. Toolchain acquisition bumps; parked-then-satisfied semantic attempts
    re-validate.
-5. Deletion and delete-then-re-add across watch-mode reloads invalidate
+6. Deletion and delete-then-re-add across watch-mode reloads invalidate
    exactly as today.
-6. A publication of unknown class bumps by default.
-7. Any query enumerating available inputs (if the section 4 audit finds one)
+7. A publication of unknown class bumps by default.
+8. Any query enumerating available inputs (if the section 4 audit finds one)
    gets an explicit regression test or is re-keyed.
 
 ## Consequences
