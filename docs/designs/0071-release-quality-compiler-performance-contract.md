@@ -9,7 +9,7 @@ accepted: 2026-08-12
 implemented:
 spec-sections: []
 superseded-by:
-relates: ["RUE-1470", "RUE-1478", "ADR-0063", "ADR-0067", "ADR-0068"]
+relates: ["RUE-1470", "RUE-1478", "RUE-1543", "ADR-0063", "ADR-0067", "ADR-0068"]
 ---
 
 # ADR-0071: Release-quality compiler performance contract
@@ -21,6 +21,15 @@ product target and the rules for pursuing it. It does not replace the compiler
 architecture in ADR-0063 or the measurement protocols in ADR-0067 and
 ADR-0068. It turns their implemented mechanisms into an explicit performance
 contract.
+
+**Amendment 1 (RUE-1543) is a proposal and is not accepted.** It measures what
+Decision 2's build-boundary evidence costs in the published store, finds that
+most of it is duplicate or unread, and recommends a smaller representation that
+keeps every guarantee a reader can re-derive. Everything above and below it
+remains the accepted text; nothing in the amendment is implemented. Its
+companion, ADR-0067 Amendment 1, rules on how such a change is versioned and
+what happens to the records already published. See
+[Amendment 1: boundary evidence costs more than it proves (RUE-1543)](#amendment-1-2026-08-16-boundary-evidence-costs-more-than-it-proves-rue-1543).
 
 ## Summary
 
@@ -478,6 +487,127 @@ does not pre-authorize a large refactor merely because a later milestone exists.
   offer one; this ADR neither requires nor forbids that future product.
 - Formal cross-language compile-speed claims on controlled comparable inputs.
 
+## Amendment 1 (2026-08-16): boundary evidence costs more than it proves (RUE-1543)
+
+**Status: proposal. Not accepted, not implemented.** This amendment answers the
+question RUE-1543 asks — does a run object need to carry the complete
+build-boundary evidence of every measured process — and recommends *no*. It
+needs a maintainer ruling before it means anything. ADR-0067 Amendment 1 is its
+companion and rules on the versioning and on the records already published;
+this one rules only on what the evidence must contain.
+
+### Recommendation
+
+**Retain one complete boundary witness per workload observation, and one
+SHA-256 per process, instead of one complete evidence entry per process.**
+Concretely, a run object gains a run-level `boundary` block for the parts that
+are invariant across the whole run, each workload observation gains a
+workload-level `boundary` block for the parts invariant across its processes,
+and each sample carries `boundary_processes`: one digest per process, taken
+over that process's `{runner, compiler, compiler_work}`.
+
+Keep one `critical_path` per workload observation (encoding **S4** in the
+supporting note). The strictly smaller variant that drops it entirely (**S1**)
+is the true floor, and either is defensible; S4 is recommended because it costs
+0.6 percentage points and preserves the only per-commit critical-path record
+the project has outside a scaling rerun.
+
+Measured against all 1,188 published records:
+
+| | Branch total | Epoch-6 record, x86-64 | Epoch-6 record, macOS | Growth/day |
+| --- | ---: | ---: | ---: | ---: |
+| today | 1,481.2 MiB | 1,639.5 KiB | 15,933.7 KiB | 288.6 MiB |
+| S4 | 52.6 MiB (3.6%) | 203.8 KiB | 350.2 KiB | 11.4 MiB |
+| S1 | 44.9 MiB (3.0%) | 134.1 KiB | 280.1 KiB | 8.2 MiB |
+
+### Why this is not a loss of precision
+
+Decision 2 requires runner, manifest and compiler to agree before a sample is
+admissible. The proposal keeps that intact, because the entries being removed
+are not independent observations.
+
+**They are byte-identical.** Across every workload of every record examined,
+the number of distinct values among a workload's evidence entries is exactly
+one for `runner`, one for `compiler` including `accepted_inputs`, and one for
+`compiler_work`. Only `critical_path` varies. A macOS `startup` observation
+stores 792 identical copies of a 5.4 KiB structure. This is by construction:
+`check_boundary_evidence` *requires* the output digest and, at one worker,
+`compiler_work` to be equal, and the epoch fixes the configuration and the
+source closure.
+
+**The cross-process guarantees survive exactly.** A reader re-derives "all N
+processes produced the same output" and "all N reported identical deterministic
+work" by comparing the N stored digests and checking they equal the digest of
+the stored witness — the same conclusion, from 64 hex characters per process
+instead of 5.4 KiB.
+
+**The N copies were never N authorities.** They are one runner process
+reporting what it observed N times, and that runner already refuses to emit a
+sample whose processes disagree.
+
+**Nothing that consumes the branch reads the rest.** The complete consumer
+inventory of stored evidence is one function, `check_boundary_evidence`. The
+heavy checks that genuinely need a full `critical_path` — the 26-row
+`REQUIRED_SEMANTIC_EVIDENCE` table, the attribution partitions, the RUE-1510
+signature-parse deletion proof — run in the producing process before the sample
+is assembled, and are unaffected. `verify_input_provenance` re-hashes every
+accepted input against the filesystem, also before storage. The scaling report
+that Decision 7 calls for reads `critical_path`, but it measures fresh
+processes and writes a workflow artifact; it never opens the data branch.
+
+**What is actually dropped**, stated plainly: per-process `critical_path`
+histograms for processes 2..N, and the ability to re-check each of those
+histograms' internal consistency. That check compares a histogram's bucket sum
+against the `count` beside it in the same object — it can catch a corrupt
+serializer, and nothing about the compiler. Under S4 it survives for one
+process per workload; under S1 it does not survive at all.
+
+### Alternatives considered
+
+Measured over the same 1,188 records:
+
+| Alternative | Branch total | Why not |
+| --- | ---: | --- |
+| drop `log2_buckets` (39% of an entry, ~88% zeros) | 1,033.7 MiB (69.8%) | the obvious waste is not the problem; leaves ~196 MiB/day |
+| sparse `log2_buckets` | 1,129.2 MiB (76.2%) | worse than deleting them |
+| `accepted_inputs` → digest | 1,215.9 MiB (82.1%) | large only for `lattice`; 18% of the branch |
+| keep process 0 of each sample | 584.3 MiB (39.4%) | halves it, and the half kept is still 60× too large |
+| whole array → one digest | 24.9 MiB (1.7%) | cheapest and weakest: a digest of discarded bytes turns every re-derivable guarantee into a producer assertion |
+| S2 — S1 with `accepted_inputs` digested | 34.2 MiB (2.3%) | `accepted_inputs` is the only record of what the compiler actually read, including `std`, and is not re-derivable from the epoch's workload pin; 3.4 MiB/day is worth it |
+
+Retaining the complete evidence as a **workflow artifact**, with its digest in
+the record, composes with any of these and is recommended alongside: it keeps
+full-depth auditing for the artifact retention window at zero cost to the
+store, and it is the only arrangement in which a stored digest of dropped
+evidence means anything.
+
+### Consequences
+
+- Decision 2's checker does the same work over one witness per workload instead
+  of one entry per process: 1,860 `validate_against` calls across the branch
+  instead of 105,489.
+- Decision 5's evidence hierarchy is unchanged. Levels 1, 2, 4 and 6 live in
+  fields this amendment does not touch; level 5's deterministic counters are
+  retained once per workload; level 3 was never in the run object.
+- Decision 7's critical-path and scaling questions are answered by the scaling
+  report, which is unaffected.
+- A future boundary variant — retained-session, package-cache, daemon-backed —
+  inherits the same shape and the same per-process digest rule.
+- The producer keeps building the full evidence in memory and keeps validating
+  it in full. Only what reaches storage changes.
+
+### What could not be verified
+
+The re-encoded corpus cannot be validated end-to-end by the current reader:
+`RunObject` uses `deny_unknown_fields`, and a protocol-2 suite requires
+`boundary_evidence.len() == batch_size`, so every re-encoded record is refused
+by construction until the schema change exists. The equivalence claim was
+therefore checked structurally rather than through `rue-bench derive`: with the
+evidence keys stripped from both sides, 0 of 1,188 records differ, so every
+value a chart is drawn from is byte-identical. A derive-level A/B, in the style
+of RUE-1542's byte-identical report comparison, is the acceptance evidence for
+the implementing change rather than for this proposal.
+
 ## References
 
 - [ADR-0063: Parallel demand-driven incremental compilation](0063-parallel-demand-driven-incremental-compilation.md)
@@ -485,3 +615,5 @@ does not pre-authorize a large refactor merely because a later milestone exists.
 - [ADR-0068: Incremental edit-scenario performance measurement](0068-incremental-edit-performance-measurement.md)
 - [Post-ADR-0063 cold compiler architecture audit](../notes/post-adr-0063-cold-compiler-architecture-audit.md)
 - [Compiler scaling reports](../process/compiler-scaling.md)
+- [Boundary evidence and the size of performance-data-v1](../notes/performance-boundary-evidence-size.md)
+  — Amendment 1's measurements, consumer inventory, and encoding prototypes.
