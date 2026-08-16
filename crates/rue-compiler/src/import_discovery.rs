@@ -829,7 +829,7 @@ impl ImportDiscoveryPlan {
     /// number of groups actually constructed (the new ones), so the caller can
     /// prove plan construction is O(new leaves), independent of the predecessor
     /// import topology.
-    pub(crate) fn extend_trusted_successor(
+    pub(crate) fn extend_successor(
         predecessor: &ImportDiscoveryPlan,
         program: &ParsedProgram,
         context: ImportDiscoveryContext,

@@ -2941,6 +2941,7 @@ impl ImportHostOperationKey {
 struct ImportInputView {
     revision: Revision,
     generation: u64,
+    transition: ImportInputTransition,
     context: ImportDiscoveryContext,
     sources: SourceRevision,
     accepted_reads: AcceptedReadManifest,
@@ -2948,6 +2949,24 @@ struct ImportInputView {
     accepted_topology_stamp: u64,
     accepted_topology: AcceptedImportTopologyValue,
     stamp_lease: Arc<ImportInputStampLease>,
+}
+
+/// The compiler-owned lineage step that produced one immutable import-input
+/// view. The filesystem host sees only [`ImportInputRevision`]; it can neither
+/// inspect nor choose these additions. Ordinary discovery uses the exact
+/// `HostBatch` parent/delta to extend the retained parse and import plan, while
+/// trusted-toolchain continuation keeps its distinct capability protocol.
+#[derive(Debug, Clone)]
+pub(crate) enum ImportInputTransition {
+    Fresh,
+    HostBatch {
+        parent: ImportInputRevision,
+        added: Arc<[ModuleRevision]>,
+    },
+    TrustedSuccessor {
+        parent: ImportInputRevision,
+        added: Arc<[ModuleRevision]>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -19303,6 +19322,7 @@ impl RevisionedQueryDatabase {
         ImportDiscoveryContext,
         AcceptedReadManifest,
         ImportObservationLedger,
+        ImportInputTransition,
     )> {
         let current = self.current_import_revision?;
         let runtime = Revision::new(current.revision_id, current.compatibility_token);
@@ -19335,6 +19355,7 @@ impl RevisionedQueryDatabase {
             view.context.clone(),
             view.accepted_reads.clone(),
             view.ledger.clone(),
+            view.transition.clone(),
         ))
     }
 
@@ -19462,6 +19483,7 @@ impl RevisionedQueryDatabase {
         let view = Arc::new(ImportInputView {
             revision,
             generation,
+            transition: ImportInputTransition::Fresh,
             context,
             sources: source_revision,
             accepted_reads,
@@ -19573,6 +19595,8 @@ impl RevisionedQueryDatabase {
         // manifest is an omission (topology would claim "resolved" with no
         // source leaf behind it); both reject. A trusted successor admits only
         // the capability-verified leaf set with no observations.
+        let transition_is_host_batch =
+            matches!(&justification, OverlayJustification::BatchAccepted);
         let authorized: std::collections::BTreeSet<ModuleId> = match justification {
             OverlayJustification::BatchAccepted => new_observations
                 .iter()
@@ -19719,9 +19743,23 @@ impl RevisionedQueryDatabase {
         // Record this step's exact additions on the session-owned lineage; the
         // successor stage/close derive their module delta from this record.
         self.lineage_additions.extend(new_sources.iter().cloned());
+        let mut transition_additions = new_sources.clone();
+        transition_additions.sort_by(|left, right| left.module.cmp(&right.module));
+        let transition = if transition_is_host_batch {
+            ImportInputTransition::HostBatch {
+                parent,
+                added: transition_additions.into(),
+            }
+        } else {
+            ImportInputTransition::TrustedSuccessor {
+                parent,
+                added: transition_additions.into(),
+            }
+        };
         let view = Arc::new(ImportInputView {
             revision,
             generation: parent.request_generation,
+            transition,
             context: parent_view.context.clone(),
             sources: snapshot.source_revision().clone(),
             accepted_reads,
@@ -30429,7 +30467,7 @@ fn main() -> i32 {
 
         // ...and with the published view, byte for byte, so a later successor
         // publication extends this state rather than rejecting it as mutated.
-        let (current, view_snapshot, _, view_manifest, _) =
+        let (current, view_snapshot, _, view_manifest, _, _) =
             database.current_import_view_state().unwrap();
         assert_eq!(current, revision);
         assert_eq!(

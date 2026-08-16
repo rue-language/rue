@@ -2026,6 +2026,45 @@ mod tests {
         assert_eq!(result.read_manifest.len(), 4);
     }
 
+    #[test]
+    fn import_chain_stages_only_each_new_module_and_import_group() {
+        const MODULES: usize = 32;
+        let dir = TestDir::new("linear-depth-staging");
+        let main = dir.write(
+            "main.rue",
+            r#"const next = @import("m1.rue"); fn main() -> i32 { 0 }"#,
+        );
+        for index in 1..MODULES {
+            let source = if index + 1 == MODULES {
+                format!("pub fn value{index}() -> i32 {{ {index} }}")
+            } else {
+                format!(
+                    "pub const next = @import(\"m{}.rue\"); pub fn value{index}() -> i32 {{ {index} }}",
+                    index + 1
+                )
+            };
+            dir.write(&format!("m{index}.rue"), &source);
+        }
+
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+
+        assert_eq!(result.input_revision.frontier_round(), (MODULES - 1) as u64);
+        assert_eq!(result.read_manifest.len(), MODULES);
+        assert!(
+            parse_sources_materialized(&result.session) <= (MODULES + 2) as u64,
+            "frontier staging plus final presentation must remain linear in module count"
+        );
+        assert!(
+            parse_modules_dispatched(&result.session) <= (MODULES * 2) as u64,
+            "module parse dispatch must remain linear in module count"
+        );
+        assert_eq!(
+            import_plan_groups_constructed(&result.session),
+            (MODULES - 1) as u64,
+            "each import occurrence must enter the plan exactly once"
+        );
+    }
+
     fn module_source_id(
         result: &ImportDiscoveryResult,
         logical_path: &str,
