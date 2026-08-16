@@ -620,9 +620,141 @@ fn generate_aarch64_stack_frame(
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
-    use rue_air::{AirEditor, AirValidationContext, FrozenTypeInternPool, Type};
-    use rue_cfg::CfgBuilder;
-    use rue_span::Span;
+    use rue_air::{
+        AirEditor, AirValidationContext, EnumDef, EnumId, FrozenTypeInternPool, ParamSlotModes,
+        SourceParamAbi, StructDef, StructField, StructId, Type, TypeInternPool,
+    };
+    use rue_cfg::{
+        BlockId, Cfg, CfgArgMode, CfgBuilder, CfgCallArg, CfgInst, CfgInstData, CfgValue,
+        PlaceBase, Projection, ValidatedCfg,
+    };
+    use rue_span::{FileId, Span};
+
+    fn span() -> Span {
+        Span::new(0, 0)
+    }
+
+    fn value(cfg: &mut Cfg, block: BlockId, data: CfgInstData, ty: Type) -> CfgValue {
+        cfg.append_inst(
+            block,
+            CfgInst {
+                data,
+                ty,
+                span: span(),
+            },
+        )
+    }
+
+    fn konst(cfg: &mut Cfg, block: BlockId, literal: u64, ty: Type) -> CfgValue {
+        value(cfg, block, CfgInstData::Const(literal), ty)
+    }
+
+    fn unit_const(cfg: &mut Cfg, block: BlockId) -> CfgValue {
+        konst(cfg, block, 0, Type::UNIT)
+    }
+
+    fn storage_live(cfg: &mut Cfg, block: BlockId, slot: u32, local_ty: Type) {
+        value(
+            cfg,
+            block,
+            CfgInstData::StorageLive { slot, local_ty },
+            Type::UNIT,
+        );
+    }
+
+    fn storage_dead(cfg: &mut Cfg, block: BlockId, slot: u32, local_ty: Type) {
+        value(
+            cfg,
+            block,
+            CfgInstData::StorageDead { slot, local_ty },
+            Type::UNIT,
+        );
+    }
+
+    fn alloc_slot(cfg: &mut Cfg, block: BlockId, slot: u32, init: CfgValue) {
+        value(cfg, block, CfgInstData::Alloc { slot, init }, Type::UNIT);
+    }
+
+    fn load_slot(cfg: &mut Cfg, block: BlockId, slot: u32, ty: Type) -> CfgValue {
+        value(cfg, block, CfgInstData::Load { slot }, ty)
+    }
+
+    fn store_slot(cfg: &mut Cfg, block: BlockId, slot: u32, stored: CfgValue) {
+        value(
+            cfg,
+            block,
+            CfgInstData::Store {
+                slot,
+                value: stored,
+            },
+            Type::UNIT,
+        );
+    }
+
+    /// One direct scalar ABI descriptor per parameter slot.
+    fn scalar_param_abi(count: u32) -> Vec<SourceParamAbi> {
+        (0..count)
+            .map(|slot| SourceParamAbi {
+                start_slot: slot,
+                slot_count: 1,
+                crossing_regs: 1,
+                ty: None,
+            })
+            .collect()
+    }
+
+    fn register_struct(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        fields: &[(&str, Type)],
+    ) -> StructId {
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern(name),
+            StructDef {
+                name: name.into(),
+                fields: fields
+                    .iter()
+                    .map(|(field, ty)| StructField {
+                        name: (*field).to_string(),
+                        ty: *ty,
+                    })
+                    .collect(),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        id
+    }
+
+    fn register_enum(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        variants: &[(&str, Vec<Type>)],
+    ) -> EnumId {
+        let (id, _) = pool.register_enum(
+            interner.get_or_intern(name),
+            EnumDef {
+                name: name.into(),
+                variants: variants
+                    .iter()
+                    .map(|(variant, _)| (*variant).into())
+                    .collect(),
+                variant_payloads: variants
+                    .iter()
+                    .map(|(_, payload)| payload.clone())
+                    .collect(),
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        id
+    }
 
     fn create_simple_cfg() -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
         let mut air = AirEditor::new(Type::I32);
@@ -719,10 +851,14 @@ mod tests {
         assert!(output.contains("rax"));
     }
 
-    /// Assembly and reported layout for `name` on `target`, from the same
-    /// production backend the compiler runs.
-    fn frame_projection(source: &str, name: &str, target: Target) -> (String, StackFrameInfo) {
-        let (cfg, type_pool, interner) = compile_named_fn(source, name);
+    /// Assembly and reported layout for a validated CFG on `target`, from the
+    /// same production backend the compiler runs.
+    fn frame_projection(
+        cfg: &ValidatedCfg,
+        type_pool: &FrozenTypeInternPool,
+        interner: &ThreadedRodeo,
+        target: Target,
+    ) -> (String, StackFrameInfo) {
         let request = crate::BackendArtifactRequest {
             asm: true,
             ..Default::default()
@@ -749,9 +885,68 @@ mod tests {
             ),
         }
         .expect("backend generation should succeed");
-        let info = generate_stack_frame_info(&cfg, name, &type_pool, &interner, target)
+        let info = generate_stack_frame_info(cfg, cfg.fn_name(), type_pool, interner, target)
             .expect("stack frame projection should succeed");
         (product.artifacts.asm.expect("assembly projection"), info)
+    }
+
+    /// `fn frameless(n: i32) -> i32 { n }`: a leaf whose scalar register
+    /// argument is read directly (RUE-1170), never homed to the frame.
+    fn frameless_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            0,
+            1,
+            "frameless".to_string(),
+            ParamSlotModes::new(vec![false], vec![false]),
+        );
+        cfg.set_source_param_abi(scalar_param_abi(1));
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let n = value(&mut cfg, entry, CfgInstData::Param { index: 0 }, Type::I32);
+        cfg.set_return(entry, Some(n));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
+    }
+
+    /// `fn framed() -> i32 { let mut total = 41; bump(inout total); total }`:
+    /// the local's address escapes through the by-reference call argument, so
+    /// it needs a real frame slot and the full prologue/epilogue.
+    fn framed_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(Type::I32, 1, 0, "framed".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, Type::I32);
+        let init = konst(&mut cfg, entry, 41, Type::I32);
+        alloc_slot(&mut cfg, entry, 0, init);
+        let arg = load_slot(&mut cfg, entry, 0, Type::I32);
+        cfg.append_call(
+            entry,
+            None,
+            interner.get_or_intern("bump"),
+            [CfgCallArg {
+                value: arg,
+                mode: CfgArgMode::Inout,
+            }],
+            Type::UNIT,
+            span(),
+        )
+        .unwrap();
+        let result = load_slot(&mut cfg, entry, 0, Type::I32);
+        storage_dead(&mut cfg, entry, 0, Type::I32);
+        cfg.set_return(entry, Some(result));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
     }
 
     /// RUE-1171: a leaf function with no locals, spills, homed parameters, sret
@@ -766,25 +961,8 @@ mod tests {
         // local that must be addressable — its address escapes through a
         // by-reference call argument in `framed` — is what restores the
         // frame: it needs a real frame slot.
-        let source = "\
-fn frameless(n: i32) -> i32 {
-    n
-}
-
-fn bump(inout n: i32) {
-    n = n + 1;
-}
-
-fn framed() -> i32 {
-    let mut total = 41;
-    bump(inout total);
-    total
-}
-
-fn main() -> i32 {
-    frameless(7) + framed()
-}
-";
+        let (frameless, frameless_pool, frameless_interner) = frameless_cfg();
+        let (framed, framed_pool, framed_interner) = framed_cfg();
 
         // Frame-pointer setup and slot allocation, per backend. These are the
         // exact mnemonics the prologue/epilogue emit.
@@ -796,7 +974,8 @@ fn main() -> i32 {
         };
 
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-            let (asm, info) = frame_projection(source, "frameless", target);
+            let (asm, info) =
+                frame_projection(&frameless, &frameless_pool, &frameless_interner, target);
             for marker in frame_markers(target) {
                 assert!(
                     !asm.contains(marker),
@@ -827,7 +1006,7 @@ fn main() -> i32 {
                 "reported frame on {target:?} must be exactly the callee-saved pushes"
             );
 
-            let (asm, info) = frame_projection(source, "framed", target);
+            let (asm, info) = frame_projection(&framed, &framed_pool, &framed_interner, target);
             for marker in frame_markers(target) {
                 assert!(
                     asm.contains(marker),
@@ -851,76 +1030,72 @@ fn main() -> i32 {
             .count()
     }
 
-    /// Compile a Rue function to a validated CFG for the codegen tests.
-    fn compile_named_fn(
-        source: &str,
-        name: &str,
-    ) -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
-        use rue_air::{Sema, SemaMetadata};
-        use rue_error::PreviewFeatures;
-        use rue_lexer::Lexer;
-        use rue_parser::Parser;
-        use rue_rir::AstGen;
-
-        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
-        let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .unwrap();
-        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
-        let func = output
-            .functions
-            .iter()
-            .find(|f| f.name == symbol)
-            .expect("requested test function should exist");
-        let cfg = CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            &output.type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
-        )
-        .cfg
-        .expect("test function CFG must build");
-        (cfg, output.type_pool, interner)
+    /// The marker-driven local frame-slot plan for a validated CFG, with the
+    /// CFG's own local slot count for comparison (RUE-768).
+    fn local_plan(
+        cfg: &ValidatedCfg,
+        type_pool: &FrozenTypeInternPool,
+        interner: &ThreadedRodeo,
+    ) -> (crate::local_storage::LocalSlotPlan, u32) {
+        let plan = crate::local_storage::LocalSlotPlan::plan(cfg, type_pool, interner);
+        (plan, cfg.num_locals())
     }
 
-    /// The marker-driven local frame-slot plan for `name` in `source`, with
-    /// the CFG's own local slot count for comparison (RUE-768).
-    fn local_plan(source: &str, name: &str) -> (crate::local_storage::LocalSlotPlan, u32) {
-        let (cfg, type_pool, interner) = compile_named_fn(source, name);
-        let plan = crate::local_storage::LocalSlotPlan::plan(&cfg, &type_pool, &interner);
-        (plan, cfg.num_locals())
+    /// A whole-function CFG with the marker pattern the pipeline emits for
+    /// `total` (slot 0, live throughout) plus two inner blocks whose pairs of
+    /// scalar temporaries (slots 1/2 and 3/4) open and close their storage
+    /// windows before the next block's open:
+    ///
+    /// ```text
+    /// fn main() -> i32 {
+    ///     let mut total = 0;
+    ///     { let a = 1; let b = 2; total = total + a + b; }
+    ///     { let c = 3; let d = 4; total = total + c + d; }
+    ///     0
+    /// }
+    /// ```
+    fn disjoint_windows_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(Type::I32, 5, 0, "main".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, Type::I32);
+        let zero = konst(&mut cfg, entry, 0, Type::I32);
+        alloc_slot(&mut cfg, entry, 0, zero);
+        for (base_slot, literals) in [(1, [1u64, 2]), (3, [3, 4])] {
+            for (offset, literal) in literals.into_iter().enumerate() {
+                let slot = base_slot + offset as u32;
+                storage_live(&mut cfg, entry, slot, Type::I32);
+                let init = konst(&mut cfg, entry, literal, Type::I32);
+                alloc_slot(&mut cfg, entry, slot, init);
+            }
+            let mut sum = load_slot(&mut cfg, entry, 0, Type::I32);
+            for offset in 0..2 {
+                let operand = load_slot(&mut cfg, entry, base_slot + offset, Type::I32);
+                sum = value(&mut cfg, entry, CfgInstData::Add(sum, operand), Type::I32);
+            }
+            store_slot(&mut cfg, entry, 0, sum);
+            unit_const(&mut cfg, entry);
+            storage_dead(&mut cfg, entry, base_slot + 1, Type::I32);
+            storage_dead(&mut cfg, entry, base_slot, Type::I32);
+        }
+        let result = konst(&mut cfg, entry, 0, Type::I32);
+        storage_dead(&mut cfg, entry, 0, Type::I32);
+        cfg.set_return(entry, Some(result));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
     }
 
     /// RUE-768: locals whose storage windows the markers prove disjoint land on
     /// the same frame cells; a local live across both of them does not.
     #[test]
     fn disjoint_storage_windows_share_frame_cells() {
-        let source = "\
-fn main() -> i32 {
-    let mut total = 0;
-    {
-        let a = 1;
-        let b = 2;
-        total = total + a + b;
-    }
-    {
-        let c = 3;
-        let d = 4;
-        total = total + c + d;
-    }
-    0
-}
-";
-        let (plan, num_locals) = local_plan(source, "main");
+        let (cfg, type_pool, interner) = disjoint_windows_cfg();
+        let (plan, num_locals) = local_plan(&cfg, &type_pool, &interner);
         assert_eq!(num_locals, 5, "`total` plus two pairs of block temporaries");
         assert_eq!(plan.frame_local_slots(), 3);
         // `total` (slot 0) is live throughout and keeps a cell of its own; the
@@ -932,21 +1107,43 @@ fn main() -> i32 {
         assert_ne!(plan.frame_slot(1), plan.frame_slot(2));
     }
 
+    /// Four scalar locals whose storage windows all stay open until the end of
+    /// the function — the marker pattern for
+    /// `let a = 1; let b = 2; let c = 3; let d = 4; a + b + c + d`.
+    fn overlapping_windows_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut cfg = Cfg::new(Type::I32, 4, 0, "main".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        for slot in 0..4 {
+            storage_live(&mut cfg, entry, slot, Type::I32);
+            let init = konst(&mut cfg, entry, u64::from(slot) + 1, Type::I32);
+            alloc_slot(&mut cfg, entry, slot, init);
+        }
+        let mut sum = load_slot(&mut cfg, entry, 0, Type::I32);
+        for slot in 1..4 {
+            let operand = load_slot(&mut cfg, entry, slot, Type::I32);
+            sum = value(&mut cfg, entry, CfgInstData::Add(sum, operand), Type::I32);
+        }
+        for slot in (0..4).rev() {
+            storage_dead(&mut cfg, entry, slot, Type::I32);
+        }
+        cfg.set_return(entry, Some(sum));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
+    }
+
     /// RUE-768: simultaneously live locals must never be merged. This is the
     /// silent-corruption case, so it is asserted slot by slot rather than only
     /// through the frame total.
     #[test]
     fn overlapping_storage_windows_never_share() {
-        let source = "\
-fn main() -> i32 {
-    let a = 1;
-    let b = 2;
-    let c = 3;
-    let d = 4;
-    a + b + c + d
-}
-";
-        let (plan, num_locals) = local_plan(source, "main");
+        let (cfg, type_pool, interner) = overlapping_windows_cfg();
+        let (plan, num_locals) = local_plan(&cfg, &type_pool, &interner);
         assert_eq!(num_locals, 4);
         assert_eq!(plan.frame_local_slots(), 4, "nothing may be merged");
         let cells: Vec<u32> = (0..num_locals).map(|slot| plan.frame_slot(slot)).collect();
@@ -962,25 +1159,118 @@ fn main() -> i32 {
     /// `held`'s last direct read is `held.a`, before `scoped` even exists.
     #[test]
     fn borrow_extended_lifetime_keeps_its_own_cells() {
-        let source = "\
-struct Pair { a: i32, b: i32 }
+        // The CFG models:
+        //
+        //     let held = Pair { a: 1, b: 2 };   // slots 0..2
+        //     let direct = held.a;              // slot 2
+        //     let mut sum = direct;             // slot 3
+        //     {
+        //         let scoped = Pair { a: 100, b: 200 };   // slots 4..6
+        //         sum = sum + total(borrow scoped);
+        //     }
+        //     sum + total(borrow held)
+        //
+        // `held`'s last direct read (`held.a`) happens before `scoped` exists,
+        // but its storage window stays open across `scoped`'s whole scope for
+        // the final borrow argument.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let pair_id = register_struct(
+            &pool,
+            &interner,
+            "Pair",
+            &[("a", Type::I32), ("b", Type::I32)],
+        );
+        let pair_ty = Type::new_struct(pair_id);
+        let pool = pool.freeze();
+        let total = interner.get_or_intern("total");
+        let mut cfg = Cfg::new(Type::I32, 6, 0, "main".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, pair_ty);
+        let one = konst(&mut cfg, entry, 1, Type::I32);
+        let two = konst(&mut cfg, entry, 2, Type::I32);
+        let held = cfg
+            .append_struct_init(entry, pair_id, [one, two], pair_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 0, held);
+        storage_live(&mut cfg, entry, 2, Type::I32);
+        let held_a = cfg
+            .append_place_read(
+                entry,
+                PlaceBase::Local(0),
+                pair_ty,
+                [Projection::Field {
+                    struct_id: pair_id,
+                    field_index: 0,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 2, held_a);
+        storage_live(&mut cfg, entry, 3, Type::I32);
+        let direct = load_slot(&mut cfg, entry, 2, Type::I32);
+        alloc_slot(&mut cfg, entry, 3, direct);
+        storage_live(&mut cfg, entry, 4, pair_ty);
+        let hundred = konst(&mut cfg, entry, 100, Type::I32);
+        let two_hundred = konst(&mut cfg, entry, 200, Type::I32);
+        let scoped = cfg
+            .append_struct_init(entry, pair_id, [hundred, two_hundred], pair_ty, span())
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 4, scoped);
+        let sum = load_slot(&mut cfg, entry, 3, Type::I32);
+        let scoped_arg = load_slot(&mut cfg, entry, 4, pair_ty);
+        let scoped_total = cfg
+            .append_call(
+                entry,
+                None,
+                total,
+                [CfgCallArg {
+                    value: scoped_arg,
+                    mode: CfgArgMode::Borrow,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        let new_sum = value(
+            &mut cfg,
+            entry,
+            CfgInstData::Add(sum, scoped_total),
+            Type::I32,
+        );
+        store_slot(&mut cfg, entry, 3, new_sum);
+        unit_const(&mut cfg, entry);
+        storage_dead(&mut cfg, entry, 4, pair_ty);
+        let sum = load_slot(&mut cfg, entry, 3, Type::I32);
+        let held_arg = load_slot(&mut cfg, entry, 0, pair_ty);
+        let held_total = cfg
+            .append_call(
+                entry,
+                None,
+                total,
+                [CfgCallArg {
+                    value: held_arg,
+                    mode: CfgArgMode::Borrow,
+                }],
+                Type::I32,
+                span(),
+            )
+            .unwrap();
+        let result = value(
+            &mut cfg,
+            entry,
+            CfgInstData::Add(sum, held_total),
+            Type::I32,
+        );
+        storage_dead(&mut cfg, entry, 3, Type::I32);
+        storage_dead(&mut cfg, entry, 2, Type::I32);
+        storage_dead(&mut cfg, entry, 0, pair_ty);
+        cfg.set_return(entry, Some(result));
+        let cfg = cfg.finish(&pool).expect("test CFG must verify");
 
-fn total(borrow p: Pair) -> i32 {
-    p.a + p.b
-}
-
-fn main() -> i32 {
-    let held = Pair { a: 1, b: 2 };
-    let direct = held.a;
-    let mut sum = direct;
-    {
-        let scoped = Pair { a: 100, b: 200 };
-        sum = sum + total(borrow scoped);
-    }
-    sum + total(borrow held)
-}
-";
-        let (plan, num_locals) = local_plan(source, "main");
+        let (plan, num_locals) = local_plan(&cfg, &pool, &interner);
         // `held` occupies slots 0..2, `direct` 2, `sum` 3, `scoped` 4..6.
         assert_eq!(num_locals, 6);
         assert_eq!(
@@ -997,23 +1287,67 @@ fn main() -> i32 {
     /// fields stay in order. A per-slot merge would interleave two structs.
     #[test]
     fn multi_slot_aggregates_share_as_whole_runs() {
-        let source = "\
-struct Triple { a: i32, b: i32, c: i32 }
+        // The CFG models:
+        //
+        //     let mut sum = 0;                            // slot 0
+        //     { let x = Triple { a: 1, b: 2, c: 3 };      // slots 1..4
+        //       sum = sum + x.a + x.b + x.c; }
+        //     { let y = Triple { a: 4, b: 5, c: 6 };      // slots 4..7
+        //       sum = sum + y.a + y.b + y.c; }
+        //     sum
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let triple_id = register_struct(
+            &pool,
+            &interner,
+            "Triple",
+            &[("a", Type::I32), ("b", Type::I32), ("c", Type::I32)],
+        );
+        let triple_ty = Type::new_struct(triple_id);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::I32, 7, 0, "main".to_string(), Vec::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, Type::I32);
+        let zero = konst(&mut cfg, entry, 0, Type::I32);
+        alloc_slot(&mut cfg, entry, 0, zero);
+        for (base_slot, literals) in [(1u32, [1u64, 2, 3]), (4, [4, 5, 6])] {
+            storage_live(&mut cfg, entry, base_slot, triple_ty);
+            let fields: Vec<CfgValue> = literals
+                .into_iter()
+                .map(|literal| konst(&mut cfg, entry, literal, Type::I32))
+                .collect();
+            let aggregate = cfg
+                .append_struct_init(entry, triple_id, fields, triple_ty, span())
+                .unwrap();
+            alloc_slot(&mut cfg, entry, base_slot, aggregate);
+            let mut sum = load_slot(&mut cfg, entry, 0, Type::I32);
+            for field_index in 0..3 {
+                let field = cfg
+                    .append_place_read(
+                        entry,
+                        PlaceBase::Local(base_slot),
+                        triple_ty,
+                        [Projection::Field {
+                            struct_id: triple_id,
+                            field_index,
+                        }],
+                        Type::I32,
+                        span(),
+                    )
+                    .unwrap();
+                sum = value(&mut cfg, entry, CfgInstData::Add(sum, field), Type::I32);
+            }
+            store_slot(&mut cfg, entry, 0, sum);
+            unit_const(&mut cfg, entry);
+            storage_dead(&mut cfg, entry, base_slot, triple_ty);
+        }
+        let result = load_slot(&mut cfg, entry, 0, Type::I32);
+        storage_dead(&mut cfg, entry, 0, Type::I32);
+        cfg.set_return(entry, Some(result));
+        let cfg = cfg.finish(&pool).expect("test CFG must verify");
 
-fn main() -> i32 {
-    let mut sum = 0;
-    {
-        let x = Triple { a: 1, b: 2, c: 3 };
-        sum = sum + x.a + x.b + x.c;
-    }
-    {
-        let y = Triple { a: 4, b: 5, c: 6 };
-        sum = sum + y.a + y.b + y.c;
-    }
-    sum
-}
-";
-        let (plan, num_locals) = local_plan(source, "main");
+        let (plan, num_locals) = local_plan(&cfg, &pool, &interner);
         assert_eq!(num_locals, 7, "`sum` plus two three-slot structs");
         assert_eq!(plan.frame_local_slots(), 4);
         let x = plan.frame_slot(1);
@@ -1032,23 +1366,81 @@ fn main() -> i32 {
     /// is disjoint from a later local's.
     #[test]
     fn raw_pointer_operands_keep_private_cells() {
-        let source = "\
-fn main() -> i32 {
-    let mut sum = 0;
-    {
-        let mut probe: i32 = 5;
-        let p: ptr mut i32 = checked { @raw_mut(probe) };
-        checked { @ptr_write(p, 9); };
-        sum = sum + probe;
-    }
-    {
-        let other: i32 = 41;
-        sum = sum + other;
-    }
-    sum
-}
-";
-        let (plan, num_locals) = local_plan(source, "main");
+        // The CFG models:
+        //
+        //     let mut sum = 0;                              // slot 0
+        //     { let mut probe: i32 = 5;                     // slot 1
+        //       let p: ptr mut i32 = @raw_mut(probe);       // slot 2
+        //       @ptr_write(p, 9);
+        //       sum = sum + probe; }
+        //     { let other: i32 = 41;                        // slot 3
+        //       sum = sum + other; }
+        //     sum
+        //
+        // `probe`'s address escapes through `@raw_mut`, which also marks the
+        // slot address-taken on the CFG, exactly as the builder does.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32));
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(Type::I32, 4, 0, "main".to_string(), Vec::new());
+        cfg.mark_address_taken(1);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        storage_live(&mut cfg, entry, 0, Type::I32);
+        let zero = konst(&mut cfg, entry, 0, Type::I32);
+        alloc_slot(&mut cfg, entry, 0, zero);
+        storage_live(&mut cfg, entry, 1, Type::I32);
+        let five = konst(&mut cfg, entry, 5, Type::I32);
+        alloc_slot(&mut cfg, entry, 1, five);
+        storage_live(&mut cfg, entry, 2, ptr_ty);
+        let probe = load_slot(&mut cfg, entry, 1, Type::I32);
+        let raw = cfg
+            .append_intrinsic(
+                entry,
+                None,
+                interner.get_or_intern("raw_mut"),
+                [probe],
+                ptr_ty,
+                span(),
+            )
+            .unwrap();
+        alloc_slot(&mut cfg, entry, 2, raw);
+        let pointer = load_slot(&mut cfg, entry, 2, ptr_ty);
+        let nine = konst(&mut cfg, entry, 9, Type::I32);
+        cfg.append_intrinsic(
+            entry,
+            None,
+            interner.get_or_intern("ptr_write"),
+            [pointer, nine],
+            Type::UNIT,
+            span(),
+        )
+        .unwrap();
+        unit_const(&mut cfg, entry);
+        unit_const(&mut cfg, entry);
+        let sum = load_slot(&mut cfg, entry, 0, Type::I32);
+        let probe = load_slot(&mut cfg, entry, 1, Type::I32);
+        let new_sum = value(&mut cfg, entry, CfgInstData::Add(sum, probe), Type::I32);
+        store_slot(&mut cfg, entry, 0, new_sum);
+        unit_const(&mut cfg, entry);
+        storage_dead(&mut cfg, entry, 2, ptr_ty);
+        storage_dead(&mut cfg, entry, 1, Type::I32);
+        storage_live(&mut cfg, entry, 3, Type::I32);
+        let forty_one = konst(&mut cfg, entry, 41, Type::I32);
+        alloc_slot(&mut cfg, entry, 3, forty_one);
+        let sum = load_slot(&mut cfg, entry, 0, Type::I32);
+        let other = load_slot(&mut cfg, entry, 3, Type::I32);
+        let new_sum = value(&mut cfg, entry, CfgInstData::Add(sum, other), Type::I32);
+        store_slot(&mut cfg, entry, 0, new_sum);
+        unit_const(&mut cfg, entry);
+        storage_dead(&mut cfg, entry, 3, Type::I32);
+        let result = load_slot(&mut cfg, entry, 0, Type::I32);
+        storage_dead(&mut cfg, entry, 0, Type::I32);
+        cfg.set_return(entry, Some(result));
+        let cfg = cfg.finish(&pool).expect("test CFG must verify");
+
+        let (plan, num_locals) = local_plan(&cfg, &pool, &interner);
         // `sum` 0, `probe` 1, `p` 2, `other` 3.
         assert_eq!(num_locals, 4);
         assert_ne!(
@@ -1065,28 +1457,152 @@ fn main() -> i32 {
     /// RUE-768: both backends must agree on the shared layout, and both must
     /// report only the cells the plan kept. `area`'s per-arm payload bindings
     /// are the shapes.rue shape that motivated the issue.
+    /// The CFG the pipeline builds for the shapes.rue `area` function:
+    ///
+    /// ```text
+    /// fn area(s: Shape) -> i32 {
+    ///     match s {
+    ///         Shape.Circle(r) => 3 * r * r,
+    ///         Shape.Rect(w, h) => w * h,
+    ///         Shape.Square(side) => side * side,
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// A switch on the discriminant with one payload-binding local per arm
+    /// (`r` 0, `w`/`h` 1/2, `side` 3), each arm opening and closing its own
+    /// storage window before joining on a block parameter.
+    fn shapes_area_cfg() -> (ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let shape_id = register_enum(
+            &pool,
+            &interner,
+            "Shape",
+            &[
+                ("Circle", vec![Type::I32]),
+                ("Rect", vec![Type::I32, Type::I32]),
+                ("Square", vec![Type::I32]),
+            ],
+        );
+        let shape_ty = Type::new_enum(shape_id);
+        let pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            4,
+            3,
+            "area".to_string(),
+            ParamSlotModes::new(vec![false; 3], vec![false; 3]),
+        );
+        cfg.set_source_param_abi(vec![SourceParamAbi {
+            start_slot: 0,
+            slot_count: 3,
+            crossing_regs: 1,
+            ty: Some(shape_ty),
+        }]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let circle_arm = cfg.new_block();
+        let rect_arm = cfg.new_block();
+        let square_arm = cfg.new_block();
+        let join = cfg.new_block();
+        let join_value = cfg.add_block_param(join, Type::I32);
+
+        let scrutinee = value(&mut cfg, entry, CfgInstData::Param { index: 0 }, shape_ty);
+        cfg.set_switch(
+            entry,
+            scrutinee,
+            [(0, circle_arm), (1, rect_arm)],
+            square_arm,
+        );
+
+        // Circle(r): 3 * r * r, binding `r` in slot 0.
+        storage_live(&mut cfg, circle_arm, 0, Type::I32);
+        let payload = value(
+            &mut cfg,
+            circle_arm,
+            CfgInstData::EnumPayloadGet {
+                base: scrutinee,
+                enum_id: shape_id,
+                variant_index: 0,
+                field_index: 0,
+            },
+            Type::I32,
+        );
+        alloc_slot(&mut cfg, circle_arm, 0, payload);
+        let three = konst(&mut cfg, circle_arm, 3, Type::I32);
+        let r = load_slot(&mut cfg, circle_arm, 0, Type::I32);
+        let partial = value(&mut cfg, circle_arm, CfgInstData::Mul(three, r), Type::I32);
+        let r = load_slot(&mut cfg, circle_arm, 0, Type::I32);
+        let product = value(
+            &mut cfg,
+            circle_arm,
+            CfgInstData::Mul(partial, r),
+            Type::I32,
+        );
+        storage_dead(&mut cfg, circle_arm, 0, Type::I32);
+        cfg.set_goto(circle_arm, join, [product]);
+
+        // Rect(w, h): w * h, binding `w`/`h` in slots 1/2.
+        for (slot, field_index) in [(1u32, 0u32), (2, 1)] {
+            storage_live(&mut cfg, rect_arm, slot, Type::I32);
+            let payload = value(
+                &mut cfg,
+                rect_arm,
+                CfgInstData::EnumPayloadGet {
+                    base: scrutinee,
+                    enum_id: shape_id,
+                    variant_index: 1,
+                    field_index,
+                },
+                Type::I32,
+            );
+            alloc_slot(&mut cfg, rect_arm, slot, payload);
+        }
+        let w = load_slot(&mut cfg, rect_arm, 1, Type::I32);
+        let h = load_slot(&mut cfg, rect_arm, 2, Type::I32);
+        let product = value(&mut cfg, rect_arm, CfgInstData::Mul(w, h), Type::I32);
+        storage_dead(&mut cfg, rect_arm, 2, Type::I32);
+        storage_dead(&mut cfg, rect_arm, 1, Type::I32);
+        cfg.set_goto(rect_arm, join, [product]);
+
+        // Square(side): side * side, binding `side` in slot 3.
+        storage_live(&mut cfg, square_arm, 3, Type::I32);
+        let payload = value(
+            &mut cfg,
+            square_arm,
+            CfgInstData::EnumPayloadGet {
+                base: scrutinee,
+                enum_id: shape_id,
+                variant_index: 2,
+                field_index: 0,
+            },
+            Type::I32,
+        );
+        alloc_slot(&mut cfg, square_arm, 3, payload);
+        let side = load_slot(&mut cfg, square_arm, 3, Type::I32);
+        let side_again = load_slot(&mut cfg, square_arm, 3, Type::I32);
+        let product = value(
+            &mut cfg,
+            square_arm,
+            CfgInstData::Mul(side, side_again),
+            Type::I32,
+        );
+        storage_dead(&mut cfg, square_arm, 3, Type::I32);
+        cfg.set_goto(square_arm, join, [product]);
+
+        cfg.set_return(join, Some(join_value));
+        (
+            cfg.finish(&pool).expect("test CFG must verify"),
+            pool,
+            interner,
+        )
+    }
+
     #[test]
     fn both_backends_report_the_same_shared_local_area() {
-        let source = "\
-enum Shape {
-    Circle(i32),
-    Rect(i32, i32),
-    Square(i32),
-}
-
-fn area(s: Shape) -> i32 {
-    match s {
-        Shape.Circle(r) => 3 * r * r,
-        Shape.Rect(w, h) => w * h,
-        Shape.Square(side) => side * side,
-    }
-}
-
-fn main() -> i32 {
-    area(Shape.Circle(2)) + area(Shape.Rect(3, 4)) + area(Shape.Square(5))
-}
-";
-        let (plan, num_locals) = local_plan(source, "area");
+        let (cfg, type_pool, interner) = shapes_area_cfg();
+        let (plan, num_locals) = local_plan(&cfg, &type_pool, &interner);
         assert_eq!(
             num_locals, 4,
             "one payload binding per arm, plus Rect's two"
@@ -1098,7 +1614,7 @@ fn main() -> i32 {
         );
 
         for target in [Target::X86_64Linux, Target::Aarch64Linux] {
-            let (_, info) = frame_projection(source, "area", target);
+            let (_, info) = frame_projection(&cfg, &type_pool, &interner, target);
             let locals = info
                 .slots
                 .iter()
@@ -1118,28 +1634,94 @@ fn main() -> i32 {
     /// local, and parameter slots together.
     #[test]
     fn aarch64_reported_slots_match_emitted_instructions() {
-        let source = "\
-struct Pair {
-    a: i32,
-    b: i32,
-}
+        // The CFG models the iterative Euclid loop:
+        //
+        //     fn gcd(p: Pair) -> i32 {
+        //         let mut x = p.a;      // slot 0
+        //         let mut y = p.b;      // slot 1
+        //         while y != 0 {
+        //             let temp = y;     // slot 2
+        //             y = x % y;
+        //             x = temp;
+        //         }
+        //         x
+        //     }
+        //
+        // The two-slot `Pair` parameter crosses as one indirect pointer
+        // (`crossing_regs: 1` over `slot_count: 2`), so the callee unmarshals
+        // it into homed frame slots at entry.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let pair_id = register_struct(
+            &pool,
+            &interner,
+            "Pair",
+            &[("a", Type::I32), ("b", Type::I32)],
+        );
+        let pair_ty = Type::new_struct(pair_id);
+        let type_pool = pool.freeze();
+        let mut cfg = Cfg::new(
+            Type::I32,
+            3,
+            2,
+            "gcd".to_string(),
+            ParamSlotModes::new(vec![false; 2], vec![false; 2]),
+        );
+        cfg.set_source_param_abi(vec![SourceParamAbi {
+            start_slot: 0,
+            slot_count: 2,
+            crossing_regs: 1,
+            ty: Some(pair_ty),
+        }]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
 
-fn gcd(p: Pair) -> i32 {
-    let mut x = p.a;
-    let mut y = p.b;
-    while y != 0 {
-        let temp = y;
-        y = x % y;
-        x = temp;
-    }
-    x
-}
+        for (slot, field_index) in [(0u32, 0u32), (1, 1)] {
+            storage_live(&mut cfg, entry, slot, Type::I32);
+            let field = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Param(0),
+                    pair_ty,
+                    [Projection::Field {
+                        struct_id: pair_id,
+                        field_index,
+                    }],
+                    Type::I32,
+                    span(),
+                )
+                .unwrap();
+            alloc_slot(&mut cfg, entry, slot, field);
+        }
+        cfg.set_goto(entry, header, []);
 
-fn main() -> i32 {
-    gcd(Pair { a: 1071, b: 462 })
-}
-";
-        let (cfg, type_pool, interner) = compile_named_fn(source, "gcd");
+        let y = load_slot(&mut cfg, header, 1, Type::I32);
+        let zero = konst(&mut cfg, header, 0, Type::I32);
+        let condition = value(&mut cfg, header, CfgInstData::Ne(y, zero), Type::BOOL);
+        cfg.set_branch(header, condition, body, [], exit, []);
+
+        storage_live(&mut cfg, body, 2, Type::I32);
+        let y = load_slot(&mut cfg, body, 1, Type::I32);
+        alloc_slot(&mut cfg, body, 2, y);
+        let x = load_slot(&mut cfg, body, 0, Type::I32);
+        let y = load_slot(&mut cfg, body, 1, Type::I32);
+        let remainder = value(&mut cfg, body, CfgInstData::Mod(x, y), Type::I32);
+        store_slot(&mut cfg, body, 1, remainder);
+        let temp = load_slot(&mut cfg, body, 2, Type::I32);
+        store_slot(&mut cfg, body, 0, temp);
+        unit_const(&mut cfg, body);
+        storage_dead(&mut cfg, body, 2, Type::I32);
+        cfg.set_goto(body, header, []);
+
+        unit_const(&mut cfg, exit);
+        let result = load_slot(&mut cfg, exit, 0, Type::I32);
+        storage_dead(&mut cfg, exit, 1, Type::I32);
+        storage_dead(&mut cfg, exit, 0, Type::I32);
+        cfg.set_return(exit, Some(result));
+        let cfg = cfg.finish(&type_pool).expect("test CFG must verify");
         let target = Target::Aarch64Linux;
 
         let info = generate_stack_frame_info(&cfg, "gcd", &type_pool, &interner, target).unwrap();

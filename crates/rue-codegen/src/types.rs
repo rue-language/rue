@@ -1300,50 +1300,71 @@ pub fn collect_struct_scalar_vregs(
 
 #[cfg(test)]
 mod layout_authority_tests {
-    use rue_air::Sema;
+    use lasso::ThreadedRodeo;
     use rue_air::layout::LayoutKind;
-    use rue_error::PreviewFeatures;
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_air::{StructDef, StructField, Type, TypeInternPool};
+    use rue_span::FileId;
 
     use super::{struct_field_slot_offset, type_size_bytes, type_slot_count};
 
     /// The compact layout authority and code generation's size helper agree, and
     /// the physical field offsets and the internal slot decomposition are each
-    /// self-consistent (ascending, in bounds) across every type in a real
-    /// compiled program. The physical byte offsets and the slot indices are
-    /// deliberately distinct representations (ADR-0052), so they are checked for
-    /// their own invariants rather than for equality.
+    /// self-consistent (ascending, in bounds) across every type in a pool
+    /// covering the interesting shapes: mixed-width scalar fields, a narrow
+    /// leading field, and a struct-element array nested inside another struct.
+    /// The physical byte offsets and the slot indices are deliberately distinct
+    /// representations (ADR-0052), so they are checked for their own invariants
+    /// rather than for equality.
     #[test]
     fn layout_agrees_with_codegen_helpers_over_a_compiled_fixture() {
-        let source = r#"
-            struct Point { x: i32, y: i64 }
-            struct Outer { tag: bool, points: [Point; 3] }
-            fn main() -> i32 {
-                let o = Outer {
-                    tag: true,
-                    points: [
-                        Point { x: 1, y: 2 },
-                        Point { x: 3, y: 4 },
-                        Point { x: 5, y: 6 },
-                    ],
-                };
-                o.points[0].x
-            }
-        "#;
-
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().expect("fixture should parse");
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .expect("fixture should analyze");
-        let pool = &output.type_pool;
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (point_id, _) = pool.register_struct(
+            interner.get_or_intern("Point"),
+            StructDef {
+                name: "Point".into(),
+                fields: vec![
+                    StructField {
+                        name: "x".to_string(),
+                        ty: Type::I32,
+                    },
+                    StructField {
+                        name: "y".to_string(),
+                        ty: Type::I64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let points_id = pool.intern_array_from_type(Type::new_struct(point_id), 3);
+        pool.register_struct(
+            interner.get_or_intern("Outer"),
+            StructDef {
+                name: "Outer".into(),
+                fields: vec![
+                    StructField {
+                        name: "tag".to_string(),
+                        ty: Type::BOOL,
+                    },
+                    StructField {
+                        name: "points".to_string(),
+                        ty: Type::new_array(points_id),
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let pool = &pool.freeze();
 
         for ty in pool.all_types() {
             let layout = pool.layout(ty);

@@ -3764,12 +3764,12 @@ impl crate::aggregate_eq::AggregateEqPlanBackend for CfgLower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::{Sema, SemaMetadata};
-    use rue_cfg::CfgBuilder;
-    use rue_error::PreviewFeatures;
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_air::{
+        EnumDef, EnumId, ParamSlotModes, RuntimeCallKind, SourceParamAbi, StructDef, StructField,
+        StructId, TypeInternPool,
+    };
+    use rue_cfg::{CfgArgMode, CfgCallArg, CfgInst, CfgInstData, PlaceBase, Projection};
+    use rue_span::{FileId, Span};
 
     #[test]
     fn physical_return_register_roster_matches_the_abi_kernel_budget() {
@@ -3781,117 +3781,347 @@ mod tests {
         );
     }
 
-    fn lower_function_to_mir(source: &str, function_name: &str) -> Aarch64Mir {
-        lower_function_to_mir_with_preview(source, function_name, PreviewFeatures::new())
+    fn span() -> Span {
+        Span::new(0, 0)
     }
 
-    fn lower_function_to_mir_with_preview(
-        source: &str,
-        function_name: &str,
-        preview: PreviewFeatures,
-    ) -> Aarch64Mir {
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-
-        let sema = Sema::new_synthetic(&rir, &mut interner, preview);
-        let output = sema.analyze_all_for_test().unwrap();
-
-        let symbol = SemaMetadata::synthetic_root_function_symbol(function_name);
-        let func = output
-            .functions
-            .iter()
-            .find(|func| func.name == symbol)
-            .expect("requested test function should exist");
-        let type_pool = &output.type_pool;
-        let cfg_output = CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
+    fn register_struct(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        fields: &[(&str, Type)],
+    ) -> StructId {
+        let (id, _) = pool.register_struct(
+            interner.get_or_intern(name),
+            StructDef {
+                name: name.into(),
+                fields: fields
+                    .iter()
+                    .map(|(field, ty)| StructField {
+                        name: (*field).to_string(),
+                        ty: *ty,
+                    })
+                    .collect(),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
         );
-
-        // Use host target for tests
-        CfgLower::new(
-            cfg_output.cfg.as_ref().unwrap(),
-            type_pool,
-            &interner,
-            Target::host().expect("test lowering requires a supported Rue host target"),
-        )
-        .lower()
-        .expect("test lowering should succeed")
+        id
     }
 
-    fn try_lower_first_fn(
-        source: &str,
-        preview: PreviewFeatures,
-    ) -> rue_error::CompileResult<Aarch64Mir> {
-        try_lower_named_fn(source, preview, None)
+    fn register_enum(
+        pool: &TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        variants: &[(&str, Vec<Type>)],
+    ) -> EnumId {
+        let (id, _) = pool.register_enum(
+            interner.get_or_intern(name),
+            EnumDef {
+                name: name.into(),
+                variants: variants
+                    .iter()
+                    .map(|(variant, _)| (*variant).into())
+                    .collect(),
+                variant_payloads: variants
+                    .iter()
+                    .map(|(_, payload)| payload.clone())
+                    .collect(),
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        id
     }
 
-    /// Lower `name` with the pipeline's real parameter storage plan applied
-    /// (RUE-1170), as production lowering does.
-    fn lower_named_fn_with_plan(source: &str, name: &str) -> Aarch64Mir {
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
-            .analyze_all_for_test()
-            .unwrap();
-        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
-        let func = output
-            .functions
-            .iter()
-            .find(|f| f.name == symbol)
-            .unwrap_or_else(|| panic!("no function named `{name}`"));
-        let type_pool = &output.type_pool;
-        let cfg_output = CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
-        );
-        let cfg = cfg_output.cfg.as_ref().unwrap();
-        let plan = crate::param_storage::ParamStoragePlan::plan(
-            cfg,
-            type_pool,
-            false,
-            ARG_REGS.len() as u32,
-        );
-        CfgLower::new(cfg, type_pool, &interner, Target::Aarch64Linux)
-            .with_param_storage(&plan)
+    /// One direct scalar ABI descriptor per parameter slot.
+    fn scalar_param_abi(count: u32) -> Vec<SourceParamAbi> {
+        (0..count)
+            .map(|slot| SourceParamAbi {
+                start_slot: slot,
+                slot_count: 1,
+                crossing_regs: 1,
+                ty: None,
+            })
+            .collect()
+    }
+
+    /// A CFG fixture under construction. Instructions append to `current`,
+    /// which multi-block fixtures retarget as they go.
+    struct FixtureCfg<'a> {
+        cfg: Cfg,
+        current: BlockId,
+        pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+    }
+
+    impl<'a> FixtureCfg<'a> {
+        fn new(
+            return_type: Type,
+            num_locals: u32,
+            name: &str,
+            param_modes: ParamSlotModes,
+            source_param_abi: Vec<SourceParamAbi>,
+            pool: &'a FrozenTypeInternPool,
+            interner: &'a ThreadedRodeo,
+        ) -> Self {
+            let num_params = param_modes.by_ref().len() as u32;
+            let mut cfg = Cfg::new(
+                return_type,
+                num_locals,
+                num_params,
+                name.to_string(),
+                param_modes,
+            );
+            cfg.set_source_param_abi(source_param_abi);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            Self {
+                cfg,
+                current: entry,
+                pool,
+                interner,
+            }
+        }
+
+        fn value(&mut self, data: CfgInstData, ty: Type) -> CfgValue {
+            self.cfg.append_inst(
+                self.current,
+                CfgInst {
+                    data,
+                    ty,
+                    span: span(),
+                },
+            )
+        }
+
+        fn konst(&mut self, literal: u64, ty: Type) -> CfgValue {
+            self.value(CfgInstData::Const(literal), ty)
+        }
+
+        fn unit(&mut self) -> CfgValue {
+            self.konst(0, Type::UNIT)
+        }
+
+        fn cast(&mut self, from_value: CfgValue, from_ty: Type, ty: Type) -> CfgValue {
+            self.value(
+                CfgInstData::IntCast {
+                    value: from_value,
+                    from_ty,
+                },
+                ty,
+            )
+        }
+
+        fn live(&mut self, slot: u32, local_ty: Type) {
+            self.value(CfgInstData::StorageLive { slot, local_ty }, Type::UNIT);
+        }
+
+        fn dead(&mut self, slot: u32, local_ty: Type) {
+            self.value(CfgInstData::StorageDead { slot, local_ty }, Type::UNIT);
+        }
+
+        fn alloc(&mut self, slot: u32, init: CfgValue) {
+            self.value(CfgInstData::Alloc { slot, init }, Type::UNIT);
+        }
+
+        fn load(&mut self, slot: u32, ty: Type) -> CfgValue {
+            self.value(CfgInstData::Load { slot }, ty)
+        }
+
+        fn param(&mut self, index: u32, ty: Type) -> CfgValue {
+            self.value(CfgInstData::Param { index }, ty)
+        }
+
+        fn intrinsic(
+            &mut self,
+            runtime: Option<RuntimeCallKind>,
+            name: &str,
+            args: &[CfgValue],
+            ty: Type,
+        ) -> CfgValue {
+            let name = self.interner.get_or_intern(name);
+            self.cfg
+                .append_intrinsic(
+                    self.current,
+                    runtime,
+                    name,
+                    args.iter().copied(),
+                    ty,
+                    span(),
+                )
+                .unwrap()
+        }
+
+        fn call(&mut self, name: &str, args: Vec<CfgCallArg>, ty: Type) -> CfgValue {
+            let name = self.interner.get_or_intern(name);
+            self.cfg
+                .append_call(self.current, None, name, args, ty, span())
+                .unwrap()
+        }
+
+        fn struct_init(&mut self, struct_id: StructId, fields: &[CfgValue], ty: Type) -> CfgValue {
+            self.cfg
+                .append_struct_init(self.current, struct_id, fields.iter().copied(), ty, span())
+                .unwrap()
+        }
+
+        fn array_init(&mut self, elements: &[CfgValue], ty: Type) -> CfgValue {
+            self.cfg
+                .append_array_init(self.current, elements.iter().copied(), ty, span())
+                .unwrap()
+        }
+
+        fn enum_variant(
+            &mut self,
+            enum_id: EnumId,
+            variant_index: u32,
+            payload: &[CfgValue],
+            ty: Type,
+        ) -> CfgValue {
+            self.cfg
+                .append_enum_variant(
+                    self.pool,
+                    self.current,
+                    enum_id,
+                    variant_index,
+                    payload.iter().copied(),
+                    ty,
+                    span(),
+                )
+                .unwrap()
+        }
+
+        fn place_read(
+            &mut self,
+            base: PlaceBase,
+            base_type: Type,
+            projections: impl IntoIterator<Item = Projection>,
+            ty: Type,
+        ) -> CfgValue {
+            self.cfg
+                .append_place_read(self.current, base, base_type, projections, ty, span())
+                .unwrap()
+        }
+
+        fn ret(&mut self, result: Option<CfgValue>) {
+            self.cfg.set_return(self.current, result);
+        }
+
+        fn lower(self) -> rue_error::CompileResult<Aarch64Mir> {
+            let cfg = self.cfg.finish(self.pool).expect("test CFG must verify");
+            CfgLower::new(&cfg, self.pool, self.interner, Target::Aarch64Linux).lower()
+        }
+
+        /// Lower for the host target, as the whole-pipeline tests do.
+        fn lower_host(self) -> Aarch64Mir {
+            let cfg = self.cfg.finish(self.pool).expect("test CFG must verify");
+            CfgLower::new(
+                &cfg,
+                self.pool,
+                self.interner,
+                Target::host().expect("test lowering requires a supported Rue host target"),
+            )
             .lower()
-            .unwrap()
+            .expect("test lowering should succeed")
+        }
+
+        /// Lower with the pipeline's real parameter storage plan applied
+        /// (RUE-1170), as production lowering does.
+        fn lower_with_plan(self) -> Aarch64Mir {
+            let cfg = self.cfg.finish(self.pool).expect("test CFG must verify");
+            let plan = crate::param_storage::ParamStoragePlan::plan(
+                &cfg,
+                self.pool,
+                false,
+                ARG_REGS.len() as u32,
+            );
+            CfgLower::new(&cfg, self.pool, self.interner, Target::Aarch64Linux)
+                .with_param_storage(&plan)
+                .lower()
+                .unwrap()
+        }
+    }
+
+    /// The `let p: ptr mut T = @int_to_ptr(@ptr_to_int(@alloc(size, align)))`
+    /// opening every checked pointer-marshalling fixture uses: allocate,
+    /// launder the provenance through an integer, and store the typed pointer
+    /// in `slot`. `raw_ptr_ty` is `@alloc`'s own `ptr mut u8` result type.
+    fn checked_alloc(
+        fixture: &mut FixtureCfg<'_>,
+        slot: u32,
+        size: u64,
+        align: u64,
+        raw_ptr_ty: Type,
+        ptr_ty: Type,
+    ) {
+        fixture.live(slot, ptr_ty);
+        let size_i32 = fixture.konst(size, Type::I32);
+        let size = fixture.cast(size_i32, Type::I32, Type::U64);
+        let align_i32 = fixture.konst(align, Type::I32);
+        let align = fixture.cast(align_i32, Type::I32, Type::U64);
+        let raw = fixture.intrinsic(
+            Some(RuntimeCallKind::Alloc),
+            "alloc",
+            &[size, align],
+            raw_ptr_ty,
+        );
+        let address = fixture.intrinsic(None, "ptr_to_int", &[raw], Type::U64);
+        let pointer = fixture.intrinsic(None, "int_to_ptr", &[address], ptr_ty);
+        fixture.alloc(slot, pointer);
+    }
+
+    /// The matching `@free(@int_to_ptr(@ptr_to_int(p)), size, align)` closing.
+    fn checked_free(
+        fixture: &mut FixtureCfg<'_>,
+        slot: u32,
+        size: u64,
+        align: u64,
+        raw_ptr_ty: Type,
+        ptr_ty: Type,
+    ) {
+        let pointer = fixture.load(slot, ptr_ty);
+        let address = fixture.intrinsic(None, "ptr_to_int", &[pointer], Type::U64);
+        let laundered = fixture.intrinsic(None, "int_to_ptr", &[address], raw_ptr_ty);
+        let size_i32 = fixture.konst(size, Type::I32);
+        let size = fixture.cast(size_i32, Type::I32, Type::U64);
+        let align_i32 = fixture.konst(align, Type::I32);
+        let align = fixture.cast(align_i32, Type::I32, Type::U64);
+        fixture.intrinsic(
+            Some(RuntimeCallKind::Free),
+            "free",
+            &[laundered, size, align],
+            Type::UNIT,
+        );
+        fixture.unit();
     }
 
     /// RUE-1170: read-only scalar register arguments are entry-copied out of
     /// their incoming registers instead of being reloaded from frame homes.
     #[test]
     fn register_only_params_entry_copy_and_never_load_from_the_frame() {
-        let mir = lower_named_fn_with_plan(
-            "fn both(a: i64, b: i64) -> i64 { a + b } \
-             fn main() -> i32 { let _ = both(1, 2); 0 }",
+        // `fn both(a: i64, b: i64) -> i64 { a + b }`, lowered with the real
+        // parameter storage plan applied.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
             "both",
+            ParamSlotModes::new(vec![false; 2], vec![false; 2]),
+            scalar_param_abi(2),
+            &pool,
+            &interner,
         );
+        let a = fixture.param(0, Type::I64);
+        let b = fixture.param(1, Type::I64);
+        let sum = fixture.value(CfgInstData::Add(a, b), Type::I64);
+        fixture.ret(Some(sum));
+        let mir = fixture.lower_with_plan();
         let insts = mir.instructions();
         assert!(
             matches!(
@@ -3926,11 +4156,22 @@ mod tests {
     /// RUE-1170: an unused register argument produces no entry copy at all.
     #[test]
     fn unused_register_params_produce_no_code() {
-        let mir = lower_named_fn_with_plan(
-            "fn pick(a: i64, b: i64) -> i64 { 42 } \
-             fn main() -> i32 { let _ = pick(1, 2); 0 }",
+        // `fn pick(a: i64, b: i64) -> i64 { 42 }`, lowered with the real
+        // parameter storage plan applied.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I64,
+            0,
             "pick",
+            ParamSlotModes::new(vec![false; 2], vec![false; 2]),
+            scalar_param_abi(2),
+            &pool,
+            &interner,
         );
+        let result = fixture.konst(42, Type::I64);
+        fixture.ret(Some(result));
+        let mir = fixture.lower_with_plan();
         assert!(
             !mir.instructions().iter().any(|inst| matches!(
                 inst,
@@ -3943,66 +4184,52 @@ mod tests {
         );
     }
 
-    /// Lower a specific function by name (or the first function when `None`),
-    /// so tests can exercise a callee whose caller sorts ahead of it.
-    fn try_lower_named_fn(
-        source: &str,
-        preview: PreviewFeatures,
-        name: Option<&str>,
-    ) -> rue_error::CompileResult<Aarch64Mir> {
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let output = Sema::new_synthetic(&rir, &mut interner, preview)
-            .analyze_all_for_test()
-            .unwrap();
-        let func = match name {
-            Some(name) => {
-                let symbol = SemaMetadata::synthetic_root_function_symbol(name);
-                output
-                    .functions
-                    .iter()
-                    .find(|f| f.name == symbol)
-                    .unwrap_or_else(|| panic!("no function named `{name}`"))
-            }
-            None => &output.functions[0],
-        };
-        let type_pool = &output.type_pool;
-        let cfg_output = CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
-        );
-        CfgLower::new(
-            cfg_output.cfg.as_ref().unwrap(),
-            type_pool,
-            &interner,
-            Target::Aarch64Linux,
-        )
-        .lower()
-    }
-
     /// RUE-1014: under the default compact layout, a non-slot-identical **array**
     /// frame value lowers on AArch64 in lockstep with x86-64: array `[]`
     /// indexing strides by the *slot* stride (`abi_slot_count(element) *
     /// SLOT_BYTES`) against the slot-shaped frame storage (RUE-975).
     #[test]
     fn aggregate_layout_allows_frame_array_slot_stride_indexing() {
-        try_lower_first_fn(
-            "fn main() -> i32 { let a: [i32; 3] = [1, 2, 3]; let i: u64 = 1; a[i] }",
-            PreviewFeatures::new(),
-        )
-        .expect("a frame array indexed at the slot stride must lower under compact layout");
+        // `let a: [i32; 3] = [1, 2, 3]; let i: u64 = 1; a[i]`
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let array_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 3));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            4,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(0, array_ty);
+        let elements: Vec<CfgValue> = [1u64, 2, 3]
+            .into_iter()
+            .map(|literal| fixture.konst(literal, Type::I32))
+            .collect();
+        let array = fixture.array_init(&elements, array_ty);
+        fixture.alloc(0, array);
+        fixture.live(3, Type::U64);
+        let one = fixture.konst(1, Type::U64);
+        fixture.alloc(3, one);
+        let index = fixture.load(3, Type::U64);
+        let element = fixture.place_read(
+            PlaceBase::Local(0),
+            array_ty,
+            [Projection::Index {
+                array_type: array_ty,
+                index,
+            }],
+            Type::I32,
+        );
+        fixture.dead(3, Type::U64);
+        fixture.dead(0, array_ty);
+        fixture.ret(Some(element));
+        fixture
+            .lower()
+            .expect("a frame array indexed at the slot stride must lower under compact layout");
     }
 
     /// RUE-989: under the default compact layout, narrow scalar access through a
@@ -4010,9 +4237,38 @@ mod tests {
     /// narrow pseudos (`ldrsw`/`str w`) instead of the eight-byte `Ldr`/`Str`.
     #[test]
     fn aggregate_layout_allows_narrow_scalar_physical_access() {
-        let source = "fn main() -> i32 { checked { let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(i32)), @intCast(@align_of(i32))))); \
-                      @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(i32)), @intCast(@align_of(i32))); }; 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // `let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(4, 4)));
+        //  @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(..., 4, 4); 0`
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::I32));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            1,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        checked_alloc(&mut fixture, 0, 4, 4, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let five = fixture.konst(5, Type::I32);
+        fixture.intrinsic(None, "ptr_write", &[pointer, five], Type::UNIT);
+        fixture.unit();
+        let pointer = fixture.load(0, ptr_ty);
+        let read = fixture.intrinsic(None, "ptr_read", &[pointer], Type::I32);
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[read], Type::UNIT);
+        fixture.unit();
+        checked_free(&mut fixture, 0, 4, 4, raw_ptr_ty, ptr_ty);
+        fixture.unit();
+        fixture.dead(0, ptr_ty);
+        let result = fixture.konst(0, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a narrow scalar through a typed pointer must lower under compact layout");
         assert!(
             mir.instructions()
@@ -4038,12 +4294,81 @@ mod tests {
     /// tag at offset 0 and the payload at its compact offset.
     #[test]
     fn aggregate_layout_allows_compact_enum_memory() {
-        let source = "enum Opt { Some(i32), None } \
-                      fn main() -> i32 { checked { let p: ptr mut Opt = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Opt)), @intCast(@align_of(Opt))))); \
-                      @ptr_write(p, Opt.Some(42)); let e = @ptr_read(p); \
-                      match e { Opt.Some(x) => @dbg(x), Opt.None => @dbg(0), }; \
-                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Opt)), @intCast(@align_of(Opt))); }; 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // `enum Opt { Some(i32), None }` written through `ptr mut Opt`, read
+        // back, and matched: `@ptr_write(p, Opt.Some(42)); let e = @ptr_read(p);
+        // match e { Opt.Some(x) => @dbg(x), Opt.None => @dbg(0) }`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let opt_id = register_enum(
+            &pool,
+            &interner,
+            "Opt",
+            &[("Some", vec![Type::I32]), ("None", vec![])],
+        );
+        let opt_ty = Type::new_enum(opt_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(opt_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            4,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        checked_alloc(&mut fixture, 0, 8, 4, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let forty_two = fixture.konst(42, Type::I32);
+        let variant = fixture.enum_variant(opt_id, 0, &[forty_two], opt_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, opt_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let read = fixture.intrinsic(None, "ptr_read", &[pointer], opt_ty);
+        fixture.alloc(1, read);
+        let scrutinee = fixture.load(1, opt_ty);
+        let some_arm = fixture.cfg.new_block();
+        let none_arm = fixture.cfg.new_block();
+        let join = fixture.cfg.new_block();
+        fixture
+            .cfg
+            .set_switch(fixture.current, scrutinee, [(0, some_arm)], none_arm);
+
+        fixture.current = some_arm;
+        fixture.live(3, Type::I32);
+        let payload = fixture.value(
+            CfgInstData::EnumPayloadGet {
+                base: scrutinee,
+                enum_id: opt_id,
+                variant_index: 0,
+                field_index: 0,
+            },
+            Type::I32,
+        );
+        fixture.alloc(3, payload);
+        let x = fixture.load(3, Type::I32);
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[x], Type::UNIT);
+        fixture.unit();
+        fixture.dead(3, Type::I32);
+        fixture.cfg.set_goto(some_arm, join, []);
+
+        fixture.current = none_arm;
+        let zero = fixture.konst(0, Type::I32);
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[zero], Type::UNIT);
+        fixture.unit();
+        fixture.cfg.set_goto(none_arm, join, []);
+
+        fixture.current = join;
+        checked_free(&mut fixture, 0, 8, 4, raw_ptr_ty, ptr_ty);
+        fixture.unit();
+        fixture.dead(1, opt_ty);
+        fixture.dead(0, ptr_ty);
+        let result = fixture.konst(0, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a compact enum with a variant-independent image must lower");
         assert!(
             mir.instructions()
@@ -4069,11 +4394,48 @@ mod tests {
     /// — the store emits a tag compare per variant plus narrow field stores.
     #[test]
     fn aggregate_layout_heterogeneous_enum_ptr_write_tag_dispatches() {
-        let source = "enum R { Ok(Point), Err(i64) } \
-                      struct Point { x: i32, y: i32, z: i32 } \
-                      fn store_it(p: ptr mut R) { checked { @ptr_write(p, R.Ok(Point { x: 1, y: 2, z: 3 })); }; } \
-                      fn main() -> i32 { checked { let p: ptr mut R = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(R)), @intCast(@align_of(R))))); store_it(p); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(R)), @intCast(@align_of(R))); }; 0 }";
-        let mir = try_lower_named_fn(source, PreviewFeatures::new(), Some("store_it"))
+        // `enum R { Ok(Point), Err(i64) }` over a three-field `Point`:
+        // `fn store_it(p: ptr mut R) { @ptr_write(p, R.Ok(Point { x: 1, y: 2, z: 3 })); }`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let point_id = register_struct(
+            &pool,
+            &interner,
+            "Point",
+            &[("x", Type::I32), ("y", Type::I32), ("z", Type::I32)],
+        );
+        let point_ty = Type::new_struct(point_id);
+        let r_id = register_enum(
+            &pool,
+            &interner,
+            "R",
+            &[("Ok", vec![point_ty]), ("Err", vec![Type::I64])],
+        );
+        let r_ty = Type::new_enum(r_id);
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(r_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "store_it",
+            ParamSlotModes::new(vec![false], vec![false]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
+        );
+        let pointer = fixture.param(0, ptr_ty);
+        let x = fixture.konst(1, Type::I32);
+        let y = fixture.konst(2, Type::I32);
+        let z = fixture.konst(3, Type::I32);
+        let point = fixture.struct_init(point_id, &[x, y, z], point_ty);
+        let variant = fixture.enum_variant(r_id, 0, &[point], r_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.unit();
+        fixture.unit();
+        fixture.unit();
+        fixture.ret(None);
+        let mir = fixture
+            .lower()
             .expect("a heterogeneous enum @ptr_write must lower via tag dispatch");
         assert!(
             mir.instructions()
@@ -4094,11 +4456,60 @@ mod tests {
     /// field narrow at its compact offset and `@ptr_read` reloads it.
     #[test]
     fn aggregate_layout_allows_compact_struct_memory() {
-        let source = "struct Padded { a: u8, b: i32, c: u8 } \
-                      fn main() -> i32 { checked { let p: ptr mut Padded = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Padded)), @intCast(@align_of(Padded))))); \
-                      @ptr_write(p, Padded { a: 7, b: 1000, c: 9 }); let s = @ptr_read(p); \
-                      @dbg(s.b); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Padded)), @intCast(@align_of(Padded))); }; 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new()).expect(
+        // `struct Padded { a: u8, b: i32, c: u8 }` written whole through
+        // `ptr mut Padded`, read back, and one field debugged:
+        // `@ptr_write(p, Padded { a: 7, b: 1000, c: 9 }); let s = @ptr_read(p); @dbg(s.b)`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let padded_id = register_struct(
+            &pool,
+            &interner,
+            "Padded",
+            &[("a", Type::U8), ("b", Type::I32), ("c", Type::U8)],
+        );
+        let padded_ty = Type::new_struct(padded_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(padded_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            4,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        checked_alloc(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let a = fixture.konst(7, Type::U8);
+        let b = fixture.konst(1000, Type::I32);
+        let c = fixture.konst(9, Type::U8);
+        let padded = fixture.struct_init(padded_id, &[a, b, c], padded_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, padded], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, padded_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let read = fixture.intrinsic(None, "ptr_read", &[pointer], padded_ty);
+        fixture.alloc(1, read);
+        let b = fixture.place_read(
+            PlaceBase::Local(1),
+            padded_ty,
+            [Projection::Field {
+                struct_id: padded_id,
+                field_index: 1,
+            }],
+            Type::I32,
+        );
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[b], Type::UNIT);
+        fixture.unit();
+        checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        fixture.unit();
+        fixture.dead(1, padded_ty);
+        fixture.dead(0, ptr_ty);
+        let result = fixture.konst(0, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture.lower().expect(
             "a whole compact struct through a typed pointer must lower under compact layout",
         );
         assert!(
@@ -4120,11 +4531,78 @@ mod tests {
     /// so it marshals whole through a pointer on AArch64.
     #[test]
     fn aggregate_layout_allows_array_bearing_struct_memory() {
-        let source = "struct HasArr { tag: u8, xs: [i32; 2] } \
-                      fn main() -> i32 { let r = checked { let p: ptr mut HasArr = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(HasArr)), @intCast(@align_of(HasArr))))); \
-                      @ptr_write(p, HasArr { tag: 5, xs: [10, 20] }); let v = @ptr_read(p); \
-                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(HasArr)), @intCast(@align_of(HasArr))); v.xs[0] + v.xs[1] }; @dbg(r); 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // `struct HasArr { tag: u8, xs: [i32; 2] }` written whole through
+        // `ptr mut HasArr`, read back, and both elements summed:
+        // `@ptr_write(p, HasArr { tag: 5, xs: [10, 20] }); let v = @ptr_read(p);
+        //  ... v.xs[0] + v.xs[1]`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let xs_ty = Type::new_array(pool.intern_array_from_type(Type::I32, 2));
+        let has_arr_id = register_struct(
+            &pool,
+            &interner,
+            "HasArr",
+            &[("tag", Type::U8), ("xs", xs_ty)],
+        );
+        let has_arr_ty = Type::new_struct(has_arr_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(has_arr_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            5,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(4, Type::I32);
+        checked_alloc(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let tag = fixture.konst(5, Type::U8);
+        let ten = fixture.konst(10, Type::I32);
+        let twenty = fixture.konst(20, Type::I32);
+        let xs = fixture.array_init(&[ten, twenty], xs_ty);
+        let has_arr = fixture.struct_init(has_arr_id, &[tag, xs], has_arr_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, has_arr], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, has_arr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let read = fixture.intrinsic(None, "ptr_read", &[pointer], has_arr_ty);
+        fixture.alloc(1, read);
+        checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        let mut elements = Vec::new();
+        for literal in [0u64, 1] {
+            let index = fixture.konst(literal, Type::I32);
+            elements.push(fixture.place_read(
+                PlaceBase::Local(1),
+                has_arr_ty,
+                [
+                    Projection::Field {
+                        struct_id: has_arr_id,
+                        field_index: 1,
+                    },
+                    Projection::Index {
+                        array_type: xs_ty,
+                        index,
+                    },
+                ],
+                Type::I32,
+            ));
+        }
+        let sum = fixture.value(CfgInstData::Add(elements[0], elements[1]), Type::I32);
+        fixture.dead(1, has_arr_ty);
+        fixture.dead(0, ptr_ty);
+        fixture.alloc(4, sum);
+        let r = fixture.load(4, Type::I32);
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[r], Type::UNIT);
+        fixture.unit();
+        let result = fixture.konst(0, Type::I32);
+        fixture.dead(4, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a struct with a compact array image must lower under compact layout");
         assert!(
             mir.instructions()
@@ -4139,12 +4617,112 @@ mod tests {
     /// whole through a pointer on AArch64.
     #[test]
     fn aggregate_layout_allows_variant_dependent_enum_image() {
-        let source = "struct Point { x: i32, y: i32 } enum Opt { Some(Point), None } \
-                      fn main() -> i32 { let r = checked { let p: ptr mut Opt = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Opt)), @intCast(@align_of(Opt))))); \
-                      @ptr_write(p, Opt.Some(Point { x: 40, y: 2 })); let v = @ptr_read(p); \
-                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Opt)), @intCast(@align_of(Opt))); match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 } }; \
-                      @dbg(r); 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // `enum Opt { Some(Point), None }` over `struct Point { x: i32, y: i32 }`
+        // written whole through `ptr mut Opt`, read back, and matched:
+        // `match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 }`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let point_id = register_struct(
+            &pool,
+            &interner,
+            "Point",
+            &[("x", Type::I32), ("y", Type::I32)],
+        );
+        let point_ty = Type::new_struct(point_id);
+        let opt_id = register_enum(
+            &pool,
+            &interner,
+            "Opt",
+            &[("Some", vec![point_ty]), ("None", vec![])],
+        );
+        let opt_ty = Type::new_enum(opt_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(opt_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            7,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(6, Type::I32);
+        checked_alloc(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let x = fixture.konst(40, Type::I32);
+        let y = fixture.konst(2, Type::I32);
+        let point = fixture.struct_init(point_id, &[x, y], point_ty);
+        let variant = fixture.enum_variant(opt_id, 0, &[point], opt_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, opt_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let read = fixture.intrinsic(None, "ptr_read", &[pointer], opt_ty);
+        fixture.alloc(1, read);
+        checked_free(&mut fixture, 0, 12, 4, raw_ptr_ty, ptr_ty);
+        let scrutinee = fixture.load(1, opt_ty);
+        let some_arm = fixture.cfg.new_block();
+        let none_arm = fixture.cfg.new_block();
+        let join = fixture.cfg.new_block();
+        let join_value = fixture.cfg.add_block_param(join, Type::I32);
+        fixture
+            .cfg
+            .set_switch(fixture.current, scrutinee, [(0, some_arm)], none_arm);
+
+        fixture.current = some_arm;
+        fixture.live(4, point_ty);
+        let payload = fixture.value(
+            CfgInstData::EnumPayloadGet {
+                base: scrutinee,
+                enum_id: opt_id,
+                variant_index: 0,
+                field_index: 0,
+            },
+            point_ty,
+        );
+        fixture.alloc(4, payload);
+        let x = fixture.place_read(
+            PlaceBase::Local(4),
+            point_ty,
+            [Projection::Field {
+                struct_id: point_id,
+                field_index: 0,
+            }],
+            Type::I32,
+        );
+        let y = fixture.place_read(
+            PlaceBase::Local(4),
+            point_ty,
+            [Projection::Field {
+                struct_id: point_id,
+                field_index: 1,
+            }],
+            Type::I32,
+        );
+        let sum = fixture.value(CfgInstData::Add(x, y), Type::I32);
+        fixture.dead(4, point_ty);
+        fixture.cfg.set_goto(some_arm, join, [sum]);
+
+        fixture.current = none_arm;
+        let zero = fixture.konst(0, Type::I32);
+        let one = fixture.konst(1, Type::I32);
+        let negative = fixture.value(CfgInstData::Sub(zero, one), Type::I32);
+        fixture.cfg.set_goto(none_arm, join, [negative]);
+
+        fixture.current = join;
+        fixture.dead(1, opt_ty);
+        fixture.dead(0, ptr_ty);
+        fixture.alloc(6, join_value);
+        let r = fixture.load(6, Type::I32);
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[r], Type::UNIT);
+        fixture.unit();
+        let result = fixture.konst(0, Type::I32);
+        fixture.dead(6, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("an enum with a variant-independent struct-payload image must lower");
         assert!(
             mir.instructions()
@@ -4160,10 +4738,45 @@ mod tests {
     /// and stores the active variant's leaves. (Previously refused as imageless.)
     #[test]
     fn aggregate_layout_marshals_struct_embedding_heterogeneous_enum() {
-        let source = "enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad } \
-                      fn main() -> i32 { checked { let p: ptr mut HasBad = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(HasBad)), @intCast(@align_of(HasBad))))); \
-                      @ptr_write(p, HasBad { b: Bad.A(5) }); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(HasBad)), @intCast(@align_of(HasBad))); }; 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // `enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad }`:
+        // `@ptr_write(p, HasBad { b: Bad.A(5) })` through `ptr mut HasBad`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let bad_id = register_enum(
+            &pool,
+            &interner,
+            "Bad",
+            &[("A", vec![Type::I64]), ("B", vec![Type::I32, Type::I32])],
+        );
+        let bad_ty = Type::new_enum(bad_id);
+        let has_bad_id = register_struct(&pool, &interner, "HasBad", &[("b", bad_ty)]);
+        let has_bad_ty = Type::new_struct(has_bad_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(has_bad_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            1,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        checked_alloc(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let five = fixture.konst(5, Type::I64);
+        let variant = fixture.enum_variant(bad_id, 0, &[five], bad_ty);
+        let has_bad = fixture.struct_init(has_bad_id, &[variant], has_bad_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, has_bad], Type::UNIT);
+        fixture.unit();
+        checked_free(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
+        fixture.unit();
+        fixture.dead(0, ptr_ty);
+        let result = fixture.konst(0, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a struct embedding a heterogeneous enum must lower via nested tag dispatch");
         assert!(
             mir.instructions()
@@ -4179,10 +4792,45 @@ mod tests {
     /// is the caller here).
     #[test]
     fn aggregate_layout_allows_compact_struct_sret_return() {
-        let source = "struct Padded { a: u8, b: i32, c: u8 } \
-                      fn make() -> Padded { Padded { a: 7, b: 1000, c: 9 } } \
-                      fn main() -> i32 { let p = make(); @dbg(p.b); 0 }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // The caller of `fn make() -> Padded`: `let p = make(); @dbg(p.b); 0`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let padded_id = register_struct(
+            &pool,
+            &interner,
+            "Padded",
+            &[("a", Type::U8), ("b", Type::I32), ("c", Type::U8)],
+        );
+        let padded_ty = Type::new_struct(padded_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            3,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(0, padded_ty);
+        let returned = fixture.call("make", vec![], padded_ty);
+        fixture.alloc(0, returned);
+        let b = fixture.place_read(
+            PlaceBase::Local(0),
+            padded_ty,
+            [Projection::Field {
+                struct_id: padded_id,
+                field_index: 1,
+            }],
+            Type::I32,
+        );
+        fixture.intrinsic(Some(RuntimeCallKind::DebugI64), "dbg", &[b], Type::UNIT);
+        fixture.unit();
+        let result = fixture.konst(0, Type::I32);
+        fixture.dead(0, padded_ty);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a compact struct sret return must lower");
         assert!(
             mir.instructions()
@@ -4196,13 +4844,56 @@ mod tests {
     /// accepted (slot-shaped by-ref transport to the caller's frame storage).
     #[test]
     fn aggregate_layout_allows_inout_compact_struct_param() {
-        try_lower_first_fn(
-            "struct Padded { a: u8, b: i32, c: u8 } \
-             fn bump(inout p: Padded) { p.b = p.b + 1; } \
-             fn main() -> i32 { let mut s = Padded { a: 1, b: 2, c: 3 }; bump(inout s); s.b }",
-            PreviewFeatures::new(),
-        )
-        .expect("an inout compact struct argument must lower");
+        // The caller of `fn bump(inout p: Padded)`:
+        // `let mut s = Padded { a: 1, b: 2, c: 3 }; bump(inout s); s.b`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let padded_id = register_struct(
+            &pool,
+            &interner,
+            "Padded",
+            &[("a", Type::U8), ("b", Type::I32), ("c", Type::U8)],
+        );
+        let padded_ty = Type::new_struct(padded_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            3,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(0, padded_ty);
+        let a = fixture.konst(1, Type::U8);
+        let b = fixture.konst(2, Type::I32);
+        let c = fixture.konst(3, Type::U8);
+        let padded = fixture.struct_init(padded_id, &[a, b, c], padded_ty);
+        fixture.alloc(0, padded);
+        let argument = fixture.load(0, padded_ty);
+        fixture.call(
+            "bump",
+            vec![CfgCallArg {
+                value: argument,
+                mode: CfgArgMode::Inout,
+            }],
+            Type::UNIT,
+        );
+        let b = fixture.place_read(
+            PlaceBase::Local(0),
+            padded_ty,
+            [Projection::Field {
+                struct_id: padded_id,
+                field_index: 1,
+            }],
+            Type::I32,
+        );
+        fixture.dead(0, padded_ty);
+        fixture.ret(Some(b));
+        fixture
+            .lower()
+            .expect("an inout compact struct argument must lower");
     }
 
     /// RUE-1005: on AArch64, a non-slot-identical struct passed BY VALUE across a
@@ -4210,10 +4901,41 @@ mod tests {
     /// into a caller-owned buffer with narrow stores and passes one pointer.
     #[test]
     fn aggregate_layout_allows_by_value_compact_struct_arg_caller() {
-        let source = "struct Padded { a: u8, b: i32, c: u8 } \
-                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) } \
-                      fn sum(p: Padded) -> i32 { p.b }";
-        let mir = try_lower_first_fn(source, PreviewFeatures::new())
+        // The caller side: `sum(Padded { a: 1, b: 5, c: 3 })`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let padded_id = register_struct(
+            &pool,
+            &interner,
+            "Padded",
+            &[("a", Type::U8), ("b", Type::I32), ("c", Type::U8)],
+        );
+        let padded_ty = Type::new_struct(padded_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let a = fixture.konst(1, Type::U8);
+        let b = fixture.konst(5, Type::I32);
+        let c = fixture.konst(3, Type::U8);
+        let padded = fixture.struct_init(padded_id, &[a, b, c], padded_ty);
+        let result = fixture.call(
+            "sum",
+            vec![CfgCallArg {
+                value: padded,
+                mode: CfgArgMode::Normal,
+            }],
+            Type::I32,
+        );
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
             .expect("a by-value compact struct argument must lower");
         assert!(
             mir.instructions()
@@ -4228,10 +4950,44 @@ mod tests {
     /// at entry.
     #[test]
     fn aggregate_layout_allows_by_value_compact_struct_arg_callee() {
-        let source = "struct Padded { a: u8, b: i32, c: u8 } \
-                      fn sum(p: Padded) -> i32 { p.b } \
-                      fn main() -> i32 { sum(Padded { a: 1, b: 5, c: 3 }) }";
-        let mir = try_lower_named_fn(source, PreviewFeatures::new(), Some("sum"))
+        // The callee side: `fn sum(p: Padded) -> i32 { p.b }`, whose by-value
+        // indirect parameter reserves three frame slots behind one pointer.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let padded_id = register_struct(
+            &pool,
+            &interner,
+            "Padded",
+            &[("a", Type::U8), ("b", Type::I32), ("c", Type::U8)],
+        );
+        let padded_ty = Type::new_struct(padded_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "sum",
+            ParamSlotModes::new(vec![false; 3], vec![false; 3]),
+            vec![SourceParamAbi {
+                start_slot: 0,
+                slot_count: 3,
+                crossing_regs: 1,
+                ty: Some(padded_ty),
+            }],
+            &pool,
+            &interner,
+        );
+        let b = fixture.place_read(
+            PlaceBase::Param(0),
+            padded_ty,
+            [Projection::Field {
+                struct_id: padded_id,
+                field_index: 1,
+            }],
+            Type::I32,
+        );
+        fixture.ret(Some(b));
+        let mir = fixture
+            .lower()
             .expect("the callee of a by-value compact struct argument must lower");
         assert!(
             mir.instructions()
@@ -4246,13 +5002,43 @@ mod tests {
     /// pointer on AArch64 via per-variant tag dispatch rather than being refused.
     #[test]
     fn aggregate_layout_marshals_variant_dependent_enum_memory() {
-        let mir = try_lower_first_fn(
-            "enum Bad { A(i64), B(i32, i32) } \
-             fn main() -> i32 { checked { let p: ptr mut Bad = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Bad)), @intCast(@align_of(Bad))))); \
-             @ptr_write(p, Bad.A(5)); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Bad)), @intCast(@align_of(Bad))); }; 0 }",
-            PreviewFeatures::new(),
-        )
-        .expect("a variant-dependent enum memory image must lower via tag dispatch");
+        // `enum Bad { A(i64), B(i32, i32) }`: `@ptr_write(p, Bad.A(5))`
+        // through `ptr mut Bad`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let bad_id = register_enum(
+            &pool,
+            &interner,
+            "Bad",
+            &[("A", vec![Type::I64]), ("B", vec![Type::I32, Type::I32])],
+        );
+        let bad_ty = Type::new_enum(bad_id);
+        let raw_ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(bad_ty));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            1,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        checked_alloc(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
+        let pointer = fixture.load(0, ptr_ty);
+        let five = fixture.konst(5, Type::I64);
+        let variant = fixture.enum_variant(bad_id, 0, &[five], bad_ty);
+        fixture.intrinsic(None, "ptr_write", &[pointer, variant], Type::UNIT);
+        fixture.unit();
+        checked_free(&mut fixture, 0, 16, 8, raw_ptr_ty, ptr_ty);
+        fixture.unit();
+        fixture.dead(0, ptr_ty);
+        let result = fixture.konst(0, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture
+            .lower()
+            .expect("a variant-dependent enum memory image must lower via tag dispatch");
         assert!(
             mir.instructions()
                 .iter()
@@ -4265,11 +5051,47 @@ mod tests {
     /// under compact layout on AArch64 and is accepted.
     #[test]
     fn aggregate_layout_allows_slot_identical_physical_layout_codegen() {
-        try_lower_first_fn(
-            "struct Cell { a: i64, b: i64 } fn main() -> i32 { let c = Cell { a: 7, b: 9 }; @intCast(c.a) }",
-            PreviewFeatures::new(),
-        )
-        .expect("a slot-identical aggregate must lower under compact layout");
+        // `struct Cell { a: i64, b: i64 }`:
+        // `let c = Cell { a: 7, b: 9 }; @intCast(c.a)`.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let cell_id = register_struct(
+            &pool,
+            &interner,
+            "Cell",
+            &[("a", Type::I64), ("b", Type::I64)],
+        );
+        let cell_ty = Type::new_struct(cell_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            2,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(0, cell_ty);
+        let a = fixture.konst(7, Type::I64);
+        let b = fixture.konst(9, Type::I64);
+        let cell = fixture.struct_init(cell_id, &[a, b], cell_ty);
+        fixture.alloc(0, cell);
+        let a = fixture.place_read(
+            PlaceBase::Local(0),
+            cell_ty,
+            [Projection::Field {
+                struct_id: cell_id,
+                field_index: 0,
+            }],
+            Type::I64,
+        );
+        let result = fixture.cast(a, Type::I64, Type::I32);
+        fixture.dead(0, cell_ty);
+        fixture.ret(Some(result));
+        fixture
+            .lower()
+            .expect("a slot-identical aggregate must lower under compact layout");
     }
 
     fn immediate_for_operand(mir: &Aarch64Mir, operand: Operand) -> Option<i64> {
@@ -4332,19 +5154,43 @@ mod tests {
         }
     }
 
-    fn lower_to_mir(source: &str) -> Aarch64Mir {
-        lower_function_to_mir(source, "main")
-    }
-
     #[test]
     fn test_simple_return() {
-        let mir = lower_to_mir("fn main() -> i32 { 42 }");
+        // `fn main() -> i32 { 42 }`
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let result = fixture.konst(42, Type::I32);
+        fixture.ret(Some(result));
+        let mir = fixture.lower_host();
         assert!(!mir.instructions().is_empty());
     }
 
     #[test]
     fn unit_main_exits_with_zero_status() {
-        let mir = lower_to_mir("fn main() {}");
+        // `fn main() {}`
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.unit();
+        fixture.ret(None);
+        let mir = fixture.lower_host();
         assert!(mir.instructions().windows(2).any(|pair| {
             matches!(
                 pair,
@@ -4361,24 +5207,119 @@ mod tests {
 
     #[test]
     fn test_arithmetic() {
-        let mir = lower_to_mir("fn main() -> i32 { 1 + 2 }");
+        // `fn main() -> i32 { 1 + 2 }`
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let one = fixture.konst(1, Type::I32);
+        let two = fixture.konst(2, Type::I32);
+        let sum = fixture.value(CfgInstData::Add(one, two), Type::I32);
+        fixture.ret(Some(sum));
+        let mir = fixture.lower_host();
         assert!(!mir.instructions().is_empty());
     }
 
     #[test]
     fn test_if_else() {
-        let mir = lower_to_mir("fn main() -> i32 { if true { 1 } else { 2 } }");
+        // `fn main() -> i32 { if true { 1 } else { 2 } }`
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            0,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        let condition = fixture.value(CfgInstData::BoolConst(true), Type::BOOL);
+        let then_arm = fixture.cfg.new_block();
+        let else_arm = fixture.cfg.new_block();
+        let join = fixture.cfg.new_block();
+        let join_value = fixture.cfg.add_block_param(join, Type::I32);
+        fixture
+            .cfg
+            .set_branch(fixture.current, condition, then_arm, [], else_arm, []);
+        fixture.current = then_arm;
+        let one = fixture.konst(1, Type::I32);
+        fixture.cfg.set_goto(then_arm, join, [one]);
+        fixture.current = else_arm;
+        let two = fixture.konst(2, Type::I32);
+        fixture.cfg.set_goto(else_arm, join, [two]);
+        fixture.current = join;
+        fixture.ret(Some(join_value));
+        let mir = fixture.lower_host();
         assert!(!mir.instructions().is_empty());
     }
 
     #[test]
     fn default_string_literal_lowers_only_ptr_and_len() {
-        let preview = PreviewFeatures::new();
-        let mir = lower_function_to_mir_with_preview(
-            "fn main() -> i32 { let s = \"hello\"; @intCast(s.len()) }",
-            "main",
-            preview,
+        // `let s = "hello"; @intCast(s.len())` — the literal is the two-slot
+        // builtin `str { ptr, len }`, and `.len()` reads its second slot.
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let (str_id, _) = pool.register_struct(
+            interner.get_or_intern("str"),
+            StructDef {
+                name: "str".into(),
+                fields: vec![
+                    StructField {
+                        name: "ptr".to_string(),
+                        ty: Type::U64,
+                    },
+                    StructField {
+                        name: "len".to_string(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
         );
+        let str_ty = Type::new_struct(str_id);
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            4,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
+        );
+        fixture.live(0, str_ty);
+        let literal = fixture.value(CfgInstData::StringConst(0), str_ty);
+        fixture.alloc(0, literal);
+        fixture.live(2, str_ty);
+        let s = fixture.load(0, str_ty);
+        fixture.alloc(2, s);
+        let len = fixture.place_read(
+            PlaceBase::Local(2),
+            str_ty,
+            [Projection::Field {
+                struct_id: str_id,
+                field_index: 1,
+            }],
+            Type::U64,
+        );
+        fixture.dead(2, str_ty);
+        let result = fixture.cast(len, Type::U64, Type::I32);
+        fixture.dead(0, str_ty);
+        fixture.ret(Some(result));
+        let mir = fixture.lower_host();
         assert!(
             mir.instructions()
                 .iter()
@@ -4398,11 +5339,30 @@ mod tests {
 
     #[test]
     fn scalar_param_store_keeps_base_only_indexed_mir() {
-        let mir = lower_function_to_mir(
-            "fn set(inout x: i32) { x = 42; } \
-             fn main() -> i32 { let mut x = 0; set(inout x); x }",
+        // `fn set(inout x: i32) { x = 42; }`: a scalar write through the
+        // by-reference parameter pointer.
+        let interner = ThreadedRodeo::new();
+        let pool = FrozenTypeInternPool::new();
+        let mut fixture = FixtureCfg::new(
+            Type::UNIT,
+            0,
             "set",
+            ParamSlotModes::new(vec![true], vec![true]),
+            scalar_param_abi(1),
+            &pool,
+            &interner,
         );
+        let forty_two = fixture.konst(42, Type::I32);
+        fixture.value(
+            CfgInstData::ParamStore {
+                param_slot: 0,
+                value: forty_two,
+            },
+            Type::UNIT,
+        );
+        fixture.unit();
+        fixture.ret(None);
+        let mir = fixture.lower_host();
         assert!(
             mir.instructions()
                 .iter()
@@ -4416,17 +5376,90 @@ mod tests {
         );
     }
 
+    /// The raw-byte fixture CFG:
+    ///
+    /// ```text
+    /// let p = @alloc(3, 1);                    // slot 0
+    /// @ptr_write(@ptr_offset(p, 1), 255);
+    /// let q = @realloc(p, 3, 1, 5);            // slot 1
+    /// let b = @ptr_read(@ptr_offset(q, 1));    // slot 2
+    /// @free(q, 5, 1);
+    /// @intCast(b)
+    /// ```
+    fn raw_bytes_fixture<'a>(
+        pool: &'a FrozenTypeInternPool,
+        interner: &'a ThreadedRodeo,
+        ptr_ty: Type,
+    ) -> FixtureCfg<'a> {
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            3,
+            "main",
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            pool,
+            interner,
+        );
+        fixture.live(0, ptr_ty);
+        let size = fixture.konst(3, Type::U64);
+        let align = fixture.konst(1, Type::U64);
+        let p = fixture.intrinsic(
+            Some(RuntimeCallKind::Alloc),
+            "alloc",
+            &[size, align],
+            ptr_ty,
+        );
+        fixture.alloc(0, p);
+        let p = fixture.load(0, ptr_ty);
+        let one = fixture.konst(1, Type::I32);
+        let offset = fixture.intrinsic(None, "ptr_offset", &[p, one], ptr_ty);
+        let byte = fixture.konst(255, Type::U8);
+        fixture.intrinsic(None, "ptr_write", &[offset, byte], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, ptr_ty);
+        let p = fixture.load(0, ptr_ty);
+        let old_size = fixture.konst(3, Type::U64);
+        let old_align = fixture.konst(1, Type::U64);
+        let new_size = fixture.konst(5, Type::U64);
+        let q = fixture.intrinsic(
+            Some(RuntimeCallKind::Realloc),
+            "realloc",
+            &[p, old_size, old_align, new_size],
+            ptr_ty,
+        );
+        fixture.alloc(1, q);
+        fixture.live(2, Type::U8);
+        let q = fixture.load(1, ptr_ty);
+        let one = fixture.konst(1, Type::I32);
+        let offset = fixture.intrinsic(None, "ptr_offset", &[q, one], ptr_ty);
+        let byte = fixture.intrinsic(None, "ptr_read", &[offset], Type::U8);
+        fixture.alloc(2, byte);
+        let q = fixture.load(1, ptr_ty);
+        let size = fixture.konst(5, Type::U64);
+        let align = fixture.konst(1, Type::U64);
+        fixture.intrinsic(
+            Some(RuntimeCallKind::Free),
+            "free",
+            &[q, size, align],
+            Type::UNIT,
+        );
+        fixture.unit();
+        let byte = fixture.load(2, Type::U8);
+        let result = fixture.cast(byte, Type::U8, Type::I32);
+        fixture.dead(2, Type::U8);
+        fixture.dead(1, ptr_ty);
+        fixture.dead(0, ptr_ty);
+        fixture.ret(Some(result));
+        fixture
+    }
+
     #[test]
     fn raw_bytes_runtime_helper_identity_and_slots_match_shared_plan() {
-        let preview = PreviewFeatures::new();
-        let mir = lower_function_to_mir_with_preview(
-            "fn main() -> i32 { checked { let p = @alloc(3, 1); \
-             @ptr_write(@ptr_offset(p, 1), 255); let q = @realloc(p, 3, 1, 5); \
-             let b = @ptr_read(@ptr_offset(q, 1)); @free(q, 5, 1); \
-             @intCast(b) } }",
-            "main",
-            preview,
-        );
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let pool = pool.freeze();
+        let mir = raw_bytes_fixture(&pool, &interner, ptr_ty).lower_host();
         assert!(
             mir.instructions()
                 .iter()
@@ -4458,13 +5491,59 @@ mod tests {
     /// rather than a full-slot access.
     #[test]
     fn aggregate_layout_folds_byte_access_into_narrow_typed_path() {
-        let mir = lower_function_to_mir_with_preview(
-            "fn main() -> i32 { checked { let p = @alloc(2, 1); \
-             @ptr_write(@ptr_offset(p, 0), 65); let b = @ptr_read(@ptr_offset(p, 1)); \
-             @free(p, 2, 1); @intCast(b) } }",
+        // `let p = @alloc(2, 1); @ptr_write(@ptr_offset(p, 0), 65);
+        //  let b = @ptr_read(@ptr_offset(p, 1)); @free(p, 2, 1); @intCast(b)`
+        let interner = ThreadedRodeo::new();
+        let pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let pool = pool.freeze();
+        let mut fixture = FixtureCfg::new(
+            Type::I32,
+            2,
             "main",
-            PreviewFeatures::new(),
+            ParamSlotModes::new(vec![], vec![]),
+            vec![],
+            &pool,
+            &interner,
         );
+        fixture.live(0, ptr_ty);
+        let size = fixture.konst(2, Type::U64);
+        let align = fixture.konst(1, Type::U64);
+        let p = fixture.intrinsic(
+            Some(RuntimeCallKind::Alloc),
+            "alloc",
+            &[size, align],
+            ptr_ty,
+        );
+        fixture.alloc(0, p);
+        let p = fixture.load(0, ptr_ty);
+        let zero = fixture.konst(0, Type::I32);
+        let offset = fixture.intrinsic(None, "ptr_offset", &[p, zero], ptr_ty);
+        let byte = fixture.konst(65, Type::U8);
+        fixture.intrinsic(None, "ptr_write", &[offset, byte], Type::UNIT);
+        fixture.unit();
+        fixture.live(1, Type::U8);
+        let p = fixture.load(0, ptr_ty);
+        let one = fixture.konst(1, Type::I32);
+        let offset = fixture.intrinsic(None, "ptr_offset", &[p, one], ptr_ty);
+        let byte = fixture.intrinsic(None, "ptr_read", &[offset], Type::U8);
+        fixture.alloc(1, byte);
+        let p = fixture.load(0, ptr_ty);
+        let size = fixture.konst(2, Type::U64);
+        let align = fixture.konst(1, Type::U64);
+        fixture.intrinsic(
+            Some(RuntimeCallKind::Free),
+            "free",
+            &[p, size, align],
+            Type::UNIT,
+        );
+        fixture.unit();
+        let byte = fixture.load(1, Type::U8);
+        let result = fixture.cast(byte, Type::U8, Type::I32);
+        fixture.dead(1, Type::U8);
+        fixture.dead(0, ptr_ty);
+        fixture.ret(Some(result));
+        let mir = fixture.lower_host();
         assert!(
             mir.instructions()
                 .iter()
