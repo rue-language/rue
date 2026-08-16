@@ -1058,93 +1058,52 @@ fn translate_terminator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::CfgBuilder;
+    use crate::CfgArgMode;
     use lasso::ThreadedRodeo;
-    use rue_air::{Sema, SemaMetadata};
-    use rue_error::{PreviewFeature, PreviewFeatures};
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_air::{
+        ParamSlotModes, SourceParamAbi, StructDef, StructField, StructId, TypeInternPool,
+    };
+    use rue_span::FileId;
     use std::collections::HashMap;
 
-    /// A whole compiled program: every analyzed function's built (drop-
-    /// elaborated) CFG, plus the shared type pool and interner the splice
-    /// and its assertions need.
+    /// A hand-built program: each function's drop-elaborated CFG, plus the
+    /// shared type pool and interner the splice and its assertions need.
     struct Program {
-        cfgs: HashMap<String, ValidatedCfg>,
+        cfgs: HashMap<&'static str, ValidatedCfg>,
         type_pool: rue_air::FrozenTypeInternPool,
         interner: ThreadedRodeo,
     }
 
-    fn compile(source: &str) -> Program {
-        compile_with_features(source, PreviewFeatures::new())
-    }
-
-    fn compile_with_features(source: &str, features: PreviewFeatures) -> Program {
-        // Drop tests use an ordinary source nominal so they do not depend on
-        // the trusted standard-library StrBuf language item. The trailing
-        // stub satisfies the `main` signature requirement so fixtures can
-        // give their caller function any return type.
-        let source = format!(
-            "struct StrBuf {{ cap: u64, fn with_capacity(cap: u64) -> StrBuf {{ StrBuf {{ cap: cap }} }} }}\n\
-             drop fn StrBuf(self) {{}}\n{source}\nfn main() -> i32 {{ let bridge = caller(); 0 }}"
-        );
-        let lexer = Lexer::new(&source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-
-        let sema = Sema::new_synthetic(&rir, &mut interner, features);
-        let output = sema.analyze_all_for_test().unwrap();
-
-        let mut cfgs = HashMap::new();
-        for func in &output.functions {
-            let built = CfgBuilder::build(
-                &func.air,
-                func.num_locals,
-                func.num_param_slots,
-                &func.name,
-                &output.type_pool,
-                func.param_modes.clone(),
-                &interner,
-                func.allow_unreachable_code,
-                func.callable_kind,
-            );
-            assert!(
-                built.errors.is_empty(),
-                "CFG construction errors for {}: {:?}",
-                func.name,
-                built.errors
-            );
-            cfgs.insert(func.name.clone(), built.cfg.unwrap());
-        }
-        Program {
-            cfgs,
-            type_pool: output.type_pool,
-            interner,
-        }
-    }
-
     impl Program {
-        /// CFGs are keyed by internal symbol, which an ordinary function
-        /// qualifies by its module (RUE-1125); fixtures name functions by
-        /// source, so every lookup projects the source name first.
+        fn new(type_pool: rue_air::FrozenTypeInternPool, interner: ThreadedRodeo) -> Self {
+            Self {
+                cfgs: HashMap::new(),
+                type_pool,
+                interner,
+            }
+        }
+
+        /// Verify and install one function's CFG.
+        fn add(&mut self, name: &'static str, build: impl FnOnce(&ThreadedRodeo) -> Cfg) {
+            let cfg = build(&self.interner);
+            self.cfgs.insert(
+                name,
+                cfg.finish(&self.type_pool)
+                    .unwrap_or_else(|error| panic!("CFG for '{name}' must verify: {error}")),
+            );
+        }
+
         fn cfg(&self, name: &str) -> &ValidatedCfg {
             self.cfgs
-                .get(&SemaMetadata::synthetic_root_function_symbol(name))
+                .get(name)
                 .unwrap_or_else(|| panic!("no CFG for function '{name}'"))
         }
 
         fn find_call(&self, caller: &str, callee: &str) -> CfgValue {
             let cfg = self.cfg(caller);
-            let callee_symbol = SemaMetadata::synthetic_root_function_symbol(callee);
             attached_values(cfg)
                 .find(|&value| match &cfg.get_inst(value).data {
-                    CfgInstData::Call { name, .. } => self.interner.resolve(name) == callee_symbol,
+                    CfgInstData::Call { name, .. } => self.interner.resolve(name) == callee,
                     _ => false,
                 })
                 .unwrap_or_else(|| panic!("no call to '{callee}' in '{caller}'"))
@@ -1159,6 +1118,167 @@ mod tests {
             let call = self.find_call(caller, callee);
             inline_call(self.cfg(caller), call, self.cfg(callee), &self.type_pool)
         }
+    }
+
+    /// A program with an empty type pool, for scalar-only fixtures.
+    fn scalar_program() -> Program {
+        Program::new(TypeInternPool::new().freeze(), ThreadedRodeo::new())
+    }
+
+    /// A program whose pool holds a droppable single-slot resource struct
+    /// (`Owned { cap: u64 }` with a destructor). Returns its value type.
+    fn droppable_program() -> (Program, Type) {
+        let interner = ThreadedRodeo::new();
+        let type_pool = TypeInternPool::new();
+        let (id, _) = type_pool.register_struct(
+            interner.get_or_intern("Owned"),
+            StructDef {
+                name: "Owned".into(),
+                fields: vec![StructField {
+                    name: "cap".into(),
+                    ty: Type::U64,
+                }],
+                is_copy: false,
+                is_linear: false,
+                destructor: Some("Owned.__drop".into()),
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let ty = Type::new_struct(id);
+        (Program::new(type_pool.freeze(), interner), ty)
+    }
+
+    /// A program whose pool holds a two-slot `Pair { a: i64, b: i64 }`
+    /// aggregate. Returns its struct id and value type.
+    fn pair_program() -> (Program, StructId, Type) {
+        let interner = ThreadedRodeo::new();
+        let type_pool = TypeInternPool::new();
+        let (id, _) = type_pool.register_struct(
+            interner.get_or_intern("Pair"),
+            StructDef {
+                name: "Pair".into(),
+                fields: vec![
+                    StructField {
+                        name: "a".into(),
+                        ty: Type::I64,
+                    },
+                    StructField {
+                        name: "b".into(),
+                        ty: Type::I64,
+                    },
+                ],
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        let ty = Type::new_struct(id);
+        (Program::new(type_pool.freeze(), interner), id, ty)
+    }
+
+    fn inst(data: CfgInstData, ty: Type) -> CfgInst {
+        CfgInst {
+            data,
+            ty,
+            span: Span::new(0, 0),
+        }
+    }
+
+    /// `fn caller() -> i64 { let s = <resource>; callee(s) }`, drop-elaborated:
+    /// the moved-out local keeps its storage bracket but no caller drop, and
+    /// the stores to the hidden slot 1 are its runtime drop flag (set while
+    /// the local owns its value, cleared at the move).
+    fn caller_moving_owned_arg(interner: &ThreadedRodeo, owned_ty: Type) -> Cfg {
+        let mut cfg = Cfg::new(Type::I64, 2, 0, "caller".to_string(), Vec::<bool>::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::StorageLive {
+                    slot: 0,
+                    local_ty: owned_ty,
+                },
+                Type::UNIT,
+            ),
+        );
+        let capacity = cfg.append_inst(entry, inst(CfgInstData::Const(8), Type::U64));
+        let produced = cfg
+            .append_call(
+                entry,
+                None,
+                interner.get_or_intern("make_owned"),
+                [CfgCallArg {
+                    value: capacity,
+                    mode: CfgArgMode::Normal,
+                }],
+                owned_ty,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::Alloc {
+                    slot: 0,
+                    init: produced,
+                },
+                Type::UNIT,
+            ),
+        );
+        let flag_set = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I32));
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::Store {
+                    slot: 1,
+                    value: flag_set,
+                },
+                Type::UNIT,
+            ),
+        );
+        let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, owned_ty));
+        let flag_clear = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I32));
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::Store {
+                    slot: 1,
+                    value: flag_clear,
+                },
+                Type::UNIT,
+            ),
+        );
+        let call = cfg
+            .append_call(
+                entry,
+                None,
+                interner.get_or_intern("callee"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Normal,
+                }],
+                Type::I64,
+                Span::new(0, 0),
+            )
+            .unwrap();
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::StorageDead {
+                    slot: 0,
+                    local_ty: owned_ty,
+                },
+                Type::UNIT,
+            ),
+        );
+        cfg.set_return(entry, Some(call));
+        cfg
     }
 
     /// Every value attached to a block, in block order.
@@ -1290,10 +1410,23 @@ mod tests {
 
     #[test]
     fn dropped_at_exit_param_drops_exactly_once_via_copied_callee_drop() {
-        let program = compile(
-            "fn callee(s: StrBuf) -> i64 { 0 }\n\
-             fn caller() -> i64 { let s = StrBuf.with_capacity(8); callee(s) }",
-        );
+        // `fn callee(s: Owned) -> i64 { 0 }` — the untouched by-value param
+        // is dropped by the callee at exit — inlined into a caller that moves
+        // a local into the argument.
+        let (mut program, owned_ty) = droppable_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I64));
+            let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, owned_ty));
+            cfg.append_inst(entry, inst(CfgInstData::Drop { value: param }, Type::UNIT));
+            cfg.set_return(entry, Some(zero));
+            cfg
+        });
+        program.add("caller", |interner| {
+            caller_moving_owned_arg(interner, owned_ty)
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("callee");
         assert_eq!(count_drops(callee), 1, "callee owns and drops its param");
@@ -1341,10 +1474,76 @@ mod tests {
 
     #[test]
     fn moved_out_param_drops_exactly_once_via_the_move_target() {
-        let program = compile(
-            "fn callee(s: StrBuf) -> i64 { let t = s; 0 }\n\
-             fn caller() -> i64 { let s = StrBuf.with_capacity(8); callee(s) }",
-        );
+        // `fn callee(s: Owned) -> i64 { let t = s; 0 }`, drop-elaborated: the
+        // param moves into local 0 (slot 1 holds its runtime drop flag), so
+        // the exit drop covers the move target only.
+        let (mut program, owned_ty) = droppable_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 2, 1, "callee".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let flag_set = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I32));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Store {
+                        slot: 1,
+                        value: flag_set,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: owned_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, owned_ty));
+            let flag_clear = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I32));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Store {
+                        slot: 1,
+                        value: flag_clear,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: param,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I64));
+            let target = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, owned_ty));
+            cfg.append_inst(entry, inst(CfgInstData::Drop { value: target }, Type::UNIT));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: owned_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(zero));
+            cfg
+        });
+        program.add("caller", |interner| {
+            caller_moving_owned_arg(interner, owned_ty)
+        });
         assert_eq!(
             count_drops(program.cfg("callee")),
             1,
@@ -1357,12 +1556,47 @@ mod tests {
         assert_all_blocks_terminated(&inlined);
     }
 
+    /// `fn callee(x: i64) -> i64 { x + 1 }`.
+    fn scalar_increment_callee() -> Cfg {
+        let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+        let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+        let sum = cfg.append_inst(entry, inst(CfgInstData::Add(param, one), Type::I64));
+        cfg.set_return(entry, Some(sum));
+        cfg
+    }
+
     #[test]
     fn copy_param_materializes_storage_without_any_drop() {
-        let program = compile(
-            "fn callee(x: i64) -> i64 { x + 1 }\n\
-             fn caller() -> i64 { callee(20) + 1 }",
-        );
+        // `fn caller() -> i64 { callee(20) + 1 }` around the scalar-increment
+        // callee.
+        let mut program = scalar_program();
+        program.add("callee", |_| scalar_increment_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Const(20), Type::I64));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [CfgCallArg {
+                        value: argument,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let sum = cfg.append_inst(entry, inst(CfgInstData::Add(call, one), Type::I64));
+            cfg.set_return(entry, Some(sum));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("callee");
         let inlined = program.inline("caller", "callee");
@@ -1374,8 +1608,8 @@ mod tests {
             inlined.num_locals(),
             caller.num_locals() + callee.num_locals() + 1
         );
-        // Every callee Param read was rewritten; main has no parameters of
-        // its own, so no Param instruction may remain attached.
+        // Every callee Param read was rewritten; the caller has no parameters
+        // of its own, so no Param instruction may remain attached.
         assert_eq!(
             count_matching(&inlined, |data| matches!(data, CfgInstData::Param { .. })),
             0
@@ -1390,11 +1624,92 @@ mod tests {
 
     #[test]
     fn aggregate_by_value_param_materializes_at_full_abi_width() {
-        let program = compile(
-            "struct Pair { a: i64, b: i64 }\n\
-             fn get(p: Pair) -> i64 { p.a }\n\
-             fn caller() -> i64 { let p = Pair { a: 1, b: 2 }; get(p) }",
-        );
+        // `fn get(p: Pair) -> i64 { p.a }` inlined into
+        // `fn caller() -> i64 { let p = Pair { a: 1, b: 2 }; get(p) }`.
+        let (mut program, pair_id, pair_ty) = pair_program();
+        program.add("get", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 2, "get".to_string(), vec![false, false]);
+            // One source parameter spans both flattened ABI slots.
+            cfg.set_source_param_abi(vec![SourceParamAbi {
+                start_slot: 0,
+                slot_count: 2,
+                crossing_regs: 2,
+                ty: None,
+            }]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let read = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Param(0),
+                    pair_ty,
+                    [Projection::Field {
+                        struct_id: pair_id,
+                        field_index: 0,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(read));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 2, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: pair_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let pair = cfg
+                .append_struct_init(entry, pair_id, [one, two], pair_ty, Span::new(0, 0))
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: pair,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, pair_ty));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("get"),
+                    [CfgCallArg {
+                        value: argument,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: pair_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("get");
         let materialized_base = caller.num_locals();
@@ -1418,12 +1733,87 @@ mod tests {
         assert_all_blocks_terminated(&inlined);
     }
 
+    /// `fn bump(inout x: i64) { x = x + 1; }`: a by-ref scalar parameter
+    /// whose body writes back through `ParamStore`.
+    fn by_ref_bump_callee() -> Cfg {
+        let mut cfg = Cfg::new(
+            Type::UNIT,
+            0,
+            1,
+            "bump".to_string(),
+            ParamSlotModes::new(vec![true], vec![true]),
+        );
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+        let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+        let sum = cfg.append_inst(entry, inst(CfgInstData::Add(param, one), Type::I64));
+        cfg.append_inst(
+            entry,
+            inst(
+                CfgInstData::ParamStore {
+                    param_slot: 0,
+                    value: sum,
+                },
+                Type::UNIT,
+            ),
+        );
+        cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::UNIT));
+        cfg.set_return(entry, None);
+        cfg
+    }
+
     #[test]
     fn by_ref_local_root_redirects_reads_and_write_backs() {
-        let program = compile(
-            "fn bump(inout x: i64) { x = x + 1; }\n\
-             fn caller() -> i64 { let mut v = 1; bump(inout v); v }",
-        );
+        // `fn caller() -> i64 { let mut v = 1; bump(inout v); v }`.
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(CfgInstData::Alloc { slot: 0, init: one }, Type::UNIT),
+            );
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            let result = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(result));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("bump");
         assert!(callee.is_param_by_ref(0), "inout uses the by-ref ABI");
@@ -1466,11 +1856,37 @@ mod tests {
 
     #[test]
     fn by_ref_param_root_redirects_to_the_caller_parameter() {
-        let program = compile(
-            "fn bump(inout x: i64) { x = x + 1; }\n\
-             fn wrapper(inout y: i64) -> i64 { bump(inout y); y }\n\
-             fn caller() -> i64 { let mut v = 1; wrapper(inout v); v }",
-        );
+        // `fn wrapper(inout y: i64) -> i64 { bump(inout y); y }`: the callee's
+        // by-ref argument roots at the wrapper's own by-ref parameter.
+        let mut program = scalar_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("wrapper", |interner| {
+            let mut cfg = Cfg::new(
+                Type::I64,
+                0,
+                1,
+                "wrapper".to_string(),
+                ParamSlotModes::new(vec![true], vec![true]),
+            );
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let argument = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            let result = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            cfg.set_return(entry, Some(result));
+            cfg
+        });
         let inlined = program.inline("wrapper", "bump");
         // The callee's write-back is redirected onto the caller's own by-ref
         // parameter slot.
@@ -1486,11 +1902,90 @@ mod tests {
 
     #[test]
     fn projected_by_ref_argument_composes_onto_caller_place() {
-        let program = compile(
-            "struct Pair { a: i64, b: i64 }\n\
-             fn bump(inout x: i64) { x = x + 1; }\n\
-             fn caller() -> i64 { let mut p = Pair { a: 1, b: 2 }; bump(inout p.a); p.a }",
-        );
+        // `fn caller() -> i64 { let mut p = Pair { a: 1, b: 2 };
+        //  bump(inout p.a); p.a }`: the inout argument is a projected place.
+        let (mut program, pair_id, pair_ty) = pair_program();
+        program.add("bump", |_| by_ref_bump_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 2, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: pair_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let pair = cfg
+                .append_struct_init(entry, pair_id, [one, two], pair_ty, Span::new(0, 0))
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: pair,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let argument = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Local(0),
+                    pair_ty,
+                    [Projection::Field {
+                        struct_id: pair_id,
+                        field_index: 0,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("bump"),
+                [CfgCallArg {
+                    value: argument,
+                    mode: CfgArgMode::Inout,
+                }],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            let result = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Local(0),
+                    pair_ty,
+                    [Projection::Field {
+                        struct_id: pair_id,
+                        field_index: 0,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: pair_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(result));
+            cfg
+        });
         let inlined = program.inline("caller", "bump");
         assert!(
             attached_values(&inlined).any(|value| match &inlined.get_inst(value).data {
@@ -1508,12 +2003,163 @@ mod tests {
         // A `borrow s: [i64]` slice is a fat pointer passed BY VALUE through
         // the aggregate ABI even though the logical mode is Borrow: the
         // splice must consult `is_param_by_ref` and materialize, not
-        // redirect (ADR-0049 §2).
-        let program = compile_with_features(
-            "fn first(borrow s: [i64]) -> i64 { let i: u64 = 0; s[i] }\n\
-             fn caller() -> i64 { let arr: [i64; 3] = [1, 2, 3]; first(borrow arr) }",
-            PreviewFeatures::from([PreviewFeature::Slices]),
+        // redirect (ADR-0049 §2). The fixture models the fat pointer as a
+        // two-slot `(ptr, len)` aggregate whose parameter is physically
+        // by-value while the call site passes it with Borrow mode.
+        let interner = ThreadedRodeo::new();
+        let type_pool = TypeInternPool::new();
+        let ptr_ty = Type::new_ptr_const(type_pool.intern_ptr_const_from_type(Type::I64));
+        let (slice_id, _) = type_pool.register_struct(
+            interner.get_or_intern("FatPointer"),
+            StructDef {
+                name: "FatPointer".into(),
+                fields: vec![
+                    StructField {
+                        name: "ptr".into(),
+                        ty: ptr_ty,
+                    },
+                    StructField {
+                        name: "len".into(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
         );
+        let slice_ty = Type::new_struct(slice_id);
+        let array_ty = Type::new_array(type_pool.intern_array_from_type(Type::I64, 3));
+        let mut program = Program::new(type_pool.freeze(), interner);
+        program.add("first", |interner| {
+            // `fn first(borrow s: [i64]) -> i64 { s[0] }`: the fat pointer's
+            // data pointer is projected out of the by-value parameter.
+            let mut cfg = Cfg::new(Type::I64, 0, 2, "first".to_string(), vec![false, false]);
+            // The fat pointer is one source parameter across two ABI slots.
+            cfg.set_source_param_abi(vec![SourceParamAbi {
+                start_slot: 0,
+                slot_count: 2,
+                crossing_regs: 2,
+                ty: None,
+            }]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, slice_ty));
+            let data = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Param(0),
+                    slice_ty,
+                    [Projection::Field {
+                        struct_id: slice_id,
+                        field_index: 0,
+                    }],
+                    ptr_ty,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let element = cfg
+                .append_intrinsic(
+                    entry,
+                    None,
+                    interner.get_or_intern("ptr_read"),
+                    [data],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(element));
+            cfg
+        });
+        program.add("caller", |interner| {
+            // `fn caller() -> i64 { let arr: [i64; 3] = [1, 2, 3];
+            //  first(borrow arr) }`.
+            let mut cfg = Cfg::new(Type::I64, 3, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: array_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let three = cfg.append_inst(entry, inst(CfgInstData::Const(3), Type::I64));
+            let array = cfg
+                .append_array_init(entry, [one, two, three], array_ty, Span::new(0, 0))
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: array,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::U64));
+            let base = cfg
+                .append_place_read(
+                    entry,
+                    PlaceBase::Local(0),
+                    array_ty,
+                    [Projection::Index {
+                        array_type: array_ty,
+                        index: zero,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let data = cfg
+                .append_intrinsic(
+                    entry,
+                    None,
+                    interner.get_or_intern("raw"),
+                    [base],
+                    ptr_ty,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let len = cfg.append_inst(entry, inst(CfgInstData::Const(3), Type::U64));
+            let fat_pointer = cfg
+                .append_struct_init(entry, slice_id, [data, len], slice_ty, Span::new(0, 0))
+                .unwrap();
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("first"),
+                    [CfgCallArg {
+                        value: fat_pointer,
+                        mode: CfgArgMode::Borrow,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: array_ty,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("first");
         assert!(
@@ -1546,10 +2192,47 @@ mod tests {
 
     #[test]
     fn early_returns_join_at_the_continuation_block_param() {
-        let program = compile(
-            "fn pick(c: bool) -> i64 { if c { return 1; } 2 }\n\
-             fn caller() -> i64 { pick(true) }",
-        );
+        // `fn pick(c: bool) -> i64 { if c { return 1; } 2 }` inlined into
+        // `fn caller() -> i64 { pick(true) }`.
+        let mut program = scalar_program();
+        program.add("pick", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "pick".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            let then_block = cfg.new_block();
+            let else_block = cfg.new_block();
+            let tail = cfg.new_block();
+            cfg.entry = entry;
+            let cond = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::BOOL));
+            cfg.set_branch(entry, cond, then_block, [], else_block, []);
+            let one = cfg.append_inst(then_block, inst(CfgInstData::Const(1), Type::I64));
+            cfg.set_return(then_block, Some(one));
+            cfg.append_inst(else_block, inst(CfgInstData::Const(0), Type::UNIT));
+            cfg.set_goto(else_block, tail, []);
+            let two = cfg.append_inst(tail, inst(CfgInstData::Const(2), Type::I64));
+            cfg.set_return(tail, Some(two));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let argument = cfg.append_inst(entry, inst(CfgInstData::BoolConst(true), Type::BOOL));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("pick"),
+                    [CfgCallArg {
+                        value: argument,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("pick");
         assert_eq!(count_returns(callee), 2, "early return plus fall-through");
@@ -1574,10 +2257,38 @@ mod tests {
         // The callee's body diverges (RUE-347 shape): no Return terminator
         // exists, so the continuation gets no incoming edge and the caller's
         // use of the result stays confined to the unreachable join.
-        let program = compile(
-            "fn forever() -> i64 { loop { } }\n\
-             fn caller() -> i64 { forever() }",
-        );
+        let mut program = scalar_program();
+        program.add("forever", |_| {
+            // `fn forever() -> i64 { loop { } }`: a self-looping body block
+            // and an unreachable exit stub, with no Return anywhere.
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "forever".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            let body = cfg.new_block();
+            let exit = cfg.new_block();
+            cfg.entry = entry;
+            cfg.set_goto(entry, body, []);
+            cfg.append_inst(body, inst(CfgInstData::Const(0), Type::UNIT));
+            cfg.set_goto(body, body, []);
+            cfg.set_unreachable(exit);
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("forever"),
+                    [],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
         let callee = program.cfg("forever");
         assert_eq!(count_returns(callee), 0, "the callee never returns");
         let inlined = program.inline("caller", "forever");
@@ -1587,10 +2298,71 @@ mod tests {
 
     #[test]
     fn instructions_after_the_call_move_to_the_continuation() {
-        let program = compile(
-            "fn callee(x: i64) -> i64 { x }\n\
-             fn caller() -> i64 { let a = callee(1); a + 7 }",
-        );
+        // `fn callee(x: i64) -> i64 { x }` inlined into
+        // `fn caller() -> i64 { let a = callee(1); a + 7 }`.
+        let mut program = scalar_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 0, 1, "callee".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let param = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            cfg.set_return(entry, Some(param));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 1, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [CfgCallArg {
+                        value: one,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: call,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let loaded = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let seven = cfg.append_inst(entry, inst(CfgInstData::Const(7), Type::I64));
+            let sum = cfg.append_inst(entry, inst(CfgInstData::Add(loaded, seven), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(entry, Some(sum));
+            cfg
+        });
         let inlined = program.inline("caller", "callee");
         let entry = inlined.get_block(inlined.entry);
         assert!(
@@ -1614,10 +2386,33 @@ mod tests {
 
     #[test]
     fn unit_returning_callee_splices_without_a_join_param() {
-        let program = compile(
-            "fn note() { }\n\
-             fn caller() -> i64 { note(); 0 }",
-        );
+        // `fn note() { }` inlined into `fn caller() -> i64 { note(); 0 }`.
+        let mut program = scalar_program();
+        program.add("note", |_| {
+            let mut cfg = Cfg::new(Type::UNIT, 0, 0, "note".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::UNIT));
+            cfg.set_return(entry, None);
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_call(
+                entry,
+                None,
+                interner.get_or_intern("note"),
+                [],
+                Type::UNIT,
+                Span::new(0, 0),
+            )
+            .unwrap();
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I64));
+            cfg.set_return(entry, Some(zero));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("note");
         let inlined = program.inline("caller", "note");
@@ -1634,17 +2429,200 @@ mod tests {
 
     #[test]
     fn rebasing_survives_branchy_caller_and_callee_shapes() {
-        let program = compile(
-            "fn callee(c: bool, x: i64) -> i64 {\n\
-                 let y = x * 2;\n\
-                 if c { y + 1 } else { let z = y - 1; z }\n\
-             }\n\
-             fn caller() -> i64 {\n\
-                 let a = 3;\n\
-                 let r = if a > 2 { callee(true, a) } else { 0 };\n\
-                 r + a\n\
-             }",
-        );
+        // `fn callee(c: bool, x: i64) -> i64 { let y = x * 2;
+        //  if c { y + 1 } else { let z = y - 1; z } }` inlined into
+        // `fn caller() -> i64 { let a = 3;
+        //  let r = if a > 2 { callee(true, a) } else { 0 }; r + a }` — both
+        // sides branch and join through block parameters.
+        let mut program = scalar_program();
+        program.add("callee", |_| {
+            let mut cfg = Cfg::new(Type::I64, 2, 2, "callee".to_string(), vec![false, false]);
+            let entry = cfg.new_block();
+            let then_block = cfg.new_block();
+            let else_block = cfg.new_block();
+            let join = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let x = cfg.append_inst(entry, inst(CfgInstData::Param { index: 1 }, Type::I64));
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let doubled = cfg.append_inst(entry, inst(CfgInstData::Mul(x, two), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: doubled,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let cond = cfg.append_inst(entry, inst(CfgInstData::Param { index: 0 }, Type::BOOL));
+            cfg.set_branch(entry, cond, then_block, [], else_block, []);
+
+            let y = cfg.append_inst(then_block, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let one = cfg.append_inst(then_block, inst(CfgInstData::Const(1), Type::I64));
+            let bumped = cfg.append_inst(then_block, inst(CfgInstData::Add(y, one), Type::I64));
+            cfg.set_goto(then_block, join, [bumped]);
+
+            cfg.append_inst(
+                else_block,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let y = cfg.append_inst(else_block, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let one = cfg.append_inst(else_block, inst(CfgInstData::Const(1), Type::I64));
+            let dropped = cfg.append_inst(else_block, inst(CfgInstData::Sub(y, one), Type::I64));
+            cfg.append_inst(
+                else_block,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 1,
+                        init: dropped,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let z = cfg.append_inst(else_block, inst(CfgInstData::Load { slot: 1 }, Type::I64));
+            cfg.append_inst(
+                else_block,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_goto(else_block, join, [z]);
+
+            let result = cfg.add_block_param(join, Type::I64);
+            cfg.append_inst(
+                join,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(join, Some(result));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 2, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            let then_block = cfg.new_block();
+            let else_block = cfg.new_block();
+            let join = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let three = cfg.append_inst(entry, inst(CfgInstData::Const(3), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: three,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let a = cfg.append_inst(entry, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let cond = cfg.append_inst(entry, inst(CfgInstData::Gt(a, two), Type::BOOL));
+            cfg.set_branch(entry, cond, then_block, [], else_block, []);
+
+            let flag = cfg.append_inst(then_block, inst(CfgInstData::BoolConst(true), Type::BOOL));
+            let a = cfg.append_inst(then_block, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let call = cfg
+                .append_call(
+                    then_block,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [
+                        CfgCallArg {
+                            value: flag,
+                            mode: CfgArgMode::Normal,
+                        },
+                        CfgCallArg {
+                            value: a,
+                            mode: CfgArgMode::Normal,
+                        },
+                    ],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_goto(then_block, join, [call]);
+
+            let zero = cfg.append_inst(else_block, inst(CfgInstData::Const(0), Type::I64));
+            cfg.set_goto(else_block, join, [zero]);
+
+            let r = cfg.add_block_param(join, Type::I64);
+            cfg.append_inst(
+                join,
+                inst(CfgInstData::Alloc { slot: 1, init: r }, Type::UNIT),
+            );
+            let r_loaded = cfg.append_inst(join, inst(CfgInstData::Load { slot: 1 }, Type::I64));
+            let a_loaded = cfg.append_inst(join, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let sum = cfg.append_inst(join, inst(CfgInstData::Add(r_loaded, a_loaded), Type::I64));
+            cfg.append_inst(
+                join,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                join,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(join, Some(sum));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("callee");
         let inlined = program.inline("caller", "callee");
@@ -1667,10 +2645,46 @@ mod tests {
 
     #[test]
     fn inlines_exactly_one_of_several_call_sites() {
-        let program = compile(
-            "fn callee(x: i64) -> i64 { x + 1 }\n\
-             fn caller() -> i64 { callee(1) + callee(2) }",
-        );
+        // `fn caller() -> i64 { callee(1) + callee(2) }` around the
+        // scalar-increment callee.
+        let mut program = scalar_program();
+        program.add("callee", |_| scalar_increment_callee());
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let one = cfg.append_inst(entry, inst(CfgInstData::Const(1), Type::I64));
+            let first = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [CfgCallArg {
+                        value: one,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let two = cfg.append_inst(entry, inst(CfgInstData::Const(2), Type::I64));
+            let second = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("callee"),
+                    [CfgCallArg {
+                        value: two,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            let sum = cfg.append_inst(entry, inst(CfgInstData::Add(first, second), Type::I64));
+            cfg.set_return(entry, Some(sum));
+            cfg
+        });
         assert_eq!(count_calls(program.cfg("caller")), 2);
         let inlined = program.inline("caller", "callee");
         assert_eq!(
@@ -1683,15 +2697,142 @@ mod tests {
 
     #[test]
     fn looping_callee_bodies_splice_intact() {
-        let program = compile(
-            "fn sum_to(n: i64) -> i64 {\n\
-                 let mut total = 0;\n\
-                 let mut i = 0;\n\
-                 while i < n { total = total + i; i = i + 1; }\n\
-                 total\n\
-             }\n\
-             fn caller() -> i64 { sum_to(10) }",
-        );
+        // `fn sum_to(n: i64) -> i64 { let mut total = 0; let mut i = 0;
+        //  while i < n { total = total + i; i = i + 1; } total }` inlined into
+        // `fn caller() -> i64 { sum_to(10) }` — the callee's loop back edge
+        // survives the splice.
+        let mut program = scalar_program();
+        program.add("sum_to", |_| {
+            let mut cfg = Cfg::new(Type::I64, 2, 1, "sum_to".to_string(), vec![false]);
+            let entry = cfg.new_block();
+            let header = cfg.new_block();
+            let body = cfg.new_block();
+            let exit = cfg.new_block();
+            cfg.entry = entry;
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 0,
+                        init: zero,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::StorageLive {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let zero = cfg.append_inst(entry, inst(CfgInstData::Const(0), Type::I64));
+            cfg.append_inst(
+                entry,
+                inst(
+                    CfgInstData::Alloc {
+                        slot: 1,
+                        init: zero,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_goto(entry, header, []);
+
+            let i = cfg.append_inst(header, inst(CfgInstData::Load { slot: 1 }, Type::I64));
+            let n = cfg.append_inst(header, inst(CfgInstData::Param { index: 0 }, Type::I64));
+            let cond = cfg.append_inst(header, inst(CfgInstData::Lt(i, n), Type::BOOL));
+            cfg.set_branch(header, cond, body, [], exit, []);
+
+            let total = cfg.append_inst(body, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            let i = cfg.append_inst(body, inst(CfgInstData::Load { slot: 1 }, Type::I64));
+            let summed = cfg.append_inst(body, inst(CfgInstData::Add(total, i), Type::I64));
+            cfg.append_inst(
+                body,
+                inst(
+                    CfgInstData::Store {
+                        slot: 0,
+                        value: summed,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            let i = cfg.append_inst(body, inst(CfgInstData::Load { slot: 1 }, Type::I64));
+            let one = cfg.append_inst(body, inst(CfgInstData::Const(1), Type::I64));
+            let bumped = cfg.append_inst(body, inst(CfgInstData::Add(i, one), Type::I64));
+            cfg.append_inst(
+                body,
+                inst(
+                    CfgInstData::Store {
+                        slot: 1,
+                        value: bumped,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(body, inst(CfgInstData::Const(0), Type::UNIT));
+            cfg.set_goto(body, header, []);
+
+            cfg.append_inst(exit, inst(CfgInstData::Const(0), Type::UNIT));
+            let total = cfg.append_inst(exit, inst(CfgInstData::Load { slot: 0 }, Type::I64));
+            cfg.append_inst(
+                exit,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 1,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.append_inst(
+                exit,
+                inst(
+                    CfgInstData::StorageDead {
+                        slot: 0,
+                        local_ty: Type::I64,
+                    },
+                    Type::UNIT,
+                ),
+            );
+            cfg.set_return(exit, Some(total));
+            cfg
+        });
+        program.add("caller", |interner| {
+            let mut cfg = Cfg::new(Type::I64, 0, 0, "caller".to_string(), Vec::<bool>::new());
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let ten = cfg.append_inst(entry, inst(CfgInstData::Const(10), Type::I64));
+            let call = cfg
+                .append_call(
+                    entry,
+                    None,
+                    interner.get_or_intern("sum_to"),
+                    [CfgCallArg {
+                        value: ten,
+                        mode: CfgArgMode::Normal,
+                    }],
+                    Type::I64,
+                    Span::new(0, 0),
+                )
+                .unwrap();
+            cfg.set_return(entry, Some(call));
+            cfg
+        });
         let caller = program.cfg("caller");
         let callee = program.cfg("sum_to");
         let inlined = program.inline("caller", "sum_to");

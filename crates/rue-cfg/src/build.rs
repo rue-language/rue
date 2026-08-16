@@ -3485,13 +3485,16 @@ impl<'a> CfgBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::{AirEditor, AirValidationContext, Sema, SemaMetadata};
-    use rue_error::PreviewFeatures;
-    use rue_lexer::Lexer;
-    use rue_parser::Parser;
-    use rue_rir::AstGen;
+    use rue_air::{
+        AirEditor, AirValidationContext, FunctionInstanceKey, NominalInstanceKey, SemanticBody,
+        SemanticBodyAnchor, SemanticBodyCallArg, SemanticBodyInst, SemanticBodyInstData,
+        SemanticBodyMatchArm, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyProjection,
+        SemanticImportEpoch, SemanticImportNominalKind, SemanticImportType, SemanticLocalCallable,
+        SemanticLocalNominal, SemanticLocalNominalShape,
+    };
     use rue_span::FileId;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
+    use std::sync::Arc;
 
     #[test]
     fn exact_moved_path_queries_do_not_materialize_per_slot_sets() {
@@ -3576,138 +3579,302 @@ mod tests {
         );
     }
 
-    fn build_cfg(source: &str) -> Cfg {
-        build_cfg_for(source, 0)
+    /// Definition/module keys for hand-built structured-body fixtures.
+    type Key = &'static str;
+
+    /// A structured-body fixture type, keyed like the fixtures themselves.
+    type ImportTy = SemanticImportType<Key, Key>;
+
+    /// The single module identity every fixture nominal lives in.
+    const FIXTURE_MODULE: Key = "fixture";
+
+    /// The name of the hand-built function under CFG construction.
+    const PROBE: Key = "probe";
+
+    fn nominal_ty(name: Key) -> ImportTy {
+        SemanticImportType::Nominal(name)
     }
 
-    /// Build the CFG for the `index`-th analyzed function in `source`
-    /// (functions are analyzed in declaration order).
-    fn build_cfg_for(source: &str, index: usize) -> Cfg {
-        build_cfg_select(source, |functions| &functions[index])
+    fn variant_arm(name: Key, variant_index: u32, body: u32) -> SemanticBodyMatchArm<Key, Key> {
+        SemanticBodyMatchArm {
+            pattern: SemanticBodyPattern::EnumVariant {
+                enum_key: NominalInstanceKey::Named(name),
+                variant_index,
+            },
+            body,
+        }
     }
 
-    /// Build the CFG for the analyzed function called `name` in `source`
-    /// (robust to analysis order, unlike `build_cfg_for`).
-    fn build_cfg_named(source: &str, name: &str) -> Cfg {
-        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
-        build_cfg_select(source, |functions| {
-            functions
-                .iter()
-                .find(|f| f.name == symbol)
-                .unwrap_or_else(|| panic!("no analyzed function named '{}'", name))
-        })
-    }
-
-    /// Build the CFG for the analyzed function of `source` chosen by `select`.
-    fn build_cfg_select(
-        source: &str,
-        select: impl for<'f> Fn(&'f [rue_air::AnalyzedFunction]) -> &'f rue_air::AnalyzedFunction,
-    ) -> Cfg {
-        // Drop tests use an ordinary source nominal so they do not depend on
-        // the trusted standard-library StrBuf language item.
-        let source = format!(
-            "struct StrBuf {{ cap: u64, fn with_capacity(cap: u64) -> StrBuf {{ StrBuf {{ cap: cap }} }} fn inspect(borrow self) {{}} }}\n\
-             drop fn StrBuf(self) {{}}\n{source}"
-        );
-        let lexer = Lexer::new(&source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-
-        let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
-        let output = sema.analyze_all_for_test().unwrap();
-
-        let func = select(&output.functions);
-        CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            &output.type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
-        )
-        .cfg
-        .unwrap()
-        .into_editor()
-    }
-
-    /// The trusted standard-library `Option` producer, provided verbatim at the
-    /// trusted `\0rue-std/option.rue` logical identity so a fixture's `?` binds
-    /// the real std `Option`.
-    const TRUSTED_OPTION_PRODUCER: &str =
-        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }\n";
-
-    /// Build the CFG for the function named `name`, compiling `source` as a
-    /// trusted standard-library `\0rue-std/option.rue` module that also defines
-    /// the std `Option` producer, so `?` on an `Option` specialization is legal.
+    /// Build a CFG from editor-assembled AIR with the given frame shape.
     ///
-    /// `?` legality is exact producer-module identity, not shape (RUE-1112): an
-    /// `Option(T)` specialization is the std `Option` only when its producer
-    /// roots at the trusted `\0rue-std/option.rue::Option` definition. The
-    /// synthetic harness grants that identity by carrying the module's symbol
-    /// path and trusted-standard-library provenance on the file that defines the
-    /// producer. `StrBuf` remains an ordinary drop nominal: the sole lang item
-    /// keys on `\0rue-std/strbuf.rue`, so a `StrBuf` declared here is never
-    /// promoted to the trusted-std language item.
-    fn build_cfg_named_with_trusted_option(source: &str, name: &str) -> Cfg {
-        let module = format!(
-            "{TRUSTED_OPTION_PRODUCER}\
-             struct StrBuf {{ cap: u64, fn with_capacity(cap: u64) -> StrBuf {{ StrBuf {{ cap: cap }} }} fn inspect(borrow self) {{}} }}\n\
-             drop fn StrBuf(self) {{}}\n{source}"
-        );
-        let module_file = FileId::DEFAULT;
-
-        let lexer = Lexer::new(&module);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let (ast, mut interner) = Parser::new(tokens, interner).parse().unwrap();
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-
-        let mut sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
-        sema.set_root_file_id(module_file);
-        sema.set_file_paths(HashMap::from([(module_file, "/std/option.rue".to_owned())]));
-        sema.set_symbol_paths(HashMap::from([(
-            module_file,
-            "\0rue-std/option.rue".to_owned(),
-        )]));
-        sema.set_trusted_standard_library_files(HashSet::from([module_file]));
-        let output = sema.analyze_all_for_test_with_stable_endpoints().unwrap();
-
-        // The fixture's module carries an explicit trusted-standard-library
-        // symbol path, so its ordinary functions qualify by that path.
-        let symbol = format!(
-            "__rue_fn_{}__{name}",
-            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
-                "\0rue-std/option.rue"
-            ))
-        );
-        let func = output
-            .functions
-            .iter()
-            .find(|f| f.name == symbol)
-            .unwrap_or_else(|| panic!("no analyzed function named '{}'", name));
+    /// This is the direct construction path for bodies whose instructions the
+    /// [`AirEditor`] exposes (constants, calls, aggregate initializers,
+    /// places, storage brackets).
+    fn build_editor_cfg(
+        air: AirEditor,
+        num_locals: u32,
+        num_params: u32,
+        name: &str,
+        type_pool: &FrozenTypeInternPool,
+        param_modes: impl Into<ParamSlotModes>,
+        interner: &ThreadedRodeo,
+    ) -> Cfg {
+        let air = air
+            .finish(AirValidationContext::Canonical(type_pool))
+            .expect("test AIR must validate");
         CfgBuilder::build(
-            &func.air,
-            func.num_locals,
-            func.num_param_slots,
-            &func.name,
-            &output.type_pool,
-            func.param_modes.clone(),
-            &interner,
-            func.allow_unreachable_code,
-            func.callable_kind,
+            &air,
+            num_locals,
+            num_params,
+            name,
+            type_pool,
+            param_modes,
+            interner,
+            false,
+            AnalyzedCallableKind::Ordinary,
         )
         .cfg
         .unwrap()
         .into_editor()
+    }
+
+    /// Register a fixture struct in an unfrozen pool; a destructor symbol
+    /// makes the struct droppable for drop elaboration.
+    fn register_fixture_struct(
+        type_pool: &rue_air::TypeInternPool,
+        interner: &ThreadedRodeo,
+        name: &str,
+        fields: Vec<rue_air::StructField>,
+        destructor: Option<&str>,
+    ) -> StructId {
+        let (id, _) = type_pool.register_struct(
+            interner.get_or_intern(name),
+            rue_air::StructDef {
+                name: name.into(),
+                fields,
+                is_copy: false,
+                is_linear: false,
+                destructor: destructor.map(Into::into),
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        id
+    }
+
+    /// A hand-built typed body for [`CfgBuilder::build`], expressed as exact
+    /// structured-body facts and materialized through the production
+    /// durable-body seam ([`SemanticImportEpoch::new_local`] plus
+    /// [`SemanticImportEpoch::materialize_local_body`]).
+    ///
+    /// The [`AirEditor`] deliberately exposes no builders for semantic-only
+    /// instructions — control flow, storage writes, and move markers — so
+    /// bodies that need them enter AIR here, through the same import
+    /// validation an imported production body crosses.
+    struct BodyFixture {
+        return_type: ImportTy,
+        instructions: Vec<SemanticBodyInst<Key, Key>>,
+        places: Vec<SemanticBodyPlace<Key, Key>>,
+        num_locals: u32,
+        num_param_slots: u32,
+        param_by_ref: Vec<bool>,
+        param_writable: Vec<bool>,
+        param_drops: Vec<(u32, ImportTy)>,
+        nominals: Vec<SemanticLocalNominal<Key, Key>>,
+        callables: Vec<Key>,
+    }
+
+    impl BodyFixture {
+        fn new(return_type: ImportTy) -> Self {
+            Self {
+                return_type,
+                instructions: Vec::new(),
+                places: Vec::new(),
+                num_locals: 0,
+                num_param_slots: 0,
+                param_by_ref: Vec::new(),
+                param_writable: Vec::new(),
+                param_drops: Vec::new(),
+                nominals: Vec::new(),
+                callables: vec![PROBE],
+            }
+        }
+
+        /// Declare a struct nominal; a `destructor` symbol makes it droppable.
+        fn struct_nominal(
+            &mut self,
+            name: Key,
+            fields: &[(Key, ImportTy)],
+            destructor: Option<Key>,
+        ) {
+            if let Some(symbol) = destructor {
+                self.callables.push(symbol);
+            }
+            self.nominals.push(SemanticLocalNominal {
+                key: NominalInstanceKey::Named(name),
+                module_path: Arc::from(FIXTURE_MODULE),
+                name: Arc::from(name),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: fields
+                        .iter()
+                        .map(|(field, ty)| (Arc::from(*field), ty.clone()))
+                        .collect(),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: destructor.map(FunctionInstanceKey::Definition),
+                },
+            });
+        }
+
+        fn enum_nominal(&mut self, name: Key, variants: &[(Key, &[ImportTy])]) {
+            self.nominals.push(SemanticLocalNominal {
+                key: NominalInstanceKey::Named(name),
+                module_path: Arc::from(FIXTURE_MODULE),
+                name: Arc::from(name),
+                kind: SemanticImportNominalKind::Enum,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(variant, payload)| (Arc::from(*variant), Arc::from(*payload)))
+                        .collect(),
+                },
+            });
+        }
+
+        /// Register a callable the body calls.
+        fn callable(&mut self, symbol: Key) {
+            self.callables.push(symbol);
+        }
+
+        fn inst(&mut self, data: SemanticBodyInstData<Key, Key>, ty: ImportTy) -> u32 {
+            let index = self.instructions.len() as u32;
+            self.instructions.push(SemanticBodyInst {
+                data,
+                ty,
+                anchor: SemanticBodyAnchor { start: 0, end: 1 },
+            });
+            index
+        }
+
+        fn call_inst(&mut self, function: Key, args: &[u32], ty: ImportTy) -> u32 {
+            let data = SemanticBodyInstData::Call {
+                function: FunctionInstanceKey::Definition(function),
+                args: args
+                    .iter()
+                    .map(|value| SemanticBodyCallArg {
+                        value: *value,
+                        mode: AirArgMode::Normal,
+                    })
+                    .collect(),
+            };
+            self.inst(data, ty)
+        }
+
+        fn place(
+            &mut self,
+            base: AirPlaceBase,
+            base_type: ImportTy,
+            projections: &[SemanticBodyProjection<Key, Key>],
+        ) -> u32 {
+            let index = self.places.len() as u32;
+            self.places.push(SemanticBodyPlace {
+                base,
+                base_type,
+                projections: projections.iter().cloned().collect(),
+            });
+            index
+        }
+
+        /// Materialize the body and build the probe function's CFG.
+        fn build_cfg(self) -> Cfg {
+            let callables = self
+                .callables
+                .iter()
+                .map(|symbol| SemanticLocalCallable {
+                    key: FunctionInstanceKey::Definition(*symbol),
+                    symbol: Arc::from(*symbol),
+                })
+                .collect();
+            let epoch =
+                SemanticImportEpoch::new_local(self.nominals, callables, vec![FIXTURE_MODULE])
+                    .expect("fixture facts must form a local epoch");
+            let body = SemanticBody {
+                is_accessor: false,
+                return_type: self.return_type,
+                instructions: self.instructions.into(),
+                places: self.places.into(),
+                strings: Arc::new([]),
+                local_atoms: Arc::new([]),
+                param_drops: self.param_drops.into(),
+                borrow_slots: Arc::new([]),
+                num_locals: self.num_locals,
+                num_param_slots: self.num_param_slots,
+                param_by_ref: self.param_by_ref.into(),
+                param_writable: self.param_writable.into(),
+                allow_unreachable_code: false,
+                warnings: Arc::new([]),
+                method_references: Arc::new([]),
+            };
+            let materialized = epoch
+                .materialize_local_body(
+                    FunctionInstanceKey::Definition(PROBE),
+                    AnalyzedCallableKind::Ordinary,
+                    &body,
+                    rue_span::Span::new(0, 4),
+                )
+                .expect("fixture body must materialize");
+            CfgBuilder::build(
+                &materialized.air,
+                materialized.num_locals,
+                materialized.num_param_slots,
+                &materialized.name,
+                &materialized.type_pool,
+                materialized.param_modes,
+                &materialized.interner,
+                materialized.allow_unreachable_code,
+                materialized.callable_kind,
+            )
+            .cfg
+            .unwrap()
+            .into_editor()
+        }
+    }
+
+    /// Declare the fixtures' droppable resource nominal: `StrBuf`-shaped with
+    /// one `cap: u64` field, a destructor, and a `with_capacity` producer, so
+    /// drop elaboration treats its values as needing cleanup.
+    fn declare_droppable_resource(f: &mut BodyFixture) -> ImportTy {
+        f.struct_nominal(
+            "StrBuf",
+            &[("cap", SemanticImportType::U64)],
+            Some("StrBuf.__drop"),
+        );
+        f.callable("StrBuf.with_capacity");
+        nominal_ty("StrBuf")
+    }
+
+    /// `let <slot> = StrBuf.with_capacity(<cap>)`: the produced resource is
+    /// alloc'd into `slot` inside a binding block, as ordinary-let lowering
+    /// shapes it. Returns the binding block.
+    fn bind_fresh_resource(f: &mut BodyFixture, slot: u32, cap: u64) -> u32 {
+        use SemanticBodyInstData as D;
+        let capacity = f.inst(D::Const(cap), SemanticImportType::U64);
+        let value = f.call_inst("StrBuf.with_capacity", &[capacity], nominal_ty("StrBuf"));
+        let live = f.inst(D::StorageLive { slot }, nominal_ty("StrBuf"));
+        let alloc = f.inst(D::Alloc { slot, init: value }, SemanticImportType::Unit);
+        f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        )
     }
 
     /// Count the Drop instructions in a CFG.
@@ -3721,11 +3888,51 @@ mod tests {
 
     #[test]
     fn projected_only_parameter_preserves_logical_base_type() {
-        let cfg = build_cfg_named(
-            "struct Pair { a: i32, b: i32 }\n\
-             fn read(borrow p: Pair) -> i32 { p.a }\n\
-             fn main() -> i32 { let p = Pair { a: 1, b: 2 }; read(borrow p) }",
+        // `fn read(borrow p: Pair) -> i32 { p.a }`: the only use of the
+        // borrowed aggregate parameter is a projected place read.
+        let interner = ThreadedRodeo::default();
+        let type_pool = rue_air::TypeInternPool::new();
+        let pair_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "Pair",
+            vec![
+                rue_air::StructField {
+                    name: "a".into(),
+                    ty: Type::I32,
+                },
+                rue_air::StructField {
+                    name: "b".into(),
+                    ty: Type::I32,
+                },
+            ],
+            None,
+        );
+        let pair_ty = Type::new_struct(pair_id);
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+
+        let mut air = AirEditor::new(Type::I32);
+        let place = air
+            .make_place(
+                AirPlaceBase::Param(0),
+                pair_ty,
+                [AirProjection::Field {
+                    struct_id: pair_id,
+                    field_index: 0,
+                }],
+            )
+            .unwrap();
+        let read = air.add_place_read(place, Type::I32, span);
+        air.add_ret(Some(read), Type::I32, span);
+        let cfg = build_editor_cfg(
+            air,
+            0,
+            1,
             "read",
+            &type_pool,
+            ParamSlotModes::new(vec![true], vec![false]),
+            &interner,
         );
         let (place, struct_id) = cfg
             .blocks()
@@ -3756,13 +3963,56 @@ mod tests {
 
     #[test]
     fn computed_aggregate_projection_reserves_the_complete_temp_width() {
-        let cfg = build_cfg_named(
-            "struct Pair { left: i32, right: i32 }\n\
-             fn make() -> Pair { Pair { left: 10, right: 20 } }\n\
-             fn use(n: i32) -> i32 { make().right + n }\n\
-             fn main() -> i32 { use(5) }",
-            "use",
+        // `fn use(n: i32) -> i32 { make().right + n }`: the computed Pair
+        // returned by `make` is spilled into a two-slot scratch local before
+        // its field projection is read.
+        let interner = ThreadedRodeo::default();
+        let type_pool = rue_air::TypeInternPool::new();
+        let pair_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "Pair",
+            vec![
+                rue_air::StructField {
+                    name: "left".into(),
+                    ty: Type::I32,
+                },
+                rue_air::StructField {
+                    name: "right".into(),
+                    ty: Type::I32,
+                },
+            ],
+            None,
         );
+        let pair_ty = Type::new_struct(pair_id);
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+
+        let mut air = AirEditor::new(Type::I32);
+        let make = air
+            .add_call(None, interner.get_or_intern("make"), &[], pair_ty, span)
+            .unwrap();
+        let live = air.add_storage_live(0, pair_ty, span);
+        let alloc = air.add_alloc(0, make, span);
+        let place = air
+            .make_place(
+                AirPlaceBase::Local(0),
+                pair_ty,
+                [AirProjection::Field {
+                    struct_id: pair_id,
+                    field_index: 1,
+                }],
+            )
+            .unwrap();
+        let read = air.add_place_read(place, Type::I32, span);
+        let spill = air
+            .add_block(&[live, alloc], read, Type::I32, span)
+            .unwrap();
+        let param = air.add_param(0, Type::I32, span);
+        let sum = air.add_add(spill, param, Type::I32, span);
+        air.add_ret(Some(sum), Type::I32, span);
+        air.set_param_drops(vec![(0, Type::I32)]);
+        let cfg = build_editor_cfg(air, 2, 1, "use", &type_pool, vec![false], &interner);
 
         assert_eq!(cfg.num_params(), 1);
         assert_eq!(
@@ -3789,15 +4039,60 @@ mod tests {
 
     #[test]
     fn aggregate_block_result_is_saved_while_scope_cleanup_runs() {
-        let cfg = build_cfg_named(
-            "struct Triple { a: u64, b: u64, c: u64 }\n\
-             struct Guard { value: i32 }\n\
-             drop fn Guard(self) { }\n\
-             fn make() -> Triple { Triple { a: 1, b: 2, c: 3 } }\n\
-             fn preserve() -> Triple { { let guard = Guard { value: 0 }; make() } }\n\
-             fn main() -> i32 { let value = preserve(); @intCast(value.a + value.b + value.c) }",
-            "preserve",
+        // `fn preserve() -> Triple { { let guard = Guard { .. }; make() } }`:
+        // the inner block's droppable Guard is cleaned up at scope exit while
+        // the three-slot aggregate block result stays saved in a scratch.
+        let interner = ThreadedRodeo::default();
+        let type_pool = rue_air::TypeInternPool::new();
+        let guard_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "Guard",
+            vec![rue_air::StructField {
+                name: "value".into(),
+                ty: Type::I32,
+            }],
+            Some("Guard.__drop"),
         );
+        let guard_ty = Type::new_struct(guard_id);
+        let triple_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "Triple",
+            vec![
+                rue_air::StructField {
+                    name: "a".into(),
+                    ty: Type::U64,
+                },
+                rue_air::StructField {
+                    name: "b".into(),
+                    ty: Type::U64,
+                },
+                rue_air::StructField {
+                    name: "c".into(),
+                    ty: Type::U64,
+                },
+            ],
+            None,
+        );
+        let triple_ty = Type::new_struct(triple_id);
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+
+        let mut air = AirEditor::new(triple_ty);
+        let zero = air.add_const(0, Type::I32, span);
+        let guard = air
+            .add_struct_init(guard_id, &[zero], &[0], guard_ty, span)
+            .unwrap();
+        let live = air.add_storage_live(0, guard_ty, span);
+        let alloc = air.add_alloc(0, guard, span);
+        let binding = air.add_block(&[live], alloc, Type::UNIT, span).unwrap();
+        let make = air
+            .add_call(None, interner.get_or_intern("make"), &[], triple_ty, span)
+            .unwrap();
+        let scope = air.add_block(&[binding], make, triple_ty, span).unwrap();
+        air.add_ret(Some(scope), triple_ty, span);
+        let cfg = build_editor_cfg(air, 1, 0, "preserve", &type_pool, vec![], &interner);
 
         let instructions: Vec<_> = cfg
             .blocks()
@@ -3838,7 +4133,14 @@ mod tests {
 
     #[test]
     fn test_simple_return() {
-        let cfg = build_cfg("fn main() -> i32 { 42 }");
+        // `fn main() -> i32 { 42 }`
+        let interner = ThreadedRodeo::default();
+        let type_pool = FrozenTypeInternPool::new();
+        let span = rue_span::Span::new(0, 1);
+        let mut air = AirEditor::new(Type::I32);
+        let value = air.add_const(42, Type::I32, span);
+        air.add_ret(Some(value), Type::I32, span);
+        let cfg = build_editor_cfg(air, 0, 0, "main", &type_pool, vec![], &interner);
 
         assert_eq!(cfg.block_count(), 1);
         assert_eq!(cfg.fn_name(), "main");
@@ -3849,7 +4151,22 @@ mod tests {
 
     #[test]
     fn test_if_else() {
-        let cfg = build_cfg("fn main() -> i32 { if true { 1 } else { 2 } }");
+        // `fn main() -> i32 { if true { 1 } else { 2 } }`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let cond = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let then_value = f.inst(D::Const(1), SemanticImportType::I32);
+        let else_value = f.inst(D::Const(2), SemanticImportType::I32);
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: Some(else_value),
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(branch)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         // Should have: entry, then, else, join
         assert!(cfg.block_count() >= 3);
@@ -3857,7 +4174,58 @@ mod tests {
 
     #[test]
     fn test_while_loop() {
-        let cfg = build_cfg("fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }");
+        // `fn main() -> i32 { let mut x = 0; while x < 10 { x = x + 1; } x }`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        f.num_locals = 1;
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let live = f.inst(D::StorageLive { slot: 0 }, SemanticImportType::I32);
+        let alloc = f.inst(
+            D::Alloc {
+                slot: 0,
+                init: zero,
+            },
+            SemanticImportType::Unit,
+        );
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let current = f.inst(D::Load { slot: 0 }, SemanticImportType::I32);
+        let limit = f.inst(D::Const(10), SemanticImportType::I32);
+        let cond = f.inst(D::Lt(current, limit), SemanticImportType::Bool);
+        let loaded = f.inst(D::Load { slot: 0 }, SemanticImportType::I32);
+        let one = f.inst(D::Const(1), SemanticImportType::I32);
+        let bumped = f.inst(D::Add(loaded, one), SemanticImportType::I32);
+        let store = f.inst(
+            D::Store {
+                slot: 0,
+                value: bumped,
+            },
+            SemanticImportType::Unit,
+        );
+        let unit = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let body = f.inst(
+            D::Block {
+                statements: [store].into(),
+                value: unit,
+            },
+            SemanticImportType::Unit,
+        );
+        let while_loop = f.inst(D::Loop { cond, body }, SemanticImportType::Unit);
+        let result = f.inst(D::Load { slot: 0 }, SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding, while_loop].into(),
+                value: result,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         // Should have: entry, header, body, exit, and possibly join blocks
         assert!(cfg.block_count() >= 3);
@@ -3865,7 +4233,24 @@ mod tests {
 
     #[test]
     fn test_short_circuit_and() {
-        let cfg = build_cfg("fn main() -> i32 { if true && false { 1 } else { 0 } }");
+        // `fn main() -> i32 { if true && false { 1 } else { 0 } }`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let lhs = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let rhs = f.inst(D::BoolConst(false), SemanticImportType::Bool);
+        let cond = f.inst(D::And(lhs, rhs), SemanticImportType::Bool);
+        let then_value = f.inst(D::Const(1), SemanticImportType::I32);
+        let else_value = f.inst(D::Const(0), SemanticImportType::I32);
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: Some(else_value),
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(branch)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         // && creates extra blocks for short-circuit evaluation
         assert!(cfg.block_count() >= 3);
@@ -3873,9 +4258,33 @@ mod tests {
 
     #[test]
     fn test_diverging_in_if_condition() {
-        // Test that a diverging expression (block with return) in an if condition
-        // is handled correctly without panicking.
-        let cfg = build_cfg("fn main() -> i32 { if { return 1; true } { 2 } else { 3 } }");
+        // `fn main() -> i32 { if { return 1; true } { 2 } else { 3 } }` — a
+        // diverging expression (block with return) in an if condition is
+        // handled correctly without panicking.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let one = f.inst(D::Const(1), SemanticImportType::I32);
+        let early = f.inst(D::Ret(Some(one)), SemanticImportType::Never);
+        let cond_tail = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let cond = f.inst(
+            D::Block {
+                statements: [early].into(),
+                value: cond_tail,
+            },
+            SemanticImportType::Bool,
+        );
+        let then_value = f.inst(D::Const(2), SemanticImportType::I32);
+        let else_value = f.inst(D::Const(3), SemanticImportType::I32);
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: Some(else_value),
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(branch)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         // Should have at least entry block
         assert!(cfg.block_count() >= 1);
@@ -3886,8 +4295,14 @@ mod tests {
 
     #[test]
     fn test_diverging_in_loop_body() {
-        // Test that a return inside a loop body is handled correctly.
-        let cfg = build_cfg("fn main() -> i32 { loop { return 42; } }");
+        // `fn main() -> i32 { loop { return 42; } }` — a return inside a loop
+        // body is handled correctly.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let value = f.inst(D::Const(42), SemanticImportType::I32);
+        let ret = f.inst(D::Ret(Some(value)), SemanticImportType::Never);
+        f.inst(D::InfiniteLoop { body: ret }, SemanticImportType::Never);
+        let cfg = f.build_cfg();
 
         // The function should return from within the loop
         assert!(cfg.block_count() >= 2);
@@ -3905,19 +4320,58 @@ mod tests {
         }
     }
 
+    /// The AIR for `fn main() -> i32 { let c = <lhs> op <diverging rhs>; 3 }`
+    /// where the rhs is `return <returned>` — the RUE-128 short-circuit
+    /// divergence shape shared by the `&&` and `||` cases below.
+    fn short_circuit_diverging_rhs_fixture(and: bool, lhs: bool, returned: u64) -> BodyFixture {
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        f.num_locals = 1;
+        let lhs = f.inst(D::BoolConst(lhs), SemanticImportType::Bool);
+        let value = f.inst(D::Const(returned), SemanticImportType::I32);
+        let ret = f.inst(D::Ret(Some(value)), SemanticImportType::Never);
+        let op = f.inst(
+            if and {
+                D::And(lhs, ret)
+            } else {
+                D::Or(lhs, ret)
+            },
+            SemanticImportType::Bool,
+        );
+        let live = f.inst(D::StorageLive { slot: 0 }, SemanticImportType::Bool);
+        let alloc = f.inst(D::Alloc { slot: 0, init: op }, SemanticImportType::Unit);
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let three = f.inst(D::Const(3), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding].into(),
+                value: three,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        f
+    }
+
     #[test]
     fn test_andand_diverging_rhs_join_terminated() {
         // RUE-128: `true && return 5` — the rhs diverges, but the join block
         // (where the short-circuit value materializes) is still reachable via
         // the lhs-false edge and must be terminated.
-        let cfg = build_cfg("fn main() -> i32 { let c = true && return 5; 3 }");
+        let cfg = short_circuit_diverging_rhs_fixture(true, true, 5).build_cfg();
         assert_all_blocks_terminated(&cfg);
     }
 
     #[test]
     fn test_oror_diverging_rhs_join_terminated() {
         // RUE-128: `false || return 7` — same shape as the && case above.
-        let cfg = build_cfg("fn main() -> i32 { let c = false || return 7; 3 }");
+        let cfg = short_circuit_diverging_rhs_fixture(false, false, 7).build_cfg();
         assert_all_blocks_terminated(&cfg);
     }
 
@@ -3929,17 +4383,54 @@ mod tests {
         // own, re-emitting Drop/StorageDead for the inner slot on the loop-exit
         // path — a same-path double drop. With the leak fixed, each droppable
         // local (s and t) is dropped exactly once.
-        let cfg = build_cfg(
-            "fn main() -> i32 {\n\
-                 let mut s = StrBuf.with_capacity(8);\n\
-                 loop {\n\
-                     let mut t = StrBuf.with_capacity(8);\n\
-                     break;\n\
-                     let unreachable_tail = 0;\n\
-                 }\n\
-                 0\n\
-             }",
+        //
+        // `fn main() -> i32 { let mut s = ..; loop { let mut t = ..; break;
+        // let unreachable_tail = 0; } 0 }`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 3;
+        let bind_s = bind_fresh_resource(&mut f, 0, 8);
+        let bind_t = bind_fresh_resource(&mut f, 1, 8);
+        let brk = f.inst(D::Break, SemanticImportType::Never);
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let live_tail = f.inst(D::StorageLive { slot: 2 }, SemanticImportType::I32);
+        let alloc_tail = f.inst(
+            D::Alloc {
+                slot: 2,
+                init: zero,
+            },
+            SemanticImportType::Unit,
         );
+        let bind_tail = f.inst(
+            D::Block {
+                statements: [live_tail].into(),
+                value: alloc_tail,
+            },
+            SemanticImportType::Unit,
+        );
+        let unit = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let loop_body = f.inst(
+            D::Block {
+                statements: [bind_t, brk, bind_tail].into(),
+                value: unit,
+            },
+            SemanticImportType::Unit,
+        );
+        let infinite = f.inst(
+            D::InfiniteLoop { body: loop_body },
+            SemanticImportType::Unit,
+        );
+        let result = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [bind_s, infinite].into(),
+                value: result,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
         let drop_count = count_drops(&cfg);
         assert_eq!(
             drop_count, 2,
@@ -3950,20 +4441,76 @@ mod tests {
 
     #[test]
     fn match_scrutinee_wrapper_drops_its_temporary_once() {
-        let cfg = build_cfg(
-            "fn O() -> type { enum { Some(i32), None } }\n\
-             fn make() -> O() { let E = O(); E.Some(1) }\n\
-             fn main() -> i32 {\n\
-                 let E = O();\n\
-                 match {\n\
-                     let scratch = StrBuf.with_capacity(8);\n\
-                     make()\n\
-                 } {\n\
-                     E.Some(value) => value,\n\
-                     E.None => 0,\n\
-                 }\n\
-             }",
+        // `match { let scratch = StrBuf.with_capacity(8); make() } {
+        //    E.Some(value) => value, E.None => 0 }` for `enum E { Some(i32),
+        // None }`: the scrutinee is computed by a block that owns a droppable
+        // temporary, and the Some arm binds the payload.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.enum_nominal("E", &[("Some", &[SemanticImportType::I32]), ("None", &[])]);
+        f.callable("make");
+        f.num_locals = 2;
+        let unit_binding = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let bind_scratch = bind_fresh_resource(&mut f, 0, 8);
+        let make = f.call_inst("make", &[], nominal_ty("E"));
+        let scrutinee = f.inst(
+            D::Block {
+                statements: [bind_scratch].into(),
+                value: make,
+            },
+            nominal_ty("E"),
         );
+        let payload = f.inst(
+            D::EnumPayloadGet {
+                base: scrutinee,
+                enum_key: NominalInstanceKey::Named("E"),
+                variant_index: 0,
+                field_index: 0,
+            },
+            SemanticImportType::I32,
+        );
+        let live_value = f.inst(D::StorageLive { slot: 1 }, SemanticImportType::I32);
+        let alloc_value = f.inst(
+            D::Alloc {
+                slot: 1,
+                init: payload,
+            },
+            SemanticImportType::Unit,
+        );
+        let value = f.inst(D::Load { slot: 1 }, SemanticImportType::I32);
+        let some_arm = f.inst(
+            D::Block {
+                statements: [live_value, alloc_value].into(),
+                value,
+            },
+            SemanticImportType::I32,
+        );
+        let drop_scrutinee = f.inst(D::Drop { value: scrutinee }, SemanticImportType::Unit);
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let none_arm = f.inst(
+            D::Block {
+                statements: [drop_scrutinee].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        let matched = f.inst(
+            D::Match {
+                scrutinee,
+                arms: [variant_arm("E", 0, some_arm), variant_arm("E", 1, none_arm)].into(),
+            },
+            SemanticImportType::I32,
+        );
+        let tail = f.inst(
+            D::Block {
+                statements: [unit_binding].into(),
+                value: matched,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         assert_eq!(
             count_drops(&cfg),
@@ -3975,19 +4522,115 @@ mod tests {
 
     #[test]
     fn fallible_initializer_drops_local_only_after_successful_alloc() {
-        let cfg = build_cfg_named_with_trusted_option(
-            "fn maybe_buf() -> Option(StrBuf) {\n\
-                 let O = Option(StrBuf);\n\
-                 if true { O.Some(StrBuf.with_capacity(8)) } else { O.None }\n\
-             }\n\
-             fn read_num() -> Option(i64) {\n\
-                 let O = Option(i64);\n\
-                 let line = maybe_buf()?;\n\
-                 O.Some(@intCast(line.cap))\n\
-             }\n\
-             fn main() -> i32 { let result = read_num(); 0 }",
-            "read_num",
+        // The post-`?` elaboration of
+        // `fn read_num() -> Option(i64) { let line = maybe_buf()?;
+        //  Option(i64).Some(@intCast(line.cap)) }`:
+        // the fallible producer's Option is matched before the local's alloc,
+        // so the None arm early-returns (dropping the Option) while only the
+        // Some path initializes `line`. Whether `?` itself is legal on a given
+        // Option specialization is frontend semantics (trusted-std producer
+        // identity, RUE-1112) and is covered by the frontend's own tests; this
+        // pins the drop shape of the elaboration the CFG receives.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(nominal_ty("OptionI64"));
+        declare_droppable_resource(&mut f);
+        f.enum_nominal(
+            "OptionStrBuf",
+            &[("Some", &[nominal_ty("StrBuf")]), ("None", &[])],
         );
+        f.enum_nominal(
+            "OptionI64",
+            &[("Some", &[SemanticImportType::I64]), ("None", &[])],
+        );
+        f.callable("maybe_buf");
+        f.num_locals = 1;
+        let unit_binding = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let produced = f.call_inst("maybe_buf", &[], nominal_ty("OptionStrBuf"));
+        let payload = f.inst(
+            D::EnumPayloadGet {
+                base: produced,
+                enum_key: NominalInstanceKey::Named("OptionStrBuf"),
+                variant_index: 0,
+                field_index: 0,
+            },
+            nominal_ty("StrBuf"),
+        );
+        let drop_produced = f.inst(D::Drop { value: produced }, SemanticImportType::Unit);
+        let none = f.inst(
+            D::EnumVariant {
+                enum_key: NominalInstanceKey::Named("OptionI64"),
+                variant_index: 1,
+                payload: [].into(),
+            },
+            nominal_ty("OptionI64"),
+        );
+        let early = f.inst(D::Ret(Some(none)), SemanticImportType::Never);
+        let none_arm = f.inst(
+            D::Block {
+                statements: [drop_produced].into(),
+                value: early,
+            },
+            SemanticImportType::Never,
+        );
+        let line = f.inst(
+            D::Match {
+                scrutinee: produced,
+                arms: [
+                    variant_arm("OptionStrBuf", 0, payload),
+                    variant_arm("OptionStrBuf", 1, none_arm),
+                ]
+                .into(),
+            },
+            nominal_ty("StrBuf"),
+        );
+        let live = f.inst(D::StorageLive { slot: 0 }, nominal_ty("StrBuf"));
+        let alloc = f.inst(
+            D::Alloc {
+                slot: 0,
+                init: line,
+            },
+            SemanticImportType::Unit,
+        );
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let cap_place = f.place(
+            AirPlaceBase::Local(0),
+            nominal_ty("StrBuf"),
+            &[SemanticBodyProjection::Field {
+                struct_key: NominalInstanceKey::Named("StrBuf"),
+                field_index: 0,
+            }],
+        );
+        let cap = f.inst(D::PlaceRead { place: cap_place }, SemanticImportType::U64);
+        let cast = f.inst(
+            D::IntCast {
+                value: cap,
+                from_ty: SemanticImportType::U64,
+            },
+            SemanticImportType::I64,
+        );
+        let some = f.inst(
+            D::EnumVariant {
+                enum_key: NominalInstanceKey::Named("OptionI64"),
+                variant_index: 0,
+                payload: [cast].into(),
+            },
+            nominal_ty("OptionI64"),
+        );
+        let tail = f.inst(
+            D::Block {
+                statements: [unit_binding, binding].into(),
+                value: some,
+            },
+            nominal_ty("OptionI64"),
+        );
+        f.inst(D::Ret(Some(tail)), nominal_ty("OptionI64"));
+        let cfg = f.build_cfg();
 
         let line_drops = cfg
             .blocks()
@@ -4025,14 +4668,49 @@ mod tests {
 
     #[test]
     fn diverging_initializer_never_makes_droppable_local_owned() {
-        let cfg = build_cfg_named(
-            "fn early() -> i32 {\n\
-                 let value: StrBuf = { return 7; StrBuf.with_capacity(8) };\n\
-                 0\n\
-             }\n\
-             fn main() -> i32 { early() }",
-            "early",
+        // `fn early() -> i32 { let value: StrBuf = { return 7;
+        //  StrBuf.with_capacity(8) }; 0 }`: the initializer diverges before
+        // producing a value, so the local's alloc is never reached.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 1;
+        let seven = f.inst(D::Const(7), SemanticImportType::I32);
+        let early = f.inst(D::Ret(Some(seven)), SemanticImportType::Never);
+        let capacity = f.inst(D::Const(8), SemanticImportType::U64);
+        let produced = f.call_inst("StrBuf.with_capacity", &[capacity], nominal_ty("StrBuf"));
+        let initializer = f.inst(
+            D::Block {
+                statements: [early].into(),
+                value: produced,
+            },
+            nominal_ty("StrBuf"),
         );
+        let live = f.inst(D::StorageLive { slot: 0 }, nominal_ty("StrBuf"));
+        let alloc = f.inst(
+            D::Alloc {
+                slot: 0,
+                init: initializer,
+            },
+            SemanticImportType::Unit,
+        );
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
 
         assert_eq!(
             count_drops(&cfg),
@@ -4056,37 +4734,130 @@ mod tests {
     fn test_moved_local_not_dropped_at_source() {
         // RUE-61: `let t = s;` moves s into t — only t's slot is dropped at
         // scope exit; s's drop is suppressed by the MarkMoved marker.
-        let cfg = build_cfg(
-            "fn main() -> i32 {\n\
-                 let s = StrBuf.with_capacity(8);\n\
-                 let t = s;\n\
-                 0\n\
-             }",
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 2;
+        let bind_s = bind_fresh_resource(&mut f, 0, 8);
+        let loaded = f.inst(D::Load { slot: 0 }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: loaded,
+                slot: 0,
+                is_param: false,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
         );
+        let live_t = f.inst(D::StorageLive { slot: 1 }, nominal_ty("StrBuf"));
+        let alloc_t = f.inst(
+            D::Alloc {
+                slot: 1,
+                init: moved,
+            },
+            SemanticImportType::Unit,
+        );
+        let bind_t = f.inst(
+            D::Block {
+                statements: [live_t].into(),
+                value: alloc_t,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [bind_s, bind_t].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
         assert_eq!(count_drops(&cfg), 1, "moved-out s must not be dropped");
+    }
+
+    /// The AIR for `fn f(s: StrBuf) -> i32 { 0 }`: a pass-by-value droppable
+    /// parameter the body never touches, owned (and dropped) by the callee
+    /// through its parameter-drop schedule.
+    fn owned_unused_param_cfg(interner: &ThreadedRodeo) -> Cfg {
+        let type_pool = rue_air::TypeInternPool::new();
+        let strbuf_id = register_fixture_struct(
+            &type_pool,
+            &interner,
+            "StrBuf",
+            vec![rue_air::StructField {
+                name: "cap".into(),
+                ty: Type::U64,
+            }],
+            Some("StrBuf.__drop"),
+        );
+        let strbuf_ty = Type::new_struct(strbuf_id);
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+        let mut air = AirEditor::new(Type::I32);
+        let zero = air.add_const(0, Type::I32, span);
+        air.add_ret(Some(zero), Type::I32, span);
+        air.set_param_drops(vec![(0, strbuf_ty)]);
+        build_editor_cfg(air, 0, 1, "f", &type_pool, vec![false], interner)
     }
 
     #[test]
     fn test_owned_param_dropped_at_exit() {
         // The callee owns its pass-by-value parameters and drops them at
         // function exit (unless moved out).
-        let cfg = build_cfg_named(
-            "fn f(s: StrBuf) -> i32 { 0 }\n\
-             fn main() -> i32 { f(StrBuf.with_capacity(8)) }",
-            "f",
-        );
+        let interner = ThreadedRodeo::default();
+        let cfg = owned_unused_param_cfg(&interner);
         assert_eq!(count_drops(&cfg), 1, "owned StrBuf param must be dropped");
     }
 
     #[test]
     fn test_moved_param_not_dropped_at_exit() {
         // A param moved into a local is dropped via the local, not again as
-        // a param at exit.
-        let cfg = build_cfg_named(
-            "fn f(s: StrBuf) -> i32 { let t = s; 0 }\n\
-             fn main() -> i32 { f(StrBuf.with_capacity(8)) }",
-            "f",
+        // a param at exit. `fn f(s: StrBuf) -> i32 { let t = s; 0 }`.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 1;
+        f.num_param_slots = 1;
+        f.param_by_ref = vec![false];
+        f.param_writable = vec![false];
+        f.param_drops = vec![(0, nominal_ty("StrBuf"))];
+        let param = f.inst(D::Param { index: 0 }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: param,
+                slot: 0,
+                is_param: true,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
         );
+        let live = f.inst(D::StorageLive { slot: 0 }, nominal_ty("StrBuf"));
+        let alloc = f.inst(
+            D::Alloc {
+                slot: 0,
+                init: moved,
+            },
+            SemanticImportType::Unit,
+        );
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
         assert_eq!(count_drops(&cfg), 1, "moved param must drop only via t");
     }
 
@@ -4097,16 +4868,82 @@ mod tests {
         // (RUE-108), so the moving path skips it at runtime. Statically the
         // CFG still contains both drops (t's, and s's guarded one) plus the
         // flag plumbing: a conditional branch on the flag around s's drop.
-        let cfg = build_cfg(
-            "fn main() -> i32 {\n\
-                 let s = StrBuf.with_capacity(8);\n\
-                 let c = true;\n\
-                 if c {\n\
-                     let t = s;\n\
-                 }\n\
-                 0\n\
-             }",
+        //
+        // `let s = StrBuf.with_capacity(8); let c = true;
+        //  if c { let t = s; } 0`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.num_locals = 3;
+        let bind_s = bind_fresh_resource(&mut f, 0, 8);
+        let flag = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let live_c = f.inst(D::StorageLive { slot: 1 }, SemanticImportType::Bool);
+        let alloc_c = f.inst(
+            D::Alloc {
+                slot: 1,
+                init: flag,
+            },
+            SemanticImportType::Unit,
         );
+        let bind_c = f.inst(
+            D::Block {
+                statements: [live_c].into(),
+                value: alloc_c,
+            },
+            SemanticImportType::Unit,
+        );
+        let cond = f.inst(D::Load { slot: 1 }, SemanticImportType::Bool);
+        let loaded = f.inst(D::Load { slot: 0 }, nominal_ty("StrBuf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: loaded,
+                slot: 0,
+                is_param: false,
+                place: None,
+            },
+            nominal_ty("StrBuf"),
+        );
+        let live_t = f.inst(D::StorageLive { slot: 2 }, nominal_ty("StrBuf"));
+        let alloc_t = f.inst(
+            D::Alloc {
+                slot: 2,
+                init: moved,
+            },
+            SemanticImportType::Unit,
+        );
+        let bind_t = f.inst(
+            D::Block {
+                statements: [live_t].into(),
+                value: alloc_t,
+            },
+            SemanticImportType::Unit,
+        );
+        let then_unit = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let then_value = f.inst(
+            D::Block {
+                statements: [bind_t].into(),
+                value: then_unit,
+            },
+            SemanticImportType::Unit,
+        );
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: None,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [bind_s, bind_c, branch].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
         // One drop for t inside the branch, one (flag-guarded) for s at exit.
         assert_eq!(
             count_drops(&cfg),
@@ -4127,19 +4964,77 @@ mod tests {
     #[test]
     fn test_move_on_both_branches_suppresses_drop() {
         // Moved in BOTH branches => moved on all paths => exit drop suppressed.
-        let source = "fn consume(s: StrBuf) -> i32 { 0 }\n\
-             fn main() -> i32 {\n\
-                 let s = StrBuf.with_capacity(8);\n\
-                 let c = true;\n\
-                 if c {\n\
-                     consume(s);\n\
-                 } else {\n\
-                     consume(s);\n\
-                 }\n\
-                 0\n\
-             }";
-        let consume_cfg = build_cfg_named(source, "consume");
-        let main_cfg = build_cfg_named(source, "main");
+        //
+        // `let s = StrBuf.with_capacity(8); let c = true;
+        //  if c { consume(s); } else { consume(s); } 0`
+        // with `fn consume(s: StrBuf) -> i32 { 0 }`.
+        use SemanticBodyInstData as D;
+        let interner = ThreadedRodeo::default();
+        let consume_cfg = owned_unused_param_cfg(&interner);
+
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        declare_droppable_resource(&mut f);
+        f.callable("consume");
+        f.num_locals = 2;
+        let bind_s = bind_fresh_resource(&mut f, 0, 8);
+        let flag = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let live_c = f.inst(D::StorageLive { slot: 1 }, SemanticImportType::Bool);
+        let alloc_c = f.inst(
+            D::Alloc {
+                slot: 1,
+                init: flag,
+            },
+            SemanticImportType::Unit,
+        );
+        let bind_c = f.inst(
+            D::Block {
+                statements: [live_c].into(),
+                value: alloc_c,
+            },
+            SemanticImportType::Unit,
+        );
+        let cond = f.inst(D::Load { slot: 1 }, SemanticImportType::Bool);
+        let consuming_arm = |f: &mut BodyFixture| {
+            let loaded = f.inst(D::Load { slot: 0 }, nominal_ty("StrBuf"));
+            let moved = f.inst(
+                D::MarkMoved {
+                    value: loaded,
+                    slot: 0,
+                    is_param: false,
+                    place: None,
+                },
+                nominal_ty("StrBuf"),
+            );
+            let consumed = f.call_inst("consume", &[moved], SemanticImportType::I32);
+            let unit = f.inst(D::UnitConst, SemanticImportType::Unit);
+            f.inst(
+                D::Block {
+                    statements: [consumed].into(),
+                    value: unit,
+                },
+                SemanticImportType::Unit,
+            )
+        };
+        let then_value = consuming_arm(&mut f);
+        let else_value = consuming_arm(&mut f);
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: Some(else_value),
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [bind_s, bind_c, branch].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let main_cfg = f.build_cfg();
         assert_eq!(
             count_drops(&consume_cfg),
             1,
@@ -4152,59 +5047,86 @@ mod tests {
         );
     }
 
+    /// The shared prefix of the partial-field-move fixtures:
+    /// `let h = H { a: StrBuf.with_capacity(8), b: StrBuf.with_capacity(8) };
+    ///  eat(h.a);` for `struct H { a: StrBuf, b: StrBuf }`.
+    /// Returns `(h's binding block, eat's call, h.a's place)`.
+    fn partial_field_move_prefix(f: &mut BodyFixture) -> (u32, u32, u32) {
+        use SemanticBodyInstData as D;
+        declare_droppable_resource(f);
+        f.struct_nominal(
+            "H",
+            &[("a", nominal_ty("StrBuf")), ("b", nominal_ty("StrBuf"))],
+            None,
+        );
+        f.callable("eat");
+        f.num_locals = 2;
+        let cap_a = f.inst(D::Const(8), SemanticImportType::U64);
+        let field_a = f.call_inst("StrBuf.with_capacity", &[cap_a], nominal_ty("StrBuf"));
+        let cap_b = f.inst(D::Const(8), SemanticImportType::U64);
+        let field_b = f.call_inst("StrBuf.with_capacity", &[cap_b], nominal_ty("StrBuf"));
+        let init = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("H"),
+                fields: [field_a, field_b].into(),
+                source_order: [0, 1].into(),
+            },
+            nominal_ty("H"),
+        );
+        let live = f.inst(D::StorageLive { slot: 0 }, nominal_ty("H"));
+        let alloc = f.inst(D::Alloc { slot: 0, init }, SemanticImportType::Unit);
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let place_a = f.place(
+            AirPlaceBase::Local(0),
+            nominal_ty("H"),
+            &[SemanticBodyProjection::Field {
+                struct_key: NominalInstanceKey::Named("H"),
+                field_index: 0,
+            }],
+        );
+        let read_a = f.inst(D::PlaceRead { place: place_a }, nominal_ty("StrBuf"));
+        let moved_a = f.inst(
+            D::MarkMoved {
+                value: read_a,
+                slot: 0,
+                is_param: false,
+                place: Some(place_a),
+            },
+            nominal_ty("StrBuf"),
+        );
+        let eaten = f.call_inst("eat", &[moved_a], SemanticImportType::I32);
+        (binding, eaten, place_a)
+    }
+
     #[test]
     fn test_partial_field_move_drops_only_remaining_field() {
         // RUE-62: moving ONE field out of a struct makes the scope-exit drop
         // field-granular — only the still-owned droppable field is dropped
         // (one Drop), not the whole struct (which would re-drop the moved
         // field via the drop glue).
-        let source = "fn eat(s: StrBuf) -> i32 { 0 }\n\
-             struct H { a: StrBuf, b: StrBuf }\n\
-             fn main() -> i32 {\n\
-                 let h = H { a: StrBuf.with_capacity(8), b: StrBuf.with_capacity(8) };\n\
-                 eat(h.a);\n\
-                 0\n\
-             }";
-        let main_cfg = build_cfg_named(source, "main");
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let (binding, eaten, _) = partial_field_move_prefix(&mut f);
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding, eaten].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let main_cfg = f.build_cfg();
         assert_eq!(
             count_drops(&main_cfg),
             1,
             "moved field a is skipped; only field b drops at exit"
-        );
-    }
-
-    #[test]
-    fn test_partial_field_move_out_of_destructor_type_rejected_in_sema() {
-        // RUE-158 supersedes the RUE-62 scenario this test used to pin
-        // (destructor-only call O.__drop(o) for a partially moved struct
-        // with its own `drop fn`): sema now rejects moving a field out of
-        // a value whose type has a user-defined destructor (E0456), so
-        // that elaboration shape is unreachable from legal source. This
-        // pins the rejection so the CFG-level assumption stays valid.
-        let source = "struct A { x: i32 }\n\
-             struct O { a: A, b: i32 }\n\
-             drop fn A(self) { }\n\
-             drop fn O(self) { }\n\
-             fn eat(a: A) -> i32 { 0 }\n\
-             fn main() -> i32 {\n\
-                 let o = O { a: A { x: 1 }, b: 2 };\n\
-                 eat(o.a);\n\
-                 0\n\
-             }";
-        let lexer = Lexer::new(source);
-        let (tokens, interner) = lexer.tokenize().unwrap();
-        let parser = Parser::new(tokens, interner);
-        let (ast, mut interner) = parser.parse().unwrap();
-        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
-        astgen.append_items(&ast.items);
-        let rir = astgen.finish();
-        let sema = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new());
-        let err = sema
-            .analyze_all_for_test()
-            .expect_err("field move out of a destructor-having struct must be rejected");
-        assert!(
-            format!("{err}").contains("cannot move field"),
-            "unexpected error: {err}"
         );
     }
 
@@ -4215,15 +5137,30 @@ mod tests {
         // so scope exit is back on the whole-struct fast path — ONE Drop
         // whose operand is a whole-slot Load (covering both fields via the
         // drop glue), not a field-granular PlaceRead drop of just field b.
-        let source = "fn eat(s: StrBuf) -> i32 { 0 }\n\
-             struct H { a: StrBuf, b: StrBuf }\n\
-             fn main() -> i32 {\n\
-                 let mut h = H { a: StrBuf.with_capacity(8), b: StrBuf.with_capacity(8) };\n\
-                 eat(h.a);\n\
-                 h.a = StrBuf.with_capacity(4);\n\
-                 0\n\
-             }";
-        let main_cfg = build_cfg_named(source, "main");
+        //
+        // The partial-move prefix plus `h.a = StrBuf.with_capacity(4);`.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let (binding, eaten, place_a) = partial_field_move_prefix(&mut f);
+        let cap = f.inst(D::Const(4), SemanticImportType::U64);
+        let fresh = f.call_inst("StrBuf.with_capacity", &[cap], nominal_ty("StrBuf"));
+        let rewrite = f.inst(
+            D::PlaceWrite {
+                place: place_a,
+                value: fresh,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding, eaten, rewrite].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let main_cfg = f.build_cfg();
         let dropped_values: Vec<_> = main_cfg
             .blocks()
             .iter()
@@ -4248,17 +5185,102 @@ mod tests {
         // RUE-157: a depth-2 field path move (`eat(t.mid.leaf)`) is exported
         // to drop elaboration. The exit drop recurses field-granularly: the
         // moved leaf is skipped and only the sibling leaf gets a Drop.
-        let source = "struct Leaf { v: i32 }\n\
-             struct Mid { leaf: Leaf, other: Leaf }\n\
-             struct Top { mid: Mid }\n\
-             drop fn Leaf(self) { }\n\
-             fn eat(l: Leaf) -> i32 { 0 }\n\
-             fn main() -> i32 {\n\
-                 let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 } } };\n\
-                 eat(t.mid.leaf);\n\
-                 0\n\
-             }";
-        let main_cfg = build_cfg_named(source, "main");
+        //
+        // `let t = Top { mid: Mid { leaf: Leaf { v: 5 }, other: Leaf { v: 6 }
+        // } }; eat(t.mid.leaf); 0` where only Leaf has a destructor.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        f.struct_nominal(
+            "Leaf",
+            &[("v", SemanticImportType::I32)],
+            Some("Leaf.__drop"),
+        );
+        f.struct_nominal(
+            "Mid",
+            &[("leaf", nominal_ty("Leaf")), ("other", nominal_ty("Leaf"))],
+            None,
+        );
+        f.struct_nominal("Top", &[("mid", nominal_ty("Mid"))], None);
+        f.callable("eat");
+        f.num_locals = 2;
+        let five = f.inst(D::Const(5), SemanticImportType::I32);
+        let leaf = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Leaf"),
+                fields: [five].into(),
+                source_order: [0].into(),
+            },
+            nominal_ty("Leaf"),
+        );
+        let six = f.inst(D::Const(6), SemanticImportType::I32);
+        let other = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Leaf"),
+                fields: [six].into(),
+                source_order: [0].into(),
+            },
+            nominal_ty("Leaf"),
+        );
+        let mid = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Mid"),
+                fields: [leaf, other].into(),
+                source_order: [0, 1].into(),
+            },
+            nominal_ty("Mid"),
+        );
+        let top = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Top"),
+                fields: [mid].into(),
+                source_order: [0].into(),
+            },
+            nominal_ty("Top"),
+        );
+        let live = f.inst(D::StorageLive { slot: 0 }, nominal_ty("Top"));
+        let alloc = f.inst(D::Alloc { slot: 0, init: top }, SemanticImportType::Unit);
+        let binding = f.inst(
+            D::Block {
+                statements: [live].into(),
+                value: alloc,
+            },
+            SemanticImportType::Unit,
+        );
+        let deep_place = f.place(
+            AirPlaceBase::Local(0),
+            nominal_ty("Top"),
+            &[
+                SemanticBodyProjection::Field {
+                    struct_key: NominalInstanceKey::Named("Top"),
+                    field_index: 0,
+                },
+                SemanticBodyProjection::Field {
+                    struct_key: NominalInstanceKey::Named("Mid"),
+                    field_index: 0,
+                },
+            ],
+        );
+        let read = f.inst(D::PlaceRead { place: deep_place }, nominal_ty("Leaf"));
+        let moved = f.inst(
+            D::MarkMoved {
+                value: read,
+                slot: 0,
+                is_param: false,
+                place: Some(deep_place),
+            },
+            nominal_ty("Leaf"),
+        );
+        let eaten = f.call_inst("eat", &[moved], SemanticImportType::I32);
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [binding, eaten].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let main_cfg = f.build_cfg();
         assert_eq!(
             count_drops(&main_cfg),
             1,
@@ -4273,19 +5295,126 @@ mod tests {
         // drop, but behind a per-field-path runtime drop flag. Statically
         // the CFG contains the guarded drop of field a plus the plain drop
         // of field b, and a distinctive Ne flag test.
-        let source = "struct Inner { v: i32 }\n\
-             struct Outer { a: Inner, b: Inner }\n\
-             drop fn Inner(self) { }\n\
-             fn eat(i: Inner) -> i32 { 0 }\n\
-             fn main() -> i32 {\n\
-                 let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };\n\
-                 let c = true;\n\
-                 if c {\n\
-                     eat(o.a);\n\
-                 }\n\
-                 0\n\
-             }";
-        let main_cfg = build_cfg_named(source, "main");
+        //
+        // `let o = Outer { a: Inner { v: 1 }, b: Inner { v: 2 } };
+        //  let c = true; if c { eat(o.a); } 0`
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        f.struct_nominal(
+            "Inner",
+            &[("v", SemanticImportType::I32)],
+            Some("Inner.__drop"),
+        );
+        f.struct_nominal(
+            "Outer",
+            &[("a", nominal_ty("Inner")), ("b", nominal_ty("Inner"))],
+            None,
+        );
+        f.callable("eat");
+        f.num_locals = 3;
+        let one = f.inst(D::Const(1), SemanticImportType::I32);
+        let field_a = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Inner"),
+                fields: [one].into(),
+                source_order: [0].into(),
+            },
+            nominal_ty("Inner"),
+        );
+        let two = f.inst(D::Const(2), SemanticImportType::I32);
+        let field_b = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Inner"),
+                fields: [two].into(),
+                source_order: [0].into(),
+            },
+            nominal_ty("Inner"),
+        );
+        let outer = f.inst(
+            D::StructInit {
+                struct_key: NominalInstanceKey::Named("Outer"),
+                fields: [field_a, field_b].into(),
+                source_order: [0, 1].into(),
+            },
+            nominal_ty("Outer"),
+        );
+        let live_o = f.inst(D::StorageLive { slot: 0 }, nominal_ty("Outer"));
+        let alloc_o = f.inst(
+            D::Alloc {
+                slot: 0,
+                init: outer,
+            },
+            SemanticImportType::Unit,
+        );
+        let bind_o = f.inst(
+            D::Block {
+                statements: [live_o].into(),
+                value: alloc_o,
+            },
+            SemanticImportType::Unit,
+        );
+        let flag = f.inst(D::BoolConst(true), SemanticImportType::Bool);
+        let live_c = f.inst(D::StorageLive { slot: 2 }, SemanticImportType::Bool);
+        let alloc_c = f.inst(
+            D::Alloc {
+                slot: 2,
+                init: flag,
+            },
+            SemanticImportType::Unit,
+        );
+        let bind_c = f.inst(
+            D::Block {
+                statements: [live_c].into(),
+                value: alloc_c,
+            },
+            SemanticImportType::Unit,
+        );
+        let cond = f.inst(D::Load { slot: 2 }, SemanticImportType::Bool);
+        let place_a = f.place(
+            AirPlaceBase::Local(0),
+            nominal_ty("Outer"),
+            &[SemanticBodyProjection::Field {
+                struct_key: NominalInstanceKey::Named("Outer"),
+                field_index: 0,
+            }],
+        );
+        let read_a = f.inst(D::PlaceRead { place: place_a }, nominal_ty("Inner"));
+        let moved_a = f.inst(
+            D::MarkMoved {
+                value: read_a,
+                slot: 0,
+                is_param: false,
+                place: Some(place_a),
+            },
+            nominal_ty("Inner"),
+        );
+        let eaten = f.call_inst("eat", &[moved_a], SemanticImportType::I32);
+        let then_unit = f.inst(D::UnitConst, SemanticImportType::Unit);
+        let then_value = f.inst(
+            D::Block {
+                statements: [eaten].into(),
+                value: then_unit,
+            },
+            SemanticImportType::Unit,
+        );
+        let branch = f.inst(
+            D::Branch {
+                cond,
+                then_value,
+                else_value: None,
+            },
+            SemanticImportType::Unit,
+        );
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: [bind_o, bind_c, branch].into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let main_cfg = f.build_cfg();
         assert_eq!(
             count_drops(&main_cfg),
             2,
@@ -4305,22 +5434,63 @@ mod tests {
 
     #[test]
     fn cfg_preserves_logical_writability_separately_from_by_ref_abi() {
-        let source = "struct Pair { a: i32, b: i32 }\n\
-             fn borrowed(borrow p: Pair) -> i32 { p.a }\n\
-             fn writable(inout p: Pair) -> i32 { p.a }\n\
-             fn main() -> i32 {\n\
-                 let mut p = Pair { a: 1, b: 2 };\n\
-                 borrowed(borrow p) + writable(inout p)\n\
-             }";
+        // `fn borrowed(borrow p: Pair) -> i32 { p.a }` versus
+        // `fn writable(inout p: Pair) -> i32 { p.a }`: both use the by-ref
+        // ABI, but only inout carries logical write permission.
+        let projected_param_cfg = |name: &str, writable: bool| {
+            let interner = ThreadedRodeo::default();
+            let type_pool = rue_air::TypeInternPool::new();
+            let pair_id = register_fixture_struct(
+                &type_pool,
+                &interner,
+                "Pair",
+                vec![
+                    rue_air::StructField {
+                        name: "a".into(),
+                        ty: Type::I32,
+                    },
+                    rue_air::StructField {
+                        name: "b".into(),
+                        ty: Type::I32,
+                    },
+                ],
+                None,
+            );
+            let pair_ty = Type::new_struct(pair_id);
+            let type_pool = type_pool.freeze();
+            let span = rue_span::Span::new(0, 1);
+            let mut air = AirEditor::new(Type::I32);
+            let place = air
+                .make_place(
+                    AirPlaceBase::Param(0),
+                    pair_ty,
+                    [AirProjection::Field {
+                        struct_id: pair_id,
+                        field_index: 0,
+                    }],
+                )
+                .unwrap();
+            let read = air.add_place_read(place, Type::I32, span);
+            air.add_ret(Some(read), Type::I32, span);
+            build_editor_cfg(
+                air,
+                0,
+                1,
+                name,
+                &type_pool,
+                ParamSlotModes::new(vec![true], vec![writable]),
+                &interner,
+            )
+        };
 
-        let borrow_cfg = build_cfg_named(source, "borrowed");
+        let borrow_cfg = projected_param_cfg("borrowed", false);
         assert!(borrow_cfg.is_param_by_ref(0), "borrow uses the by-ref ABI");
         assert!(
             !borrow_cfg.is_param_writable(0),
             "borrow must not carry logical write permission"
         );
 
-        let inout_cfg = build_cfg_named(source, "writable");
+        let inout_cfg = projected_param_cfg("writable", true);
         assert!(inout_cfg.is_param_by_ref(0), "inout uses the by-ref ABI");
         assert!(
             inout_cfg.is_param_writable(0),
