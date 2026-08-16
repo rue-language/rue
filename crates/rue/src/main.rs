@@ -2124,6 +2124,51 @@ mod tests {
     }
 
     #[test]
+    fn toolchain_acquisition_timing_excludes_the_semantic_probe() {
+        let project = TestDir::new("toolchain-timing-project");
+        let stdlib = TestDir::new("toolchain-timing-std");
+        let plain = project.write("plain.rue", "fn main() -> i32 { 0 }");
+        let fallible = project.write(
+            "fallible.rue",
+            "fn main() -> i32 { let _ = @parse_i64(\"1\"); 0 }",
+        );
+        stdlib.write(
+            "option.rue",
+            "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }",
+        );
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+
+        let measure = |root: &Path| {
+            let data = timing::TimingData::new();
+            let subscriber =
+                tracing_subscriber::registry().with(timing::TimingLayer::new(data.clone()));
+            tracing::subscriber::with_default(subscriber, || {
+                let mut host = FilesystemCompilerHost::open(HostOpenRequest {
+                    root_source: root.to_string_lossy().as_ref(),
+                    source_manifest_path: None,
+                    std_root: Some(&std_root),
+                })
+                .unwrap();
+                host.acquire_reached_toolchain_modules(&CompileOptions::default())
+                    .unwrap();
+            });
+            data.pass_duration_distribution("toolchain_acquisition")
+                .count
+        };
+
+        assert_eq!(
+            measure(&plain),
+            0,
+            "a semantic readiness probe with no park is not acquisition work"
+        );
+        assert_eq!(
+            measure(&fallible),
+            1,
+            "one parked trusted-module acquisition owns one timing span"
+        );
+    }
+
+    #[test]
     fn discovery_parse_and_pipeline_share_the_cli_compile_root() {
         let dir = TestDir::new("timed-discovery-root");
         let main = dir.write(
