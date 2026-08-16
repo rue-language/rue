@@ -20,7 +20,6 @@ use super::body_identity::{
 };
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
-use super::{DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{
@@ -48,9 +47,6 @@ pub(crate) trait BodyEndpointProvider {
         token: SemanticModuleToken,
     ) -> Option<SemanticModuleEndpoint>;
 
-    /// The internal free-function symbol declared as `(file, name)`.
-    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur>;
-
     /// The struct id declared as `(file, name)`.
     fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId>;
 
@@ -76,11 +72,8 @@ pub(crate) trait BodyEndpointProvider {
     /// The signature/binding info for an internal free-function symbol.
     fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo>;
 
-    /// The signature/binding info for a `(struct, name)` member.
-    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
-
-    /// The source name a specialized/internal function name derives from.
-    /// Mirrors `Sema::source_function_name` (identity when unmapped).
+    /// The source name a specialized/internal function name derives from
+    /// (identity when unmapped).
     fn endpoint_source_function_name(&self, name: Spur) -> Spur;
 
     /// The module id whose definition lives in `file`.
@@ -96,105 +89,9 @@ pub(crate) trait BodyEndpointProvider {
     fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
 }
 
-impl<D: DeclarationPhase> BodyEndpointProvider for Sema<'_, D> {
-    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
-        self.interner.get(name)
-    }
-
-    fn endpoint_definition_endpoint(
-        &self,
-        token: SemanticDefinitionToken,
-    ) -> Option<SemanticDefinitionEndpoint> {
-        self.stable_definition_endpoints.get(&token).cloned()
-    }
-
-    fn endpoint_module_endpoint(
-        &self,
-        token: SemanticModuleToken,
-    ) -> Option<SemanticModuleEndpoint> {
-        self.stable_module_endpoints.get(&token).cloned()
-    }
-
-    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.functions_by_file_name.get(&(file, name)).copied()
-    }
-
-    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.structs_by_file_name.get(&(file, name)).copied()
-    }
-
-    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.enums_by_file_name.get(&(file, name)).copied()
-    }
-
-    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.resolve_builtin_struct_name(name)
-            .or_else(|| self.generated_structs.get(&name).copied())
-    }
-
-    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.generated_structs.get(&name).copied()
-    }
-
-    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.resolve_builtin_enum_name(name)
-    }
-
-    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
-        self.anon_struct_identities.get(identity).copied()
-    }
-
-    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
-        self.anon_enum_identities.get(identity).copied()
-    }
-
-    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.functions.get(&name).copied()
-    }
-
-    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.method_info((struct_id, name)).copied()
-    }
-
-    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
-        Sema::source_function_name(self, name)
-    }
-
-    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        (0..self.module_registry.len())
-            .map(|index| ModuleId::new(index as u32))
-            .find(|id| self.module_registry.get_def(*id).file_id.index() == file)
-    }
-
-    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
-        self.type_pool.try_intern_array(element, len).ok()
-    }
-
-    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type> {
-        self.type_pool.try_intern_ptr_const(pointee).ok()
-    }
-
-    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
-        self.type_pool.try_intern_ptr_mut(pointee).ok()
-    }
-}
-
-/// Resolve a definition-token function reference to its internal free-function
-/// symbol. The endpoint, name interning, and by-file lookup all fail to the
-/// same `MissingStableIdentity` in the caller, so a single `None` is faithful.
-pub(in crate::sema) fn resolve_free_function_symbol<P: BodyEndpointProvider>(
-    facts: &P,
-    token: SemanticDefinitionToken,
-) -> Option<Spur> {
-    let endpoint = facts.endpoint_definition_endpoint(token)?;
-    let symbol = facts.endpoint_name_symbol(endpoint.name.as_ref())?;
-    facts.endpoint_function_by_file_name(FileId::new(endpoint.file), symbol)
-}
-
-/// Materialize a canonical type-instance key into a concrete [`Type`]. The
-/// provider-generic form of `body_analysis::materialize_instance_type`: an exact
-/// transcription of the epoch code, with every table read routed through
-/// `facts` and every failure mapped to `MissingStableIdentity`.
+/// Materialize a canonical type-instance key into a concrete [`Type`], with
+/// every table read routed through `facts` and every failure mapped to
+/// `MissingStableIdentity`.
 pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
     facts: &P,
     value: &crate::TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
@@ -501,26 +398,23 @@ where
         self.identity.pool_mut()?.find_or_create_anon(durable).ok()
     }
 
-    /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
-    /// through the pool — the provider-facing port of the epoch's
-    /// `BoundSema::install_well_known_option_types` (RUE-1091 r6c). `nominals`
-    /// are the durable identities of the trusted-std `Option` enums the
-    /// per-body demand loop resolved; each mints through the pool's ordinary
-    /// anonymous machinery so its full materialization is byte-identical to
-    /// the epoch install's, and each is recorded under the export-as-produced
-    /// ruling: the installing body EXPORTS these identities as produced
-    /// anonymous nominals (the provider baseline subtraction consults
-    /// [`Self::is_well_known_option_identity`]), never leaking them as
-    /// imports. `option_by_payload` records the demand map fallible-intrinsic
-    /// resolution consults. Fail-closed: `None` on any refusal (non-enum
-    /// shape, absent shape, digest collision, a registry pair naming an
-    /// identity the install never minted, unresolvable registry type) —
-    /// a refusal is fatal for the requesting body, exactly as the epoch's
-    /// failed install fails the body query deterministically. A refusal also
-    /// POISONS the pool's well-known registry: repeat installs re-error (still
-    /// `None` here) and the accessors below answer as if nothing was installed
-    /// — no observable partial success, matching the atomicity of the epoch's
-    /// by-value install (which drops the whole mutated `BoundSema` on failure).
+    /// Install the per-body well-known `Option(payload)` registry (RUE-1112,
+    /// RUE-1091 r6c) through the pool. `nominals` are the durable identities
+    /// of the trusted-std `Option` enums the per-body demand loop resolved;
+    /// each mints through the pool's ordinary anonymous machinery so its full
+    /// materialization matches an ordinary annotation/comptime-path
+    /// materialization exactly, and each is recorded under the
+    /// export-as-produced ruling: the installing body EXPORTS these
+    /// identities as produced anonymous nominals (the provider baseline
+    /// subtraction consults [`Self::is_well_known_option_identity`]), never
+    /// leaking them as imports. `option_by_payload` records the demand map
+    /// fallible-intrinsic resolution consults. Fail-closed: `None` on any
+    /// refusal (non-enum shape, absent shape, digest collision, a registry
+    /// pair naming an identity the install never minted, unresolvable
+    /// registry type) — a refusal is fatal for the requesting body. A refusal
+    /// also POISONS the pool's well-known registry: repeat installs re-error
+    /// (still `None` here) and the accessors below answer as if nothing was
+    /// installed — no observable partial success.
     pub fn install_well_known_option_types(
         &self,
         nominals: &[crate::AnonymousNominalKey<K, M>],
@@ -998,14 +892,6 @@ where
         self.overlay.borrow().module_tokens.get(&token).copied()
     }
 
-    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.overlay
-            .borrow()
-            .functions_by_file_name
-            .get(&(file.index(), name))
-            .map(|(symbol, _)| *symbol)
-    }
-
     fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
         let key = self
             .overlay
@@ -1154,13 +1040,6 @@ where
                 },
             )
             .ok()
-    }
-
-    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        // The shared registry preserves Sema's anonymous-before-named order.
-        // Named entries are installed from the exact call fact before analysis
-        // consumes the endpoint view; both facades then observe one authority.
-        self.method_info(struct_id, name)
     }
 
     fn endpoint_source_function_name(&self, name: Spur) -> Spur {

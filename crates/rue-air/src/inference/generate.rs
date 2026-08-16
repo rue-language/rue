@@ -706,7 +706,7 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Convert a resolved `Type` into an `InferType`, representing arrays
     /// structurally so they unify with array-literal expressions. Mirrors
-    /// `Sema::type_to_infer_type`.
+    /// semantic analysis's type-to-infer-type lowering.
     fn type_to_infer(&self, ty: Type) -> InferType {
         match ty.kind() {
             TypeKind::Array(array_id) => {

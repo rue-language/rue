@@ -2,8 +2,8 @@
 //!
 //! This category is the single owner of semantic places and the state changes
 //! caused by reading, writing, moving, copying, borrowing, and reinitializing
-//! them. It extends the canonical [`BodySema`] rather than introducing peer
-//! analysis state.
+//! them. It extends the canonical body-analysis engine rather than
+//! introducing peer analysis state.
 
 use super::super::context::{LocalVar, VariableMoveState};
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
@@ -4857,7 +4857,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `borrow arr` (where `arr: [T; N]`) passed to a `borrow s: [T]` parameter
     /// is coerced to a by-value slice `{ptr: @raw(arr[0]), len: N}`, which flows
     /// through the existing by-value aggregate ABI (the parameter is by-value —
-    /// see [`crate::sema::Sema`] parameter setup). All other arguments retain
+    /// see the host's parameter setup). All other arguments retain
     /// the ordinary by-value/by-reference analysis in this same chokepoint.
     ///
     /// A `borrow` operand that denotes no existing place is elaborated here
@@ -4927,7 +4927,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         result
     }
 
-    /// The argument loop behind [`Sema::analyze_call_args_coerced`], factored
+    /// The argument loop behind [`Self::analyze_call_args_coerced`], factored
     /// out so the loan frame is popped on every exit path.
     fn analyze_call_args_coerced_inner<A>(
         &mut self,

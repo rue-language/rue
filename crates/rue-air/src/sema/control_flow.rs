@@ -1,7 +1,7 @@
 //! Control-flow expression semantic analysis.
 //!
 //! This module owns branch, loop, match, try, return, and block analysis.
-//! The methods operate directly on the canonical [`BodySema`] state so
+//! The methods operate directly on the shared body-analysis engine state so
 //! control-flow lowering does not introduce a peer analysis context.
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};

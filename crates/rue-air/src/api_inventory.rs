@@ -14,43 +14,6 @@ fn peer_one_body_authority_cannot_return() {
 }
 
 #[test]
-fn reusable_specialization_candidates_have_one_indexed_first_wins_authority() {
-    let sema = include_str!("sema/mod.rs");
-    let consumer = include_str!("specialize.rs");
-
-    assert!(sema.contains("reusable_specialized_bodies: HashMap<"));
-    assert!(consumer.contains("reusable_specialized_bodies.remove(&identity)"));
-    assert!(!consumer.contains(".position(|candidate| candidate.identity == identity)"));
-}
-
-#[test]
-fn declaration_type_dependency_admission_is_deterministic_and_subquadratic() {
-    let sema = include_str!("sema/mod.rs");
-    let typeck = include_str!("sema/typeck.rs");
-    let declarations = include_str!("sema/declarations.rs");
-    let output = include_str!("sema/analysis.rs");
-
-    assert!(
-        sema.contains("declaration_type_dependency_index: HashSet<DeclarationTypeDependencyEvent>")
-    );
-    assert!(typeck.contains("declaration_type_dependency_index.insert(event.clone())"));
-    assert!(!typeck.contains("declaration_type_dependencies.contains(&event)"));
-    assert!(declarations.contains("declaration_type_dependency_index.insert(event.clone())"));
-    assert!(output.contains("sema.declaration_type_dependencies.sort()"));
-    assert!(output.contains("baseline_declaration_type_dependency_index"));
-}
-
-#[test]
-fn deferred_generic_signature_lookup_has_one_first_wins_index() {
-    let manifest = include_str!("sema/binding_manifest.rs");
-
-    assert!(manifest.contains("let mut generic_name_indices = HashMap::new()"));
-    assert!(manifest.contains(".entry(param.name)\n                .or_insert(index as u32)"));
-    assert!(manifest.contains("generic_name_indices\n                    .get(symbol)"));
-    assert!(!manifest.contains(".position(|name| self.interner.resolve(name) == syntax)"));
-}
-
-#[test]
 fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     let typeck = include_str!("sema/typeck.rs");
 
@@ -61,40 +24,6 @@ fn type_syntax_dependency_admission_indexes_only_the_large_case() {
     assert!(typeck.contains("if index.insert(dependency.clone())"));
     assert!(typeck.contains("index.clear()"));
     assert!(typeck.contains(".len() == LINEAR_ADMISSION_LIMIT"));
-}
-
-#[test]
-fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
-    let analysis = include_str!("sema/analysis.rs");
-    let manifest = include_str!("sema/binding_manifest.rs");
-    let sema = include_str!("sema/mod.rs");
-    let sources = [analysis, manifest, sema].concat();
-
-    for retired in [
-        "fn analyze_all_function_bodies(",
-        "fn analyze_all_function_bodies_with_work(",
-        "fn analyze_all_function_bodies_mut(",
-        "fn analyze_all_bodies(",
-        "fn analyze_all_bodies_with_work(",
-        ".analyze_all_bodies()",
-        ".analyze_all_bodies_with_work()",
-    ] {
-        assert!(
-            !sources.contains(retired),
-            "retired production body authority returned: {retired}"
-        );
-    }
-    for oracle in [
-        "fn analyze_all_function_bodies_for_test(",
-        "fn analyze_all_function_bodies_with_work_for_test(",
-        "fn analyze_all_function_bodies_mut_for_test(",
-        "fn analyze_all_bodies_for_test(",
-    ] {
-        assert!(
-            sources.contains(oracle),
-            "missing explicit whole-program test oracle: {oracle}"
-        );
-    }
 }
 
 #[test]
@@ -137,185 +66,6 @@ fn accessor_producers_do_not_spell_their_own_declaration_diagnostics() {
     assert!(
         !include_str!("sema/ordinary_engine.rs").contains("accessor_signature("),
         "the ordinary body engine regained an accessor signature re-check"
-    );
-}
-
-#[test]
-fn canonical_import_consumers_do_not_grow_resolution_policy() {
-    let consumers = [
-        include_str!("canonical_imports.rs"),
-        include_str!("sema/file_paths.rs"),
-        include_str!("sema/analysis/intrinsics.rs"),
-        include_str!("sema/declarations.rs"),
-    ]
-    .concat();
-
-    assert_eq!(
-        consumers.matches("pub trait CanonicalImportView {").count(),
-        1,
-        "AIR must expose exactly one borrowing import-consumption boundary"
-    );
-    assert!(consumers.contains("fn visit_resolved_sites("));
-    assert!(consumers.contains("CanonicalImportContext"));
-
-    for retired in [
-        ["SemanticResolved", "Import"].concat(),
-        ["SemanticModule", "Identity"].concat(),
-        ["ParsedImport", "Site"].concat(),
-        ["Module", "Path"].concat(),
-        ["Dir", "Resolution"].concat(),
-        ["Vec<(String, u32, String, String)>"].concat(),
-    ] {
-        assert!(
-            !consumers.contains(&retired),
-            "AIR import consumer regained a peer representation: {retired}"
-        );
-    }
-
-    for forbidden_policy in [
-        ["std::", "fs"].concat(),
-        ["fs", "::"].concat(),
-        ["std::", "env"].concat(),
-        ["RUE_STD", "_PATH"].concat(),
-        ["canonicalize", "("].concat(),
-        [".exists", "("].concat(),
-        ["candidate_", "groups"].concat(),
-        ["resolve_explicit_", "candidates"].concat(),
-    ] {
-        assert!(
-            !consumers.contains(&forbidden_policy),
-            "AIR import consumer must not own discovery policy: {forbidden_policy}"
-        );
-    }
-}
-
-#[test]
-fn const_classification_has_one_tagged_authority_and_no_retired_maps() {
-    let air_production = [
-        include_str!("call_abi.rs"),
-        include_str!("canonical_imports.rs"),
-        include_str!("drop_glue_names.rs"),
-        include_str!("ffi_predicates.rs"),
-        include_str!("inference/constraint.rs"),
-        include_str!("inference/generate.rs"),
-        include_str!("inference/mod.rs"),
-        include_str!("inference/types.rs"),
-        include_str!("inference/unify.rs"),
-        include_str!("inst.rs"),
-        include_str!("inst/payload_support.rs"),
-        include_str!("intern_pool.rs"),
-        include_str!("layout.rs"),
-        include_str!("lib.rs"),
-        include_str!("module_registry.rs"),
-        include_str!("param_arena.rs"),
-        include_str!("path_norm.rs"),
-        include_str!("runtime_call.rs"),
-        include_str!("scope.rs"),
-        include_str!("sema/aggregates.rs"),
-        include_str!("sema/analysis.rs"),
-        include_str!("sema/analysis/anon_methods.rs"),
-        include_str!("sema/analysis/builtin_ops.rs"),
-        include_str!("sema/analysis/calls.rs"),
-        include_str!("sema/analysis/functions.rs"),
-        include_str!("sema/analysis/instructions.rs"),
-        include_str!("sema/analysis/intrinsics.rs"),
-        include_str!("sema/analysis/ownership.rs"),
-        include_str!("sema/analysis/pointers.rs"),
-        include_str!("sema/analysis/type_inference.rs"),
-        include_str!("sema/analyze_ops.rs"),
-        include_str!("sema/anon_structs.rs"),
-        include_str!("sema/binding_manifest.rs"),
-        include_str!("sema/builtins.rs"),
-        include_str!("sema/comptime_eval.rs"),
-        include_str!("sema/context.rs"),
-        include_str!("sema/control_flow.rs"),
-        include_str!("sema/declaration_index.rs"),
-        include_str!("sema/declarations.rs"),
-        include_str!("sema/file_paths.rs"),
-        include_str!("sema/inference_ctx.rs"),
-        include_str!("sema/info.rs"),
-        include_str!("sema/known_symbols.rs"),
-        include_str!("sema/metadata.rs"),
-        include_str!("sema/mod.rs"),
-        include_str!("sema/output.rs"),
-        include_str!("sema/semantic_body_export.rs"),
-        include_str!("sema/typeck.rs"),
-        include_str!("sema/visibility.rs"),
-        include_str!("semantic_body.rs"),
-        include_str!("semantic_identity.rs"),
-        include_str!("semantic_import.rs"),
-        include_str!("semantic_type_resolution.rs"),
-        include_str!("specialize.rs"),
-        include_str!("type_encoding.rs"),
-        include_str!("type_properties.rs"),
-        include_str!("types.rs"),
-    ]
-    .concat();
-
-    assert_eq!(
-        air_production
-            .matches("const_resolutions: HashMap<")
-            .count(),
-        1,
-        "AIR must retain exactly one tagged const-resolution table"
-    );
-    assert_eq!(
-        air_production
-            .matches("pub(crate) enum ConstResolution")
-            .count(),
-        1,
-        "AIR must classify value constants and module bindings in one internal enum"
-    );
-    for retired_map in [
-        ["constants_by_", "file_name: HashMap"].concat(),
-        ["module_", "bindings: HashMap"].concat(),
-    ] {
-        assert!(
-            !air_production.contains(&retired_map),
-            "retired const storage map returned: {retired_map}"
-        );
-    }
-}
-
-#[test]
-fn const_resolution_uses_only_shell_bound_candidate_locators() {
-    let declaration_index = include_str!("sema/declaration_index.rs")
-        .split("#[cfg(test)]")
-        .next()
-        .unwrap();
-    let resolver = include_str!("sema/declarations.rs");
-    let shell_boundary = include_str!("sema/binding_manifest.rs");
-
-    for retired_index_authority in [
-        ["const_", "candidates: Vec<InstRef>"].concat(),
-        ["const_candidates_by_", "file_name: HashMap"].concat(),
-        ["fn all_const_", "candidates("].concat(),
-    ] {
-        assert!(
-            !declaration_index.contains(&retired_index_authority),
-            "RIR declaration index regained const lookup authority: {retired_index_authority}"
-        );
-    }
-    for retired_resolver_read in [
-        ["declaration_index.", "const_candidates("].concat(),
-        ["declaration_index.", "all_const_candidates("].concat(),
-    ] {
-        assert!(
-            !resolver.contains(&retired_resolver_read),
-            "const resolver bypassed the shell-bound candidate set: {retired_resolver_read}"
-        );
-    }
-    assert_eq!(
-        shell_boundary
-            .matches("self.sema.bound_const_candidates =")
-            .count(),
-        1,
-        "declaration resolution must install the exact shell-bound const set once"
-    );
-    assert_eq!(
-        resolver.matches(".bound_const_candidates").count(),
-        4,
-        "all const occurrence traversal and point lookup must use the bound set"
     );
 }
 
@@ -404,7 +154,6 @@ fn canonical_type_surface_has_one_checked_handle_and_private_storage_ids() {
     assert!(public_surface.contains("pub struct TypeInternPool"));
     assert!(pool.contains("pub fn all_types(&self) -> impl ExactSizeIterator<Item = Type> + '_"));
     assert!(pool.contains("pub(crate) fn set_struct_destructor("));
-    assert!(pool.contains("pub(crate) fn requalify_struct_destructor("));
 }
 
 #[test]
@@ -481,12 +230,20 @@ fn air_payload_ownership_and_validation_boundary_cannot_regress() {
     assert_eq!(inst.matches("word_range!(Air").count(), 10);
     assert_eq!(crate::AIR_PAYLOAD_FAMILY_NAMES.len(), 10);
 
-    // Semantic consumers receive an immutable RIR. Its payload fields and
-    // stores remain inaccessible, so this lower-level entry point is not a
+    // Semantic consumers receive an immutable RIR: the provider host reads
+    // bodies through `BodyRirView`/`BodyRirBundle` borrows and no semantic
+    // construction takes a mutable RIR, so no body-analysis entry point is a
     // payload escape hatch.
-    let sema = include_str!("sema/mod.rs");
-    assert!(sema.contains("pub fn new_synthetic(\n        rir: &'a Rir,"));
-    assert!(!sema.contains("&'a mut Rir"));
+    let identity = include_str!("sema/body_identity.rs");
+    assert!(identity.contains("pub fn from_parts(rir: &'a Rir,"));
+    let sema_sources = [
+        include_str!("sema/mod.rs"),
+        include_str!("sema/body_identity.rs"),
+        include_str!("sema/provider_body_host.rs"),
+        include_str!("sema/ordinary_engine.rs"),
+    ]
+    .concat();
+    assert!(!sema_sources.contains("&'a mut Rir"));
 }
 
 #[test]
@@ -599,51 +356,110 @@ fn semantic_definition_taxonomy_has_one_enum_declaration() {
 }
 
 #[test]
-fn source_owned_declaration_producers_are_test_only_entrypoints() {
-    let sema = include_str!("sema/mod.rs");
-    let shells = include_str!("sema/binding_manifest.rs");
-    let declarations = include_str!("sema/declarations.rs");
+fn retired_source_owned_sema_plane_cannot_return() {
+    // RUE-1538: the source-owned `Sema` declaration/body plane is deleted.
+    // Body analysis has exactly one production shape: the compiler's query
+    // graph supplies durable facts through `BodyFactProvider`, and the
+    // provider host drives the shared engine over one demanded body. This
+    // gate holds the deletion closed three ways.
+    //
+    // (a) No retired driver, phase type, or install entry point may reappear
+    // anywhere in AIR's production sources. Needles are spelled with
+    // `concat!` so the gate does not match itself; `_tests.rs` files and the
+    // test fixture are excluded because they spell needle fragments while
+    // documenting the migration.
+    let production = [
+        include_str!("lib.rs"),
+        include_str!("specialize.rs"),
+        include_str!("sema/aggregate_resolution.rs"),
+        include_str!("sema/aggregates.rs"),
+        include_str!("sema/analysis.rs"),
+        include_str!("sema/analysis/builtin_ops.rs"),
+        include_str!("sema/analysis/calls.rs"),
+        include_str!("sema/analysis/instructions.rs"),
+        include_str!("sema/analysis/intrinsics.rs"),
+        include_str!("sema/analysis/ownership.rs"),
+        include_str!("sema/analysis/pointers.rs"),
+        include_str!("sema/analysis/type_inference.rs"),
+        include_str!("sema/analyze_ops.rs"),
+        include_str!("sema/anon_structs.rs"),
+        include_str!("sema/binding_manifest.rs"),
+        include_str!("sema/body_endpoint.rs"),
+        include_str!("sema/body_identity.rs"),
+        include_str!("sema/call_resolution.rs"),
+        include_str!("sema/comptime_eval.rs"),
+        include_str!("sema/context.rs"),
+        include_str!("sema/control_flow.rs"),
+        include_str!("sema/declaration_index.rs"),
+        include_str!("sema/declarations.rs"),
+        include_str!("sema/fact_mode.rs"),
+        include_str!("sema/inference_ctx.rs"),
+        include_str!("sema/info.rs"),
+        include_str!("sema/known_symbols.rs"),
+        include_str!("sema/mod.rs"),
+        include_str!("sema/ordinary_engine.rs"),
+        include_str!("sema/output.rs"),
+        include_str!("sema/provider.rs"),
+        include_str!("sema/provider_body_host.rs"),
+        include_str!("sema/provider_module_registry.rs"),
+        include_str!("sema/semantic_body_export.rs"),
+        include_str!("sema/typeck.rs"),
+        include_str!("sema/visibility.rs"),
+    ]
+    .concat();
+    for retired in [
+        concat!("new_", "synthetic"),
+        concat!("bind_", "declarations"),
+        concat!("analyze_all", "_for_test"),
+        concat!("analyze_all", "_bodies"),
+        concat!("analyze_all", "_function_bodies"),
+        concat!("predeclare_", "declaration_shells"),
+        concat!("analyze_function_bodies", "_lazy"),
+        concat!("compose_", "queried_bodies"),
+        concat!("resolve_", "declarations"),
+        concat!("install_", "declaration_semantics"),
+        concat!("install_", "ordinary_body_candidates"),
+        concat!("install_", "stable_identity_endpoints"),
+        concat!("install_", "body_owner_tokens"),
+        concat!("run_", "to_fixpoint"),
+        concat!("create_", "specialized_function"),
+        concat!("Bound", "Sema"),
+        concat!("Body", "Sema"),
+        concat!("Sema", "<"),
+        concat!("Declaration", "Shells"),
+        concat!("Declaration", "Phase"),
+        concat!("Mutable", "Declarations"),
+        concat!("Source", "Declarations"),
+        concat!("Speci", "alizer"),
+    ] {
+        assert!(
+            !production.contains(retired),
+            "retired source-owned Sema plane returned: {retired}"
+        );
+    }
 
-    for gated_entrypoint in [
-        "#[cfg(test)]\n    pub fn analyze_all(",
-        "#[cfg(test)]\n    pub fn bind_declarations(",
-    ] {
-        assert!(
-            sema.contains(gated_entrypoint),
-            "source-owned producer escaped its test-only gate: {gated_entrypoint}"
-        );
-    }
-    for gated_entrypoint in [
-        "#[cfg(test)]\n    pub fn resolve_declarations(",
-        "#[cfg(test)]\n    pub fn resolve_declarations_with_work(",
-    ] {
-        assert!(
-            shells.contains(gated_entrypoint),
-            "source-owned shell producer escaped its test-only gate: {gated_entrypoint}"
-        );
-    }
-    assert!(
-        declarations.contains("#[cfg(test)]\n    pub(crate) fn resolve_declarations("),
-        "source-owned resolver escaped its test-only gate"
-    );
-    assert!(sema.contains("#[doc(hidden)]\n    pub fn predeclare_declaration_shells_for_test("));
-    // The shell producer is consumed only by the frozen test-support adapters:
-    // `bind_declarations_for_test` (predeclare + resolve) and
-    // `analyze_all_for_test_with_stable_endpoints` (predeclare + authoritative
-    // stable-identity endpoint install + resolve + analyze). Both are doc-hidden
-    // `_for_test` entry points; no production path calls the shell producer.
+    // (b) Exactly one implementation of the body-analysis host contract
+    // exists, and it is the provider host. A renamed source-owned host
+    // cannot reappear without tripping this count.
     assert_eq!(
-        sema.matches(".predeclare_declaration_shells_for_test()")
-            .count(),
-        2,
-        "only the frozen test-support adapters may call the shell producer"
+        production.matches("OrdinaryBodyAnalysisHost for").count(),
+        1,
+        "body analysis must have exactly one host implementation"
     );
-    let shell_production = shells
-        .split("\n#[cfg(test)]\nmod ")
-        .next()
-        .expect("binding manifest production prefix");
+    let provider_host = include_str!("sema/provider_body_host.rs");
     assert!(
-        !shell_production.contains(".predeclare_declaration_shells_for_test()"),
-        "AIR production called the frozen declaration-shell adapter"
+        provider_host.contains("OrdinaryBodyAnalysisHost for ProviderBodyHost<"),
+        "the one host implementation must be the provider host"
+    );
+
+    // (c) The production ordinary-body entry point exists and drives the
+    // shared engine.
+    assert!(
+        provider_host.contains("pub fn analyze_provider_ordinary_body"),
+        "the provider ordinary-body entry point is the production driver"
+    );
+    assert!(
+        provider_host.contains("OrdinaryBodyEngine::new"),
+        "the provider host must construct the shared body engine"
     );
 }

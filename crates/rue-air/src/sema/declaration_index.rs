@@ -1,6 +1,6 @@
 //! Snapshot-local lookup tables for raw RIR declaration candidates.
 //!
-//! This index is an implementation detail of one [`super::Sema`] invocation.
+//! This index is an implementation detail of one semantic epoch's RIR view.
 //! Its [`InstRef`] values, [`FileId`] values, and [`Spur`] values are meaningful
 //! only with the exact RIR and interner epoch from which it was built. They are
 //! arena locators, not durable semantic or tooling identities.
@@ -72,68 +72,9 @@ pub(super) struct RirDeclarationIndex {
     free_functions_by_name: HashMap<Spur, Vec<InstRef>>,
     named_methods: Vec<InstRef>,
     anonymous_methods: Vec<InstRef>,
-    named_method_refs: HashSet<InstRef>,
-    anonymous_method_refs: HashSet<InstRef>,
     destructors: Vec<RirDestructorDeclaration>,
     shell_declarations: Vec<RirShellDeclaration>,
     work: RirDeclarationIndexWork,
-}
-
-/// Exact current-epoch locators for the const occurrence set admitted at the
-/// declaration-shell boundary.
-///
-/// Canonical compiler epochs build this index from query-owned shells after
-/// they have been joined to the current RIR arena. Synthetic component tests
-/// use shells discovered from that synthetic arena. The declaration resolver
-/// never falls back to the independent RIR declaration index.
-#[derive(Debug)]
-pub(super) struct BoundConstCandidateIndex {
-    candidates: Vec<InstRef>,
-    candidate_set: HashSet<InstRef>,
-    candidates_by_file_name: HashMap<(FileId, Spur), Vec<InstRef>>,
-}
-
-impl BoundConstCandidateIndex {
-    pub(super) fn new(rir: &Rir, candidates: impl IntoIterator<Item = (u32, InstRef)>) -> Self {
-        let mut candidates = candidates.into_iter().collect::<Vec<_>>();
-        candidates.sort_by_key(|(source_order, declaration)| (*source_order, declaration.as_u32()));
-        let mut candidates_by_file_name = HashMap::<(FileId, Spur), Vec<InstRef>>::new();
-        let candidates: Vec<InstRef> = candidates
-            .into_iter()
-            .map(|(_, declaration)| {
-                let inst = rir.get(declaration);
-                let InstData::ConstDecl { name, .. } = inst.data else {
-                    unreachable!("bound const candidate must locate a ConstDecl")
-                };
-                candidates_by_file_name
-                    .entry((inst.span.file_id, name))
-                    .or_default()
-                    .push(declaration);
-                declaration
-            })
-            .collect();
-        let candidate_set = candidates.iter().copied().collect();
-        Self {
-            candidates,
-            candidate_set,
-            candidates_by_file_name,
-        }
-    }
-
-    pub(super) fn candidates(&self, file_id: FileId, name: Spur) -> &[InstRef] {
-        self.candidates_by_file_name
-            .get(&(file_id, name))
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-    }
-
-    pub(super) fn all_candidates(&self) -> &[InstRef] {
-        &self.candidates
-    }
-
-    pub(super) fn contains(&self, declaration: InstRef) -> bool {
-        self.candidate_set.contains(&declaration)
-    }
 }
 
 impl RirDeclarationIndex {
@@ -265,8 +206,6 @@ impl RirDeclarationIndex {
             free_functions_by_name,
             named_methods,
             anonymous_methods,
-            named_method_refs,
-            anonymous_method_refs,
             destructors,
             shell_declarations,
             work,
@@ -297,35 +236,13 @@ impl RirDeclarationIndex {
         candidates.first().copied()
     }
 
-    /// Every source free-function declaration in deterministic RIR order.
-    /// Used to verify that declaration binding has materialized the complete
-    /// source-function namespace before constructing `BoundSema`.
-    pub(super) fn all_free_functions(&self) -> &[InstRef] {
-        &self.free_functions
-    }
-
-    #[inline]
-    pub(super) fn is_named_method(&self, inst_ref: InstRef) -> bool {
-        self.named_method_refs.contains(&inst_ref)
-    }
-
     pub(super) fn shell_declarations(&self) -> &[RirShellDeclaration] {
         &self.shell_declarations
     }
 
-    #[inline]
-    pub(super) fn is_anonymous_method(&self, inst_ref: InstRef) -> bool {
-        self.anonymous_method_refs.contains(&inst_ref)
-    }
-
-    #[inline]
-    pub(super) fn is_type_scoped_method(&self, inst_ref: InstRef) -> bool {
-        self.is_named_method(inst_ref) || self.is_anonymous_method(inst_ref)
-    }
-
     #[cfg(test)]
     fn free_functions(&self) -> &[InstRef] {
-        self.all_free_functions()
+        &self.free_functions
     }
 
     #[cfg(test)]
@@ -348,7 +265,7 @@ impl RirDeclarationIndex {
 
     /// Named destructor declarations in exact RIR order.
     ///
-    /// These records remain private to one `Sema` invocation: their arena and
+    /// These records remain private to one semantic epoch: their arena and
     /// interner handles are not durable semantic identities.
     pub(super) fn destructors(&self) -> &[RirDestructorDeclaration] {
         &self.destructors
@@ -357,16 +274,12 @@ impl RirDeclarationIndex {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use lasso::ThreadedRodeo;
-    use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
     use rue_rir::{AstGen, InstData};
 
     use super::*;
-    use crate::sema::Sema;
 
     fn lower_files(files: &[(&str, FileId)]) -> (Rir, ThreadedRodeo) {
         let mut interner = ThreadedRodeo::default();
@@ -403,19 +316,6 @@ mod tests {
                 .all(|pair| pair[0].as_u32() < pair[1].as_u32()),
             "declarations are not in RIR order: {refs:?}"
         );
-    }
-
-    fn bound_const_candidates(rir: &Rir, index: &RirDeclarationIndex) -> BoundConstCandidateIndex {
-        BoundConstCandidateIndex::new(
-            rir,
-            index.shell_declarations().iter().filter_map(|candidate| {
-                matches!(
-                    rir.get(candidate.declaration).data,
-                    InstData::ConstDecl { .. }
-                )
-                .then_some((candidate.source_order, candidate.declaration))
-            }),
-        )
     }
 
     #[test]
@@ -456,22 +356,12 @@ mod tests {
         assert_rir_order(index.free_functions());
         assert_rir_order(index.named_methods());
         assert_rir_order(index.anonymous_methods());
-        for &method in index.named_methods() {
-            assert!(index.is_named_method(method));
-            assert!(index.is_type_scoped_method(method));
-            assert!(!index.is_anonymous_method(method));
-        }
-        for &method in index.anonymous_methods() {
-            assert!(index.is_anonymous_method(method));
-            assert!(index.is_type_scoped_method(method));
-            assert!(!index.is_named_method(method));
-        }
-
         let collide = interner.get("collide").unwrap();
-        let free_collide = index
-            .first_free_function(collide, Some(FileId::new(7)))
-            .unwrap();
-        assert!(!index.is_type_scoped_method(free_collide));
+        assert!(
+            index
+                .first_free_function(collide, Some(FileId::new(7)))
+                .is_some()
+        );
 
         let destructors = index.destructors();
         assert_eq!(destructors.len(), 1);
@@ -481,11 +371,6 @@ mod tests {
             rir.get(destructors[0].declaration).data,
             InstData::DropFnDecl { body, .. } if body == destructors[0].body
         ));
-
-        let alias = interner.get("alias").unwrap();
-        let bound_consts = bound_const_candidates(&rir, &index);
-        assert_eq!(bound_consts.candidates(FileId::new(7), alias).len(), 1);
-        assert_eq!(bound_consts.all_candidates().len(), 1);
 
         let expected_work = RirDeclarationIndexWork {
             build_invocations: 1,
@@ -498,8 +383,6 @@ mod tests {
             const_candidates_indexed: 1,
         };
         assert_eq!(index.work(), expected_work);
-        let sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
-        assert_eq!(sema.rir_declaration_index_work(), expected_work);
     }
 
     #[test]
@@ -542,46 +425,9 @@ mod tests {
             index.first_free_function(same, Some(second)),
             second_candidates.first().copied()
         );
-        let bound_consts = bound_const_candidates(&rir, &index);
-        assert_eq!(bound_consts.candidates(second, same).len(), 1);
-
         let rebuilt = RirDeclarationIndex::new(&rir);
-        let rebuilt_bound_consts = bound_const_candidates(&rir, &rebuilt);
         assert_eq!(rebuilt.work(), index.work());
         assert_eq!(rebuilt.free_functions(), index.free_functions());
-        assert_eq!(
-            rebuilt_bound_consts.candidates(second, same),
-            bound_consts.candidates(second, same)
-        );
-    }
-
-    #[test]
-    fn bound_const_index_admits_only_the_supplied_occurrence_set() {
-        let file = FileId::new(12);
-        let (rir, interner) = lower_files(&[(
-            "const first = 1; const second = 2; fn main() -> i32 { first }",
-            file,
-        )]);
-        let index = RirDeclarationIndex::new(&rir);
-        let const_locators = index
-            .shell_declarations()
-            .iter()
-            .filter(|candidate| {
-                matches!(
-                    rir.get(candidate.declaration).data,
-                    InstData::ConstDecl { .. }
-                )
-            })
-            .map(|candidate| (candidate.source_order, candidate.declaration))
-            .collect::<Vec<_>>();
-        assert_eq!(const_locators.len(), 2);
-
-        let bound = BoundConstCandidateIndex::new(&rir, [const_locators[0]]);
-        let first = interner.get("first").unwrap();
-        let second = interner.get("second").unwrap();
-        assert_eq!(bound.all_candidates(), [const_locators[0].1]);
-        assert_eq!(bound.candidates(file, first), [const_locators[0].1]);
-        assert!(bound.candidates(file, second).is_empty());
     }
 
     #[test]
@@ -619,52 +465,5 @@ mod tests {
                 InstData::DropFnDecl { body, .. } if body == record.body
             ));
         }
-    }
-
-    #[test]
-    fn indexed_consumers_preserve_free_function_identity_and_body() {
-        let file_id = FileId::new(17);
-        let source = r#"
-            struct Named {
-                fn collide() -> i64 { 99 }
-            }
-            const alias = collide;
-            fn collide() -> i32 { 42 }
-            fn main() -> i32 { alias() }
-        "#;
-        let (rir, interner) = lower_files(&[(source, file_id)]);
-        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
-        sema.set_symbol_paths(HashMap::from([(file_id, "pkg/main.rue".to_owned())]));
-        let output = sema.analyze_all().unwrap();
-
-        // A free function's internal symbol is module-qualified from its own
-        // declaration (RUE-1125), and the index selects the free declaration
-        // rather than the same-named associated function that precedes it.
-        let expected_name = "__rue_fn_pkg_2fmain_2erue__collide";
-        let free = output
-            .functions
-            .iter()
-            .find(|function| function.name == expected_name)
-            .unwrap_or_else(|| panic!("missing indexed free function {expected_name}"));
-        assert_eq!(free.air.return_type(), crate::Type::I32);
-        assert!(
-            free.air
-                .iter()
-                .any(|(_, inst)| { matches!(inst.data, crate::AirInstData::Const(42)) })
-        );
-
-        // Collection and early const-alias lookup must choose the free
-        // declaration without confusing the same-named, type-owned
-        // associated declaration for a free candidate.
-        assert!(output.functions.iter().any(|function| {
-            function.name == "main"
-                && function.air.iter().any(|(_, inst)| {
-                    matches!(
-                        inst.data,
-                        crate::AirInstData::Call { name, .. }
-                            if interner.resolve(&name) == expected_name
-                    )
-                })
-        }));
     }
 }

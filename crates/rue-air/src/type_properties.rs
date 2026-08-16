@@ -400,8 +400,8 @@ fn incomplete_lifecycles_allow_graph_construction_but_hide_layout_and_definition
     assert_eq!(pool.validate_structural_child(pointer), Ok(()));
     assert_eq!(pool.validate_structural_child(by_value), Ok(()));
 
-    // Completion may temporarily form a by-value cycle. Sema's later
-    // check_recursive_value_types pass is the authority that reports E0483;
+    // Completion may temporarily form a by-value cycle. Semantic analysis's
+    // recursive-value-type check is the authority that reports E0483;
     // layout reads stay unavailable until completion.
     pool.complete_declared_struct(
         node,

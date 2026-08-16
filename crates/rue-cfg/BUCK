@@ -8,11 +8,6 @@ rue_crate(
         "//crates/rue-span:rue-span",
         "//third-party:lasso",
     ],
-    test_deps = [
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-parser:rue-parser",
-        "//crates/rue-rir:rue-rir",
-    ],
 )
 
 native.rust_library(

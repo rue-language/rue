@@ -15,9 +15,4 @@ rue_crate(
         "//third-party:smallvec",
         "//third-party:tracing",
     ],
-    test_deps = [
-        "//crates/rue-lexer:rue-lexer",
-        "//crates/rue-parser:rue-parser",
-        "//crates/rue-rir:rue-rir",
-    ],
 )

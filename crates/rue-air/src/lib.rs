@@ -13,7 +13,6 @@
 #[cfg(test)]
 mod api_inventory;
 pub mod call_abi;
-mod canonical_imports;
 pub mod declaration_validation;
 pub mod drop_glue_names;
 pub mod ffi_predicates;
@@ -43,7 +42,6 @@ pub use call_abi::{
     NativeAbiTypeFacts, NativeCallAbi, ReturnClass, ScalarAbiExtension, TargetCAbiFlavor,
     TargetCCallAbi, is_slot_identical_layout, native_return_register_budget,
 };
-pub use canonical_imports::CanonicalImportView;
 pub use ffi_predicates::{
     FfiPredicate, FfiPredicateFailure, FfiRejectReason, FfiTypePool, c_ffi_safe,
     c_passable_by_value, check_c_layout, has_c_layout, repr_c_marker_eligible,
@@ -75,35 +73,29 @@ pub use runtime_call::{
     RuntimeOperandOrigin,
 };
 pub use sema::{
-    AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
-    BodyAnalysisWork, BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind,
-    BodyOwnerToken, BodyRirBundle, BodyRirIndexAttribution, BodyRirView, BoundSema,
-    BuiltinTypeCallHead, ConstInfo, ConstValue, DeclarationBindingWork,
-    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationInstallFailure,
-    DeclarationResolutionFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
-    DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
-    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind, DropCopyMetadata,
-    DurableAnonymousMethod, DurableAnonymousMethodType, DurableAnonymousShape,
-    DurableAnonymousSource, DurableBodyLookupSource, DurableBodyModuleBinding,
-    DurableBodySourceLocator, DurableCallableSource, DurableCallableTypeSyntax,
-    DurableComptimeCallOutcome, DurableComptimeDiagnostic, DurableConst, DurableConstSource,
-    DurableFunction, DurableMethod, DurableNominal, DurableNominalBody, DurableNominalSource,
-    DurableReducedComptimeCall, DurableSignatureParameter, DurableTryProducer, FunctionInfo,
-    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent, ImportResolution,
-    MemberCandidate, MemberKind, MethodInfo, NameCandidate, NameResolution,
-    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NominalWellFormedness,
-    OperatorMemberCandidate, OperatorName, ParamSlotModes, ProviderAggregateFacts,
-    ProviderAnonymousBody, ProviderBodyAnalysisState, ProviderBodyWork, ProviderCallFacts,
-    ProviderDefinitionKind, ProviderEndpointFacts, ProviderIdentityContext, ProviderModuleMember,
-    ProviderNamespace, ProviderOrdinaryBody, ProviderQualifiedType, ProviderSpecializedBody,
-    ProviderStructHead, ProviderWellKnownOptionFacts, RirDeclarationIndexWork, Sema, SemaMetadata,
-    SemaOutput, SemanticAnonymousMethodSignature, SemanticAnonymousMethodType,
-    SemanticAnonymousNominalExport, SemanticAnonymousNominalIdentity,
-    SemanticAnonymousNominalShape, SemanticBinding, SemanticBindingManifest,
-    SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
-    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
-    SemanticDefinitionIdentity, SemanticExportConstValue, SemanticExportFailure,
-    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
+    AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisWork,
+    BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
+    BodyRirBundle, BodyRirIndexAttribution, BodyRirView, BuiltinTypeCallHead, ConstInfo,
+    ConstValue, DeclarationBindingWork, DeclarationBuiltinTypeCallHeadDependencyEvent,
+    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
+    DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
+    DeclarationTypeDependencyTargetKind, DropCopyMetadata, DurableAnonymousMethod,
+    DurableAnonymousMethodType, DurableAnonymousShape, DurableAnonymousSource,
+    DurableBodyLookupSource, DurableBodyModuleBinding, DurableBodySourceLocator,
+    DurableCallableSource, DurableCallableTypeSyntax, DurableComptimeCallOutcome,
+    DurableComptimeDiagnostic, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
+    DurableNominal, DurableNominalBody, DurableNominalSource, DurableReducedComptimeCall,
+    DurableSignatureParameter, DurableTryProducer, FunctionInfo, ImplicitDropDependencySourceEvent,
+    ImplicitNamedDestructorDependencyEvent, ImportResolution, MemberCandidate, MemberKind,
+    MethodInfo, NameCandidate, NameResolution, NamedConstDependencyEvent,
+    NamedConstDependencyTargetEvent, NominalWellFormedness, OperatorMemberCandidate, OperatorName,
+    ParamSlotModes, ProviderAggregateFacts, ProviderAnonymousBody, ProviderBodyAnalysisState,
+    ProviderBodyWork, ProviderCallFacts, ProviderDefinitionKind, ProviderEndpointFacts,
+    ProviderIdentityContext, ProviderModuleMember, ProviderNamespace, ProviderOrdinaryBody,
+    ProviderQualifiedType, ProviderSpecializedBody, ProviderStructHead,
+    ProviderWellKnownOptionFacts, RirDeclarationIndexWork, SemanticAnonymousNominalIdentity,
+    SemanticBindingManifestWork, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticDefinitionIdentity, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
     SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
     analyze_provider_anonymous_body, analyze_provider_ordinary_body,

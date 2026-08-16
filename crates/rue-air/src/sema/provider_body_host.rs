@@ -2,7 +2,7 @@
 //!
 //! This receiver owns only body analysis's RIR and compact semantic state. Durable
 //! declaration facts are materialized through the provider-owned fact state as they are
-//! consulted; no declaration epoch or whole-program `Sema` is reachable here.
+//! consulted; no declaration epoch or whole-program analyzer is reachable here.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -375,7 +375,7 @@ pub struct ProviderSpecializedBody<K, M> {
     pub export: crate::SemanticSpecializedBodyExport,
     /// Exact body-local AIR and its issuing domains. The compiler currently
     /// publishes the durable export; the local materializer/CFG cutover can
-    /// consume these without reconstructing a reachable-program Sema epoch.
+    /// consume these without reconstructing a reachable-program semantic epoch.
     pub function: AnalyzedFunction,
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
@@ -2803,9 +2803,6 @@ where
     ) -> Option<crate::SemanticModuleEndpoint> {
         self.endpoint.endpoint_module_endpoint(token)
     }
-    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.function_for_file_symbol(file, name)
-    }
     fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
         self.nominal_type_for_symbol(file, name)?.as_struct()
     }
@@ -2835,9 +2832,6 @@ where
     }
     fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.endpoint.endpoint_function_info(name)
-    }
-    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.endpoint.method_info(struct_id, name)
     }
     fn endpoint_source_function_name(&self, name: Spur) -> Spur {
         self.endpoint.endpoint_source_function_name(name)
@@ -2870,9 +2864,6 @@ where
     fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
         self.function_info_for_symbol(name)
     }
-    fn call_function_contains(&self, name: Spur) -> bool {
-        self.function_info_for_symbol(name).is_some()
-    }
     fn call_source_function_name(&self, name: Spur) -> Spur {
         self.endpoint.endpoint_source_function_name(name)
     }
@@ -2890,18 +2881,6 @@ where
     }
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.method_info_for_symbol(struct_id, name)
-    }
-    fn call_named_method_declaration(
-        &self,
-        file: FileId,
-        ty: Spur,
-        method: Spur,
-    ) -> Option<InstRef> {
-        self.endpoint.named_method_declaration(
-            file,
-            self.interner.resolve(&ty),
-            self.interner.resolve(&method),
-        )
     }
     fn call_module_def(&self, module: ModuleId) -> ModuleDef {
         self.calls
@@ -3121,10 +3100,6 @@ where
 {
     fn type_syntax_symbol(&mut self, name: &str) -> Spur {
         self.interner.get_or_intern(name)
-    }
-
-    fn existing_type_syntax_symbol(&self, name: &str) -> Option<Spur> {
-        self.interner.get(name)
     }
 
     fn type_syntax_module_binding(

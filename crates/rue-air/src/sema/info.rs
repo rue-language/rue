@@ -65,19 +65,12 @@ pub struct FunctionInfo {
     pub file_id: FileId,
 }
 
-impl FunctionInfo {
-    pub(crate) fn rir_params<'a>(&self, rir: &'a rue_rir::Rir) -> &'a rue_rir::RirParamsRange {
-        let rue_rir::InstData::FnDecl { params, .. } = &rir.get(self.declaration).data else {
-            unreachable!("function metadata declaration must remain a FnDecl")
-        };
-        params
-    }
-}
+impl FunctionInfo {}
 
 /// Information about a method in an impl block.
 ///
-/// Note: Captured comptime values for anonymous struct methods are stored at the
-/// struct level in `Sema::anon_struct_captured_values`, not per-method. This ensures
+/// Note: Captured comptime values for anonymous struct methods are stored at
+/// the struct level on the body host, not per-method. This ensures
 /// that different instantiations with different captured values create different types.
 #[derive(Debug, Clone, Copy)]
 pub struct MethodInfo {
@@ -227,54 +220,4 @@ pub struct ConstInfo {
     pub value: crate::sema::ConstValue,
     /// Span of the const declaration
     pub span: Span,
-}
-
-/// The authoritative post-evaluation classification of a source `const`.
-/// Keeping the variants in one table prevents value and module namespaces
-/// from drifting or accepting the same candidate twice.
-#[derive(Debug, Clone)]
-pub(crate) enum ConstResolution {
-    Value(ConstInfo),
-    ModuleBinding(ConstInfo),
-}
-
-impl ConstResolution {
-    pub(crate) fn value(&self) -> Option<&ConstInfo> {
-        match self {
-            Self::Value(info) => Some(info),
-            Self::ModuleBinding(_) => None,
-        }
-    }
-
-    pub(crate) fn module_binding(&self) -> Option<&ConstInfo> {
-        match self {
-            Self::Value(_) => None,
-            Self::ModuleBinding(info) => Some(info),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn info() -> ConstInfo {
-        ConstInfo {
-            is_pub: false,
-            ty: Type::I32,
-            value: crate::sema::ConstValue::Integer(1),
-            span: Span::new(0, 1),
-        }
-    }
-
-    #[test]
-    fn const_resolution_accessors_keep_variants_disjoint() {
-        let value = ConstResolution::Value(info());
-        assert!(value.value().is_some());
-        assert!(value.module_binding().is_none());
-
-        let module_binding = ConstResolution::ModuleBinding(info());
-        assert!(module_binding.value().is_none());
-        assert!(module_binding.module_binding().is_some());
-    }
 }

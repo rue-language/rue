@@ -2417,7 +2417,7 @@ impl CompileErrors {
     ///
     /// This is useful for combining error checking with a result:
     /// ```ignore
-    /// let output = SemaOutput { ... };
+    /// let output = analyze(input);
     /// errors.into_result_with(output)
     /// ```
     pub fn into_result_with<T>(self, value: T) -> Result<T, CompileErrors> {

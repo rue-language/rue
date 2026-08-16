@@ -28,32 +28,26 @@ use super::body_identity::{
 };
 use super::info::{ConstInfo, FunctionCallInfo, FunctionInfo, MethodCallInfo, MethodInfo};
 use super::provider::BodyFactProvider;
-use super::{DeclarationPhase, Sema};
 use crate::types::{ModuleDef, ModuleId, StructId};
 
 /// The exact call/method/operator-resolution fact boundary consumed by the
 /// family-1C analyzer sites. Every operation answers one point query against
-/// the declaration universe and returns owned/`Copy` data — no borrowed epoch
-/// table or live `Sema` handle escapes.
+/// the declaration universe and returns owned/`Copy` data — no borrowed
+/// declaration table or live analyzer handle escapes.
 pub(crate) trait CallResolutionFacts {
     /// The signature/binding info for an internal free-function symbol.
-    /// Mirrors `Sema::function_info` (`functions.get`).
     fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
 
-    /// Whether an internal free-function symbol is declared. Mirrors
-    /// `functions.contains_key`.
-    fn call_function_contains(&self, name: Spur) -> bool;
-
-    /// The source name a specialized/internal function name derives from.
-    /// Mirrors `Sema::source_function_name` (identity when unmapped).
+    /// The source name a specialized/internal function name derives from
+    /// (identity when unmapped).
     fn call_source_function_name(&self, name: Spur) -> Spur;
 
     /// The internal free-function symbol a source name resolves to inside its
-    /// own file. Mirrors `Sema::resolve_function_name_local`.
+    /// own file.
     fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
 
-    /// The value-constant info declared as `(file, name)`. Mirrors
-    /// `Sema::resolve_const_info_in_file` (a file-scoped `value_const`).
+    /// The value-constant info declared as `(file, name)` — a file-scoped
+    /// `value_const` lookup.
     fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
 
     /// The value-constant info declared as `(file, name)`. Mirrors
@@ -66,107 +60,12 @@ pub(crate) trait CallResolutionFacts {
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
 
     /// The method/associated-function info for `(struct, name)`, preferring the
-    /// anonymous table then the named table. Mirrors `Sema::method_info`.
+    /// anonymous table then the named table.
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
-
-    /// The named-method RIR declaration for the durable-available
-    /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
-    /// `structs_by_file_name.get` followed by `named_method_declarations.get`.
-    fn call_named_method_declaration(
-        &self,
-        owner_file: FileId,
-        owner_type_name: Spur,
-        method_name: Spur,
-    ) -> Option<InstRef>;
 
     /// The module definition for a module id. Mirrors
     /// `module_registry.get_def`.
     fn call_module_def(&self, module_id: ModuleId) -> ModuleDef;
-}
-
-impl<D: DeclarationPhase> CallResolutionFacts for Sema<'_, D> {
-    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
-        Sema::function_info(self, name)
-            .copied()
-            .map(FunctionCallInfo::from_body)
-    }
-
-    fn call_function_contains(&self, name: Spur) -> bool {
-        self.functions.contains_key(&name)
-    }
-
-    fn call_source_function_name(&self, name: Spur) -> Spur {
-        Sema::source_function_name(self, name)
-    }
-
-    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        Sema::resolve_function_name_local(self, name, file)
-    }
-
-    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
-        Sema::resolve_const_info_in_file(self, name, file).cloned()
-    }
-
-    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.declarations.value_const(&(file, name)).cloned()
-    }
-
-    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.declarations.module_binding(&(file, name)).cloned()
-    }
-
-    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
-        Sema::method_info(self, (struct_id, name))
-            .copied()
-            .map(MethodCallInfo::from_body)
-    }
-
-    fn call_named_method_declaration(
-        &self,
-        owner_file: FileId,
-        owner_type_name: Spur,
-        method_name: Spur,
-    ) -> Option<InstRef> {
-        let struct_id = self
-            .structs_by_file_name
-            .get(&(owner_file, owner_type_name))?;
-        self.named_method_declarations
-            .get(&(*struct_id, method_name))
-            .copied()
-    }
-
-    fn call_module_def(&self, module_id: ModuleId) -> ModuleDef {
-        self.module_registry.get_def(module_id)
-    }
-}
-
-/// Resolve a statically discovered call name to the free-function symbol it
-/// references for reachability. The provider-generic form of the inline
-/// resolution in `collect_static_function_references`, replaying `analyze_call`'s
-/// alias-then-local selection: a function-valued constant alias is consulted
-/// first (and, when it names a declared function, wins directly); otherwise the
-/// file-local function name is resolved. The alias read is skipped when the name
-/// binds no function-valued const, and the local read is skipped when the alias
-/// already resolved to a declared function.
-pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
-    facts: &P,
-    name: Spur,
-    file: FileId,
-) -> Option<Spur> {
-    let mut target = name;
-    let mut resolved_alias = false;
-    if let Some(const_info) = facts.call_resolve_const_info_in_file(name, file)
-        && let Some(callee) = const_info.value.as_function()
-    {
-        target = callee;
-        resolved_alias = true;
-    }
-
-    if resolved_alias && facts.call_function_contains(target) {
-        Some(target)
-    } else {
-        facts.call_resolve_function_name_local(target, file)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -521,9 +420,8 @@ where
         })
     }
 
-    /// The `@allow(<warning>)` check over a directive view, replicated from
-    /// `Sema::has_allow_directive` against the RIR interner (the driver holds no
-    /// `Sema`).
+    /// The `@allow(<warning>)` check over a directive view against the RIR
+    /// interner (the driver holds no analyzer state).
     fn has_allow<'r>(
         &self,
         mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,

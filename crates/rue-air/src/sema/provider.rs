@@ -18,8 +18,9 @@
 //!   returns owned facts. rue-air stays independent of the query runtime: the
 //!   candidate-set facts are modeled here in rue-air, and the heavier durable
 //!   declaration facts are associated types the compiler-side implementation
-//!   binds to its own owned durable projections. No query-runtime handle, live
-//!   `Sema`, merged program, or borrowed table crosses this boundary.
+//!   binds to its own owned durable projections. No query-runtime handle,
+//!   live analyzer state, merged program, or borrowed table crosses this
+//!   boundary.
 //!
 //! The compiler-side implementation (`rue-compiler`) runs each operation inside
 //! the `BodyTransaction` query context and records the corresponding query edge

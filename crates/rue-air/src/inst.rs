@@ -1369,10 +1369,6 @@ impl AirEditor {
         self.air.set_param_drops(drops);
     }
 
-    pub(crate) fn remap_string_ids(&mut self, map: impl Fn(u32) -> u32) {
-        self.air.remap_string_ids(map);
-    }
-
     pub(crate) fn rewrite_generic_call_to_call(&mut self, index: usize, name: Spur) {
         self.air.rewrite_generic_call_to_call(index, name);
     }
@@ -3090,22 +3086,6 @@ impl Air {
             data,
             remaining: count,
         })
-    }
-
-    /// Remap string constant IDs using the provided mapping function.
-    ///
-    /// This is used after per-function analysis to convert local string IDs
-    /// to global string IDs across all analyzed functions. The mapping function
-    /// takes a local string ID and returns the global string ID.
-    pub(crate) fn remap_string_ids<F>(&mut self, map_fn: F)
-    where
-        F: Fn(u32) -> u32,
-    {
-        for inst in &mut self.instructions {
-            if let AirInstData::StringConst(ref mut id) = inst.data {
-                *id = map_fn(*id);
-            }
-        }
     }
 
     /// Get a reference to all instructions.

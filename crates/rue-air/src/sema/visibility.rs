@@ -4,92 +4,12 @@
 //! - `pub` items are always accessible
 //! - Private items are accessible if the files are in the same directory module
 
-use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use rue_error::{CompileError, CompileResult, ErrorKind};
-use rue_span::FileId;
 
-use super::aggregate_resolution::{
-    AggregateFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
-};
-use super::{DeclarationPhase, Sema, context::AnalysisContext};
+use super::aggregate_resolution::{resolve_visibility_module_ref, select_qualified_enum};
+use super::context::AnalysisContext;
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use crate::types::EnumId;
-
-impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Check if the accessing file can see a private item from the target file.
-    ///
-    /// Visibility rules (per ADR-0026):
-    /// - `pub` items are always accessible
-    /// - Private items are accessible if the files are in the same directory module
-    ///
-    /// Directory module membership is simply "files in the same directory" —
-    /// including the facade, which lives inside its directory
-    /// (`utils/_utils.rue` is in the `utils` module, RUE-137).
-    ///
-    /// Returns true if the item is accessible.
-    pub(crate) fn is_accessible(
-        &self,
-        accessing_file_id: FileId,
-        target_file_id: FileId,
-        is_pub: bool,
-    ) -> bool {
-        let facts = self.aggregate_facts();
-        is_accessible(facts, accessing_file_id, target_file_id, is_pub)
-    }
-
-    /// Check that an *unqualified* reference may reach the item (RUE-37,
-    /// RUE-180, RUE-183, RUE-185).
-    ///
-    /// Unqualified references resolve only in the reference file. This helper
-    /// then applies the uniform privacy rule to the declaration found there
-    /// (spec 10.3:1, 10.3:7):
-    ///
-    /// - If the item is accessible per [`Sema::is_accessible`] (it is
-    ///   `pub`, or the reference is in the item's directory — ADR-0026
-    ///   intra-directory visibility), the reference is fine.
-    /// - Otherwise the reference is an error (E0460), naming the item's
-    ///   defining file. Ordinary unqualified lookups are file-local, so this
-    ///   fires only on the comptime resolution paths that carry a reference
-    ///   into another file, e.g. applying a private comptime type constructor
-    ///   in type position (RUE-283).
-    ///
-    /// `item_kind` names the kind in the diagnostic ("function", "struct",
-    /// "enum", "constant").
-    pub(crate) fn check_unqualified_visibility(
-        &self,
-        item_kind: &str,
-        name: &str,
-        defining_file_id: FileId,
-        is_pub: bool,
-        span: rue_span::Span,
-    ) -> CompileResult<()> {
-        if self.is_accessible(span.file_id, defining_file_id, is_pub) {
-            return Ok(());
-        }
-
-        // `is_accessible` is permissive when either file path is unknown
-        // (single-file mode, synthetic items), so the item's path is
-        // always known here.
-        let defining_file = self
-            .aggregate_facts()
-            .aggregate_file_path(defining_file_id)
-            .unwrap_or("<unknown>")
-            .to_string();
-
-        Err(CompileError::new(
-            ErrorKind::PrivateUnqualifiedAccess(Box::new(
-                rue_error::PrivateUnqualifiedAccessData {
-                    item_kind: item_kind.to_string(),
-                    name: name.to_string(),
-                    defining_file,
-                },
-            )),
-            span,
-        )
-        .with_help(format!(
-            "`{name}` is not marked `pub`; private items are only visible within their defining directory"
-        )))
-    }
-}
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve an enum type through a module reference.
