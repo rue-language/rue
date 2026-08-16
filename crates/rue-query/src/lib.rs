@@ -6886,6 +6886,12 @@ where
             terminal.kind == kind
                 && outcomes_equal(self.inner.value_equal, &terminal.outcome, &outcome)
                 && semantic_diagnostics_equal(&terminal.diagnostics, &diagnostics)
+                // Cone purity is part of the red/green identity (ADR-0073): a
+                // parent observes only (node, stamp), so a purity transition
+                // must change the stamp, or parents would stay certified with
+                // stale safety metadata and a later additive revision could
+                // wrongly carry their certificates past a satisfied absence.
+                && terminal.cone_missing_observation == cone_missing_observation
         });
         let stamp = if red {
             previous.expect("red publication has a predecessor").stamp
@@ -16144,6 +16150,103 @@ mod tests {
             "an older same-epoch certificate is accepted forward"
         );
         assert_eq!(validation.demands, 0);
+    }
+
+    #[test]
+    fn purity_transition_with_an_equal_value_changes_the_stamp() {
+        // The four-step soundness sequence from the ADR-0073 review: a child
+        // whose value stays identical while its cone turns impure must mint a
+        // NEW stamp, so parents recompute and inherit the impurity instead of
+        // staying certified with stale safety metadata that a later additive
+        // revision would wrongly carry past a satisfied absence.
+        let runtime = QueryRuntime::new(1);
+        let pure_mode = Revision::new(70, 15);
+        let probing_mode = Revision::new(71, 15);
+        let satisfied = Revision::new(72, 15);
+        let mode = InputIdentity::new("config", "mode");
+        let probed = InputIdentity::new("candidate", "late.rue");
+        runtime
+            .publish_revision(pure_mode, [(mode.clone(), 1)])
+            .unwrap();
+        // An ordinary edit: a fresh full view with the changed mode leaf.
+        runtime
+            .publish_revision(probing_mode, [(mode.clone(), 2)])
+            .unwrap();
+        runtime
+            .publish_revision_overlay(satisfied, probing_mode, [(probed.clone(), 9)])
+            .unwrap();
+
+        let child_mode = mode.clone();
+        let child_probe = probed.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>("purity-child", 8, move |context, _, _| {
+                let mode = context.input(child_mode.clone())?;
+                if mode == 1 {
+                    // Pure cone, value 0.
+                    Ok(QueryOutput::success(0))
+                } else {
+                    // Impure cone, SAME value 0 while the probe is absent.
+                    Ok(QueryOutput::success(
+                        context.optional_input(child_probe.clone()).unwrap_or(0),
+                    ))
+                }
+            })
+            .unwrap();
+        let child_for_parent = child.clone();
+        let parent = runtime
+            .family_with_evaluator::<Key, u64, _>("purity-parent", 8, move |context, _, _| {
+                let attempt = context.query_registered(&child_for_parent, Key("child"))?;
+                let QueryOutcome::Success(value) = attempt.outcome() else {
+                    panic!("the child publishes typed values");
+                };
+                Ok(QueryOutput::success(*value))
+            })
+            .unwrap();
+
+        // Step 1: pure cone, value 0.
+        let first =
+            runtime.request_registered(&parent, pure_mode, Key("parent"), CancellationToken::new());
+        assert_eq!(first.execution(), RequestExecution::Computed);
+        let child_pure =
+            runtime.request_registered(&child, pure_mode, Key("child"), CancellationToken::new());
+        let child_pure_stamp = child_pure.terminal().unwrap().stamp();
+
+        // Step 2: the edit flips the child's cone impure with an EQUAL value.
+        // The purity transition is part of red/green identity, so the child
+        // mints a new stamp and the parent recomputes, inheriting the bit.
+        let edited = runtime.request_registered(
+            &parent,
+            probing_mode,
+            Key("parent"),
+            CancellationToken::new(),
+        );
+        assert_eq!(edited.execution(), RequestExecution::Computed);
+        let child_probing = runtime.request_registered(
+            &child,
+            probing_mode,
+            Key("child"),
+            CancellationToken::new(),
+        );
+        assert_ne!(
+            child_probing.terminal().unwrap().stamp(),
+            child_pure_stamp,
+            "an equal-value purity transition must not reuse the pure stamp"
+        );
+
+        // Steps 3-4: the additive revision satisfies the probed absence. The
+        // parent must recompute to the newly present value; a carried
+        // certificate returning the stale 0 is exactly the unsound outcome.
+        let final_result =
+            runtime.request_registered(&parent, satisfied, Key("parent"), CancellationToken::new());
+        assert_eq!(final_result.execution(), RequestExecution::Computed);
+        let terminal = final_result.terminal().unwrap();
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            panic!("the parent republishes the child's value");
+        };
+        assert_eq!(
+            *value, 9,
+            "the satisfied absence must reach the parent through recomputation"
+        );
     }
 
     #[test]
