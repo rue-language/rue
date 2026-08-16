@@ -13,13 +13,18 @@ commit count degrades gracefully across quiet weekends while a clock does not.
 Collection legitimately lags trunk by minutes, and a single failed collection
 should not block the repository, so the threshold tolerates both.
 
-Two things can stop, and both are checked here. Points can stop arriving, which
-is what the commit-count rule catches. Points can also keep arriving while the
-headline index they exist to move goes missing — an epoch whose declared
-baseline resolves to nothing publishes a ratio for no workload, so every point
-is plotted and the index is silently absent. That failed openly nowhere: the
-collector succeeded, no run was rejected, and the page simply stopped saying
-whether the compiler is getting slower (RUE-1486).
+Three things can stop, and all three are checked here. Points can stop arriving,
+which is what the commit-count rule catches. Points can also keep arriving while
+the headline index they exist to move goes missing, in two ways that look
+identical on the page and are opposite in the manifest. An epoch whose declared
+baseline resolves to nothing publishes a ratio for no workload (RUE-1486). An
+epoch that never declared one at all publishes no ratio either, and that state
+is legitimate right after the epoch is declared, which is why it survived
+fourteen complete runs on every platform (RUE-1533).
+
+Neither of those failed openly anywhere: the collector succeeded, no run was
+rejected, and the page simply stopped saying whether the compiler is getting
+slower.
 
 The series state comes from `rue-bench derive`, never from a status file stored
 alongside the raw records: ADR-0067 keeps everything derived out of the data
@@ -40,6 +45,27 @@ from pathlib import Path
 # enough that one failed collection, or collection simply lagging a merge, never
 # blocks a pull request.
 DEFAULT_MAX_COMMITS = 5
+
+# Complete runs an epoch may collect before it must have pinned a baseline
+# (RUE-1533). Counted in the epoch's own collected points rather than in trunk
+# commits, which is what every other rule here counts, for two reasons.
+#
+# Trunk commits are the right unit for "collection stopped", where the question
+# is how far the series has fallen behind the tree. They are the wrong unit for
+# "a maintainer has not done something yet", because commits do not arrive one
+# at a time: the RUE-1522 stack put twelve on trunk in a single merge, so a
+# twenty-commit deadline can expire in the time it takes one pull request to
+# land. Points arrive once per collection, so a stack costs one.
+#
+# Points also measure from inside the epoch. A deadline counted from the
+# measured commit to trunk gives an epoch declared while collection is behind
+# no grace at all — its first point arrives already past due, which is exactly
+# the state a stall's remedy creates.
+#
+# Ten is a handful of hours at the current collection cadence, and well inside
+# the fourteen that went uncaught here. A quiet weekend collects nothing and
+# spends none of it.
+DEFAULT_MAX_UNPINNED_POINTS = 10
 
 
 class HistoryUnavailable(Exception):
@@ -87,10 +113,11 @@ def unindexed(data: dict) -> list[tuple[str, int, int]]:
     """Return (platform, epoch, points) for live epochs publishing no index.
 
     An epoch with no baseline yet is the documented state of one that has just
-    been declared, and it publishes no index by design. An epoch that *has* a
-    baseline and still publishes no index is the failure: the baseline names a
-    run nothing resolves to, so no point carries a ratio and the headline index
-    is absent from a series that otherwise looks healthy.
+    been declared, and it publishes no index by design; `unpinned` is what holds
+    that state to a deadline. An epoch that *has* a baseline and still publishes
+    no index is the failure: the baseline names a run nothing resolves to, so no
+    point carries a ratio and the headline index is absent from a series that
+    otherwise looks healthy.
     """
     missing = []
     for platform, epoch in newest_epochs(data):
@@ -100,6 +127,57 @@ def unindexed(data: dict) -> list[tuple[str, int, int]]:
         if points and not any(point.get("index") for point in points):
             missing.append((platform, epoch.get("epoch"), len(points)))
     return missing
+
+
+def unpinned(
+    data: dict,
+    max_points: int = DEFAULT_MAX_UNPINNED_POINTS,
+) -> list[tuple[str, int, str, str, int]]:
+    """Return live epochs that could have pinned a baseline and still have not.
+
+    Declaring an epoch without a baseline is correct — a baseline is a complete
+    valid run *under* that epoch, so it cannot be named until collection has
+    produced one — but the state is meant to end at the first such run. Nothing
+    ended it for epoch 6, which collected fourteen complete runs on every
+    platform while the headline index the page exists to publish stayed absent
+    (RUE-1533).
+
+    The deadline is the epoch's own complete points, for the reasons given at
+    `DEFAULT_MAX_UNPINNED_POINTS`. Complete points only, because a partial run
+    is never a baseline; the run named is the first of them, because that is
+    the one the manifest should pin and the moment the clock started.
+
+    Takes no repository: this rule is decidable from the derived data alone,
+    which also keeps a shallow checkout from turning it into an error.
+
+    Returns (platform, epoch, run, commit, collected), naming the run to pin
+    rather than only the omission.
+    """
+    late = []
+    for platform, epoch in newest_epochs(data):
+        if epoch.get("baseline_commit"):
+            continue
+        complete = sorted(
+            (point for point in epoch.get("points", []) if point.get("complete")),
+            key=lambda point: point["finished_at"],
+        )
+        if not complete:
+            # Collecting, but nothing yet that could serve as a baseline. The
+            # honest state of an epoch declared moments ago, and of one whose
+            # runs are all partial — which the commit-count rule owns.
+            continue
+        if len(complete) > max_points:
+            first = complete[0]
+            late.append(
+                (
+                    platform,
+                    epoch.get("epoch"),
+                    first["run"],
+                    first["commit"],
+                    len(complete),
+                )
+            )
+    return late
 
 
 def stalled(
@@ -201,6 +279,40 @@ def report_unindexed(missing: list[tuple[str, int, int]]) -> str:
     return "\n".join(lines)
 
 
+def report_unpinned(late: list[tuple[str, int, str, str, int]], max_points: int) -> str:
+    lines = [
+        "A collecting epoch has never pinned its baseline, so no index is published.",
+        "",
+    ]
+    for platform, epoch, _run, commit, count in late:
+        lines.append(
+            f"  {platform}: epoch {epoch} has collected {count} complete runs "
+            f"(threshold {max_points}) and could have pinned a baseline since "
+            f"the first of them, at {commit[:12]}"
+        )
+    lines += [
+        "",
+        "This is a repository-wide condition and almost certainly not caused by",
+        "this pull request. An epoch is declared without a baseline on purpose —",
+        "a baseline is a complete valid run under that epoch, so it cannot be",
+        "named until one exists — but that state ends at the first such run, and",
+        "these did not end.",
+        "",
+        "Pin each platform's first complete valid run in performance/manifest.toml,",
+        "in that epoch's block:",
+        "",
+    ]
+    for platform, epoch, run, commit, _count in late:
+        lines += [
+            f"  # {platform}, epoch {epoch}",
+            "  [epoch.baseline]",
+            f'  commit = "{commit}"',
+            f'  run = "{run}"',
+            "",
+        ]
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -216,6 +328,12 @@ def main() -> int:
         help="the branch a stall is measured against (default: origin/trunk)",
     )
     parser.add_argument("--max-commits", type=int, default=DEFAULT_MAX_COMMITS)
+    parser.add_argument(
+        "--max-unpinned-points",
+        type=int,
+        default=DEFAULT_MAX_UNPINNED_POINTS,
+        help="complete runs an epoch may collect before it must pin a baseline",
+    )
     args = parser.parse_args()
 
     data = json.loads(args.data.read_text())
@@ -246,6 +364,11 @@ def main() -> int:
     missing = unindexed(data)
     if missing:
         print(report_unindexed(missing), file=sys.stderr)
+        return 1
+
+    late = unpinned(data, args.max_unpinned_points)
+    if late:
+        print(report_unpinned(late, args.max_unpinned_points), file=sys.stderr)
         return 1
 
     for platform, commit, finished_at in plotted:

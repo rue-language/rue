@@ -202,6 +202,150 @@ def test_a_partial_newest_run_does_not_fail_an_indexed_epoch() -> None:
     assert stall.unindexed(indexed_epoch(5, "b" * 40, [1.0, None])) == []
 
 
+def collecting_epoch(
+    epoch: int,
+    baseline: str | None,
+    points: list[tuple[str, bool]],
+    platform: str = "x86_64-linux",
+) -> dict:
+    """One platform holding one epoch whose points are (commit, complete).
+
+    Points are stamped a minute apart in the order given, so a fixture can hold
+    more of them than a day has hours without the timestamps going out of order.
+    """
+    return {
+        "platforms": [
+            {
+                "platform": platform,
+                "epochs": [
+                    {
+                        "epoch": epoch,
+                        "baseline_commit": baseline,
+                        "points": [
+                            {
+                                "commit": commit,
+                                "run": f"run-of-{commit}",
+                                "complete": complete,
+                                "finished_at": f"2026-08-15T00:{i:02d}:00Z",
+                                "index": None,
+                            }
+                            for i, (commit, complete) in enumerate(points)
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+
+def test_a_new_epoch_is_given_room_to_pin() -> None:
+    # The state is correct while it is young: a baseline is a complete valid run
+    # under the epoch, so it cannot be named before collection produces one.
+    points = [(chr(97 + i) * 40, True) for i in range(stall.DEFAULT_MAX_UNPINNED_POINTS)]
+    assert stall.unpinned(collecting_epoch(6, None, points[:1])) == []
+    assert stall.unpinned(collecting_epoch(6, None, points)) == [], (
+        "the threshold itself still passes"
+    )
+
+
+def test_the_deadline_is_counted_in_points_not_trunk_commits() -> None:
+    # Commits do not arrive one at a time — the RUE-1522 stack put twelve on
+    # trunk in a single merge — so a commit-counted deadline can expire in the
+    # time one pull request takes to land. A stack costs one point.
+    late = stall.unpinned(
+        collecting_epoch(6, None, [("a" * 40, True)] * 11), max_points=10
+    )
+    assert late and late[0][4] == 11
+
+
+def test_an_epoch_that_never_pins_its_baseline_is_a_failure() -> None:
+    # The shape RUE-1533 took: complete runs kept arriving on every platform and
+    # the headline index stayed absent, with nothing red anywhere. Fourteen
+    # complete runs per platform, which is why the deadline has to be inside
+    # that.
+    points = [("a" * 40, True)] + [(chr(98 + i) * 40, True) for i in range(13)]
+    late = stall.unpinned(collecting_epoch(6, None, points))
+    assert late == [("x86_64-linux", 6, "run-of-" + "a" * 40, "a" * 40, 14)]
+    assert stall.DEFAULT_MAX_UNPINNED_POINTS < 14
+
+
+def test_the_run_named_is_the_first_complete_one() -> None:
+    # The one the manifest should pin, and the moment the clock started — not
+    # whichever point happens to be newest, and not a partial run ahead of it.
+    points = [("a" * 40, False)] + [(chr(98 + i) * 40, True) for i in range(11)]
+    late = stall.unpinned(collecting_epoch(6, None, points))
+    assert [(entry[2], entry[3], entry[4]) for entry in late] == [
+        ("run-of-" + "b" * 40, "b" * 40, 11)
+    ]
+
+
+def test_partial_points_never_start_the_deadline() -> None:
+    # A partial run is never a baseline, so an epoch that has only ever
+    # collected partial runs has nothing to pin. That is the commit-count
+    # rule's business, not this one's.
+    subject = collecting_epoch(6, None, [("a" * 40, False)] * 50)
+    assert stall.unpinned(subject) == []
+
+
+def test_an_epoch_with_a_baseline_is_not_held_to_pinning_one() -> None:
+    subject = collecting_epoch(5, "b" * 40, [("a" * 40, True)] * 50)
+    assert stall.unpinned(subject) == []
+
+
+def test_a_retired_unpinned_epoch_does_not_block_the_repository() -> None:
+    # Epoch 4 collected one complete run and was superseded before it was ever
+    # pinned. Only the live epoch is the signal anyone reads, and an epoch that
+    # will never receive another point cannot be brought current.
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 4,
+                        "baseline_commit": None,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "run": "run-a",
+                                "complete": True,
+                                "finished_at": "2026-08-01T00:00:00Z",
+                                "index": None,
+                            }
+                        ],
+                    },
+                    {
+                        "epoch": 5,
+                        "baseline_commit": "c" * 40,
+                        "points": [
+                            {
+                                "commit": "d" * 40,
+                                "run": "run-d",
+                                "complete": True,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "index": {"latency": 1.0},
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    assert stall.unpinned(subject) == []
+
+
+def test_the_unpinned_report_hands_over_the_block_to_paste() -> None:
+    # There is no bypass, so the remedy has to be actionable by whoever the
+    # gate blocks — including the exact run to pin, which is otherwise only
+    # recoverable by re-deriving the data branch by hand.
+    text = stall.report_unpinned([("x86_64-linux", 6, "run-a", "a" * 40, 9)], 5)
+    assert "not caused by" in text
+    assert "performance/manifest.toml" in text
+    assert "[epoch.baseline]" in text
+    assert 'run = "run-a"' in text
+    assert f'commit = "{"a" * 40}"' in text
+
+
 def test_the_unindexed_report_names_the_pin_to_check() -> None:
     text = stall.report_unindexed([("x86_64-linux", 5, 25)])
     assert "not caused by" in text
