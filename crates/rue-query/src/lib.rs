@@ -2319,7 +2319,12 @@ impl PartialOrd for NodeIdentity {
 
 impl Ord for NodeIdentity {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        (self.family(), self.key()).cmp(&(other.family(), other.key()))
+        let family_order = if Arc::ptr_eq(&self.inner.family, &other.inner.family) {
+            std::cmp::Ordering::Equal
+        } else {
+            self.family().cmp(other.family())
+        };
+        family_order.then_with(|| self.key().cmp(other.key()))
     }
 }
 
@@ -11324,6 +11329,36 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn node_identity_order_matches_lexical_family_key_order() {
+        let shared_family: Arc<str> = Arc::from("family");
+        let shared_a = NodeIdentity::new(shared_family.clone(), Arc::from("a"));
+        let shared_b = NodeIdentity::new(shared_family.clone(), Arc::from("b"));
+        assert!(Arc::ptr_eq(&shared_a.inner.family, &shared_b.inner.family));
+        assert_eq!(
+            shared_a.cmp(&shared_b),
+            ("family", "a").cmp(&("family", "b"))
+        );
+
+        let distinct_family_a: Arc<str> = Arc::from(String::from("same"));
+        let distinct_family_b: Arc<str> = Arc::from(String::from("same"));
+        assert!(!Arc::ptr_eq(&distinct_family_a, &distinct_family_b));
+        let equal_text_a = NodeIdentity::new(distinct_family_a, Arc::from("key"));
+        let equal_text_b = NodeIdentity::new(distinct_family_b, Arc::from("key"));
+        assert_eq!(equal_text_a.cmp(&equal_text_b), std::cmp::Ordering::Equal);
+
+        let alpha = NodeIdentity::new(Arc::from("alpha"), Arc::from("key"));
+        let beta = NodeIdentity::new(Arc::from("beta"), Arc::from("key"));
+        assert_eq!(alpha.cmp(&beta), ("alpha", "key").cmp(&("beta", "key")));
+
+        let key_a = NodeIdentity::new(shared_family.clone(), Arc::from("key-a"));
+        let key_b = NodeIdentity::new(shared_family, Arc::from("key-b"));
+        assert_eq!(
+            key_a.cmp(&key_b),
+            ("family", "key-a").cmp(&("family", "key-b"))
+        );
+    }
 
     #[test]
     fn active_validations_stay_inline_and_detect_cycles() {
