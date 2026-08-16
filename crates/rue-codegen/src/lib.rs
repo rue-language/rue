@@ -266,7 +266,7 @@ pub struct BackendArtifactRequest {
 }
 
 /// Diagnostic projections retained by one production backend execution.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BackendArtifacts {
     pub lowering: Option<LoweringDebugInfo>,
     pub mir: Option<String>,

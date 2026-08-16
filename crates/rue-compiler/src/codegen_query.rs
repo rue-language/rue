@@ -7,7 +7,6 @@
 //! callers keep their units unless a real ABI or emitted reference changes.
 
 use std::{
-    collections::BTreeSet,
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -167,20 +166,17 @@ impl QueryKey for CodegenUnitQueryKey {
 #[derive(Debug, Clone)]
 pub(crate) struct CodegenUnit {
     pub(crate) defined_symbol: Arc<str>,
-    pub(crate) referenced_symbols: Arc<[Arc<str>]>,
     pub(crate) relocations: Arc<[NormalizedRelocation]>,
     pub(crate) sections: Arc<[CodegenSection]>,
     pub(crate) artifacts: rue_codegen::BackendArtifacts,
     pub(crate) content_fingerprint: u64,
-    pub(crate) presentation_fingerprint: u64,
-    pub(crate) presentation: Arc<str>,
 }
 
 /// A reached canonical terminal paired only with its stable function identity.
 /// RUE-1217 owns replacing the semantic root enumerator that assembles this
 /// list; neither the terminal nor this collection record retains live frontend
 /// state.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct CollectedCodegenUnit {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) unit: Arc<CodegenUnit>,
@@ -204,14 +200,6 @@ impl CodeModel {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SectionContents {
-    pub(crate) bytes: Arc<[u8]>,
-    pub(crate) alignment: u32,
-    pub(crate) executable: bool,
-    pub(crate) writable: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SectionKind {
     Text,
@@ -223,7 +211,9 @@ pub(crate) enum SectionKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct CodegenSection {
     pub(crate) kind: SectionKind,
-    pub(crate) contents: SectionContents,
+    pub(crate) alignment: u32,
+    pub(crate) executable: bool,
+    pub(crate) writable: bool,
     /// Atoms preserve the deterministic local ownership boundary. The current
     /// backend has anonymous text and string atoms; data/BSS are explicit empty
     /// sections until a producer supplies them.
@@ -304,17 +294,9 @@ impl RetainedCharge for rue_codegen::BackendArtifacts {
     }
 }
 
-impl RetainedCharge for SectionContents {
-    fn retained_charge(&self) -> u64 {
-        self.bytes.retained_charge()
-    }
-}
-
 impl RetainedCharge for CodegenSection {
     fn retained_charge(&self) -> u64 {
-        self.contents
-            .retained_charge()
-            .saturating_add(self.atoms.retained_charge())
+        self.atoms.retained_charge()
     }
 }
 
@@ -328,11 +310,9 @@ impl RetainedCharge for CodegenUnit {
     fn retained_charge(&self) -> u64 {
         self.defined_symbol
             .retained_charge()
-            .saturating_add(self.referenced_symbols.retained_charge())
             .saturating_add(self.relocations.retained_charge())
             .saturating_add(self.sections.retained_charge())
             .saturating_add(self.artifacts.retained_charge())
-            .saturating_add(self.presentation.retained_charge())
     }
 }
 
@@ -345,6 +325,16 @@ impl RetainedCharge for CodegenUnitValue {
     }
 }
 
+impl CodegenUnit {
+    #[cfg(test)]
+    pub(crate) fn text_atom(&self) -> Option<&[u8]> {
+        self.sections
+            .iter()
+            .find(|section| section.kind == SectionKind::Text)
+            .and_then(|section| (section.atoms.len() == 1).then(|| section.atoms[0].as_ref()))
+    }
+}
+
 const BACKEND_EPOCH: u32 = 1;
 const ABI_LAYOUT_EPOCH: u32 = 1;
 
@@ -352,69 +342,28 @@ pub(crate) fn codegen_unit_value_equal(left: &CodegenUnitValue, right: &CodegenU
     match (left, right) {
         (CodegenUnitValue::Available(left), CodegenUnitValue::Available(right)) => {
             left.defined_symbol == right.defined_symbol
-                && left.referenced_symbols == right.referenced_symbols
                 && left.relocations == right.relocations
                 && left.sections == right.sections
+                && left.artifacts == right.artifacts
                 && left.content_fingerprint == right.content_fingerprint
-                && left.presentation_fingerprint == right.presentation_fingerprint
-                && left.presentation == right.presentation
         }
         (CodegenUnitValue::Failure(left), CodegenUnitValue::Failure(right)) => left == right,
         _ => false,
     }
 }
 
-impl CodegenUnit {
-    /// Thin legacy projection for the object writer.  No lowering, allocation,
-    /// or emission occurs here: all link-relevant bytes come from this terminal.
-    pub(crate) fn backend_product(&self) -> crate::backend::FunctionBackendProduct {
-        let text = self
-            .sections
-            .iter()
-            .find(|section| section.kind == SectionKind::Text)
-            .expect("CodegenUnit always has text");
-        let rodata = self
-            .sections
-            .iter()
-            .find(|section| section.kind == SectionKind::Rodata)
-            .expect("CodegenUnit always has rodata");
-        crate::backend::FunctionBackendProduct {
-            machine_name: self.defined_symbol.to_string(),
-            machine_code: rue_codegen::MachineCode {
-                code: text.contents.bytes.to_vec(),
-                relocations: self
-                    .relocations
-                    .iter()
-                    .map(|relocation| rue_codegen::EmittedRelocation {
-                        offset: relocation.offset,
-                        symbol: relocation.symbol.to_string(),
-                        kind: relocation.kind,
-                        addend: relocation.addend,
-                    })
-                    .collect(),
-                strings: rodata
-                    .atoms
-                    .iter()
-                    .map(|atom| {
-                        String::from_utf8(atom.to_vec())
-                            .expect("codegen rodata atoms are UTF-8 strings")
-                    })
-                    .collect(),
-            },
-            artifacts: self.artifacts.clone(),
-        }
-    }
-}
-
-fn product_fingerprint(machine_name: &str, machine_code: &rue_codegen::MachineCode) -> u64 {
+fn content_fingerprint(
+    defined_symbol: &str,
+    sections: &[CodegenSection],
+    relocations: &[NormalizedRelocation],
+) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    machine_name.hash(&mut hasher);
-    machine_code.code.hash(&mut hasher);
-    machine_code.strings.hash(&mut hasher);
-    for relocation in &machine_code.relocations {
+    defined_symbol.hash(&mut hasher);
+    sections.hash(&mut hasher);
+    for relocation in relocations {
         relocation.offset.hash(&mut hasher);
         relocation.symbol.hash(&mut hasher);
-        std::mem::discriminant(&relocation.kind).hash(&mut hasher);
+        relocation.kind.hash(&mut hasher);
         relocation.addend.hash(&mut hasher);
     }
     hasher.finish()
@@ -525,108 +474,78 @@ pub(crate) fn evaluate_codegen_unit(
                 addend: 0,
             });
     }
+    let rue_codegen::BackendProduct {
+        machine_code:
+            rue_codegen::MachineCode {
+                code,
+                relocations: emitted_relocations,
+                strings,
+            },
+        artifacts,
+    } = product;
     if let Err(error) = crate::backend::validate_production_call_relocations(
-        &product.machine_code.relocations,
+        &emitted_relocations,
         &record.codegen.symbol_mappings,
     ) {
         return Ok(codegen_failure(error.into()));
     }
     context.check_canceled()?;
     context.record_work(rue_query::WorkItem::new("codegen.unit.successes", 1));
-    let relocations = product
-        .machine_code
-        .relocations
-        .iter()
+    let relocations: Arc<[NormalizedRelocation]> = emitted_relocations
+        .into_iter()
         .map(|relocation| NormalizedRelocation {
             offset: relocation.offset,
-            symbol: Arc::from(relocation.symbol.as_str()),
+            symbol: Arc::from(relocation.symbol),
             kind: relocation.kind,
             addend: relocation.addend,
         })
         .collect::<Vec<_>>()
         .into();
-    let referenced_symbols = product
-        .machine_code
-        .relocations
-        .iter()
-        .map(|relocation| Arc::from(relocation.symbol.as_str()))
-        .collect::<BTreeSet<_>>()
+    let text: Arc<[u8]> = code.into();
+    let rodata_atoms = strings
         .into_iter()
-        .collect::<Vec<_>>()
-        .into();
-    let text: Arc<[u8]> = product.machine_code.code.clone().into();
-    let rodata_atoms = product
-        .machine_code
-        .strings
-        .iter()
-        .map(|value| Arc::<[u8]>::from(value.as_bytes()))
+        .map(|value| Arc::<[u8]>::from(value.into_bytes()))
         .collect::<Vec<_>>();
-    let rodata_bytes = rodata_atoms
-        .iter()
-        .flat_map(|atom| atom.iter().copied())
-        .collect::<Vec<_>>();
-    let empty = SectionContents {
-        bytes: Arc::from([]),
-        alignment: 1,
-        executable: false,
-        writable: true,
-    };
     let sections: Arc<[CodegenSection]> = vec![
         CodegenSection {
             kind: SectionKind::Text,
-            contents: SectionContents {
-                bytes: text.clone(),
-                alignment: 16,
-                executable: true,
-                writable: false,
-            },
+            alignment: 16,
+            executable: true,
+            writable: false,
             atoms: Arc::from([text.clone()]),
         },
         CodegenSection {
             kind: SectionKind::Rodata,
-            contents: SectionContents {
-                bytes: rodata_bytes.into(),
-                alignment: 1,
-                executable: false,
-                writable: false,
-            },
+            alignment: 1,
+            executable: false,
+            writable: false,
             atoms: rodata_atoms.into(),
         },
         CodegenSection {
             kind: SectionKind::Data,
-            contents: empty.clone(),
+            alignment: 1,
+            executable: false,
+            writable: true,
             atoms: Arc::from([]),
         },
         CodegenSection {
             kind: SectionKind::Bss,
-            contents: empty,
+            alignment: 1,
+            executable: false,
+            writable: true,
             atoms: Arc::from([]),
         },
     ]
     .into();
-    let content_fingerprint = {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        product_fingerprint(&record.codegen.defined_symbol, &product.machine_code)
-            .hash(&mut hasher);
-        sections.hash(&mut hasher);
-        hasher.finish()
-    };
-    let presentation: Arc<str> = Arc::from(format!("{:?}", product.artifacts));
-    let presentation_fingerprint = {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        presentation.hash(&mut hasher);
-        hasher.finish()
-    };
+    let content_fingerprint =
+        content_fingerprint(&record.codegen.defined_symbol, &sections, &relocations);
     Ok(QueryOutput::success(CodegenUnitValue::Available(Arc::new(
         CodegenUnit {
             defined_symbol: record.codegen.defined_symbol.clone(),
-            referenced_symbols,
             relocations,
             sections,
-            artifacts: product.artifacts,
+            artifacts,
             content_fingerprint,
-            presentation_fingerprint,
-            presentation,
         },
     ))))
 }
@@ -641,21 +560,97 @@ mod tests {
     use super::*;
 
     #[test]
-    fn presentation_fingerprint_prevents_stale_projection_reuse() {
+    fn backend_artifacts_participate_in_exact_unit_equality() {
         let empty: Arc<[CodegenSection]> = Arc::from([]);
-        let unit = |presentation_fingerprint| CodegenUnit {
+        let unit = |artifacts| CodegenUnit {
             defined_symbol: Arc::from("main"),
-            referenced_symbols: Arc::from([]),
             relocations: Arc::from([]),
             sections: empty.clone(),
-            artifacts: rue_codegen::BackendArtifacts::default(),
+            artifacts,
             content_fingerprint: 1,
-            presentation_fingerprint,
-            presentation: Arc::from("presentation"),
         };
         assert!(!codegen_unit_value_equal(
-            &CodegenUnitValue::Available(Arc::new(unit(1))),
-            &CodegenUnitValue::Available(Arc::new(unit(2))),
+            &CodegenUnitValue::Available(Arc::new(unit(rue_codegen::BackendArtifacts {
+                mir: Some("one".into()),
+                ..Default::default()
+            },))),
+            &CodegenUnitValue::Available(Arc::new(unit(rue_codegen::BackendArtifacts {
+                mir: Some("two".into()),
+                ..Default::default()
+            },))),
         ));
+    }
+
+    #[test]
+    fn codegen_unit_retained_charge_counts_canonical_bytes_once() {
+        let text = Arc::<[u8]>::from(*b"abc");
+        let rodata =
+            Arc::<[Arc<[u8]>]>::from([Arc::<[u8]>::from(*b"xy"), Arc::<[u8]>::from(*b"xyz")]);
+        let sections: Arc<[CodegenSection]> = vec![
+            CodegenSection {
+                kind: SectionKind::Text,
+                alignment: 16,
+                executable: true,
+                writable: false,
+                atoms: Arc::from([text]),
+            },
+            CodegenSection {
+                kind: SectionKind::Rodata,
+                alignment: 1,
+                executable: false,
+                writable: false,
+                atoms: rodata,
+            },
+            CodegenSection {
+                kind: SectionKind::Data,
+                alignment: 1,
+                executable: false,
+                writable: true,
+                atoms: Arc::from([]),
+            },
+            CodegenSection {
+                kind: SectionKind::Bss,
+                alignment: 1,
+                executable: false,
+                writable: true,
+                atoms: Arc::from([]),
+            },
+        ]
+        .into();
+        let unit = CodegenUnit {
+            defined_symbol: Arc::from("main"),
+            relocations: Arc::from([
+                NormalizedRelocation {
+                    offset: 1,
+                    symbol: Arc::from("a"),
+                    kind: rue_codegen::RelocationKind::X86Pc32,
+                    addend: 0,
+                },
+                NormalizedRelocation {
+                    offset: 2,
+                    symbol: Arc::from("bb"),
+                    kind: rue_codegen::RelocationKind::X86Plt32,
+                    addend: -4,
+                },
+            ]),
+            sections,
+            artifacts: rue_codegen::BackendArtifacts {
+                mir: Some("mir".to_owned()),
+                ..Default::default()
+            },
+            content_fingerprint: 0,
+        };
+        let expected = 4 * std::mem::size_of::<CodegenSection>()
+            + std::mem::size_of::<Arc<[u8]>>()
+            + 3
+            + 2 * std::mem::size_of::<Arc<[u8]>>()
+            + 2
+            + 3
+            + 2 * std::mem::size_of::<NormalizedRelocation>()
+            + "main".len()
+            + "a".len()
+            + "bb".len()
+            + 3;
+        assert_eq!(unit.retained_charge(), expected as u64);
     }
 }

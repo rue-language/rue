@@ -2,23 +2,6 @@
 // Backend (code generation and linking)
 // ============================================================================
 
-/// Collect the raw C symbol names of every `extern "C"` foreign declaration in
-/// the lowered program (ADR-0064 C FFI). These are the undefined symbols a call
-/// site references and the linker resolves from a supplied static archive.
-#[cfg(test)]
-pub(crate) fn collect_foreign_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
-    rir.iter()
-        .filter_map(|(_, inst)| match &inst.data {
-            rue_rir::InstData::FnDecl {
-                is_extern: true,
-                name,
-                ..
-            } => Some(interner.resolve(name).to_string()),
-            _ => None,
-        })
-        .collect()
-}
-
 /// Collect the unmangled C symbol names of every `pub extern "C" fn` export in
 /// the lowered program (ADR-0064 P4). Each is the raw name under which a C-ABI
 /// entry thunk exposes the exported Rue function to separately compiled C
@@ -35,137 +18,6 @@ pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRode
             _ => None,
         })
         .collect()
-}
-
-/// Project live callable legacy names to their machine symbols, plus an
-/// identity mapping for every `extern "C"` foreign declaration.
-///
-/// A foreign symbol maps to itself (no mangling, ADR-0064): a call site resolves
-/// it to the raw C name, the object writer records it as an undefined external,
-/// and the linker satisfies it from a static archive. The identity mapping also
-/// lets `validate_production_call_relocations` recognize the raw name as a
-/// declared foreign call rather than an unresolved glue symbol.
-#[cfg(test)]
-pub(crate) fn foreign_call_symbol_mappings(
-    functions: &[crate::session::RootedCfgUnit],
-    foreign_symbols: &[String],
-) -> std::collections::BTreeMap<String, String> {
-    let mut symbol_mappings = functions
-        .iter()
-        .flat_map(|function| function.record.codegen.symbol_mappings.iter())
-        .map(|(source, target)| (source.clone(), target.clone()))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    for name in foreign_symbols {
-        symbol_mappings
-            .entry(name.clone())
-            .or_insert_with(|| name.clone());
-    }
-    symbol_mappings
-}
-
-/// Canonical per-function result of the production backend pipeline.
-#[derive(Debug, Clone)]
-pub(crate) struct FunctionBackendProduct {
-    pub(crate) machine_name: String,
-    pub(crate) machine_code: rue_codegen::MachineCode,
-    pub(crate) artifacts: rue_codegen::BackendArtifacts,
-}
-
-/// Compile analyzed functions to a binary.
-///
-/// This backend handles both architectures. It:
-/// 1. Generates machine code for each function
-/// 2. Creates object files with relocations
-/// 3. Links them into an executable
-///
-/// This function is used by the sole one-shot compilation adapter.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compile_backend(
-    functions: &[crate::session::RootedCfgUnit],
-    options: &CompileOptions,
-    warnings: &[CompileWarning],
-    // Names of `extern "C"` foreign declarations (ADR-0064 C FFI). Each is an
-    // undefined symbol a call site references by its raw (unmangled) name and
-    // that the linker resolves from a supplied static archive.
-    foreign_symbols: &[String],
-    // Unmangled C names of `pub extern "C" fn` exports (ADR-0064 P4). Each gets
-    // an additional C-ABI entry thunk object exposing that name globally.
-    export_symbols: &[String],
-) -> MultiErrorResult<CompileOutput> {
-    let object_files =
-        generate_pre_link_objects(functions, options, foreign_symbols, export_symbols)?;
-
-    // Link to executable
-    match &options.linker {
-        LinkerMode::Internal => link_internal_with_warnings(options, &object_files, warnings),
-        LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &object_files, linker_cmd, warnings)
-        }
-    }
-}
-
-/// Everything the backend does *before* linking: main-function validation, CFG
-/// lowering, per-architecture code generation, and object-file creation with
-/// relocations. This is the pre-link boundary the RUE-1086 scaling-bench runner
-/// times as its `pre_link` interval; `compile_backend` calls it and then links
-/// the returned objects.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn generate_pre_link_objects(
-    functions: &[crate::session::RootedCfgUnit],
-    options: &CompileOptions,
-    foreign_symbols: &[String],
-    export_symbols: &[String],
-) -> MultiErrorResult<Vec<Vec<u8>>> {
-    // Check for main function
-    let _main_fn = functions
-        .iter()
-        .find(|function| function.record.codegen.defined_symbol.as_ref() == "main")
-        .ok_or_else(|| {
-            CompileErrors::from(CompileError::without_span(ErrorKind::NoMainFunction))
-        })?;
-
-    let products = generate_backend_products(
-        functions,
-        options,
-        foreign_symbols,
-        rue_codegen::BackendArtifactRequest::default(),
-    )?;
-    generate_pre_link_objects_from_products(functions, products, options, export_symbols)
-}
-
-/// Object/link projection of canonical `CodegenUnit` terminals. This owns no
-/// lowering or emission; callers have already collected the shared units.
-#[cfg(test)]
-pub(crate) fn generate_pre_link_objects_from_products(
-    functions: &[crate::session::RootedCfgUnit],
-    products: Vec<FunctionBackendProduct>,
-    options: &CompileOptions,
-    export_symbols: &[String],
-) -> MultiErrorResult<Vec<Vec<u8>>> {
-    validate_backend_functions(functions)?;
-    let mut object_files = products
-        .into_iter()
-        .map(|product| project_backend_object(product, options.target))
-        .collect::<CompileResult<Vec<_>>>()
-        .map_err(CompileErrors::from)?;
-    info!(
-        function_count = functions.len(),
-        object_bytes = object_files.iter().map(Vec::len).sum::<usize>(),
-        "codegen complete"
-    );
-
-    // Emit a C-ABI entry thunk object for every `pub extern "C" fn` export
-    // (ADR-0064 P4). The native body was already generated above under its
-    // mangled symbol; the thunk adds the unmangled global C entry point.
-    object_files.extend(generate_export_thunk_objects(
-        functions,
-        options,
-        export_symbols,
-    ));
-
-    Ok(object_files)
 }
 
 /// Validate the function/symbol projection at the object-generation boundary.
@@ -199,104 +51,111 @@ pub(crate) fn validate_backend_functions(
     Ok(())
 }
 
-/// Run the production per-function backend pipeline, optionally retaining
-/// diagnostic projections from that exact execution.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn generate_backend_products(
-    functions: &[crate::session::RootedCfgUnit],
-    options: &CompileOptions,
-    foreign_symbols: &[String],
-    request: rue_codegen::BackendArtifactRequest,
-) -> MultiErrorResult<Vec<FunctionBackendProduct>> {
-    // Keep every per-function subphase nested under one `codegen` aggregate
-    // timing root (RUE-786).
-    let codegen_span = info_span!("codegen", arch = ?options.target.arch(), phase = "backend");
-    let _entered = codegen_span.clone().entered();
-    let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
-    let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
-    let symbols =
-        rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
-
-    let results: Vec<CompileResult<FunctionBackendProduct>> = functions
-        .iter()
-        .map(|func| {
-            let _worker = codegen_span.enter();
-            let stable_atom_ids = func
-                .record
-                .local_atoms
-                .iter()
-                .map(|atom| {
-                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::LocalAtom(
-                        atom.identity.clone(),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let atom_projection = func
-                .record
-                .local_atoms
-                .iter()
-                .zip(&stable_atom_ids)
-                .map(|(atom, stable_id)| rue_codegen::LocalAtomProjection {
-                    stable_id,
-                    dense_id: atom.dense_id,
-                    content: &atom.content,
-                })
-                .collect::<Vec<_>>();
-            let mut product = match options.target.arch() {
-                Arch::X86_64 => rue_codegen::x86_64::generate_product_with_symbols_and_atoms(
-                    &func.record.cfg,
-                    &func.record.type_pool,
-                    &func.record.strings,
-                    &func.record.interner,
-                    symbols,
-                    &atom_projection,
-                    request,
-                )?,
-                Arch::Aarch64 => rue_codegen::aarch64::generate_product_with_symbols_and_atoms(
-                    &func.record.cfg,
-                    &func.record.type_pool,
-                    &func.record.strings,
-                    &func.record.interner,
-                    options.target,
-                    symbols,
-                    &atom_projection,
-                    request,
-                )?,
-            };
-            if let Some(lowering) = &mut product.artifacts.lowering {
-                lowering.fn_name = func.record.codegen.defined_symbol.to_string();
-            }
-            validate_production_call_relocations(
-                &product.machine_code.relocations,
-                &symbol_mappings,
-            )?;
-            Ok(FunctionBackendProduct {
-                machine_name: func.record.codegen.defined_symbol.to_string(),
-                machine_code: product.machine_code,
-                artifacts: product.artifacts,
-            })
-        })
-        .collect();
-
-    results
-        .into_iter()
-        .collect::<CompileResult<Vec<_>>>()
-        .map_err(CompileErrors::from)
-}
-
+/// Project one canonical `CodegenUnit` into the linker-owned object builder.
+/// The builder currently accepts owned strings and byte vectors, so this leaf
+/// makes transient copies without retaining a second compiler-side product.
 pub(crate) fn project_backend_object(
-    product: FunctionBackendProduct,
+    unit: &crate::codegen_query::CodegenUnit,
     target: Target,
 ) -> CompileResult<Vec<u8>> {
     // Object serialization runs after code generation, so it is a sibling leaf
     // of `codegen` rather than one of its subphases (RUE-786).
     let _span = info_span!("object_serialization", phase = "object_generation").entered();
-    let mut obj_builder = ObjectBuilder::new(target, &product.machine_name)
-        .code(product.machine_code.code)
-        .strings(product.machine_code.strings);
+    use crate::codegen_query::{CodegenSection, SectionKind};
+    let mut text: Option<&CodegenSection> = None;
+    let mut rodata: Option<&CodegenSection> = None;
+    let mut data: Option<&CodegenSection> = None;
+    let mut bss: Option<&CodegenSection> = None;
+    for section in unit.sections.iter() {
+        let slot = match section.kind {
+            SectionKind::Text => &mut text,
+            SectionKind::Rodata => &mut rodata,
+            SectionKind::Data => &mut data,
+            SectionKind::Bss => &mut bss,
+        };
+        if slot.replace(section).is_some() {
+            return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                format!(
+                    "object projection requires exactly one {:?} section, found multiple",
+                    section.kind
+                ),
+            )));
+        }
+    }
+    let text = text.ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Text section, found 0".into(),
+        ))
+    })?;
+    if (text.alignment, text.executable, text.writable) != (16, true, false) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Text metadata".into(),
+        )));
+    }
+    if text.atoms.len() != 1 {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            format!(
+                "object projection requires exactly one text atom, found {}",
+                text.atoms.len()
+            ),
+        )));
+    }
+    let rodata = rodata.ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Rodata section, found 0".into(),
+        ))
+    })?;
+    if (rodata.alignment, rodata.executable, rodata.writable) != (1, false, false) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Rodata metadata".into(),
+        )));
+    }
+    let data = data.ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Data section, found 0".into(),
+        ))
+    })?;
+    if (data.alignment, data.executable, data.writable) != (1, false, true) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Data metadata".into(),
+        )));
+    }
+    if !data.atoms.is_empty() {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection does not support Data atoms".into(),
+        )));
+    }
+    let bss = bss.ok_or_else(|| {
+        CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection requires exactly one Bss section, found 0".into(),
+        ))
+    })?;
+    if (bss.alignment, bss.executable, bss.writable) != (1, false, true) {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection found non-canonical Bss metadata".into(),
+        )));
+    }
+    if !bss.atoms.is_empty() {
+        return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+            "object projection does not support Bss atoms".into(),
+        )));
+    }
+    let strings = rodata
+        .atoms
+        .iter()
+        .map(|atom| {
+            String::from_utf8(atom.to_vec()).map_err(|_| {
+                CompileError::without_span(ErrorKind::InternalCodegenError(
+                    "object projection encountered non-UTF-8 rodata atom".into(),
+                ))
+            })
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+    let mut obj_builder = ObjectBuilder::new(target, unit.defined_symbol.to_string())
+        .code(text.atoms[0].to_vec())
+        .strings(strings);
 
-    for reloc in product.machine_code.relocations {
+    for reloc in unit.relocations.iter() {
         let rel_type = match (target.arch(), reloc.kind) {
             (Arch::X86_64, RelocationKind::X86Pc32) => RelocationType::Pc32,
             (Arch::X86_64, RelocationKind::X86Plt32) => RelocationType::Plt32,
@@ -311,31 +170,12 @@ pub(crate) fn project_backend_object(
         };
         obj_builder = obj_builder.relocation(CodeRelocation {
             offset: reloc.offset,
-            symbol: reloc.symbol,
+            symbol: reloc.symbol.to_string(),
             rel_type,
             addend: reloc.addend,
         });
     }
     Ok(obj_builder.build())
-}
-
-/// Link canonical codegen units through the ordinary one-shot adapter.
-#[cfg(test)]
-pub(crate) fn compile_backend_products(
-    functions: &[crate::session::RootedCfgUnit],
-    products: Vec<FunctionBackendProduct>,
-    options: &CompileOptions,
-    warnings: &[CompileWarning],
-    export_symbols: &[String],
-) -> MultiErrorResult<CompileOutput> {
-    let objects =
-        generate_pre_link_objects_from_products(functions, products, options, export_symbols)?;
-    match &options.linker {
-        LinkerMode::Internal => link_internal_with_warnings(options, &objects, warnings),
-        LinkerMode::System(linker_cmd) => {
-            link_system_with_warnings(options, &objects, linker_cmd, warnings)
-        }
-    }
 }
 
 /// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
@@ -461,11 +301,6 @@ pub(crate) fn validate_production_call_relocations(
 // ============================================================================
 use tracing::info_span;
 
-#[cfg(test)]
-use tracing::info;
-
-#[cfg(test)]
-use crate::linking::{link_internal_with_warnings, link_system_with_warnings};
 use crate::*;
 
 #[cfg(test)]
@@ -473,7 +308,9 @@ mod tests {
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
 
-    use rue_linker::ObjectFile;
+    use rue_linker::{CodeRelocation, ObjectBuilder, ObjectFile, RelocationType};
+
+    use crate::codegen_query::{CodegenSection, CodegenUnit, NormalizedRelocation, SectionKind};
 
     use super::*;
 
@@ -541,15 +378,243 @@ fn main() -> i32 {
         );
     }
 
-    fn frontend() -> (std::sync::Arc<CanonicalRirOutput>, RootedCfgOutput) {
-        let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
-        let (rir, semantic, _) =
-            crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
-                .unwrap();
-        (rir, semantic)
+    fn projection_section(kind: SectionKind, atoms: &[&[u8]]) -> CodegenSection {
+        let (alignment, executable, writable) = match kind {
+            SectionKind::Text => (16, true, false),
+            SectionKind::Rodata => (1, false, false),
+            SectionKind::Data | SectionKind::Bss => (1, false, true),
+        };
+        CodegenSection {
+            kind,
+            alignment,
+            executable,
+            writable,
+            atoms: atoms
+                .iter()
+                .map(|atom| Arc::<[u8]>::from(*atom))
+                .collect::<Vec<_>>()
+                .into(),
+        }
     }
 
-    fn strbuf_concat_frontend() -> (std::sync::Arc<CanonicalRirOutput>, RootedCfgOutput) {
+    fn projection_unit(sections: Vec<CodegenSection>) -> CodegenUnit {
+        CodegenUnit {
+            defined_symbol: Arc::from("main"),
+            relocations: Arc::from([]),
+            sections: sections.into(),
+            artifacts: Default::default(),
+            content_fingerprint: 0,
+        }
+    }
+
+    fn canonical_projection_unit(text: &[u8], strings: &[&[u8]]) -> CodegenUnit {
+        projection_unit(vec![
+            projection_section(SectionKind::Text, &[text]),
+            projection_section(SectionKind::Rodata, strings),
+            projection_section(SectionKind::Data, &[]),
+            projection_section(SectionKind::Bss, &[]),
+        ])
+    }
+
+    fn assert_projection_rejects(unit: CodegenUnit, expected: &str) {
+        let error = project_backend_object(&unit, Target::X86_64Linux).unwrap_err();
+        assert!(
+            matches!(&error.kind, ErrorKind::InternalCodegenError(message) if message.contains(expected)),
+            "unexpected projection error: {error}"
+        );
+    }
+
+    #[test]
+    fn object_projection_rejects_malformed_section_shapes_without_panicking() {
+        let all_sections = vec![
+            projection_section(SectionKind::Text, &[b"text"]),
+            projection_section(SectionKind::Rodata, &[]),
+            projection_section(SectionKind::Data, &[]),
+            projection_section(SectionKind::Bss, &[]),
+        ];
+        for kind in [
+            SectionKind::Text,
+            SectionKind::Rodata,
+            SectionKind::Data,
+            SectionKind::Bss,
+        ] {
+            let missing = all_sections
+                .iter()
+                .filter(|section| section.kind != kind)
+                .cloned()
+                .collect();
+            assert_projection_rejects(
+                projection_unit(missing),
+                &format!("exactly one {kind:?} section"),
+            );
+            let mut duplicate = all_sections.clone();
+            duplicate.push(projection_section(kind, &[]));
+            assert_projection_rejects(
+                projection_unit(duplicate),
+                &format!("exactly one {kind:?} section"),
+            );
+        }
+        assert_projection_rejects(
+            canonical_projection_unit(b"text", &[&[0xff]]),
+            "non-UTF-8 rodata",
+        );
+        for kind in [SectionKind::Data, SectionKind::Bss] {
+            let mut malformed = canonical_projection_unit(b"text", &[]);
+            Arc::make_mut(&mut malformed.sections)
+                .iter_mut()
+                .find(|section| section.kind == kind)
+                .unwrap()
+                .atoms = Arc::from([Arc::<[u8]>::from(*b"unsupported")]);
+            assert_projection_rejects(malformed, &format!("does not support {kind:?} atoms"));
+        }
+        assert_projection_rejects(
+            {
+                let mut malformed = canonical_projection_unit(b"text", &[]);
+                Arc::make_mut(&mut malformed.sections)
+                    .iter_mut()
+                    .find(|section| section.kind == SectionKind::Data)
+                    .unwrap()
+                    .atoms = Arc::from([Arc::<[u8]>::from(&b""[..])]);
+                malformed
+            },
+            "does not support Data atoms",
+        );
+        for kind in [
+            SectionKind::Text,
+            SectionKind::Rodata,
+            SectionKind::Data,
+            SectionKind::Bss,
+        ] {
+            let mut malformed = canonical_projection_unit(b"text", &[]);
+            let section = Arc::make_mut(&mut malformed.sections)
+                .iter_mut()
+                .find(|section| section.kind == kind)
+                .unwrap();
+            section.alignment = section.alignment.saturating_add(1);
+            assert_projection_rejects(malformed, &format!("non-canonical {kind:?}"));
+        }
+        let mut wrong_arch = canonical_projection_unit(b"text", &[]);
+        wrong_arch.relocations = Arc::from([NormalizedRelocation {
+            offset: 0,
+            symbol: Arc::from("callee"),
+            kind: RelocationKind::Aarch64Call26,
+            addend: 0,
+        }]);
+        assert_projection_rejects(wrong_arch, "incompatible relocation");
+    }
+
+    #[test]
+    fn object_projection_preserves_rodata_atoms_and_relocations_on_every_target() {
+        let non_ascii = "é".as_bytes();
+        let atom_bytes: [&[u8]; 4] = [b"", b"duplicate", non_ascii, b"duplicate"];
+        let strings = vec![
+            String::new(),
+            "duplicate".to_owned(),
+            "é".to_owned(),
+            "duplicate".to_owned(),
+        ];
+        for target in [
+            Target::X86_64Linux,
+            Target::Aarch64Linux,
+            Target::Aarch64Macos,
+        ] {
+            let (relocations, expected_relocations): (Vec<_>, Vec<_>) = match target.arch() {
+                Arch::X86_64 => (
+                    vec![
+                        NormalizedRelocation {
+                            offset: 1,
+                            symbol: Arc::from("first"),
+                            kind: RelocationKind::X86Pc32,
+                            addend: -4,
+                        },
+                        NormalizedRelocation {
+                            offset: 3,
+                            symbol: Arc::from("duplicate"),
+                            kind: RelocationKind::X86Plt32,
+                            addend: 0,
+                        },
+                    ],
+                    vec![
+                        CodeRelocation {
+                            offset: 1,
+                            symbol: "first".to_owned(),
+                            rel_type: RelocationType::Pc32,
+                            addend: -4,
+                        },
+                        CodeRelocation {
+                            offset: 3,
+                            symbol: "duplicate".to_owned(),
+                            rel_type: RelocationType::Plt32,
+                            addend: 0,
+                        },
+                    ],
+                ),
+                Arch::Aarch64 => (
+                    vec![
+                        NormalizedRelocation {
+                            offset: 0,
+                            symbol: Arc::from("first"),
+                            kind: RelocationKind::Aarch64AdrpPage21,
+                            addend: 0,
+                        },
+                        NormalizedRelocation {
+                            offset: 4,
+                            symbol: Arc::from("duplicate"),
+                            kind: RelocationKind::Aarch64AddLo12,
+                            addend: 8,
+                        },
+                        NormalizedRelocation {
+                            offset: 8,
+                            symbol: Arc::from("first"),
+                            kind: RelocationKind::Aarch64Call26,
+                            addend: 0,
+                        },
+                    ],
+                    vec![
+                        CodeRelocation {
+                            offset: 0,
+                            symbol: "first".to_owned(),
+                            rel_type: RelocationType::AdrpPage21,
+                            addend: 0,
+                        },
+                        CodeRelocation {
+                            offset: 4,
+                            symbol: "duplicate".to_owned(),
+                            rel_type: RelocationType::AddLo12,
+                            addend: 8,
+                        },
+                        CodeRelocation {
+                            offset: 8,
+                            symbol: "first".to_owned(),
+                            rel_type: RelocationType::Call26,
+                            addend: 0,
+                        },
+                    ],
+                ),
+            };
+            let mut unit = canonical_projection_unit(b"\x90\xc3", &atom_bytes);
+            unit.relocations = relocations.into();
+            let actual = project_backend_object(&unit, target).unwrap();
+            let mut expected = ObjectBuilder::new(target, "main")
+                .code(vec![0x90, 0xc3])
+                .strings(strings.clone());
+            for relocation in expected_relocations {
+                expected = expected.relocation(relocation);
+            }
+            assert_eq!(actual, expected.build(), "{target:?}");
+        }
+    }
+
+    fn frontend() -> SourceSnapshot {
+        let snapshot = SourceSnapshot::single("<rue-784>", SOURCE).unwrap();
+        snapshot
+    }
+
+    fn strbuf_concat_frontend() -> (
+        SourceSnapshot,
+        std::sync::Arc<CanonicalRirOutput>,
+        RootedCfgOutput,
+    ) {
         let root = FileId::new(1);
         let strbuf = FileId::new(2);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
@@ -606,31 +671,31 @@ drop fn StrBuf(self) { }
         let (rir, semantic, _) =
             crate::test_support::test_frontend_snapshot(&snapshot, &CompileOptions::default())
                 .unwrap();
-        (rir, semantic)
+        (snapshot, rir, semantic)
     }
 
     fn assert_three_result_slots_cross_cleanup(target: Target) {
-        let (rir, semantic) = strbuf_concat_frontend();
+        let (snapshot, _rir, semantic) = strbuf_concat_frontend();
         let options = CompileOptions {
             target,
             ..Default::default()
         };
-        let interner = rir.semantic_symbols().interner();
-        let foreign_symbols = collect_foreign_symbols(rir.rir(), interner);
-        let products = generate_backend_products(
-            semantic.functions(),
-            &options,
-            &foreign_symbols,
-            rue_codegen::BackendArtifactRequest {
-                asm: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let assembly = products
+        let mut session = CompilerSession::new();
+        crate::test_support::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let rooted = session
+            .rooted_codegen(
+                &options,
+                rue_codegen::BackendArtifactRequest {
+                    asm: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let assembly = rooted
+            .units
             .into_iter()
-            .find(|product| product.machine_name == "main")
-            .and_then(|product| product.artifacts.asm)
+            .find(|unit| unit.unit.defined_symbol.as_ref() == "main")
+            .and_then(|unit| unit.unit.artifacts.asm.clone())
             .expect("main assembly projection");
         let instructions = assembly
             .lines()
@@ -742,7 +807,7 @@ drop fn StrBuf(self) { }
 
     #[test]
     fn function_objects_only_contain_their_referenced_strings() {
-        let (_rir, semantic) = frontend();
+        let snapshot = frontend();
 
         for target in [
             Target::X86_64Linux,
@@ -753,10 +818,16 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects =
-                generate_pre_link_objects(semantic.functions(), &options, &[], &[]).unwrap();
-
-            let all_object_bytes: Vec<_> = objects.into_iter().flatten().collect();
+            let mut session = CompilerSession::new();
+            crate::test_support::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let rooted = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let all_object_bytes: Vec<_> = rooted
+                .objects
+                .iter()
+                .flat_map(|object| object.object.bytes.iter().copied())
+                .collect();
             assert_eq!(count(&all_object_bytes, FIRST_LITERAL), 1, "{target}");
             assert_eq!(count(&all_object_bytes, SECOND_LITERAL), 1, "{target}");
         }
@@ -764,7 +835,7 @@ drop fn StrBuf(self) { }
 
     #[test]
     fn text_objects_and_runtime_archive_have_no_obsolete_string_symbols() {
-        let (_rir, semantic) = strbuf_concat_frontend();
+        let (snapshot, _rir, _semantic) = strbuf_concat_frontend();
         let obsolete =
             |name: &str| name.starts_with("__rue_String_") || name == "__rue_drop_String";
 
@@ -777,12 +848,20 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects =
-                generate_pre_link_objects(semantic.functions(), &options, &[], &[]).unwrap();
+            let mut session = CompilerSession::new();
+            crate::test_support::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let rooted = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let objects = rooted
+                .objects
+                .iter()
+                .map(|object| object.object.bytes.as_ref())
+                .collect::<Vec<_>>();
 
             let mut undefined = HashSet::new();
             for bytes in objects {
-                let object = ObjectFile::parse(&bytes).unwrap();
+                let object = ObjectFile::parse(bytes).unwrap();
                 undefined.extend(
                     object
                         .symbols
@@ -814,7 +893,7 @@ drop fn StrBuf(self) { }
             "runtime archive still contains obsolete exports: {obsolete_exports:?}"
         );
 
-        compile_backend(semantic.functions(), &options, &[], &[], &[])
+        crate::test_support::test_compile_snapshot(&snapshot, &options)
             .expect("ordinary source-defined StrBuf program must link without obsolete members");
     }
 

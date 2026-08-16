@@ -209,7 +209,7 @@ pub(crate) fn evaluate_object_projection(
         return Ok(object_failure(errors.clone()));
     };
     context.record_work(rue_query::WorkItem::new("object.projection.attempts", 1));
-    let value = match crate::backend::project_backend_object(unit.backend_product(), key.target) {
+    let value = match crate::backend::project_backend_object(unit, key.target) {
         Ok(bytes) => {
             ObjectProjectionValue::Available(Arc::new(ObjectProjection::from_bytes(bytes)))
         }

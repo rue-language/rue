@@ -247,14 +247,15 @@ impl ProgramImage {
         let objects = units
             .into_iter()
             .map(|collected| {
-                backend::project_backend_object(collected.unit.backend_product(), options.target)
-                    .map(|bytes| CollectedObjectProjection {
+                backend::project_backend_object(&collected.unit, options.target).map(|bytes| {
+                    CollectedObjectProjection {
                         function: collected.function,
                         unit: collected.unit,
                         object: std::sync::Arc::new(
                             crate::object_query::ObjectProjection::from_bytes(bytes),
                         ),
-                    })
+                    }
+                })
             })
             .collect::<Result<Vec<_>, _>>()
             .map_err(CompileErrors::from)?;
@@ -429,7 +430,8 @@ impl ProgramImagePlan {
         required_runtime_symbols.insert(entry_point.to_owned());
         required_runtime_symbols.insert(rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned());
         for unit in units {
-            for symbol in unit.referenced_symbols.iter() {
+            for relocation in unit.relocations.iter() {
+                let symbol = &relocation.symbol;
                 if rue_runtime_abi::classify_export(symbol).is_some() {
                     required_runtime_symbols.insert(symbol.to_string());
                 }
@@ -714,33 +716,6 @@ mod tests {
                 .map(ToString::to_string)
                 .collect(),
         )
-    }
-
-    fn old_objects_for(source: &str, target: Target) -> Vec<Vec<u8>> {
-        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
-        let options = CompileOptions {
-            target,
-            ..CompileOptions::default()
-        };
-        let mut session = crate::CompilerSession::new();
-        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let rir = session.canonical_rir().unwrap();
-        let semantic = session.rooted_cfg(&options).unwrap();
-        let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-        let products = session
-            .codegen_products(
-                &semantic,
-                &options,
-                rue_codegen::BackendArtifactRequest::default(),
-            )
-            .unwrap();
-        backend::generate_pre_link_objects_from_products(
-            semantic.functions(),
-            products,
-            &options,
-            &exports,
-        )
-        .unwrap()
     }
 
     #[test]
@@ -1116,75 +1091,5 @@ mod tests {
                 .iter()
                 .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused)
         );
-    }
-
-    #[test]
-    fn fresh_adapter_matches_the_prior_object_projection_on_every_target() {
-        let source = "fn callee() -> i32 { 7 } fn main() -> i32 { callee() }";
-        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
-        for target in [
-            Target::X86_64Linux,
-            Target::Aarch64Linux,
-            Target::Aarch64Macos,
-        ] {
-            let options = CompileOptions {
-                target,
-                ..CompileOptions::default()
-            };
-            let mut session = crate::CompilerSession::new();
-            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-            let rooted = session
-                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
-                .unwrap();
-            let image =
-                ProgramImage::from_rooted(rooted.objects, rooted.exports, &options).unwrap();
-            assert_eq!(
-                image.fresh_objects(&options).unwrap(),
-                old_objects_for(source, target),
-                "{target:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn fresh_adapter_matches_the_prior_host_executable() {
-        let source = "fn callee() -> i32 { 7 } fn main() -> i32 { callee() }";
-        let target = Target::host().unwrap();
-        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
-        let options = CompileOptions {
-            target,
-            ..CompileOptions::default()
-        };
-
-        let mut old_session = crate::CompilerSession::new();
-        crate::publish_test_snapshot(&mut old_session, &snapshot).unwrap();
-        let old_rir = old_session.canonical_rir().unwrap();
-        let old_semantic = old_session.rooted_cfg(&options).unwrap();
-        let old_exports =
-            backend::collect_export_symbols(old_rir.rir(), old_rir.semantic_symbols().interner());
-        let old = backend::compile_backend_products(
-            old_semantic.functions(),
-            old_session
-                .codegen_products(
-                    &old_semantic,
-                    &options,
-                    rue_codegen::BackendArtifactRequest::default(),
-                )
-                .unwrap(),
-            &options,
-            old_semantic.warnings(),
-            &old_exports,
-        )
-        .unwrap();
-
-        let mut fresh_session = crate::CompilerSession::new();
-        crate::publish_test_snapshot(&mut fresh_session, &snapshot).unwrap();
-        let rooted = fresh_session
-            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
-            .unwrap();
-        let image = ProgramImage::from_rooted(rooted.objects, rooted.exports, &options).unwrap();
-        let fresh = image.fresh_link(&options, &rooted.warnings).unwrap();
-        assert_eq!(fresh.elf, old.elf);
-        assert_eq!(fresh.warnings, old.warnings);
     }
 }

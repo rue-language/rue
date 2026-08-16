@@ -1246,10 +1246,7 @@ mod tests {
         let options = CompileOptions::default();
         let run = |workers| {
             let mut session = CompilerSession::with_query_concurrency(workers);
-            session
-                .update_for_presentation(&snapshot)
-                .into_result()
-                .unwrap();
+            crate::test_support::publish_test_snapshot(&mut session, &snapshot).unwrap();
             crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap()
         };
 
@@ -1613,10 +1610,7 @@ mod tests {
         let canonical_objects = cold
             .units
             .iter()
-            .map(|unit| {
-                crate::backend::project_backend_object(unit.unit.backend_product(), options.target)
-                    .unwrap()
-            })
+            .map(|unit| crate::backend::project_backend_object(&unit.unit, options.target).unwrap())
             .collect::<Vec<_>>();
         let cold_image = crate::program_image_plan::ProgramImage::from_rooted(
             cold.objects,
@@ -2084,7 +2078,7 @@ mod tests {
         let snapshot = assembler.snapshot().unwrap();
 
         let options = CompileOptions::default();
-        let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &options)
+        let (_rir, semantic, _) = test_frontend_snapshot(&snapshot, &options)
             .expect("qualified and aliased canonical StrBuf references should compile");
         assert!(semantic.type_pools().any(|pool| {
             pool.all_struct_ids()
@@ -2103,17 +2097,18 @@ mod tests {
                 target,
                 ..Default::default()
             };
-            let interner = rir.semantic_symbols().interner();
-            let foreign_symbols = crate::backend::collect_foreign_symbols(rir.rir(), interner);
-            crate::backend::generate_backend_products(
-                semantic.functions(),
-                &options,
-                &foreign_symbols,
-                rue_codegen::BackendArtifactRequest::default(),
-            )
-            .unwrap_or_else(|error| {
-                panic!("canonical source StrBuf functions should lower for {target}: {error}")
-            });
+            let mut session = crate::CompilerSession::new();
+            crate::test_support::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let semantic = session.rooted_cfg(&options).unwrap();
+            session
+                .codegen_units(
+                    &semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("canonical source StrBuf functions should lower for {target}: {error}")
+                });
         }
     }
 
