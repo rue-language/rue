@@ -32163,6 +32163,654 @@ fn main() -> i32 {
         }
     }
 
+    /// One stable argument classification against the live classifier's answer
+    /// for the same type under the same convention.
+    fn assert_native_arg_parity(
+        stable: &crate::type_queries::CallAbiArgument,
+        live_class: rue_air::ArgClass,
+        live_width: u32,
+        context: &str,
+    ) {
+        use crate::type_queries::CallAbiArgumentClass as A;
+        assert_eq!(
+            stable.value_slots, live_width,
+            "value-slot width parity for {context}"
+        );
+        match (stable.class, live_class) {
+            (A::Omitted, rue_air::ArgClass::Omitted) => {}
+            (A::NativeDirect { slots }, rue_air::ArgClass::Direct { slot_count }) => {
+                assert_eq!(slots, slot_count, "direct slot parity for {context}");
+            }
+            (A::NativeIndirect, rue_air::ArgClass::Indirect) => {}
+            (A::Reference, rue_air::ArgClass::Indirect) => {}
+            (stable, live) => {
+                panic!(
+                    "argument classification parity mismatch for {context}: {stable:?} != {live:?}"
+                )
+            }
+        }
+    }
+
+    /// One stable return classification against the live classifier's answer.
+    fn assert_native_return_parity(
+        stable: crate::type_queries::CallAbiReturnClass,
+        live: rue_air::ReturnClass,
+        context: &str,
+    ) {
+        use crate::type_queries::CallAbiReturnClass as R;
+        match (stable, live) {
+            (R::ZeroSized, rue_air::ReturnClass::ZeroSized) => {}
+            (
+                R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::None,
+                },
+                rue_air::ReturnClass::Scalar,
+            ) => {}
+            (R::NativeRegisters { slots }, rue_air::ReturnClass::Registers { slot_count }) => {
+                assert_eq!(slots, slot_count, "register slot parity for {context}");
+            }
+            (R::NativeIndirect { slots }, rue_air::ReturnClass::Indirect { slot_count }) => {
+                assert_eq!(slots, slot_count, "indirect slot parity for {context}");
+            }
+            (stable, live) => {
+                panic!(
+                    "return classification parity mismatch for {context}: {stable:?} != {live:?}"
+                )
+            }
+        }
+    }
+
+    #[test]
+    fn call_abi_native_classification_matches_the_live_classifier_on_both_targets() {
+        use lasso::ThreadedRodeo;
+        use rue_air::{
+            ArgConvention, EnumDef, NativeCallAbi, StructDef, StructField, Type, TypeInternPool,
+        };
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Empty {}\n\
+                 struct Wide { a: u64, b: u64 }\n\
+                 struct Narrow { a: u32, b: u32 }\n\
+                 struct OneNarrow { a: u32 }\n\
+                 struct Nested { inner: Wide, tail: [u64; 2] }\n\
+                 struct NestedNarrow { inner: Narrow, tail: u64 }\n\
+                 enum Flag { A, B }\n\
+                 enum Choice { Small(u8, u64), Wide(u32, u16, u64) }\n\
+                 fn scalars(a: i32, b: u32, c: bool, d: i64) -> i64 { d }\n\
+                 fn zero(e: Empty) -> Empty { e }\n\
+                 fn refs(inout a: i64, borrow b: Wide) {}\n\
+                 fn five(v: [u64; 5]) -> [u64; 5] { v }\n\
+                 fn six(v: [u64; 6]) -> [u64; 6] { v }\n\
+                 fn seven(v: [u64; 7]) -> [u64; 7] { v }\n\
+                 fn eight(v: [u64; 8]) -> [u64; 8] { v }\n\
+                 fn nine(v: [u64; 9]) -> [u64; 9] { v }\n\
+                 fn wide(v: Wide) -> Wide { v }\n\
+                 fn narrow(v: Narrow) -> Narrow { v }\n\
+                 fn one_narrow(v: OneNarrow) -> OneNarrow { v }\n\
+                 fn nested(v: Nested) -> Nested { v }\n\
+                 fn nested_narrow(v: NestedNarrow) -> NestedNarrow { v }\n\
+                 fn flag(v: Flag) -> Flag { v }\n\
+                 fn choice(v: Choice) -> Choice { v }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+
+        // Mirror the source types into a live pool so the stable query can be
+        // compared against the live classifier's answer for the same shapes.
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let struct_def = |name: &str, fields: Vec<(&str, Type)>| StructDef {
+            name: name.into(),
+            fields: fields
+                .into_iter()
+                .map(|(name, ty)| StructField {
+                    name: name.into(),
+                    ty,
+                })
+                .collect(),
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: false,
+            file_id: rue_span::FileId::DEFAULT,
+        };
+        let register = |name: &str, fields: Vec<(&str, Type)>| {
+            Type::new_struct(
+                pool.register_struct(interner.get_or_intern(name), struct_def(name, fields))
+                    .0,
+            )
+        };
+        let empty = register("Empty", vec![]);
+        let wide = register("Wide", vec![("a", Type::U64), ("b", Type::U64)]);
+        let narrow = register("Narrow", vec![("a", Type::U32), ("b", Type::U32)]);
+        let one_narrow = register("OneNarrow", vec![("a", Type::U32)]);
+        let tail = Type::new_array(pool.intern_array_from_type(Type::U64, 2));
+        let nested = register("Nested", vec![("inner", wide), ("tail", tail)]);
+        let nested_narrow = register("NestedNarrow", vec![("inner", narrow), ("tail", Type::U64)]);
+        let flag = Type::new_enum(
+            pool.register_enum(
+                interner.get_or_intern("Flag"),
+                EnumDef {
+                    name: "Flag".into(),
+                    variants: Arc::from(["A".into(), "B".into()]),
+                    variant_payloads: vec![vec![], vec![]],
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0,
+        );
+        let choice = Type::new_enum(
+            pool.register_enum(
+                interner.get_or_intern("Choice"),
+                EnumDef {
+                    name: "Choice".into(),
+                    variants: Arc::from(["Small".into(), "Wide".into()]),
+                    variant_payloads: vec![
+                        vec![Type::U8, Type::U64],
+                        vec![Type::U32, Type::U16, Type::U64],
+                    ],
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0,
+        );
+        let arrays: Vec<Type> = (5u64..=9)
+            .map(|len| Type::new_array(pool.intern_array_from_type(Type::U64, len)))
+            .collect();
+        let pool = pool.freeze();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        for (target, budget) in [
+            (crate::Target::X86_64Linux, 6u32),
+            (crate::Target::Aarch64Linux, 8u32),
+        ] {
+            let live = NativeCallAbi::new(&pool, budget);
+            let by_value = ArgConvention::ByValue;
+            let cases: Vec<(&str, Vec<(ArgConvention, Type)>, Type)> = vec![
+                (
+                    "scalars",
+                    vec![
+                        (by_value, Type::I32),
+                        (by_value, Type::U32),
+                        (by_value, Type::BOOL),
+                        (by_value, Type::I64),
+                    ],
+                    Type::I64,
+                ),
+                ("zero", vec![(by_value, empty)], empty),
+                (
+                    "refs",
+                    vec![
+                        (ArgConvention::ByReference, Type::I64),
+                        (ArgConvention::ByReference, wide),
+                    ],
+                    Type::UNIT,
+                ),
+                ("five", vec![(by_value, arrays[0])], arrays[0]),
+                ("six", vec![(by_value, arrays[1])], arrays[1]),
+                ("seven", vec![(by_value, arrays[2])], arrays[2]),
+                ("eight", vec![(by_value, arrays[3])], arrays[3]),
+                ("nine", vec![(by_value, arrays[4])], arrays[4]),
+                ("wide", vec![(by_value, wide)], wide),
+                ("narrow", vec![(by_value, narrow)], narrow),
+                ("one_narrow", vec![(by_value, one_narrow)], one_narrow),
+                ("nested", vec![(by_value, nested)], nested),
+                (
+                    "nested_narrow",
+                    vec![(by_value, nested_narrow)],
+                    nested_narrow,
+                ),
+                ("choice", vec![(by_value, choice)], choice),
+            ];
+            for (name, params, result) in &cases {
+                let facts = request_call_abi(
+                    &database,
+                    revision,
+                    free_function_instance(&module, name),
+                    target,
+                );
+                assert_eq!(
+                    facts.convention,
+                    crate::type_queries::CallAbiConvention::Native,
+                    "{name} is a native callable"
+                );
+                assert_eq!(facts.arguments.len(), params.len(), "arity of {name}");
+                for (argument, (convention, ty)) in facts.arguments.iter().zip(params) {
+                    assert_native_arg_parity(
+                        argument,
+                        live.classify_arg(*ty, *convention),
+                        live.arg_slot_width(*ty, *convention),
+                        &format!("{name} on {target:?}"),
+                    );
+                }
+                assert_native_return_parity(
+                    facts.return_class,
+                    live.classify_return(*result),
+                    &format!("{name} return on {target:?}"),
+                );
+            }
+
+            // The discriminant-only enum is the one deliberate projection
+            // divergence between the planes: the live classifier reports its
+            // single tag slot as `Scalar`, while the stable projection keeps
+            // reporting the aggregate as one register slot. The physical
+            // crossing is identical (one register); this pin keeps the
+            // divergence visible instead of letting it drift silently.
+            let flag_facts = request_call_abi(
+                &database,
+                revision,
+                free_function_instance(&module, "flag"),
+                target,
+            );
+            assert_eq!(
+                live.classify_return(flag),
+                rue_air::ReturnClass::Scalar,
+                "live plane reports a discriminant-only enum return as a scalar"
+            );
+            assert_eq!(
+                flag_facts.return_class,
+                crate::type_queries::CallAbiReturnClass::NativeRegisters { slots: 1 },
+                "stable plane projects a discriminant-only enum return as one register slot"
+            );
+            assert_native_arg_parity(
+                &flag_facts.arguments[0],
+                live.classify_arg(flag, ArgConvention::ByValue),
+                live.arg_slot_width(flag, ArgConvention::ByValue),
+                &format!("flag argument on {target:?}"),
+            );
+
+            // Pin the classification outcomes themselves, not only the
+            // cross-plane agreement: zero-sized values vanish, a slot-identical
+            // aggregate stays direct, a multi-slot narrow-leaf aggregate is
+            // forced indirect by the compact memory-first rule, and a
+            // single-slot narrow aggregate stays direct (RUE-1035).
+            use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+            let request = |name: &str| {
+                request_call_abi(
+                    &database,
+                    revision,
+                    free_function_instance(&module, name),
+                    target,
+                )
+            };
+            let zero = request("zero");
+            assert!(matches!(zero.arguments[0].class, A::Omitted));
+            assert_eq!(zero.return_class, R::ZeroSized);
+            let wide_facts = request("wide");
+            assert!(matches!(
+                wide_facts.arguments[0].class,
+                A::NativeDirect { slots: 2 }
+            ));
+            assert_eq!(wide_facts.return_class, R::NativeRegisters { slots: 2 });
+            let narrow_facts = request("narrow");
+            assert!(matches!(narrow_facts.arguments[0].class, A::NativeIndirect));
+            assert_eq!(narrow_facts.return_class, R::NativeIndirect { slots: 2 });
+            let one_narrow_facts = request("one_narrow");
+            assert!(matches!(
+                one_narrow_facts.arguments[0].class,
+                A::NativeDirect { slots: 1 }
+            ));
+            assert_eq!(
+                one_narrow_facts.return_class,
+                R::NativeRegisters { slots: 1 }
+            );
+            let nested_narrow_facts = request("nested_narrow");
+            assert!(matches!(
+                nested_narrow_facts.arguments[0].class,
+                A::NativeIndirect
+            ));
+            let refs_facts = request("refs");
+            assert!(matches!(refs_facts.arguments[0].class, A::Reference));
+            assert!(matches!(refs_facts.arguments[1].class, A::Reference));
+
+            // Pin the return-register budget boundary explicitly: budget - 1
+            // and budget fit in registers, budget + 1 goes indirect.
+            let boundary = |name: &str| request(name).return_class;
+            match target {
+                crate::Target::X86_64Linux => {
+                    assert_eq!(boundary("five"), R::NativeRegisters { slots: 5 });
+                    assert_eq!(boundary("six"), R::NativeRegisters { slots: 6 });
+                    assert_eq!(boundary("seven"), R::NativeIndirect { slots: 7 });
+                }
+                _ => {
+                    assert_eq!(boundary("seven"), R::NativeRegisters { slots: 7 });
+                    assert_eq!(boundary("eight"), R::NativeRegisters { slots: 8 });
+                    assert_eq!(boundary("nine"), R::NativeIndirect { slots: 9 });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn call_abi_target_c_classification_matches_the_live_classifier_on_both_targets() {
+        use lasso::ThreadedRodeo;
+        use rue_air::{StructDef, StructField, TargetCCallAbi, Type, TypeInternPool};
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "@repr(c)\n\
+                 struct CInner { a: i32, b: i32 }\n\
+                 @repr(c)\n\
+                 struct CTwelve { a: i32, b: i32, c: i32 }\n\
+                 @repr(c)\n\
+                 struct CNested { inner: CInner, tail: i64 }\n\
+                 @repr(c)\n\
+                 struct CLarge { a: i64, b: i64, c: i64 }\n\
+                 extern \"C\" {\n\
+                     fn c_signed(a: i8, b: i16, c: i32, d: i64) -> i16;\n\
+                     fn c_unsigned(a: u8, b: u16, c: u32, d: u64, e: bool) -> u16;\n\
+                     fn c_pointers(p: ptr const u8, q: ptr mut u8) -> ptr mut u8;\n\
+                     fn c_eight(v: CInner) -> CInner;\n\
+                     fn c_twelve(v: CTwelve) -> CTwelve;\n\
+                     fn c_sixteen(v: CNested) -> CNested;\n\
+                     fn c_large(v: CLarge) -> CLarge;\n\
+                 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let register = |name: &str, fields: Vec<(&str, Type)>| {
+            Type::new_struct(
+                pool.register_struct(
+                    interner.get_or_intern(name),
+                    StructDef {
+                        name: name.into(),
+                        fields: fields
+                            .into_iter()
+                            .map(|(name, ty)| StructField {
+                                name: name.into(),
+                                ty,
+                            })
+                            .collect(),
+                        is_copy: false,
+                        is_linear: false,
+                        destructor: None,
+                        is_builtin: false,
+                        is_pub: false,
+                        file_id: rue_span::FileId::DEFAULT,
+                    },
+                )
+                .0,
+            )
+        };
+        let c_inner = register("CInner", vec![("a", Type::I32), ("b", Type::I32)]);
+        let c_twelve = register(
+            "CTwelve",
+            vec![("a", Type::I32), ("b", Type::I32), ("c", Type::I32)],
+        );
+        let c_nested = register("CNested", vec![("inner", c_inner), ("tail", Type::I64)]);
+        let c_large = register(
+            "CLarge",
+            vec![("a", Type::I64), ("b", Type::I64), ("c", Type::I64)],
+        );
+        let ptr_const_u8 = Type::new_ptr_const(pool.intern_ptr_const_from_type(Type::U8));
+        let ptr_mut_u8 = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let pool = pool.freeze();
+
+        let assert_scalar_args = |facts: &crate::type_queries::CallAbiFacts,
+                                  abi: &TargetCCallAbi,
+                                  live_params: &[Type],
+                                  live_result: Type,
+                                  name: &str| {
+            use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+            assert_eq!(facts.arguments.len(), live_params.len(), "arity of {name}");
+            for (argument, live_ty) in facts.arguments.iter().zip(live_params) {
+                let A::CScalar { extension } = argument.class else {
+                    panic!("{name} argument is a target-C scalar: {:?}", argument.class);
+                };
+                assert_eq!(
+                    extension,
+                    abi.scalar_arg_extension(*live_ty),
+                    "argument extension parity for {name}"
+                );
+            }
+            let R::Scalar { extension } = facts.return_class else {
+                panic!(
+                    "{name} return is a target-C scalar: {:?}",
+                    facts.return_class
+                );
+            };
+            assert_eq!(
+                extension,
+                abi.scalar_return_extension(live_result),
+                "return extension parity for {name}"
+            );
+        };
+        let assert_aggregate = |facts: &crate::type_queries::CallAbiFacts,
+                                abi: &TargetCCallAbi,
+                                live_ty: Type,
+                                name: &str| {
+            use crate::type_queries::{CallAbiArgumentClass as A, CallAbiReturnClass as R};
+            let layout = pool.layout(live_ty);
+            match (
+                facts.arguments[0].class,
+                abi.classify_aggregate_arg(layout.size, layout.alignment),
+            ) {
+                (
+                    A::CIntegerRegisters { eightbytes },
+                    rue_air::AggregateArgClass::IntegerRegisters {
+                        eightbytes: live_eightbytes,
+                    },
+                ) => assert_eq!(eightbytes, live_eightbytes, "eightbyte parity for {name}"),
+                (
+                    A::CByValueStack { size, alignment },
+                    rue_air::AggregateArgClass::ByValueStack {
+                        size: live_size,
+                        align: live_align,
+                    },
+                ) => assert_eq!(
+                    (size, alignment),
+                    (live_size, live_align),
+                    "byval parity for {name}"
+                ),
+                (
+                    A::CByReferenceCopy { size, alignment },
+                    rue_air::AggregateArgClass::ByReferenceCopy {
+                        size: live_size,
+                        align: live_align,
+                    },
+                ) => assert_eq!(
+                    (size, alignment),
+                    (live_size, live_align),
+                    "reference-copy parity for {name}"
+                ),
+                (stable, live) => {
+                    panic!("aggregate argument parity mismatch for {name}: {stable:?} != {live:?}")
+                }
+            }
+            match (
+                facts.return_class,
+                abi.classify_aggregate_return(layout.size, layout.alignment),
+            ) {
+                (
+                    R::CIntegerRegisters { eightbytes },
+                    rue_air::AggregateReturnClass::IntegerRegisters {
+                        eightbytes: live_eightbytes,
+                    },
+                ) => assert_eq!(
+                    eightbytes, live_eightbytes,
+                    "return eightbyte parity for {name}"
+                ),
+                (
+                    R::CIndirect { size, alignment },
+                    rue_air::AggregateReturnClass::Indirect {
+                        size: live_size,
+                        align: live_align,
+                    },
+                ) => assert_eq!(
+                    (size, alignment),
+                    (live_size, live_align),
+                    "sret parity for {name}"
+                ),
+                (stable, live) => {
+                    panic!("aggregate return parity mismatch for {name}: {stable:?} != {live:?}")
+                }
+            }
+        };
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let flavor = if target == crate::Target::X86_64Linux {
+                rue_air::TargetCAbiFlavor::SysVAmd64
+            } else {
+                rue_air::TargetCAbiFlavor::Aapcs64
+            };
+            let abi = TargetCCallAbi::new(flavor);
+            let request = |name: &str| {
+                request_call_abi(
+                    &database,
+                    revision,
+                    free_function_instance(&module, name),
+                    target,
+                )
+            };
+
+            let signed = request("c_signed");
+            assert_eq!(
+                signed.convention,
+                crate::type_queries::CallAbiConvention::TargetC(flavor)
+            );
+            assert_scalar_args(
+                &signed,
+                &abi,
+                &[Type::I8, Type::I16, Type::I32, Type::I64],
+                Type::I16,
+                "c_signed",
+            );
+            assert_scalar_args(
+                &request("c_unsigned"),
+                &abi,
+                &[Type::U8, Type::U16, Type::U32, Type::U64, Type::BOOL],
+                Type::U16,
+                "c_unsigned",
+            );
+            assert_scalar_args(
+                &request("c_pointers"),
+                &abi,
+                &[ptr_const_u8, ptr_mut_u8],
+                ptr_mut_u8,
+                "c_pointers",
+            );
+
+            // Aggregates at 8, 12, 16, and 24 bytes: one eightbyte, rounding
+            // up to two, exactly two, and past the 16-byte register limit
+            // where the psABIs diverge (SysV byval stack, AAPCS64 reference
+            // to a caller copy; sret for returns on both).
+            assert_aggregate(&request("c_eight"), &abi, c_inner, "c_eight");
+            assert_aggregate(&request("c_twelve"), &abi, c_twelve, "c_twelve");
+            assert_aggregate(&request("c_sixteen"), &abi, c_nested, "c_sixteen");
+            assert_aggregate(&request("c_large"), &abi, c_large, "c_large");
+        }
+    }
+
+    #[test]
+    fn call_abi_strbuf_return_uses_sret_on_both_planes() {
+        use lasso::ThreadedRodeo;
+        use rue_air::{ArgConvention, NativeCallAbi, StructDef, StructField, Type, TypeInternPool};
+        let snapshot = trusted_body_snapshot(
+            "fn main() -> i32 { 0 }",
+            None,
+            Some((
+                FileId::new(3),
+                "pub struct StrBuf { buf: ptr mut u8, cap: u64, len: u64 }\n\
+                 pub fn echo(v: StrBuf) -> StrBuf { v }",
+            )),
+        );
+        let strbuf_module =
+            ModuleId::from_trusted_standard_library_path(crate::STRBUF_MODULE_LOGICAL_PATH)
+                .expect("the strbuf module path is inside the standard-library namespace");
+
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let ptr_mut_u8 = Type::new_ptr_mut(pool.intern_ptr_mut_from_type(Type::U8));
+        let (strbuf_id, _) = pool.register_struct(
+            interner.get_or_intern("StrBuf"),
+            StructDef {
+                name: "StrBuf".into(),
+                fields: vec![
+                    StructField {
+                        name: "buf".into(),
+                        ty: ptr_mut_u8,
+                    },
+                    StructField {
+                        name: "cap".into(),
+                        ty: Type::U64,
+                    },
+                    StructField {
+                        name: "len".into(),
+                        ty: Type::U64,
+                    },
+                ],
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: true,
+                file_id: rue_span::FileId::DEFAULT,
+            },
+        );
+        pool.set_struct_lang_item(strbuf_id, rue_air::LangItem::StrBuf);
+        let strbuf = Type::new_struct(strbuf_id);
+        let pool = pool.freeze();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        for (target, budget) in [
+            (crate::Target::X86_64Linux, 6u32),
+            (crate::Target::Aarch64Linux, 8u32),
+        ] {
+            let live = NativeCallAbi::new(&pool, budget);
+            // The canonical StrBuf always returns through sret even though its
+            // three slots fit the return-register budget, and its slot-identical
+            // layout keeps by-value arguments direct.
+            assert_eq!(
+                live.classify_return(strbuf),
+                rue_air::ReturnClass::Indirect { slot_count: 3 }
+            );
+            assert_eq!(
+                live.classify_arg(strbuf, ArgConvention::ByValue),
+                rue_air::ArgClass::Direct { slot_count: 3 }
+            );
+            let facts = request_call_abi(
+                &database,
+                revision,
+                free_function_instance(&strbuf_module, "echo"),
+                target,
+            );
+            assert_eq!(
+                facts.convention,
+                crate::type_queries::CallAbiConvention::Native
+            );
+            assert_eq!(
+                facts.return_class,
+                crate::type_queries::CallAbiReturnClass::NativeIndirect { slots: 3 }
+            );
+            assert_native_arg_parity(
+                &facts.arguments[0],
+                live.classify_arg(strbuf, ArgConvention::ByValue),
+                live.arg_slot_width(strbuf, ArgConvention::ByValue),
+                &format!("StrBuf echo argument on {target:?}"),
+            );
+        }
+    }
+
     #[test]
     fn anonymous_producer_preserves_a_deterministic_body_diagnostic_as_a_typed_failure() {
         let source = source_snapshot(
