@@ -837,18 +837,6 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
     // Union-find structure for tracking coalesced vregs
     let mut parent: HashMap<VReg, VReg> = HashMap::new();
 
-    // Find the representative of a vreg in the union-find
-    fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
-        if let Some(&p) = parent.get(&vreg) {
-            if p != vreg {
-                let root = find(parent, p);
-                parent.insert(vreg, root);
-                return root;
-            }
-        }
-        vreg
-    }
-
     // Process each candidate
     for candidate in candidates {
         let dst = find(&mut parent, candidate.dst);
@@ -905,28 +893,84 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
             parent.insert(dst, src);
             result.coalesce_map.insert(dst, src);
 
-            // Update liveness: assign merged range to src, remove dst
+            // Update liveness: assign merged range to src, remove dst.
+            // These are O(1) and later candidates read `range()` to decide
+            // interference, so they stay eager; only the `live_at` rewrite is
+            // deferred (see `apply_merges_to_live_at`).
             liveness.ranges[src] = Some(merged_range);
             liveness.ranges[dst] = None;
-
-            // Update live_at bitsets: replace dst with src
-            for live_set in &mut liveness.live_at {
-                let dst_idx = dst.index() as usize;
-                let src_idx = src.index() as usize;
-                if dst_idx < live_set.len() && live_set.contains(dst_idx) {
-                    live_set.set(dst_idx, false);
-                    if src_idx < live_set.len() {
-                        live_set.insert(src_idx);
-                    }
-                }
-            }
 
             // Mark the move for elimination
             result.eliminated_moves.insert(candidate.inst_idx);
         }
     }
 
+    apply_merges_to_live_at(&mut parent, liveness);
+
     result
+}
+
+/// Find the representative of a vreg in the union-find, with path compression.
+fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
+    if let Some(&p) = parent.get(&vreg) {
+        if p != vreg {
+            let root = find(parent, p);
+            parent.insert(vreg, root);
+            return root;
+        }
+    }
+    vreg
+}
+
+/// Rewrite the `live_at` bitsets so every coalesced vreg reads as the
+/// representative its equivalence class settled on.
+///
+/// Substituting eagerly inside the candidate loop — one full sweep of `live_at`
+/// per successful merge — costs O(merges × instructions). Both factors scale
+/// with function size, so a single large straight-line body drove the backend
+/// phase quadratic. One sweep after the loop is equivalent: the eager form
+/// rewrote dst to src at each merge, so a chain a -> b -> c rewrote `a` twice
+/// and left it on the class's final root, which is exactly `find(a)`. Nothing
+/// in the candidate loop reads `live_at`, so deferring the rewrite cannot
+/// change which candidates coalesce.
+fn apply_merges_to_live_at<Reg: Copy + Eq + std::hash::Hash>(
+    parent: &mut HashMap<VReg, VReg>,
+    liveness: &mut LivenessInfo<Reg>,
+) {
+    if parent.is_empty() {
+        return;
+    }
+
+    // Resolve the merged vregs once so the sweep below is an array read per
+    // live bit rather than a union-find walk. Every vreg the merges touched is
+    // a key of `parent`; the rest are their own representatives.
+    let mut root_of: Vec<u32> = (0..liveness.ranges.len() as u32).collect();
+    let merged: Vec<VReg> = parent.keys().copied().collect();
+    for vreg in merged {
+        let idx = vreg.index() as usize;
+        if idx < root_of.len() {
+            root_of[idx] = find(parent, vreg).index();
+        }
+    }
+
+    // A bit cannot be cleared while `ones()` borrows the set, so each set's
+    // moves are collected first. The buffer is reused across sets.
+    let mut moves: Vec<(usize, usize)> = Vec::new();
+    for live_set in &mut liveness.live_at {
+        moves.extend(live_set.ones().filter_map(|idx| {
+            // An index past `root_of` cannot name a merged vreg, so it stays.
+            let root = *root_of.get(idx)? as usize;
+            (root != idx).then_some((idx, root))
+        }));
+
+        let len = live_set.len();
+        for (from, to) in moves.drain(..) {
+            live_set.set(from, false);
+            if to < len {
+                live_set.insert(to);
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -3668,6 +3712,64 @@ mod tests {
         assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
         assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
         assert_eq!(result.representative(VReg::new(2)), VReg::new(0));
+    }
+
+    #[test]
+    fn test_coalesce_rewrites_live_at_through_the_whole_chain() {
+        // The `live_at` rewrite is applied once after every candidate has been
+        // decided, so a vreg merged early and merged again later must still
+        // land on its class's final representative — v2 -> v1 -> v0 leaves
+        // every bit reading v0, and no bit for v1 or v2 survives.
+        let mut liveness = make_liveness(vec![(0, 0, 1), (1, 1, 2), (2, 2, 3)]);
+        liveness.live_at[0].insert(0);
+        liveness.live_at[1].insert(1);
+        liveness.live_at[2].insert(2);
+        // A point where both a merged vreg and its representative are live.
+        liveness.live_at[3].insert(0);
+        liveness.live_at[3].insert(2);
+
+        let candidates = vec![
+            CoalesceCandidate {
+                inst_idx: 1,
+                dst: VReg::new(1),
+                src: VReg::new(0),
+            },
+            CoalesceCandidate {
+                inst_idx: 2,
+                dst: VReg::new(2),
+                src: VReg::new(1),
+            },
+        ];
+
+        coalesce(&candidates, &mut liveness);
+
+        for (idx, live_set) in liveness.live_at.iter().enumerate() {
+            assert_eq!(
+                live_set.ones().collect::<Vec<_>>(),
+                vec![0],
+                "live_at[{idx}] should name only the representative v0"
+            );
+        }
+    }
+
+    #[test]
+    fn test_coalesce_leaves_live_at_alone_without_merges() {
+        // No candidate coalesces, so the bitsets must come back untouched.
+        let mut liveness = make_liveness(vec![(0, 0, 3), (1, 1, 4)]);
+        liveness.live_at[1].insert(0);
+        liveness.live_at[1].insert(1);
+
+        // v0 is still live at the move, so the ranges interfere.
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 3,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+
+        let result = coalesce(&candidates, &mut liveness);
+
+        assert_eq!(result.num_eliminated(), 0);
+        assert_eq!(liveness.live_at[1].ones().collect::<Vec<_>>(), vec![0, 1]);
     }
 
     #[test]
