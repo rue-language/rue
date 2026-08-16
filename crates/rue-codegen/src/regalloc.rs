@@ -42,7 +42,7 @@
 //!
 //! The [`CostModel`] struct allows these parameters to be configured.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
 use rue_error::CompileResult;
@@ -50,6 +50,12 @@ use rue_error::CompileResult;
 use crate::index_map::IndexMap;
 use crate::reg_class::{RegClass, VRegClasses};
 use crate::vreg::VReg;
+
+/// Empty entry for the dense coalescing tables. A valid table slot has an
+/// index strictly below its `liveness.ranges.len()` bound, and `coalesce`
+/// asserts that bound cannot exceed this sentinel, so `u32::MAX` is never a
+/// valid vreg index in either table.
+const EMPTY_VREG: u32 = u32::MAX;
 
 // ============================================================================
 // Cost Model
@@ -759,17 +765,27 @@ pub struct CoalesceCandidate {
 pub struct CoalesceResult {
     /// Maps each coalesced vreg to its representative.
     /// If a vreg is not in this map, it's its own representative.
-    coalesce_map: HashMap<VReg, VReg>,
+    coalesce_map: Vec<u32>,
     /// Instruction indices of moves that were coalesced and can be eliminated.
-    pub eliminated_moves: HashSet<usize>,
+    eliminated_moves: Vec<bool>,
+    eliminated_count: usize,
 }
 
 impl CoalesceResult {
     /// Create an empty coalesce result (no coalescing performed).
     pub fn empty() -> Self {
         Self {
-            coalesce_map: HashMap::new(),
-            eliminated_moves: HashSet::new(),
+            coalesce_map: Vec::new(),
+            eliminated_moves: Vec::new(),
+            eliminated_count: 0,
+        }
+    }
+
+    fn with_vreg_count(vreg_count: usize) -> Self {
+        Self {
+            coalesce_map: vec![EMPTY_VREG; vreg_count],
+            eliminated_moves: Vec::new(),
+            eliminated_count: 0,
         }
     }
 
@@ -778,17 +794,35 @@ impl CoalesceResult {
     /// If the vreg was coalesced, returns its representative.
     /// Otherwise, returns the vreg itself.
     pub fn representative(&self, vreg: VReg) -> VReg {
-        self.coalesce_map.get(&vreg).copied().unwrap_or(vreg)
+        self.coalesce_map
+            .get(vreg.index() as usize)
+            .copied()
+            .filter(|&representative| representative != EMPTY_VREG)
+            .map(VReg::new)
+            .unwrap_or(vreg)
     }
 
     /// Check if a move instruction at the given index was eliminated.
     pub fn is_eliminated(&self, inst_idx: usize) -> bool {
-        self.eliminated_moves.contains(&inst_idx)
+        self.eliminated_moves
+            .get(inst_idx)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Get the number of moves that were eliminated.
     pub fn num_eliminated(&self) -> usize {
-        self.eliminated_moves.len()
+        self.eliminated_count
+    }
+
+    fn mark_eliminated(&mut self, inst_idx: usize) {
+        if inst_idx >= self.eliminated_moves.len() {
+            self.eliminated_moves.resize(inst_idx + 1, false);
+        }
+        if !self.eliminated_moves[inst_idx] {
+            self.eliminated_moves[inst_idx] = true;
+            self.eliminated_count += 1;
+        }
     }
 }
 
@@ -828,19 +862,22 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
     candidates: &[CoalesceCandidate],
     liveness: &mut LivenessInfo<Reg>,
 ) -> CoalesceResult {
-    let mut result = CoalesceResult::empty();
+    assert!(liveness.ranges.len() <= EMPTY_VREG as usize);
+    let mut result = CoalesceResult::with_vreg_count(liveness.ranges.len());
 
     // Union-find structure for tracking coalesced vregs
-    let mut parent: HashMap<VReg, VReg> = HashMap::new();
+    let mut parent = vec![EMPTY_VREG; liveness.ranges.len()];
 
     // Find the representative of a vreg in the union-find
-    fn find(parent: &mut HashMap<VReg, VReg>, vreg: VReg) -> VReg {
-        if let Some(&p) = parent.get(&vreg) {
-            if p != vreg {
-                let root = find(parent, p);
-                parent.insert(vreg, root);
-                return root;
-            }
+    fn find(parent: &mut [u32], vreg: VReg) -> VReg {
+        let index = vreg.index() as usize;
+        let Some(p) = parent.get(index).copied() else {
+            return vreg;
+        };
+        if p != EMPTY_VREG {
+            let root = find(parent, VReg::new(p));
+            parent[index] = root.index();
+            return root;
         }
         vreg
     }
@@ -852,7 +889,7 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
 
         // Already in the same equivalence class
         if dst == src {
-            result.eliminated_moves.insert(candidate.inst_idx);
+            result.mark_eliminated(candidate.inst_idx);
             continue;
         }
 
@@ -898,15 +935,15 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
             );
 
             // Use src as the representative (arbitrary choice, but keeps the original value)
-            parent.insert(dst, src);
-            result.coalesce_map.insert(dst, src);
+            parent[dst.index() as usize] = src.index();
+            result.coalesce_map[dst.index() as usize] = src.index();
 
             // Update liveness: assign merged range to src, remove dst
             liveness.ranges[src] = Some(merged_range);
             liveness.ranges[dst] = None;
 
             // Mark the move for elimination
-            result.eliminated_moves.insert(candidate.inst_idx);
+            result.mark_eliminated(candidate.inst_idx);
         }
     }
 
@@ -3675,6 +3712,52 @@ mod tests {
 
         // Both moves eliminated
         assert_eq!(result.num_eliminated(), 2);
+    }
+
+    #[test]
+    fn test_coalesce_sparse_high_instruction_index() {
+        let move_index = 4096;
+        let mut liveness = make_liveness(vec![(0, 0, move_index), (1, move_index, move_index + 1)]);
+        let result = coalesce(
+            &[CoalesceCandidate {
+                inst_idx: move_index,
+                dst: VReg::new(1),
+                src: VReg::new(0),
+            }],
+            &mut liveness,
+        );
+
+        assert!(result.is_eliminated(move_index));
+        assert_eq!(result.num_eliminated(), 1);
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
+    }
+
+    #[test]
+    fn test_coalesce_duplicate_eliminated_candidate_keeps_unique_count() {
+        let mut liveness = make_liveness(vec![(0, 0, 1), (1, 1, 2)]);
+        let candidate = CoalesceCandidate {
+            inst_idx: 1,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        };
+        let result = coalesce(&[candidate, candidate], &mut liveness);
+
+        assert!(result.is_eliminated(1));
+        assert_eq!(result.num_eliminated(), 1);
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(0));
+    }
+
+    #[test]
+    fn coalesce_dense_sentinel_is_outside_the_valid_vreg_bound() {
+        let result = CoalesceResult::with_vreg_count(2);
+
+        assert_eq!(EMPTY_VREG, u32::MAX);
+        assert_eq!(result.representative(VReg::new(0)), VReg::new(0));
+        assert_eq!(result.representative(VReg::new(1)), VReg::new(1));
+        assert_eq!(
+            result.representative(VReg::new(EMPTY_VREG)),
+            VReg::new(EMPTY_VREG)
+        );
     }
 
     #[test]
