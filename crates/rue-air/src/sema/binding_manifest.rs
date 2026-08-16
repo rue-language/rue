@@ -2259,16 +2259,6 @@ impl<'a> BoundSema<'a> {
         self.binding_work
     }
 
-    /// The request-local [`BodySema`] whose declaration maps this bind
-    /// populated. Test-only: the pool-arc twin-parity tests
-    /// (`body_identity.rs`) read the epoch's populated `FunctionInfo` /
-    /// `MethodInfo` / RIR-index answers through this handle to compare against
-    /// the provider-side pool + RIR index.
-    #[cfg(test)]
-    pub(in crate::sema) fn body_sema(&self) -> &super::BodySema<'a> {
-        &self.sema
-    }
-
     /// Return the frozen semantic answer for a free function's identity.
     /// Provider-boundary parity tests compare this canonical answer with the
     /// independently assembled provider result.

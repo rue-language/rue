@@ -598,3 +598,89 @@ fn provider_body_export_round_trips_through_a_fresh_air_epoch_exactly() {
         );
     }
 }
+
+// A function-valued durable const resolves to the free function even when a
+// type-owned member shares its name: the durable lookup vocabulary keys
+// members and free functions separately, and the alias call binds the free
+// declaration's signature.
+#[test]
+fn provider_body_const_alias_selects_the_free_function_over_a_member() {
+    let mut fixture = ProviderFixture::new();
+    let named = fixture.declare_struct("Named", Vec::new(), true);
+    fixture.declare_method_with(
+        &named,
+        "collide",
+        Vec::new(),
+        SemanticImportType::I64,
+        MethodShape {
+            has_self: false,
+            ..MethodShape::default()
+        },
+    );
+    let free = fixture.declare_function("collide", Vec::new(), SemanticImportType::I32);
+    fixture.declare_const(
+        "alias",
+        SemanticImportType::I32,
+        SemanticImportConstValue::Function(free.clone()),
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze("fn main() -> i32 { alias() }", "main")
+        .expect("const-alias call analyzes");
+    assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
+    assert!(
+        body.referenced_definitions.contains(&free),
+        "the alias call resolves to the free declaration"
+    );
+}
+
+// Moving a field out of a value whose type declares a destructor is rejected
+// (E0456, RUE-158): the partially-moved owner could not run its destructor.
+// Pinning the rejection keeps CFG drop elaboration's assumption valid that a
+// destructor-owning aggregate is never partially moved.
+#[test]
+fn provider_body_rejects_field_move_out_of_destructor_owner() {
+    let mut fixture = ProviderFixture::new();
+    let a = fixture.declare_struct_with(
+        "A",
+        vec![("x", SemanticImportType::I32)],
+        false,
+        StructShape {
+            has_destructor: true,
+            ..StructShape::default()
+        },
+    );
+    fixture.declare_struct_with(
+        "O",
+        vec![
+            ("a", SemanticImportType::Nominal(a.clone())),
+            ("b", SemanticImportType::I32),
+        ],
+        false,
+        StructShape {
+            has_destructor: true,
+            ..StructShape::default()
+        },
+    );
+    fixture.declare_function(
+        "eat",
+        vec![value_param("a", SemanticImportType::Nominal(a))],
+        SemanticImportType::I32,
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let error = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let o = O { a: A { x: 1 }, b: 2 };
+    eat(o.a);
+    0
+}",
+            "main",
+        )
+        .map(|_| ())
+        .expect_err("field move out of a destructor-having struct must be rejected");
+    assert!(
+        format!("{error}").contains("cannot move field"),
+        "unexpected error: {error}"
+    );
+}
