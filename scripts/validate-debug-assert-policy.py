@@ -60,7 +60,6 @@ ALLOWANCES = {
     "crates/rue-compiler/src/body_query.rs": Allowance(
         1, "redundant canonical body-reference ordering check"
     ),
-    "crates/rue-compiler/src/definition_snapshot.rs": Allowance(1, "redundant definition arena identity check"),
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
     "crates/rue-compiler/src/parsed_modules.rs": Allowance(1, "redundant source ownership check"),
     "crates/rue-compiler/src/revisioned_query_database.rs": Allowance(
