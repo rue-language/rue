@@ -1050,6 +1050,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ctx.byref_arg_root = saved_byref_root;
                         let index_result = index_result?;
 
+                        // A place trace can be built before the outer read or
+                        // write path performs its normal index validation. Do
+                        // the same AIR-level check here so generic analysis
+                        // cannot record a `type`-valued projection and defer
+                        // the failure to whole-body AIR validation.
+                        let index_type = air.get(index_result.air_ref).ty;
+                        if !index_type.is_integer() {
+                            return Err(CompileError::new(
+                                ErrorKind::TypeMismatch {
+                                    expected: "integer type".to_string(),
+                                    found: index_type
+                                        .safe_name_with_pool(Some(self.body_type_pool())),
+                                },
+                                self.body_rir_ref().get(*index).span,
+                            ));
+                        }
+
                         // Add this projection (no field name for indices).
                         // A non-negative constant index also gets its interned
                         // element path segment so field_path can nest through
@@ -3114,6 +3131,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ));
             }
         };
+
+        // Type inference normally enforces this constraint, but generic bodies
+        // can reach authoritative semantic analysis before a comptime type
+        // parameter has been substituted. Reject that value here as well so a
+        // `type`-typed AIR operand cannot reach an index projection.
+        let index_type = air.get(index_result.air_ref).ty;
+        if !index_type.is_integer() {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: "integer type".to_string(),
+                    found: index_type.safe_name_with_pool(Some(self.body_type_pool())),
+                },
+                self.body_rir_ref().get(index).span,
+            ));
+        }
 
         // Check for constant out-of-bounds index (at the index's resolved
         // operand types, so an overflowing index expression is a compile-time

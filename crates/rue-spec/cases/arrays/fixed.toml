@@ -150,6 +150,38 @@ fn main() -> i32 {
 """
 compile_fail = true
 
+[[case]]
+name = "generic_index_type_error_is_diagnostic"
+spec = ["7.1:7"]
+description = "A comptime type parameter cannot be used as an array index; generic analysis must report a type error before building AIR."
+source = """
+fn f(comptime T: type, x: T) -> i32 {
+    let y: [T; 2] = [x, x];
+    y[T] + y[1]
+}
+fn main() -> i32 { f(i32, 5) }
+"""
+compile_fail = true
+error_contains = ["E0206", "integer type", "type"]
+
+[[case]]
+name = "unresolved_generic_array_literal_is_diagnostic"
+spec = ["7.1:7"]
+description = "An unresolved array literal in a malformed generic construction reports the annotation diagnostic instead of an internal compiler error."
+source = """
+const K: i32 = 3;
+fn Matrix(comptime T: type, comptime N: i32) -> type { struct { row: [T; N] } }
+fn sum(m: Matrix(i32, K)) -> i32 {
+    m.row[0] + m.row[1] + m.row[2]
+}
+fn main() -> i32 {
+    let M = Matrix(i32, K);
+    sum(M { row: [40, 1, 1] }) { row: [T; N] }
+}
+"""
+compile_fail = true
+error_contains = ["E0903"]
+
 # =============================================================================
 # Compile-Time Bounds Checking
 # =============================================================================

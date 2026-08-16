@@ -671,13 +671,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // 7.1:7. A negative or out-of-range runtime index is not a type
             // error; it traps at runtime via the bounds check (RUE-81).
             let index_result = self.analyze_inst(air, *index, ctx)?;
-            if !index_result.ty.is_integer() && !index_result.ty.is_error() {
+            // Use the AIR instruction's type as the final guard. During
+            // generic analysis the lightweight result can be `ERROR` while
+            // the emitted value still carries a concrete non-integer type;
+            // allowing that value into a projection produces invalid AIR.
+            let index_type = air.get(index_result.air_ref).ty;
+            if !index_type.is_integer() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: index_result
-                            .ty
-                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: index_type.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     self.body_rir_ref().get(*index).span,
                 ));
