@@ -961,9 +961,13 @@ run = "1404128c40051b386dd7b545c9eb555333004f0774ec99689df1fce296042f18"
 # lattice ratchet and ADR-0071 target carry forward unchanged — the regime
 # they gate is identical here.
 #
-# No [epoch.baseline] yet: a baseline is a complete valid run under this
-# epoch, pinned after the first collection, exactly as epoch 5's was. Until
-# then per-workload observations publish and the headline index waits.
+# Each platform's [epoch.baseline] is its first complete valid run under this
+# epoch, all three from 170c1014 — the commit that declared the epoch, exactly
+# as epoch 5's baselines were pinned at their own declaring commit. Pinned by
+# RUE-1533 rather than with the declaration, because a baseline cannot be named
+# until collection has produced one; the headline index was absent on every
+# platform for the fourteen complete runs, spanning thirty trunk commits, that
+# each of them collected in between (RUE-1533).
 #
 # Measured per-run added cost at declaration time (x86-64 Linux, local):
 # roughly 28 seconds of compile time across the six probes at the sampling
@@ -1042,16 +1046,27 @@ batch_size = 1
 process_elapsed_ns = 250000000
 reference = "ADR-0071"
 
-# No [epoch.process_elapsed_ratchets] yet, and not an oversight: the schema
-# requires a ratchet's reference run to be this epoch's own baseline run, so
-# the ratchet is re-pinned together with the baseline after this epoch's
-# first collection — epoch 5's ratchet (limit 3,022 ms over its 2,887 ms
-# baseline) is the value to re-derive against. The ADR-0071 target above
-# carries forward because it is a property of the product, not of a run.
+# No [epoch.process_elapsed_ratchets] yet. The schema requires a ratchet's
+# reference run to be this epoch's own baseline run, so the ratchet became
+# declarable with the baseline below — but not at epoch 5's derivation. That
+# rule was the baseline median plus k times lattice's calibrated 0.78%
+# relative MAD, which over this epoch's 1,749.77 ms baseline gives a
+# 1,831.66 ms limit, and one of this epoch's own fourteen collected runs
+# already measured 1,823.18 ms. The 0.78% figure is within-session dispersion
+# from a 12-repetition calibration at one commit; run-to-run spread here is
+# roughly ±4%, so the mechanical re-derivation would gate on noise. Re-pinning
+# it needs a calibration decision rather than arithmetic (RUE-1535). The
+# ADR-0071 target above carries forward because it is a property of the
+# product, not of a run.
 
 [epoch.flagging]
 k = 6.0
 window = 5
+
+# The first complete, valid run under this epoch.
+[epoch.baseline]
+commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
+run = "e0aecf7e5a506ad4b0044090ab3a4c45d037fc4143b845bcafd69d7424866e07"
 
 [[epoch]]
 id = 6
@@ -1123,6 +1138,11 @@ batch_size = 1
 [epoch.flagging]
 k = 5.0
 window = 3
+
+# The first complete, valid run under this epoch.
+[epoch.baseline]
+commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
+run = "fd71cab1b4128891e060deec4e8e4bc312a7bcea4666fde43dd5588d1e01a424"
 
 [[epoch]]
 id = 6
@@ -1199,3 +1219,8 @@ batch_size = 1
 [epoch.flagging]
 k = 4.0
 window = 5
+
+# The first complete, valid run under this epoch.
+[epoch.baseline]
+commit = "170c10148f1f74ae62330d93cadc9c567e4c93f0"
+run = "a4850f73079a73193257fa1418182116f0d4e6453f3b2851284b0f90680ab7d9"
