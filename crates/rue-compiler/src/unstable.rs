@@ -73,6 +73,19 @@ pub fn plan_round_roots(
     plan.round_roots(previous)
 }
 
+/// The occurrences one ordinary discovery round must assemble reads for: the
+/// occurrences `current` and `previous` demanded host answers for. Every other
+/// occurrence carries the observations it carried when it was last assembled, so
+/// assembling this union adds exactly what re-reducing the whole plan would add.
+/// Both halves come from the compiler-owned frontier values; the host supplies
+/// no membership of its own.
+pub fn plan_round_read_roots(
+    previous: &ImportDemandFrontier,
+    current: &ImportDemandFrontier,
+) -> ImportDemandRoots {
+    current.round_read_roots(previous)
+}
+
 pub fn publish_import_observation_batch(
     session: &mut crate::CompilerSession,
     frontier: &ImportDemandFrontier,

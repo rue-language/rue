@@ -138,6 +138,26 @@ impl<T> SharedSegments<T> {
         None
     }
 
+    /// Every element comparing `Equal` under `f`, by binary search for the equal
+    /// range of each sorted segment — O(segments · log n + matches), with no
+    /// materialization and no whole-sequence scan. `f` must be consistent with
+    /// the canonical order, so each segment's matches are contiguous. Matches are
+    /// yielded segment by segment; a caller needing canonical order across
+    /// segments sorts the (small) result itself.
+    pub(crate) fn for_each_matching<'a>(
+        &'a self,
+        f: impl Fn(&T) -> Ordering,
+        mut visit: impl FnMut(&'a T),
+    ) {
+        for segment in self.segments.iter() {
+            let start = segment.partition_point(|value| f(value) == Ordering::Less);
+            let end = segment.partition_point(|value| f(value) != Ordering::Greater);
+            for value in &segment[start..end] {
+                visit(value);
+            }
+        }
+    }
+
     /// Iterate the logical merged sequence in canonical order without allocating
     /// the merged buffer (a small per-segment cursor vector aside).
     pub(crate) fn iter(&self) -> MergeIter<'_, T> {

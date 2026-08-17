@@ -30,6 +30,15 @@ pub struct SourceSnapshot {
 
 #[derive(Debug)]
 struct SourceSnapshotData {
+    /// Memoized retained-artifact charge of this exact snapshot value. The
+    /// charge is a pure function of immutable data, so computing it once per
+    /// value yields the identical number every retention pass would recompute.
+    /// Discovery retains one snapshot per frontier round and re-measures the
+    /// retained set every round, so recomputing the whole-snapshot walk on each
+    /// measurement is quadratic in the length of an import chain.
+    retained_charge: std::sync::OnceLock<u64>,
+    /// Memoized total retained source bytes; see [`SourceSnapshot::total_source_bytes`].
+    source_bytes: std::sync::OnceLock<usize>,
     metadata: SourceMetadata,
     /// `Arc`-shared size-tiered record segments, oldest first. Untouched tiers
     /// stay shared; compacted tail tiers copy only record metadata and retain
@@ -188,6 +197,8 @@ impl SourceSnapshot {
 
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
+                retained_charge: std::sync::OnceLock::new(),
+                source_bytes: std::sync::OnceLock::new(),
                 metadata,
                 len: contents.len(),
                 segments: vec![Arc::new(SnapshotSegment::from_records(contents))],
@@ -308,6 +319,8 @@ impl SourceSnapshot {
 
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
+                retained_charge: std::sync::OnceLock::new(),
+                source_bytes: std::sync::OnceLock::new(),
                 metadata,
                 len: contents.len(),
                 segments: vec![Arc::new(SnapshotSegment::from_records(contents))],
@@ -347,6 +360,25 @@ impl SourceSnapshot {
     #[inline]
     pub fn len(&self) -> usize {
         self.data.len
+    }
+
+    /// This snapshot value's retained-artifact charge, computed by `charge` on
+    /// first use and memoized for the life of the value. The snapshot is
+    /// immutable, so the memo and a fresh walk are the same number.
+    pub(crate) fn memoized_retained_charge(&self, charge: impl FnOnce() -> u64) -> u64 {
+        *self.data.retained_charge.get_or_init(charge)
+    }
+
+    /// Total retained source bytes across this snapshot's files, memoized for
+    /// the life of the immutable value. Retention measurement asks every
+    /// retained diagnostic attempt for this number, and discovery re-measures
+    /// once per frontier round.
+    pub(crate) fn total_source_bytes(&self) -> usize {
+        *self.data.source_bytes.get_or_init(|| {
+            (0..self.data.len)
+                .map(|index| self.record_at(index).text.len())
+                .sum()
+        })
     }
 
     /// Whether this snapshot contains no source files.
@@ -559,6 +591,8 @@ impl SourceSnapshot {
         let len = base.data.len + appended_len;
         Ok(SourceSnapshot {
             data: Arc::new(SourceSnapshotData {
+                retained_charge: std::sync::OnceLock::new(),
+                source_bytes: std::sync::OnceLock::new(),
                 metadata,
                 segments,
                 segment_offsets,

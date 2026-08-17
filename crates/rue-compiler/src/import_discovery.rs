@@ -741,6 +741,25 @@ impl ImportDemandFrontier {
             .flat_map(|requests| requests.iter())
             .map(ImportDiscoveryRequest::occurrence)
     }
+
+    /// The occurrences whose ledger answers changed since the previous round's
+    /// reads were assembled: this frontier's own demanded occurrences, plus the
+    /// previous frontier's.
+    ///
+    /// A round assembles from a ledger holding the carried observations plus its
+    /// own batch's answers. The previous round's fanout answers — the extra
+    /// occurrences that shared one host read — only enter the carried ledger when
+    /// that batch is published, so they first become assemblable here; this
+    /// round's own batch supplies the rest. Every occurrence outside the union
+    /// carries the observations it already carried, so its winner cannot change.
+    pub(crate) fn round_read_roots(&self, previous: &ImportDemandFrontier) -> ImportDemandRoots {
+        ImportDemandRoots::new(
+            previous
+                .demanded_occurrences()
+                .chain(self.demanded_occurrences())
+                .cloned(),
+        )
+    }
 }
 
 /// Exact parser-owned import occurrences demanded by canonical query
@@ -1014,6 +1033,43 @@ impl ImportDiscoveryPlan {
     ) -> Vec<&'a AcceptedImportSource> {
         accepted_sources_for(self.groups.delta_segment().iter(), ledger)
     }
+
+    /// The accepted sources of exactly `occurrences`, resolved by the same
+    /// candidate precedence as [`Self::accepted_sources`].
+    ///
+    /// One ordinary discovery round only changes the ledger at the occurrences
+    /// its own and its predecessor round's frontier demanded answers for; every
+    /// other occurrence carries the identical observations it carried when it was
+    /// last assembled, so re-deriving its winner re-proves an already assembled
+    /// conclusion. Reducing exactly the changed occurrences therefore yields the
+    /// same new accepted sources, in the same canonical order, as reducing the
+    /// whole plan — while costing O(changed occurrences · log n) rather than
+    /// O(plan) per round.
+    ///
+    /// Each occurrence's candidate groups are found by binary search: every
+    /// request in a plan carries the plan's own context, so the canonical group
+    /// order sorts by context and then by occurrence, and one occurrence's groups
+    /// are a contiguous range of every stored segment.
+    pub(crate) fn accepted_sources_at<'a>(
+        &'a self,
+        ledger: &'a ImportObservationLedger,
+        occurrences: &ImportDemandRoots,
+    ) -> Vec<&'a AcceptedImportSource> {
+        let mut accepted = Vec::new();
+        let mut candidates: Vec<&Arc<[ImportDiscoveryRequest]>> = Vec::new();
+        for occurrence in occurrences.occurrences() {
+            candidates.clear();
+            self.groups.for_each_matching(
+                |group| (&group[0].context, &group[0].occurrence).cmp(&(&self.context, occurrence)),
+                |group| candidates.push(group),
+            );
+            // Segment-local ranges arrive segment by segment; candidate
+            // precedence is the canonical group order.
+            candidates.sort_by(|left, right| group_order(left, right));
+            extend_accepted_from_site(&mut accepted, candidates.iter().copied(), ledger);
+        }
+        canonicalize_accepted(accepted)
+    }
 }
 
 /// The winning accepted sources across a set of candidate request groups.
@@ -1028,24 +1084,43 @@ fn accepted_sources_for<'a>(
     }
     let mut accepted = Vec::new();
     for groups in by_site.values() {
-        for group in groups {
-            if group
-                .iter()
-                .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
-            {
-                break;
-            }
-            let present = group
-                .iter()
-                .filter_map(|request| ledger.get(request))
-                .filter_map(ImportObservation::accepted_source)
-                .collect::<Vec<_>>();
-            if !present.is_empty() {
-                accepted.extend(present);
-                break;
-            }
+        extend_accepted_from_site(&mut accepted, groups.iter().copied(), ledger);
+    }
+    canonicalize_accepted(accepted)
+}
+
+/// One occurrence's winner: the first candidate group, in precedence order, that
+/// observed a present read. A failed candidate ends the occurrence's precedence
+/// walk, and a later group is never consulted once an earlier one won.
+fn extend_accepted_from_site<'a>(
+    accepted: &mut Vec<&'a AcceptedImportSource>,
+    groups: impl Iterator<Item = &'a Arc<[ImportDiscoveryRequest]>>,
+    ledger: &'a ImportObservationLedger,
+) {
+    for group in groups {
+        if group
+            .iter()
+            .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
+        {
+            break;
+        }
+        let present = group
+            .iter()
+            .filter_map(|request| ledger.get(request))
+            .filter_map(ImportObservation::accepted_source)
+            .collect::<Vec<_>>();
+        if !present.is_empty() {
+            accepted.extend(present);
+            break;
         }
     }
+}
+
+/// The canonical order and deduplication every accepted-source set is published
+/// in, whichever occurrences it was reduced from.
+fn canonicalize_accepted<'a>(
+    mut accepted: Vec<&'a AcceptedImportSource>,
+) -> Vec<&'a AcceptedImportSource> {
     accepted.sort_by(|left, right| {
         left.requested_path
             .cmp(&right.requested_path)
@@ -1508,6 +1583,12 @@ pub struct DiscoverySourceAssembler {
     /// Cumulative provenance entries appended by extension manifest builds —
     /// the only per-round manifest work once a lineage's first manifest exists.
     manifest_entries_appended: u64,
+    /// Cumulative accepted sources reduced out of a plan and offered to this
+    /// assembler — the exact per-round read volume. A round that reduces the
+    /// whole plan offers every already assembled leaf again, so this grows as
+    /// rounds times plan; a round that reduces only the occurrences it changed
+    /// keeps it linear in the discovered module count.
+    plan_reads_reduced: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1739,6 +1820,7 @@ impl DiscoverySourceAssembler {
             appended_since_manifest: Vec::new(),
             manifest_entries_rebuilt: 0,
             manifest_entries_appended: 0,
+            plan_reads_reduced: 0,
         })
     }
 
@@ -1769,8 +1851,40 @@ impl DiscoverySourceAssembler {
                 "discovery plan belongs to a different epoch or captured context",
             ));
         }
+        let reduced = plan.accepted_sources(ledger);
+        self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
-        for source in plan.accepted_sources(ledger) {
+        for source in reduced {
+            added += usize::from(self.add_source(source)?);
+        }
+        Ok(added)
+    }
+
+    /// Add only the accepted reads of the occurrences one ordinary discovery
+    /// round changed. The rest of the plan carries the observations it carried
+    /// when it was last assembled, and assembly is idempotent for an already
+    /// assembled source, so this adds exactly what re-reducing the whole plan
+    /// would add — in the same canonical order, at O(changed occurrences) per
+    /// round instead of O(plan).
+    ///
+    /// `occurrences` is compiler-derived from the frontier values themselves
+    /// (see `ImportDemandFrontier::demanded_occurrences`); the host contributes
+    /// no membership claim of its own.
+    pub fn add_plan_round_reads(
+        &mut self,
+        plan: &ImportDiscoveryPlan,
+        ledger: &ImportObservationLedger,
+        occurrences: &ImportDemandRoots,
+    ) -> CompileResult<usize> {
+        if plan.context != self.context {
+            return Err(invalid_input(
+                "discovery plan belongs to a different epoch or captured context",
+            ));
+        }
+        let reduced = plan.accepted_sources_at(ledger, occurrences);
+        self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
+        let mut added = 0;
+        for source in reduced {
             added += usize::from(self.add_source(source)?);
         }
         Ok(added)
@@ -1789,8 +1903,10 @@ impl DiscoverySourceAssembler {
                 "discovery plan belongs to a different epoch or captured context",
             ));
         }
+        let reduced = plan.delta_accepted_sources(ledger);
+        self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
-        for source in plan.delta_accepted_sources(ledger) {
+        for source in reduced {
             added += usize::from(self.add_source(source)?);
         }
         Ok(added)
@@ -2066,6 +2182,14 @@ impl DiscoverySourceAssembler {
     /// Cumulative provenance entries appended by extension manifest builds.
     pub fn manifest_entries_appended(&self) -> u64 {
         self.manifest_entries_appended
+    }
+
+    /// Cumulative accepted sources reduced out of a plan and offered to this
+    /// assembler; see the field docs on `plan_reads_reduced`. This is the exact
+    /// per-round read volume, so a host can prove its rounds stay linear in the
+    /// discovered module count rather than rounds times plan.
+    pub fn plan_reads_reduced(&self) -> u64 {
+        self.plan_reads_reduced
     }
 }
 

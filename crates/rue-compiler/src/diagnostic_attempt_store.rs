@@ -287,7 +287,7 @@ impl DiagnosticAttemptStore {
             {
                 continue;
             }
-            source_bytes += source.files().map(|file| file.source.len()).sum::<usize>();
+            source_bytes += source.total_source_bytes();
             attempts.push(source);
         }
         DiagnosticRetentionMetrics {
