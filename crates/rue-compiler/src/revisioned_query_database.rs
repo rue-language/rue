@@ -5855,6 +5855,13 @@ fn evaluate_call_abi(
             convention,
             return_class,
             arguments: arguments.into(),
+            native_symbol: matches!(convention, CallAbiConvention::Native).then(|| {
+                Arc::from(crate::StableSymbolEncoder::encode(
+                    &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
+                        key.callable.clone(),
+                    )),
+                ))
+            }),
         },
     )))
 }
@@ -32089,6 +32096,7 @@ fn main() -> i32 {
         for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
             let native = request_call_abi(&database, revision, native.clone(), target);
             assert_eq!(native.convention, C::Native);
+            assert!(native.native_symbol.is_some());
             assert_eq!(
                 native.return_class,
                 if target == crate::Target::X86_64Linux {
@@ -32107,6 +32115,7 @@ fn main() -> i32 {
                     rue_air::TargetCAbiFlavor::Aapcs64
                 })
             );
+            assert!(foreign.native_symbol.is_none());
             assert_eq!(
                 foreign.return_class,
                 R::Scalar {

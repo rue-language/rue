@@ -784,9 +784,17 @@ impl CfgDomainProjection {
                     } else if source == "main" {
                         source.clone()
                     } else {
-                        crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
-                            crate::StableCallableId::Function(callable.clone()),
-                        ))
+                        call_abis
+                            .get(callable)
+                            .and_then(|facts| facts.native_symbol.as_ref())
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| {
+                                crate::StableSymbolEncoder::encode(
+                                    &crate::StableSymbolId::Callable(
+                                        crate::StableCallableId::Function(callable.clone()),
+                                    ),
+                                )
+                            })
                     };
                     (machine, foreign)
                 }
@@ -805,9 +813,17 @@ impl CfgDomainProjection {
                     } else if source == "main" {
                         source.clone()
                     } else {
-                        crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
-                            crate::StableCallableId::Function(callable),
-                        ))
+                        call_abis
+                            .get(&callable)
+                            .and_then(|facts| facts.native_symbol.as_ref())
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| {
+                                crate::StableSymbolEncoder::encode(
+                                    &crate::StableSymbolId::Callable(
+                                        crate::StableCallableId::Function(callable),
+                                    ),
+                                )
+                            })
                     };
                     (machine, foreign)
                 }
