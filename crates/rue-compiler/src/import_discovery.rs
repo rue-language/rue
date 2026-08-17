@@ -1118,9 +1118,7 @@ fn extend_accepted_from_site<'a>(
 
 /// The canonical order and deduplication every accepted-source set is published
 /// in, whichever occurrences it was reduced from.
-fn canonicalize_accepted<'a>(
-    mut accepted: Vec<&'a AcceptedImportSource>,
-) -> Vec<&'a AcceptedImportSource> {
+fn canonicalize_accepted(mut accepted: Vec<&AcceptedImportSource>) -> Vec<&AcceptedImportSource> {
     accepted.sort_by(|left, right| {
         left.requested_path
             .cmp(&right.requested_path)
