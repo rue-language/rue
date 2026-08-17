@@ -18,6 +18,8 @@
 //! This design eliminates ~800 lines of duplicated code between backends while
 //! keeping the instruction-specific logic where it belongs.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::iter::Take;
 use std::ops::Deref;
@@ -28,6 +30,11 @@ use crate::index_map::IndexMap;
 use crate::reg_class::VRegClasses;
 use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo, LoopInfo};
 use crate::vreg::{LabelId, VReg};
+
+#[cfg(test)]
+thread_local! {
+    static DATAFLOW_CALLS: Cell<usize> = const { Cell::new(0) };
+}
 
 /// A fixed-capacity, inline list for bounded machine-instruction facts.
 ///
@@ -427,26 +434,40 @@ where
 
     // Step 4: Backward dataflow analysis to compute live sets. Without a back
     // edge, reverse instruction order is already a topological order and one
-    // sweep computes the fixed point exactly.
-    let (dataflow, _) =
-        compute_dataflow(num_insts, vreg_count, &successors, &inst_uses, &inst_defs);
+    // sweep computes the fixed point exactly. Production range construction
+    // does not consume those sets in this case, so leave the dataflow storage
+    // and walk out of the normal loop-free path. Debug output still materializes
+    // the sets, and cyclic production analysis still needs them for ranges.
+    let has_back_edge = has_back_edge(&successors);
+    let dataflow = (collect_debug || has_back_edge).then(|| {
+        compute_dataflow(
+            num_insts,
+            vreg_count,
+            &successors,
+            &inst_uses,
+            &inst_defs,
+            has_back_edge,
+        )
+        .0
+    });
     let acyclic_live_out = match &dataflow {
-        DataflowSets::Acyclic { live_in } if collect_debug => Some(materialize_live_out(
+        Some(DataflowSets::Acyclic { live_in }) if collect_debug => Some(materialize_live_out(
             live_in,
             &successors,
             vreg_count as usize,
         )),
         _ => None,
     };
-    let (live_in, live_out, has_back_edge) = match &dataflow {
-        DataflowSets::Acyclic { live_in } => (
+    let (live_in, live_out, has_back_edge) = match dataflow.as_ref() {
+        Some(DataflowSets::Acyclic { live_in }) => (
             live_in.as_slice(),
             acyclic_live_out.as_deref().unwrap_or(&[]),
             false,
         ),
-        DataflowSets::Cyclic { live_in, live_out } => {
+        Some(DataflowSets::Cyclic { live_in, live_out }) => {
             (live_in.as_slice(), live_out.as_slice(), true)
         }
+        None => (&[][..], &[][..], false),
     };
 
     // Step 5: Build live ranges from dataflow results
@@ -591,9 +612,12 @@ fn compute_dataflow(
     successors: &[SuccessorList],
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
+    has_back_edge: bool,
 ) -> (DataflowSets, DataflowSweepCount) {
     let vreg_count_usize = vreg_count as usize;
-    let has_back_edge = has_back_edge(successors);
+
+    #[cfg(test)]
+    DATAFLOW_CALLS.with(|calls| calls.set(calls.get() + 1));
 
     let mut live_in: Vec<FixedBitSet> =
         vec![FixedBitSet::with_capacity(vreg_count_usize); num_insts];
@@ -948,6 +972,14 @@ mod tests {
         Vec::new()
     }
 
+    fn reset_dataflow_call_count() {
+        DATAFLOW_CALLS.with(|calls| calls.set(0));
+    }
+
+    fn dataflow_call_count() -> usize {
+        DATAFLOW_CALLS.with(Cell::get)
+    }
+
     #[test]
     fn test_simple_liveness() {
         let instructions = vec![
@@ -972,6 +1004,52 @@ mod tests {
         assert_eq!(info.range(VReg::new(0)), Some(&LiveRange::new(0, 1)));
         // v1: defined at 1, not used after
         assert_eq!(info.range(VReg::new(1)), Some(&LiveRange::new(1, 1)));
+    }
+
+    #[test]
+    fn acyclic_production_skips_dataflow_but_debug_retains_exact_liveness() {
+        let instructions = vec![
+            TestInst::Def { dst: 0 },
+            TestInst::Use { src: 0 },
+            TestInst::Ret,
+        ];
+        let num_insts = instructions.len();
+        let classes = VRegClasses::all_gp(1);
+        reset_dataflow_call_count();
+        let production = analyze(
+            &instructions,
+            1,
+            classes.clone(),
+            test_get_label,
+            |idx, inst, labels| test_get_successors(idx, inst, labels, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            |_| false,
+        );
+        assert_eq!(dataflow_call_count(), 0);
+
+        reset_dataflow_call_count();
+        let (debug_liveness, debug) = analyze_with_debug(
+            &instructions,
+            1,
+            classes,
+            test_get_label,
+            |idx, inst, labels| test_get_successors(idx, inst, labels, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            |_| false,
+        );
+        assert_eq!(dataflow_call_count(), 1);
+        assert_eq!(
+            debug_liveness.range(VReg::new(0)),
+            production.range(VReg::new(0))
+        );
+        assert!(debug.instructions[0].live_in.is_empty());
+        assert!(debug.instructions[0].live_out.contains(&VReg::new(0)));
+        assert!(debug.instructions[1].live_in.contains(&VReg::new(0)));
+        assert!(debug.instructions[2].live_in.is_empty());
     }
 
     #[test]
@@ -1017,6 +1095,7 @@ mod tests {
         ];
         let num_insts = instructions.len();
 
+        reset_dataflow_call_count();
         let info: LivenessInfo<u32> = analyze(
             &instructions,
             1,
@@ -1034,6 +1113,7 @@ mod tests {
         // must survive when range construction omits the redundant live-out
         // scan.
         assert_eq!(info.range(VReg::new(0)), Some(&LiveRange::new(0, 3)));
+        assert_eq!(dataflow_call_count(), 1);
     }
 
     #[test]
@@ -1105,7 +1185,8 @@ mod tests {
         // back-edge, so convergence requires another reverse pass. Instruction
         // 0 is processed after those live rows but remains empty, proving one
         // row's scratch bits do not leak to the next row or the next round.
-        let (sets, sweeps) = compute_dataflow(4, 1, &successors, &uses, &defs);
+        let (sets, sweeps) =
+            compute_dataflow(4, 1, &successors, &uses, &defs, has_back_edge(&successors));
         let DataflowSets::Cyclic { live_in, live_out } = sets else {
             panic!("the back-edge must select cyclic dataflow storage");
         };
@@ -1137,7 +1218,8 @@ mod tests {
         .into();
         let defs = vec![VRegList::new(); successors.len()];
 
-        let (sets, sweeps) = compute_dataflow(3, 1, &successors, &uses, &defs);
+        let (sets, sweeps) =
+            compute_dataflow(3, 1, &successors, &uses, &defs, has_back_edge(&successors));
         let DataflowSets::Acyclic { live_in } = sets else {
             panic!("forward-only control flow must select acyclic storage");
         };
