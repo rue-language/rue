@@ -120,8 +120,8 @@ pub use import_discovery::{
 pub(crate) use import_discovery::AcceptedImportSource;
 pub(crate) use import_discovery::{
     ImportDemandFrontier, ImportDemandMode, ImportDemandRoots, ImportDiscoveryPlan,
-    ImportDiscoveryRequest, ImportInputRevision, ImportObservation, ImportObservationLedger,
-    ImportObservationStatus,
+    ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision, ImportObservation,
+    ImportObservationLedger, ImportObservationStatus,
 };
 pub use import_graph::{
     CanonicalImportCycle, CanonicalImportGraph, CanonicalImportGraphProblem,

@@ -2034,7 +2034,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         reexports,
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
-            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
+            "pubusecrate::import_discovery::{AcceptedImportSource,DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportDiscoveryPlan,ImportDiscoveryRequest,ImportDiscoveryWave,ImportInputRevision,ImportObservation,ImportObservationLedger,ImportObservationStatus,};",
             "pubusecrate::session::{ClosedDiscoveryContinuation,RootedCfgOutput,RootedCfgUnit,RootedParkOutcome,TrustedSuccessorDelta,};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, and host discovery-protocol records"
