@@ -1887,6 +1887,19 @@ prototype was not retained; `QueryKey::stable_identity` stays documented as
 presentation-only, and the display-identity counters continue to report one
 materialization per memo node.
 
+That last paragraph is the finding
+[ADR-0074](../designs/0074-structural-node-identity.md) acted on. Both readers
+demanded a name because identity *was* the rendered pair, so the ADR moved
+identity off presentation instead of deferring the format again: every
+`QueryKey` now derives a content-addressed 128-bit digest from its typed
+fields with a compile-time-keyed hasher, `NodeIdentity` orders, compares, and
+hashes on `(family, stable_hash)` with the recorded field stream as a cold
+collision witness, the published dependency order became
+`(family, stable_hash, incarnation)`, and the retained charge counts a fixed
+16-byte identity charge in place of the two `len()` terms. Deferring the format
+then works, because nothing on the ordinary path asks for a name. The rejected
+prototype's premise was right and its ordering was wrong.
+
 ## Next actions and decision boundary
 
 ADR-0071 Phase 2 extends this general architecture record with the current

@@ -158,6 +158,25 @@ impl QueryKey for CodegenUnitQueryKey {
     fn shared_stable_identity(&self) -> Arc<str> {
         self.display_identity.clone()
     }
+
+    /// The same field set `memo_hash` covers, absorbed structurally.
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.function.hash(hasher);
+        self.target.hash(hasher);
+        self.data_model.hash(hasher);
+        self.code_model.hash(hasher);
+        std::mem::discriminant(&self.optimization).hash(hasher);
+        self.backend_epoch.hash(hasher);
+        self.abi_layout_epoch.hash(hasher);
+        self.request.lowering.hash(hasher);
+        self.request.mir.hash(hasher);
+        self.request.liveness.hash(hasher);
+        self.request.regalloc.hash(hasher);
+        self.request.asm.hash(hasher);
+        self.optimized_cfg.stable_hash(hasher);
+        #[cfg(test)]
+        self.inject_failure.hash(hasher);
+    }
 }
 
 /// Typed terminal shared by normal object generation and `--emit` backend

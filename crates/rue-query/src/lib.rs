@@ -12,7 +12,9 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
+use std::sync::{
+    Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak,
+};
 use std::time::Instant;
 
 use ahash::{AHashMap, AHashSet, RandomState};
@@ -24,6 +26,15 @@ const VALIDATION_PROOF_REGISTERED: u8 = 0;
 const VALIDATION_PROOF_RETRYABLE: u8 = 1;
 const VALIDATION_PROOF_UNREGISTERED: u8 = 2;
 const VALIDATION_PUBLISH_SWEEP_QUANTUM: usize = 64;
+
+/// Structural retained charge of one node identity (ADR-0074).
+///
+/// A retained terminal names its own node and every node and input it
+/// observed. Since ADR-0074 an identity is a shared family handle plus a
+/// 128-bit digest, so each of those names costs the same fixed 16 bytes
+/// instead of the byte length of a formatted family/key pair. Charging a
+/// constant is what lets the ordinary path stop formatting keys at all.
+const IDENTITY_CHARGE_BYTES: u64 = 16;
 
 fn duration_ns(duration: std::time::Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
@@ -107,6 +118,10 @@ mod registered_batch_tests {
         fn stable_identity(&self) -> String {
             self.0.to_owned()
         }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -115,6 +130,10 @@ mod registered_batch_tests {
     impl QueryKey for Slot {
         fn stable_identity(&self) -> String {
             self.0.to_string()
+        }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
         }
     }
 
@@ -2133,6 +2152,256 @@ impl Drop for HandoffCallbackGuard {
     }
 }
 
+/// Compile-time keys of the stable key digest (ADR-0074).
+///
+/// These are constants, never a per-process seed. Two runs of the same
+/// compiler over the same inputs must derive identical digests, because the
+/// digest orders published dependencies and denominates the retained charge:
+/// a seeded hasher would make both artifacts differ per process.
+const STABLE_HASH_LOW_KEY: u64 = 0x243F_6A88_85A3_08D3;
+const STABLE_HASH_HIGH_KEY: u64 = 0x1319_8A2E_0370_7344;
+
+/// Content-derived 128-bit digest of one typed query key (ADR-0074).
+///
+/// Ordering is the ordering of the digest read as one 128-bit integer, high
+/// half most significant, so `(family, stable_hash)` is a deterministic total
+/// preorder over nodes that never touches presentation text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StableKeyHash {
+    high: u64,
+    low: u64,
+}
+
+impl StableKeyHash {
+    /// The digest as one 128-bit integer, high half most significant.
+    pub const fn to_u128(self) -> u128 {
+        ((self.high as u128) << 64) | self.low as u128
+    }
+}
+
+/// Bijective 64-bit finalizer (the SplitMix64 mixer).
+#[inline]
+const fn stable_hash_mix(mut word: u64) -> u64 {
+    word ^= word >> 30;
+    word = word.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    word ^= word >> 27;
+    word = word.wrapping_mul(0x94D0_49BB_1331_11EB);
+    word ^ (word >> 31)
+}
+
+/// The fixed hasher behind [`StableKeyHash`].
+///
+/// It is an ordinary [`Hasher`], so a key's [`QueryKey::stable_hash`] absorbs
+/// its typed fields with the same `Hash` calls a derive would emit. Integers
+/// are absorbed little-endian rather than through `to_ne_bytes`, so the digest
+/// does not depend on the host's byte order either.
+///
+/// The hasher can also *record* the byte stream a key feeds it, in field
+/// order. That recording is the structural collision witness: it comes from
+/// the same typed fields as the digest, so two keys whose 128-bit digests
+/// collide are still separated deterministically without formatting either.
+#[derive(Debug, Clone)]
+pub struct StableHasher {
+    low: u64,
+    high: u64,
+    absorbed: u64,
+    witness: Option<Vec<u8>>,
+}
+
+impl Default for StableHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StableHasher {
+    /// Creates a hasher keyed with the fixed compile-time constants.
+    pub const fn new() -> Self {
+        Self {
+            low: STABLE_HASH_LOW_KEY,
+            high: STABLE_HASH_HIGH_KEY,
+            absorbed: 0,
+            witness: None,
+        }
+    }
+
+    /// Creates a hasher that also records the byte stream it is fed.
+    pub fn recording() -> Self {
+        Self {
+            witness: Some(Vec::new()),
+            ..Self::new()
+        }
+    }
+
+    /// The recorded byte stream, for a hasher built by [`Self::recording`].
+    pub fn into_witness(self) -> Vec<u8> {
+        self.witness
+            .expect("only a recording hasher yields a witness")
+    }
+
+    /// Records one field's bytes in the witness, in the order they were fed.
+    #[inline]
+    fn note(&mut self, bytes: &[u8]) {
+        if let Some(witness) = &mut self.witness {
+            witness.extend_from_slice(bytes);
+        }
+    }
+
+    #[inline]
+    fn absorb(&mut self, word: u64) {
+        self.absorbed = self.absorbed.wrapping_add(1);
+        // Two lanes injecting the same word differently: a collision has to
+        // survive both, which is what makes the 128-bit pair meaningful.
+        self.low = stable_hash_mix(self.low ^ word);
+        self.high =
+            stable_hash_mix(self.high.rotate_left(31) ^ word.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    }
+
+    /// The complete 128-bit digest of everything absorbed so far.
+    pub fn finish128(&self) -> StableKeyHash {
+        #[cfg(test)]
+        if FORCED_STABLE_HASH_COLLISION.with(Cell::get) {
+            // Test-only hasher override: every key of every family digests
+            // alike, so the collision path carries the whole runtime.
+            return StableKeyHash { high: 0, low: 0 };
+        }
+        let low = stable_hash_mix(self.low ^ self.absorbed);
+        let high = stable_hash_mix(self.high ^ low ^ self.absorbed.rotate_left(32));
+        StableKeyHash { high, low }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Collapses every digest this thread computes to one value, so a test can
+    /// drive the collision path without weakening any key's own field hashing.
+    /// It is thread-local rather than global so it cannot leak into the other
+    /// tests sharing this process.
+    static FORCED_STABLE_HASH_COLLISION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Forces [`StableKeyHash`] collisions on this thread for the guard's lifetime.
+#[cfg(test)]
+struct ForcedStableHashCollision;
+
+#[cfg(test)]
+impl ForcedStableHashCollision {
+    fn enter() -> Self {
+        FORCED_STABLE_HASH_COLLISION.with(|forced| forced.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ForcedStableHashCollision {
+    fn drop(&mut self) {
+        FORCED_STABLE_HASH_COLLISION.with(|forced| forced.set(false));
+    }
+}
+
+impl Hasher for StableHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        self.note(bytes);
+        let mut chunks = bytes.chunks_exact(8);
+        for chunk in &mut chunks {
+            let word = u64::from_le_bytes(chunk.try_into().expect("an exact eight-byte chunk"));
+            self.absorb(word);
+        }
+        let remainder = chunks.remainder();
+        let mut tail = [0_u8; 8];
+        tail[..remainder.len()].copy_from_slice(remainder);
+        // The high byte of a short tail is always zero, so folding the length
+        // in there separates `[1]` from `[1, 0]` without losing a byte.
+        self.absorb(u64::from_le_bytes(tail) ^ ((remainder.len() as u64) << 56));
+    }
+
+    fn write_u8(&mut self, value: u8) {
+        self.note(&value.to_le_bytes());
+        self.absorb(value as u64);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.note(&value.to_le_bytes());
+        self.absorb(value as u64);
+    }
+
+    fn write_u32(&mut self, value: u32) {
+        self.note(&value.to_le_bytes());
+        self.absorb(value as u64);
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.note(&value.to_le_bytes());
+        self.absorb(value);
+    }
+
+    fn write_u128(&mut self, value: u128) {
+        self.note(&value.to_le_bytes());
+        self.absorb(value as u64);
+        self.absorb((value >> 64) as u64);
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.note(&(value as u64).to_le_bytes());
+        self.absorb(value as u64);
+    }
+
+    fn write_i8(&mut self, value: i8) {
+        self.write_u8(value as u8);
+    }
+
+    fn write_i16(&mut self, value: i16) {
+        self.write_u16(value as u16);
+    }
+
+    fn write_i32(&mut self, value: i32) {
+        self.write_u32(value as u32);
+    }
+
+    fn write_i64(&mut self, value: i64) {
+        self.write_u64(value as u64);
+    }
+
+    fn write_i128(&mut self, value: i128) {
+        self.write_u128(value as u128);
+    }
+
+    fn write_isize(&mut self, value: isize) {
+        self.write_usize(value as usize);
+    }
+
+    fn finish(&self) -> u64 {
+        self.finish128().low
+    }
+}
+
+/// The complete content-derived digest of one typed key.
+pub fn stable_key_hash<K: QueryKey + ?Sized>(key: &K) -> StableKeyHash {
+    let mut hasher = StableHasher::new();
+    key.stable_hash(&mut hasher);
+    hasher.finish128()
+}
+
+/// The structural collision witness of one typed key.
+///
+/// This is the canonical byte stream [`QueryKey::stable_hash`] feeds, in field
+/// order: the same typed fields [`stable_key_hash`] digests, and nothing else.
+/// Two keys that collide in 128 bits are ordered and compared by this stream,
+/// so a collision never consults presentation text — which is explicitly
+/// allowed to collide for unequal keys and therefore could not decide identity.
+///
+/// A key whose `stable_hash` absorbs a strict subset of the fields its `Eq`
+/// compares makes those variants structurally indistinguishable: they share a
+/// digest and a witness and so compare equal here, exactly as they already
+/// shared one display identity. Typed `Eq` remains authoritative for memo
+/// lookup, and the canonical publication order breaks the remaining tie on the
+/// node incarnation.
+pub fn stable_key_witness<K: QueryKey + ?Sized>(key: &K) -> Vec<u8> {
+    let mut hasher = StableHasher::recording();
+    key.stable_hash(&mut hasher);
+    hasher.into_witness()
+}
+
 /// A logical key suitable for a retained query family.
 ///
 /// `Hash` must agree with `Eq`: keys that compare equal must hash equal. The
@@ -2144,7 +2413,9 @@ pub trait QueryKey: Clone + Eq + Hash + Send + Sync + 'static {
     /// A deterministic user-visible identity within the family.
     ///
     /// This text is presentation only and may collide. Exact `Self::eq`
-    /// remains authoritative for memo-node lookup.
+    /// remains authoritative for memo-node lookup, and since ADR-0074 no
+    /// runtime contract reads this text on the ordinary path: it is formatted
+    /// on first diagnostic, cycle render, abort, or `Debug` need.
     fn stable_identity(&self) -> String;
 
     /// A shareable form of the presentation identity.
@@ -2156,6 +2427,20 @@ pub trait QueryKey: Clone + Eq + Hash + Send + Sync + 'static {
     fn shared_stable_identity(&self) -> Arc<str> {
         self.stable_identity().into()
     }
+
+    /// Absorbs this key's typed fields into the stable digest (ADR-0074).
+    ///
+    /// The digest is structural: it orders published dependencies and
+    /// denominates the retained charge, so it must be derived from the key's
+    /// own fields, exactly as a `Hash` derive would enumerate them. Never
+    /// absorb [`Self::stable_identity`]'s text, an address, an allocation
+    /// order, or anything a schedule can change.
+    ///
+    /// Equal keys must produce equal digests, so an implementation may absorb
+    /// a strict subset of the fields `Eq` compares — a deliberately coarse
+    /// digest costs a cold collision tiebreak, never correctness. Absorbing a
+    /// field `Eq` ignores is a bug.
+    fn stable_hash(&self, hasher: &mut StableHasher);
 }
 
 /// Collision-free identity of one immutable input leaf.
@@ -2218,12 +2503,82 @@ impl Revision {
     }
 }
 
-/// Canonical user-visible identity of one logical memo node.
+/// The typed key behind one node identity.
 ///
-/// The display identity is shared by the node, its terminals, and every
-/// dependency observation. Runtime-created identities also carry a weak,
-/// non-owning route back to the exact erased node. Equality, ordering, hashing,
-/// and display remain defined solely by the stable family/key pair.
+/// The source owns the key, so an identity can still name itself and still
+/// answer a structural comparison after its node has been evicted — a retained
+/// observation outlives the node it names, and a later cycle or diagnostic
+/// must still render it.
+trait TypedKeyView: Send + Sync {
+    /// Presentation text, formatted here and nowhere else.
+    fn format(&self) -> Arc<str>;
+
+    /// The structural collision witness of the typed key.
+    fn witness(&self) -> Vec<u8>;
+}
+
+struct TypedKeySource<K> {
+    key: K,
+    /// Live runtime to attribute a memo-node materialization to. A cold
+    /// identity the runtime built precisely because it already needed a name
+    /// carries a never-upgradable handle: its formatting is counted by the
+    /// abort-fallback or structured-wait counter at the call site instead.
+    core: Weak<RuntimeCore>,
+}
+
+impl<K: QueryKey> TypedKeyView for TypedKeySource<K> {
+    fn format(&self) -> Arc<str> {
+        let text = self.key.shared_stable_identity();
+        if let Some(core) = self.core.upgrade() {
+            core.metrics.record_memo_node_identity(text.len());
+        }
+        text
+    }
+
+    fn witness(&self) -> Vec<u8> {
+        stable_key_witness(&self.key)
+    }
+}
+
+/// A key that is nothing but its own presentation text.
+///
+/// Tests build display-only identities from a name; every runtime caller has
+/// a typed key and reaches `NodeIdentity::from_key` instead.
+#[cfg(test)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct TextKey(Arc<str>);
+
+#[cfg(test)]
+impl QueryKey for TextKey {
+    fn stable_identity(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn shared_stable_identity(&self) -> Arc<str> {
+        self.0.clone()
+    }
+
+    fn stable_hash(&self, hasher: &mut StableHasher) {
+        self.0.hash(hasher);
+    }
+}
+
+/// Canonical structural identity of one logical memo node (ADR-0074).
+///
+/// The identity is the pair `(family, stable_hash)`: a shared family name plus
+/// the content-derived 128-bit digest of the typed key. Equality, ordering,
+/// and hashing are integer comparisons over that pair. When two identities of
+/// one family share a digest, they are separated by the *structural collision
+/// witness* — the canonical byte stream the typed key feeds into that digest.
+///
+/// Presentation text is never consulted for identity. `stable_identity()` is
+/// explicitly allowed to collide for unequal keys, so it could not decide one:
+/// it is lazily formatted and used only to name a node in a diagnostic, a
+/// rendered cycle, an abort, or a `Debug` dump.
+///
+/// The identity is shared by the node, its terminals, and every dependency
+/// observation. Runtime-created identities also carry a weak, non-owning route
+/// back to the exact erased node.
 #[derive(Clone)]
 pub struct NodeIdentity {
     inner: Arc<NodeIdentityData>,
@@ -2231,7 +2586,12 @@ pub struct NodeIdentity {
 
 struct NodeIdentityData {
     family: Arc<str>,
-    key: Arc<str>,
+    stable_hash: StableKeyHash,
+    /// Presentation text. Preformatted for the cold identities the runtime
+    /// builds only when it already needs a name; lazily filled from `key` for
+    /// memo-node identities.
+    text: OnceLock<Arc<str>>,
+    key: Arc<dyn TypedKeyView>,
     runtime_identity: Option<u64>,
     node: Option<Weak<dyn ErasedNode>>,
 }
@@ -2243,26 +2603,55 @@ struct ExactNodeIdentity {
 }
 
 impl NodeIdentity {
+    /// A display-only identity whose text is already known.
+    ///
+    /// The digest comes from the text because for this identity the text *is*
+    /// the key. Every runtime caller reaches it through [`Self::from_key`],
+    /// which digests the typed key instead.
+    #[cfg(test)]
     fn new(family: Arc<str>, key: Arc<str>) -> Self {
+        Self::from_key(family, &TextKey(key))
+    }
+
+    /// A display-only identity for a typed key the caller already has to name.
+    ///
+    /// Used by the cold paths that exist only to render a name — an aborted
+    /// nested request and a structured wait edge on a rendered cycle — so the
+    /// text is formatted eagerly here and the lazy slot starts filled.
+    fn from_key<K: QueryKey>(family: Arc<str>, key: &K) -> Self {
+        let text = OnceLock::new();
+        let _ = text.set(key.shared_stable_identity());
         Self {
             inner: Arc::new(NodeIdentityData {
                 family,
-                key,
+                stable_hash: stable_key_hash(key),
+                text,
+                key: Arc::new(TypedKeySource {
+                    key: key.clone(),
+                    core: Weak::new(),
+                }),
                 runtime_identity: None,
                 node: None,
             }),
         }
     }
 
-    fn registered(
+    /// The identity of one live memo-node incarnation.
+    ///
+    /// The digest is computed here from the typed key; the presentation text
+    /// is not, and is formatted only if something later asks for a name.
+    fn registered<K: QueryKey>(
         family: Arc<str>,
-        key: Arc<str>,
+        key: Arc<TypedKeySource<K>>,
+        stable_hash: StableKeyHash,
         runtime_identity: u64,
         node: Weak<dyn ErasedNode>,
     ) -> Self {
         Self {
             inner: Arc::new(NodeIdentityData {
                 family,
+                stable_hash,
+                text: OnceLock::new(),
                 key,
                 runtime_identity: Some(runtime_identity),
                 node: Some(node),
@@ -2287,25 +2676,71 @@ impl NodeIdentity {
         &self.inner.family
     }
 
-    /// Family-defined stable key identity.
+    /// The content-derived digest of this node's typed key (ADR-0074).
+    ///
+    /// This is the structural half of the identity: ordering, equality, and
+    /// hashing are defined on `(family, stable_hash)`, and it is what callers
+    /// should key their own per-node tables by instead of the text.
+    pub fn stable_hash(&self) -> StableKeyHash {
+        self.inner.stable_hash
+    }
+
+    /// Family-defined presentation key, formatted on first demand.
+    ///
+    /// This is the ADR-0074 cold path. Calling it on a memo-node identity
+    /// formats the typed key once and counts one
+    /// `display_identities.memo_node_materializations`. This text is
+    /// presentation only and may be equal for unequal keys.
     pub fn key(&self) -> &str {
-        &self.inner.key
+        if let Some(text) = self.inner.text.get() {
+            return text;
+        }
+        self.inner.text.get_or_init(|| self.inner.key.format())
+    }
+
+    /// Compares `(family, stable_hash)`, which never touches presentation text.
+    fn structural_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let family_order = if Arc::ptr_eq(&self.inner.family, &other.inner.family) {
+            std::cmp::Ordering::Equal
+        } else {
+            self.family().cmp(other.family())
+        };
+        family_order.then_with(|| self.inner.stable_hash.cmp(&other.inner.stable_hash))
+    }
+
+    /// Breaks a 128-bit digest collision on the typed keys' own content.
+    ///
+    /// This is the cold path: it is reached only when two identities of one
+    /// family share a digest, which for content-derived digests means either
+    /// the same key or a genuine collision. It allocates each stream on
+    /// demand rather than retaining one per node, because the ordinary path
+    /// answers on the integer pair above and never gets here.
+    fn collision_cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.inner.key.witness().cmp(&other.inner.key.witness())
     }
 }
 
 impl fmt::Debug for NodeIdentity {
+    /// `Debug` names the node, so it deliberately materializes the text.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("NodeIdentity")
             .field("family", &self.inner.family)
-            .field("key", &self.inner.key)
+            .field("key", &self.key())
             .finish()
     }
 }
 
 impl PartialEq for NodeIdentity {
+    /// Distinct identities never compare equal. `(family, stable_hash)` decides
+    /// every ordinary answer; two distinct keys of one family that collide in
+    /// 128 bits are separated by the structural collision witness.
     fn eq(&self, other: &Self) -> bool {
-        self.family() == other.family() && self.key() == other.key()
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return true;
+        }
+        self.structural_cmp(other) == std::cmp::Ordering::Equal
+            && self.collision_cmp(other) == std::cmp::Ordering::Equal
     }
 }
 
@@ -2318,20 +2753,21 @@ impl PartialOrd for NodeIdentity {
 }
 
 impl Ord for NodeIdentity {
+    /// `(family, stable_hash, structural_collision_witness)`. The witness is
+    /// absent from the fast path: it is computed only when the digests tie.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        let family_order = if Arc::ptr_eq(&self.inner.family, &other.inner.family) {
-            std::cmp::Ordering::Equal
-        } else {
-            self.family().cmp(other.family())
-        };
-        family_order.then_with(|| self.key().cmp(other.key()))
+        if Arc::ptr_eq(&self.inner, &other.inner) {
+            return std::cmp::Ordering::Equal;
+        }
+        self.structural_cmp(other)
+            .then_with(|| self.collision_cmp(other))
     }
 }
 
 impl Hash for NodeIdentity {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.family().hash(state);
-        self.key().hash(state);
+        self.inner.stable_hash.hash(state);
     }
 }
 
@@ -3353,11 +3789,18 @@ impl Drop for DependencyValidationWork<'_> {
 /// The byte counters record the UTF-8 length returned by
 /// [`QueryKey::stable_identity`]. Family names are shared separately and are
 /// not included. Typed keys remain authoritative for memo lookup.
+///
+/// Since ADR-0074 every counter here reports an actual formatting event.
+/// Nothing on the ordinary path needs a node's name: ordering, equality,
+/// hashing, the published dependency order, and the retained charge are all
+/// defined on `(family, stable_hash)`. A key is formatted when something asks
+/// what a node is *called* — a diagnostic, a rendered cycle, an aborted nested
+/// request, or a `Debug` dump.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DisplayIdentityMetrics {
-    /// Identities created once for new memo-node incarnations.
+    /// Memo-node identities formatted on first demand for a name.
     pub memo_node_materializations: u64,
-    /// Formatted key bytes retained by new memo-node incarnations.
+    /// Formatted key bytes retained by materialized memo-node identities.
     pub memo_node_bytes: u64,
     /// Structured batch identities materialized only to render wait cycles.
     pub structured_wait_materializations: u64,
@@ -5236,8 +5679,10 @@ type FamilyEvaluator<K, V> = dyn Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Re
 
 struct Node<K, V> {
     /// Typed key owning this node, retained so eviction can locate the node in
-    /// the hashed memo index without a linear scan.
-    key: K,
+    /// the hashed memo index without a linear scan. It is shared with this
+    /// node's identity rather than copied into it, so deferring the display
+    /// format costs one `Arc` header per node and not a second typed key.
+    key_source: Arc<TypedKeySource<K>>,
     identity: NodeIdentity,
     incarnation: u64,
     // Both links are weak: the runtime and node therefore remain free to die
@@ -5250,6 +5695,13 @@ struct Node<K, V> {
     wait: Arc<WaitCell>,
     demand: Option<Arc<dyn Fn(Arc<Task>, u64) -> ValidationDemand<V> + Send + Sync>>,
     state: Mutex<NodeState<V>>,
+}
+
+impl<K, V> Node<K, V> {
+    /// The typed key this node memoizes.
+    fn key(&self) -> &K {
+        &self.key_source.key
+    }
 }
 
 /// Outcome of re-demanding a retained dependency from family-owned authority.
@@ -5867,14 +6319,14 @@ where
         family.retained_count.fetch_sub(1, Ordering::Relaxed);
         retention.remove_charge(terminal.retained_charge, terminal.dependency_pin_charge);
         if empty && node.users.load(Ordering::Acquire) == 0 {
-            let mut nodes = family.nodes.shard(&node.key);
+            let mut nodes = family.nodes.shard(node.key());
             if node.users.load(Ordering::Acquire) == 0
                 && lock(&node.state).attempts.is_empty()
                 && nodes
-                    .get(&node.key)
+                    .get(node.key())
                     .is_some_and(|candidate| Arc::ptr_eq(candidate, &node))
             {
-                nodes.remove(&node.key);
+                nodes.remove(node.key());
                 family.retained_nodes.fetch_sub(1, Ordering::Relaxed);
             }
         }
@@ -6050,10 +6502,10 @@ where
         let node = if let Some(node) = nodes.get(&key) {
             node.clone()
         } else {
-            let stable_key = key.shared_stable_identity();
-            self.core
-                .metrics
-                .record_memo_node_identity(stable_key.len());
+            // ADR-0074: minting a node digests its typed key and formats
+            // nothing. The presentation text is produced later, if a
+            // diagnostic, cycle render, abort, or `Debug` dump asks for a name.
+            let stable_hash = stable_key_hash(&key);
             let incarnation = self.core.next_node.fetch_add(1, Ordering::Relaxed);
             let demand = self.inner.evaluator.as_ref().map(|_| {
                 let core = self.core.clone();
@@ -6101,16 +6553,24 @@ where
                     as Arc<dyn Fn(Arc<Task>, u64) -> ValidationDemand<V> + Send + Sync>
             });
             let registry_core = Arc::downgrade(&self.core);
+            // One typed-key allocation serves both the node's own eviction
+            // lookup and its identity's deferred presentation, so the identity
+            // owns no second copy of the key.
+            let key_source = Arc::new(TypedKeySource {
+                key: key.clone(),
+                core: registry_core.clone(),
+            });
             let node: Arc<Node<K, V>> = Arc::new_cyclic(|registry_self: &Weak<Node<K, V>>| {
                 let registry_self: Weak<dyn ErasedNode> = registry_self.clone();
                 Node {
-                    key: key.clone(),
                     identity: NodeIdentity::registered(
                         self.inner.name.clone(),
-                        stable_key,
+                        key_source.clone(),
+                        stable_hash,
                         self.core.identity,
                         registry_self.clone(),
                     ),
+                    key_source,
                     incarnation,
                     registry_core,
                     registry_self,
@@ -6872,7 +7332,6 @@ where
         let (retained_charge, dependency_pin_charge) = retained_terminal_charge(
             &outcome,
             retained_value_charge,
-            &node.identity,
             &diagnostics,
             &work,
             &dependencies,
@@ -7622,7 +8081,7 @@ impl<K: QueryKey> StructuredWaitLabels for RegisteredBatchItems<K> {
             .items
             .get(index)
             .expect("a structured wait edge names one live batch item");
-        NodeIdentity::new(self.family.clone(), item.key.shared_stable_identity())
+        NodeIdentity::from_key(self.family.clone(), &item.key)
     }
 }
 
@@ -7882,7 +8341,7 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || NodeIdentity::new(family.inner.name.clone(), key.shared_stable_identity()),
+            move || NodeIdentity::from_key(family.inner.name.clone(), &key),
             &result,
         );
         result.into_result()
@@ -7917,7 +8376,7 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || NodeIdentity::new(family.inner.name.clone(), key.shared_stable_identity()),
+            move || NodeIdentity::from_key(family.inner.name.clone(), &key),
             &result,
         );
         result.into_result()
@@ -8178,7 +8637,7 @@ impl QueryContext {
             }
             self.task.record_nested(
                 item.request_id,
-                || NodeIdentity::new(items.family.clone(), item.key.shared_stable_identity()),
+                || NodeIdentity::from_key(items.family.clone(), &item.key),
                 &result,
             );
             terminals.push(result.into_result()?);
@@ -9318,6 +9777,17 @@ impl TaskDependencies {
         }
     }
 
+    /// Publishes this frame's dependencies in the canonical order.
+    ///
+    /// RUE-1381 fixed a canonical order so two runs of the same compilation
+    /// publish the same array; ADR-0074 redefines that order structurally as
+    /// `(family, stable_hash, structural_collision_witness, incarnation)`. The
+    /// two leading terms are integer comparisons over already-computed data,
+    /// so completing a frame names no node; the witness is absent from that
+    /// fast path and is computed only when two digests tie, which keeps a
+    /// collision's relative order content-derived rather than
+    /// allocation-ordered. The trailing incarnation is what separates two
+    /// incarnations of one key, and is reached only for them.
     fn into_observations(self) -> Vec<Observation> {
         let mut observations: Vec<Observation> = match self {
             Self::Empty => Vec::new(),
@@ -11193,19 +11663,25 @@ fn decrement_waiter<V>(state: &mut NodeState<V>, attempt_id: u64) -> bool {
     false
 }
 
+/// Deterministic retained charge of one published terminal.
+///
+/// ADR-0074 denominates identity structurally: a node, each observed
+/// dependency, and each observed input are charged one fixed
+/// [`IDENTITY_CHARGE_BYTES`] rather than the byte length of a formatted
+/// family/key pair. Every other term — the terminal header, the retained
+/// payload, diagnostics, work items, and the per-observation headers — is
+/// unchanged, so the charge still tracks what retention actually holds while
+/// no longer requiring a name for anything.
 fn retained_terminal_charge<V>(
     outcome: &QueryOutcome<V>,
     retained_value_charge: Option<u64>,
-    node: &NodeIdentity,
     diagnostics: &[QueryDiagnostic],
     work: &[(Arc<str>, u64)],
     dependencies: &[Observation],
     inputs: &[InputObservation],
 ) -> (u64, u64) {
     let mut bytes = std::mem::size_of::<QueryTerminal<V>>() as u64;
-    bytes = bytes
-        .saturating_add(node.family().len() as u64)
-        .saturating_add(node.key().len() as u64);
+    bytes = bytes.saturating_add(IDENTITY_CHARGE_BYTES);
     bytes = bytes.saturating_add(match outcome {
         QueryOutcome::Success(_) => retained_value_charge.unwrap_or(0),
         QueryOutcome::Failure(failure) => {
@@ -11228,17 +11704,15 @@ fn retained_terminal_charge<V>(
             .saturating_add(std::mem::size_of::<(Arc<str>, u64)>() as u64)
             .saturating_add(identity.len() as u64);
     }
-    for dependency in dependencies {
+    for _ in dependencies {
         bytes = bytes
             .saturating_add(std::mem::size_of::<Observation>() as u64)
-            .saturating_add(dependency.node.family().len() as u64)
-            .saturating_add(dependency.node.key().len() as u64);
+            .saturating_add(IDENTITY_CHARGE_BYTES);
     }
-    for input in inputs {
+    for _ in inputs {
         bytes = bytes
             .saturating_add(std::mem::size_of::<InputObservation>() as u64)
-            .saturating_add(input.input.family.len() as u64)
-            .saturating_add(input.input.key.len() as u64);
+            .saturating_add(IDENTITY_CHARGE_BYTES);
     }
     let dependency_pins =
         u64::try_from(dependencies.len().saturating_add(inputs.len())).unwrap_or(u64::MAX);
@@ -11293,10 +11767,23 @@ fn canonical_reduced_work(work: Vec<(Arc<str>, u64)>) -> Vec<(Arc<str>, u64)> {
     aggregate.into_iter().collect()
 }
 
+/// Canonicalizes the members of one detected cycle for rendering.
+///
+/// This is presentation, and it is deliberately the one place that orders
+/// identities by their *text* rather than by the ADR-0074 structural pair. A
+/// cycle is about to be shown to a person, its member list is tiny, and
+/// consumers match members by name, so the rendered order and the rendered
+/// de-duplication must both stay exactly what they were when identity was the
+/// formatted family/key pair. Formatting here is the intended cold path and is
+/// what the display-identity counters are for.
 fn canonical_cycle(nodes: impl IntoIterator<Item = NodeIdentity>) -> Arc<[NodeIdentity]> {
     let mut nodes = nodes.into_iter().collect::<Vec<_>>();
-    nodes.sort();
-    nodes.dedup();
+    nodes.sort_by(|left, right| {
+        left.family()
+            .cmp(right.family())
+            .then_with(|| left.key().cmp(right.key()))
+    });
+    nodes.dedup_by(|left, right| left.family() == right.family() && left.key() == right.key());
     nodes.into()
 }
 
@@ -11331,32 +11818,352 @@ mod tests {
     use super::*;
 
     #[test]
-    fn node_identity_order_matches_lexical_family_key_order() {
+    fn node_identity_order_is_family_then_stable_hash() {
         let shared_family: Arc<str> = Arc::from("family");
         let shared_a = NodeIdentity::new(shared_family.clone(), Arc::from("a"));
         let shared_b = NodeIdentity::new(shared_family.clone(), Arc::from("b"));
         assert!(Arc::ptr_eq(&shared_a.inner.family, &shared_b.inner.family));
+        // Within a family the digest decides, not the text.
         assert_eq!(
             shared_a.cmp(&shared_b),
-            ("family", "a").cmp(&("family", "b"))
+            shared_a.stable_hash().cmp(&shared_b.stable_hash())
         );
+        assert_ne!(shared_a.stable_hash(), shared_b.stable_hash());
 
+        // The family name still leads, and it is compared as text so two
+        // separately allocated `Arc<str>` spellings agree.
         let distinct_family_a: Arc<str> = Arc::from(String::from("same"));
         let distinct_family_b: Arc<str> = Arc::from(String::from("same"));
         assert!(!Arc::ptr_eq(&distinct_family_a, &distinct_family_b));
         let equal_text_a = NodeIdentity::new(distinct_family_a, Arc::from("key"));
         let equal_text_b = NodeIdentity::new(distinct_family_b, Arc::from("key"));
         assert_eq!(equal_text_a.cmp(&equal_text_b), std::cmp::Ordering::Equal);
+        assert_eq!(equal_text_a, equal_text_b);
 
         let alpha = NodeIdentity::new(Arc::from("alpha"), Arc::from("key"));
         let beta = NodeIdentity::new(Arc::from("beta"), Arc::from("key"));
-        assert_eq!(alpha.cmp(&beta), ("alpha", "key").cmp(&("beta", "key")));
+        assert_eq!(alpha.cmp(&beta), "alpha".cmp("beta"));
+        assert_eq!(alpha.stable_hash(), beta.stable_hash());
+        assert_ne!(alpha, beta);
+    }
 
-        let key_a = NodeIdentity::new(shared_family.clone(), Arc::from("key-a"));
-        let key_b = NodeIdentity::new(shared_family, Arc::from("key-b"));
+    /// ADR-0074 falsifier: the digest is derived from the key's own content,
+    /// with compile-time keys, so it is identical in every process and does
+    /// not depend on construction order, sharing, or a per-run seed.
+    #[test]
+    fn stable_key_hash_is_content_derived_and_process_independent() {
+        // Pinned digests. A change here changes the published dependency
+        // order of every existing build, so it must be a deliberate decision.
         assert_eq!(
-            key_a.cmp(&key_b),
-            ("family", "key-a").cmp(&("family", "key-b"))
+            stable_key_hash(&Key("a")).to_u128(),
+            0xb7cc_bbb6_dffb_00f0_c159_cd0d_4338_ccba
+        );
+        assert_eq!(
+            stable_key_hash(&Key("")).to_u128(),
+            stable_key_hash(&Key("")).to_u128()
+        );
+
+        // Equal content, independently allocated, digests equally.
+        let owned = String::from("some-longer-key-value");
+        let first = TextKey(Arc::from(owned.as_str()));
+        let second = TextKey(Arc::from(owned.as_str()));
+        assert!(!Arc::ptr_eq(&first.0, &second.0));
+        assert_eq!(stable_key_hash(&first), stable_key_hash(&second));
+
+        // Distinct content separates, including at the byte-boundary cases
+        // the streaming hasher folds a length into.
+        let mut seen = BTreeSet::new();
+        for length in 0..40_usize {
+            let text = "k".repeat(length);
+            assert!(
+                seen.insert(stable_key_hash(&TextKey(Arc::from(text.as_str()))).to_u128()),
+                "distinct keys of length {length} must not share a digest"
+            );
+        }
+
+        // The digest is not the text's own hash: it is fixed-width and the
+        // hasher is keyed with constants, never seeded.
+        let mut hasher = StableHasher::new();
+        assert_eq!(hasher.finish128(), StableHasher::new().finish128());
+        hasher.write_u64(0);
+        assert_ne!(hasher.finish128(), StableHasher::new().finish128());
+    }
+
+    /// A key whose presentation text is equal for unequal keys, which
+    /// [`QueryKey::stable_identity`] explicitly permits. Text therefore cannot
+    /// break an identity tie, and ADR-0074 does not ask it to.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct EqualTextKey(u8);
+
+    impl QueryKey for EqualTextKey {
+        fn stable_identity(&self) -> String {
+            "collision".to_owned()
+        }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
+        }
+    }
+
+    /// ADR-0074 falsifier: with the test-only hasher override collapsing every
+    /// digest, distinct keys still order totally and deterministically through
+    /// the structural collision witness and never compare equal — including
+    /// when the two keys render byte-identical presentation text.
+    #[test]
+    fn forced_stable_hash_collision_stays_total_and_unequal() {
+        let _forced = ForcedStableHashCollision::enter();
+
+        // Equal digests, equal names, unequal keys.
+        let text_family: Arc<str> = Arc::from("forced-collision-equal-text");
+        let text_first = NodeIdentity::from_key(text_family.clone(), &EqualTextKey(1));
+        let text_second = NodeIdentity::from_key(text_family, &EqualTextKey(2));
+        assert_eq!(text_first.stable_hash(), text_second.stable_hash());
+        assert_eq!(text_first.key(), text_second.key());
+        assert_ne!(
+            text_first, text_second,
+            "distinct keys never compare equal, even sharing a digest and a name"
+        );
+        assert_eq!(text_first.cmp(&text_second), std::cmp::Ordering::Less);
+        assert_eq!(text_second.cmp(&text_first), std::cmp::Ordering::Greater);
+
+        let family: Arc<str> = Arc::from("forced-collision");
+        let first = NodeIdentity::from_key(family.clone(), &Key("alpha"));
+        let second = NodeIdentity::from_key(family.clone(), &Key("beta"));
+        let third = NodeIdentity::from_key(family.clone(), &Key("gamma"));
+        assert_eq!(first.stable_hash(), second.stable_hash());
+        assert_eq!(second.stable_hash(), third.stable_hash());
+
+        // Distinct identities never compare equal, even when they collide.
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+        assert_eq!(first, first.clone());
+
+        // The order is total, antisymmetric, transitive, and content-derived
+        // rather than construction-ordered.
+        assert_eq!(first.cmp(&second), std::cmp::Ordering::Less);
+        assert_eq!(second.cmp(&first), std::cmp::Ordering::Greater);
+        assert_eq!(first.cmp(&third), std::cmp::Ordering::Less);
+        let mut sorted = vec![third.clone(), first.clone(), second.clone()];
+        sorted.sort();
+        assert_eq!(
+            sorted.iter().map(NodeIdentity::key).collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"]
+        );
+
+        // A runtime whose every node collides still resolves distinct memo
+        // nodes and publishes one canonical dependency order, in the same
+        // order whichever order the dependencies were demanded in.
+        for demand in [
+            [Key("gamma"), Key("alpha"), Key("beta")],
+            [Key("beta"), Key("gamma"), Key("alpha")],
+        ] {
+            let runtime = QueryRuntime::new(1);
+            publish_empty(&runtime, [revision(1)]);
+            let leaf = runtime
+                .family_with_evaluator::<Key, u64, _>("collision-leaf", 8, |_, _, key| {
+                    Ok(QueryOutput::success(key.0.len() as u64))
+                })
+                .unwrap();
+            let leaf_for_root = leaf.clone();
+            let root = runtime
+                .family_with_evaluator::<Key, u64, _>("collision-root", 8, move |context, _, _| {
+                    for key in demand.clone() {
+                        context.query_registered(&leaf_for_root, key)?;
+                    }
+                    Ok(QueryOutput::success(0))
+                })
+                .unwrap();
+            let terminal = runtime
+                .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+                .into_result()
+                .unwrap();
+            assert_eq!(
+                terminal
+                    .dependencies()
+                    .iter()
+                    .map(|dependency| dependency.node.key())
+                    .collect::<Vec<_>>(),
+                vec!["alpha", "beta", "gamma"],
+                "a whole family of collisions still publishes one canonical order"
+            );
+        }
+    }
+
+    /// ADR-0074 falsifier: two unequal keys that render one name are two
+    /// identities. Presentation text may collide; identity may not.
+    #[test]
+    fn equal_display_text_still_yields_distinct_identities() {
+        let family: Arc<str> = Arc::from("equal-text");
+        let first = NodeIdentity::from_key(family.clone(), &EqualTextKey(1));
+        let second = NodeIdentity::from_key(family, &EqualTextKey(2));
+        assert_eq!(first.key(), second.key());
+        assert_ne!(first.stable_hash(), second.stable_hash());
+        assert_ne!(first, second);
+        assert_eq!(
+            first.cmp(&second),
+            first.stable_hash().cmp(&second.stable_hash())
+        );
+    }
+
+    /// ADR-0074 falsifier: `Debug` still names a node. `session.rs` renders
+    /// dependency nodes with `format!("{:?}", dependency.node)`, so deferring
+    /// the format must not turn a debug dump into an anonymous one.
+    #[test]
+    fn debug_formatting_still_materializes_a_memo_node_name() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime.family::<Key, u64>("debug-identity", 1).unwrap();
+        let lease = family.node(Key("named")).unwrap();
+        assert_eq!(
+            runtime
+                .metrics()
+                .display_identities
+                .memo_node_materializations,
+            0,
+            "minting a node names nothing"
+        );
+
+        assert_eq!(
+            format!("{:?}", lease.node.identity),
+            r#"NodeIdentity { family: "debug-identity", key: "named" }"#
+        );
+        assert_eq!(
+            runtime
+                .metrics()
+                .display_identities
+                .memo_node_materializations,
+            1
+        );
+    }
+
+    /// ADR-0074 falsifier: two fresh runs of the same graph publish identical
+    /// dependency orders and identical retained charges, at any worker count.
+    /// The digest is keyed with compile-time constants, so nothing here is
+    /// seeded per process, per run, or per schedule.
+    #[test]
+    fn published_order_and_charge_are_identical_across_runs_and_worker_counts() {
+        fn run(workers: usize) -> (Vec<(String, String, u64)>, u64, u64) {
+            let runtime = QueryRuntime::new(workers);
+            publish_empty(&runtime, [revision(1)]);
+            let leaf = runtime
+                .family_with_evaluator::<Key, u64, _>("determinism-leaf", 8, |_, _, key| {
+                    Ok(QueryOutput::success(key.0.len() as u64))
+                })
+                .unwrap();
+            let leaf_for_root = leaf.clone();
+            let root = runtime
+                .family_with_evaluator::<Key, u64, _>(
+                    "determinism-root",
+                    8,
+                    move |context, _, _| {
+                        context.query_registered_batch(
+                            &leaf_for_root,
+                            [
+                                Key("zeta"),
+                                Key("alpha"),
+                                Key("mu"),
+                                Key("beta"),
+                                Key("omicron"),
+                                Key("gamma"),
+                            ],
+                        )?;
+                        Ok(QueryOutput::success(0))
+                    },
+                )
+                .unwrap();
+            let terminal = runtime
+                .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+                .into_result()
+                .unwrap();
+            let order = terminal
+                .dependencies()
+                .iter()
+                .map(|dependency| {
+                    (
+                        dependency.node.family().to_owned(),
+                        dependency.node.key().to_owned(),
+                        dependency.stamp,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let metrics = runtime.metrics();
+            (
+                order,
+                metrics.retained_bytes,
+                metrics.retained_dependency_pins,
+            )
+        }
+
+        let single = run(1);
+        assert_eq!(single, run(1), "two runs at one worker agree exactly");
+        assert_eq!(
+            single,
+            run(4),
+            "four workers publish the same order and charge"
+        );
+        assert_eq!(single, run(8), "and so do eight");
+        assert_eq!(single.0.len(), 6);
+    }
+
+    /// ADR-0074 falsifier: the retained charge is denominated structurally, so
+    /// a longer name costs nothing and every identity costs the same 16 bytes.
+    #[test]
+    fn retained_charge_is_independent_of_presentation_length() {
+        fn charge(dependencies: &[Observation], inputs: &[InputObservation]) -> u64 {
+            retained_terminal_charge(
+                &QueryOutcome::Success(0_u64),
+                Some(0),
+                &[],
+                &[],
+                dependencies,
+                inputs,
+            )
+            .0
+        }
+
+        let short = NodeIdentity::from_key(Arc::from("f"), &Key("a"));
+        let long = NodeIdentity::from_key(
+            Arc::from("a-considerably-longer-family-name"),
+            &Key("a-considerably-longer-key-identity-than-the-other-one"),
+        );
+        let observation = |node: NodeIdentity| Observation {
+            node,
+            incarnation: 1,
+            stamp: 1,
+        };
+
+        assert_eq!(
+            charge(&[observation(short.clone())], &[]),
+            charge(&[observation(long.clone())], &[]),
+            "an observed dependency costs a fixed identity charge"
+        );
+        assert_eq!(
+            charge(&[], &[]) + std::mem::size_of::<Observation>() as u64 + IDENTITY_CHARGE_BYTES,
+            charge(&[observation(long)], &[])
+        );
+        assert_eq!(
+            charge(
+                &[],
+                &[InputObservation {
+                    input: InputIdentity::new("s", "a"),
+                    stamp: 1,
+                }]
+            ),
+            charge(
+                &[],
+                &[InputObservation {
+                    input: InputIdentity::new(
+                        "a-much-longer-input-family",
+                        "a-much-longer-input-key"
+                    ),
+                    stamp: 1,
+                }]
+            ),
+            "an observed input costs a fixed identity charge"
+        );
+        // Neither identity was named to compute any of that.
+        assert!(
+            short.inner.text.get().is_some(),
+            "cold identities preformat"
         );
     }
 
@@ -11405,6 +12212,10 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_owned()
         }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
+        }
     }
 
     #[test]
@@ -11446,17 +12257,35 @@ mod tests {
             Some(&QueryAbort::ForeignRuntime)
         );
 
+        // ADR-0074: four memo nodes were minted and none of them was named.
+        // Ordering, equality, hashing, publication order, and the retained
+        // charge are all structural now, so the only formatted identity here
+        // is the one the aborted nested request had to name.
         assert_eq!(
             runtime.metrics().display_identities,
             DisplayIdentityMetrics {
-                memo_node_materializations: 4,
-                memo_node_bytes: 7,
+                memo_node_materializations: 0,
+                memo_node_bytes: 0,
                 structured_wait_materializations: 0,
                 structured_wait_bytes: 0,
                 abort_fallback_materializations: 1,
                 abort_fallback_bytes: 4,
             }
         );
+
+        // Asking a memo node what it is called formats it exactly once and
+        // counts exactly one materialization.
+        let lease = child.node(Key("aa")).unwrap();
+        assert_eq!(lease.node.identity.key(), "aa");
+        assert_eq!(lease.node.identity.key(), "aa");
+        assert_eq!(
+            runtime
+                .metrics()
+                .display_identities
+                .memo_node_materializations,
+            1
+        );
+        assert_eq!(runtime.metrics().display_identities.memo_node_bytes, 2);
     }
 
     #[test]
@@ -11794,6 +12623,10 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_string()
         }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
+        }
     }
 
     #[test]
@@ -11927,8 +12760,7 @@ mod tests {
         assert_eq!(work.snapshot().registry_index_lookups, 0);
         drop(direct);
 
-        let display_only =
-            NodeIdentity::new(identity.inner.family.clone(), identity.inner.key.clone());
+        let display_only = NodeIdentity::from_key(identity.inner.family.clone(), &Key("node"));
         let fallback = runtime
             .core
             .validation_node(&display_only, incarnation, &work)
@@ -12101,6 +12933,10 @@ mod tests {
     impl QueryKey for CountingKey {
         fn stable_identity(&self) -> String {
             self.0.to_string()
+        }
+
+        fn stable_hash(&self, hasher: &mut StableHasher) {
+            self.0.hash(hasher);
         }
     }
 
@@ -15470,6 +16306,10 @@ mod tests {
             fn stable_identity(&self) -> String {
                 self.0.to_string()
             }
+
+            fn stable_hash(&self, hasher: &mut StableHasher) {
+                self.0.hash(hasher);
+            }
         }
 
         let runtime = QueryRuntime::new(1);
@@ -15581,6 +16421,10 @@ mod tests {
                 // Distinct display identities to prove lookup never consults the
                 // display string: only typed `Eq` chooses the node.
                 format!("one-bucket:{}", self.0)
+            }
+
+            fn stable_hash(&self, hasher: &mut StableHasher) {
+                self.0.hash(hasher);
             }
         }
 
@@ -18375,8 +19219,19 @@ mod tests {
         }
 
         impl QueryKey for CollidingKey {
+            /// Deliberately equal for unequal keys. Presentation text is
+            /// allowed to collide, which is exactly why ADR-0074 does not let
+            /// it decide identity.
             fn stable_identity(&self) -> String {
                 "collision".to_owned()
+            }
+
+            /// The bucketing `Hash` above is deliberately constant; the
+            /// structural digest is not. It absorbs the key's real field, so
+            /// two unequal keys get two identities even though they render
+            /// one name.
+            fn stable_hash(&self, hasher: &mut StableHasher) {
+                self.0.hash(hasher);
             }
         }
 
@@ -18414,11 +19269,18 @@ mod tests {
         assert_ne!(CollidingKey(1), CollidingKey(2));
         assert_eq!(hash_of(&CollidingKey(1)), hash_of(&CollidingKey(2)));
         assert_eq!(first.node().family(), "colliding-keys");
+        // Both nodes render one name, because `stable_identity` is allowed to
+        // collide for unequal keys.
         assert_eq!(first.node().key(), "collision");
-        // The schedule-dependent incarnation stays out of canonical display
-        // ordering while exact K equality still chooses distinct memo nodes even
-        // under a forced hash collision.
-        assert_eq!(first.node(), second.node());
+        assert_eq!(second.node().key(), "collision");
+        // ADR-0074 contract change: identity is structural, so two unequal
+        // keys are two identities even when they render the same text. Before
+        // ADR-0074 identity *was* the rendered pair and these compared equal;
+        // making display text decide identity is precisely what this fixture
+        // shows to be unsound. The schedule-dependent incarnation still stays
+        // out of the canonical order.
+        assert_ne!(first.node(), second.node());
+        assert_ne!(first.node().stable_hash(), second.node().stable_hash());
         assert!(!Arc::ptr_eq(&first, &second));
         assert_ne!(first.outcome(), second.outcome());
     }
@@ -20414,6 +21276,10 @@ mod tests {
             fn stable_identity(&self) -> String {
                 self.name.to_owned()
             }
+
+            fn stable_hash(&self, hasher: &mut StableHasher) {
+                self.name.hash(hasher);
+            }
         }
 
         let runtime = QueryRuntime::new(1);
@@ -20476,12 +21342,11 @@ mod tests {
         assert!(Arc::ptr_eq(&reused, &dependent));
     }
 
-    fn budget_unit_charge(family: &'static str, key: &'static str, value_charge: u64) -> u64 {
+    fn budget_unit_charge(value_charge: u64) -> u64 {
         let output = QueryOutput::success(0_u64).with_retained_value_charge(value_charge);
         retained_terminal_charge(
             &output.outcome,
             output.retained_value_charge,
-            &NodeIdentity::new(family.into(), key.into()),
             &[],
             &[],
             &[],
@@ -20633,7 +21498,7 @@ mod tests {
 
     #[test]
     fn byte_pressure_evicts_in_stable_family_round_robin_order() {
-        let unit = budget_unit_charge("budget-a", "0", 100);
+        let unit = budget_unit_charge(100);
         let runtime = QueryRuntime::with_retention_budgets(
             1,
             RetentionBudgets {
@@ -20701,7 +21566,7 @@ mod tests {
 
     #[test]
     fn protected_byte_overflow_reclaims_when_request_bridge_releases() {
-        let unit = budget_unit_charge("protected", "0", 100);
+        let unit = budget_unit_charge(100);
         let runtime = QueryRuntime::with_retention_budgets(
             1,
             RetentionBudgets {
@@ -20742,7 +21607,7 @@ mod tests {
 
     #[test]
     fn protected_overflow_does_not_repeat_aggregate_scans_below_watermark() {
-        let unit = budget_unit_charge("watermark", "0", 100);
+        let unit = budget_unit_charge(100);
         let runtime = QueryRuntime::with_retention_budgets(
             1,
             RetentionBudgets {

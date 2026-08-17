@@ -181,13 +181,18 @@ separate from materialization shows when accounting work repeats over an
 unchanged artifact, even when host timing noise hides its cost.
 
 The display-identity table similarly reports formatted key bytes per token.
-Memo-node identities and abort fallbacks label diagnostics. A memo-node
-identity is formatted when its incarnation is created, and the count therefore
-tracks memo nodes rather than rendered names, because two runtime readers need
-that text for every node anyway: the deterministic retained-terminal charge
-counts its formatted bytes, and a completed frame publishes its dependency
-array in canonical family-then-key order. Deferring it was measured and
-rejected; see the
+Memo-node identities and abort fallbacks label diagnostics. Every count here
+is a rendered name rather than a node: since
+[ADR-0074](../designs/0074-structural-node-identity.md) a memo node's identity
+is its family plus a content-derived 128-bit digest of the typed key, so the
+two readers that used to need every node's text no longer do. The
+retained-terminal charge is denominated in a fixed per-identity charge, and a
+completed frame publishes its dependency array in canonical
+`(family, stable_hash, incarnation)` order. A memo-node identity is therefore
+formatted only when something asks what a node is called — a diagnostic, a
+rendered cycle, an abort, or a debug dump — and a clean build formats
+approximately none. The earlier measurement that rejected deferring the format
+under the old text-ordered contract is in the
 [cold-compiler architecture audit](../notes/post-adr-0063-cold-compiler-architecture-audit.md).
 Structured-wait identities are materialized only when a detected wait cycle
 must be rendered; registering an acyclic edge formats no key text. Typed query

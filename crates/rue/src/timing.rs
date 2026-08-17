@@ -1685,6 +1685,10 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_string()
         }
+
+        fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+            std::hash::Hash::hash(&self.0, hasher);
+        }
     }
 
     fn publish_test_revision(runtime: &QueryRuntime) {

@@ -4,6 +4,7 @@
 //! handles and pool indexes are materialization details and never cross this
 //! boundary.
 
+use std::hash::Hash;
 use std::sync::Arc;
 
 use rue_query::QueryKey;
@@ -22,6 +23,11 @@ impl QueryKey for TypeQueryKey {
             "{:?};target={:?};preview={:?}",
             self.ty, self.configuration.target, self.configuration.preview_features
         )
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.ty.hash(hasher);
+        self.configuration.hash(hasher);
     }
 }
 
@@ -123,6 +129,11 @@ impl QueryKey for CallAbiQueryKey {
             "{:?};target={:?};preview={:?}",
             self.callable, self.configuration.target, self.configuration.preview_features
         )
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.callable.hash(hasher);
+        self.configuration.hash(hasher);
     }
 }
 

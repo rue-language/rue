@@ -174,6 +174,15 @@ impl QueryKey for CfgQueryKey {
     fn shared_stable_identity(&self) -> Arc<str> {
         self.display_identity.clone()
     }
+
+    /// Function and configuration, which is exactly what `memo_hash` and the
+    /// display identity above already summarize. The retained semantic
+    /// versions of one function deliberately share a digest, as they already
+    /// share a memo bucket and a rendered name; typed `Eq` separates them.
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.function.hash(hasher);
+        self.configuration.hash(hasher);
+    }
 }
 
 #[derive(Debug)]
@@ -476,6 +485,15 @@ impl QueryKey for OptimizedCfgQueryKey {
 
     fn shared_stable_identity(&self) -> Arc<str> {
         self.display_identity.clone()
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.cfg.stable_hash(hasher);
+        std::mem::discriminant(&self.opt_level).hash(hasher);
+        hasher.write_usize(self.accessor_dependencies.len());
+        for dependency in self.accessor_dependencies.iter() {
+            dependency.stable_hash(hasher);
+        }
     }
 }
 
