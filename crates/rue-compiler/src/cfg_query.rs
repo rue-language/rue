@@ -868,11 +868,47 @@ pub(crate) fn collect_type_and_drop_dependencies(
 ) {
     let instance = type_instance_from_semantic(ty);
     layout_output.insert(instance.clone());
-    drop_output.insert(instance);
+    if type_may_need_drop_glue(ty) {
+        drop_output.insert(instance);
+    }
     // Array representation and CFG indexing depend on the element layout.
     // Pointer and slice representation does not depend on the pointee.
     if let rue_air::SemanticImportType::Array { element, .. } = ty {
         collect_type_dependencies(element, layout_output);
+    }
+}
+
+/// Return whether a semantic type can have a drop plan of its own.
+///
+/// Scalars, pointers, slices, and zero-length arrays are unconditionally
+/// dropless. Keeping them out of the CFG's drop-glue prerequisite family avoids
+/// asking the ownership query for a terminal that can only publish
+/// `DropGluePlan::None`; nominal types remain in the set because their fields or
+/// destructor declarations may make them droppable, and arrays recurse so an
+/// array of a droppable element keeps its own glue terminal.
+fn type_may_need_drop_glue<K, M>(ty: &rue_air::SemanticImportType<K, M>) -> bool {
+    use rue_air::SemanticImportType as T;
+
+    match ty {
+        T::Array { element, len } => *len != 0 && type_may_need_drop_glue(element),
+        T::BuiltinNominal { .. } | T::Nominal(_) | T::AnonymousNominal(_) => true,
+        T::I8
+        | T::I16
+        | T::I32
+        | T::I64
+        | T::U8
+        | T::U16
+        | T::U32
+        | T::U64
+        | T::Bool
+        | T::Unit
+        | T::Never
+        | T::ComptimeType
+        | T::PtrConst(_)
+        | T::PtrMut(_)
+        | T::Slice { .. }
+        | T::Module(_)
+        | T::GenericParameter(_) => false,
     }
 }
 
