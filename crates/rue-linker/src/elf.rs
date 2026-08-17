@@ -990,8 +990,16 @@ impl ObjectFile {
         }
 
         // Parse section headers
-        let mut sections = Vec::new();
-        let mut section_map = HashMap::new();
+        // A truncated table may claim the maximum u16 section count, so cap
+        // reservations by the number of complete headers present in `data`.
+        // Valid tables still reserve their exact declared count.
+        let section_capacity = if e_shentsize >= ELF64_SHDR_SIZE {
+            e_shnum.min(data.len().saturating_sub(e_shoff) / e_shentsize)
+        } else {
+            0
+        };
+        let mut sections = Vec::with_capacity(section_capacity);
+        let mut section_map = HashMap::with_capacity(section_capacity);
         let mut symtab_idx = None;
         let mut strtab_idx = None;
 
@@ -1007,7 +1015,7 @@ impl ObjectFile {
             entsize: u64,
         }
 
-        let mut raw_sections = Vec::new();
+        let mut raw_sections = Vec::with_capacity(section_capacity);
 
         for i in 0..e_shnum {
             let sh_offset = e_shoff + i * e_shentsize;
@@ -1170,6 +1178,13 @@ impl ObjectFile {
                 return Err(ParseError::InvalidSymbol("zero entsize".into()));
             }
             let sym_count = symtab.size / symtab.entsize;
+            // Avoid speculative allocation for an undersized entry width: the
+            // existing per-entry bounds check must reject that malformed table.
+            if symtab.entsize >= ELF64_SYM_SIZE as u64 {
+                if let Ok(capacity) = usize::try_from(sym_count) {
+                    let _ = symbols.try_reserve(capacity);
+                }
+            }
             for i in 0..sym_count {
                 let sym_offset = (i * symtab.entsize) as usize;
                 if sym_offset + ELF64_SYM_SIZE > symtab_data.len() {
@@ -1271,6 +1286,13 @@ impl ObjectFile {
                 continue; // Skip malformed relocation sections
             }
             let rela_count = raw.size / raw.entsize;
+            // As with symbols, malformed undersized entries must reach the
+            // existing bounds check without a large speculative allocation.
+            if raw.entsize >= ELF64_RELA_SIZE as u64 {
+                if let Ok(capacity) = usize::try_from(rela_count) {
+                    let _ = sections[target_section].relocations.try_reserve(capacity);
+                }
+            }
 
             for j in 0..rela_count {
                 let rela_offset = (j * raw.entsize) as usize;
@@ -1977,6 +1999,27 @@ mod tests {
         assert!(matches!(
             ObjectFile::parse(&data),
             Err(ParseError::InvalidSection(_))
+        ));
+    }
+
+    #[test]
+    fn test_large_section_count_short_table_fails_before_reserving_claimed_count() {
+        let mut data = [0u8; ELF64_EHDR_SIZE];
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        data[EI_CLASS] = ELFCLASS64;
+        data[EI_DATA] = ELFDATA2LSB;
+        data[E_TYPE_OFFSET..E_TYPE_OFFSET + 2].copy_from_slice(&ET_REL.to_le_bytes());
+        data[E_MACHINE_OFFSET..E_MACHINE_OFFSET + 2].copy_from_slice(&EM_X86_64.to_le_bytes());
+        data[E_SHOFF_OFFSET..E_SHOFF_OFFSET + 8]
+            .copy_from_slice(&(ELF64_EHDR_SIZE as u64).to_le_bytes());
+        data[E_SHENTSIZE_OFFSET..E_SHENTSIZE_OFFSET + 2]
+            .copy_from_slice(&(TEST_SHDR_SIZE as u16).to_le_bytes());
+        data[E_SHNUM_OFFSET..E_SHNUM_OFFSET + 2].copy_from_slice(&u16::MAX.to_le_bytes());
+
+        assert!(matches!(
+            ObjectFile::parse(&data),
+            Err(ParseError::InvalidSection(message))
+                if message == "section header out of bounds"
         ));
     }
 
