@@ -2025,6 +2025,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     Vec<Reg>,
     RegAllocDebugInfo<Reg>,
 ) {
+    let inputs = ScanInputs::new(vreg_count, liveness, file);
     let baseline = scan_intervals(
         vreg_count,
         liveness,
@@ -2033,6 +2034,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         collect_debug,
         cost_model,
         loop_info,
+        &inputs,
         &[],
     );
     let (_, _, baseline_saved, _) = &baseline;
@@ -2047,6 +2049,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         collect_debug,
         cost_model,
         loop_info,
+        &inputs,
         baseline_saved,
     );
     if accept_reuse_pass(&baseline, &reuse) {
@@ -2067,6 +2070,37 @@ fn active_by_class<Reg: Copy>(
     file: RegisterFile<'_, Reg>,
 ) -> [Vec<(VReg, Reg, usize)>; RegClass::COUNT] {
     std::array::from_fn(|index| Vec::with_capacity(file.class(RegClass::ALL[index]).len()))
+}
+
+/// Immutable work shared by the baseline and callee-saved reuse scans.
+///
+/// The two scans differ only in the already-paid (`sunk`) callee-saved
+/// registers they offer first. Their interval order and caller-clobber answers
+/// are properties of the function's liveness and register file, so rebuilding
+/// either one for the second scan only repeats sorting and prefix construction.
+struct ScanInputs<Reg> {
+    vregs_by_start: Vec<(VReg, LiveRange)>,
+    clobbers: ClobberIndex<Reg>,
+}
+
+impl<Reg: Copy + Eq + std::hash::Hash> ScanInputs<Reg> {
+    fn new(vreg_count: u32, liveness: &LivenessInfo<Reg>, file: RegisterFile<'_, Reg>) -> Self {
+        let mut vregs_by_start = Vec::with_capacity(vreg_count as usize);
+        for vreg_idx in 0..vreg_count {
+            let vreg = VReg::new(vreg_idx);
+            if let Some(&range) = liveness.range(vreg) {
+                vregs_by_start.push((vreg, range));
+            }
+        }
+        vregs_by_start.sort_by_key(|(_, range)| range.start);
+
+        let caller_saved = file.caller_saved_flattened();
+        let clobbers = ClobberIndex::build(liveness, &caller_saved);
+        Self {
+            vregs_by_start,
+            clobbers,
+        }
+    }
 }
 
 /// Whether the RUE-1227 reuse pass can possibly reach a different answer than
@@ -2119,6 +2153,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
     collect_debug: bool,
     cost_model: &CostModel,
     loop_info: &LoopInfo,
+    inputs: &ScanInputs<Reg>,
     sunk: &[Reg],
 ) -> (
     IndexMap<VReg, Option<Allocation<Reg>>>,
@@ -2142,26 +2177,24 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
     let mut debug_interference: Vec<(u32, u32)> = Vec::new();
     let mut debug_spills: Vec<u32> = Vec::new();
 
-    // Collect vregs with live ranges and sort by start
-    let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::with_capacity(vreg_count_usize);
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let Some(&range) = liveness.range(vreg) {
-            vregs_by_start.push((vreg, range));
-            if collect_debug {
+    // Keep the diagnostic projection in its historical vreg-index order;
+    // allocation itself consumes the shared start-sorted preparation below.
+    if collect_debug {
+        for vreg_idx in 0..vreg_count {
+            let vreg = VReg::new(vreg_idx);
+            if let Some(&range) = liveness.range(vreg) {
                 debug_live_ranges.push((vreg_idx, range.start, range.end));
             }
         }
     }
-    vregs_by_start.sort_by_key(|(_, range)| range.start);
 
     // Build interference graph: vregs that overlap. This is O(V²) and feeds only
     // `--emit regalloc`; skip it on the normal compilation path (RUE-302).
     if collect_debug {
-        for i in 0..vregs_by_start.len() {
-            for j in (i + 1)..vregs_by_start.len() {
-                let (vreg1, range1) = &vregs_by_start[i];
-                let (vreg2, range2) = &vregs_by_start[j];
+        for i in 0..inputs.vregs_by_start.len() {
+            for j in (i + 1)..inputs.vregs_by_start.len() {
+                let (vreg1, range1) = &inputs.vregs_by_start[i];
+                let (vreg2, range2) = &inputs.vregs_by_start[j];
                 if range1.overlaps(range2) {
                     debug_interference.push((vreg1.index(), vreg2.index()));
                 }
@@ -2172,15 +2205,14 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
     // Constant-time clobber answers for the caller-saved candidates of every
     // class; the callee-saved registers survive every clobber by definition
     // (RUE-1146).
-    let caller_saved = file.caller_saved_flattened();
-    let clobbers = ClobberIndex::build(liveness, &caller_saved);
+    let clobbers = &inputs.clobbers;
 
     // Track which registers are currently in use and when they become free,
     // separately per register class.
     // Tuple: (vreg, physical reg, live range end)
     let mut active = active_by_class(file);
 
-    for (vreg, range) in vregs_by_start {
+    for &(vreg, range) in &inputs.vregs_by_start {
         let class = liveness.class_of(vreg);
         let save = file.class(class);
         let active = &mut active[class.index()];
@@ -2190,7 +2222,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
 
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, &clobbers, active, sunk, &range);
+        let allocated_reg = pick_free_register(save, clobbers, active, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
@@ -2218,7 +2250,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(save, &clobbers, active_reg, &range) {
+                if !register_survives_range(save, clobbers, active_reg, &range) {
                     continue;
                 }
                 let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
@@ -2317,6 +2349,7 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     Vec<Reg>,
     RegAllocDebugInfo<Reg>,
 ) {
+    let inputs = ScanInputs::new(vreg_count, liveness, file);
     let baseline = scan_intervals_with_remat(
         vreg_count,
         liveness,
@@ -2326,6 +2359,7 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         cost_model,
         loop_info,
         vreg_info,
+        &inputs,
         &[],
     );
     let (_, _, baseline_saved, _) = &baseline;
@@ -2341,6 +2375,7 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         cost_model,
         loop_info,
         vreg_info,
+        &inputs,
         baseline_saved,
     );
     if accept_reuse_pass(&baseline, &reuse) {
@@ -2370,6 +2405,7 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     cost_model: &CostModel,
     loop_info: &LoopInfo,
     vreg_info: &IndexMap<VReg, VRegInfo>,
+    inputs: &ScanInputs<Reg>,
     sunk: &[Reg],
 ) -> (
     IndexMap<VReg, Option<Allocation<Reg>>>,
@@ -2397,26 +2433,24 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     let can_remat =
         |vreg: VReg| -> Option<RematerializeOp> { vreg_info.get(vreg).and_then(|info| info.remat) };
 
-    // Collect vregs with live ranges and sort by start
-    let mut vregs_by_start: Vec<(VReg, LiveRange)> = Vec::with_capacity(vreg_count_usize);
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let Some(&range) = liveness.range(vreg) {
-            vregs_by_start.push((vreg, range));
-            if collect_debug {
+    // Keep the diagnostic projection in its historical vreg-index order;
+    // allocation itself consumes the shared start-sorted preparation below.
+    if collect_debug {
+        for vreg_idx in 0..vreg_count {
+            let vreg = VReg::new(vreg_idx);
+            if let Some(&range) = liveness.range(vreg) {
                 debug_live_ranges.push((vreg_idx, range.start, range.end));
             }
         }
     }
-    vregs_by_start.sort_by_key(|(_, range)| range.start);
 
     // Build interference graph: vregs that overlap. This is O(V²) and feeds only
     // `--emit regalloc`; skip it on the normal compilation path (RUE-302).
     if collect_debug {
-        for i in 0..vregs_by_start.len() {
-            for j in (i + 1)..vregs_by_start.len() {
-                let (vreg1, range1) = &vregs_by_start[i];
-                let (vreg2, range2) = &vregs_by_start[j];
+        for i in 0..inputs.vregs_by_start.len() {
+            for j in (i + 1)..inputs.vregs_by_start.len() {
+                let (vreg1, range1) = &inputs.vregs_by_start[i];
+                let (vreg2, range2) = &inputs.vregs_by_start[j];
                 if range1.overlaps(range2) {
                     debug_interference.push((vreg1.index(), vreg2.index()));
                 }
@@ -2427,15 +2461,14 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     // Constant-time clobber answers for the caller-saved candidates of every
     // class; the callee-saved registers survive every clobber by definition
     // (RUE-1146).
-    let caller_saved = file.caller_saved_flattened();
-    let clobbers = ClobberIndex::build(liveness, &caller_saved);
+    let clobbers = &inputs.clobbers;
 
     // Track which registers are currently in use and when they become free,
     // separately per register class.
     // Tuple: (vreg, physical reg, live range end)
     let mut active = active_by_class(file);
 
-    for (vreg, range) in vregs_by_start {
+    for &(vreg, range) in &inputs.vregs_by_start {
         let class = liveness.class_of(vreg);
         let save = file.class(class);
         let active = &mut active[class.index()];
@@ -2445,7 +2478,7 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
 
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, &clobbers, active, sunk, &range);
+        let allocated_reg = pick_free_register(save, clobbers, active, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
@@ -2481,7 +2514,7 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(save, &clobbers, active_reg, &range) {
+                if !register_survives_range(save, clobbers, active_reg, &range) {
                     continue;
                 }
                 let active_is_remat = can_remat(active_vreg).is_some();
