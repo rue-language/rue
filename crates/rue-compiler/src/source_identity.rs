@@ -304,7 +304,7 @@ impl fmt::Display for SourceId {
 }
 
 /// Canonical logical identity of one module.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone)]
 pub struct ModuleId {
     logical_path: Arc<str>,
     origin: ModuleOrigin,
@@ -314,6 +314,40 @@ pub struct ModuleId {
 enum ModuleOrigin {
     Caller,
     StandardLibrary,
+}
+
+impl PartialEq for ModuleId {
+    fn eq(&self, other: &Self) -> bool {
+        (Arc::ptr_eq(&self.logical_path, &other.logical_path)
+            || self.logical_path == other.logical_path)
+            && self.origin == other.origin
+    }
+}
+
+impl Eq for ModuleId {}
+
+impl Hash for ModuleId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.logical_path.hash(state);
+        self.origin.hash(state);
+    }
+}
+
+impl PartialOrd for ModuleId {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ModuleId {
+    fn cmp(&self, other: &Self) -> Ordering {
+        let path_order = if Arc::ptr_eq(&self.logical_path, &other.logical_path) {
+            Ordering::Equal
+        } else {
+            self.logical_path.cmp(&other.logical_path)
+        };
+        path_order.then_with(|| self.origin.cmp(&other.origin))
+    }
 }
 
 impl ModuleId {
@@ -698,6 +732,12 @@ mod tests {
         value.hash(&mut h);
         h.finish()
     }
+
+    fn module_hash(value: &ModuleId) -> u64 {
+        let mut h = DefaultHasher::new();
+        value.hash(&mut h);
+        h.finish()
+    }
     #[test]
     fn collisions_do_not_equal_or_replace_text() {
         let a = SourceId::from_shared_text_with(Arc::new("a".into()), &Constant);
@@ -728,6 +768,61 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left.cmp(&right), Ordering::Equal);
         assert_eq!(hash(&left), hash(&right));
+    }
+
+    #[test]
+    fn module_id_order_skips_shared_path_bytes() {
+        let path: Arc<str> = Arc::from("shared/module.rue");
+        let left = ModuleId {
+            logical_path: path.clone(),
+            origin: ModuleOrigin::Caller,
+        };
+        let right = ModuleId {
+            logical_path: path,
+            origin: ModuleOrigin::Caller,
+        };
+        assert_eq!(left, right);
+        assert_eq!(left.cmp(&right), Ordering::Equal);
+    }
+
+    #[test]
+    fn module_id_order_keeps_equal_text_distinct_paths_equal() {
+        let left = ModuleId {
+            logical_path: Arc::from("same/module.rue"),
+            origin: ModuleOrigin::Caller,
+        };
+        let right = ModuleId {
+            logical_path: Arc::from("same/module.rue"),
+            origin: ModuleOrigin::Caller,
+        };
+        assert!(!Arc::ptr_eq(&left.logical_path, &right.logical_path));
+        assert_eq!(left, right);
+        assert_eq!(left.cmp(&right), Ordering::Equal);
+        assert_eq!(module_hash(&left), module_hash(&right));
+    }
+
+    #[test]
+    fn module_id_order_matches_path_then_origin_tuple() {
+        let earlier = ModuleId {
+            logical_path: Arc::from("a/module.rue"),
+            origin: ModuleOrigin::Caller,
+        };
+        let later = ModuleId {
+            logical_path: Arc::from("b/module.rue"),
+            origin: ModuleOrigin::Caller,
+        };
+        assert!(earlier < later);
+        assert!(later > earlier);
+
+        let caller = ModuleId {
+            logical_path: Arc::from("same/module.rue"),
+            origin: ModuleOrigin::Caller,
+        };
+        let standard = ModuleId {
+            logical_path: Arc::from("same/module.rue"),
+            origin: ModuleOrigin::StandardLibrary,
+        };
+        assert!(caller < standard, "origin remains the tuple tie-break");
     }
 
     #[test]
