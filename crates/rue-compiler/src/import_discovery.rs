@@ -881,9 +881,15 @@ impl ImportDiscoveryPlan {
             let Some(module) = program.module(module_id) else {
                 continue;
             };
+            let Some(first_site) = module.imports().first() else {
+                continue;
+            };
+            // Every import site in a parsed module has the same importer. Build
+            // its normalized anchor once instead of repeating the path
+            // normalization for every site in the module.
+            let importer_path = requested_path_for_module(&context, first_site.importer())?;
             for site in module.imports() {
                 let occurrence = ImportOccurrenceKey::from_directive(site);
-                let importer_path = requested_path_for_module(&context, site.importer())?;
                 let built = discovery_groups_for_occurrence(&context, &occurrence, &importer_path)?;
                 constructed += built.len() as u64;
                 delta.extend(built);
