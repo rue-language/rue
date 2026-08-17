@@ -741,24 +741,23 @@ impl ImportDemandFrontier {
             .flat_map(|requests| requests.iter())
             .map(ImportDiscoveryRequest::occurrence)
     }
+}
 
-    /// The occurrences whose ledger answers changed since the previous round's
-    /// reads were assembled: this frontier's own demanded occurrences, plus the
-    /// previous frontier's.
-    ///
-    /// A round assembles from a ledger holding the carried observations plus its
-    /// own batch's answers. The previous round's fanout answers — the extra
-    /// occurrences that shared one host read — only enter the carried ledger when
-    /// that batch is published, so they first become assemblable here; this
-    /// round's own batch supplies the rest. Every occurrence outside the union
-    /// carries the observations it already carried, so its winner cannot change.
-    pub(crate) fn round_read_roots(&self, previous: &ImportDemandFrontier) -> ImportDemandRoots {
-        ImportDemandRoots::new(
-            previous
-                .demanded_occurrences()
-                .chain(self.demanded_occurrences())
-                .cloned(),
-        )
+/// One physical host operation: every candidate request naming the same
+/// operation under the same captured context receives one host answer, which
+/// then fans out to each requesting occurrence.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ImportHostOperationKey {
+    context: ImportDiscoveryContext,
+    requested_path: Arc<str>,
+}
+
+impl ImportHostOperationKey {
+    pub(crate) fn new(request: &ImportDiscoveryRequest) -> Self {
+        Self {
+            context: request.context().clone(),
+            requested_path: Arc::from(request.requested_path()),
+        }
     }
 }
 
@@ -1034,41 +1033,272 @@ impl ImportDiscoveryPlan {
         accepted_sources_for(self.groups.delta_segment().iter(), ledger)
     }
 
-    /// The accepted sources of exactly `occurrences`, resolved by the same
-    /// candidate precedence as [`Self::accepted_sources`].
+    /// The candidate groups of exactly `occurrences`, in candidate-precedence
+    /// order.
     ///
-    /// One ordinary discovery round only changes the ledger at the occurrences
-    /// its own and its predecessor round's frontier demanded answers for; every
-    /// other occurrence carries the identical observations it carried when it was
-    /// last assembled, so re-deriving its winner re-proves an already assembled
-    /// conclusion. Reducing exactly the changed occurrences therefore yields the
-    /// same new accepted sources, in the same canonical order, as reducing the
-    /// whole plan — while costing O(changed occurrences · log n) rather than
-    /// O(plan) per round.
-    ///
-    /// Each occurrence's candidate groups are found by binary search: every
-    /// request in a plan carries the plan's own context, so the canonical group
-    /// order sorts by context and then by occurrence, and one occurrence's groups
-    /// are a contiguous range of every stored segment.
-    pub(crate) fn accepted_sources_at<'a>(
-        &'a self,
-        ledger: &'a ImportObservationLedger,
+    /// A discovery wave continues the precedence walk of the occurrences its
+    /// starting frontier demanded answers for, so it needs those occurrences'
+    /// groups without materializing the merged plan. Each occurrence's groups
+    /// are found by binary search: every request in a plan carries the plan's
+    /// own context, so the canonical group order sorts by context and then by
+    /// occurrence, and one occurrence's groups are a contiguous range of every
+    /// stored segment.
+    pub(crate) fn groups_at(
+        &self,
         occurrences: &ImportDemandRoots,
-    ) -> Vec<&'a AcceptedImportSource> {
-        let mut accepted = Vec::new();
-        let mut candidates: Vec<&Arc<[ImportDiscoveryRequest]>> = Vec::new();
+    ) -> Vec<(ImportOccurrenceKey, Vec<Arc<[ImportDiscoveryRequest]>>)> {
+        let mut found = Vec::with_capacity(occurrences.occurrences().len());
         for occurrence in occurrences.occurrences() {
-            candidates.clear();
+            let mut candidates: Vec<Arc<[ImportDiscoveryRequest]>> = Vec::new();
             self.groups.for_each_matching(
                 |group| (&group[0].context, &group[0].occurrence).cmp(&(&self.context, occurrence)),
-                |group| candidates.push(group),
+                |group| candidates.push(group.clone()),
             );
-            // Segment-local ranges arrive segment by segment; candidate
-            // precedence is the canonical group order.
-            candidates.sort_by(|left, right| group_order(left, right));
-            extend_accepted_from_site(&mut accepted, candidates.iter().copied(), ledger);
+            candidates.sort_by(group_order);
+            found.push((occurrence.clone(), candidates));
         }
-        canonicalize_accepted(accepted)
+        found
+    }
+}
+
+/// One discovery wave: the transitive import closure reachable from a round's
+/// starting frontier, resolved hop by hop and published as ONE input revision
+/// (ADR-0075).
+///
+/// A hop-granular round can only resolve the imports of sources the current
+/// revision already carries, so a depth-n chain costs n revision mints, ledger
+/// appends, batch publications, and validation sweeps. A wave keeps the hop
+/// structure — each hop emits exactly the operations, in exactly the order, the
+/// corresponding round's frontier would have emitted — but resolves the next hop
+/// against its own running ledger instead of a published successor. The reads it
+/// performs, and the order the ledger records them in, are therefore identical
+/// to the sequence of rounds it replaces; only the number of publications
+/// changes.
+///
+/// Candidate policy stays compiler-owned and singular: a hop's next operations
+/// come from [`discovery_groups_for_occurrence`] and
+/// [`exact_import_pending_requests`], the same functions the `ResolveImport`
+/// query evaluates. The wave runs them eagerly because the memoized query cannot
+/// serve sources no revision carries yet.
+#[derive(Debug)]
+pub struct ImportDiscoveryWave {
+    revision: ImportInputRevision,
+    context: ImportDiscoveryContext,
+    /// The wave's running ledger: the revision's carried observations plus every
+    /// answer the wave has recorded, fanned out exactly as publication will.
+    ledger: ImportObservationLedger,
+    /// Occurrences whose candidate-precedence walk is still open, with the
+    /// canonical groups each owns. A concluded occurrence is dropped, so a hop
+    /// costs O(open occurrences), never O(plan).
+    open: BTreeMap<ImportOccurrenceKey, Vec<Arc<[ImportDiscoveryRequest]>>>,
+    /// Modules whose occurrences are already accounted for — the revision's own
+    /// modules plus everything the wave has read.
+    known_modules: BTreeSet<ModuleId>,
+    /// This hop's deduplicated host operations and the occurrence requests each
+    /// one answers.
+    requests: Vec<ImportDiscoveryRequest>,
+    fanout: Vec<Arc<[ImportDiscoveryRequest]>>,
+    /// Every hop's operations and answers in hop order — the single batch this
+    /// wave publishes.
+    batch_requests: Vec<ImportDiscoveryRequest>,
+    batch_fanout: Vec<Arc<[ImportDiscoveryRequest]>>,
+    batch_observations: Vec<ImportObservation>,
+    /// Accepted sources reduced hop by hop, in the canonical order each hop
+    /// offers them to the assembler.
+    accepted: Vec<AcceptedImportSource>,
+    /// A source that did not parse ends the wave at that hop's boundary, so the
+    /// published revision holds exactly what the equivalent round would have and
+    /// the canonical staging parse reports the diagnostics.
+    sealed: bool,
+}
+
+impl ImportDiscoveryWave {
+    /// Begin a wave from a round's starting frontier. `ledger` is the revision's
+    /// carried ledger; `frontier` is the batch the host is about to answer.
+    pub(crate) fn begin(
+        plan: &ImportDiscoveryPlan,
+        frontier: &ImportDemandFrontier,
+        ledger: ImportObservationLedger,
+    ) -> CompileResult<Self> {
+        if frontier.mode != ImportDemandMode::Rooted {
+            return Err(invalid_input(
+                "speculative import work cannot open a discovery wave",
+            ));
+        }
+        let demanded = ImportDemandRoots::new(frontier.demanded_occurrences().cloned());
+        let open = plan.groups_at(&demanded).into_iter().collect();
+        let known_modules = plan
+            .source_revision()
+            .modules()
+            .iter()
+            .map(|revision| revision.module.clone())
+            .collect();
+        Ok(Self {
+            revision: frontier.revision,
+            context: plan.context().clone(),
+            ledger,
+            open,
+            known_modules,
+            requests: frontier.requests.to_vec(),
+            fanout: frontier.fanout.to_vec(),
+            batch_requests: Vec::new(),
+            batch_fanout: Vec::new(),
+            batch_observations: Vec::new(),
+            accepted: Vec::new(),
+            sealed: false,
+        })
+    }
+
+    /// The exact ordered operations the host must answer for this hop.
+    pub fn requests(&self) -> &[ImportDiscoveryRequest] {
+        &self.requests
+    }
+
+    /// Whether the wave has reached its fixed point — the frontier of the
+    /// transitive closure raised no further demand.
+    pub fn is_complete(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// The accepted sources this wave read, in the canonical order they were
+    /// reduced. The host re-verifies their stamps before publication so a
+    /// mid-wave rewrite can never enter a mixed-stamp revision.
+    pub fn accepted_reads(&self) -> &[AcceptedImportSource] {
+        &self.accepted
+    }
+
+    /// Record one hop's answers and derive the next hop.
+    ///
+    /// The answers are checked against this hop's operations exactly as batch
+    /// publication checks them, then fanned out into the running ledger. Sources
+    /// the hop accepted are read for their own `@import` occurrences, whose
+    /// candidate groups join the open set; occurrences whose precedence walk
+    /// concluded leave it.
+    pub(crate) fn extend(&mut self, observations: Vec<ImportObservation>) -> CompileResult<()> {
+        if observations.len() != self.requests.len()
+            || observations
+                .iter()
+                .zip(self.requests.iter())
+                .any(|(observation, request)| observation.request() != request)
+        {
+            return Err(invalid_input(
+                "host import results must exactly preserve the compiler-produced batch order",
+            ));
+        }
+        let hop_requests = std::mem::take(&mut self.requests);
+        let hop_fanout = std::mem::take(&mut self.fanout);
+        let mut answered: BTreeSet<&ImportOccurrenceKey> = BTreeSet::new();
+        for (observation, fanout) in observations.iter().zip(hop_fanout.iter()) {
+            for request in fanout.iter() {
+                answered.insert(request.occurrence());
+                self.ledger
+                    .record(observation.fanout_to(request.clone())?)?;
+            }
+        }
+        // Reduce exactly the occurrences whose ledger answers this hop changed —
+        // the same reduction the round it replaces performs, over the same
+        // occurrences, in the same canonical order.
+        let reduced = {
+            let groups = answered
+                .iter()
+                .filter_map(|occurrence| self.open.get(*occurrence))
+                .flat_map(|groups| groups.iter());
+            accepted_sources_for(groups, &self.ledger)
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for source in &reduced {
+            let module = classify_module(
+                &self.context,
+                source.requested_path(),
+                source.canonical_path(),
+            )?;
+            if !self.known_modules.insert(module.clone()) {
+                continue;
+            }
+            let Some(sites) = crate::parsed_modules::parse_unpublished_import_sites(
+                &module,
+                source.canonical_path(),
+                source.source(),
+            ) else {
+                self.sealed = true;
+                continue;
+            };
+            let importer_path = requested_path_for_module(&self.context, &module)?;
+            for site in &sites {
+                let occurrence = ImportOccurrenceKey::from_directive(site);
+                let groups =
+                    discovery_groups_for_occurrence(&self.context, &occurrence, &importer_path)?;
+                self.open.insert(occurrence, groups);
+            }
+        }
+        self.accepted.extend(reduced);
+        self.batch_requests.extend(hop_requests);
+        self.batch_fanout.extend(hop_fanout);
+        self.batch_observations.extend(observations);
+        self.advance_frontier();
+        Ok(())
+    }
+
+    /// Derive the next hop's operations from the open set: each open occurrence's
+    /// pending candidate requests, in occurrence order, deduplicated to one host
+    /// operation with a fanout — the frontier construction, over the wave's own
+    /// running ledger rather than a published revision.
+    fn advance_frontier(&mut self) {
+        let mut requests = Vec::new();
+        let mut fanout = Vec::<Vec<ImportDiscoveryRequest>>::new();
+        let mut operations = BTreeMap::<ImportHostOperationKey, usize>::new();
+        let mut concluded = Vec::new();
+        for (occurrence, groups) in &self.open {
+            let pending = exact_import_pending_requests(groups, &self.ledger);
+            if pending.is_empty() {
+                // The precedence walk is over: the ledger only grows, and no
+                // growth can reopen an occurrence whose candidates are all
+                // decided.
+                concluded.push(occurrence.clone());
+                continue;
+            }
+            for request in pending {
+                let operation = ImportHostOperationKey::new(&request);
+                match operations.get(&operation).copied() {
+                    Some(index) => fanout[index].push(request),
+                    None => {
+                        operations.insert(operation, requests.len());
+                        requests.push(request.clone());
+                        fanout.push(vec![request]);
+                    }
+                }
+            }
+        }
+        for occurrence in concluded {
+            self.open.remove(&occurrence);
+        }
+        if self.sealed {
+            // A hop that read an unparsable source publishes what it has; the
+            // still-open occurrences are re-rooted by the next ordinary round.
+            return;
+        }
+        self.requests = requests;
+        self.fanout = fanout
+            .into_iter()
+            .map(Arc::<[ImportDiscoveryRequest]>::from)
+            .collect();
+    }
+
+    /// The single batch this wave publishes: every hop's operations, fanout, and
+    /// answers, concatenated in hop order.
+    pub(crate) fn into_batch(self) -> (ImportDemandFrontier, Vec<ImportObservation>) {
+        (
+            ImportDemandFrontier {
+                revision: self.revision,
+                mode: ImportDemandMode::Rooted,
+                requests: self.batch_requests.into(),
+                fanout: self.batch_fanout.into_iter().collect::<Vec<_>>().into(),
+                speculative_blocked: false,
+            },
+            self.batch_observations,
+        )
     }
 }
 
@@ -1858,28 +2088,19 @@ impl DiscoverySourceAssembler {
         Ok(added)
     }
 
-    /// Add only the accepted reads of the occurrences one ordinary discovery
-    /// round changed. The rest of the plan carries the observations it carried
-    /// when it was last assembled, and assembly is idempotent for an already
-    /// assembled source, so this adds exactly what re-reducing the whole plan
-    /// would add — in the same canonical order, at O(changed occurrences) per
-    /// round instead of O(plan).
+    /// Add the accepted reads one discovery wave reduced (ADR-0075).
     ///
-    /// `occurrences` is compiler-derived from the frontier values themselves
-    /// (see `ImportDemandFrontier::demanded_occurrences`); the host contributes
-    /// no membership claim of its own.
-    pub fn add_plan_round_reads(
-        &mut self,
-        plan: &ImportDiscoveryPlan,
-        ledger: &ImportObservationLedger,
-        occurrences: &ImportDemandRoots,
-    ) -> CompileResult<usize> {
-        if plan.context != self.context {
+    /// The wave reduced them hop by hop from its own running ledger, in the same
+    /// canonical order and by the same candidate precedence the rounds it
+    /// replaces would have used, so this adds exactly what those rounds' plan
+    /// reductions would have added.
+    pub fn add_wave_reads(&mut self, wave: &ImportDiscoveryWave) -> CompileResult<usize> {
+        if wave.context != self.context {
             return Err(invalid_input(
-                "discovery plan belongs to a different epoch or captured context",
+                "discovery wave belongs to a different epoch or captured context",
             ));
         }
-        let reduced = plan.accepted_sources_at(ledger, occurrences);
+        let reduced = wave.accepted_reads();
         self.plan_reads_reduced = self.plan_reads_reduced.saturating_add(reduced.len() as u64);
         let mut added = 0;
         for source in reduced {

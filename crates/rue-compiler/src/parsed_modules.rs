@@ -1433,6 +1433,36 @@ pub(crate) fn parse_source_snapshot_module(
     }
 }
 
+/// The import occurrences of one source that has been read but not yet
+/// published into an input revision (ADR-0075).
+///
+/// A discovery wave extends past the sources of the revision it started from, so
+/// the next hop's candidate policy needs the freshly read module's `@import`
+/// sites before any revision carries it. This runs the same lexer, parser, and
+/// projection collector `parse_snapshot_file` runs — it is the canonical
+/// recognition path invoked eagerly, not a second one — and returns only the
+/// valid directives, in the same AST order [`ParsedModule::imports`] carries.
+///
+/// `None` means the source did not parse. The wave stops extending there and
+/// publishes; the canonical staging parse of the published revision then reports
+/// the diagnostics, exactly as it would have for the hop-granular round that
+/// read the same source.
+pub(crate) fn parse_unpublished_import_sites(
+    module: &ModuleId,
+    physical_path: &str,
+    source: &str,
+) -> Option<Vec<ImportDirective>> {
+    // Occurrence keys carry file-relative offsets, so the placeholder file id
+    // below never reaches a published span.
+    let outcome = crate::syntax::parse_file(
+        crate::queries::SourceView::new(physical_path, source, FileId::new(1)),
+        ThreadedRodeo::new(),
+    );
+    let ast = outcome.result.ok()?;
+    let projections = collect_module_projections(&ast, module, &outcome.interner).ok()?;
+    Some(projections.imports.valid)
+}
+
 pub(crate) fn rebind_parsed_module(
     snapshot: &SourceSnapshot,
     module: &Arc<ParsedModule>,

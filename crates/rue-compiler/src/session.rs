@@ -1765,6 +1765,55 @@ impl CompilerSession {
         )
     }
 
+    /// Open a discovery wave over the round's starting frontier (ADR-0075).
+    ///
+    /// The wave resolves the transitive import closure reachable from that
+    /// frontier hop by hop against its own running ledger, then publishes once
+    /// through [`Self::publish_import_wave`].
+    pub(crate) fn begin_import_wave(
+        &mut self,
+        revision: crate::ImportInputRevision,
+        plan: &crate::ImportDiscoveryPlan,
+        frontier: &crate::ImportDemandFrontier,
+    ) -> crate::CompileResult<crate::ImportDiscoveryWave> {
+        if frontier.revision() != revision {
+            return Err(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                "discovery wave frontier belongs to a stale immutable revision".into(),
+            )));
+        }
+        let ledger = self.queries.revisioned.import_ledger(revision)?;
+        crate::ImportDiscoveryWave::begin(plan, frontier, ledger)
+    }
+
+    /// Record one wave hop's answers and derive the next hop's operations.
+    pub(crate) fn extend_import_wave(
+        &mut self,
+        wave: &mut crate::ImportDiscoveryWave,
+        observations: Vec<crate::ImportObservation>,
+    ) -> crate::CompileResult<()> {
+        wave.extend(observations)
+    }
+
+    /// Publish one whole wave as one successor immutable revision. The batch is
+    /// every hop's operations and answers in hop order, so the published ledger
+    /// records exactly the reads the hop-granular rounds would have recorded, in
+    /// the same order.
+    pub(crate) fn publish_import_wave(
+        &mut self,
+        wave: crate::ImportDiscoveryWave,
+        snapshot: &SourceSnapshot,
+        accepted_reads: crate::AcceptedReadManifest,
+    ) -> crate::CompileResult<(crate::ImportInputRevision, crate::ImportDemandFrontier)> {
+        let (frontier, observations) = wave.into_batch();
+        let revision = self.queries.revisioned.publish_import_batch(
+            &frontier,
+            snapshot,
+            accepted_reads,
+            observations,
+        )?;
+        Ok((revision, frontier))
+    }
+
     /// Returns the immutable canonical ledger carried by one input revision.
     pub(crate) fn import_observation_ledger(
         &self,

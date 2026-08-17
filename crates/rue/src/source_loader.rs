@@ -8,11 +8,12 @@ use std::time::{Duration, SystemTime};
 
 use rue_compiler::unstable::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
-    ImportDiscoveryRequest, ImportInputRevision, ImportObservation, ImportObservationStatus,
-    RootedParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
-    close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
-    discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
-    plan_delta_roots, plan_round_read_roots, plan_round_roots, publish_import_observation_batch,
+    ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave, ImportInputRevision,
+    ImportObservation, ImportObservationStatus, RootedParkOutcome, TrustedSuccessorDelta,
+    begin_import_input_request, begin_import_wave, close_import_discovery_successor,
+    close_import_input_request, closed_discovery_continuation, discovery_attempt,
+    extend_import_wave, import_demand_frontier_for_roots, import_observation_ledger,
+    plan_delta_roots, plan_round_roots, publish_import_observation_batch, publish_import_wave,
     publish_trusted_toolchain_successor, rooted_or_toolchain_park,
     stage_import_discovery_successor, stage_import_input_request,
 };
@@ -797,6 +798,111 @@ struct ReClose<'a> {
     delta: &'a TrustedSuccessorDelta,
 }
 
+/// How many times one ordinary discovery round may re-run its wave because a
+/// source it read changed before the wave published.
+///
+/// A wave re-run is bounded rather than unlimited: a source being rewritten in a
+/// loop must surface as a fail-closed error instead of spinning discovery
+/// forever. The bound is generous — a real editor save races one wave at most.
+const WAVE_STAMP_RETRIES: u32 = 4;
+
+#[cfg(test)]
+thread_local! {
+    /// Test hook fired between a wave's last read and its stamp verification, so
+    /// a test can rewrite a source inside the exact window the atomicity
+    /// contract covers.
+    static WAVE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// Waves discarded by that verification and re-run.
+    static WAVE_STAMP_RERUNS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn fire_wave_publish_hook() {
+    WAVE_PUBLISH_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+}
+
+/// Whether every source the wave read still has the exact physical identity and
+/// metadata stamp it was read with.
+///
+/// A wave publishes one revision covering reads taken over its whole closure, so
+/// the window between its first read and its publication is wider than a single
+/// hop's. Verifying the whole batch here, fail-closed, is what makes that window
+/// safe: a revision can never mix a stale read with a fresh one, because a single
+/// disagreement discards the wave and re-runs it.
+fn wave_reads_are_stable(wave: &ImportDiscoveryWave) -> bool {
+    wave.accepted_reads().iter().all(|source| {
+        fs::metadata(Path::new(source.canonical_path())).is_ok_and(|metadata| {
+            physical_file_identity(&metadata) == source.metadata_identity()
+                && file_metadata_fingerprint(&metadata) == source.metadata_fingerprint()
+        })
+    })
+}
+
+/// Resolve one discovery wave to its fixed point and publish it as one revision.
+///
+/// Returns the successor revision and the batch frontier the next round
+/// continues from — the wave's whole fanout, so the next round re-roots exactly
+/// the occurrences the wave demanded answers for.
+#[allow(clippy::too_many_arguments)]
+fn run_import_wave(
+    assembler: &mut DiscoverySourceAssembler,
+    staging: &mut CompilerSession,
+    input_revision: ImportInputRevision,
+    plan: &ImportDiscoveryPlan,
+    frontier: &ImportDemandFrontier,
+    source_manifest: Option<&SourceManifest>,
+    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
+) -> Result<(ImportInputRevision, ImportDemandFrontier), SourceLoadError> {
+    for attempt in 0..=WAVE_STAMP_RETRIES {
+        let mut wave = begin_import_wave(staging, input_revision, plan, frontier)
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        while !wave.is_complete() {
+            let observations = wave
+                .requests()
+                .iter()
+                .cloned()
+                .map(|request| execute_import_request(request, source_manifest, reobserved_reads))
+                .collect::<Vec<_>>();
+            extend_import_wave(staging, &mut wave, observations)
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        }
+        #[cfg(test)]
+        fire_wave_publish_hook();
+        if !wave_reads_are_stable(&wave) {
+            #[cfg(test)]
+            WAVE_STAMP_RERUNS.with(|count| count.set(count.get() + 1));
+            if attempt == WAVE_STAMP_RETRIES {
+                return Err(SourceLoadError::Message(format!(
+                    "Error: a source read during import discovery kept changing across {} wave attempts",
+                    WAVE_STAMP_RETRIES + 1
+                )));
+            }
+            // Nothing was assembled or published, so the retry re-reads the same
+            // compiler-produced operations against the settled filesystem.
+            continue;
+        }
+        assembler
+            .add_wave_reads(&wave)
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        let successor_snapshot = assembler
+            .snapshot()
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        return publish_import_wave(
+            staging,
+            wave,
+            &successor_snapshot,
+            assembler.accepted_read_manifest(),
+        )
+        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")));
+    }
+    unreachable!("the wave retry loop returns or fails on its last attempt")
+}
+
 fn drive_import_discovery_to_close(
     assembler: &mut DiscoverySourceAssembler,
     staging: &mut CompilerSession,
@@ -931,64 +1037,75 @@ fn drive_import_discovery_to_close(
         }
         let _read_span =
             tracing::info_span!("import_read", phase = "source_discovery_and_parsing").entered();
-        let observations = frontier
-            .requests()
-            .iter()
-            .cloned()
-            .map(|request| execute_import_request(request, source_manifest, reobserved_reads))
-            .collect::<Vec<_>>();
-        // In a trusted-toolchain re-close every frontier request resolves an
-        // `@import` edge owned by an appended leaf or a leaf newly discovered from
-        // it (e.g. strbuf → arraybuf/rawbuf). These edges are toolchain-internal,
-        // so a non-accepted observation there is an environmental failure of THAT
-        // transitive leaf, not a program error — attribute it to the exact failing
-        // module before the outcome is folded into an opaque close diagnostic.
-        if reclose.is_some()
-            && let Some(error) = classify_trusted_transitive_failure(context, &observations)
-        {
-            return Err(error);
-        }
-        let mut next_ledger = ledger;
-        for observation in observations.iter().cloned() {
-            next_ledger
-                .record(observation)
+        match &reclose {
+            // A trusted-toolchain re-close keeps the hop-granular contract: its
+            // frontier is rooted in the successor delta alone, its module set is
+            // fixed by an opaque capability, and its failures are attributed per
+            // leaf before the close folds them (RUE-1112).
+            Some(_) => {
+                let observations = frontier
+                    .requests()
+                    .iter()
+                    .cloned()
+                    .map(|request| {
+                        execute_import_request(request, source_manifest, reobserved_reads)
+                    })
+                    .collect::<Vec<_>>();
+                // In a trusted-toolchain re-close every frontier request resolves
+                // an `@import` edge owned by an appended leaf or a leaf newly
+                // discovered from it (e.g. strbuf → arraybuf/rawbuf). These edges
+                // are toolchain-internal, so a non-accepted observation there is an
+                // environmental failure of THAT transitive leaf, not a program
+                // error — attribute it to the exact failing module before the
+                // outcome is folded into an opaque close diagnostic.
+                if let Some(error) = classify_trusted_transitive_failure(context, &observations) {
+                    return Err(error);
+                }
+                let mut next_ledger = ledger;
+                for observation in observations.iter().cloned() {
+                    next_ledger
+                        .record(observation)
+                        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                }
+                // A successor adds its delta groups' accepted sources, never
+                // re-feeding the predecessor plan through the winner map.
+                assembler
+                    .add_successor_plan_reads(&plan, &next_ledger)
+                    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                let successor_snapshot = assembler
+                    .snapshot()
+                    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                input_revision = publish_import_observation_batch(
+                    staging,
+                    &frontier,
+                    &successor_snapshot,
+                    assembler.accepted_read_manifest(),
+                    observations,
+                )
                 .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+                previous_frontier = Some(frontier);
+            }
+            // An ordinary round resolves its whole wave before publishing
+            // (ADR-0075): the sources this frontier discovers are read, their own
+            // import occurrences are resolved against the wave's running ledger,
+            // and that repeats until the closure raises no further demand. Each hop
+            // emits exactly the operations, in exactly the order, the round it
+            // replaces would have emitted, so the ledger records the same reads in
+            // the same order — only the publication count changes.
+            None => {
+                let (revision, published) = run_import_wave(
+                    assembler,
+                    staging,
+                    input_revision,
+                    &plan,
+                    &frontier,
+                    source_manifest,
+                    reobserved_reads,
+                )?;
+                input_revision = revision;
+                previous_frontier = Some(published);
+            }
         }
-        // Assemble only the newly read leaves: a successor adds its delta groups'
-        // accepted sources, never re-feeding the predecessor plan through the
-        // winner map.
-        //
-        // An ordinary round assembles the same way once it has a predecessor
-        // round: only the occurrences this round's batch answered, plus the ones
-        // the previous round's fanout answered as that batch was published, can
-        // have gained a winner since the last assembly. Re-reducing the WHOLE
-        // plan every round instead re-derives every already assembled leaf's
-        // winner and re-offers it to the assembler, which is quadratic in the
-        // depth of an import chain. The first round has no predecessor, so it
-        // reduces the whole plan — for a continuation that is also what admits
-        // the carried generation's already accepted reads.
-        let assembled = match (&reclose, &previous_frontier) {
-            (Some(_), _) => assembler.add_successor_plan_reads(&plan, &next_ledger),
-            (None, None) => assembler.add_plan_reads(&plan, &next_ledger),
-            (None, Some(previous)) => assembler.add_plan_round_reads(
-                &plan,
-                &next_ledger,
-                &plan_round_read_roots(previous, &frontier),
-            ),
-        };
-        let _ = assembled.map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        let successor_snapshot = assembler
-            .snapshot()
-            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        input_revision = publish_import_observation_batch(
-            staging,
-            &frontier,
-            &successor_snapshot,
-            assembler.accepted_read_manifest(),
-            observations,
-        )
-        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        previous_frontier = Some(frontier);
     }
 
     let _close_span = tracing::info_span!("import_discovery_close").entered();
@@ -2068,8 +2185,12 @@ mod tests {
         assert_eq!(wide_result.read_manifest.len(), 25);
     }
 
+    /// ADR-0075: depth costs hops inside one wave, not published revisions. This
+    /// chain is three imports deep and still publishes exactly one discovery
+    /// revision — the wave reads `a`, resolves ITS import in the same round,
+    /// reads `b`, and so on to the fixed point before publishing once.
     #[test]
-    fn import_chain_adds_one_frontier_round_per_depth() {
+    fn import_chain_publishes_one_revision_per_wave_regardless_of_depth() {
         let dir = TestDir::new("depth-frontier");
         let main = dir.write(
             "main.rue",
@@ -2086,7 +2207,7 @@ mod tests {
         dir.write("c.rue", "pub fn value() -> i32 { 3 }");
 
         let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
-        assert_eq!(result.input_revision.frontier_round(), 3);
+        assert_eq!(result.input_revision.frontier_round(), 1);
         assert_eq!(result.read_manifest.len(), 4);
     }
 
@@ -2112,7 +2233,16 @@ mod tests {
 
         let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
 
-        assert_eq!(result.input_revision.frontier_round(), (MODULES - 1) as u64);
+        // ADR-0075: the whole chain is ONE wave, so discovery publishes exactly
+        // one input revision no matter how deep it runs. Publishing per import
+        // hop instead cost MODULES-1 revisions here — 31 revision mints, ledger
+        // appends, batch publications, and validation sweeps — and grew with
+        // depth by contract.
+        assert_eq!(
+            result.input_revision.frontier_round(),
+            1,
+            "a chain of any depth publishes one discovery revision per wave"
+        );
         assert_eq!(result.read_manifest.len(), MODULES);
         assert!(
             parse_sources_materialized(&result.session) <= (MODULES + 2) as u64,
@@ -2127,47 +2257,55 @@ mod tests {
             (MODULES - 1) as u64,
             "each import occurrence must enter the plan exactly once"
         );
-        // ADR-0073: every frontier round publishes an append-only overlay, so
-        // validation certificates survive the whole discovery chain. Without
-        // that, each of the ~MODULES rounds expired every certificate and this
-        // count grew as rounds times graph size — quadratic in chain depth
-        // (961+ at this shape). The bound is deliberately loose against
-        // scheduling variation while remaining far below quadratic growth.
+        // ADR-0073: every publication is an append-only overlay, so validation
+        // certificates survive the whole discovery chain. Without that, each of
+        // the ~MODULES hop-granular rounds expired every certificate and this
+        // count grew as rounds times graph size — quadratic in chain depth (961+
+        // at this shape). ADR-0075 leaves one publication to expire anything at
+        // all, so the count is 1 either way; the bound stays loose against
+        // scheduling variation and can only fall as waves remove publications.
         assert!(
             rue_compiler::unstable::validation_certificate_misses(&result.session)
                 <= (MODULES as u64) * 8,
             "discovery certificate misses must stay linear in module count"
         );
-        // Each round roots only in the occurrences the plan just gained plus the
-        // ones the previous round demanded answers for, and the whole plan is
-        // rooted once more to witness closure: roughly two roots per round plus
-        // one final pass. Rooting the whole plan every round instead dispatched
-        // one top-level `ResolveImport` request per occurrence per round — 527 at
-        // this shape, and quadratic in chain depth.
+        // The wave resolves the whole chain against its own running ledger, so
+        // the query frontier is dispatched exactly twice: once for the round's
+        // starting occurrence, and once more for the closing round, which roots
+        // in the wave's fanout (MODULES-1 occurrences) and then owes the whole
+        // plan one closure rooting (MODULES-1 again) — 1 + 31 + 31 = 63 here.
+        // Publishing per hop instead cost 93 at this shape, and rooting the
+        // whole plan every round cost 527 and grew quadratically with depth.
         assert!(
-            import_frontier_roots_requested(&result.session) <= (MODULES as u64) * 4,
+            import_frontier_roots_requested(&result.session) <= (MODULES as u64) * 2,
             "frontier dispatch must stay linear in chain depth, not rounds times plan"
         );
-        // The read half of the same property: each round reduces only the
-        // occurrences it and the previous round demanded answers for, so it
-        // offers the assembler about one accepted source per round plus the
-        // first round's whole-plan reduction. Re-reducing the whole plan every
-        // round instead offered every already assembled leaf again — 528 at this
-        // shape, and quadratic in chain depth.
+        // The read half of the same property: the wave reduces exactly the
+        // occurrences each hop answered, one accepted source apiece, and the
+        // closing round's frontier is empty so it assembles nothing — MODULES-1
+        // reads offered in total. Publishing per hop cost 61 (each round also
+        // re-reduced its predecessor's fanout occurrences), and re-reducing the
+        // whole plan every round offered 528 and grew quadratically with depth.
         assert!(
-            result.assembler.plan_reads_reduced() <= (MODULES as u64) * 2,
+            result.assembler.plan_reads_reduced() <= MODULES as u64,
             "per-round read volume must stay linear in chain depth, not rounds times plan"
         );
     }
 
     /// A candidate that misses on its first group is answered but NOT concluded:
-    /// the occurrence still owes its next candidate a round. Here `sub/leaf.rue`
-    /// imports `shared.rue`, which is absent beside it and present at the project
-    /// root, so its occurrence spans two rounds while its module is new in
-    /// neither. A round that rooted only in the plan's newly staged occurrences
-    /// would drop it.
+    /// the occurrence still owes its next candidate an operation. Here
+    /// `sub/leaf.rue` imports `shared.rue`, which is absent beside it and present
+    /// at the project root, so its precedence walk spans two hops while its
+    /// module is new in neither.
+    ///
+    /// The contract this pins is unchanged by ADR-0075 — an occurrence that is
+    /// answered but still open must be carried forward, and dropping it loses
+    /// `shared.rue` — but the carrying happens a level down: the wave keeps the
+    /// occurrence in its open set and derives its second candidate at the next
+    /// hop, instead of a later round re-rooting it. The three reads and the
+    /// resolution are identical; the three publications collapse to one.
     #[test]
-    fn import_occurrence_answered_but_still_open_is_rerooted_next_round() {
+    fn import_occurrence_answered_but_still_open_is_carried_across_wave_hops() {
         let dir = TestDir::new("open-occurrence-reroot");
         let main = dir.write(
             "main.rue",
@@ -2182,9 +2320,147 @@ mod tests {
         let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
 
         assert_eq!(result.read_manifest.len(), 3);
-        // Three published batches: the leaf, its missed sibling candidate, then
-        // the project-root `shared.rue` the second candidate resolves to.
-        assert_eq!(result.input_revision.frontier_round(), 3);
+        assert!(
+            result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().as_str() == "shared.rue"),
+            "the second candidate of the still-open occurrence must be resolved"
+        );
+        // One wave, three hops: the leaf, its missed sibling candidate, then the
+        // project-root `shared.rue` the second candidate resolves to. Publishing
+        // per hop minted three revisions for the same three reads.
+        assert_eq!(result.input_revision.frontier_round(), 1);
+    }
+
+    /// ADR-0075 stamp atomicity: a wave publishes one revision covering reads
+    /// taken across its whole closure, so a source rewritten after it was read
+    /// and before the wave publishes must be caught as a batch, fail-closed.
+    ///
+    /// The hook fires in exactly that window — after the wave's last hop, before
+    /// its stamp verification — and rewrites a source the wave read on its FIRST
+    /// hop. The wave is discarded and re-run against the settled filesystem, and
+    /// the revision that does publish carries the rewritten bytes with every
+    /// recorded read verifying. No revision can mix a stale read with a fresh
+    /// one, because one disagreement discards the whole wave.
+    #[test]
+    fn a_source_rewritten_mid_wave_forces_a_fail_closed_wave_rerun() {
+        let dir = TestDir::new("wave-stamp-atomicity");
+        let main = dir.write(
+            "main.rue",
+            r#"const a = @import("a.rue"); fn main() -> i32 { a.value() }"#,
+        );
+        dir.write(
+            "a.rue",
+            r#"pub const b = @import("b.rue"); pub fn value() -> i32 { b.value() + 1 }"#,
+        );
+        dir.write("b.rue", "pub fn value() -> i32 { 2 }");
+        let rewritten =
+            r#"pub const b = @import("b.rue"); pub fn value() -> i32 { b.value() + 9 }"#;
+
+        let path = dir.path.join("a.rue");
+        let fired = std::cell::Cell::new(false);
+        WAVE_STAMP_RERUNS.with(|count| count.set(0));
+        WAVE_PUBLISH_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                if !fired.replace(true) {
+                    fs::write(&path, rewritten).unwrap();
+                }
+            }));
+        });
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None);
+        WAVE_PUBLISH_HOOK.with(|hook| *hook.borrow_mut() = None);
+        let result = result.expect("a re-run wave closes against the settled filesystem");
+
+        assert_eq!(
+            WAVE_STAMP_RERUNS.with(std::cell::Cell::get),
+            1,
+            "the mid-wave rewrite must discard exactly one wave"
+        );
+        assert_eq!(result.read_manifest.len(), 3);
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("b.value() + 9")),
+            "the published revision must carry the rewritten source, never the stale read"
+        );
+        for entry in result.read_manifest.iter() {
+            let metadata = fs::metadata(entry.canonical_path()).expect("a published read exists");
+            assert_eq!(
+                physical_file_identity(&metadata),
+                entry.metadata_identity(),
+                "every recorded read of the published revision verifies"
+            );
+            assert_eq!(
+                file_metadata_fingerprint(&metadata),
+                entry.metadata_fingerprint(),
+                "every recorded read of the published revision verifies"
+            );
+        }
+    }
+
+    /// ADR-0075 determinism: the ledger's read order and the revision's contents
+    /// are properties of the compiler's candidate policy, not of how many query
+    /// workers happen to be running. A wave dedupes host operations and derives
+    /// each hop from its own ledger, so both must be identical across worker
+    /// counts and across repeated runs.
+    #[test]
+    fn wave_ledger_order_and_contents_are_independent_of_worker_count() {
+        fn discover(dir: &TestDir, jobs: usize) -> (String, Vec<String>, u64) {
+            rue_compiler::configure_thread_pool(jobs);
+            let result =
+                discover_and_load_imports(dir.path.join("main.rue").to_str().unwrap(), None, None)
+                    .unwrap();
+            let modules = result
+                .source_snapshot
+                .source_revision()
+                .modules()
+                .iter()
+                .map(|revision| revision.module.as_str().to_owned())
+                .collect();
+            (
+                rue_compiler::unstable::import_discovery_observation_ledger_debug(&result.revision),
+                modules,
+                result.input_revision.frontier_round(),
+            )
+        }
+
+        // A shape with real ordering pressure: same-depth siblings, a deeper
+        // chain, and one occurrence whose first candidate misses beside its
+        // importer and is answered at the project root.
+        let dir = TestDir::new("wave-determinism");
+        dir.write(
+            "main.rue",
+            r#"const a = @import("a.rue"); const d = @import("sub/d.rue"); fn main() -> i32 { a.value() + d.value() }"#,
+        );
+        dir.write(
+            "a.rue",
+            r#"pub const b = @import("b.rue"); pub const c = @import("c.rue"); pub fn value() -> i32 { b.value() + c.value() }"#,
+        );
+        dir.write(
+            "b.rue",
+            r#"pub const shared = @import("shared.rue"); pub fn value() -> i32 { shared.value() }"#,
+        );
+        dir.write("c.rue", "pub fn value() -> i32 { 3 }");
+        dir.write(
+            "sub/d.rue",
+            r#"pub const shared = @import("shared.rue"); pub fn value() -> i32 { shared.value() }"#,
+        );
+        dir.write("shared.rue", "pub fn value() -> i32 { 7 }");
+
+        let single = discover(&dir, 1);
+        let repeat = discover(&dir, 1);
+        let parallel = discover(&dir, 4);
+        rue_compiler::configure_thread_pool(0);
+
+        assert_eq!(single, repeat, "discovery must be reproducible run to run");
+        assert_eq!(
+            single, parallel,
+            "ledger read order and revision contents must not depend on worker count"
+        );
+        assert_eq!(single.2, 1, "this closure is one wave");
+        assert_eq!(single.1.len(), 6);
     }
 
     fn module_source_id(
@@ -2317,7 +2593,8 @@ mod tests {
 
         let result =
             discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
-        assert_eq!(result.input_revision.frontier_round(), 2);
+        // `std` and the `math.rue` it re-exports are two hops of one wave.
+        assert_eq!(result.input_revision.frontier_round(), 1);
         assert_eq!(result.read_manifest.len(), 3);
         assert!(
             result
@@ -3180,9 +3457,8 @@ mod tests {
                 .sharing_after
                 .expect("successor close has committed artifacts");
             for (index, name) in artifacts.iter().enumerate() {
-                let (before_ptr, before_delta) = before[index];
+                let (before_ptr, _) = before[index];
                 let (after_ptr, after_delta) = after[index];
-                assert_eq!(before_delta, 0, "the initial close is flat for {name}");
                 assert_eq!(
                     before_ptr, after_ptr,
                     "the successor must retain the predecessor {name} lineage witness"
@@ -3190,14 +3466,33 @@ mod tests {
                 assert!(after_delta > 0, "the successor delta must carry new {name}");
             }
         }
+        let small_before = small_acq.sharing_before.unwrap();
+        let big_before = big_acq.sharing_before.unwrap();
         let small_after = small_acq.sharing_after.unwrap();
         let big_after = big_acq.sharing_after.unwrap();
         for (index, name) in artifacts.iter().enumerate() {
+            // The initial close's own delta IS the project's discovery wave: one
+            // publication carries every module the closure reached, so the
+            // closing stage of a fresh close extends the first round's flat plan
+            // by whatever the wave found (ADR-0075). The small project's root
+            // imports nothing and closes on its first round, so its delta is
+            // empty; the big project's wave carries `a`, `b`, and `c`. That the
+            // predecessor delta tracks project topology this way is what makes
+            // the equal successor deltas below a real independence proof rather
+            // than a comparison of two zeroes.
+            assert_eq!(
+                small_before[index].1, 0,
+                "a close with nothing to discover has no {name} delta"
+            );
             assert_eq!(
                 small_after[index].1, big_after[index].1,
                 "the successor {name} delta size must be independent of the predecessor topology"
             );
         }
+        assert!(
+            big_before.iter().any(|(_, delta)| *delta > 0),
+            "the big project's initial close carries its own discovery wave's delta"
+        );
     }
 
     /// A manifest that denies a newly introduced transitive helper (`arraybuf.rue`,

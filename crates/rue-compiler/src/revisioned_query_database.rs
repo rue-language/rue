@@ -3012,21 +3012,6 @@ impl RetainedCharge for LookupImportValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ImportHostOperationKey {
-    context: ImportDiscoveryContext,
-    requested_path: Arc<str>,
-}
-
-impl ImportHostOperationKey {
-    fn new(request: &ImportDiscoveryRequest) -> Self {
-        Self {
-            context: request.context().clone(),
-            requested_path: Arc::from(request.requested_path()),
-        }
-    }
-}
-
 #[derive(Debug)]
 struct ImportInputView {
     revision: Revision,
@@ -19151,7 +19136,8 @@ impl RevisionedQueryDatabase {
         }
         let mut requests = Vec::new();
         let mut fanout = Vec::<Vec<ImportDiscoveryRequest>>::new();
-        let mut operation_indices = BTreeMap::<ImportHostOperationKey, usize>::new();
+        let mut operation_indices =
+            BTreeMap::<crate::import_discovery::ImportHostOperationKey, usize>::new();
         let mut speculative_blocked = false;
         self.import_frontier_roots_requested = self
             .import_frontier_roots_requested
@@ -19183,7 +19169,7 @@ impl RevisionedQueryDatabase {
             }
             speculative_blocked |= value.speculative_blocked;
             for request in value.requests.iter() {
-                let operation = ImportHostOperationKey::new(request);
+                let operation = crate::import_discovery::ImportHostOperationKey::new(request);
                 if let Some(index) = operation_indices.get(&operation).copied() {
                     fanout[index].push(request.clone());
                 } else {

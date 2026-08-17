@@ -13,8 +13,8 @@ pub use crate::diagnostic::{
 };
 pub use crate::import_discovery::{
     AcceptedImportSource, DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode,
-    ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportInputRevision,
-    ImportObservation, ImportObservationLedger, ImportObservationStatus,
+    ImportDemandRoots, ImportDiscoveryPlan, ImportDiscoveryRequest, ImportDiscoveryWave,
+    ImportInputRevision, ImportObservation, ImportObservationLedger, ImportObservationStatus,
 };
 
 /// Begin a fresh external-input observation generation.
@@ -73,17 +73,41 @@ pub fn plan_round_roots(
     plan.round_roots(previous)
 }
 
-/// The occurrences one ordinary discovery round must assemble reads for: the
-/// occurrences `current` and `previous` demanded host answers for. Every other
-/// occurrence carries the observations it carried when it was last assembled, so
-/// assembling this union adds exactly what re-reducing the whole plan would add.
-/// Both halves come from the compiler-owned frontier values; the host supplies
-/// no membership of its own.
-pub fn plan_round_read_roots(
-    previous: &ImportDemandFrontier,
-    current: &ImportDemandFrontier,
-) -> ImportDemandRoots {
-    current.round_read_roots(previous)
+/// Open a discovery wave over one round's starting frontier (ADR-0075).
+///
+/// The wave is the unit of publication: it resolves the transitive import
+/// closure reachable from that frontier hop by hop, emitting each hop's host
+/// operations in the exact order the round it replaces would have emitted them,
+/// and is published once by [`publish_import_wave`].
+pub fn begin_import_wave(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+    plan: &crate::ImportDiscoveryPlan,
+    frontier: &ImportDemandFrontier,
+) -> crate::CompileResult<ImportDiscoveryWave> {
+    session.begin_import_wave(revision, plan, frontier)
+}
+
+/// Record one wave hop's answers and derive the next hop's operations. The host
+/// supplies only results for the exact batch [`ImportDiscoveryWave::requests`]
+/// named, in that order.
+pub fn extend_import_wave(
+    session: &mut crate::CompilerSession,
+    wave: &mut ImportDiscoveryWave,
+    observations: Vec<crate::ImportObservation>,
+) -> crate::CompileResult<()> {
+    session.extend_import_wave(wave, observations)
+}
+
+/// Publish one whole wave as one successor immutable revision, returning that
+/// revision and the batch frontier the next round continues from.
+pub fn publish_import_wave(
+    session: &mut crate::CompilerSession,
+    wave: ImportDiscoveryWave,
+    snapshot: &crate::SourceSnapshot,
+    accepted_reads: crate::AcceptedReadManifest,
+) -> crate::CompileResult<(ImportInputRevision, ImportDemandFrontier)> {
+    session.publish_import_wave(wave, snapshot, accepted_reads)
 }
 
 pub fn publish_import_observation_batch(
