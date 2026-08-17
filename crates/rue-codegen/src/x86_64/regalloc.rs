@@ -1429,10 +1429,16 @@ impl RegAllocBackend for X86Backend {
         })
     }
 
-    fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg> {
-        let mut regs: Vec<_> = super::schedule::regs_read(inst).into();
-        regs.extend(super::schedule::regs_written(inst));
-        regs
+    fn for_each_physical_operand<F>(inst: &Self::Inst, mut visit: F)
+    where
+        F: FnMut(Self::Reg),
+    {
+        for reg in super::schedule::regs_read(inst) {
+            visit(reg);
+        }
+        for reg in super::schedule::regs_written(inst) {
+            visit(reg);
+        }
     }
 
     fn new_mir() -> Self::Mir {
@@ -1495,6 +1501,19 @@ mod tests {
         );
         assert_eq!(file.len(), ALLOCATABLE_REGS.len());
         assert_eq!(file.caller_saved_flattened(), CALLER_SAVED_REGS.to_vec());
+    }
+
+    #[test]
+    fn physical_operand_visitor_preserves_read_then_write_order() {
+        let inst = X86Inst::AddRR {
+            dst: Operand::Physical(Reg::Rax),
+            src: Operand::Physical(Reg::Rcx),
+        };
+        let mut observed = Vec::new();
+        <X86Backend as RegAllocBackend>::for_each_physical_operand(&inst, |reg| {
+            observed.push(reg);
+        });
+        assert_eq!(observed, [Reg::Rax, Reg::Rcx, Reg::Rax]);
     }
 
     #[test]
