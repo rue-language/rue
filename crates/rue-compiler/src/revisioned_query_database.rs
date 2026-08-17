@@ -14185,9 +14185,9 @@ impl RevisionedQueryDatabase {
                         "compiler.cfg",
                         "compiler.optimized-cfg",
                     ]);
-                    let terminals = context.query_registered_adaptive_batch(
+                    let terminals = context.query_registered_adaptive_batch_refs(
                         &optimized_cfgs_for_batch,
-                        key.keys.iter().cloned(),
+                        key.keys.iter(),
                     )?;
                     let kind = if terminals
                         .iter()
@@ -14291,9 +14291,9 @@ impl RevisionedQueryDatabase {
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
                     let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
-                    let terminals = context.query_registered_adaptive_batch(
+                    let terminals = context.query_registered_adaptive_batch_refs(
                         &codegen_units_for_batch,
-                        key.keys.iter().cloned(),
+                        key.keys.iter(),
                     )?;
                     let kind = if terminals
                         .iter()
@@ -14370,9 +14370,9 @@ impl RevisionedQueryDatabase {
                         .expect("backend retention roots belong to this query runtime");
                     let _attempts =
                         context.retain_nested_attempts_for(&["compiler.object-projection"]);
-                    let terminals = context.query_registered_adaptive_batch(
+                    let terminals = context.query_registered_adaptive_batch_refs(
                         &object_projections_for_batch,
-                        key.keys.iter().cloned(),
+                        key.keys.iter(),
                     )?;
                     let kind = if terminals
                         .iter()
@@ -14427,9 +14427,9 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
                         .expect("backend retention roots belong to this query runtime");
-                    let terminals = context.query_registered_adaptive_batch(
+                    let terminals = context.query_registered_adaptive_batch_refs(
                         &object_projections_for_backend_publication,
-                        key.objects.keys.iter().cloned(),
+                        key.objects.keys.iter(),
                     )?;
                     if terminals.iter().any(|terminal| {
                         matches!(
