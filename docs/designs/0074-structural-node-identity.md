@@ -52,14 +52,18 @@ falsified) lazy formatting on top:
    **stable key hash**, computed from the typed key's fields with a fixed,
    keyed-with-a-compile-time-constant hasher — never from the formatted
    string, and never from addresses, allocation order, or scheduling.
-2. `NodeIdentity` ordering, equality, and hashing become
-   `(family, stable_hash)` with formatted text as a lazily-computed, cold
-   tiebreaker that is only reachable on a 128-bit hash collision between
-   distinct keys of the same family.
+2. `NodeIdentity` ordering, equality, and hashing use `(family, stable_hash)`
+   on the fast path. If two unequal typed keys in one family share that hash,
+   the runtime must consult a deterministic structural collision witness
+   derived from the exact key fields (or retain exact typed-key equality in
+   the collision bucket). Formatted text may be computed lazily for
+   presentation, but it is not a valid collision witness by itself: the
+   `QueryKey` contract explicitly permits distinct keys to share display text.
 3. The canonical published dependency order (RUE-1381) is redefined as
-   `(family, stable_hash, incarnation)`. The order remains fully
-   deterministic across runs and worker counts; it is one-time different
-   from today's text order.
+   `(family, stable_hash, structural_collision_witness, incarnation)`, with
+   the witness absent on the non-colliding fast path. The order remains fully
+   deterministic across runs and worker counts; it is one-time different from
+   today's text order.
 4. `retained_terminal_charge` is re-denominated in structural units: the
    fixed sizes it already counts, plus the actual retained payload sizes,
    plus a fixed 16-byte identity charge per node/observation in place of
@@ -94,8 +98,10 @@ The implementation must land with tests that fail if any of these break:
   different worker counts (`-j1` vs `-j4`) and across process runs (the
   hash must not be seeded per-process).
 - **Collision safety**: a forced hash collision between two distinct keys
-  (test-only hasher override) still yields a total, deterministic order
-  via the text tiebreaker, and distinct identities never compare equal.
+  (test-only hasher override), including keys whose `stable_identity()` text
+  is identical, still yields a total, deterministic order via the structural
+  witness, and distinct identities never compare equal. The existing
+  `CollidingKey` fixture in `rue-query` is the minimum regression case.
 - **Presentation identity**: diagnostic, cycle-render, and abort text is
   byte-identical to today's (the pinned cycle-render test from 2026-08-16
   must pass unchanged); `Debug` formatting still materializes
@@ -133,6 +139,12 @@ The implementation must land with tests that fail if any of these break:
 alongside `stable_identity()`; the runtime computes the 128-bit digest at
 node mint (cheap: hashes typed fields, no allocation), stores it inline in
 `NodeIdentityData`, and keeps `key: OnceLock<Arc<str>>` for presentation.
+The implementation must also retain enough exact structural identity to
+resolve a forced hash collision; it cannot use `stable_identity()` alone,
+because that text is allowed to collide. That witness may remain cold-path
+state in a collision bucket, or be represented by a canonical structural
+encoding, but it must participate in equality and ordering before any
+presentation-only fallback.
 `retained_terminal_charge` swaps the two `len()` terms per the contract
 above; the budget constant is recalibrated in the same commit from
 paired-run RSS measurements. Falsifier tests live next to the existing
