@@ -13,7 +13,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use ahash::{AHashMap, RandomState};
+use ahash::{AHashMap, AHashSet, RandomState};
 use lasso::Key;
 
 #[derive(Debug, Default)]
@@ -6146,12 +6146,12 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
 
 fn visit_instance_anonymous_nominals<'a>(
     function: &'a crate::FunctionInstanceKey,
-    seen: &mut Vec<*const crate::AnonymousNominalKey>,
+    seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
     mut visit: impl FnMut(&'a crate::AnonymousNominalKey),
 ) {
     fn arguments<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
         arguments: &'a crate::CanonicalArguments,
-        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
         visit: &mut F,
     ) {
         for ty in arguments.types.iter() {
@@ -6170,19 +6170,20 @@ fn visit_instance_anonymous_nominals<'a>(
 
     fn anonymous<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
         identity: &'a crate::AnonymousNominalKey,
-        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
         visit: &mut F,
     ) {
         // Canonical argument slices are shared through `Arc`, so one instance
         // key can reach the same nested identity through several paths. Track
         // those shared objects by address: structural equality is unnecessary
-        // for traversal, and a reusable flat scratch buffer avoids one tree
-        // allocation per visited anonymous identity.
+        // for traversal, and a reusable hashed scratch set avoids one tree
+        // allocation per visited anonymous identity while answering the repeat
+        // check in constant time, so a wide or deeply nested key does not turn
+        // the traversal quadratic in the identities it reaches.
         let identity_pointer = std::ptr::from_ref(identity);
-        if seen.contains(&identity_pointer) {
+        if !seen.insert(identity_pointer) {
             return;
         }
-        seen.push(identity_pointer);
         visit(identity);
         if let crate::StableProducerId::Function(function) = &identity.producer {
             instance_function(function, seen, visit);
@@ -6192,7 +6193,7 @@ fn visit_instance_anonymous_nominals<'a>(
 
     fn instance_type<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
         ty: &'a crate::TypeInstanceKey,
-        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
         visit: &mut F,
     ) {
         match ty {
@@ -6209,7 +6210,7 @@ fn visit_instance_anonymous_nominals<'a>(
 
     fn instance_function<'a, F: FnMut(&'a crate::AnonymousNominalKey)>(
         function: &'a crate::FunctionInstanceKey,
-        seen: &mut Vec<*const crate::AnonymousNominalKey>,
+        seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
         visit: &mut F,
     ) {
         match function {
@@ -6234,7 +6235,7 @@ pub(crate) fn collect_instance_anonymous_nominals(
     function: &crate::FunctionInstanceKey,
 ) -> BTreeSet<crate::AnonymousNominalKey> {
     let mut output = BTreeSet::new();
-    let mut seen = Vec::new();
+    let mut seen = AHashSet::new();
     visit_instance_anonymous_nominals(function, &mut seen, |identity| {
         output.insert(identity.clone());
     });
@@ -14542,7 +14543,7 @@ impl RevisionedQueryDatabase {
                             >,
                         >,
                     )>::new();
-                    let mut anonymous_visit_seen = Vec::new();
+                    let mut anonymous_visit_seen = AHashSet::new();
                     let concurrency = context.max_concurrency();
                     let body_query_prefetch_window = if concurrency == 1 {
                         1
@@ -25248,6 +25249,128 @@ mod tests {
             Arc::from(name),
             None,
         ))
+    }
+
+    #[test]
+    fn anonymous_nominal_traversal_visits_each_shared_identity_exactly_once() {
+        // RUE-1555: canonical argument slices are shared through `Arc`, so one
+        // instance key reaches the same nested identity through many paths and
+        // the visited set is consulted far more often than it grows. It used
+        // to be a `Vec` scanned linearly, which made the traversal quadratic
+        // in the identities a key reaches; membership is now constant-time.
+        //
+        // What must not change is the traversal: every reachable identity
+        // produced exactly once, by pointer identity rather than structural
+        // equality, with the scratch buffer reused across calls.
+        const LEAVES: u32 = 256;
+        const SHARERS: u32 = 64;
+
+        let module = ModuleId::from_logical_path("anon.rue").unwrap();
+        let definition = |name: &str| {
+            crate::StableDefinitionKey::from_stable_parts(
+                module.clone(),
+                crate::StableDefinitionNamespace::Type,
+                crate::StableDefinitionKind::Struct,
+                Arc::from(name),
+                None,
+            )
+        };
+        let leaf = |ordinal: u32| crate::AnonymousNominalKey {
+            kind: crate::semantic_identity::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition(definition("make")),
+            anchor: crate::semantic_identity::StructuralAnchor::new(vec![
+                crate::semantic_identity::StructuralPathSegment::AnonymousType(ordinal),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        };
+
+        // One slice, cloned into every specialization below, so each of the
+        // SHARERS levels re-walks the very same LEAVES addresses. That is the
+        // adversarial shape: LEAVES * SHARERS visit attempts against a visited
+        // set that only ever holds LEAVES entries.
+        let shared: Arc<[crate::TypeInstanceKey]> = (0..LEAVES)
+            .map(|ordinal| {
+                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(leaf(ordinal)))
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let wide = |base: crate::FunctionInstanceKey| crate::FunctionInstanceKey::Specialization {
+            base: Box::new(base),
+            arguments: crate::CanonicalArguments {
+                types: shared.clone(),
+                values: Arc::new([]),
+            },
+        };
+
+        let mut key = free_function_instance(&module, "root");
+        for _ in 0..SHARERS {
+            key = wide(key);
+        }
+        // Deep nesting on top of the fan-out: an identity whose producer is
+        // itself a specialization carrying the same slice, so the whole leaf
+        // set is reachable a second time through a different kind of edge.
+        let nested = crate::AnonymousNominalKey {
+            kind: crate::semantic_identity::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Function(Box::new(wide(free_function_instance(
+                &module, "nested",
+            )))),
+            anchor: crate::semantic_identity::StructuralAnchor::new(vec![
+                crate::semantic_identity::StructuralPathSegment::AnonymousType(LEAVES),
+            ]),
+            arguments: crate::CanonicalArguments {
+                types: shared.clone(),
+                values: Arc::new([]),
+            },
+        };
+        let key = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(key),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(nested.clone()),
+                )]),
+                values: Arc::new([]),
+            },
+        };
+
+        let mut scratch = AHashSet::new();
+        let mut visited = Vec::new();
+        visit_instance_anonymous_nominals(&key, &mut scratch, |identity| {
+            visited.push(identity.clone());
+        });
+
+        assert_eq!(
+            visited.len(),
+            LEAVES as usize + 1,
+            "every leaf plus the nested identity is produced exactly once, \
+             however many paths reach it"
+        );
+        let distinct: BTreeSet<crate::AnonymousNominalKey> = visited.iter().cloned().collect();
+        assert_eq!(
+            distinct.len(),
+            visited.len(),
+            "a repeat visit must be suppressed, not merely deduplicated later"
+        );
+        assert!(
+            distinct.contains(&nested),
+            "the identity reached through a Function producer is still visited"
+        );
+        assert_eq!(
+            collect_instance_anonymous_nominals(&key),
+            distinct,
+            "the collecting wrapper agrees with the raw traversal"
+        );
+
+        // Scratch reuse: the buffer is cleared at entry, so a second traversal
+        // through the same one produces the same result rather than a
+        // truncated one.
+        let mut reused = Vec::new();
+        visit_instance_anonymous_nominals(&key, &mut scratch, |identity| {
+            reused.push(identity.clone());
+        });
+        assert_eq!(
+            reused, visited,
+            "the scratch set must be cleared and reused between traversals"
+        );
     }
 
     fn trusted_option_body_snapshot(root_source: &str, option_source: &str) -> SourceSnapshot {
