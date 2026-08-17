@@ -2376,7 +2376,7 @@ impl Hasher for StableHasher {
 }
 
 /// The complete content-derived digest of one typed key.
-pub fn stable_key_hash<K: QueryKey + ?Sized>(key: &K) -> StableKeyHash {
+pub fn stable_key_hash<K: QueryKey>(key: &K) -> StableKeyHash {
     let mut hasher = StableHasher::new();
     key.stable_hash(&mut hasher);
     hasher.finish128()
@@ -2396,7 +2396,7 @@ pub fn stable_key_hash<K: QueryKey + ?Sized>(key: &K) -> StableKeyHash {
 /// shared one display identity. Typed `Eq` remains authoritative for memo
 /// lookup, and the canonical publication order breaks the remaining tie on the
 /// node incarnation.
-pub fn stable_key_witness<K: QueryKey + ?Sized>(key: &K) -> Vec<u8> {
+pub fn stable_key_witness<K: QueryKey>(key: &K) -> Vec<u8> {
     let mut hasher = StableHasher::recording();
     key.stable_hash(&mut hasher);
     hasher.into_witness()
