@@ -240,8 +240,13 @@ impl AirValidationContext<'_> {
         .map_err(|error| format!("{error:?}"))
     }
 
-    fn struct_field_type(&self, id: StructId, field: u32) -> Result<Type, String> {
-        self.validate_type(Type::new_struct(id))?;
+    fn struct_field_type(
+        &self,
+        id: StructId,
+        field: u32,
+        validate_type: &dyn Fn(Type) -> Result<(), String>,
+    ) -> Result<Type, String> {
+        validate_type(Type::new_struct(id))?;
         let field_type = match self {
             Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
                 .struct_def(id)
@@ -257,11 +262,15 @@ impl AirValidationContext<'_> {
         field_type.ok_or_else(|| format!("struct field index {field} is out of bounds"))
     }
 
-    fn array_element_type(&self, ty: Type) -> Result<Type, String> {
+    fn array_element_type(
+        &self,
+        ty: Type,
+        validate_type: &dyn Fn(Type) -> Result<(), String>,
+    ) -> Result<Type, String> {
         let id = ty
             .as_array()
             .ok_or_else(|| format!("projection base {} is not an array", ty.name()))?;
-        self.validate_type(ty)?;
+        validate_type(ty)?;
         Ok(match self {
             Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.array_def(id).0,
             Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool.array_def(id).0,
@@ -1495,7 +1504,7 @@ impl Air {
                             ));
                         }
                         context
-                            .struct_field_type(struct_id, field_index)
+                            .struct_field_type(struct_id, field_index, &validate_type)
                             .map_err(|reason| {
                                 fail(None, format!("place {place_index}: {reason}"))
                             })?
@@ -1534,9 +1543,11 @@ impl Air {
                                 ),
                             ));
                         }
-                        context.array_element_type(array_type).map_err(|reason| {
-                            fail(None, format!("place {place_index}: {reason}"))
-                        })?
+                        context
+                            .array_element_type(array_type, &validate_type)
+                            .map_err(|reason| {
+                                fail(None, format!("place {place_index}: {reason}"))
+                            })?
                     }
                 };
             }
@@ -1597,7 +1608,7 @@ impl Air {
                                 ));
                             }
                             context
-                                .struct_field_type(struct_id, field_index)
+                                .struct_field_type(struct_id, field_index, &validate_type)
                                 .map_err(|reason| fail(Some(index), reason))?
                         }
                         AirProjection::Index {
@@ -1626,7 +1637,7 @@ impl Air {
                                 ));
                             }
                             context
-                                .array_element_type(array_type)
+                                .array_element_type(array_type, &validate_type)
                                 .map_err(|reason| fail(Some(index), reason))?
                         }
                     };
@@ -4748,6 +4759,62 @@ mod tests {
                 .unwrap_err()
                 .reason
                 .contains("non-integer type")
+        );
+    }
+
+    #[test]
+    fn projection_validation_preserves_exact_handle_and_diagnostic_errors() {
+        let (pool, first, _, _) = projection_test_pool();
+
+        let mut invalid_struct = AirEditor::new(Type::UNIT);
+        invalid_struct
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_struct(StructId::from_pool_index(99)),
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            invalid_struct
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason,
+            "invalid place 0 base type: PoolIndexOutOfRange"
+        );
+
+        let mut invalid_array = AirEditor::new(Type::UNIT);
+        invalid_array
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_array(crate::ArrayTypeId::from_pool_index(99)),
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            invalid_array
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason,
+            "invalid place 0 base type: PoolIndexOutOfRange"
+        );
+
+        let mut field_oob = AirEditor::new(Type::UNIT);
+        field_oob
+            .make_place(
+                AirPlaceBase::Local(0),
+                Type::new_struct(first),
+                [AirProjection::Field {
+                    struct_id: first,
+                    field_index: 1,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            field_oob
+                .finish(AirValidationContext::Canonical(&pool))
+                .unwrap_err()
+                .reason,
+            "place 0: struct field index 1 is out of bounds"
         );
     }
 
