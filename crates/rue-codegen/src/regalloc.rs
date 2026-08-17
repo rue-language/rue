@@ -1268,7 +1268,8 @@ pub trait RegAllocBackend {
     /// own register class (RUE-1067).
     fn register_file() -> RegisterFile<'static, Self::Reg>;
 
-    /// Every physical register `inst` names as an operand — read or written.
+    /// Visit every physical register `inst` names as an operand — read or
+    /// written — in the backend's canonical read-then-write order.
     ///
     /// This is the exhaustive per-instruction enumeration each backend's
     /// scheduler already maintains (`regs_read` + `regs_written`), reused here
@@ -1276,7 +1277,9 @@ pub trait RegAllocBackend {
     /// an allocatable register directly. Implicit clobbers are deliberately not
     /// included: a call destroys the caller-saved registers without naming any
     /// of them as an operand, and the allocator models that separately.
-    fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg>;
+    fn for_each_physical_operand<F>(inst: &Self::Inst, visit: F)
+    where
+        F: FnMut(Self::Reg);
 
     fn new_mir() -> Self::Mir;
     fn take_symbols(mir: &mut Self::Mir) -> Vec<String>;
@@ -1439,7 +1442,7 @@ impl<I> RewriteBuffer<I> {
 fn assert_no_allocatable_physical_operands<B: RegAllocBackend>(mir: &B::Mir) {
     let file = B::register_file();
     for inst in B::instructions(mir) {
-        for reg in B::physical_operands(inst) {
+        B::for_each_physical_operand(inst, |reg| {
             for (_, save) in file.iter() {
                 assert!(
                     !save.caller_saved.contains(&reg) && !save.callee_saved.contains(&reg),
@@ -1447,7 +1450,7 @@ fn assert_no_allocatable_physical_operands<B: RegAllocBackend>(mir: &B::Mir) {
                      allocation may put an unrelated value there"
                 );
             }
-        }
+        });
     }
 }
 
