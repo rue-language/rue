@@ -1115,6 +1115,10 @@ impl CfgDomainProjection {
             .iter()
             .map(|(current, _)| *current)
             .collect::<Vec<_>>();
+        let mut enqueued = pending
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
         let mut visited = std::collections::HashSet::new();
         let mut incomplete = false;
         while let Some(current) = pending.pop() {
@@ -1167,7 +1171,7 @@ impl CfgDomainProjection {
                 _ => Vec::new(),
             };
             for child in children {
-                if visited.contains(&child) {
+                if enqueued.contains(&child) {
                     continue;
                 }
                 if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -1190,6 +1194,7 @@ impl CfgDomainProjection {
                         Err(failure) => return Err(failure),
                     }
                 }
+                enqueued.insert(child);
                 pending.push(child);
             }
         }
