@@ -179,6 +179,99 @@ impl RetainedCharge for SharedDeclarationFactIndex {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LocalMaterializationIndexes {
+    destructors:
+        std::collections::BTreeMap<(ModuleId, StableDefinitionKind, Arc<str>), FunctionInstanceKey>,
+    nominal_metadata: std::collections::BTreeMap<StableDefinitionKey, Option<rue_air::LangItem>>,
+    has_ambiguous_named_destructor: bool,
+    has_duplicate_nominal_metadata: bool,
+}
+
+impl LocalMaterializationIndexes {
+    pub(crate) fn new(
+        declarations: &[DurableDeclarationSemantic],
+        nominal_metadata: &[LocalNominalMetadataFact],
+    ) -> Self {
+        let mut indexes = Self::default();
+        for candidate in declarations {
+            if !matches!(candidate.payload, DurableDeclarationPayload::Destructor) {
+                continue;
+            }
+            let Some(owner) = candidate.key.owner() else {
+                continue;
+            };
+            if indexes
+                .destructors
+                .insert(
+                    (
+                        owner.module().clone(),
+                        owner.kind(),
+                        Arc::<str>::from(owner.name()),
+                    ),
+                    FunctionInstanceKey::Definition(candidate.key.clone()),
+                )
+                .is_some()
+            {
+                indexes.has_ambiguous_named_destructor = true;
+            }
+        }
+        for fact in nominal_metadata {
+            if indexes
+                .nominal_metadata
+                .insert(fact.identity().clone(), fact.lang_item())
+                .is_some()
+            {
+                indexes.has_duplicate_nominal_metadata = true;
+            }
+        }
+        indexes
+    }
+
+    fn destructor(&self, owner: &StableDefinitionKey) -> Option<FunctionInstanceKey> {
+        self.destructors
+            .get(&(
+                owner.module().clone(),
+                owner.kind(),
+                Arc::<str>::from(owner.name()),
+            ))
+            .cloned()
+    }
+
+    fn nominal_metadata(
+        &self,
+        identity: &StableDefinitionKey,
+    ) -> Option<Option<rue_air::LangItem>> {
+        self.nominal_metadata.get(identity).copied()
+    }
+}
+
+impl RetainedCharge for LocalMaterializationIndexes {
+    fn retained_charge(&self) -> u64 {
+        self.destructors
+            .values()
+            .map(RetainedCharge::retained_charge)
+            .sum::<u64>()
+            .saturating_add(
+                (self.destructors.len()
+                    * std::mem::size_of::<(
+                        (ModuleId, StableDefinitionKind, Arc<str>),
+                        FunctionInstanceKey,
+                    )>()) as u64,
+            )
+            .saturating_add(
+                self.nominal_metadata
+                    .keys()
+                    .map(RetainedCharge::retained_charge)
+                    .sum::<u64>(),
+            )
+            .saturating_add(
+                (self.nominal_metadata.len() * std::mem::size_of::<Option<rue_air::LangItem>>())
+                    as u64,
+            )
+    }
+}
+
 fn collect_slice_sources(
     ty: &crate::durable_semantics::DurableType,
     output: &mut std::collections::HashMap<Arc<str>, crate::TypeInstanceKey>,
@@ -243,6 +336,7 @@ pub(crate) struct LocalMaterializationFacts {
     /// Exact stable types that must exist in this local epoch even when they
     /// originate in an accessor body that will be mandatorily spliced here.
     pub(crate) required_types: Arc<[crate::durable_semantics::DurableType]>,
+    pub(crate) indexes: Arc<LocalMaterializationIndexes>,
 }
 
 impl LocalMaterializationFacts {
@@ -302,11 +396,17 @@ impl LocalMaterializationFacts {
                 &facts.required_types,
             );
         }
+        let declarations: Arc<[DurableDeclarationSemantic]> = declarations.into();
+        let nominal_metadata: Arc<[LocalNominalMetadataFact]> = nominal_metadata.into();
         Self {
-            declarations: declarations.into(),
+            indexes: Arc::new(LocalMaterializationIndexes::new(
+                &declarations,
+                &nominal_metadata,
+            )),
+            declarations,
             anonymous_nominals: anonymous_nominals.into(),
             callables: callables.into(),
-            nominal_metadata: nominal_metadata.into(),
+            nominal_metadata,
             modules: modules.into(),
             builtin_nominals: builtin_nominals.into(),
             required_types: required_types.into(),
@@ -359,6 +459,7 @@ impl RetainedCharge for LocalMaterializationFacts {
             .saturating_add(self.modules.retained_charge())
             .saturating_add(self.builtin_nominals.retained_charge())
             .saturating_add(self.required_types.retained_charge())
+            .saturating_add(self.indexes.retained_charge())
     }
 }
 
@@ -637,6 +738,34 @@ pub(crate) fn materialize_canonical_body(
     builtin_facts: &[LocalBuiltinNominalFact],
     materialization_types: &[crate::durable_semantics::DurableType],
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
+    let indexes = LocalMaterializationIndexes::new(declarations, nominal_metadata);
+    materialize_canonical_body_with_indexes(
+        canonical,
+        body_span,
+        declarations,
+        anonymous_nominals,
+        callable_facts,
+        nominal_metadata,
+        modules,
+        builtin_facts,
+        materialization_types,
+        &indexes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_canonical_body_with_indexes(
+    canonical: &crate::body_query::CanonicalBody,
+    body_span: rue_span::Span,
+    declarations: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[DurableAnonymousNominal],
+    callable_facts: &[LocalCallableFact],
+    nominal_metadata: &[LocalNominalMetadataFact],
+    modules: &[ModuleId],
+    builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
+    indexes: &LocalMaterializationIndexes,
+) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
     let (identity, body) = match canonical {
         crate::body_query::CanonicalBody::Ordinary { owner, body } => {
             (FunctionInstanceKey::Definition(owner.clone()), body)
@@ -650,7 +779,7 @@ pub(crate) fn materialize_canonical_body(
             body,
         ),
     };
-    materialize_semantic_body(
+    materialize_semantic_body_with_indexes(
         identity,
         body,
         body_span,
@@ -661,10 +790,11 @@ pub(crate) fn materialize_canonical_body(
         modules,
         builtin_facts,
         materialization_types,
+        indexes,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn materialize_semantic_body(
     identity: FunctionInstanceKey,
     body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
@@ -677,52 +807,48 @@ pub(crate) fn materialize_semantic_body(
     builtin_facts: &[LocalBuiltinNominalFact],
     materialization_types: &[crate::durable_semantics::DurableType],
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
+    let indexes = LocalMaterializationIndexes::new(declarations, nominal_metadata);
+    materialize_semantic_body_with_indexes(
+        identity,
+        body,
+        body_span,
+        declarations,
+        anonymous_nominals,
+        callable_facts,
+        nominal_metadata,
+        modules,
+        builtin_facts,
+        materialization_types,
+        &indexes,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn materialize_semantic_body_with_indexes(
+    identity: FunctionInstanceKey,
+    body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
+    body_span: rue_span::Span,
+    declarations: &[DurableDeclarationSemantic],
+    anonymous_nominals: &[DurableAnonymousNominal],
+    callable_facts: &[LocalCallableFact],
+    _nominal_metadata: &[LocalNominalMetadataFact],
+    modules: &[ModuleId],
+    builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
+    indexes: &LocalMaterializationIndexes,
+) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
     let callable_kind = if body.is_accessor {
         rue_air::AnalyzedCallableKind::Accessor
     } else {
         callable_kind_for_identity(&identity)
     };
 
-    let mut destructors = std::collections::BTreeMap::new();
-    for candidate in declarations {
-        if !matches!(candidate.payload, DurableDeclarationPayload::Destructor) {
-            continue;
-        }
-        let Some(owner) = candidate.key.owner() else {
-            continue;
-        };
-        let owner = (
-            owner.module().clone(),
-            owner.kind(),
-            Arc::<str>::from(owner.name()),
-        );
-        if destructors
-            .insert(
-                owner,
-                FunctionInstanceKey::Definition(candidate.key.clone()),
-            )
-            .is_some()
-        {
-            return Err(LocalMaterializationFailure::AmbiguousNamedDestructor);
-        }
+    if indexes.has_ambiguous_named_destructor {
+        return Err(LocalMaterializationFailure::AmbiguousNamedDestructor);
     }
-    let destructor_for = |owner: &StableDefinitionKey| {
-        destructors
-            .get(&(
-                owner.module().clone(),
-                owner.kind(),
-                Arc::<str>::from(owner.name()),
-            ))
-            .cloned()
-    };
-    let mut metadata = std::collections::BTreeMap::new();
-    for fact in nominal_metadata {
-        if metadata
-            .insert(fact.identity().clone(), fact.lang_item())
-            .is_some()
-        {
-            return Err(LocalMaterializationFailure::DuplicateNominalMetadata);
-        }
+    let destructor_for = |owner: &StableDefinitionKey| indexes.destructor(owner);
+    if indexes.has_duplicate_nominal_metadata {
+        return Err(LocalMaterializationFailure::DuplicateNominalMetadata);
     }
     let mut nominals = Vec::new();
     for declaration in declarations {
@@ -748,8 +874,8 @@ pub(crate) fn materialize_semantic_body(
             ),
             _ => continue,
         };
-        let lang_item = metadata
-            .remove(&declaration.key)
+        let lang_item = indexes
+            .nominal_metadata(&declaration.key)
             .ok_or(LocalMaterializationFailure::MissingNominalMetadata)?;
         nominals.push(rue_air::SemanticLocalNominal {
             key: rue_air::NominalInstanceKey::Named(declaration.key.clone()),
@@ -761,7 +887,16 @@ pub(crate) fn materialize_semantic_body(
             shape,
         });
     }
-    if !metadata.is_empty() {
+    let named_nominal_count = declarations
+        .iter()
+        .filter(|declaration| {
+            matches!(
+                declaration.payload,
+                DurableDeclarationPayload::Struct { .. } | DurableDeclarationPayload::Enum { .. }
+            )
+        })
+        .count();
+    if indexes.nominal_metadata.len() != named_nominal_count {
         return Err(LocalMaterializationFailure::ExtraNominalMetadata);
     }
     nominals.extend(anonymous_nominals.iter().map(|nominal| {
@@ -1387,12 +1522,17 @@ pub(crate) fn select_materialization_facts(
             LocalNominalMetadataFact::new(declaration.key.clone(), lang_item)
         })
         .collect::<Vec<_>>();
+    let declarations = selection
+        .selected_declarations
+        .into_values()
+        .collect::<Vec<_>>();
+    let nominal_metadata = nominal_metadata;
     Ok(LocalMaterializationFacts {
-        declarations: selection
-            .selected_declarations
-            .into_values()
-            .collect::<Vec<_>>()
-            .into(),
+        indexes: Arc::new(LocalMaterializationIndexes::new(
+            &declarations,
+            &nominal_metadata,
+        )),
+        declarations: declarations.into(),
         anonymous_nominals: selection
             .selected_anonymous
             .into_values()
@@ -1453,6 +1593,7 @@ mod tests {
             modules: modules.into(),
             builtin_nominals: Arc::new([]),
             required_types: Arc::new([]),
+            indexes: Arc::new(LocalMaterializationIndexes::default()),
         }
     }
 

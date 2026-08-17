@@ -38679,6 +38679,9 @@ fn main() -> i32 {
                 modules: Arc::from([owner.module().clone()]),
                 builtin_nominals: Arc::from([]),
                 required_types: Arc::from([]),
+                indexes: Arc::new(
+                    crate::local_semantic_materialization::LocalMaterializationIndexes::default(),
+                ),
             };
             let body_span = rue_span::Span::with_file(
                 input.source.file_id,
