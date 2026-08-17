@@ -1,7 +1,7 @@
 ---
 id: 0074
 title: "Structural node identity for dependency order and retained charge"
-status: proposed
+status: proposal
 tags: [architecture, compiler, performance, query-engine]
 feature-flag: null
 created: 2026-08-17

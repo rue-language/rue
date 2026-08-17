@@ -1,7 +1,7 @@
 ---
 id: 0075
 title: "Wave-granular import discovery revisions and cumulative exhaustion witness"
-status: proposed
+status: proposal
 tags: [architecture, compiler, incremental, performance, query-engine]
 feature-flag: null
 created: 2026-08-17
