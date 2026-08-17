@@ -20,7 +20,7 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::iter::Take;
 use std::ops::Deref;
 
@@ -592,9 +592,9 @@ fn has_back_edge(successors: &[SuccessorList]) -> bool {
 /// - live_out[i] = union of live_in[s] for all successors s of i
 /// - live_in[i] = uses[i] ∪ (live_out[i] - defs[i])
 #[cfg(test)]
-type DataflowSweepCount = usize;
+type DataflowRowVisitCount = usize;
 #[cfg(not(test))]
-type DataflowSweepCount = ();
+type DataflowRowVisitCount = ();
 
 enum DataflowSets {
     Acyclic {
@@ -613,7 +613,7 @@ fn compute_dataflow(
     inst_uses: &[VRegList],
     inst_defs: &[VRegList],
     has_back_edge: bool,
-) -> (DataflowSets, DataflowSweepCount) {
+) -> (DataflowSets, DataflowRowVisitCount) {
     let vreg_count_usize = vreg_count as usize;
 
     #[cfg(test)]
@@ -628,22 +628,38 @@ fn compute_dataflow(
     // every row on every pass.
     let mut new_live_in = FixedBitSet::with_capacity(vreg_count_usize);
     #[cfg(test)]
-    let mut sweeps = 0;
+    let mut row_visits = 0;
 
-    // Iterate until fixed point
-    let mut changed = true;
-    while changed {
-        changed = false;
-
-        // Process instructions in reverse order for faster convergence
+    if has_back_edge {
+        // Cyclic CFGs need repeated propagation, but rescanning every row on
+        // every round revisits rows that have no changed successor. Seed a
+        // deterministic descending worklist, then requeue only predecessors
+        // of rows whose live-in set changed. The flat CSR representation keeps
+        // the transient predecessor index bounded without one Vec header per
+        // instruction; each predecessor slice is descending because rows are
+        // inserted from high to low indices.
+        let (predecessor_offsets, predecessors) = build_predecessor_csr(successors);
+        let mut queue = VecDeque::with_capacity(num_insts);
+        let mut queued = vec![false; num_insts];
         for idx in (0..num_insts).rev() {
-            // Compute live_out as union of live_in of all successors
+            queue.push_back(idx);
+            queued[idx] = true;
+        }
+
+        while let Some(idx) = queue.pop_front() {
+            queued[idx] = false;
+            #[cfg(test)]
+            {
+                row_visits += 1;
+            }
+
+            // Compute live_out as union of live-in of all successors.
             new_live_in.clear();
             for &succ in &successors[idx] {
                 new_live_in.union_with(&live_in[succ]);
             }
 
-            // Compute live_in = uses ∪ (live_out - defs)
+            // Compute live_in = uses ∪ (live_out - defs).
             for vreg in &inst_defs[idx] {
                 new_live_in.set(vreg.index() as usize, false);
             }
@@ -651,36 +667,94 @@ fn compute_dataflow(
                 new_live_in.insert(vreg.index() as usize);
             }
 
-            // Check if anything changed
             if new_live_in != live_in[idx] {
-                changed = true;
                 live_in[idx].clone_from(&new_live_in);
+                for &predecessor in
+                    &predecessors[predecessor_offsets[idx]..predecessor_offsets[idx + 1]]
+                {
+                    if !queued[predecessor] {
+                        queued[predecessor] = true;
+                        queue.push_back(predecessor);
+                    }
+                }
             }
         }
+    } else {
+        // Acyclic CFGs retain the exact one-pass reverse sweep: every
+        // successor has a greater instruction index, so successors are solved
+        // before their predecessors and no worklist is needed.
+        for idx in (0..num_insts).rev() {
+            #[cfg(test)]
+            {
+                row_visits += 1;
+            }
 
-        #[cfg(test)]
-        {
-            sweeps += 1;
-        }
-        if !has_back_edge {
-            // Every successor has a greater instruction index, so this reverse
-            // sweep visited successors before their predecessors. There can be
-            // no information left to propagate on another sweep.
-            break;
+            new_live_in.clear();
+            for &succ in &successors[idx] {
+                new_live_in.union_with(&live_in[succ]);
+            }
+            for vreg in &inst_defs[idx] {
+                new_live_in.set(vreg.index() as usize, false);
+            }
+            for vreg in &inst_uses[idx] {
+                new_live_in.insert(vreg.index() as usize);
+            }
+
+            if new_live_in != live_in[idx] {
+                live_in[idx].clone_from(&new_live_in);
+            }
         }
     }
 
     #[cfg(test)]
-    let sweep_count = sweeps;
+    let row_visit_count = row_visits;
     #[cfg(not(test))]
-    let sweep_count = ();
+    let row_visit_count = ();
     let sets = if has_back_edge {
         let live_out = materialize_live_out(&live_in, successors, vreg_count_usize);
         DataflowSets::Cyclic { live_in, live_out }
     } else {
         DataflowSets::Acyclic { live_in }
     };
-    (sets, sweep_count)
+    (sets, row_visit_count)
+}
+
+/// Build a flat CSR predecessor index for a successor table.
+///
+/// The offsets and edge arrays are transient to one cyclic dataflow solve.
+/// Inserting source rows in descending order makes each predecessor slice
+/// deterministic without sorting or per-row `Vec` allocations.
+fn build_predecessor_csr(successors: &[SuccessorList]) -> (Vec<usize>, Vec<usize>) {
+    let mut offsets = vec![0usize; successors.len() + 1];
+    for successor_list in successors {
+        for &successor in successor_list {
+            offsets[successor + 1] += 1;
+        }
+    }
+    for idx in 1..offsets.len() {
+        offsets[idx] += offsets[idx - 1];
+    }
+
+    let mut predecessors = vec![0usize; offsets[successors.len()]];
+    for source in (0..successors.len()).rev() {
+        for &successor in &successors[source] {
+            // Reuse the offset entries as per-row insertion cursors. They
+            // currently contain each row's start; after filling, they hold
+            // each row's end and can be shifted back in place below. This
+            // avoids a second instruction-sized cursor allocation.
+            let slot = offsets[successor];
+            predecessors[slot] = source;
+            offsets[successor] += 1;
+        }
+    }
+    // Restore the CSR starts while retaining the final total at offsets[n].
+    // Descending order is required because each source entry is still the
+    // preceding row's end until it is copied.
+    for idx in (1..successors.len()).rev() {
+        offsets[idx] = offsets[idx - 1];
+    }
+    offsets[0] = 0;
+    (offsets, predecessors)
 }
 
 fn materialize_live_out(
@@ -989,6 +1063,129 @@ mod tests {
         DATAFLOW_CALLS.with(Cell::get)
     }
 
+    fn reference_dataflow(
+        num_insts: usize,
+        vreg_count: u32,
+        successors: &[SuccessorList],
+        inst_uses: &[VRegList],
+        inst_defs: &[VRegList],
+    ) -> (Vec<FixedBitSet>, Vec<FixedBitSet>) {
+        let mut live_in: Vec<FixedBitSet> =
+            vec![FixedBitSet::with_capacity(vreg_count as usize); num_insts];
+        let mut scratch = FixedBitSet::with_capacity(vreg_count as usize);
+        loop {
+            let mut changed = false;
+            for idx in (0..num_insts).rev() {
+                scratch.clear();
+                for &successor in &successors[idx] {
+                    scratch.union_with(&live_in[successor]);
+                }
+                for vreg in &inst_defs[idx] {
+                    scratch.set(vreg.index() as usize, false);
+                }
+                for vreg in &inst_uses[idx] {
+                    scratch.insert(vreg.index() as usize);
+                }
+                if scratch != live_in[idx] {
+                    changed = true;
+                    live_in[idx].clone_from(&scratch);
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let live_out = materialize_live_out(&live_in, successors, vreg_count as usize);
+        (live_in, live_out)
+    }
+
+    fn assert_worklist_matches_reference(
+        num_insts: usize,
+        vreg_count: u32,
+        successors: &[SuccessorList],
+        inst_uses: &[VRegList],
+        inst_defs: &[VRegList],
+    ) {
+        assert!(has_back_edge(successors));
+        let (expected_in, expected_out) =
+            reference_dataflow(num_insts, vreg_count, successors, inst_uses, inst_defs);
+        let (sets, _) = compute_dataflow(
+            num_insts, vreg_count, successors, inst_uses, inst_defs, true,
+        );
+        let DataflowSets::Cyclic { live_in, live_out } = sets else {
+            panic!("the back-edge must select cyclic dataflow storage");
+        };
+        assert_eq!(live_in, expected_in);
+        assert_eq!(live_out, expected_out);
+    }
+
+    #[test]
+    fn predecessor_csr_is_descending_and_flat() {
+        let successors: Vec<SuccessorList> = [
+            [1, 2].into_iter().collect(),
+            [2].into_iter().collect(),
+            [1].into_iter().collect(),
+            SuccessorList::new(),
+        ]
+        .into();
+        let (offsets, predecessors) = build_predecessor_csr(&successors);
+        assert_eq!(offsets, vec![0, 0, 2, 4, 4]);
+        assert_eq!(predecessors, vec![2, 0, 1, 0]);
+    }
+
+    #[test]
+    fn cyclic_worklist_matches_reverse_sweep_on_bounded_cfgs() {
+        let mut state = 0x5eed_u64;
+        let next = |state: &mut u64| {
+            *state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (*state >> 32) as usize
+        };
+
+        for _case in 0..64 {
+            let num_insts = 4 + next(&mut state) % 20;
+            let vreg_count = 1 + (next(&mut state) % 8) as u32;
+            let mut successors = vec![SuccessorList::new(); num_insts];
+            for idx in 0..num_insts {
+                if idx + 1 < num_insts {
+                    successors[idx].push(idx + 1);
+                }
+                if idx > 1 && next(&mut state) % 3 == 0 {
+                    successors[idx].push(next(&mut state) % idx);
+                }
+            }
+            // Ensure the generated graph is cyclic while retaining the
+            // bounded two-successor MIR contract.
+            successors[num_insts - 1] = [num_insts - 2, 1].into_iter().collect();
+
+            let mut uses = Vec::with_capacity(num_insts);
+            let mut defs = Vec::with_capacity(num_insts);
+            for _ in 0..num_insts {
+                let mut use_facts = VRegList::new();
+                let mut def_facts = VRegList::new();
+                if next(&mut state) % 2 == 0 {
+                    use_facts.push(VReg::new((next(&mut state) % vreg_count as usize) as u32));
+                }
+                if next(&mut state) % 2 == 0 {
+                    def_facts.push(VReg::new((next(&mut state) % vreg_count as usize) as u32));
+                }
+                uses.push(use_facts);
+                defs.push(def_facts);
+            }
+            assert_worklist_matches_reference(num_insts, vreg_count, &successors, &uses, &defs);
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn malformed_successor_target_still_panics() {
+        let successors: Vec<SuccessorList> = [[0, 99].into_iter().collect()].into();
+        let uses = vec![VRegList::new()];
+        let defs = vec![VRegList::new()];
+        let _ = compute_dataflow(1, 1, &successors, &uses, &defs, true);
+    }
+
     #[test]
     fn test_simple_liveness() {
         let instructions = vec![
@@ -1194,7 +1391,7 @@ mod tests {
         // back-edge, so convergence requires another reverse pass. Instruction
         // 0 is processed after those live rows but remains empty, proving one
         // row's scratch bits do not leak to the next row or the next round.
-        let (sets, sweeps) =
+        let (sets, row_visits) =
             compute_dataflow(4, 1, &successors, &uses, &defs, has_back_edge(&successors));
         let DataflowSets::Cyclic { live_in, live_out } = sets else {
             panic!("the back-edge must select cyclic dataflow storage");
@@ -1208,7 +1405,10 @@ mod tests {
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert_eq!(ones(&live_out[2]), vec![0]);
         assert!(live_out[3].is_clear());
-        assert_eq!(sweeps, 3, "the back-edge requires fixed-point iteration");
+        assert_eq!(
+            row_visits, 6,
+            "the worklist must revisit changed predecessors"
+        );
     }
 
     #[test]
@@ -1227,7 +1427,7 @@ mod tests {
         .into();
         let defs = vec![VRegList::new(); successors.len()];
 
-        let (sets, sweeps) =
+        let (sets, row_visits) =
             compute_dataflow(3, 1, &successors, &uses, &defs, has_back_edge(&successors));
         let DataflowSets::Acyclic { live_in } = sets else {
             panic!("forward-only control flow must select acyclic storage");
@@ -1241,7 +1441,7 @@ mod tests {
         assert_eq!(ones(&live_out[0]), vec![0]);
         assert_eq!(ones(&live_out[1]), vec![0]);
         assert!(live_out[2].is_clear());
-        assert_eq!(sweeps, 1, "forward-only control flow is solved exactly");
+        assert_eq!(row_visits, 3, "forward-only dataflow visits each row once");
     }
 
     // ========================================
