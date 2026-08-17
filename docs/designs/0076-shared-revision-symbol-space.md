@@ -39,11 +39,27 @@ only the `Spur` handles differ.
 This ADR shares one append-only symbol interner across all bodies of a
 revision:
 
-1. **Index space and scope.** The shared space is the symbol interner
-   (string → `Spur`), scoped to one revision generation of the semantic
-   engine. Type pools remain body-private exactly as today — this ADR
-   deliberately does not share pool indices, which are sort keys in
-   measured places and whose sharing (candidate A) reaches only 0.71%.
+1. **Index space and scope.** The shared space is the *equality/identity*
+   symbol space (string → handle), scoped to one revision generation of
+   the semantic engine. Type pools remain body-private exactly as today —
+   this ADR deliberately does not share pool indices, which are sort keys
+   in measured places and whose sharing (candidate A) reaches only 0.71%.
+
+   *Amended after the Phase 1 audit*: the shared space cannot simply
+   replace the body interner behind `body_symbol_interner()`. Packed RIR
+   asserts that each body's symbol handles equal its **dense, body-local
+   ordinals** (`materialize_candidate_rir_internal`,
+   `canonical_lower.rs:386`) and encodes symbols as those ordinals — the
+   ordinal is the encoding, not an ordering that can be converted to
+   text. A body therefore keeps a private dense encoding space alongside
+   the shared equality space, wired through the existing remap machinery
+   (`PackedValidatedRir::remap_symbol`, `AstGen::normalize_symbol`).
+   Artifact-space assignment: packed RIR and the AIR comptime-argument
+   encoder speak the body-dense ordinal space; analysis-state equality,
+   membership, and cross-body identity speak the shared space. The
+   interning saving is realized in the shared space (strings are interned
+   once per revision); the dense space holds only the body's own compact
+   remap, not re-interned strings.
 2. **Handle discipline (the core contract).** `Spur` values under a
    shared concurrent interner are assigned in first-intern order, which
    varies with worker scheduling. Therefore: `Spur` is a process-local,
@@ -69,9 +85,18 @@ revision:
 5. **`require_rir_authority`.** Its pointer-equality assertion (a body's
    analysis-state interner must be the body RIR's interner) survives with
    the revision interner as the shared referent: both sides hold the same
-   `Arc`, and the assertion becomes `Arc::ptr_eq` against the revision's
-   interner. A body RIR carrying a superseded generation's interner fails
-   the check, which is the invalidation path in (4) doing its job.
+   shared handle, and the assertion becomes pointer identity against the
+   revision's interner. A body RIR carrying a superseded generation's
+   interner fails the check, which is the invalidation path in (4) doing
+   its job. *Amended after the Phase 1 audit*: the ownership chain
+   through `body_identity.rs`/`provider_body_host.rs` is `Rc<…>` today,
+   so Phase 2 includes converting that chain to `Arc` (or an equivalent
+   shared-ownership handle) before the revision-scoped referent can
+   exist; this conversion is in Phase 2's budget, byte-identity gated
+   like everything else. The authority contract additionally covers the
+   dense space: a body's packed RIR must carry the dense remap minted by
+   that body's own analysis, and the dense-ordinal assertion at
+   `canonical_lower.rs:386` keeps holding unchanged.
 
 ## What this buys
 
@@ -100,6 +125,10 @@ expected shape: this is a closure-size-scaled cost.
 - **Retention**: peak RSS on Lattice within ±2% (one interner holding
   the union of body symbols replaces 1,263 holding overlapping subsets —
   expected to drop, measured not assumed).
+- **Dense-space integrity** (added with the dual-space amendment): the
+  packed-RIR dense-ordinal assertion (`canonical_lower.rs:386`) holds
+  unchanged under sharing, and a test proves a body's packed RIR round-
+  trips through its dense remap to the same bytes as today.
 
 ## Rejected alternatives (measured in the note)
 
