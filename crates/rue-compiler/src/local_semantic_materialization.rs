@@ -1293,8 +1293,9 @@ pub(crate) fn select_materialization_facts(
     };
     selection.callable(identity);
     let mut required_types = Vec::new();
+    let mut seen_required_types = std::collections::HashSet::new();
     let mut require_type = |ty: &crate::durable_semantics::DurableType| {
-        if !required_types.contains(ty) {
+        if seen_required_types.insert(ty.clone()) {
             required_types.push(ty.clone());
         }
     };
