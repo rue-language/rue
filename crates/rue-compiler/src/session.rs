@@ -8909,7 +8909,10 @@ mod tests {
             cfg_work.prerequisite_type_fact_requests, 0,
             "drop-glue prerequisites already own the exact type-fact dependency: {cfg_work:?}"
         );
-        assert!(cfg_work.prerequisite_drop_glue_requests > 0, "{cfg_work:?}");
+        assert_eq!(
+            cfg_work.prerequisite_drop_glue_requests, 0,
+            "a CFG containing only statically dropless types needs no drop-glue terminals: {cfg_work:?}"
+        );
         assert_eq!(
             cfg_work.retained_interner_entries_scanned, 0,
             "{cfg_work:?}"

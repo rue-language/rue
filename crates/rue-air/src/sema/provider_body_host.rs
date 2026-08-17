@@ -2183,15 +2183,25 @@ where
             | T::Module(_)
             | T::GenericParameter(_) => {}
             T::AnonymousNominal(identity) => {
+                // Importing the same anonymous nominal through several
+                // signatures is common in a body request. The first visit
+                // installs its identity and method endpoints; once that
+                // succeeds, replaying the durable relocation walk only adds
+                // registration work and cannot change the result.
+                let ty = self
+                    .endpoint
+                    .mint_anonymous(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                if self.canonical_anonymous_types.contains_key(&ty)
+                    || self.consulted_anonymous_types.borrow().contains_key(&ty)
+                {
+                    return Ok(());
+                }
                 let issued = self
                     .register_and_issue_anonymous_identity(identity)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.endpoint
                     .register_anonymous_nominal(issued.clone(), identity.clone());
-                let ty = self
-                    .endpoint
-                    .mint_anonymous(identity)
-                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
                 self.consulted_anonymous_types
                     .borrow_mut()
                     .insert(ty, issued.clone());
