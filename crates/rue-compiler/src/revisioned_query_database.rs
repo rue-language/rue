@@ -5876,10 +5876,6 @@ fn evaluate_call_abi(
 
 fn evaluate_drop_glue(
     context: &rue_query::QueryContext,
-    type_shapes: &QueryFamily<
-        crate::type_queries::TypeQueryKey,
-        crate::type_queries::TypeShapeValue,
-    >,
     type_facts: &QueryFamily<
         crate::type_queries::TypeQueryKey,
         crate::type_queries::TypeFactsValue,
@@ -5898,14 +5894,14 @@ fn evaluate_drop_glue(
                 .with_terminal_kind(QueryTerminalKind::Failure));
         }
     };
-    let shape_terminal = context.query_registered(type_shapes, key.clone())?;
-    let shape = match type_shape_from_terminal(&shape_terminal) {
-        Ok(shape) => shape,
-        Err(failure) => {
-            return Ok(QueryOutput::success(DropGlueValue::Failure(failure))
-                .with_terminal_kind(QueryTerminalKind::Failure));
-        }
-    };
+    // `evaluate_type_facts` queries `compiler.type-shape` for this same key and
+    // stamps the answer onto every `Available` value it publishes, so the facts
+    // already carry the canonical shape. Asking the shape family again would
+    // repeat a lookup per drop-glue request for a value in hand, and it cannot
+    // disagree: facts that resolved at all resolved through that shape, and the
+    // dependency this drops is still observed transitively through the facts
+    // edge, so invalidation reaches here unchanged.
+    let shape = &facts.shape;
     let children = match shape {
         TypeShape::Array { element, len } if *len != 0 => vec![element.clone()],
         TypeShape::Array { .. } => Vec::new(),
@@ -14028,7 +14024,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the CallAbi family has one canonical name");
-        let type_shapes_for_drop_glue = type_shapes.clone();
         let type_facts_for_drop_glue = type_facts.clone();
         let drop_glues = runtime
             .family_with_equality_and_evaluator(
@@ -14037,12 +14032,7 @@ impl RevisionedQueryDatabase {
                 |left: &crate::type_queries::DropGlueValue,
                  right: &crate::type_queries::DropGlueValue| left == right,
                 move |context, _, key: &crate::type_queries::TypeQueryKey| {
-                    evaluate_drop_glue(
-                        context,
-                        &type_shapes_for_drop_glue,
-                        &type_facts_for_drop_glue,
-                        key,
-                    )
+                    evaluate_drop_glue(context, &type_facts_for_drop_glue, key)
                 },
             )
             .expect("the DropGlue family has one canonical name");
@@ -33123,6 +33113,93 @@ fn main() -> i32 {
             },
             CancellationToken::new(),
         )
+    }
+
+    #[test]
+    fn drop_glue_reads_the_shape_carried_by_type_facts_instead_of_requesting_it() {
+        // RUE-1556: `TypeFacts` already carries the canonical `TypeShape` for
+        // its own key — `evaluate_type_facts` stamps the shape it queried onto
+        // every value it publishes — so drop glue asking the shape family again
+        // was a second lookup for a value already in hand. The saved dependency
+        // is still observed transitively through type-facts, so invalidation is
+        // unchanged; only the direct edge is gone.
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Child { value: i64 }\n\
+                 drop fn Child(self) {}\n\
+                 struct Outer { first: Child, spacer: i64, second: Child }",
+            )],
+            1,
+        );
+        let outer = named_type_instance(&module, "Outer", crate::StableDefinitionKind::Struct);
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+
+        let attempt = request_drop_glue(&database, revision, outer.clone());
+        assert_eq!(attempt.execution(), RequestExecution::Computed);
+        let dependencies = attempt.terminal().unwrap().dependencies();
+
+        let families: Vec<&str> = dependencies
+            .iter()
+            .map(|observation| observation.node.family())
+            .collect();
+        assert!(
+            families.contains(&"compiler.type-facts"),
+            "drop glue still depends on the facts it reads the shape from, got {families:?}"
+        );
+        assert!(
+            !families.contains(&"compiler.type-shape"),
+            "one drop-glue request must not perform a shape-family lookup of its \
+             own; the shape travels with the facts. Observed families: {families:?}"
+        );
+
+        // The control for that negative: type-facts does observe the shape
+        // family for this same key, so a shape edge is something these
+        // dependency lists demonstrably show when one exists.
+        let facts_attempt = database.runtime.request_registered(
+            &database.type_facts,
+            revision,
+            crate::type_queries::TypeQueryKey {
+                ty: outer,
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        );
+        let facts_families: Vec<&str> = facts_attempt
+            .terminal()
+            .unwrap()
+            .dependencies()
+            .iter()
+            .map(|observation| observation.node.family())
+            .collect();
+        assert!(
+            facts_families.contains(&"compiler.type-shape"),
+            "type-facts is where the shape is queried and stamped onto the value, \
+             got {facts_families:?}"
+        );
+
+        // The plan itself is derived from that shape, so a correct read shows up
+        // as the same field-granular ownership decisions the shape describes.
+        let rue_query::QueryOutcome::Success(crate::type_queries::DropGlueValue::Available(facts)) =
+            attempt.terminal().unwrap().outcome()
+        else {
+            panic!("drop-glue plan did not publish");
+        };
+        let crate::type_queries::DropGluePlan::Struct { fields } = &facts.plan else {
+            panic!("outer must have a struct plan");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| (field.name.as_ref(), field.drop))
+                .collect::<Vec<_>>(),
+            [("first", true), ("spacer", false), ("second", true)],
+            "the plan must still name every field in shape order"
+        );
     }
 
     #[test]
