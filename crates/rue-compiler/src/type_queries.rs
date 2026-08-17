@@ -137,12 +137,25 @@ impl QueryKey for CallAbiQueryKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct CallAbiFacts {
     pub(crate) convention: CallAbiConvention,
     pub(crate) return_class: CallAbiReturnClass,
     pub(crate) arguments: Arc<[CallAbiArgument]>,
+    /// The stable native machine symbol is derived once by the ABI terminal.
+    /// It is a retained projection, not part of the ABI facts' semantic value.
+    pub(crate) native_symbol: Option<Arc<str>>,
 }
+
+impl PartialEq for CallAbiFacts {
+    fn eq(&self, other: &Self) -> bool {
+        self.convention == other.convention
+            && self.return_class == other.return_class
+            && self.arguments == other.arguments
+    }
+}
+
+impl Eq for CallAbiFacts {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallAbiConvention {
@@ -417,7 +430,11 @@ impl RetainedCharge for CallAbiArgument {
 
 impl RetainedCharge for CallAbiFacts {
     fn retained_charge(&self) -> u64 {
-        self.arguments.retained_charge()
+        self.arguments.retained_charge().saturating_add(
+            self.native_symbol
+                .as_ref()
+                .map_or(0, |symbol| symbol.len() as u64),
+        )
     }
 }
 
@@ -529,5 +546,27 @@ pub(crate) fn align_to(value: u64, alignment: u64) -> u64 {
         value
     } else {
         value.saturating_add(alignment - 1) / alignment * alignment
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn native_facts(symbol: &str) -> CallAbiFacts {
+        CallAbiFacts {
+            convention: CallAbiConvention::Native,
+            return_class: CallAbiReturnClass::ZeroSized,
+            arguments: Arc::from([]),
+            native_symbol: Some(Arc::from(symbol)),
+        }
+    }
+
+    #[test]
+    fn native_symbol_is_a_retained_projection_not_abi_semantic_identity() {
+        let first = native_facts("__rue_sem_v1_first");
+        let second = native_facts("__rue_sem_v1_second");
+        assert_eq!(first, second);
+        assert_ne!(first.retained_charge(), second.retained_charge());
     }
 }
