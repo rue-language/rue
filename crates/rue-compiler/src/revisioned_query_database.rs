@@ -15758,6 +15758,7 @@ impl RevisionedQueryDatabase {
                     provider_observation_meter: provider_observation_meter.clone(),
                     lookup_root_lease: lookup_root_lease.clone(),
                     runtime: runtime.clone(),
+                    symbol_space: RevisionSymbolSpace::default(),
                     #[cfg(test)]
                     inject_body_transaction_failure: inject_body_transaction_failure.clone(),
                     #[cfg(test)]
@@ -16859,6 +16860,51 @@ impl BodyInputResolver {
     }
 }
 
+/// The revision-scoped owner of the shared symbol equality space (ADR-0076).
+///
+/// One append-only interner serves every body of one semantic revision, so a
+/// name in the program's nominal closure is interned once rather than once per
+/// body. A generation is retired when its revision falls out of the window
+/// below; a body still carrying the retired generation fails
+/// `require_rir_authority` and re-runs, so a superseded equality space is never
+/// silently reused.
+///
+/// The window holds more than one revision on purpose. Retiring the previous
+/// generation on every mint would make two concurrently pinned revisions retire
+/// each other's space and abandon each other's bodies without progressing;
+/// keeping the recent few makes that need more simultaneously live revisions
+/// than the engine pins, while still bounding how many interners are resident.
+#[derive(Debug, Default)]
+struct RevisionSymbolSpace {
+    generations: rue_rir::SymbolSpaceGenerations,
+    live: Mutex<VecDeque<(Revision, rue_rir::SharedSymbolSpace)>>,
+}
+
+impl RevisionSymbolSpace {
+    /// How many revisions' equality spaces stay live at once.
+    const WINDOW: usize = 4;
+
+    /// The live generation for `revision`, minting it if this revision has no
+    /// live generation yet.
+    fn generation(&self, revision: Revision) -> rue_rir::SharedSymbolSpace {
+        let mut live = self
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, space)) = live.iter().find(|(pinned, _)| *pinned == revision) {
+            return space.clone();
+        }
+        let space = self.generations.next_generation();
+        live.push_back((revision, space.clone()));
+        while live.len() > Self::WINDOW {
+            if let Some((_, evicted)) = live.pop_front() {
+                evicted.supersede();
+            }
+        }
+        space
+    }
+}
+
 struct BodyTransactionEvaluator {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
@@ -16878,6 +16924,11 @@ struct BodyTransactionEvaluator {
     provider_observation_meter: Arc<ProviderObservationCounters>,
     lookup_root_lease: Arc<Mutex<PublishedRootLookupLease>>,
     runtime: QueryRuntime,
+    /// The ADR-0076 revision-shared symbol space. Every body of one semantic
+    /// revision decodes its RIR into, and analyzes against, one append-only
+    /// interner, so the program's nominal closure is interned once per
+    /// revision instead of once per body.
+    symbol_space: RevisionSymbolSpace,
     #[cfg(test)]
     inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
@@ -17331,11 +17382,13 @@ impl BodyTransactionEvaluator {
                 let _body_input_lowering_span =
                     tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
                         .entered();
+                let symbol_space = self.symbol_space.generation(context.revision());
                 let materialized = if attribution_enabled {
                     input
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle_with_attribution(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -17347,6 +17400,7 @@ impl BodyTransactionEvaluator {
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -17386,6 +17440,13 @@ impl BodyTransactionEvaluator {
                     }
                 };
                 drop(_body_input_lowering_span);
+                // ADR-0076 §4: a body materialized against a superseded
+                // equality space is never reused. Abandoning the attempt here
+                // re-runs the body against the live generation, which is the
+                // fail-closed half of `require_rir_authority`.
+                if !bundle.symbol_space().is_live() {
+                    return Err(QueryAbort::Canceled);
+                }
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -17612,11 +17673,13 @@ impl BodyTransactionEvaluator {
                 let _body_input_lowering_span =
                     tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
                         .entered();
+                let symbol_space = self.symbol_space.generation(context.revision());
                 let materialized = if attribution_enabled {
                     input
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle_with_attribution(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -17628,6 +17691,7 @@ impl BodyTransactionEvaluator {
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -17667,6 +17731,13 @@ impl BodyTransactionEvaluator {
                     }
                 };
                 drop(_body_input_lowering_span);
+                // ADR-0076 §4: a body materialized against a superseded
+                // equality space is never reused. Abandoning the attempt here
+                // re-runs the body against the live generation, which is the
+                // fail-closed half of `require_rir_authority`.
+                if !bundle.symbol_space().is_live() {
+                    return Err(QueryAbort::Canceled);
+                }
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -17980,11 +18051,13 @@ impl BodyTransactionEvaluator {
                 let _body_input_lowering_span =
                     tracing::info_span!("body_input_lowering", phase = "semantic_analysis")
                         .entered();
+                let symbol_space = self.symbol_space.generation(context.revision());
                 let materialized = if attribution_enabled {
                     input
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle_with_declaration_and_attribution(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -17998,6 +18071,7 @@ impl BodyTransactionEvaluator {
                         .artifacts
                         .plan
                         .materialize_body_rir_bundle_with_declaration(
+                            &symbol_space,
                             input.source.file_id,
                             input.source.declaration_start,
                             input.source.source_length,
@@ -18039,6 +18113,13 @@ impl BodyTransactionEvaluator {
                     }
                 };
                 drop(_body_input_lowering_span);
+                // ADR-0076 §4: a body materialized against a superseded
+                // equality space is never reused. Abandoning the attempt here
+                // re-runs the body against the live generation, which is the
+                // fail-closed half of `require_rir_authority`.
+                if !bundle.symbol_space().is_live() {
+                    return Err(QueryAbort::Canceled);
+                }
                 let provider = CompilerBodyFactProvider::new(
                     self.compiler_body_provider_queries(
                         context,
@@ -24650,6 +24731,41 @@ mod tests {
     };
     use rue_span::FileId;
     use std::collections::{BTreeSet, HashMap};
+
+    /// ADR-0076 §1/§4: one append-only equality space per revision, shared by
+    /// every body of that revision, and retired once the revision leaves the
+    /// live window so a body carrying it fails its authority check.
+    #[test]
+    fn the_revision_symbol_space_is_one_generation_per_revision() {
+        let space = RevisionSymbolSpace::default();
+        let first = Revision::new(1, 0);
+
+        let a = space.generation(first);
+        let b = space.generation(first);
+        assert!(Arc::ptr_eq(a.interner(), b.interner()));
+        a.interner().get_or_intern("__anon_struct_00.member");
+        assert_eq!(b.interner().len(), 1, "the space is shared, not copied");
+
+        // A peer revision gets its own space and does not retire this one, so
+        // two concurrently pinned revisions cannot abandon each other's bodies.
+        let peer = space.generation(Revision::new(2, 0));
+        assert!(!Arc::ptr_eq(a.interner(), peer.interner()));
+        assert!(a.is_live());
+        assert!(peer.is_live());
+        assert_eq!(peer.interner().len(), 0);
+
+        // Falling out of the live window retires it for every holder.
+        for id in 3..=(RevisionSymbolSpace::WINDOW as u64 + 2) {
+            space.generation(Revision::new(id, 0));
+        }
+        assert!(!a.is_live(), "the superseded generation fails closed");
+        assert!(!b.is_live());
+        assert_eq!(
+            a.interner().len(),
+            1,
+            "a retired space still resolves the handles it issued"
+        );
+    }
 
     fn lookup_history_key(name: impl Into<Arc<str>>) -> LookupObservationKey {
         LookupObservationKey::Name(LookupNameKey {
@@ -37515,6 +37631,7 @@ fn main() -> i32 {
             .artifacts
             .plan
             .materialize_body_rir_bundle(
+                &rue_rir::SharedSymbolSpace::private(),
                 input.source.file_id,
                 input.source.declaration_start,
                 input.source.source_length,
@@ -38307,6 +38424,7 @@ fn main() -> i32 {
             .artifacts
             .plan
             .materialize_body_rir_bundle(
+                &rue_rir::SharedSymbolSpace::private(),
                 input.source.file_id,
                 input.source.declaration_start,
                 input.source.source_length,
@@ -38808,16 +38926,18 @@ fn main() -> i32 {
         let first_weak = Arc::downgrade(first_artifact);
         let render = |artifact: &crate::canonical_lower::DeclarationBodyPlanArtifacts| {
             let declaration_start = u32::try_from(text.find("fn f0").unwrap()).unwrap();
-            let (rir, symbols) = artifact
+            let space = rue_rir::SharedSymbolSpace::private();
+            let rir = artifact
                 .plan
                 .materialize_candidate_rir(
+                    &space,
                     rue_span::FileId::new(1),
                     declaration_start,
                     u32::try_from(text.len()).unwrap(),
                     || Ok(()),
                 )
                 .unwrap();
-            rue_rir::RirPrinter::new(&rir, &symbols).to_string()
+            rue_rir::RirPrinter::new(&rir, space.interner()).to_string()
         };
         let first_render = render(first_artifact);
         drop(first_terminal);

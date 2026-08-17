@@ -233,7 +233,7 @@ impl PackedValidatedRir {
         projection: PackedRirProjection,
         checkpoint: impl FnMut() -> Result<(), E>,
     ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
-        self.try_decode_validated_internal(projection, false, checkpoint)
+        self.try_decode_validated_internal(projection, false, checkpoint, Self::dense_symbol)
     }
 
     /// Decode one candidate and append its analysis-only named-method owner
@@ -243,7 +243,39 @@ impl PackedValidatedRir {
         projection: PackedRirProjection,
         checkpoint: impl FnMut() -> Result<(), E>,
     ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
-        self.try_decode_validated_internal(projection, true, checkpoint)
+        self.try_decode_validated_internal(projection, true, checkpoint, Self::dense_symbol)
+    }
+
+    /// Decode one candidate while translating its dense symbol ordinals into
+    /// another interner's handles.
+    ///
+    /// The packed envelope always speaks the body-private dense encoding space
+    /// (ADR-0076 §1): a symbol *is* its ordinal in this owner's dense spelling
+    /// section. A caller whose analysis state uses the revision-shared equality
+    /// space supplies the body's dense remap here, so the decoded RIR names
+    /// symbols in the same space its analysis does. `remap_symbol` returning
+    /// `None` is an out-of-range ordinal and fails the decode.
+    pub fn try_decode_validated_remapped<E>(
+        &self,
+        projection: PackedRirProjection,
+        include_method_owner: bool,
+        checkpoint: impl FnMut() -> Result<(), E>,
+        remap_symbol: impl FnMut(u32) -> Option<Spur>,
+    ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
+        self.try_decode_validated_internal(
+            projection,
+            include_method_owner,
+            checkpoint,
+            remap_symbol,
+        )
+    }
+
+    /// The identity remap: a dense ordinal is its own symbol handle. This is
+    /// the body-private dense encoding space read back as itself, used by the
+    /// declaration-time candidate path whose spelling table is a `&[&str]`
+    /// indexed by the same ordinals.
+    fn dense_symbol(ordinal: u32) -> Option<Spur> {
+        Spur::try_from_usize(ordinal as usize)
     }
 
     fn try_decode_validated_internal<E>(
@@ -251,6 +283,7 @@ impl PackedValidatedRir {
         projection: PackedRirProjection,
         include_method_owner: bool,
         mut checkpoint: impl FnMut() -> Result<(), E>,
+        mut remap_symbol: impl FnMut(u32) -> Option<Spur>,
     ) -> Result<(ValidatedRir, PackedRirAppendMetadata), PackedRirAppendError<E>> {
         enum Checked<E> {
             Callback(E),
@@ -301,7 +334,7 @@ impl PackedValidatedRir {
                 false,
                 || checkpoint().map_err(Checked::Callback),
                 |ordinal| {
-                    Spur::try_from_usize(ordinal as usize).ok_or(Checked::Invalid(
+                    remap_symbol(ordinal).ok_or(Checked::Invalid(
                         PackedRirDecodeError::CountOutOfBounds {
                             family: "projected symbol ordinal",
                         },
@@ -3488,6 +3521,96 @@ mod tests {
         };
         assert_eq!(render(&source), render(&decoded));
         assert_eq!(pack(&decoded, &symbols, root).as_bytes(), packed.as_bytes());
+    }
+
+    /// ADR-0076 dense-space integrity.
+    ///
+    /// The packed envelope always speaks the body-private dense ordinal space.
+    /// Decoding it through a body's dense remap into a *shared* equality space
+    /// — one already carrying unrelated strings, so no handle equals its
+    /// ordinal — produces the same program: the two decodes render identically,
+    /// and the dense decode still repacks to the original bytes. The dense
+    /// space is the encoding; the equality space the body analyzes in is not.
+    #[test]
+    fn a_shared_space_decode_renders_and_repacks_exactly_like_the_dense_one() {
+        let (source, dense_symbols, root) = every_structured_type_owner();
+        let packed = pack(&source, &dense_symbols, root);
+        let projection = PackedRirProjection {
+            symbol_count: packed.symbol_count(),
+            file_id: FileId::DEFAULT,
+            declaration_start: 0,
+            source_length: u32::MAX,
+        };
+
+        let shared: ThreadedRodeo = ThreadedRodeo::new();
+        for occupied in ["@revision", "@peer-body", "@another-body-name"] {
+            shared.get_or_intern(occupied);
+        }
+        let dense_remap = packed
+            .symbols()
+            .map(|spelling| shared.get_or_intern(spelling))
+            .collect::<Vec<_>>();
+        assert_eq!(dense_remap.len(), packed.symbol_count());
+        assert!(
+            dense_remap
+                .iter()
+                .enumerate()
+                .all(|(ordinal, symbol)| symbol.into_usize() != ordinal),
+            "the fixture must exercise handles that are not their own ordinals"
+        );
+
+        let (dense_decoded, dense_metadata) = packed
+            .try_decode_validated(projection, || Ok::<_, ()>(()))
+            .unwrap();
+        let (shared_decoded, shared_metadata) = packed
+            .try_decode_validated_remapped(
+                projection,
+                false,
+                || Ok::<_, ()>(()),
+                |ordinal| dense_remap.get(ordinal as usize).copied(),
+            )
+            .unwrap();
+
+        assert_eq!(dense_metadata.declaration, shared_metadata.declaration);
+        assert_eq!(dense_metadata.declaration, root);
+        assert_eq!(dense_decoded.0.extra, shared_decoded.0.extra);
+        assert_eq!(
+            RirPrinter::new(&dense_decoded, &dense_symbols).to_string(),
+            RirPrinter::new(&shared_decoded, &shared).to_string(),
+            "the equality space a body decodes into does not change the program"
+        );
+        assert_eq!(
+            pack(&dense_decoded, &dense_symbols, root).as_bytes(),
+            packed.as_bytes(),
+            "the dense encoding space round-trips to the same bytes"
+        );
+    }
+
+    /// An ordinal outside the body's dense remap fails the decode closed rather
+    /// than silently naming another body's symbol in the shared space.
+    #[test]
+    fn a_dense_ordinal_outside_the_remap_fails_the_decode() {
+        let (source, dense_symbols, root) = every_structured_type_owner();
+        let packed = pack(&source, &dense_symbols, root);
+        let error = packed
+            .try_decode_validated_remapped(
+                PackedRirProjection {
+                    symbol_count: packed.symbol_count(),
+                    file_id: FileId::DEFAULT,
+                    declaration_start: 0,
+                    source_length: u32::MAX,
+                },
+                false,
+                || Ok::<_, ()>(()),
+                |_| None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PackedRirAppendError::Decode(PackedRirDecodeError::CountOutOfBounds {
+                family: "projected symbol ordinal"
+            })
+        ));
     }
 
     #[test]

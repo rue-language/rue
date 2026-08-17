@@ -157,3 +157,60 @@ state and body RIR; update `require_rir_authority`. Phase 3: falsifier
 tests and the retention measurement. Each phase lands with the full
 byte-identity gate; Phase 1 is independently valuable (it removes latent
 scheduling-sensitivity) even if Phase 2 stalls.
+
+## Phase 2 as implemented
+
+`rue_rir::SharedSymbolSpace` is one append-only `ThreadedRodeo` branded
+with the generation that minted it and carrying a liveness cell every
+clone observes, so retiring a generation refuses every holder of it at
+once. `RevisionSymbolSpace` in the compiler holds one generation per
+semantic revision, and every body of that revision decodes its RIR into,
+and analyzes against, that one interner.
+
+Two deviations from the amended text, both narrowing:
+
+1. **The dense space is a remap, not a second interner.** The body no
+   longer rebuilds a private `ThreadedRodeo` from the packed symbol
+   section. It builds a `Vec<Spur>` from ordinal to shared handle and
+   decodes through `PackedValidatedRir::try_decode_validated_remapped`.
+   The density invariant is unchanged in content — the entry a spelling
+   lands at is the ordinal the envelope encodes it as — and §1's "the
+   dense space holds the body's remap only, not re-interned strings" is
+   what forced this reading.
+2. **The AIR comptime-argument word is not re-densified.** It names the
+   shared handle and round-trips inside one body's own AIR against the
+   interner that issued it; nothing else reads it, and both of its arms
+   remain unreachable. `SymbolHandle::body_local_ordinal` was renamed
+   `issuing_interner_ordinal` because "body-local" stopped being true.
+
+Fail-closed: the body transaction abandons its attempt when the space it
+materialized against is no longer live, which re-runs the body against
+the current generation. `require_rir_authority` is pointer identity
+against that generation's interner *and* its liveness. The owner keeps
+the four most recent revisions' generations live rather than retiring on
+every mint, because two concurrently pinned revisions retiring each
+other's space would abandon each other's bodies without progressing.
+
+Measured, release build, callgrind on the parent commit versus this one:
+Lattice 7,043,253,465 to 6,843,146,953 retired instructions (-200,106,512,
+-2.84%), Mosaic -72,481,991 (-2.49%), chain256 -7,145,295 (-1.26%).
+`try_get_or_intern` is called exactly as often as before — 597,760 times
+on Lattice — but its inclusive cost falls from 403,945,189 to 240,366,124
+instructions, 675 to 402 per call, because sharing converts insertions
+into lookups rather than removing calls. That is the whole realized
+saving; the formatting that feeds the interner is unchanged, because a
+lookup still needs the rendered string. chain256's -1.26% is larger than
+the "approximately nothing" this ADR predicted: it comes from deleting
+the per-body interner construction, population, and drop, a fixed
+per-body cost the closure-size argument did not cover.
+
+Retention did not fall. Peak RSS over twelve interleaved pairs:
+Lattice +0.17% (MAD 0.10%), Mosaic +1.35% (MAD 0.06%), chain256 +0.01%
+(MAD 0.06%). The falsifier's ±2% holds, but its expectation — that one
+union interner would be smaller than 1,263 overlapping ones — was wrong
+in shape: the per-body interners were transient and freed as bodies
+completed, so they were never all resident at once, while the shared one
+is resident for the whole revision. Wall clock is not quoted: twelve
+interleaved pairs give paired medians between -26% and +15% with MADs of
+5-15% on this host, which is the same noise floor the measurement note
+recorded.

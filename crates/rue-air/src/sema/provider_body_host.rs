@@ -388,7 +388,7 @@ pub struct ProviderOrdinaryBody<K, M> {
         Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
     pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
     pub type_pool: Rc<TypeInternPool>,
-    pub interner: Rc<ThreadedRodeo>,
+    pub interner: Arc<ThreadedRodeo>,
     pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
     pub module_tokens: Vec<(SemanticModuleToken, M)>,
 }
@@ -404,7 +404,7 @@ pub struct ProviderSpecializedBody<K, M> {
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
     pub type_pool: Rc<TypeInternPool>,
-    pub interner: Rc<ThreadedRodeo>,
+    pub interner: Arc<ThreadedRodeo>,
     pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
@@ -430,7 +430,7 @@ pub struct ProviderAnonymousBody<K, M> {
     pub warnings: Vec<rue_error::CompileWarning>,
     pub strings: Vec<String>,
     pub type_pool: Rc<TypeInternPool>,
-    pub interner: Rc<ThreadedRodeo>,
+    pub interner: Arc<ThreadedRodeo>,
     pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
@@ -828,7 +828,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     aggregate: ProviderAggregateFacts<K, M, S>,
     state: ProviderBodyAnalysisState<K, M, S>,
     rir: super::BodyRirView<'a>,
-    interner: Rc<ThreadedRodeo>,
+    interner: Arc<ThreadedRodeo>,
     type_pool: Rc<TypeInternPool>,
     known: KnownSymbols,
     target: Target,
@@ -3574,7 +3574,7 @@ where
         Type,
         crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
     > {
-        let interner = Rc::clone(&self.interner);
+        let interner = Arc::clone(&self.interner);
         let mut provider = TypeSyntaxProvider::new(
             self,
             request.span,
@@ -4148,7 +4148,7 @@ where
             arena: self.rir.rir().type_syntax().clone(),
             root: syntax,
         };
-        let interner = Rc::clone(&self.interner);
+        let interner = Arc::clone(&self.interner);
         OrdinaryBodyAnalysisHost::resolve_structured_type_syntax(
             self,
             StructuredTypeSyntaxRequest {
