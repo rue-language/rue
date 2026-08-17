@@ -238,4 +238,5 @@ The table is generated from ADR frontmatter. Run
 | [0073](0073-validation-certificate-durability.md) | Validation-certificate durability across append-only revisions | Accepted | architecture, compiler, incremental, performance, query-engine |
 | [0074](0074-structural-node-identity.md) | Structural node identity for dependency order and retained charge | Proposal | architecture, compiler, performance, query-engine |
 | [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Proposal | architecture, compiler, incremental, performance, query-engine |
+| [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Proposal | architecture, compiler, performance, query-engine, type-system |
 <!-- ADR-INDEX:END -->
