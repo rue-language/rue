@@ -2286,19 +2286,29 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
-    // Build final allocation list
-    let debug_allocations: Vec<(u32, Allocation<Reg>)> = allocation
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
-        .collect();
+    // Build the final allocation list only for the diagnostic projection.
+    // Normal compilation discards this field, so avoid walking the dense map
+    // and copying every assignment when diagnostics are disabled.
+    let debug_allocations = if collect_debug {
+        allocation
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let debug_info = RegAllocDebugInfo {
         live_ranges: debug_live_ranges,
         interference: debug_interference,
         allocations: debug_allocations,
         spills: debug_spills,
-        callee_saved_used: used_callee_saved.clone(),
+        callee_saved_used: if collect_debug {
+            used_callee_saved.clone()
+        } else {
+            Vec::new()
+        },
     };
 
     (
@@ -2577,19 +2587,29 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
-    // Build final allocation list
-    let debug_allocations: Vec<(u32, Allocation<Reg>)> = allocation
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
-        .collect();
+    // Build the final allocation list only for the diagnostic projection.
+    // Normal compilation discards this field, so avoid walking the dense map
+    // and copying every assignment when diagnostics are disabled.
+    let debug_allocations = if collect_debug {
+        allocation
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, alloc)| alloc.map(|a| (idx as u32, a)))
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let debug_info = RegAllocDebugInfo {
         live_ranges: debug_live_ranges,
         interference: debug_interference,
         allocations: debug_allocations,
         spills: debug_spills,
-        callee_saved_used: used_callee_saved.clone(),
+        callee_saved_used: if collect_debug {
+            used_callee_saved.clone()
+        } else {
+            Vec::new()
+        },
     };
 
     (
