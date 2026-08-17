@@ -15,6 +15,7 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, PreviewFeatures};
 use rue_rir::{
     InstData, InstRef, Rir, RirParam, RirParamMode, RirTypeSyntaxBuilder, RirTypeSyntaxRef,
+    SymbolHandle,
 };
 use rue_span::{FileId, Span};
 use rue_target::Target;
@@ -1822,7 +1823,7 @@ where
             self.register_provider_anonymous_method_endpoints(identity, resolved)?;
         }
         if let Some(function) = function {
-            let source_symbol = info.value.as_function()?;
+            let source_symbol = info.value.as_function()?.spur();
             let alias_symbol =
                 if let Some(module) = self.source.foreign_function_module(&self.key, &function) {
                     self.interner.get_or_intern(&format!(
@@ -1833,7 +1834,7 @@ where
                 } else {
                     source_symbol
                 };
-            info.value = ConstValue::Function(alias_symbol);
+            info.value = ConstValue::Function(alias_symbol.into());
             self.function_alias_keys
                 .borrow_mut()
                 .insert(alias_symbol, function);
@@ -2307,11 +2308,13 @@ where
             ConstValue::Bool(value) => V::Bool(value),
             ConstValue::Type(ty) => V::Type(self.durable_type_from_concrete(ty)?),
             ConstValue::Function(symbol) => {
-                let (_, definition) = self.function_token_for_symbol(symbol)?;
+                let (_, definition) = self.function_token_for_symbol(symbol.spur())?;
                 V::Function(definition)
             }
             ConstValue::Unit => V::Unit,
-            ConstValue::String(symbol) => V::String(Arc::from(self.interner.resolve(&symbol))),
+            ConstValue::String(symbol) => {
+                V::String(Arc::from(self.interner.resolve(&symbol.spur())))
+            }
         })
     }
 
@@ -2340,10 +2343,13 @@ where
             V::Type(ty) => ConstValue::Type(self.materialize_durable_type(ty)?),
             V::Function(definition) => ConstValue::Function(
                 self.interner
-                    .get_or_intern(&self.source.definition_name(definition)?),
+                    .get_or_intern(&self.source.definition_name(definition)?)
+                    .into(),
             ),
             V::Unit => ConstValue::Unit,
-            V::String(value) => ConstValue::String(self.interner.get_or_intern(value.as_ref())),
+            V::String(value) => {
+                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
+            }
         })
     }
 
@@ -2810,7 +2816,7 @@ where
             }
             CanonicalArgumentValue::Unit => ConstValue::Unit,
             CanonicalArgumentValue::String(value) => {
-                ConstValue::String(self.interner.get_or_intern(value.as_ref()))
+                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
             }
             CanonicalArgumentValue::Function(function) => {
                 let FunctionInstanceKey::Definition(definition) = function.as_ref() else {
@@ -2827,7 +2833,7 @@ where
                 self.function_tokens
                     .borrow_mut()
                     .insert(symbol, (token, definition.clone()));
-                ConstValue::Function(symbol)
+                ConstValue::Function(symbol.into())
             }
         })
     }
@@ -3131,6 +3137,7 @@ where
     fn inference_const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
         self.call_value_const(key.0, key.1)
             .and_then(|info| info.value.as_function())
+            .map(SymbolHandle::spur)
     }
     fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
         self.call_module_binding(key.0, key.1).map(|info| info.ty)
@@ -3869,10 +3876,10 @@ where
                 CanonicalArgumentValue::Type(Box::new(self.canonical_type_instance(ty)?))
             }
             ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Box::new(
-                FunctionInstanceKey::Definition(self.function_identity(symbol)?),
+                FunctionInstanceKey::Definition(self.function_identity(symbol.spur())?),
             )),
             ConstValue::String(symbol) => {
-                CanonicalArgumentValue::String(self.interner.resolve(&symbol).into())
+                CanonicalArgumentValue::String(self.interner.resolve(&symbol.spur()).into())
             }
             ConstValue::Unit => CanonicalArgumentValue::Unit,
         })

@@ -2726,10 +2726,12 @@ where
                     self.const_poisoned.insert(key.clone(), err.clone());
                     return Err(err);
                 };
-                ConstValue::Function(self.interner.get_or_intern(name.as_ref()))
+                ConstValue::Function(self.interner.get_or_intern(name.as_ref()).into())
             }
             V::Unit => ConstValue::Unit,
-            V::String(value) => ConstValue::String(self.interner.get_or_intern(value.as_ref())),
+            V::String(value) => {
+                ConstValue::String(self.interner.get_or_intern(value.as_ref()).into())
+            }
         })
     }
 }
@@ -5981,7 +5983,7 @@ mod tests {
         let ConstValue::Function(symbol) = callable.value else {
             panic!("function-valued const");
         };
-        assert_eq!(pool.resolve_symbol(symbol), "fn2");
+        assert_eq!(pool.resolve_symbol(symbol.spur()), "fn2");
     }
 
     #[test]

@@ -26,6 +26,7 @@ mod anonymous_sites;
 mod api_inventory;
 mod astgen;
 mod inst;
+mod symbol;
 mod type_syntax;
 
 pub use anonymous_sites::{AnonymousTypeSite, AnonymousTypeSiteKind, anonymous_type_sites};
@@ -48,6 +49,7 @@ pub use inst::{
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
     ValidatedRir,
 };
+pub use symbol::SymbolHandle;
 pub use type_syntax::{
     RirTypeSyntaxAppendError, RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder,
     RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxRef, RirTypeSyntaxSymbol,

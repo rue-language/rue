@@ -500,6 +500,11 @@ struct RawWarningCallHead {
     components: Vec<Spur>,
 }
 
+/// Ordering exists to group equal raw heads for `dedup`, and reaches no
+/// published order: [`project_warning_call_heads`] resolves every component to
+/// its spelling and re-sorts the projection by that text before publishing it.
+/// A component's interner handle therefore decides which raw head is adjacent
+/// to which, never what a consumer observes (ADR-0076).
 impl Ord for RawWarningCallHead {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         let span_key =

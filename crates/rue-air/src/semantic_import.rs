@@ -1868,17 +1868,18 @@ where
             SemanticImportConstValue::Bool(v) => ConstValue::Bool(*v),
             SemanticImportConstValue::Type(v) => ConstValue::Type(self.import_type_local(v)?),
             SemanticImportConstValue::Function(key) => ConstValue::Function(
-                *self
+                (*self
                     .functions
                     .get(&FunctionInstanceKey::Definition(key.clone()))
-                    .ok_or(SemanticImportFailure::MissingFunction)?,
+                    .ok_or(SemanticImportFailure::MissingFunction)?)
+                .into(),
             ),
             SemanticImportConstValue::Unit => ConstValue::Unit,
             // The epoch owns an isolated interner, so the content round-trips
             // through it for validation; durable const payloads are never
             // installed into a live analyzer (install fails closed on consts).
             SemanticImportConstValue::String(content) => {
-                ConstValue::String(self.interner.get_or_intern(content.as_ref()))
+                ConstValue::String(self.interner.get_or_intern(content.as_ref()).into())
             }
         })
     }
@@ -2018,7 +2019,8 @@ where
             ConstValue::Bool(v) => SemanticImportConstValue::Bool(v),
             ConstValue::Type(v) => SemanticImportConstValue::Type(self.export_type_local(v)?),
             ConstValue::Function(symbol) => {
-                let Some(FunctionInstanceKey::Definition(key)) = self.function_exports.get(&symbol)
+                let Some(FunctionInstanceKey::Definition(key)) =
+                    self.function_exports.get(&symbol.spur())
                 else {
                     return Err(SemanticImportFailure::ForeignLocalValue);
                 };
@@ -2026,7 +2028,7 @@ where
             }
             ConstValue::Unit => SemanticImportConstValue::Unit,
             ConstValue::String(content) => {
-                SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content)))
+                SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content.spur())))
             }
         })
     }

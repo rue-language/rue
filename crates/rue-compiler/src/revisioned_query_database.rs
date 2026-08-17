@@ -36651,9 +36651,9 @@ fn main() -> i32 {
             V::Integer(value) => format!("integer:{value}"),
             V::Bool(value) => format!("bool:{value}"),
             V::Type(value) => format!("type:{}", endpoint_display(pool, value)),
-            V::Function(value) => format!("function:{}", resolve_symbol(value)),
+            V::Function(value) => format!("function:{}", resolve_symbol(value.spur())),
             V::Unit => "unit".to_owned(),
-            V::String(value) => format!("string:{}", resolve_symbol(value)),
+            V::String(value) => format!("string:{}", resolve_symbol(value.spur())),
         };
         ConstInfoRender {
             is_pub: info.is_pub,

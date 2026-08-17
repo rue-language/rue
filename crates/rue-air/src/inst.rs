@@ -27,6 +27,7 @@ const _: () = assert!(std::mem::size_of::<AirInstData>() <= 32);
 use crate::types::{StructId, Type};
 use crate::{FrozenTypeInternPool, TypeInternPool};
 use lasso::{Key, Spur, ThreadedRodeo};
+use rue_rir::SymbolHandle;
 use rue_span::Span;
 
 #[cfg(any(test, feature = "fuzz-support"))]
@@ -882,8 +883,16 @@ pub(crate) fn encode_const_values(
             }
             crate::sema::ConstValue::Function(value) => {
                 words.push(ConstValueTag::Function.word());
+                // The dense space named here is the body's own symbol table.
+                // The analysis interner is the body RIR's interner
+                // (`require_rir_authority`), and `materialize_candidate_rir`
+                // builds it by interning the packed symbol section in order, so
+                // a handle's ordinal is its index in that section. ADR-0076's
+                // shared revision interner breaks that equality: this word then
+                // needs a body-local remap, exactly like the packed RIR's own
+                // symbol words.
                 words.push(
-                    u32::try_from(value.into_usize())
+                    u32::try_from(value.body_local_ordinal())
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
             }
@@ -1030,9 +1039,9 @@ impl Iterator for ConstValueIterator<'_> {
             ConstValueTag::Type => crate::sema::ConstValue::Type(
                 Type::try_from_u32(payload[0]).expect("validated const type"),
             ),
-            ConstValueTag::Function => crate::sema::ConstValue::Function(
+            ConstValueTag::Function => crate::sema::ConstValue::Function(SymbolHandle::new(
                 Spur::try_from_usize(payload[0] as usize).expect("validated const symbol"),
-            ),
+            )),
         })
     }
 }
@@ -1843,7 +1852,7 @@ impl Air {
                             })?;
                         } else if let crate::sema::ConstValue::Function(symbol) = value {
                             context
-                                .validate_symbol(symbol)
+                                .validate_symbol(symbol.spur())
                                 .map_err(|reason| fail(Some(index), reason))?;
                         }
                     }
