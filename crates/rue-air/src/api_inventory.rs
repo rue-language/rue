@@ -318,7 +318,9 @@ fn local_semantic_materialization_owns_complete_cfg_inputs_without_a_peer_cache(
             .expect("provider result declaration");
         assert!(body.contains("pub function: AnalyzedFunction"));
         assert!(body.contains("pub type_pool: Rc<TypeInternPool>"));
-        assert!(body.contains("pub interner: Rc<ThreadedRodeo>"));
+        // The symbol interner is revision-shared and crosses worker threads
+        // (ADR-0076); the type pool stays body-private and `Rc`.
+        assert!(body.contains("pub interner: Arc<ThreadedRodeo>"));
     }
     for forbidden in ["Mutex<", "RwLock<", "QueryFamily<", "cache:", "selected:"] {
         let materialization = import

@@ -80,7 +80,7 @@ use std::sync::Arc;
 
 use ahash::AHashMap;
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstData, InstRef, Rir, RirParamMode, ValidatedRir};
+use rue_rir::{InstData, InstRef, Rir, RirParamMode, SharedSymbolSpace, ValidatedRir};
 use rue_span::{FileId, Span};
 
 use super::ConstValue;
@@ -374,7 +374,9 @@ enum PoolNominal {
 /// order.
 pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     type_pool: Rc<TypeInternPool>,
-    interner: Rc<ThreadedRodeo>,
+    /// The revision-shared equality space (ADR-0076 §1). Strings are interned
+    /// once per revision generation, not once per body.
+    interner: Arc<ThreadedRodeo>,
     source: S,
     struct_ids: AHashMap<K, StructId>,
     enum_ids: AHashMap<K, EnumId>,
@@ -566,14 +568,19 @@ where
     M: Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
-    /// Create the single identity universe for one provider-driven body.
+    /// Create the single identity universe for one provider-driven body over
+    /// its own private symbol space.
     pub fn new(source: S) -> Self {
-        Self::with_interner_mode(source, Rc::new(ThreadedRodeo::new()), false)
+        Self::with_interner_mode(
+            source,
+            Arc::clone(SharedSymbolSpace::private().interner()),
+            false,
+        )
     }
 
     fn with_interner_mode(
         source: S,
-        interner: Rc<ThreadedRodeo>,
+        interner: Arc<ThreadedRodeo>,
         allow_post_seal_overlay: bool,
     ) -> Self {
         Self {
@@ -587,8 +594,8 @@ where
 
     /// Return the interner authority shared by all provider fact state in this
     /// identity context.
-    pub fn interner(&self) -> Rc<ThreadedRodeo> {
-        Rc::clone(&self.pool.borrow().interner)
+    pub fn interner(&self) -> Arc<ThreadedRodeo> {
+        Arc::clone(&self.pool.borrow().interner)
     }
 
     /// Intern a provider-facing name in the shared body authority.
@@ -713,6 +720,9 @@ pub struct ProviderBodyAnalysisState<K, M, S> {
     /// Stable outer handle; containment sealing rebases its locked inner value
     /// in place so engine-facing references never go stale.
     type_pool: Rc<TypeInternPool>,
+    /// The revision generation whose equality space this state speaks. Held so
+    /// the RIR authority check can refuse a superseded generation (ADR-0076 §5).
+    space: SharedSymbolSpace,
 }
 
 impl<K, M, S> Clone for ProviderBodyAnalysisState<K, M, S> {
@@ -720,6 +730,7 @@ impl<K, M, S> Clone for ProviderBodyAnalysisState<K, M, S> {
         Self {
             identity: self.identity.clone(),
             type_pool: Rc::clone(&self.type_pool),
+            space: self.space.clone(),
         }
     }
 }
@@ -730,12 +741,14 @@ where
     M: Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
-    pub fn new(source: S, interner: Rc<ThreadedRodeo>) -> Self {
-        let identity = ProviderIdentityContext::with_interner_mode(source, interner, true);
+    pub fn new(source: S, space: SharedSymbolSpace) -> Self {
+        let identity =
+            ProviderIdentityContext::with_interner_mode(source, Arc::clone(space.interner()), true);
         let type_pool = identity.type_pool();
         Self {
             identity,
             type_pool,
+            space,
         }
     }
 
@@ -743,8 +756,13 @@ where
         self.identity.clone()
     }
 
-    pub fn interner(&self) -> Rc<ThreadedRodeo> {
+    pub fn interner(&self) -> Arc<ThreadedRodeo> {
         self.identity.interner()
+    }
+
+    /// The revision generation whose shared equality space this state speaks.
+    pub fn symbol_space(&self) -> &SharedSymbolSpace {
+        &self.space
     }
 
     pub fn type_pool(&self) -> Rc<TypeInternPool> {
@@ -791,9 +809,17 @@ where
         self.identity.frozen.get()
     }
 
+    /// Fail-closed check that this state and the body RIR name symbols in the
+    /// same live equality space (ADR-0076 §5).
+    ///
+    /// Under a revision-shared interner the pointer identity is the
+    /// *generation's* identity rather than the body's, so the check also
+    /// refuses a body whose generation has been superseded: its handles are
+    /// still resolvable, but nothing may reuse them against the current
+    /// generation's state.
     pub(in crate::sema) fn require_rir_authority(&self, rir: &BodyRirView<'_>) -> bool {
         let state_interner = self.interner();
-        std::ptr::eq(rir.rir_interner(), Rc::as_ref(&state_interner))
+        self.space.is_live() && std::ptr::eq(rir.rir_interner(), Arc::as_ref(&state_interner))
     }
 }
 
@@ -863,7 +889,7 @@ where
 {
     /// Create an empty pool with the builtin enums and the core `str` identity
     /// pre-registered, mirroring a fresh import epoch.
-    pub(in crate::sema) fn new(source: S, interner: Rc<ThreadedRodeo>) -> Self {
+    pub(in crate::sema) fn new(source: S, interner: Arc<ThreadedRodeo>) -> Self {
         let type_pool = Rc::new(TypeInternPool::new());
         let mut builtins = AHashMap::new();
 
@@ -2803,7 +2829,9 @@ pub(in crate::sema) struct BodyRirIndex {
 #[derive(Debug)]
 pub struct BodyRirBundle {
     rir: ValidatedRir,
-    rir_interner: Rc<ThreadedRodeo>,
+    /// The revision generation this body's symbols were decoded into. The RIR
+    /// and the analysis state it seeds both name symbols here (ADR-0076 §1).
+    space: SharedSymbolSpace,
     rir_index: Arc<BodyRirIndex>,
 }
 
@@ -2820,8 +2848,8 @@ pub struct BodyRirIndexAttribution {
 }
 
 impl BodyRirBundle {
-    pub fn new(rir: ValidatedRir, rir_interner: ThreadedRodeo) -> Self {
-        Self::new_with_index_attribution(rir, rir_interner, false).0
+    pub fn new(rir: ValidatedRir, space: SharedSymbolSpace) -> Self {
+        Self::new_with_index_attribution(rir, space, false).0
     }
 
     /// Construct the canonical bundle while returning bounded index-build
@@ -2829,7 +2857,7 @@ impl BodyRirBundle {
     /// cannot select a peer construction path.
     pub fn new_with_index_attribution(
         rir: ValidatedRir,
-        rir_interner: ThreadedRodeo,
+        space: SharedSymbolSpace,
         attribution_enabled: bool,
     ) -> (Self, BodyRirIndexAttribution) {
         let (rir_index, attribution) =
@@ -2837,7 +2865,7 @@ impl BodyRirBundle {
         (
             Self {
                 rir,
-                rir_interner: Rc::new(rir_interner),
+                space,
                 rir_index: Arc::new(rir_index),
             },
             attribution,
@@ -2845,8 +2873,15 @@ impl BodyRirBundle {
     }
 
     /// The one interner authority for this body RIR and its provider fact state.
-    pub fn shared_interner(&self) -> Rc<ThreadedRodeo> {
-        Rc::clone(&self.rir_interner)
+    pub fn shared_interner(&self) -> Arc<ThreadedRodeo> {
+        Arc::clone(self.space.interner())
+    }
+
+    /// The revision generation this body was materialized against. A caller
+    /// that finds it superseded must re-run the body rather than publish work
+    /// derived from a retired equality space (ADR-0076 §4).
+    pub fn symbol_space(&self) -> &SharedSymbolSpace {
+        &self.space
     }
 
     /// Build a fail-closed compatibility context over this RIR's interner.
@@ -2866,7 +2901,7 @@ impl BodyRirBundle {
         M: Eq + Hash,
         S: DurableNominalSource<K, M>,
     {
-        ProviderBodyAnalysisState::new(source, self.shared_interner())
+        ProviderBodyAnalysisState::new(source, self.space.clone())
     }
 
     pub fn instruction_count(&self) -> usize {
@@ -2887,7 +2922,7 @@ impl BodyRirBundle {
     pub fn view(&self) -> BodyRirView<'_> {
         BodyRirView {
             rir: &self.rir,
-            rir_interner: &self.rir_interner,
+            rir_interner: self.space.interner(),
             index: self.rir_index.clone(),
         }
     }
@@ -3119,18 +3154,19 @@ mod tests {
             (type_pool, params.types().to_vec())
         }
 
-        let interner = Rc::new(ThreadedRodeo::new());
+        let space = SharedSymbolSpace::private();
+        let interner = Arc::clone(space.interner());
         let widget = interner.get_or_intern("Widget");
-        let state = ProviderBodyAnalysisState::new(source([]), Rc::clone(&interner));
+        let state = ProviderBodyAnalysisState::new(source([]), space);
 
         // RIR-local and provider-created names are the same Spur, not merely
         // strings that were translated between two interner universes.
         let context = state.identity_context();
         assert_eq!(context.name_symbol("Widget"), widget);
-        assert!(Rc::ptr_eq(&context.interner(), &interner));
+        assert!(Arc::ptr_eq(&context.interner(), &interner));
         let stable_type_pool = state.type_pool();
         let opposite_order_context = state.identity_context();
-        assert!(Rc::ptr_eq(
+        assert!(Arc::ptr_eq(
             &context.interner(),
             &opposite_order_context.interner()
         ));
@@ -3311,7 +3347,7 @@ mod tests {
             source_lengths: &[],
         };
         let rir = ValidatedRir::finish(editor, &validation).unwrap();
-        let bundle = BodyRirBundle::new(rir, ThreadedRodeo::new());
+        let bundle = BodyRirBundle::new(rir, SharedSymbolSpace::private());
 
         let peer = bundle.provider_identity_context(source([]));
         peer.finalize_containment_metadata().unwrap();
@@ -3328,28 +3364,54 @@ mod tests {
         legacy.finalize_containment_metadata().unwrap();
         assert!(legacy.pool_mut().is_none());
 
-        let interner = Rc::new(ThreadedRodeo::new());
-        let state = ProviderBodyAnalysisState::new(source([]), Rc::clone(&interner));
+        let generations = rue_rir::SymbolSpaceGenerations::default();
+        let space = generations.next_generation();
+        let interner = Arc::clone(space.interner());
+        let state = ProviderBodyAnalysisState::new(source([]), space);
         state.finalize_containment_metadata().unwrap();
         assert!(state.identity_context().pool_mut().is_some());
-        assert!(Rc::ptr_eq(&interner, &state.interner()));
+        assert!(Arc::ptr_eq(&interner, &state.interner()));
         let state_interner = state.interner();
         assert!(std::ptr::eq(
-            Rc::as_ref(&interner),
-            Rc::as_ref(&state_interner)
+            Arc::as_ref(&interner),
+            Arc::as_ref(&state_interner)
         ));
 
         let rir = Rir::default();
-        let matching = BodyRirView::from_parts(&rir, Rc::as_ref(&interner));
+        let matching = BodyRirView::from_parts(&rir, Arc::as_ref(&interner));
         assert_eq!(
             matching.rir_interner() as *const ThreadedRodeo,
-            Rc::as_ref(&interner) as *const ThreadedRodeo
+            Arc::as_ref(&interner) as *const ThreadedRodeo
         );
         assert!(state.require_rir_authority(&matching));
 
         let other_interner = ThreadedRodeo::new();
         let mismatched = BodyRirView::from_parts(&rir, &other_interner);
         assert!(!state.require_rir_authority(&mismatched));
+
+        // ADR-0076 §4/§5: retiring this state's generation makes the authority
+        // check refuse it even though the interner it names is unchanged and
+        // still resolvable. The caller's only correct response is to re-run the
+        // body against the live generation, which is what the fail-closed
+        // contract requires.
+        let successor = generations.next_generation();
+        assert!(
+            state.symbol_space().is_live(),
+            "a peer mint retires nothing"
+        );
+        state.symbol_space().supersede();
+        assert!(!state.symbol_space().is_live());
+        assert!(!state.require_rir_authority(&matching));
+        assert!(
+            state
+                .interner()
+                .resolve(&state.identity_context().name_symbol("Widget"))
+                == "Widget",
+            "a retired space still resolves the handles it issued"
+        );
+        let reran = ProviderBodyAnalysisState::new(source([]), successor.clone());
+        let reran_view = BodyRirView::from_parts(&rir, successor.interner());
+        assert!(reran.require_rir_authority(&reran_view));
     }
 
     /// A durable nominal + callable source backed by fixed maps, standing in for
@@ -3435,7 +3497,7 @@ mod tests {
     fn pool(
         nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(source(nominals), Rc::new(ThreadedRodeo::new()))
+        BodyIdentityPool::new(source(nominals), Arc::new(ThreadedRodeo::new()))
     }
 
     /// A pool seeded with nominals, functions, and methods for the callable
@@ -3456,7 +3518,7 @@ mod tests {
                 anonymous_shapes: AHashMap::new(),
                 def_component_overrides: AHashMap::new(),
             },
-            Rc::new(ThreadedRodeo::new()),
+            Arc::new(ThreadedRodeo::new()),
         )
     }
 
@@ -3476,7 +3538,7 @@ mod tests {
                 anonymous_shapes: AHashMap::new(),
                 def_component_overrides: AHashMap::new(),
             },
-            Rc::new(ThreadedRodeo::new()),
+            Arc::new(ThreadedRodeo::new()),
         )
     }
 
@@ -3498,7 +3560,7 @@ mod tests {
                 anonymous_shapes: anonymous_shapes.into_iter().collect(),
                 def_component_overrides: def_component_overrides.into_iter().collect(),
             },
-            Rc::new(ThreadedRodeo::new()),
+            Arc::new(ThreadedRodeo::new()),
         )
     }
 
@@ -5287,7 +5349,7 @@ mod tests {
             .step_by(2)
             .map(|key| (key, FileId::new(key + 1)))
             .collect();
-        let mut pool = BodyIdentityPool::new(provider, Rc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(provider, Arc::new(ThreadedRodeo::new()));
 
         for key in 0..MODULES {
             let ty = pool.resolve_provider_type(&DType::Nominal(key)).unwrap();
@@ -5337,7 +5399,7 @@ mod tests {
             ),
         ]);
         provider.nominal_file_ids = AHashMap::from([(0, FileId::new(41)), (1, FileId::new(41))]);
-        let mut pool = BodyIdentityPool::new(provider, Rc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(provider, Arc::new(ThreadedRodeo::new()));
 
         pool.resolve_provider_type(&DType::Nominal(0)).unwrap();
         assert_eq!(
@@ -5544,7 +5606,7 @@ mod tests {
         supplied_source.functions.insert(0, function.clone());
         supplied_source.function_reads = Rc::clone(&supplied_reads);
         let mut supplied_pool =
-            BodyIdentityPool::new(supplied_source, Rc::new(ThreadedRodeo::new()));
+            BodyIdentityPool::new(supplied_source, Arc::new(ThreadedRodeo::new()));
         let first = supplied_pool
             .resolve_function_call_from(&0, &function, returns_type, file)
             .unwrap();
@@ -5567,7 +5629,7 @@ mod tests {
         ordinary_source.functions.insert(0, function);
         ordinary_source.function_reads = Rc::clone(&ordinary_reads);
         let mut ordinary_pool =
-            BodyIdentityPool::new(ordinary_source, Rc::new(ThreadedRodeo::new()));
+            BodyIdentityPool::new(ordinary_source, Arc::new(ThreadedRodeo::new()));
         let ordinary = ordinary_pool
             .resolve_function_call(&0, returns_type, file)
             .unwrap();
@@ -5614,7 +5676,7 @@ mod tests {
         let mut durable_source = source([]);
         durable_source.functions.insert(0, broken.clone());
         durable_source.function_reads = Rc::clone(&reads);
-        let mut pool = BodyIdentityPool::new(durable_source, Rc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(durable_source, Arc::new(ThreadedRodeo::new()));
         let returns_type = false;
         let file = FileId::new(19);
 

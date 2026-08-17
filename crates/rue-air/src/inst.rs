@@ -883,16 +883,18 @@ pub(crate) fn encode_const_values(
             }
             crate::sema::ConstValue::Function(value) => {
                 words.push(ConstValueTag::Function.word());
-                // The dense space named here is the body's own symbol table.
-                // The analysis interner is the body RIR's interner
-                // (`require_rir_authority`), and `materialize_candidate_rir`
-                // builds it by interning the packed symbol section in order, so
-                // a handle's ordinal is its index in that section. ADR-0076's
-                // shared revision interner breaks that equality: this word then
-                // needs a body-local remap, exactly like the packed RIR's own
-                // symbol words.
+                // The interner named here is the revision-shared equality space
+                // this body's analysis and its RIR both speak
+                // (`require_rir_authority`, ADR-0076 §1). The word round-trips
+                // inside one body's own AIR payload and nowhere else:
+                // `ConstValueIterator` decodes it back against that same
+                // interner, and the durable export replaces a symbol-valued
+                // const with a definition token or its text rather than with
+                // this number. Under a shared interner the value is assigned in
+                // worker-scheduling order, which is why it may not become
+                // anything a consumer outside this payload reads.
                 words.push(
-                    u32::try_from(value.body_local_ordinal())
+                    u32::try_from(value.issuing_interner_ordinal())
                         .map_err(|_| error(AirBuildErrorKind::ResourceLimit))?,
                 );
             }

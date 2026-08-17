@@ -31,7 +31,7 @@ Three findings, in descending order of how much they change the plan.
    ordinals*, by an invariant the compiler asserts. A revision-shared interner
    breaks that equality by construction, so Phase 2 needs a body-local remap
    that ADR-0076 does not currently mention. This is stated in full under
-   [What Phase 2 still owes](#what-phase-2-still-owes).
+   [What Phase 2 still owed, and what it did](#what-phase-2-still-owed-and-what-it-did).
 
 ## How the inventory was taken
 
@@ -96,7 +96,7 @@ action; these are exactly what an equality-only handle is for.
 | Site | What the value becomes | Classification and action |
 | --- | --- | --- |
 | `crates/rue-air/src/specialize.rs` `mangle_const_value` | `vfn{index}` / `vstr{index}` fragments of a specialized function's mangled name — which is interned and becomes a **link-time symbol** | **Converted.** Both arms now spell the symbol's text, and `mangle_specialized_name` takes the interner for that purpose. Behavior-preserving because neither arm is reachable: a callable alias is refused as a comptime argument by `validate_comptime_value_for_type_impl`, and no comptime parameter has a string type (RUE-957), which the AIR encoder also asserts. This is the one site where a handle's number could have reached an emitted artifact, and the conversion removes the possibility rather than the (absent) symptom. |
-| `crates/rue-air/src/inst.rs:895` (AIR comptime-argument encoder) | One `u32` word per `ConstValue::Function` argument in the AIR payload | **(c), structural; deferred to Phase 2 with its contract stated in source.** The word is legitimate exactly because the body's interner is dense: it is the body RIR's interner, and `materialize_candidate_rir` builds it by interning the packed symbol section in order. The call now reads `SymbolHandle::body_local_ordinal` and says which dense space it means. A shared interner invalidates the premise; see below. |
+| `crates/rue-air/src/inst.rs:895` (AIR comptime-argument encoder) | One `u32` word per `ConstValue::Function` argument in the AIR payload | **(c), structural; deferred to Phase 2 with its contract stated in source.** The word is legitimate exactly because the body's interner is dense: it is the body RIR's interner, and `materialize_candidate_rir` builds it by interning the packed symbol section in order. The call now reads `SymbolHandle::issuing_interner_ordinal` and says which interner it means. Phase 2 moved the analysis interner into the revision-shared equality space, so this word is no longer a dense ordinal; it stayed sound because it round-trips inside one body's own AIR against the interner that issued it, and the arm is unreachable. |
 | `crates/rue-rir/src/inst.rs:2749`, `:3582`, `:3607`, `:4435`, `:4574`, `:4577`, `:4584`, `:4636`, `:4677`, `:4830` and `crates/rue-rir/src/inst/packed.rs:606`, `:653`, `:746`, `:801` | The packed RIR symbol section: a handle **is** its ordinal in a dense per-body table, written as a `u32` word and validated against `symbol_count` | **(c), structural; the blocking Phase 2 item.** Not convertible — the encoding is the dense space. See below. |
 | `crates/rue-compiler/src/canonical_lower.rs:386` | Asserts `symbol.into_usize() == ordinal` while rebuilding a body's interner from the packed symbol section | **(c), structural.** This is the invariant the two rows above depend on, stated as a runtime check. It is also the exact assertion a shared interner fails. |
 | `crates/rue-compiler/src/revisioned_query_database.rs:6697`, `:6714`, `:6735`, `:6758`, `:6773`, `:6851` | Indexes a `&[&str]` dense candidate symbol view by handle ordinal | **(c), structural**, and the same dense space: `materialize_semantic_candidate_rir` returns the packed symbol section as a `Vec<&str>` whose positions are the ordinals. Safe as long as the packed space stays body-local. |
@@ -112,8 +112,10 @@ a `Spur` and deliberately offers less than one: no `Ord`/`PartialOrd`, so it
 cannot be a sort key, a `BTreeMap`/`BTreeSet` key, or an operand of a
 comparison; and no `lasso::Key` implementation, so `into_usize()` is not in
 scope on it. The only way to a handle's number is
-`SymbolHandle::body_local_ordinal`, whose name says what a caller has to be able
-to justify and whose doc comment says it.
+`SymbolHandle::issuing_interner_ordinal`, whose name says what a caller has to
+be able to justify and whose doc comment says it. (Phase 1 spelled it
+`body_local_ordinal`; Phase 2 renamed it when the analysis interner stopped
+being body-local.)
 
 The migrated surface is `ConstValue::Function` and `ConstValue::String`, the two
 symbol payloads that carry a handle out of body analysis into the two places
@@ -132,7 +134,7 @@ value is what the two migrated payloads carry.
 ### What is not migrated
 
 - The RIR/packed layer (`rue-rir`), where handles are dense ordinals on purpose.
-  Migrating it would mean spelling `body_local_ordinal` at every encode and
+  Migrating it would mean spelling `issuing_interner_ordinal` at every encode and
   decode, which is noise around a contract that is already this note's headline
   Phase 2 item.
 - The body-analysis maps (`AHashMap<Spur, …>` and friends). They are class (a)
@@ -140,10 +142,35 @@ value is what the two migrated payloads carry.
 - `rue-parser` and `rue-lexer`, whose interners are per-file parse interners
   that ADR-0076 does not share.
 
-## What Phase 2 still owes
+## What Phase 2 still owed, and what it did
 
-Flagged for the consensus round: ADR-0076's implementation shape does not
-mention any of this, and Phase 2 cannot land without it.
+Phase 2 has since landed. Each item below is resolved as described; the
+statements are kept because they are the reasoning the implementation had to
+answer, not a to-do list.
+
+- **The dense table.** Resolved by keeping the packed envelope's dense ordinal
+  space exactly as it was and adding a *body dense remap* — ordinal to shared
+  handle, one `Vec<Spur>` per materialization — consumed by a new
+  `PackedValidatedRir::try_decode_validated_remapped`. The density check moved
+  from "the rebuilt interner issues handle *n* for ordinal *n*" to "the remap
+  entry a spelling lands at is the ordinal the envelope encodes it as", which is
+  the same statement about the same space. The per-body `ThreadedRodeo` rebuild
+  is gone rather than kept alongside the remap: re-interning the section into a
+  private table is exactly the "re-interned strings" ADR-0076 §1 says the dense
+  space must not hold, and keeping it would have spent part of the saving to
+  assert a property the remap already carries.
+- **`Rc` to `Arc`.** Done for the interner ownership chain only
+  (`BodyIdentityPool::interner`, `ProviderIdentityContext::interner`,
+  `ProviderBodyAnalysisState::interner`, `BodyRirBundle`, and the three
+  `Provider*Body` result structs). The body type pool stays `Rc`: ADR-0076 does
+  not share it, and it never crosses a worker thread.
+- **The dead mangler arms** are unchanged and still unreachable.
+
+## What Phase 2 owed (as written before implementation)
+
+Flagged for the consensus round: ADR-0076's implementation shape did not
+mention any of this, and Phase 2 could not land without it. The amendment and
+the implementation both answer it; the section above records how.
 
 **The body's interner is a dense table and the compiler depends on it.**
 `materialize_candidate_rir_internal` builds each body's `ThreadedRodeo` by

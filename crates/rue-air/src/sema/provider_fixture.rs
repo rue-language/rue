@@ -742,7 +742,10 @@ impl ProviderFixture {
             },
         )
         .expect("fixture RIR validates");
-        let bundle = BodyRirBundle::new(rir, interner);
+        let bundle = BodyRirBundle::new(
+            rir,
+            rue_rir::SharedSymbolSpace::adopt(std::sync::Arc::new(interner)),
+        );
         let facts = FixtureFactSource(Rc::new(self.facts.clone()));
         analyze_provider_ordinary_body(
             &UnconsultedFactProvider,

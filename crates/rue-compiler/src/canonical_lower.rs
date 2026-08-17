@@ -147,12 +147,14 @@ impl DeclarationBodyPlan {
     /// for the subsequent immutable-base/projected-view tranche.
     pub(crate) fn materialize_body_rir_bundle(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
         checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<rue_air::BodyRirBundle, BodyPlanMaterializationFailure> {
         self.materialize_body_rir_bundle_internal(
+            space,
             file_id,
             declaration_start,
             source_length,
@@ -164,6 +166,7 @@ impl DeclarationBodyPlan {
 
     pub(crate) fn materialize_body_rir_bundle_with_attribution(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
@@ -173,6 +176,7 @@ impl DeclarationBodyPlan {
         BodyPlanMaterializationFailure,
     > {
         self.materialize_body_rir_bundle_internal(
+            space,
             file_id,
             declaration_start,
             source_length,
@@ -187,12 +191,14 @@ impl DeclarationBodyPlan {
     /// nested producer/member directly from this same candidate graph.
     pub(crate) fn materialize_body_rir_bundle_with_declaration(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
         checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
     ) -> Result<(rue_air::BodyRirBundle, InstRef), BodyPlanMaterializationFailure> {
         self.materialize_body_rir_bundle_internal(
+            space,
             file_id,
             declaration_start,
             source_length,
@@ -204,6 +210,7 @@ impl DeclarationBodyPlan {
 
     pub(crate) fn materialize_body_rir_bundle_with_declaration_and_attribution(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
@@ -217,6 +224,7 @@ impl DeclarationBodyPlan {
         BodyPlanMaterializationFailure,
     > {
         self.materialize_body_rir_bundle_internal(
+            space,
             file_id,
             declaration_start,
             source_length,
@@ -228,6 +236,7 @@ impl DeclarationBodyPlan {
 
     fn materialize_body_rir_bundle_internal(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
@@ -241,25 +250,23 @@ impl DeclarationBodyPlan {
         ),
         BodyPlanMaterializationFailure,
     > {
-        let (
-            rir,
-            symbols,
-            declaration,
-            _remap_finished_ns,
-            symbol_finished_ns,
-            validation_finished_ns,
-        ) = self.materialize_candidate_rir_internal(
-            file_id,
-            declaration_start,
-            source_length,
-            true,
-            attribution_enabled,
-            &mut checkpoint,
-        )?;
+        let (rir, declaration, _remap_finished_ns, symbol_finished_ns, validation_finished_ns) =
+            self.materialize_candidate_rir_internal(
+                space,
+                file_id,
+                declaration_start,
+                source_length,
+                true,
+                attribution_enabled,
+                &mut checkpoint,
+            )?;
         let rir_instructions = rir.len() as u64;
         let rir_payload_words = rir.extra_len() as u64;
-        let (bundle, index) =
-            rue_air::BodyRirBundle::new_with_index_attribution(rir, symbols, attribution_enabled);
+        let (bundle, index) = rue_air::BodyRirBundle::new_with_index_attribution(
+            rir,
+            space.clone(),
+            attribution_enabled,
+        );
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         Ok((
             bundle,
@@ -284,12 +291,14 @@ impl DeclarationBodyPlan {
     #[cfg(test)]
     pub(crate) fn materialize_candidate_rir(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
         mut checkpoint: impl FnMut() -> Result<(), rue_query::QueryAbort>,
-    ) -> Result<(ValidatedRir, lasso::ThreadedRodeo), BodyPlanMaterializationFailure> {
+    ) -> Result<ValidatedRir, BodyPlanMaterializationFailure> {
         self.materialize_candidate_rir_internal(
+            space,
             file_id,
             declaration_start,
             source_length,
@@ -297,7 +306,7 @@ impl DeclarationBodyPlan {
             false,
             &mut checkpoint,
         )
-        .map(|(rir, symbols, _, _, _, _)| (rir, symbols))
+        .map(|(rir, _, _, _, _)| rir)
     }
 
     /// Decode this candidate for declaration-time constant/comptime
@@ -357,18 +366,26 @@ impl DeclarationBodyPlan {
         Ok((rir, symbols, metadata.declaration))
     }
 
+    /// Materialize this body plan's RIR into the revision-shared equality space
+    /// (ADR-0076 §1).
+    ///
+    /// The packed envelope speaks the body-private dense encoding space: a
+    /// symbol *is* its ordinal in the dense spelling section. This builds the
+    /// body's dense remap — ordinal to shared handle, one entry per ordinal,
+    /// interned once per revision rather than once per body — and decodes the
+    /// candidate through it, so the RIR names symbols in the same space its
+    /// analysis state does. The dense space holds only that remap; it does not
+    /// re-intern the section into a private table.
     fn materialize_candidate_rir_internal(
         &self,
+        space: &rue_rir::SharedSymbolSpace,
         file_id: FileId,
         declaration_start: u32,
         source_length: u32,
         include_method_owner: bool,
         attribution_enabled: bool,
         checkpoint: &mut impl FnMut() -> Result<(), rue_query::QueryAbort>,
-    ) -> Result<
-        (ValidatedRir, lasso::ThreadedRodeo, InstRef, u64, u64, u64),
-        BodyPlanMaterializationFailure,
-    > {
+    ) -> Result<(ValidatedRir, InstRef, u64, u64, u64), BodyPlanMaterializationFailure> {
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let started = attribution_enabled.then(Instant::now);
         let elapsed = || {
@@ -376,22 +393,35 @@ impl DeclarationBodyPlan {
                 u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
             })
         };
-        let symbols = lasso::ThreadedRodeo::new();
+        let interner = space.interner();
         let packed_symbols = self.packed.symbols();
+        let mut dense_remap = Vec::new();
+        dense_remap
+            .try_reserve_exact(packed_symbols.len())
+            .map_err(|_| {
+                BodyPlanMaterializationFailure::Build(RirPayloadBuildError::CapacityFailure {
+                    family: "body-plan dense symbol remap",
+                })
+            })?;
         for (ordinal, spelling) in packed_symbols.enumerate() {
             if ordinal & 63 == 0 {
                 checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
             }
-            let symbol: lasso::Spur = symbols.get_or_intern(spelling);
-            if symbol.into_usize() != ordinal {
+            // The dense space's own invariant, unchanged in meaning from the
+            // per-body interner it replaces: the remap entry a spelling lands
+            // at *is* the ordinal the packed envelope encodes it as. A shared
+            // handle's numeric value is a revision-wide, scheduling-dependent
+            // datum and deliberately says nothing about this ordinal.
+            if dense_remap.len() != ordinal {
                 return Err(BodyPlanMaterializationFailure::Invalid(Arc::from(
                     "body-plan symbol universe did not preserve stable ordinals",
                 )));
             }
+            dense_remap.push(interner.get_or_intern(spelling));
         }
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let symbol_finished_ns = elapsed();
-        let symbol_count = symbols.len();
+        let symbol_count = dense_remap.len();
         let projection = PackedRirProjection {
             symbol_count,
             file_id,
@@ -399,32 +429,32 @@ impl DeclarationBodyPlan {
             source_length,
         };
         let checkpoint_decode = || checkpoint().map_err(BodyPlanMaterializationFailure::Query);
-        let (rir, metadata) = if include_method_owner {
-            self.packed
-                .try_decode_validated_with_method_owner(projection, checkpoint_decode)
-        } else {
-            self.packed
-                .try_decode_validated(projection, checkpoint_decode)
-        }
-        .map_err(|error| match error {
-            rue_rir::PackedRirAppendError::Checkpoint(failure)
-            | rue_rir::PackedRirAppendError::SymbolRemap(failure)
-            | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
-            rue_rir::PackedRirAppendError::Build(error) => {
-                BodyPlanMaterializationFailure::Build(error)
-            }
-            rue_rir::PackedRirAppendError::Decode(error) => {
-                BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
-                    "private packed body plan is invalid: {error}"
-                )))
-            }
-        })?;
+        let (rir, metadata) = self
+            .packed
+            .try_decode_validated_remapped(
+                projection,
+                include_method_owner,
+                checkpoint_decode,
+                |ordinal| dense_remap.get(ordinal as usize).copied(),
+            )
+            .map_err(|error| match error {
+                rue_rir::PackedRirAppendError::Checkpoint(failure)
+                | rue_rir::PackedRirAppendError::SymbolRemap(failure)
+                | rue_rir::PackedRirAppendError::SpanRemap { error: failure, .. } => failure,
+                rue_rir::PackedRirAppendError::Build(error) => {
+                    BodyPlanMaterializationFailure::Build(error)
+                }
+                rue_rir::PackedRirAppendError::Decode(error) => {
+                    BodyPlanMaterializationFailure::Invalid(Arc::from(format!(
+                        "private packed body plan is invalid: {error}"
+                    )))
+                }
+            })?;
         let remap_finished_ns = elapsed();
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         let validation_finished_ns = elapsed();
         Ok((
             rir,
-            symbols,
             metadata.declaration,
             remap_finished_ns,
             symbol_finished_ns,
@@ -1734,9 +1764,10 @@ fn target(inout values: [i32; 4]) -> type {
             .unwrap()
             .declaration_span
             .start;
-        let (target_rir, _) = target_artifact
+        let target_rir = target_artifact
             .plan
             .materialize_candidate_rir(
+                &rue_rir::SharedSymbolSpace::private(),
                 module.file_id(),
                 declaration_start,
                 module.source_text().len() as u32,
@@ -1951,6 +1982,76 @@ fn target(inout values: [i32; 4]) -> type {
         );
     }
 
+    /// ADR-0076: two bodies of one revision share the equality space, and the
+    /// space a body is materialized into does not change the program it names.
+    ///
+    /// The second candidate is materialized into a space the first has already
+    /// populated, so its handles are offset out of the dense ordinals the
+    /// packed envelope encodes. Both renders match the private-space render,
+    /// and the shared space holds each spelling once rather than once per body.
+    #[test]
+    fn bodies_of_one_revision_share_one_equality_space() {
+        let source = snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn first() -> i32 { 1 + 2 }\nfn second() -> i32 { 3 + 4 }",
+            )],
+            1,
+        );
+        let module = parse_source_snapshot_modules(&source).unwrap().modules()[0].clone();
+        let source_length = module.source_text().len() as u32;
+        let render = |name: &str, space: &rue_rir::SharedSymbolSpace| {
+            let key = candidate_named(&module, name);
+            let declaration_start = module
+                .definitions()
+                .declaration_locator(&key)
+                .unwrap()
+                .declaration_span
+                .start;
+            let artifacts = lower_parsed_declaration_body_plan(&module, &key, || Ok(())).unwrap();
+            let rir = artifacts
+                .plan
+                .materialize_candidate_rir(
+                    space,
+                    module.file_id(),
+                    declaration_start,
+                    source_length,
+                    || Ok(()),
+                )
+                .unwrap();
+            rue_rir::RirPrinter::new(&rir, space.interner()).to_string()
+        };
+
+        let shared = rue_rir::SharedSymbolSpace::private();
+        let first_shared = render("first", &shared);
+        let interned_after_first = shared.interner().len();
+        let second_shared = render("second", &shared);
+
+        assert_eq!(
+            first_shared,
+            render("first", &rue_rir::SharedSymbolSpace::private())
+        );
+        assert_eq!(
+            second_shared,
+            render("second", &rue_rir::SharedSymbolSpace::private())
+        );
+        assert!(
+            shared.interner().len() < interned_after_first * 2,
+            "the second body reused the first body's interned spellings"
+        );
+        // The dense ordinals the second body's packed envelope encodes are no
+        // longer its handles: the shared space had already issued them.
+        assert!(shared.interner().get("second").is_some());
+        assert!(
+            shared
+                .interner()
+                .get("second")
+                .is_some_and(|symbol| symbol.into_usize() >= interned_after_first)
+        );
+    }
+
     #[test]
     fn body_plan_materialization_reprojects_fails_closed_and_retries() {
         let source = snapshot(
@@ -1970,23 +2071,33 @@ fn target(inout values: [i32; 4]) -> type {
         let source_length = module.source_text().len() as u32;
         let materialized = artifacts
             .plan
-            .materialize_candidate_rir(file_id, declaration_start, source_length, || Ok(()))
-            .unwrap()
-            .0;
+            .materialize_candidate_rir(
+                &rue_rir::SharedSymbolSpace::private(),
+                file_id,
+                declaration_start,
+                source_length,
+                || Ok(()),
+            )
+            .unwrap();
         assert!(
             materialized
                 .iter()
                 .all(|(_, instruction)| instruction.span.file_id == file_id)
         );
         assert!(matches!(
-            artifacts
-                .plan
-                .materialize_body_rir_bundle(file_id, declaration_start, 1, || Ok(()),),
+            artifacts.plan.materialize_body_rir_bundle(
+                &rue_rir::SharedSymbolSpace::private(),
+                file_id,
+                declaration_start,
+                1,
+                || Ok(()),
+            ),
             Err(BodyPlanMaterializationFailure::Invalid(_))
         ));
 
         assert!(matches!(
             artifacts.plan.materialize_body_rir_bundle(
+                &rue_rir::SharedSymbolSpace::private(),
                 file_id,
                 declaration_start,
                 source_length,
@@ -1999,7 +2110,13 @@ fn target(inout values: [i32; 4]) -> type {
         assert!(
             artifacts
                 .plan
-                .materialize_body_rir_bundle(file_id, declaration_start, source_length, || Ok(()),)
+                .materialize_body_rir_bundle(
+                    &rue_rir::SharedSymbolSpace::private(),
+                    file_id,
+                    declaration_start,
+                    source_length,
+                    || Ok(()),
+                )
                 .is_ok()
         );
     }
@@ -2029,9 +2146,10 @@ fn target(inout values: [i32; 4]) -> type {
         assert!(spellings.contains(&"middle"));
         assert!(!spellings.contains(&"first"));
         assert!(!spellings.contains(&"last"));
-        let (materialized, _) = artifacts
+        let materialized = artifacts
             .plan
             .materialize_candidate_rir(
+                &rue_rir::SharedSymbolSpace::private(),
                 module.file_id(),
                 method_span.start,
                 module.source_text().len() as u32,

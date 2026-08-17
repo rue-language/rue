@@ -49,7 +49,7 @@ pub use inst::{
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
     ValidatedRir,
 };
-pub use symbol::SymbolHandle;
+pub use symbol::{SharedSymbolSpace, SymbolHandle, SymbolSpaceGenerations};
 pub use type_syntax::{
     RirTypeSyntaxAppendError, RirTypeSyntaxArena, RirTypeSyntaxBuildError, RirTypeSyntaxBuilder,
     RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxRef, RirTypeSyntaxSymbol,
