@@ -221,14 +221,32 @@ pub(crate) enum CallAbiValue {
     Failure(TypeQueryFailure),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct DropGlueFacts<D = crate::StableDefinitionKey, M = crate::ModuleId> {
     pub(crate) required: bool,
     pub(crate) synthesize: bool,
     pub(crate) destructor: Option<rue_air::FunctionInstanceKey<D, M>>,
     pub(crate) nested: Arc<[rue_air::TypeInstanceKey<D, M>]>,
     pub(crate) plan: DropGluePlan<D, M>,
+    /// The canonical machine symbol for this owner's synthesized drop glue.
+    /// This is a retained projection, not part of the semantic drop plan.
+    pub(crate) machine_symbol: Option<Arc<str>>,
+    /// The canonical machine symbol for this owner's source destructor, when
+    /// present. This is also a retained projection, not semantic identity.
+    pub(crate) destructor_symbol: Option<Arc<str>>,
 }
+
+impl<D: PartialEq, M: PartialEq> PartialEq for DropGlueFacts<D, M> {
+    fn eq(&self, other: &Self) -> bool {
+        self.required == other.required
+            && self.synthesize == other.synthesize
+            && self.destructor == other.destructor
+            && self.nested == other.nested
+            && self.plan == other.plan
+    }
+}
+
+impl<D: Eq, M: Eq> Eq for DropGlueFacts<D, M> {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DropGluePlan<D = crate::StableDefinitionKey, M = crate::ModuleId> {
@@ -336,6 +354,8 @@ impl<D, M> DropGlueFacts<D, M> {
                         .into(),
                 },
             },
+            machine_symbol: self.machine_symbol.clone(),
+            destructor_symbol: self.destructor_symbol.clone(),
         })
     }
 }
@@ -453,6 +473,16 @@ impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGlueFacts<D, M
             .retained_charge()
             .saturating_add(self.nested.retained_charge())
             .saturating_add(self.plan.retained_charge())
+            .saturating_add(
+                self.machine_symbol
+                    .as_ref()
+                    .map_or(0, |symbol| symbol.len() as u64),
+            )
+            .saturating_add(
+                self.destructor_symbol
+                    .as_ref()
+                    .map_or(0, |symbol| symbol.len() as u64),
+            )
     }
 }
 
@@ -566,6 +596,30 @@ mod tests {
     fn native_symbol_is_a_retained_projection_not_abi_semantic_identity() {
         let first = native_facts("__rue_sem_v1_first");
         let second = native_facts("__rue_sem_v1_second");
+        assert_eq!(first, second);
+        assert_ne!(first.retained_charge(), second.retained_charge());
+    }
+
+    #[test]
+    fn drop_symbols_are_retained_projections_not_drop_plan_identity() {
+        let first: DropGlueFacts = DropGlueFacts {
+            required: true,
+            synthesize: true,
+            destructor: None,
+            nested: Arc::from([]),
+            plan: DropGluePlan::None,
+            machine_symbol: Some(Arc::from("__rue_drop_first")),
+            destructor_symbol: Some(Arc::from("__rue_destructor_first")),
+        };
+        let second: DropGlueFacts = DropGlueFacts {
+            required: true,
+            synthesize: true,
+            destructor: None,
+            nested: Arc::from([]),
+            plan: DropGluePlan::None,
+            machine_symbol: Some(Arc::from("__rue_drop_second")),
+            destructor_symbol: Some(Arc::from("__rue_destructor_second")),
+        };
         assert_eq!(first, second);
         assert_ne!(first.retained_charge(), second.retained_charge());
     }

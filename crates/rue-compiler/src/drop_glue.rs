@@ -740,6 +740,8 @@ mod tests {
                 len: 3,
                 drop_element: true,
             },
+            machine_symbol: None,
+            destructor_symbol: None,
         };
         let slots = std::collections::BTreeMap::from([(element, 2), (owner.clone(), 6)]);
         let body = synthesize_canonical_drop_glue(&owner, &facts, &slots).unwrap();
@@ -859,6 +861,8 @@ mod tests {
             destructor: None,
             nested: Arc::from([]),
             plan,
+            machine_symbol: None,
+            destructor_symbol: None,
         }
     }
 

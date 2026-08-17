@@ -1245,7 +1245,23 @@ fn materialize_and_build_cfg(
     // Every DropGlue terminal observes the exact TypeFacts terminal for the
     // same key. Keep one direct CFG edge to that transitive cone instead of
     // issuing and validating a duplicate top-level TypeFacts request.
-    context.query_registered_adaptive_batch(drop_glues, drop_dependencies)?;
+    let drop_glue_terminals =
+        context.query_registered_adaptive_batch(drop_glues, drop_dependencies.clone())?;
+    let mut drop_glue_symbols = std::collections::BTreeMap::new();
+    let mut destructor_symbols = std::collections::BTreeMap::new();
+    for (query, terminal) in drop_dependencies.iter().zip(drop_glue_terminals) {
+        let QueryOutcome::Success(crate::type_queries::DropGlueValue::Available(facts)) =
+            terminal.outcome()
+        else {
+            continue;
+        };
+        if let Some(symbol) = &facts.machine_symbol {
+            drop_glue_symbols.insert(query.ty.clone(), symbol.clone());
+        }
+        if let Some(symbol) = &facts.destructor_symbol {
+            destructor_symbols.insert(query.ty.clone(), symbol.clone());
+        }
+    }
     let prerequisite_queries_ns = elapsed_ns(prerequisite_queries_started);
     let breakdown = CfgConstructionBreakdown {
         input_preparation_ns,
@@ -1255,7 +1271,16 @@ fn materialize_and_build_cfg(
         prerequisite_collection_ns,
         prerequisite_queries_ns,
     };
-    build_cfg(context, call_abis, key, materialized, domains, breakdown)
+    build_cfg(
+        context,
+        call_abis,
+        key,
+        materialized,
+        domains,
+        drop_glue_symbols,
+        destructor_symbols,
+        breakdown,
+    )
 }
 
 /// The published composite-type ceiling was reached while this body's type
@@ -1285,6 +1310,8 @@ fn build_cfg(
     key: &CfgQueryKey,
     materialized: crate::local_semantic_materialization::LocalSemanticMaterialization,
     domains: crate::durable_cfg::CfgDomainProjection,
+    drop_glue_symbols: std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
+    destructor_symbols: std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
     breakdown: CfgConstructionBreakdown,
 ) -> Result<CfgValue, QueryAbort> {
     context.record_work(rue_query::WorkItem::new("cfg.build.attempts", 1));
@@ -1367,6 +1394,8 @@ fn build_cfg(
         &materialized.type_pool,
         &materialized.interner,
         &call_abi_facts,
+        &drop_glue_symbols,
+        &destructor_symbols,
     ) {
         Ok(value) => value,
         Err(error) => {
