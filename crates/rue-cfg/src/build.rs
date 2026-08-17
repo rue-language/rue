@@ -653,7 +653,12 @@ impl<'a> CfgBuilder<'a> {
 
         // Owned by-value params are "initialized" at entry: arm their drop
         // flags here so a flag is live before any move site is reached.
-        for &(abi_slot, ty) in &builder.air.param_drops().to_vec() {
+        //
+        // Index instead of snapshotting the slice: the body needs `&mut
+        // builder`, so the `param_drops()` borrow cannot be held across it.
+        // Re-borrowing per step reads the same AIR without copying it.
+        for index in 0..builder.air.param_drops().len() {
+            let (abi_slot, ty) = builder.air.param_drops()[index];
             let key = MovedSlot::Param(abi_slot);
             if builder.ever_moved.contains(&key) && builder.type_needs_drop(ty) {
                 builder.set_drop_flag(key, true, rue_span::Span::default());
@@ -2872,7 +2877,11 @@ impl<'a> CfgBuilder<'a> {
         // Drop owned parameters (unless their value was moved out on every
         // path reaching this exit). The list is empty for destructors and
         // drop-glue functions, which must not re-drop their own parameter.
-        for &(abi_slot, ty) in self.air.param_drops().to_vec().iter().rev() {
+        //
+        // Reverse index rather than a reversed copy: the body needs `&mut
+        // self`, so the `param_drops()` borrow cannot span it.
+        for index in (0..self.air.param_drops().len()).rev() {
+            let (abi_slot, ty) = self.air.param_drops()[index];
             let key = MovedSlot::Param(abi_slot);
             if self.moved.is_slot_moved(key) {
                 continue;
@@ -4800,6 +4809,172 @@ mod tests {
         air.add_ret(Some(zero), Type::I32, span);
         air.set_param_drops(vec![(0, strbuf_ty)]);
         build_editor_cfg(air, 0, 1, "f", &type_pool, vec![false], interner)
+    }
+
+    /// The AIR for `fn wide(a: StrBuf, .., z: StrBuf) -> i32 { 0 }`: many
+    /// pass-by-value droppable parameters, none of them touched, so the whole
+    /// parameter-drop schedule runs at the single exit (RUE-1559).
+    fn wide_owned_param_cfg(interner: &ThreadedRodeo, param_count: u32) -> Cfg {
+        let type_pool = rue_air::TypeInternPool::new();
+        let strbuf_id = register_fixture_struct(
+            &type_pool,
+            interner,
+            "StrBuf",
+            vec![rue_air::StructField {
+                name: "cap".into(),
+                ty: Type::U64,
+            }],
+            Some("StrBuf.__drop"),
+        );
+        let strbuf_ty = Type::new_struct(strbuf_id);
+        let type_pool = type_pool.freeze();
+        let span = rue_span::Span::new(0, 1);
+        let mut air = AirEditor::new(Type::I32);
+        let zero = air.add_const(0, Type::I32, span);
+        air.add_ret(Some(zero), Type::I32, span);
+        air.set_param_drops((0..param_count).map(|slot| (slot, strbuf_ty)).collect());
+        build_editor_cfg(
+            air,
+            0,
+            param_count,
+            "wide",
+            &type_pool,
+            vec![false; param_count as usize],
+            interner,
+        )
+    }
+
+    /// The parameter slots dropped at exit, in the order the CFG drops them.
+    fn dropped_param_order(cfg: &Cfg) -> Vec<u32> {
+        cfg.blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter_map(|value| match cfg.get_inst(*value).data {
+                CfgInstData::Drop { value } => match cfg.get_inst(value).data {
+                    CfgInstData::Param { index } => Some(index),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn wide_parameter_drop_schedule_keeps_reverse_order_without_snapshotting_it() {
+        // RUE-1559: the entry arming pass and the exit cleanup pass both read
+        // `Air::param_drops()` while holding `&mut` on the builder, which used
+        // to be resolved by copying the slice. Iterating by index instead must
+        // leave the schedule itself untouched: every owned parameter is still
+        // dropped exactly once, in reverse declaration order.
+        const PARAM_COUNT: u32 = 64;
+        let interner = ThreadedRodeo::default();
+        let cfg = wide_owned_param_cfg(&interner, PARAM_COUNT);
+
+        let dropped = dropped_param_order(&cfg);
+        assert_eq!(
+            dropped.len(),
+            PARAM_COUNT as usize,
+            "every owned parameter is dropped exactly once at the single exit"
+        );
+        let expected: Vec<u32> = (0..PARAM_COUNT).rev().collect();
+        assert_eq!(
+            dropped, expected,
+            "owned parameters must be cleaned up in reverse declaration order"
+        );
+        assert_all_blocks_terminated(&cfg);
+    }
+
+    #[test]
+    fn walking_the_parameter_drop_schedule_allocates_nothing() {
+        // RUE-1559: the entry-arming and exit-cleanup passes each copied the
+        // schedule into a fresh Vec to satisfy borrowck, so a function with a
+        // non-empty schedule paid allocations a function without one did not.
+        // `to_vec()` on an empty slice does not allocate, which makes an
+        // otherwise identical unscheduled build the control.
+        //
+        // The parameters are `i32`, which needs no cleanup, so a populated
+        // schedule is walked but emits nothing: the two builds produce the
+        // same CFG and differ only in whether the walk had entries to visit.
+        // The AIR — the schedule included — is prepared outside the
+        // measurement, because building a schedule is a cost of having one
+        // rather than of walking it, and only the walk is under test.
+        const PARAM_COUNT: u32 = 128;
+
+        let prepared = |scheduled: bool| {
+            let type_pool = rue_air::TypeInternPool::new().freeze();
+            let span = rue_span::Span::new(0, 1);
+            let mut air = AirEditor::new(Type::I32);
+            let zero = air.add_const(0, Type::I32, span);
+            air.add_ret(Some(zero), Type::I32, span);
+            if scheduled {
+                air.set_param_drops((0..PARAM_COUNT).map(|slot| (slot, Type::I32)).collect());
+            }
+            let air = air
+                .finish(AirValidationContext::Canonical(&type_pool))
+                .expect("test AIR must validate");
+            (air, type_pool, ThreadedRodeo::default())
+        };
+
+        let build = |air: &ValidatedAir, type_pool: &FrozenTypeInternPool, interner| {
+            CfgBuilder::build(
+                air,
+                0,
+                PARAM_COUNT,
+                "scalars",
+                type_pool,
+                vec![false; PARAM_COUNT as usize],
+                interner,
+                false,
+                AnalyzedCallableKind::Ordinary,
+            )
+            .cfg
+            .unwrap()
+            .into_editor()
+        };
+
+        let (scheduled_air, scheduled_pool, scheduled_interner) = prepared(true);
+        let (unscheduled_air, unscheduled_pool, unscheduled_interner) = prepared(false);
+
+        let (scheduled, scheduled_allocations) =
+            crate::allocation_test_support::allocations_during(|| {
+                build(&scheduled_air, &scheduled_pool, &scheduled_interner)
+            });
+        let (unscheduled, unscheduled_allocations) =
+            crate::allocation_test_support::allocations_during(|| {
+                build(&unscheduled_air, &unscheduled_pool, &unscheduled_interner)
+            });
+
+        // The control is only a control if the two builds emit the same CFG.
+        assert_eq!(count_drops(&scheduled), 0, "i32 parameters need no cleanup");
+        assert_eq!(count_drops(&unscheduled), 0);
+        assert_eq!(
+            scheduled.blocks().len(),
+            unscheduled.blocks().len(),
+            "the schedule must not change the emitted block structure"
+        );
+        assert_eq!(
+            scheduled.num_locals(),
+            unscheduled.num_locals(),
+            "a schedule over non-droppable parameters must allocate no flag slots"
+        );
+
+        // One schedule-dependent allocator remains, and it is not the walk:
+        // `derive_source_param_abi` seeds a `HashMap` from `param_drops`, so a
+        // longer schedule costs that map's doubling growth — logarithmic in the
+        // entry count. The two removed copies were a flat constant on top of
+        // that (one at entry, one per exit, here a single exit), so bounding
+        // the difference by the doubling growth alone rejects them at every
+        // width while tolerating a smarter descriptor build.
+        let doubling_growth = PARAM_COUNT.ilog2() + 1;
+        let difference = scheduled_allocations.saturating_sub(unscheduled_allocations);
+        assert!(
+            difference <= doubling_growth as usize,
+            "building a {PARAM_COUNT}-entry parameter-drop schedule allocated \
+             {scheduled_allocations} times against {unscheduled_allocations} for an empty \
+             one, a difference of {difference} over a {doubling_growth}-allocation budget \
+             for the source-param ABI map's growth; walking the schedule is copying it \
+             rather than iterating it"
+        );
     }
 
     #[test]
