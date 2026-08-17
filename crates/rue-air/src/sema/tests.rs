@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use ahash::AHashMap;
+    use ahash::{AHashMap, AHashSet};
 
     use lasso::ThreadedRodeo;
     use rue_lexer::Lexer;
@@ -136,7 +136,11 @@ mod tests {
             {
                 candidates.insert(
                     interner.resolve(&name).to_owned(),
-                    crate::sema::comptime_eval::initializer_may_evaluate_to_type(&rir, init),
+                    crate::sema::comptime_eval::initializer_may_evaluate_to_type_with_bindings(
+                        &rir,
+                        init,
+                        &AHashSet::new(),
+                    ),
                 );
             }
         }

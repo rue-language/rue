@@ -2301,7 +2301,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 let (name, init) = (*name, *init);
                 if let Some(name) = name {
-                    let alias = if initializer_may_evaluate_to_type(self.body_rir_ref(), init) {
+                    let alias = if initializer_may_evaluate_to_type_with_bindings(
+                        self.body_rir_ref(),
+                        init,
+                        runtime_bindings,
+                    ) {
                         let started = attribution.enabled.then(Instant::now);
                         if attribution.enabled {
                             attribution.alias_filter_accepts += 1;
@@ -2551,35 +2555,37 @@ struct InlineCtorScanWork {
     raw_candidates: u64,
 }
 
-/// Whether the comptime evaluator can possibly return a type value for an
-/// initializer's outer RIR shape.
-///
-/// This is deliberately a one-sided filter. Calls, names, member paths, and
-/// every composition form remain candidates because their result can depend
-/// on exact semantic facts or on a selected control-flow arm. Shapes rejected
-/// here are evaluator arms whose result is always a runtime value, unit, or
-/// `None`; skipping them avoids entering semantic/provider resolution for an
-/// initializer which cannot populate the inference-time type-alias map. The
-/// speculative caller deliberately discards evaluator errors with
-/// `.ok().flatten()`; ordinary analysis still owns every published diagnostic.
-pub(super) fn initializer_may_evaluate_to_type(rir: &rue_rir::Rir, inst_ref: InstRef) -> bool {
+/// This one-sided shape filter excludes names already known to be runtime
+/// bindings in the current lexical scope. Such a name
+/// cannot evaluate to a type, while an unresolved/file-level name must remain
+/// a candidate because the evaluator may resolve it through semantic facts.
+pub(super) fn initializer_may_evaluate_to_type_with_bindings(
+    rir: &rue_rir::Rir,
+    inst_ref: InstRef,
+    runtime_bindings: &AHashSet<Spur>,
+) -> bool {
     match &rir.get(inst_ref).data {
         InstData::AnonStructType { .. }
         | InstData::AnonEnumType { .. }
         | InstData::TypeConst { .. }
-        | InstData::VarRef { .. }
         | InstData::Call { .. }
         | InstData::MethodCall { .. }
         | InstData::FieldGet { .. } => true,
-        InstData::Comptime { expr } => initializer_may_evaluate_to_type(rir, *expr),
-        InstData::ArrayRepeat { value, .. } => initializer_may_evaluate_to_type(rir, *value),
+        InstData::VarRef { name, .. } => !runtime_bindings.contains(name),
+        InstData::Comptime { expr } => {
+            initializer_may_evaluate_to_type_with_bindings(rir, *expr, runtime_bindings)
+        }
+        InstData::ArrayRepeat { value, .. } => {
+            initializer_may_evaluate_to_type_with_bindings(rir, *value, runtime_bindings)
+        }
         InstData::Block { instructions } => {
             let count = rir.block_inst_count(instructions);
             count != 0
-                && initializer_may_evaluate_to_type(
+                && initializer_may_evaluate_to_type_with_bindings(
                     rir,
                     rir.block_inst(instructions, count - 1)
                         .expect("the tail index came from this block payload"),
+                    runtime_bindings,
                 )
         }
         InstData::Branch {
@@ -2587,14 +2593,18 @@ pub(super) fn initializer_may_evaluate_to_type(rir: &rue_rir::Rir, inst_ref: Ins
             else_block,
             ..
         } => {
-            initializer_may_evaluate_to_type(rir, *then_block)
-                || else_block
-                    .is_some_and(|else_block| initializer_may_evaluate_to_type(rir, else_block))
+            initializer_may_evaluate_to_type_with_bindings(rir, *then_block, runtime_bindings)
+                || else_block.is_some_and(|else_block| {
+                    initializer_may_evaluate_to_type_with_bindings(
+                        rir,
+                        else_block,
+                        runtime_bindings,
+                    )
+                })
         }
-        InstData::Match { arms, .. } => rir
-            .match_arms(arms)
-            .iter()
-            .any(|(_, body)| initializer_may_evaluate_to_type(rir, body)),
+        InstData::Match { arms, .. } => rir.match_arms(arms).iter().any(|(_, body)| {
+            initializer_may_evaluate_to_type_with_bindings(rir, body, runtime_bindings)
+        }),
         _ => false,
     }
 }
