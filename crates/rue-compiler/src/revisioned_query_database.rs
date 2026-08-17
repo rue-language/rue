@@ -5999,6 +5999,20 @@ fn evaluate_drop_glue(
             destructor: facts.destructor.clone(),
             nested: nested.into(),
             plan,
+            machine_symbol: facts.needs_drop.then(|| {
+                Arc::from(crate::StableSymbolEncoder::encode(
+                    &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
+                        crate::FunctionInstanceKey::DropGlue(Box::new(key.ty.clone())),
+                    )),
+                ))
+            }),
+            destructor_symbol: facts.destructor.as_ref().map(|destructor| {
+                Arc::from(crate::StableSymbolEncoder::encode(
+                    &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
+                        destructor.clone(),
+                    )),
+                ))
+            }),
         },
     ))))
 }
@@ -33017,9 +33031,27 @@ fn main() -> i32 {
         let cold = request_drop_glue(&database, first_revision, outer.clone());
         assert_eq!(cold.execution(), RequestExecution::Computed);
         let cold_stamp = cold.terminal().unwrap().stamp();
+        let cold_machine_symbol = match cold.terminal().unwrap().outcome() {
+            rue_query::QueryOutcome::Success(crate::type_queries::DropGlueValue::Available(
+                facts,
+            )) => facts
+                .machine_symbol
+                .clone()
+                .expect("drop glue owns its symbol"),
+            _ => panic!("drop-glue plan did not publish"),
+        };
         let reused = request_drop_glue(&database, first_revision, outer.clone());
         assert_eq!(reused.execution(), RequestExecution::Reused);
         assert_eq!(reused.terminal().unwrap().stamp(), cold_stamp);
+        assert_eq!(
+            match reused.terminal().unwrap().outcome() {
+                rue_query::QueryOutcome::Success(
+                    crate::type_queries::DropGlueValue::Available(facts),
+                ) => facts.machine_symbol.as_deref(),
+                _ => None,
+            },
+            Some(cold_machine_symbol.as_ref())
+        );
 
         let reordered_revision = revision_for(&mut database, &reordered);
         let changed = request_drop_glue(&database, reordered_revision, outer);
@@ -33039,6 +33071,10 @@ fn main() -> i32 {
                 .map(|field| (field.name.as_ref(), field.drop))
                 .collect::<Vec<_>>(),
             [("spacer", false), ("first", true), ("second", true)]
+        );
+        assert_eq!(
+            facts.machine_symbol.as_deref(),
+            Some(cold_machine_symbol.as_ref())
         );
     }
 

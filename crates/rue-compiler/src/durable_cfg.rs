@@ -757,6 +757,8 @@ impl CfgDomainProjection {
             crate::FunctionInstanceKey,
             crate::type_queries::CallAbiFacts,
         >,
+        drop_glue_symbols: &std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
+        destructor_symbols: &std::collections::BTreeMap<crate::TypeInstanceKey, Arc<str>>,
     ) -> Result<crate::cfg_query::CfgCodegenDomain, CfgDomainFailure> {
         let defined_symbol: Arc<str> = if source_name == "main" {
             Arc::from("main")
@@ -861,10 +863,16 @@ impl CfgDomainProjection {
                                 name: Arc::from("__drop"),
                             },
                         };
-                        let machine =
-                            crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
-                                crate::StableCallableId::Function(callable),
-                            ));
+                        let machine = destructor_symbols
+                            .get(&owner)
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| {
+                                crate::StableSymbolEncoder::encode(
+                                    &crate::StableSymbolId::Callable(
+                                        crate::StableCallableId::Function(callable),
+                                    ),
+                                )
+                            });
                         if let Some(previous) =
                             symbol_mappings.insert(source.to_string(), machine.clone())
                             && previous != machine
@@ -887,11 +895,16 @@ impl CfgDomainProjection {
             let Some(drop_glue_source) = drop_glue_source else {
                 continue;
             };
-            let machine = crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
-                crate::StableCallableId::Function(crate::FunctionInstanceKey::DropGlue(Box::new(
-                    owner,
-                ))),
-            ));
+            let machine = drop_glue_symbols
+                .get(&owner)
+                .map(ToString::to_string)
+                .unwrap_or_else(|| {
+                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                        crate::StableCallableId::Function(crate::FunctionInstanceKey::DropGlue(
+                            Box::new(owner.clone()),
+                        )),
+                    ))
+                });
             if let Some(previous) = symbol_mappings.insert(drop_glue_source, machine.clone())
                 && previous != machine
             {
