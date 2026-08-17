@@ -12,7 +12,7 @@ use rue_compiler::unstable::{
     RootedParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
     close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
     discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
-    plan_delta_roots, plan_round_roots, publish_import_observation_batch,
+    plan_delta_roots, plan_round_read_roots, plan_round_roots, publish_import_observation_batch,
     publish_trusted_toolchain_successor, rooted_or_toolchain_park,
     stage_import_discovery_successor, stage_import_input_request,
 };
@@ -957,9 +957,24 @@ fn drive_import_discovery_to_close(
         // Assemble only the newly read leaves: a successor adds its delta groups'
         // accepted sources, never re-feeding the predecessor plan through the
         // winner map.
-        let assembled = match &reclose {
-            Some(_) => assembler.add_successor_plan_reads(&plan, &next_ledger),
-            None => assembler.add_plan_reads(&plan, &next_ledger),
+        //
+        // An ordinary round assembles the same way once it has a predecessor
+        // round: only the occurrences this round's batch answered, plus the ones
+        // the previous round's fanout answered as that batch was published, can
+        // have gained a winner since the last assembly. Re-reducing the WHOLE
+        // plan every round instead re-derives every already assembled leaf's
+        // winner and re-offers it to the assembler, which is quadratic in the
+        // depth of an import chain. The first round has no predecessor, so it
+        // reduces the whole plan — for a continuation that is also what admits
+        // the carried generation's already accepted reads.
+        let assembled = match (&reclose, &previous_frontier) {
+            (Some(_), _) => assembler.add_successor_plan_reads(&plan, &next_ledger),
+            (None, None) => assembler.add_plan_reads(&plan, &next_ledger),
+            (None, Some(previous)) => assembler.add_plan_round_reads(
+                &plan,
+                &next_ledger,
+                &plan_round_read_roots(previous, &frontier),
+            ),
         };
         let _ = assembled.map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
         let successor_snapshot = assembler
@@ -2132,6 +2147,16 @@ mod tests {
         assert!(
             import_frontier_roots_requested(&result.session) <= (MODULES as u64) * 4,
             "frontier dispatch must stay linear in chain depth, not rounds times plan"
+        );
+        // The read half of the same property: each round reduces only the
+        // occurrences it and the previous round demanded answers for, so it
+        // offers the assembler about one accepted source per round plus the
+        // first round's whole-plan reduction. Re-reducing the whole plan every
+        // round instead offered every already assembled leaf again — 528 at this
+        // shape, and quadratic in chain depth.
+        assert!(
+            result.assembler.plan_reads_reduced() <= (MODULES as u64) * 2,
+            "per-round read volume must stay linear in chain depth, not rounds times plan"
         );
     }
 

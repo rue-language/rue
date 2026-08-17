@@ -1163,6 +1163,12 @@ impl RetainedCharge for crate::SourceMetadata {
 
 impl RetainedCharge for crate::SourceSnapshot {
     fn retained_charge(&self) -> u64 {
+        self.memoized_retained_charge(|| self.walk_retained_charge())
+    }
+}
+
+impl crate::SourceSnapshot {
+    fn walk_retained_charge(&self) -> u64 {
         let records = self.metadata().file_ids().fold(0_u64, |charge, file_id| {
             charge
                 .saturating_add(std::mem::size_of::<(

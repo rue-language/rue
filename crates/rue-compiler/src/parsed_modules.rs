@@ -595,6 +595,9 @@ struct ParsedSyntaxPayload {
 /// Immutable, Arc-shareable parsed syntax and exact local provenance.
 #[derive(Debug)]
 pub struct ParsedModule {
+    /// Memoized retained-artifact charge of this exact module value; see
+    /// [`Self::retained_allocation_charge`].
+    retained_charge: std::sync::OnceLock<u64>,
     revision: ModuleRevision,
     file_id: FileId,
     physical_path: Arc<str>,
@@ -660,7 +663,19 @@ impl ParsedModule {
     /// Charge the complete retained graph, including the immutable parser
     /// payload and the snapshot-local aliases derived from it. Aliased Arcs are
     /// charged once per reachable field rather than deduplicated by address.
+    ///
+    /// A module is immutable, so its charge is computed once per value and
+    /// memoized: the program a discovery round publishes is charged whole on
+    /// every publication and every retention measurement, and re-walking each
+    /// carried module's syntax on each of those is quadratic in the length of an
+    /// import chain. The memo answers with the number the walk produces.
     pub(crate) fn retained_allocation_charge(&self) -> u64 {
+        *self
+            .retained_charge
+            .get_or_init(|| self.walk_retained_allocation_charge())
+    }
+
+    fn walk_retained_allocation_charge(&self) -> u64 {
         let ast_charge = |ast: &Arc<Ast>| ast.retained_charge();
         let tokens_charge = |tokens: &[rue_lexer::Token]| std::mem::size_of_val(tokens) as u64;
         let imports_charge = |imports: &[ImportDirective]| {
@@ -953,6 +968,8 @@ impl ParsedModule {
         };
         function.name.name = foreign;
         Arc::new(Self {
+            // A perturbed module is a distinct value; it charges itself.
+            retained_charge: std::sync::OnceLock::new(),
             revision: self.revision.clone(),
             file_id: self.file_id,
             physical_path: self.physical_path.clone(),
@@ -1655,6 +1672,7 @@ fn bind_payload(
         })
         .collect::<Vec<_>>();
     Arc::new(ParsedModule {
+        retained_charge: std::sync::OnceLock::new(),
         revision,
         file_id,
         physical_path: Arc::from(snapshot.metadata().physical_path(file_id).unwrap()),

@@ -671,6 +671,11 @@ pub struct CompilerSession {
     /// Protocol context only while the typed import-closure query is open.
     /// Closed attempts live exclusively in their plan or closure terminal.
     open_discovery: Option<Arc<ImportDiscoveryRevisionArtifact>>,
+    /// The exact snapshot and accepted-read manifest pair whose fail-closed
+    /// agreement this session has already proved, so a stage extending that pair
+    /// re-proves only its own appended entries. Both values are immutable, so
+    /// holding them is what makes the structural-extension proof below sound.
+    validated_accepted_reads: Option<(SourceSnapshot, crate::AcceptedReadManifest)>,
     /// Trusted-toolchain continuation state (RUE-1112). Set only at a
     /// successful import-discovery close and single-use: consumed by a
     /// successful `publish_trusted_toolchain_successor`, and cleared on any new
@@ -2296,6 +2301,47 @@ impl CompilerSession {
         )
     }
 
+    /// Prove the staged snapshot and its accepted-read provenance manifest agree,
+    /// fail-closed, before anything is staged from them.
+    ///
+    /// A stage whose snapshot AND manifest are both direct structural extensions
+    /// of the exact pair this session last proved re-checks only the appended
+    /// entries. The prefix is not assumed unchanged: both values are immutable
+    /// and the extension proof is pointer lineage, so the retained prefix IS the
+    /// pair already checked. Any other stage — a fresh lineage, a rebuilt
+    /// snapshot, a manifest that compacted away its lineage — re-checks the whole
+    /// pair, which is also what a mid-discovery source change lands on, because a
+    /// changed source cannot appear as an extension of an already proved pair.
+    fn validate_staged_accepted_reads(
+        &mut self,
+        snapshot: &SourceSnapshot,
+        accepted_reads: &crate::AcceptedReadManifest,
+    ) -> Result<(), CompileErrors> {
+        let extension = self.validated_accepted_reads.as_ref().and_then(
+            |(previous_snapshot, previous_reads)| {
+                let files = snapshot.direct_appended_file_ids_from(previous_snapshot)?;
+                let entries = accepted_reads
+                    .segments()
+                    .direct_delta_from(previous_reads.segments())?;
+                Some((files, entries, previous_reads))
+            },
+        );
+        match extension {
+            Some((files, entries, previous_reads)) => {
+                validate_appended_accepted_reads(
+                    snapshot,
+                    accepted_reads,
+                    previous_reads,
+                    &files,
+                    entries,
+                )?;
+            }
+            None => validate_accepted_read_manifest(snapshot, accepted_reads)?,
+        }
+        self.validated_accepted_reads = Some((snapshot.clone(), accepted_reads.clone()));
+        Ok(())
+    }
+
     fn stage_import_discovery_inner(
         &mut self,
         snapshot: &SourceSnapshot,
@@ -2335,7 +2381,7 @@ impl CompilerSession {
         // attempts are retained as projections of the canonical frontier.
         self.open_discovery = None;
         let source_revision = snapshot.source_revision().clone();
-        if let Err(errors) = validate_accepted_read_manifest(snapshot, &accepted_reads) {
+        if let Err(errors) = self.validate_staged_accepted_reads(snapshot, &accepted_reads) {
             let diagnostic_snapshot = self.publish_import_diagnostics(
                 snapshot,
                 Some(context.clone()),
@@ -6503,6 +6549,62 @@ fn validate_accepted_read_manifest(
                     "accepted read manifest content does not match logical module {module}"
                 )),
             )));
+        }
+    }
+    Ok(())
+}
+
+/// The appended half of [`validate_accepted_read_manifest`], for a snapshot and
+/// manifest that both directly extend an already validated pair. It proves the
+/// same properties over the appended entries: the manifest covers the snapshot
+/// exactly, names no module twice, and carries each source's exact content
+/// fingerprint. Failure messages match the whole-pair check, because a caller
+/// cannot observe which half proved the disagreement.
+fn validate_appended_accepted_reads(
+    snapshot: &SourceSnapshot,
+    accepted_reads: &crate::AcceptedReadManifest,
+    previous_reads: &crate::AcceptedReadManifest,
+    appended_files: &[crate::FileId],
+    appended_entries: &[crate::AcceptedReadManifestEntry],
+) -> Result<(), CompileErrors> {
+    let reject = |message: String| {
+        Err(CompileErrors::from(CompileError::without_span(
+            ErrorKind::InvalidCompilerInput(message),
+        )))
+    };
+    if accepted_reads.len() != snapshot.len() {
+        return reject("accepted read manifest does not cover the staging source snapshot".into());
+    }
+    if appended_entries.len() != appended_files.len() {
+        // Equal totals over equal prefixes make this unreachable; a pair that
+        // reaches it is not the shape this delta check reasons about, so it is
+        // proved by the whole-pair check rather than diagnosed from here.
+        return validate_accepted_read_manifest(snapshot, accepted_reads);
+    }
+    for entry in appended_entries {
+        if previous_reads.find_module(entry.module()).is_some() {
+            return reject("accepted read manifest contains duplicate logical modules".into());
+        }
+    }
+    for file_id in appended_files {
+        let module = snapshot
+            .module_id(*file_id)
+            .expect("snapshot files have logical module IDs");
+        let Ok(index) = appended_entries.binary_search_by(|entry| entry.module().cmp(module))
+        else {
+            return reject(format!(
+                "accepted read manifest is missing logical module {module}"
+            ));
+        };
+        let source = snapshot
+            .source(*file_id)
+            .expect("snapshot files retain their source text");
+        if appended_entries[index].content_fingerprint()
+            != crate::import_discovery::source_fingerprint(source.source)
+        {
+            return reject(format!(
+                "accepted read manifest content does not match logical module {module}"
+            ));
         }
     }
     Ok(())
