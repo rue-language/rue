@@ -1720,7 +1720,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // literal: its content joins the function's local string table
             // and lowers to a `.rodata`-backed `str` value (RUE-957).
             ConstValue::String(content) => {
-                let content = self.body_interner().resolve(&content).to_string();
+                let content = self.body_interner().resolve(&content.spur()).to_string();
                 let anchor = anchor.ok_or_else(|| {
                     CompileError::new(
                         ErrorKind::InternalError(

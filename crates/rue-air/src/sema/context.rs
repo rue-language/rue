@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::CompileWarning;
-use rue_rir::RirParamMode;
+use rue_rir::{RirParamMode, SymbolHandle};
 use rue_span::{FileId, Span};
 
 use crate::inst::{AirPlaceBase, AirProjection};
@@ -1125,7 +1125,13 @@ pub enum ConstValue {
     /// Function-valued constants are currently callable aliases only: they can
     /// be used as the callee of a call expression, but cannot be materialized
     /// as ordinary runtime values.
-    Function(lasso::Spur),
+    ///
+    /// The payload is an equality-only [`SymbolHandle`] rather than a bare
+    /// `Spur` because this value reaches two places that must not depend on a
+    /// handle's numeric value: specialization name mangling, which spells a
+    /// link-time symbol, and the AIR comptime-argument encoder, which writes
+    /// one word per argument (ADR-0076).
+    Function(SymbolHandle),
     /// String value - stores the interned literal content (RUE-957).
     ///
     /// A string constant's use sites materialize it exactly like an inline
@@ -1133,7 +1139,7 @@ pub enum ConstValue {
     /// and lowers to `.rodata`-backed `str` (`{ptr, len}`). String constants
     /// are not usable as comptime arguments (no `comptime s: str` parameters
     /// exist), so specialization serialization rejects them.
-    String(lasso::Spur),
+    String(SymbolHandle),
     /// Unit value - the value of `()`.
     Unit,
 }
@@ -1178,7 +1184,7 @@ impl ConstValue {
     }
 
     /// Try to extract a function reference.
-    pub fn as_function(self) -> Option<lasso::Spur> {
+    pub fn as_function(self) -> Option<SymbolHandle> {
         match self {
             ConstValue::Function(name) => Some(name),
             _ => None,

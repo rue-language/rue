@@ -523,11 +523,16 @@ impl CfgDomainProjection {
             .iter()
             .map(|(_, stable)| stable)
             .collect::<Vec<_>>();
-        let symbols = self
+        // `symbols` is stored ordered by live interner handle, which is a
+        // private lookup order rather than a semantic one. Render it in stable
+        // symbol order so this snapshot describes the body's durable shape and
+        // not the order its interner happened to issue handles in (ADR-0076).
+        let mut symbols = self
             .symbols
             .iter()
             .map(|(_, stable)| stable)
             .collect::<Vec<_>>();
+        symbols.sort();
         format!(
             "{instruction_kinds:?}|{types:?}|{strings:?}|{:?}|{spans:?}|{symbols:?}",
             self.atoms
@@ -673,6 +678,10 @@ impl CfgDomainProjection {
         Ok((imported, string_map))
     }
 
+    /// The live-handle order this searches is the same one insertion sorts by,
+    /// so the answer is a function of the handle alone and never of the order
+    /// the interner issued handles in — the property ADR-0076 needs from every
+    /// ordered symbol-handle use that survives.
     pub(crate) fn callable_for_symbol(&self, name: Spur) -> Option<crate::FunctionInstanceKey> {
         let position = self
             .symbols

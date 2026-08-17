@@ -10,6 +10,7 @@ real.
 
 | File | Records | Status | Superseded by |
 | --- | --- | --- | --- |
+| [adr-0076-symbol-handle-ordered-use-audit.md](adr-0076-symbol-handle-ordered-use-audit.md) | ADR-0076 Phase 1: the complete inventory of ordered and value-bearing symbol-handle uses, their conversions, and what a revision-shared interner still owes. | current | — |
 | [adr-0071-phase-1-reference-baseline.md](adr-0071-phase-1-reference-baseline.md) | The first complete `fresh_source_to_native_v1` reference measurements closing ADR-0071's measurement phase. | current | — |
 | [adr-0071-horizontal-vertical-ownership-reaudit.md](adr-0071-horizontal-vertical-ownership-reaudit.md) | Current-source whole-pipeline ownership re-audit after the accepted ADR-0071 and RUE-1510 work, with the next measured verticals. | current | — |
 | [adr-0071-phase-2-semantic-cfg-ownership-audit.md](adr-0071-phase-2-semantic-cfg-ownership-audit.md) | Point-in-time Phase 2 audit (2026-08-13) of semantic-to-CFG ownership before the accepted payload-sharing and packed-artifact work. | historical | [adr-0071-horizontal-vertical-ownership-reaudit.md](adr-0071-horizontal-vertical-ownership-reaudit.md) |

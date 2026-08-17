@@ -31,7 +31,7 @@
 use ahash::{AHashMap, AHashSet};
 use std::collections::hash_map::Entry;
 
-use lasso::{Key, Spur, ThreadedRodeo};
+use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
 use rue_span::Span;
 
@@ -112,6 +112,7 @@ fn collect_specializations(
                 work.specialization_requests_unique += 1;
                 let base_name = interner.resolve(name);
                 let mangled = mangle_specialized_name(
+                    interner,
                     base_name,
                     &entry.key().type_args,
                     &entry.key().value_args,
@@ -196,11 +197,11 @@ where
                     crate::SemanticImportConstValue::Type(host.export_body_type(*value)?)
                 }
                 ConstValue::Function(value) => {
-                    crate::SemanticImportConstValue::Function(host.function_identity(*value)?)
+                    crate::SemanticImportConstValue::Function(host.function_identity(value.spur())?)
                 }
                 ConstValue::Unit => crate::SemanticImportConstValue::Unit,
                 ConstValue::String(content) => crate::SemanticImportConstValue::String(
-                    std::sync::Arc::from(host.resolve_publication_symbol(content)),
+                    std::sync::Arc::from(host.resolve_publication_symbol(&content.spur())),
                 ),
             })
         })
@@ -349,8 +350,12 @@ where
         ))
     })?;
     let base_name = host.body_interner().resolve(&key.base_name).to_owned();
-    let specialized_name_text =
-        mangle_specialized_name(&base_name, &key.type_args, &key.value_args);
+    let specialized_name_text = mangle_specialized_name(
+        host.body_interner(),
+        &base_name,
+        &key.type_args,
+        &key.value_args,
+    );
     let base_call_info = crate::sema::FunctionCallInfo::from_body(base_info);
     let param_comptime_type = host.comptime_type_param_flags(&base_call_info);
     let base_params = host
@@ -573,7 +578,13 @@ const SPEC_SEP: char = '.';
 /// (RUE-100's lesson: colliding mangles mean duplicate symbols at link time).
 /// The `.` separator is illegal in Rue identifiers, so these names cannot
 /// collide with a user-spellable function name (RUE-41).
+///
+/// The interner is a parameter because a symbol-valued argument contributes its
+/// *text*, never its handle: this name becomes a link-time symbol, and ADR-0076
+/// makes a handle's numeric value scheduling-dependent once one interner is
+/// shared across a revision's bodies.
 pub(crate) fn mangle_specialized_name(
+    interner: &ThreadedRodeo,
     base_name: &str,
     type_args: &[Type],
     value_args: &[ConstValue],
@@ -585,7 +596,7 @@ pub(crate) fn mangle_specialized_name(
     }
     for value in value_args {
         mangled.push(SPEC_SEP);
-        mangled.push_str(&mangle_const_value(value));
+        mangled.push_str(&mangle_const_value(interner, value));
     }
     mangled
 }
@@ -594,18 +605,20 @@ pub(crate) fn mangle_specialized_name(
 ///
 /// Negative integers use an `m` (minus) prefix on the magnitude because `-`
 /// is not a safe symbol character (`-3` -> `vm3`).
-fn mangle_const_value(value: &ConstValue) -> String {
+fn mangle_const_value(interner: &ThreadedRodeo, value: &ConstValue) -> String {
     match value {
         ConstValue::Integer(n) if *n < 0 => format!("vm{}", n.unsigned_abs()),
         ConstValue::Integer(n) => format!("v{}", n),
         ConstValue::Bool(b) => format!("v{}", b),
         ConstValue::Unit => "vunit".to_string(),
         ConstValue::Type(ty) => format!("v{}", mangle_type(*ty)),
-        ConstValue::Function(name) => format!("vfn{}", name.into_usize()),
-        // Comptime parameters have no string type, so strings never appear
-        // in a specialization key (RUE-957). The interner index still gives
-        // a unique, symbol-safe fragment should that ever change.
-        ConstValue::String(content) => format!("vstr{}", content.into_usize()),
+        // Both symbol-valued arms spell the symbol's text. Neither is reachable
+        // today — a callable alias is refused as a comptime argument
+        // (`validate_comptime_value_for_type_impl`) and no comptime parameter
+        // has a string type (RUE-957) — but a mangled fragment carrying an
+        // interner index would be a link-name that depends on intern order.
+        ConstValue::Function(name) => format!("vfn{}", interner.resolve(&name.spur())),
+        ConstValue::String(content) => format!("vstr{}", interner.resolve(&content.spur())),
     }
 }
 

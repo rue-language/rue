@@ -288,7 +288,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 file: const_info.span.file_id.index(),
                 name: alias_name,
             });
-            name = callee;
+            name = callee.spur();
             resolved_alias = true;
         }
 
@@ -1259,7 +1259,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .call_facts()
                 .call_value_const(mfile, function_name)
                 .and_then(|info| match info.value {
-                    ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
+                    ConstValue::Function(fkey) => Some((fkey.spur(), info.is_pub)),
                     _ => None,
                 });
             if let Some((fkey, is_pub)) = reexport {
