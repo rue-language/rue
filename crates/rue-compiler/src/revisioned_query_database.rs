@@ -6140,6 +6140,46 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
     matches!(kind, rue_error::ErrorKind::InternalError(_))
 }
 
+/// The trusted-toolchain demand of one body, answered from this reachability
+/// evaluation's cache once it has been observed.
+///
+/// Reachability asks for the same body's demand more than once. The prefetch
+/// batch reads the frontier window, and if any demanded module is absent the
+/// parking sweep then walks the whole frontier — which contains that window —
+/// to union what every remaining body still needs. The demand is a pure
+/// function of the key at this revision, so the repeat is served from the cache
+/// and each body is queried at most once per request (RUE-1562).
+///
+/// Only repeats are skipped, so the set of dependency edges the evaluation
+/// records is unchanged: a body whose demand has not been observed yet is still
+/// queried here, and the first observation is what registers the edge.
+fn observe_body_toolchain_demand(
+    context: &rue_query::QueryContext,
+    demands: &QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
+    cache: &mut AHashMap<Arc<crate::FunctionInstanceKey>, crate::BodyToolchainDemand>,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    instance: &Arc<crate::FunctionInstanceKey>,
+) -> Result<crate::BodyToolchainDemand, QueryAbort> {
+    if let Some(demand) = cache.get(instance) {
+        return Ok(demand.clone());
+    }
+    let terminal = context.query_registered(
+        demands,
+        crate::body_query::BodyQueryKey::new(instance.as_ref().clone(), configuration.clone()),
+    )?;
+    let rue_query::QueryOutcome::Success(demand) = terminal.outcome() else {
+        unreachable!("BodyToolchainDemands publishes typed values")
+    };
+    context.record_work(rue_query::WorkItem::new(
+        "reachability.toolchain-demand.queries",
+        1,
+    ));
+    Ok(cache
+        .entry(instance.clone())
+        .or_insert_with(|| demand.clone())
+        .clone())
+}
+
 fn visit_instance_anonymous_nominals<'a>(
     function: &'a crate::FunctionInstanceKey,
     seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
@@ -14534,6 +14574,23 @@ impl RevisionedQueryDatabase {
                         >,
                     )>::new();
                     let mut anonymous_visit_seen = AHashSet::new();
+                    // Toolchain demands observed so far in this evaluation.
+                    //
+                    // The parking path unions the missing modules of every body
+                    // still ready or pending, and it can run more than once per
+                    // request, so the same body's demand was re-queried on each
+                    // sweep — a deep `BodyQueryKey` rebuilt and a registration
+                    // performed per body per parking event (RUE-1562). The
+                    // demand is a pure function of the key at this revision, so
+                    // one evaluation-scoped cache answers every repeat.
+                    //
+                    // Only repeats are skipped: a body whose demand has not
+                    // been observed yet is still queried here, so the set of
+                    // dependency edges this evaluation records is unchanged.
+                    let mut observed_toolchain_demands: AHashMap<
+                        Arc<crate::FunctionInstanceKey>,
+                        crate::BodyToolchainDemand,
+                    > = AHashMap::new();
                     let concurrency = context.max_concurrency();
                     let body_query_prefetch_window = if concurrency == 1 {
                         1
@@ -14685,11 +14742,24 @@ impl RevisionedQueryDatabase {
                             )?;
                             let mut batch_modules = BTreeSet::new();
                             let mut batch_requesters = BTreeSet::new();
-                            for demand in demands {
+                            for (instance, demand) in instances.iter().zip(demands) {
                                 let rue_query::QueryOutcome::Success(demand) = demand.outcome()
                                 else {
                                     unreachable!("BodyToolchainDemands publishes typed values")
                                 };
+                                // The parking sweep below walks the whole ready
+                                // frontier, which contains every instance in
+                                // this window, so record what the batch already
+                                // answered rather than asking again (RUE-1562).
+                                if observed_toolchain_demands
+                                    .insert(instance.clone(), demand.clone())
+                                    .is_none()
+                                {
+                                    context.record_work(rue_query::WorkItem::new(
+                                        "reachability.toolchain-demand.queries",
+                                        1,
+                                    ));
+                                }
                                 let mut any_absent = false;
                                 for module in demand.modules() {
                                     if !present_trusted_modules.contains(module.logical_path()) {
@@ -14704,23 +14774,20 @@ impl RevisionedQueryDatabase {
                                 }
                             }
                             if !batch_modules.is_empty() {
-                                for remaining_instance in
-                                    ready_frontier.keys().chain(pending.keys())
-                                {
-                                    let remaining_demand = context.query_registered(
+                                let remaining: Vec<Arc<crate::FunctionInstanceKey>> =
+                                    ready_frontier.keys().chain(pending.keys()).cloned().collect();
+                                for remaining_instance in remaining {
+                                    // A cached demand skips the query that used
+                                    // to carry this loop's cancellation check.
+                                    context.check_canceled()?;
+                                    let remaining_demand = observe_body_toolchain_demand(
+                                        context,
                                         &toolchain_for_body_closure,
-                                        crate::body_query::BodyQueryKey::new(
-                                            remaining_instance.as_ref().clone(),
-                                            key.configuration.clone(),
-                                        ),
+                                        &mut observed_toolchain_demands,
+                                        &key.configuration,
+                                        &remaining_instance,
                                     )?;
-                                    let rue_query::QueryOutcome::Success(remaining_demand) =
-                                        remaining_demand.outcome()
-                                    else {
-                                        unreachable!(
-                                            "BodyToolchainDemands publishes typed values"
-                                        )
-                                    };
+                                    let remaining_demand = &remaining_demand;
                                     let mut any_absent = false;
                                     for module in remaining_demand.modules() {
                                         if !present_trusted_modules
@@ -14850,11 +14917,14 @@ impl RevisionedQueryDatabase {
                             instance.as_ref().clone(),
                             key.configuration.clone(),
                         );
-                        let demand = context
-                            .query_registered(&toolchain_for_body_closure, body_key.clone())?;
-                        let rue_query::QueryOutcome::Success(demand) = demand.outcome() else {
-                            unreachable!("BodyToolchainDemands publishes typed values")
-                        };
+                        let demand = observe_body_toolchain_demand(
+                            context,
+                            &toolchain_for_body_closure,
+                            &mut observed_toolchain_demands,
+                            &key.configuration,
+                            &instance,
+                        )?;
+                        let demand = &demand;
                         let mut batch_modules = demand
                             .modules()
                             .iter()
@@ -14869,23 +14939,24 @@ impl RevisionedQueryDatabase {
                                 .cloned()
                                 .into_iter()
                                 .collect::<BTreeSet<_>>();
-                            for pending_instance in ready_frontier.keys().chain(pending.keys()) {
-                                if visited.contains(pending_instance) {
-                                    continue;
-                                }
-                                let pending_key = crate::body_query::BodyQueryKey::new(
-                                    pending_instance.as_ref().clone(),
-                                    key.configuration.clone(),
-                                );
-                                let pending_demand = context.query_registered(
+                            let sweep: Vec<Arc<crate::FunctionInstanceKey>> = ready_frontier
+                                .keys()
+                                .chain(pending.keys())
+                                .filter(|pending_instance| !visited.contains(*pending_instance))
+                                .cloned()
+                                .collect();
+                            for pending_instance in sweep {
+                                // A cached demand skips the query that used to
+                                // carry this loop's cancellation check.
+                                context.check_canceled()?;
+                                let pending_demand = observe_body_toolchain_demand(
+                                    context,
                                     &toolchain_for_body_closure,
-                                    pending_key,
+                                    &mut observed_toolchain_demands,
+                                    &key.configuration,
+                                    &pending_instance,
                                 )?;
-                                let rue_query::QueryOutcome::Success(pending_demand) =
-                                    pending_demand.outcome()
-                                else {
-                                    unreachable!("BodyToolchainDemands publishes typed values")
-                                };
+                                let pending_demand = &pending_demand;
                                 let mut any_absent = false;
                                 for module in pending_demand.modules() {
                                     if !present_trusted_modules.contains(module.logical_path()) {
@@ -40474,6 +40545,75 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn each_body_toolchain_demand_is_queried_once_per_reachability_request() {
+        // RUE-1562: reachability reads a body's trusted-toolchain demand from
+        // more than one place — the prefetch batch reads the frontier window,
+        // and the parking sweep walks the whole frontier, which contains that
+        // window. Each body's demand is a pure function of its key at this
+        // revision, so one evaluation-scoped cache answers every repeat and no
+        // body is queried twice.
+        //
+        // A wide frontier is the case that made the duplication visible: the
+        // batch and the sweep overlap by the whole prefetch window.
+        const CALLEES: usize = 24;
+        let mut text = (0..CALLEES)
+            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .collect::<String>();
+        let expression = (0..CALLEES)
+            .map(|index| format!("f{index}()"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            let request = database
+                .body_closure(revision, key.clone(), CancellationToken::new())
+                .expect("a wide call fan-out publishes one body closure");
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            assert!(output.fatal.is_none());
+            let queries = request
+                .work
+                .iter()
+                .find_map(|(label, amount)| {
+                    (label.as_ref() == "reachability.toolchain-demand.queries").then_some(*amount)
+                })
+                .unwrap_or(0);
+            (output.reached.len(), queries)
+        };
+
+        for workers in [1, 4] {
+            let (reached, queries) = run(workers);
+            assert_eq!(reached, CALLEES + 1, "every callee is reached");
+            assert_eq!(
+                queries, reached as u64,
+                "with {workers} worker(s) each of the {reached} reached bodies must have its \
+                 toolchain demand queried exactly once, got {queries} queries"
+            );
+        }
+
+        // The counter must not depend on how the work was scheduled: the serial
+        // and parallel paths reach the demand through different call sites, and
+        // a published work ledger that disagreed across worker counts would be
+        // a determinism break rather than a measurement.
+        assert_eq!(
+            run(1),
+            run(4),
+            "demand accounting must be identical across worker counts"
+        );
+    }
+
+    #[test]
     fn ready_anonymous_producers_share_one_structured_frontier() {
         let snapshot = source_snapshot(
             &[(
@@ -41085,6 +41225,66 @@ fn main() -> i32 {
             output.fatal.is_none(),
             "an already observed collision must not leak past the higher-precedence park"
         );
+    }
+
+    #[test]
+    fn parking_unions_pending_demands_without_re_querying_them() {
+        // RUE-1562: when a body demands an absent trusted toolchain module the
+        // park has to union what every still-ready and still-pending body needs
+        // too, which walks the whole frontier. That sweep re-asked the demand
+        // family for bodies the prefetch batch had just read. It now reads the
+        // evaluation's cache, so a body is queried at most once even though it
+        // is visited by both the batch and the sweep.
+        //
+        // A wide fan-out where one leaf parks makes the overlap maximal: the
+        // frontier is still full when the sweep runs.
+        const CALLEES: usize = 24;
+        let mut text = (0..CALLEES)
+            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .collect::<String>();
+        text.push_str("fn parked() -> i32 { let _value = @parse_u32(\"1\"); 0 }\n");
+        let calls = (0..CALLEES)
+            .map(|index| format!("f{index}()"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        text.push_str(&format!("fn main() -> i32 {{ {calls} + parked() }}\n"));
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+
+        for workers in [1, 4] {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            let request = database
+                .body_closure(revision, key.clone(), CancellationToken::new())
+                .expect("the acquisition round publishes a typed park");
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            assert!(
+                output.parked_toolchain.is_some(),
+                "with {workers} worker(s) the absent trusted module must park the closure"
+            );
+            let queries = request
+                .work
+                .iter()
+                .find_map(|(label, amount)| {
+                    (label.as_ref() == "reachability.toolchain-demand.queries").then_some(*amount)
+                })
+                .unwrap_or(0);
+            // Every body the round touched is bounded by the whole program, so
+            // one query per distinct body is the ceiling the sweep must respect.
+            assert!(
+                queries <= (CALLEES + 2) as u64,
+                "with {workers} worker(s) the parking sweep re-queried demands: {queries} \
+                 queries for at most {} distinct bodies",
+                CALLEES + 2
+            );
+        }
     }
 
     #[test]
