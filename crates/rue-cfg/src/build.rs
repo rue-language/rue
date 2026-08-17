@@ -2810,6 +2810,13 @@ impl<'a> CfgBuilder<'a> {
                 f
             }
         };
+        self.store_field_drop_flag(flag_slot, live, span);
+    }
+
+    /// Write `live` into an already-resolved per-field drop-flag slot. Split
+    /// out so the update path can emit from the slot its own lookup found,
+    /// instead of re-deriving it from the path a second time.
+    fn store_field_drop_flag(&mut self, flag_slot: u32, live: bool, span: rue_span::Span) {
         let val = self.emit(
             CfgInstData::Const(if live { 1 } else { 0 }),
             Type::I32,
@@ -2827,7 +2834,9 @@ impl<'a> CfgBuilder<'a> {
 
     /// Update an EXISTING per-field drop flag; no-op when the path has none
     /// (its type needs no drop). The flag is allocated and armed at the
-    /// slot's initialization site, which always precedes the move.
+    /// slot's initialization site, which always precedes the move, so this
+    /// path never reaches `set_field_drop_flag`'s allocating branch: one
+    /// owned path and one hash answer the whole question.
     fn update_field_drop_flag(
         &mut self,
         key: MovedSlot,
@@ -2835,9 +2844,10 @@ impl<'a> CfgBuilder<'a> {
         live: bool,
         span: rue_span::Span,
     ) {
-        if self.field_drop_flags.contains_key(&(key, path.to_vec())) {
-            self.set_field_drop_flag(key, path.to_vec(), live, span);
-        }
+        let Some(flag_slot) = self.field_drop_flags.get(&(key, path.to_vec())).copied() else {
+            return;
+        };
+        self.store_field_drop_flag(flag_slot, live, span);
     }
 
     /// The path (declaration/element indices, outermost first) named by a
@@ -5353,6 +5363,119 @@ mod tests {
             ),
             "the drop covers the whole re-initialized struct, not one field"
         );
+    }
+
+    /// Stores into hidden drop-flag slots: the temp locals `set_field_drop_flag`
+    /// allocates past the body's declared locals, paired with the constant
+    /// written into them.
+    fn drop_flag_stores(cfg: &Cfg, declared_locals: u32) -> Vec<(u32, u64)> {
+        cfg.blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter_map(|value| match cfg.get_inst(*value).data {
+                CfgInstData::Store { slot, value } if slot >= declared_locals => {
+                    match cfg.get_inst(value).data {
+                        CfgInstData::Const(constant) => Some((slot, constant)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repeated_field_moves_update_one_flag_slot_per_path() {
+        // RUE-1560: `update_field_drop_flag` used to hash and materialize the
+        // path once to ask whether a flag existed and again to write it. It
+        // now resolves the slot once and stores through it, which must not
+        // change what is emitted: the same single flag slot, written in the
+        // same order, with the same drop elaboration around it.
+        //
+        // `let h = H { a: sb(8), b: sb(8) };
+        //  eat(h.a); h.a = sb(4); eat(h.a); h.a = sb(2); 0`
+        //
+        // Each `eat(h.a)` clears the field's flag and each reassignment re-arms
+        // it, so the update path runs four times against a flag that already
+        // exists — the branch that must never allocate a second slot.
+        use SemanticBodyInstData as D;
+        let mut f = BodyFixture::new(SemanticImportType::I32);
+        let (binding, first_eat, place_a) = partial_field_move_prefix(&mut f);
+        let declared_locals = f.num_locals;
+
+        let mut statements = vec![binding, first_eat];
+        for (capacity, reads_again) in [(4u64, true), (2u64, false)] {
+            let cap = f.inst(D::Const(capacity), SemanticImportType::U64);
+            let fresh = f.call_inst("StrBuf.with_capacity", &[cap], nominal_ty("StrBuf"));
+            statements.push(f.inst(
+                D::PlaceWrite {
+                    place: place_a,
+                    value: fresh,
+                },
+                SemanticImportType::Unit,
+            ));
+            if reads_again {
+                let read = f.inst(D::PlaceRead { place: place_a }, nominal_ty("StrBuf"));
+                let moved = f.inst(
+                    D::MarkMoved {
+                        value: read,
+                        slot: 0,
+                        is_param: false,
+                        place: Some(place_a),
+                    },
+                    nominal_ty("StrBuf"),
+                );
+                statements.push(f.call_inst("eat", &[moved], SemanticImportType::I32));
+            }
+        }
+
+        let zero = f.inst(D::Const(0), SemanticImportType::I32);
+        let tail = f.inst(
+            D::Block {
+                statements: statements.into(),
+                value: zero,
+            },
+            SemanticImportType::I32,
+        );
+        f.inst(D::Ret(Some(tail)), SemanticImportType::I32);
+        let cfg = f.build_cfg();
+
+        let stores = drop_flag_stores(&cfg, declared_locals);
+        let slots: std::collections::BTreeSet<u32> = stores.iter().map(|(slot, _)| *slot).collect();
+        assert_eq!(
+            slots.len(),
+            1,
+            "field a's path owns exactly one flag slot however often it is \
+             moved and re-initialized, got stores into {slots:?}"
+        );
+
+        // Armed once at the struct's initialization, then cleared and re-armed
+        // by each move and each reassignment, in source order.
+        let written: Vec<u64> = stores.iter().map(|(_, constant)| *constant).collect();
+        assert_eq!(
+            written,
+            vec![1, 0, 1, 0, 1],
+            "the flag must be armed at initialization and then alternate with \
+             each move and reassignment"
+        );
+
+        // The trailing reassignment leaves the struct whole, so exit is back on
+        // the whole-struct path: one drop covering both fields.
+        let dropped: Vec<_> = cfg
+            .blocks()
+            .iter()
+            .flat_map(|block| block.insts.iter())
+            .filter_map(|value| match cfg.get_inst(*value).data {
+                CfgInstData::Drop { value } => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dropped.len(), 1, "exactly one whole-struct drop at exit");
+        assert!(
+            matches!(cfg.get_inst(dropped[0]).data, CfgInstData::Load { slot: 0 }),
+            "the re-initialized struct drops whole, not field-granularly"
+        );
+        assert_all_blocks_terminated(&cfg);
     }
 
     #[test]
