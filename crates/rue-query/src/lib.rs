@@ -8382,6 +8382,38 @@ impl QueryContext {
         result.into_result()
     }
 
+    fn query_registered_ref<K, V>(
+        &self,
+        family: &QueryFamily<K, V>,
+        key: &K,
+    ) -> Result<Arc<QueryTerminal<V>>, QueryAbort>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "closure-free dependency requests require a registered evaluator"
+        );
+        let request_id = self.task.next_nested_request();
+        let result = if Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            family.query_task_registered(self.task.clone(), key.clone(), request_id)
+        } else {
+            TaskQueryResult::Aborted {
+                abort: QueryAbort::ForeignRuntime,
+                dependencies: Vec::new(),
+                inputs: Vec::new(),
+                work: Vec::new(),
+            }
+        };
+        self.task.record_nested(
+            request_id,
+            move || NodeIdentity::from_key(family.inner.name.clone(), key),
+            &result,
+        );
+        result.into_result()
+    }
+
     /// Requests stable-ordered registered dependencies with concurrency-aware
     /// scheduling.
     ///
@@ -8409,7 +8441,7 @@ impl QueryContext {
         if self.max_concurrency() == 1 {
             return keys
                 .into_iter()
-                .map(|key| self.query_registered(family, key))
+                .map(|key| self.query_registered_ref(family, &key))
                 .collect();
         }
         let keys = keys.into_iter().collect::<Vec<_>>();
@@ -8447,6 +8479,39 @@ impl QueryContext {
                 .collect(),
         });
         self.query_registered_batch_with_claim(family, items, worker_claim)
+    }
+
+    /// Requests stable-ordered registered dependencies from borrowed keys.
+    ///
+    /// This is the one-worker counterpart to [`Self::query_registered_adaptive_batch`]
+    /// for callers whose keys already live in an immutable batch key. It keeps
+    /// the same request accounting and ordered results, but avoids cloning each
+    /// key merely to hand ownership to the adaptive scheduler before the
+    /// scheduler clones it for the actual query.
+    pub fn query_registered_adaptive_batch_refs<'a, K, V, I>(
+        &self,
+        family: &QueryFamily<K, V>,
+        keys: I,
+    ) -> Result<Vec<Arc<QueryTerminal<V>>>, QueryAbort>
+    where
+        K: QueryKey + 'a,
+        V: Clone + Send + Sync + 'static,
+        I: IntoIterator<Item = &'a K>,
+    {
+        assert!(
+            family.inner.evaluator.is_some(),
+            "closure-free dependency requests require a registered evaluator"
+        );
+        if !Arc::ptr_eq(&self.task_runtime(), &family.core) {
+            return Err(QueryAbort::ForeignRuntime);
+        }
+        if self.max_concurrency() == 1 {
+            return keys
+                .into_iter()
+                .map(|key| self.query_registered_ref(family, key))
+                .collect();
+        }
+        self.query_registered_adaptive_batch(family, keys.into_iter().cloned())
     }
 
     /// Requests a stable-ordered batch of dependencies through one registered
@@ -15871,10 +15936,9 @@ mod tests {
                     "adaptive-batch-root",
                     8,
                     move |context, _, _| {
-                        let terminals = context.query_registered_adaptive_batch(
-                            &leaf_for_root,
-                            [Key("aa"), Key("bbb")],
-                        )?;
+                        let keys = [Key("aa"), Key("bbb")];
+                        let terminals = context
+                            .query_registered_adaptive_batch_refs(&leaf_for_root, keys.iter())?;
                         let sum = terminals
                             .iter()
                             .map(|terminal| match terminal.outcome() {

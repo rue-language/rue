@@ -1554,7 +1554,7 @@ pub(crate) fn evaluate_optimized_cfg(
     let mut implicit_destructor_dependencies_complete =
         record.implicit_destructor_dependencies_complete;
     let accessor_terminals =
-        context.query_registered_adaptive_batch(cfgs, key.accessor_dependencies.iter().cloned())?;
+        context.query_registered_adaptive_batch_refs(cfgs, key.accessor_dependencies.iter())?;
     let mut accessor_cfgs = std::collections::BTreeMap::new();
     for (dependency, terminal) in key.accessor_dependencies.iter().zip(accessor_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
