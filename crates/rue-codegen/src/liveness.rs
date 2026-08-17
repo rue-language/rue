@@ -810,8 +810,15 @@ fn build_live_ranges(
 /// # Algorithm
 ///
 /// 1. Identify back-edges by finding successors[i] where successor <= i
-/// 2. For each back-edge (from -> to), mark all instructions in [to, from] as in a loop
-/// 3. Handle nested loops by tracking depth (incremented for each enclosing loop)
+/// 2. Record each back-edge (from -> to) as an interval `[to, from]` in a
+///    difference array: `+1` at `to`, `-1` just past `from`
+/// 3. Prefix-sum the difference array, so each instruction's depth is the
+///    number of enclosing loop intervals covering it
+///
+/// Accumulating intervals rather than marking each range instruction by
+/// instruction keeps this linear in instructions plus back-edges; the marking
+/// form was back-edges times instructions, which dominated the pass on large
+/// bodies with many back-edges.
 ///
 /// # Arguments
 ///
@@ -829,33 +836,35 @@ where
         return LoopInfo::no_loops(0);
     }
 
-    // Find all back-edges: edges where we jump to an earlier or same instruction
+    // Find all back-edges: edges where we jump to an earlier or same instruction.
     // A back-edge from instruction `from` to instruction `to` (where to <= from)
-    // indicates a loop from `to` to `from`
-    let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
+    // indicates a loop from `to` to `from`, inclusive at both ends. Each one is
+    // recorded as a delta pair rather than painted across its range, so the cost
+    // is one entry per back-edge instead of one per covered instruction. The
+    // ranges need no sorting: interval sums do not depend on their order.
+    let mut deltas = vec![0i64; num_insts + 1];
 
     for (from, succs) in successors.iter().enumerate() {
         for &to in succs.as_ref() {
             if to <= from {
-                // This is a back-edge: we're jumping backwards
-                // The loop spans from `to` (loop header) to `from` (back-edge source)
-                loop_ranges.push((to, from));
+                deltas[to] += 1;
+                deltas[from + 1] -= 1;
             }
         }
     }
 
-    // Sort loop ranges by start point for consistent processing
-    loop_ranges.sort_by_key(|(start, _)| *start);
-
-    // Compute loop depth for each instruction
-    // Each loop range [start, end] increments the depth of all instructions in that range
-    let mut depths = vec![0u32; num_insts];
-
-    for (loop_start, loop_end) in &loop_ranges {
-        for idx in *loop_start..=*loop_end {
-            depths[idx] = depths[idx].saturating_add(1);
-        }
-    }
+    // An instruction's depth is the number of loop ranges covering it, which one
+    // prefix sum over the deltas yields. Accumulate wide and saturate on the way
+    // out, matching the per-range `saturating_add` this replaced for counts
+    // beyond what a `u32` holds.
+    let mut enclosing = 0i64;
+    let depths = deltas[..num_insts]
+        .iter()
+        .map(|delta| {
+            enclosing += delta;
+            u32::try_from(enclosing).unwrap_or(u32::MAX)
+        })
+        .collect();
 
     LoopInfo::from_depths(depths)
 }
@@ -1351,5 +1360,183 @@ mod tests {
         assert_eq!(loop_info.depth(2), 1, "Loop body");
         assert_eq!(loop_info.depth(3), 1, "Loop back-edge");
         assert_eq!(loop_info.depth(4), 0, "After loop");
+    }
+
+    // ========================================
+    // RUE-1558: interval accumulation
+    // ========================================
+
+    /// The marking form `compute_loop_info` replaced: paint every instruction
+    /// covered by every back-edge range. Retained as the differential oracle,
+    /// because RUE-1558 is an implementation optimization and the depth vector
+    /// it produces must not move.
+    fn marked_loop_depths<S: AsRef<[usize]>>(num_insts: usize, successors: &[S]) -> Vec<u32> {
+        let mut depths = vec![0u32; num_insts];
+        for (from, succs) in successors.iter().enumerate() {
+            for &to in succs.as_ref() {
+                if to <= from {
+                    for depth in depths.iter_mut().take(from + 1).skip(to) {
+                        *depth = depth.saturating_add(1);
+                    }
+                }
+            }
+        }
+        depths
+    }
+
+    fn assert_matches_marking_reference(num_insts: usize, successors: &[Vec<usize>], case: &str) {
+        let expected = marked_loop_depths(num_insts, successors);
+        let actual = compute_loop_info(num_insts, successors);
+        for (index, depth) in expected.iter().enumerate() {
+            assert_eq!(
+                actual.depth(index),
+                *depth,
+                "{case}: depth diverged from the marking reference at instruction {index}"
+            );
+        }
+        assert_eq!(
+            actual.max_depth_in_range(0, num_insts.saturating_sub(1)),
+            expected.iter().copied().max().unwrap_or(0),
+            "{case}: cached max depth diverged from the marking reference"
+        );
+    }
+
+    #[test]
+    fn interval_accumulation_matches_marking_on_nested_and_overlapping_loops() {
+        // Triply nested: 1..8 encloses 2..7 encloses 3..6.
+        assert_matches_marking_reference(
+            9,
+            &[
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![5],
+                vec![6],
+                vec![3],
+                vec![2],
+                vec![1],
+            ],
+            "triply nested",
+        );
+
+        // Overlapping but not nested: 0..5 and 3..7 share only 3..5. The
+        // marking form and the interval form must agree that the shared
+        // stretch is depth 2 and each tail is depth 1.
+        assert_matches_marking_reference(
+            8,
+            &[
+                vec![1],
+                vec![2],
+                vec![3],
+                vec![4],
+                vec![0],
+                vec![6],
+                vec![7],
+                vec![3],
+            ],
+            "overlapping",
+        );
+
+        // Self-loop: `to == from` is a back-edge covering exactly one
+        // instruction, the inclusive-at-both-ends boundary case.
+        assert_matches_marking_reference(3, &[vec![1], vec![1], vec![]], "self loop");
+
+        // Two back-edges landing on the same header, and a range covering the
+        // whole function.
+        assert_matches_marking_reference(
+            6,
+            &[vec![1], vec![2], vec![1], vec![4], vec![1], vec![0]],
+            "shared header",
+        );
+
+        // No back-edges at all: every depth stays zero.
+        assert_matches_marking_reference(4, &[vec![1], vec![2], vec![3], vec![]], "straight line");
+    }
+
+    #[test]
+    fn interval_accumulation_matches_marking_on_randomized_graphs() {
+        // A fixed-seed xorshift, so a failure reproduces exactly rather than
+        // depending on the run.
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for case in 0..200 {
+            let num_insts = 1 + (next() % 64) as usize;
+            let successors: Vec<Vec<usize>> = (0..num_insts)
+                .map(|from| {
+                    // Up to three successors per instruction, each anywhere in
+                    // range, so back-edges, forward edges and self-loops all
+                    // appear at every density.
+                    (0..next() % 4)
+                        .map(|_| (next() as usize) % num_insts)
+                        .chain(if from + 1 < num_insts {
+                            Some(from + 1)
+                        } else {
+                            None
+                        })
+                        .collect()
+                })
+                .collect();
+            assert_matches_marking_reference(
+                num_insts,
+                &successors,
+                &format!("randomized case {case} ({num_insts} instructions)"),
+            );
+        }
+    }
+
+    #[test]
+    fn many_overlapping_back_edges_stay_linear_in_instructions() {
+        // Every instruction in the second half carries a back-edge to the
+        // matching instruction in the first half, so the ranges overlap
+        // heavily and the marking form would touch ~n^2/4 cells. The interval
+        // form pays one delta pair per back-edge; this case exists so a
+        // reintroduced painting loop shows up as a stalled test rather than a
+        // silent slowdown.
+        const NUM_INSTS: usize = 20_000;
+        let half = NUM_INSTS / 2;
+        let successors: Vec<Vec<usize>> = (0..NUM_INSTS)
+            .map(|index| {
+                if index >= half {
+                    vec![index + 1, index - half]
+                } else {
+                    vec![index + 1]
+                }
+            })
+            .collect();
+
+        let info = compute_loop_info(NUM_INSTS, &successors);
+
+        // Instruction i is covered by every back-edge range [j - half, j] with
+        // j >= half and j - half <= i <= j, i.e. by j in [max(half, i), i +
+        // half], clamped to the instructions that have back-edges.
+        for index in [0, 1, half - 1, half, half + 1, NUM_INSTS - 1] {
+            let lowest = half.max(index);
+            let highest = (index + half).min(NUM_INSTS - 1);
+            let expected = u32::try_from(highest.saturating_sub(lowest) + 1).unwrap();
+            assert_eq!(
+                info.depth(index),
+                expected,
+                "instruction {index} sits inside {expected} overlapping loop ranges"
+            );
+        }
+    }
+
+    #[test]
+    fn back_edge_ranges_are_inclusive_at_both_ends() {
+        // 2 -> 1 covers exactly instructions 1 and 2: the header it lands on
+        // and the instruction the edge leaves from. An off-by-one in the
+        // difference array would drop one end or bleed into instruction 3.
+        let info = compute_loop_info(4, &[vec![1], vec![2], vec![1, 3], vec![]]);
+        assert_eq!(info.depth(0), 0, "before the header");
+        assert_eq!(info.depth(1), 1, "the header is inside its own loop");
+        assert_eq!(info.depth(2), 1, "the back-edge source is inside the loop");
+        assert_eq!(info.depth(3), 0, "the exit is outside the loop");
     }
 }
