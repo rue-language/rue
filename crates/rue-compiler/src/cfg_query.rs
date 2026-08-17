@@ -861,11 +861,19 @@ pub(crate) fn collect_type_dependencies(
     }
 }
 
-pub(crate) fn collect_drop_type_dependency(
+pub(crate) fn collect_type_and_drop_dependencies(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
-    output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    layout_output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    drop_output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
 ) {
-    output.insert(type_instance_from_semantic(ty));
+    let instance = type_instance_from_semantic(ty);
+    layout_output.insert(instance.clone());
+    drop_output.insert(instance);
+    // Array representation and CFG indexing depend on the element layout.
+    // Pointer and slice representation does not depend on the pointee.
+    if let rue_air::SemanticImportType::Array { element, .. } = ty {
+        collect_type_dependencies(element, layout_output);
+    }
 }
 
 fn type_instance_from_semantic(
@@ -1207,8 +1215,7 @@ fn materialize_and_build_cfg(
     let mut stable_types_scanned = 0_u64;
     for ty in domains.stable_types() {
         stable_types_scanned = stable_types_scanned.saturating_add(1);
-        collect_type_dependencies(ty, &mut layout_dependencies);
-        collect_drop_type_dependency(ty, &mut drop_dependencies);
+        collect_type_and_drop_dependencies(ty, &mut layout_dependencies, &mut drop_dependencies);
     }
     let layout_prerequisite_requests = layout_dependencies.len() as u64;
     let drop_prerequisite_requests = drop_dependencies.len() as u64;
