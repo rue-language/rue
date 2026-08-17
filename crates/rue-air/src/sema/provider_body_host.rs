@@ -113,12 +113,20 @@ fn intern_synthetic_argument_name(interner: &ThreadedRodeo, index: usize) -> Spu
     interner.get_or_intern(name)
 }
 
-fn append_member_callable_name(mut owner: String, method: &str, has_self: bool) -> String {
+/// The one spelling of a member callable name, built from an already-rendered
+/// owner component.
+///
+/// Taking the owner by reference is what lets a caller that spells several
+/// members of the same owner render that owner once; the exact final capacity
+/// is reserved up front, so joining never reallocates the way appending onto an
+/// exactly-sized owner string did.
+fn member_callable_name_for_owner(owner: &str, method: &str, has_self: bool) -> String {
     let separator = if has_self { "." } else { "::" };
-    owner.reserve(separator.len() + method.len());
-    owner.push_str(separator);
-    owner.push_str(method);
-    owner
+    let mut name = String::with_capacity(owner.len() + separator.len() + method.len());
+    name.push_str(owner);
+    name.push_str(separator);
+    name.push_str(method);
+    name
 }
 
 fn append_file_callable_name(mut module_path: String, name: &str) -> String {
@@ -148,14 +156,30 @@ fn synthetic_argument_names_match_the_canonical_spelling_without_a_heap_buffer()
 
 #[cfg(test)]
 #[test]
-fn member_callable_names_extend_the_owned_owner_spelling() {
+fn member_callable_names_extend_the_rendered_owner_spelling() {
     assert_eq!(
-        append_member_callable_name("Owner".to_owned(), "method", true),
+        member_callable_name_for_owner("Owner", "method", true),
         "Owner.method"
     );
     assert_eq!(
-        append_member_callable_name("Owner".to_owned(), "make", false),
+        member_callable_name_for_owner("Owner", "make", false),
         "Owner::make"
+    );
+    // The anonymous owner spelling the installation loops hoist, with the
+    // three member shapes they install: method, associated function, and
+    // destructor. One rendered owner spells all of them.
+    let owner = "__anon_struct_0123456789abcdef0123456789abcdef";
+    assert_eq!(
+        member_callable_name_for_owner(owner, "len", true),
+        "__anon_struct_0123456789abcdef0123456789abcdef.len"
+    );
+    assert_eq!(
+        member_callable_name_for_owner(owner, "make", false),
+        "__anon_struct_0123456789abcdef0123456789abcdef::make"
+    );
+    assert_eq!(
+        member_callable_name_for_owner(owner, "__drop", true),
+        "__anon_struct_0123456789abcdef0123456789abcdef.__drop"
     );
 }
 
@@ -1560,19 +1584,39 @@ where
 
     /// The callable symbol `Owner.method` / `Owner::method` for a member of
     /// `struct_id`, with the owner component rendered by
-    /// [`TypeInternPool::struct_symbol_name`] — the same renderer call-site
+    /// [`Self::member_callable_owner`] — which is
+    /// [`TypeInternPool::struct_symbol_name`], the same renderer call-site
     /// analysis uses. Every map keyed by a member callable symbol
     /// (`anonymous_function_identities`, `function_tokens`) must write and
-    /// read through this one spelling (RUE-1236); a second renderer would
+    /// read through the one spelling in
+    /// [`member_callable_name_for_owner`] (RUE-1236); a second renderer would
     /// reintroduce a join that only holds while two policies agree.
     fn member_callable_name(&self, struct_id: StructId, method: &str, has_self: bool) -> String {
-        let owner = self.type_pool.struct_symbol_name(struct_id);
-        append_member_callable_name(owner, method, has_self)
+        member_callable_name_for_owner(&self.member_callable_owner(struct_id), method, has_self)
+    }
+
+    /// The owner component every member callable symbol of `struct_id` shares.
+    ///
+    /// A pool entry's name never changes after registration — completing a
+    /// declared shell rewrites its fields, not its name, and anonymity
+    /// registration precedes any member installation — so a caller spelling
+    /// several members of one owner renders this once and reuses it instead of
+    /// taking the pool's read lock and rebuilding the same string per member.
+    fn member_callable_owner(&self, struct_id: StructId) -> String {
+        self.type_pool.struct_symbol_name(struct_id)
     }
 
     fn member_callable_symbol(&self, struct_id: StructId, method: &str, has_self: bool) -> Spur {
+        self.member_callable_symbol_for_owner(
+            &self.member_callable_owner(struct_id),
+            method,
+            has_self,
+        )
+    }
+
+    fn member_callable_symbol_for_owner(&self, owner: &str, method: &str, has_self: bool) -> Spur {
         self.interner
-            .get_or_intern(self.member_callable_name(struct_id, method, has_self))
+            .get_or_intern(member_callable_name_for_owner(owner, method, has_self))
     }
 
     fn named_method_info_for_symbol(
@@ -2536,6 +2580,7 @@ where
         }
         let mut infos = Vec::with_capacity(methods.len());
         let mut signatures = Vec::with_capacity(methods.len());
+        let owner_name = self.member_callable_owner(struct_id);
         for method in methods {
             let resolve = |ty: &crate::DurableAnonymousMethodType<K, M>| {
                 Some(match ty {
@@ -2555,7 +2600,8 @@ where
                 .collect::<Option<Vec<_>>>()?;
             let return_type = resolve(&method.result)?;
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable = self.member_callable_symbol(struct_id, &method.name, method.has_self);
+            let callable =
+                self.member_callable_symbol_for_owner(&owner_name, &method.name, method.has_self);
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -2682,9 +2728,11 @@ where
         if methods.is_empty() {
             return Some(());
         }
+        let owner_name = self.member_callable_owner(struct_id);
         for method in methods {
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable = self.member_callable_symbol(struct_id, &method.name, method.has_self);
+            let callable =
+                self.member_callable_symbol_for_owner(&owner_name, &method.name, method.has_self);
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
