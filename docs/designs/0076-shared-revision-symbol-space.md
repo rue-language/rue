@@ -78,10 +78,18 @@ revision:
    land — there is no counter-rebaseline escape hatch here, unlike
    ADR-0074/0075 where the artifact itself was redefined.
 4. **Invalidation.** The shared interner is append-only within its
-   revision generation and dropped whole when the generation is
-   superseded. Bodies never observe removal or mutation of an entry. A
-   body analyzed against a superseded generation fails the authority
-   check below and re-runs — fail-closed, never silently reused.
+   revision generation. Bodies never observe removal or mutation of an
+   entry. A body analyzed against a superseded generation fails the
+   authority check below and re-runs — fail-closed, never silently
+   reused. *Amended after Phase 2*: a generation is retired when its
+   revision stops being served, not the instant a successor is minted —
+   retiring on mint would let two concurrently pinned revisions retire
+   each other's spaces and abandon each other's bodies without progress
+   (the implementation keeps a small window of recent generations live
+   and retires on eviction). A retired space's interner remains
+   allocated as long as any holder could still resolve handles it
+   issued: refusal via the authority check, never a dangling handle, is
+   the fail-closed behavior.
 5. **`require_rir_authority`.** Its pointer-equality assertion (a body's
    analysis-state interner must be the body RIR's interner) survives with
    the revision interner as the shared referent: both sides hold the same
@@ -100,11 +108,18 @@ revision:
 
 ## What this buys
 
-Up to ~213M instructions of redundant interning plus the formatting that
-feeds it — roughly **2.9–3.3% of a cold Lattice build**, concentrated in
-the semantic phase that is 45% of Lattice's wall time. chain-shaped
-programs (closure ≈ 5 types) see approximately nothing, which is the
-expected shape: this is a closure-size-scaled cost.
+*As corrected by the Phase 2 measurements.* The reachable term is the
+**insertion half** of interning only: sharing converts insertions into
+lookups, it does not remove calls, and a lookup still needs the rendered
+string, so the formatting that feeds the interner is untouched (it
+remains a separate ~0.4% target per the measurement note). Measured
+Phase 2 result: **−2.84%** of all instructions on a cold Lattice build
+(`try_get_or_intern` inclusive cost 675 → 402 instructions/call at an
+unchanged 597,760 calls), −2.49% on Mosaic. Chain-shaped programs also
+gain (−1.26% on chain256) from the deleted per-body interner lifecycle —
+a fixed per-body cost the original closure-size argument did not model —
+so the chain fixture is a control for closure-scaled interning only, not
+a no-op shape for this ADR.
 
 ## Falsifiers
 
@@ -122,9 +137,12 @@ expected shape: this is a closure-size-scaled cost.
   re-runs against the current generation.
 - **Concurrency**: `-j4` stress run with deterministic-output comparison
   across ≥3 runs (scheduling-varied `Spur` assignment must be invisible).
-- **Retention**: peak RSS on Lattice within ±2% (one interner holding
-  the union of body symbols replaces 1,263 holding overlapping subsets —
-  expected to drop, measured not assumed).
+- **Retention**: peak RSS within ±2% on the reference workloads. *Bound
+  corrected after Phase 2*: the original "expected to drop" prediction
+  was wrong in shape — the per-body interners were transient and freed
+  as bodies completed, never all resident, while the shared space is
+  resident for the whole revision. The honest bound is "does not rise
+  materially"; measured: Lattice +0.17%, Mosaic +1.35%, chain256 +0.01%.
 - **Dense-space integrity** (added with the dual-space amendment): the
   packed-RIR dense-ordinal assertion (`canonical_lower.rs:386`) holds
   unchanged under sharing, and a test proves a body's packed RIR round-
