@@ -102,6 +102,14 @@ impl QueryKey for ObjectProjectionQueryKey {
     fn shared_stable_identity(&self) -> Arc<str> {
         self.display_identity.clone()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.codegen.stable_hash(hasher);
+        self.target.hash(hasher);
+        self.object_format.hash(hasher);
+        self.abi_layout_epoch.hash(hasher);
+        self.object_writer_epoch.hash(hasher);
+    }
 }
 
 /// Retained object-container bytes and their stable content identity for one
@@ -238,6 +246,8 @@ mod tests {
         fn stable_identity(&self) -> String {
             "object-failure".to_owned()
         }
+
+        fn stable_hash(&self, _hasher: &mut rue_query::StableHasher) {}
     }
 
     #[test]

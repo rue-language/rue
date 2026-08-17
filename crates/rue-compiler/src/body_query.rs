@@ -232,6 +232,11 @@ impl QueryKey for BodyQueryKey {
             .get_or_init(|| self.format_identity().into())
             .clone()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.instance.hash(hasher);
+        self.configuration.hash(hasher);
+    }
 }
 
 /// Request-independent semantic body shared by every stamped projection and
@@ -467,6 +472,12 @@ impl rue_query::QueryKey for BodyClosureQueryKey {
             self.configuration.preview_features,
         )
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.modules.hash(hasher);
+        self.roots.hash(hasher);
+        self.configuration.hash(hasher);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -478,6 +489,11 @@ pub(crate) struct BodyClosurePublicationKey {
 impl rue_query::QueryKey for BodyClosurePublicationKey {
     fn stable_identity(&self) -> String {
         format!("{};epoch={}", self.closure.stable_identity(), self.epoch)
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        rue_query::QueryKey::stable_hash(&self.closure, hasher);
+        self.epoch.hash(hasher);
     }
 }
 

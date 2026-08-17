@@ -8,7 +8,7 @@
 //! retain the current and last-good terminals.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -283,6 +283,11 @@ impl QueryKey for CompatibilityKey<super::session::ParseQueryKey> {
         // string is what cycle and wait-graph reports print, so it must name
         // the query rather than a constant (RUE-1142).
         self.key.compatibility_identity()
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        // Agrees with `PartialEq`/`Hash` above, which compare only `key`.
+        self.key.hash(hasher);
     }
 }
 
@@ -1381,6 +1386,13 @@ impl QueryKey for OptimizedCfgBatchKey {
         }
         identity
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        hasher.write_usize(self.keys.len());
+        for key in self.keys.iter() {
+            key.stable_hash(hasher);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1412,6 +1424,13 @@ impl QueryKey for CodegenUnitBatchKey {
         }
         identity
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        hasher.write_usize(self.keys.len());
+        for key in self.keys.iter() {
+            key.stable_hash(hasher);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1440,6 +1459,13 @@ impl QueryKey for ObjectProjectionBatchKey {
             identity.push_str(&key.shared_stable_identity());
         }
         identity
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        hasher.write_usize(self.keys.len());
+        for key in self.keys.iter() {
+            key.stable_hash(hasher);
+        }
     }
 }
 
@@ -1483,6 +1509,13 @@ impl QueryKey for BackendRootPublicationKey {
             self.epoch,
             self.objects.keys.len()
         )
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.epoch.hash(hasher);
+        self.objects.stable_hash(hasher);
+        self.functions.hash(hasher);
+        self.cfg_terminals.hash(hasher);
     }
 }
 
@@ -1876,6 +1909,10 @@ impl QueryKey for ModuleQueryKey {
     fn stable_identity(&self) -> String {
         self.0.as_str().to_owned()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2092,6 +2129,10 @@ impl QueryKey for DeclarationShellQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2119,6 +2160,13 @@ impl QueryKey for StableDeclarationClassificationQueryKey {
             self.0.name(),
             owner,
         )
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        // `StableDefinitionKey`'s `Hash` writes its SHA-256 content
+        // accelerator over module, namespace, kind, name, and owner — the
+        // exact fields the identity above renders.
+        self.0.hash(hasher);
     }
 }
 
@@ -2151,6 +2199,10 @@ struct DeclarationBodyPlanQueryKey(crate::declaration_candidate::DeclarationCand
 impl QueryKey for DeclarationBodyPlanQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
     }
 }
 
@@ -2275,6 +2327,10 @@ impl QueryKey for WarningCallHeadProjectionQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2332,6 +2388,11 @@ struct SemanticNucleusProjectionKey {
 impl QueryKey for SemanticNucleusProjectionKey {
     fn stable_identity(&self) -> String {
         format!("{:?}:{:?}", self.modules, self.configuration)
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.modules.hash(hasher);
+        self.configuration.hash(hasher);
     }
 }
 
@@ -2435,6 +2496,11 @@ impl QueryKey for ResolveImportKey {
             self.occurrence.specifier()
         )
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.occurrence.hash(hasher);
+        self.mode.hash(hasher);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2453,11 +2519,20 @@ impl QueryKey for DeclarationImportQueryKey {
     fn stable_identity(&self) -> String {
         self.0.stable_identity()
     }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.0.hash(hasher);
+    }
 }
 
 impl QueryKey for crate::semantic_query_nucleus::SemanticNucleusKey {
     fn stable_identity(&self) -> String {
         self.stable_identity()
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        // The derived `Hash` enumerates the variant plus its typed payload.
+        self.hash(hasher);
     }
 }
 
@@ -2477,6 +2552,12 @@ pub(crate) struct LookupNameKey {
 impl QueryKey for LookupNameKey {
     fn stable_identity(&self) -> String {
         format!("{}::{:?}::{}", self.module, self.namespace, self.name)
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.module.hash(hasher);
+        self.namespace.hash(hasher);
+        self.name.hash(hasher);
     }
 }
 
@@ -2615,6 +2696,11 @@ pub(crate) struct LookupImportKey {
 impl QueryKey for LookupImportKey {
     fn stable_identity(&self) -> String {
         format!("{}::@import::{}", self.module, self.specifier)
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.module.hash(hasher);
+        self.specifier.hash(hasher);
     }
 }
 
@@ -5941,8 +6027,11 @@ pub(crate) enum BodyTransactionRequestFailure {
 
 pub(crate) struct BodyClosureRequest {
     pub(crate) terminal: Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
-    body_executions: BTreeMap<String, rue_query::RequestExecution>,
-    retained_before: BTreeSet<String>,
+    /// Keyed by the ADR-0074 structural key digest rather than the rendered
+    /// body identity, so building and reading this projection never formats a
+    /// body transaction's name.
+    body_executions: BTreeMap<rue_query::StableKeyHash, rue_query::RequestExecution>,
+    retained_before: BTreeSet<rue_query::StableKeyHash>,
     work: Vec<(Arc<str>, u64)>,
 }
 
@@ -5952,13 +6041,14 @@ impl BodyClosureRequest {
         key: &crate::body_query::BodyQueryKey,
     ) -> rue_query::RequestExecution {
         self.body_executions
-            .get(&key.stable_identity())
+            .get(&rue_query::stable_key_hash(key))
             .copied()
             .unwrap_or(rue_query::RequestExecution::Reused)
     }
 
     pub(crate) fn was_retained(&self, key: &crate::body_query::BodyQueryKey) -> bool {
-        self.retained_before.contains(&key.stable_identity())
+        self.retained_before
+            .contains(&rue_query::stable_key_hash(key))
     }
 
     /// Accrue request-local database-owned reachability scheduling work into
@@ -18171,7 +18261,7 @@ impl RevisionedQueryDatabase {
         let mut retained_before = BTreeSet::new();
         self.body_transactions.any_retained_key(|candidate| {
             if candidate.configuration == key.configuration {
-                retained_before.insert(candidate.stable_identity());
+                retained_before.insert(rue_query::stable_key_hash(candidate));
             }
             false
         });
@@ -18190,7 +18280,7 @@ impl RevisionedQueryDatabase {
             .filter(|attempt| attempt.node().family() == "compiler.body-transaction")
             .fold(BTreeMap::new(), |mut executions, attempt| {
                 executions
-                    .entry(attempt.node().key().to_owned())
+                    .entry(attempt.node().stable_hash())
                     .and_modify(|execution| {
                         // The publication request can observe the same body
                         // transaction first through closure validation and
@@ -20492,6 +20582,10 @@ struct ProviderProbeKey {
 impl QueryKey for ProviderProbeKey {
     fn stable_identity(&self) -> String {
         format!("provider-probe:{}", self.label)
+    }
+
+    fn stable_hash(&self, hasher: &mut rue_query::StableHasher) {
+        self.label.hash(hasher);
     }
 }
 
