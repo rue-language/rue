@@ -727,6 +727,7 @@ fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
 /// The declaration and anonymous slices may contain only the facts required by
 /// this body. Missing transitive shapes/callables fail closed in `rue-air`;
 /// this adapter never widens the request by discovering a program universe.
+#[allow(dead_code)]
 pub(crate) fn materialize_canonical_body(
     canonical: &crate::body_query::CanonicalBody,
     body_span: rue_span::Span,
@@ -1525,7 +1526,6 @@ pub(crate) fn select_materialization_facts(
         .selected_declarations
         .into_values()
         .collect::<Vec<_>>();
-    let nominal_metadata = nominal_metadata;
     Ok(LocalMaterializationFacts {
         indexes: Arc::new(LocalMaterializationIndexes::new(
             &declarations,
