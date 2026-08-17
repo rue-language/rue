@@ -6140,6 +6140,44 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
     matches!(kind, rue_error::ErrorKind::InternalError(_))
 }
 
+/// The producer functions named by an instance key's statically encoded
+/// anonymous-nominal graph, in traversal order.
+///
+/// Body reachability needs this list twice for the same key: once to schedule
+/// the producers the key names, and again on every frontier scan to ask whether
+/// those producers have all been visited. Walking the key each time made a scan
+/// cost the whole anonymous graph of every pending body, re-derived per round,
+/// even though the graph is statically encoded and cannot move within a
+/// request. The closure is a pure function of the key, so one
+/// evaluation-scoped memo serves both phases (RUE-1557).
+///
+/// Duplicates are preserved rather than collapsed into a set: two identities
+/// can name the same producer, and the scheduling phase is written against the
+/// exact sequence the traversal emits.
+fn instance_producer_closure(
+    context: &rue_query::QueryContext,
+    memo: &mut AHashMap<Arc<crate::FunctionInstanceKey>, Arc<[Arc<crate::FunctionInstanceKey>]>>,
+    seen: &mut AHashSet<*const crate::AnonymousNominalKey>,
+    instance: &Arc<crate::FunctionInstanceKey>,
+) -> Arc<[Arc<crate::FunctionInstanceKey>]> {
+    if let Some(producers) = memo.get(instance) {
+        return producers.clone();
+    }
+    let mut producers = Vec::new();
+    visit_instance_anonymous_nominals(instance.as_ref(), seen, |identity| {
+        if let crate::StableProducerId::Function(producer) = &identity.producer {
+            producers.push(Arc::new(producer.as_ref().clone()));
+        }
+    });
+    context.record_work(rue_query::WorkItem::new(
+        "reachability.anonymous.closure-walks",
+        1,
+    ));
+    memo.entry(instance.clone())
+        .or_insert_with(|| Arc::from(producers))
+        .clone()
+}
+
 /// The trusted-toolchain demand of one body, answered from this reachability
 /// evaluation's cache once it has been observed.
 ///
@@ -14574,6 +14612,11 @@ impl RevisionedQueryDatabase {
                         >,
                     )>::new();
                     let mut anonymous_visit_seen = AHashSet::new();
+                    // Producer closures already derived in this evaluation (RUE-1557).
+                    let mut anonymous_producer_closures: AHashMap<
+                        Arc<crate::FunctionInstanceKey>,
+                        Arc<[Arc<crate::FunctionInstanceKey>]>,
+                    > = AHashMap::new();
                     // Toolchain demands observed so far in this evaluation.
                     //
                     // The parking path unions the missing modules of every body
@@ -14617,32 +14660,29 @@ impl RevisionedQueryDatabase {
                                 anonymous_dependency_pending.pop()
                             {
                                 context.check_canceled()?;
-                                visit_instance_anonymous_nominals(
-                                    instance.as_ref(),
+                                let producers = instance_producer_closure(
+                                    context,
+                                    &mut anonymous_producer_closures,
                                     &mut anonymous_visit_seen,
-                                    |identity| {
-                                        let crate::StableProducerId::Function(producer) =
-                                            &identity.producer
-                                        else {
-                                            return;
-                                        };
-                                        let depth = current_depth
-                                            + usize::from(matches!(
-                                                producer.as_ref(),
-                                                crate::FunctionInstanceKey::Specialization { .. }
-                                        ));
-                                        if let Some((producer, true)) = schedule_body_instance(
-                                            &mut pending,
-                                            &mut ready_frontier,
-                                            &mut prefetched_transactions,
-                                            &visited,
-                                            producer.as_ref(),
-                                            depth,
-                                        ) {
-                                            anonymous_dependency_pending.push((producer, depth));
-                                        }
-                                    },
+                                    &instance,
                                 );
+                                for producer in producers.iter() {
+                                    let depth = current_depth
+                                        + usize::from(matches!(
+                                            producer.as_ref(),
+                                            crate::FunctionInstanceKey::Specialization { .. }
+                                        ));
+                                    if let Some((producer, true)) = schedule_body_instance(
+                                        &mut pending,
+                                        &mut ready_frontier,
+                                        &mut prefetched_transactions,
+                                        &visited,
+                                        producer.as_ref(),
+                                        depth,
+                                    ) {
+                                        anonymous_dependency_pending.push((producer, depth));
+                                    }
+                                }
                             }
                             context.record_work(rue_query::WorkItem::new(
                                 "reachability.frontier.scans",
@@ -14655,19 +14695,14 @@ impl RevisionedQueryDatabase {
                             let mut frontier = Vec::new();
                             let mut blocked_pending = BTreeMap::new();
                             for (instance, depth) in std::mem::take(&mut pending) {
-                                let mut all_producers_visited = true;
-                                visit_instance_anonymous_nominals(
-                                    instance.as_ref(),
+                                let producers = instance_producer_closure(
+                                    context,
+                                    &mut anonymous_producer_closures,
                                     &mut anonymous_visit_seen,
-                                    |identity| {
-                                        if let crate::StableProducerId::Function(producer) =
-                                            &identity.producer
-                                            && !visited.contains(producer.as_ref())
-                                        {
-                                            all_producers_visited = false;
-                                        }
-                                    },
+                                    &instance,
                                 );
+                                let all_producers_visited =
+                                    producers.iter().all(|producer| visited.contains(producer));
                                 let ready = !visited.contains(&instance)
                                     && blocked_on_anonymous
                                         .get(&instance)
@@ -40542,6 +40577,91 @@ fn main() -> i32 {
             (CALLEES + 1) as u64
         );
         assert_eq!(work("reachability.transactions.serial"), 0);
+    }
+
+    #[test]
+    fn anonymous_producer_closures_are_derived_once_per_instance() {
+        // RUE-1557: reachability walks a key's anonymous-nominal graph to
+        // schedule the producers it names, and walks it again on every frontier
+        // scan to ask whether those producers are visited. The graph is
+        // statically encoded and cannot move within a request, so the second
+        // use re-derived a closure the first had already computed — once per
+        // pending body per scan round.
+        //
+        // Several producers keep the frontier alive for more than one round,
+        // which is what made the per-round re-walk visible.
+        const PRODUCERS: usize = 8;
+        let mut text = (0..PRODUCERS)
+            .map(|index| format!("fn P{index}() -> type {{ struct {{ x{index}: i32 }} }}\n"))
+            .collect::<String>();
+        text.push_str("fn main() -> i32 {\n");
+        for index in 0..PRODUCERS {
+            text.push_str(&format!("    let T{index} = P{index}();\n"));
+            text.push_str(&format!(
+                "    let v{index}: T{index} = T{index} {{ x{index}: {index} }};\n"
+            ));
+        }
+        let sum = (0..PRODUCERS)
+            .map(|index| format!("v{index}.x{index}"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        text.push_str(&format!("    {sum}\n}}\n"));
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            let request = database
+                .body_closure(revision, key.clone(), CancellationToken::new())
+                .expect("anonymous producers publish one body closure");
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            assert!(output.fatal.is_none());
+            assert!(output.scheduling_errors.is_empty());
+            let work = |expected: &str| {
+                request
+                    .work
+                    .iter()
+                    .find_map(|(label, amount)| (label.as_ref() == expected).then_some(*amount))
+                    .unwrap_or(0)
+            };
+            (
+                output.reached.len(),
+                work("reachability.anonymous.closure-walks"),
+                work("reachability.frontier.scans"),
+            )
+        };
+
+        for workers in [1, 4] {
+            let (reached, walks, scans) = run(workers);
+            assert_eq!(reached, PRODUCERS + 1, "every producer body is reached");
+            assert!(
+                scans > 1,
+                "the fixture must take more than one frontier scan to be a regression test \
+                 for per-scan re-walking, got {scans}"
+            );
+            assert!(
+                walks <= reached as u64,
+                "with {workers} worker(s) each of the {reached} instances must have its \
+                 anonymous graph walked at most once, got {walks} walks across {scans} scans"
+            );
+        }
+
+        // With the closure derived once per instance the count no longer tracks
+        // how many scan rounds a schedule happened to take, so it is identical
+        // whatever the worker count.
+        assert_eq!(
+            run(1),
+            run(4),
+            "closure accounting must be identical across worker counts"
+        );
     }
 
     #[test]
