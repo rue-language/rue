@@ -1,12 +1,12 @@
 ---
 id: 0075
 title: "Wave-granular import discovery revisions and cumulative exhaustion witness"
-status: accepted
+status: implemented
 tags: [architecture, compiler, incremental, performance, query-engine]
 feature-flag: null
 created: 2026-08-17
 accepted: 2026-08-16
-implemented:
+implemented: 2026-08-18
 spec-sections: []
 superseded-by:
 relates: ["ADR-0063", "ADR-0071", "ADR-0073", "ADR-0074"]
@@ -16,19 +16,24 @@ relates: ["ADR-0063", "ADR-0071", "ADR-0073", "ADR-0074"]
 
 ## Status
 
-Approved by Steve Klabnik in session on 2026-08-16 and proposed via PR
-#2464. The wave core (items 1-3) was implemented 2026-08-17 via PR #2472:
-one revision per discovery wave, batch stamp verification, and the
-falsifier suite, with discovery revisions on a depth-n chain collapsing
-from n to 1. Item 4 — the cumulative exhaustion witness replacing the
-closing whole-plan re-root — is deliberately not yet implemented: the
-re-root measured at roughly 1.8% of a deep-chain compile, so the verified
-wave win shipped without it. The ADR remains accepted rather than
-implemented until that item lands or is formally dropped. No language-semantics change: the
-final published import plan, resolution results, and emitted bytes are
-byte-identical. What changes is the *granularity* of discovery's revision
-ledger — a deliberate coarsening of the incremental story during
-discovery, spelled out below.
+Implemented. Approved by Steve Klabnik in session on 2026-08-16 and
+proposed via PR #2464. The wave core (items 1-3) was implemented
+2026-08-17 via PR #2472: one revision per discovery wave, batch stamp
+verification, and the falsifier suite, with discovery revisions on a
+depth-n chain collapsing from n to 1.
+
+Item 4 — the cumulative exhaustion witness replacing the closing
+whole-plan re-root — was deliberately held back at that point, because
+the re-root measured at roughly 1.8% of a deep-chain compile and the
+verified wave win did not need to wait for it. It landed separately via
+PR #2500, which removes the closing dispatch: frontier roots on the
+32-module chain fixture fall from 63 to 32, now an exact assertion rather
+than a bound, and the witness-soundness falsifier below is in place.
+
+No language-semantics change: the final published import plan, resolution
+results, and emitted bytes are byte-identical. What changes is the
+*granularity* of discovery's revision ledger — a deliberate coarsening of
+the incremental story during discovery, spelled out below.
 
 ## Summary
 
