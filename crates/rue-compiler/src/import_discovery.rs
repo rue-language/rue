@@ -1764,8 +1764,9 @@ fn module_for_accepted_source(
 pub(crate) fn accepted_import_module(
     source: &AcceptedImportSource,
     accepted_reads: &AcceptedReadManifest,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> CompileResult<ModuleId> {
-    let entry = match accepted_reads.lookup_physical_identity(source.metadata_identity()) {
+    let entry = match accepted_reads.lookup_physical_identity(source.metadata_identity(), meter) {
         ManifestIdentityLookup::Unique(entry) => entry,
         ManifestIdentityLookup::Absent => {
             return Err(invalid_input(
@@ -1993,15 +1994,24 @@ impl AcceptedReadManifest {
     /// A manifest that names the same physical file twice reports
     /// [`ManifestIdentityLookup::Duplicate`] rather than picking a winner, so
     /// the ambiguity still reaches the caller that must reject it.
+    ///
+    /// `meter` records the lookup and every manifest entry examined to answer
+    /// it, including the entries walked once to materialize the index. Charging
+    /// the materialization to its triggering lookup keeps the counter an honest
+    /// total: a manifest that is rebuilt and re-indexed once per module would
+    /// show the same quadratic entry count the scan showed.
     pub(crate) fn lookup_physical_identity(
         &self,
         identity: PhysicalFileIdentity,
+        meter: &crate::source_snapshot::IdentityResolutionMeter,
     ) -> ManifestIdentityLookup<'_> {
+        let mut visited = 0;
         let index = self.by_physical_identity.get_or_init(|| {
             let mut index: HashMap<PhysicalFileIdentity, IdentitySlot> =
                 HashMap::with_capacity(self.entries.len());
             for (segment, entries) in self.entries.segments().iter().enumerate() {
                 for (position, entry) in entries.iter().enumerate() {
+                    visited += 1;
                     index
                         .entry(entry.metadata_identity)
                         .and_modify(|slot| *slot = IdentitySlot::Duplicate)
@@ -2013,6 +2023,8 @@ impl AcceptedReadManifest {
             }
             index
         });
+        // The hash probe itself reads at most the one entry it names.
+        meter.record_physical_identity_lookup(visited + 1);
         match index.get(&identity) {
             None => ManifestIdentityLookup::Absent,
             Some(IdentitySlot::Duplicate) => ManifestIdentityLookup::Duplicate,
@@ -2777,6 +2789,7 @@ mod tests {
         }
         assert!(manifest.segments().segments().len() > 1);
 
+        let meter = crate::source_snapshot::IdentityResolutionMeter::default();
         for index in 0..ENTRIES {
             let identity = PhysicalFileIdentity::new(1, index);
             let scanned = manifest
@@ -2784,21 +2797,30 @@ mod tests {
                 .filter(|candidate| candidate.metadata_identity() == identity)
                 .collect::<Vec<_>>();
             assert_eq!(scanned.len(), 1);
-            match manifest.lookup_physical_identity(identity) {
+            match manifest.lookup_physical_identity(identity, &meter) {
                 ManifestIdentityLookup::Unique(found) => assert_eq!(found, scanned[0]),
                 _ => panic!("module {index} resolves to exactly one entry"),
             }
         }
         assert!(matches!(
-            manifest.lookup_physical_identity(PhysicalFileIdentity::new(9, 9)),
+            manifest.lookup_physical_identity(PhysicalFileIdentity::new(9, 9), &meter),
             ManifestIdentityLookup::Absent
         ));
+        // The index is materialized once for this manifest value and shared by
+        // every later lookup, so the whole run costs one pass over the entries
+        // plus one entry per lookup — not one pass per lookup, which is what
+        // the scan cost and what `visits` would show if the index were rebuilt.
+        assert_eq!(meter.physical_identity_lookups(), ENTRIES + 1);
+        assert_eq!(
+            meter.physical_identity_visits(),
+            ENTRIES + meter.physical_identity_lookups()
+        );
 
         // Two modules naming one physical file stay an ambiguity the caller
         // rejects rather than a silently chosen winner.
         let ambiguous = AcceptedReadManifest::from_entries(vec![entry(0, 7), entry(1, 7)]);
         assert!(matches!(
-            ambiguous.lookup_physical_identity(PhysicalFileIdentity::new(1, 7)),
+            ambiguous.lookup_physical_identity(PhysicalFileIdentity::new(1, 7), &meter),
             ManifestIdentityLookup::Duplicate
         ));
     }

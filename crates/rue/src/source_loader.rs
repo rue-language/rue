@@ -19,12 +19,13 @@ use rue_compiler::unstable::{
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
-    committed_successor_sharing, exact_import_groups_dispatched, import_close_records_reduced,
-    import_frontier_roots_requested, import_plan_groups_constructed,
-    import_view_full_leaves_published, import_view_ledger_entries_cloned,
-    import_view_overlay_leaves_published, import_view_read_entries_compared,
-    import_view_source_entries_compared, parse_invalidation_entries_compared,
-    parse_key_entries_compared, parse_modules_dispatched, parse_sources_materialized,
+    accepted_read_identity_lookups, accepted_read_identity_visits, committed_successor_sharing,
+    exact_import_groups_dispatched, import_close_records_reduced, import_frontier_roots_requested,
+    import_plan_groups_constructed, import_view_full_leaves_published,
+    import_view_ledger_entries_cloned, import_view_overlay_leaves_published,
+    import_view_read_entries_compared, import_view_source_entries_compared,
+    parse_invalidation_entries_compared, parse_key_entries_compared, parse_modules_dispatched,
+    parse_sources_materialized, snapshot_module_resolution_visits, snapshot_module_resolutions,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
@@ -2487,6 +2488,231 @@ mod tests {
         assert!(
             result.assembler.plan_reads_reduced() <= MODULES as u64,
             "per-round read volume must stay linear in chain depth, not rounds times plan"
+        );
+    }
+
+    /// Deterministic per-size counters for the generated import chain below.
+    ///
+    /// Every field is a work counter published by the compiler, never a clock:
+    /// at `-j1` a fresh build of a fixed chain performs a fixed sequence of
+    /// query executions, so each field is exactly reproducible.
+    #[derive(Clone, Copy)]
+    struct ChainScalingCounters {
+        module_resolutions: u64,
+        module_resolution_visits: u64,
+        identity_lookups: u64,
+        identity_visits: u64,
+        parse_sources_materialized: u64,
+        parse_key_entries_compared: u64,
+        parse_modules_dispatched: u64,
+        parse_invalidation_entries_compared: u64,
+        plan_groups: u64,
+        frontier_roots: u64,
+        plan_reads_reduced: u64,
+        close_records_reduced: u64,
+        overlay_leaves_published: u64,
+        ledger_entries_cloned: u64,
+    }
+
+    /// Compile a generated `modules`-deep import chain and read its counters.
+    ///
+    /// The chain is written programmatically rather than checked in: a fixture
+    /// this size exists only to be scaled, and two committed copies of it would
+    /// drift from each other and from the shape this gate describes.
+    fn chain_scaling_counters(modules: usize) -> ChainScalingCounters {
+        let dir = TestDir::new(&format!("chain-scaling-{modules}"));
+        let main = dir.write(
+            "main.rue",
+            r#"const next = @import("m1.rue"); fn main() -> i32 { 0 }"#,
+        );
+        for index in 1..modules {
+            let source = if index + 1 == modules {
+                format!("pub fn value{index}() -> i32 {{ {index} }}")
+            } else {
+                format!(
+                    "pub const next = @import(\"m{}.rue\"); pub fn value{index}() -> i32 {{ {index} }}",
+                    index + 1
+                )
+            };
+            dir.write(&format!("m{index}.rue"), &source);
+        }
+
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        assert_eq!(result.read_manifest.len(), modules);
+        ChainScalingCounters {
+            module_resolutions: snapshot_module_resolutions(&result.session),
+            module_resolution_visits: snapshot_module_resolution_visits(&result.session),
+            identity_lookups: accepted_read_identity_lookups(&result.session),
+            identity_visits: accepted_read_identity_visits(&result.session),
+            parse_sources_materialized: parse_sources_materialized(&result.session),
+            parse_key_entries_compared: parse_key_entries_compared(&result.session),
+            parse_modules_dispatched: parse_modules_dispatched(&result.session),
+            parse_invalidation_entries_compared: parse_invalidation_entries_compared(
+                &result.session,
+            ),
+            plan_groups: import_plan_groups_constructed(&result.session),
+            frontier_roots: import_frontier_roots_requested(&result.session),
+            plan_reads_reduced: result.assembler.plan_reads_reduced(),
+            close_records_reduced: import_close_records_reduced(&result.session),
+            overlay_leaves_published: import_view_overlay_leaves_published(&result.session),
+            ledger_entries_cloned: import_view_ledger_entries_cloned(&result.session),
+        }
+    }
+
+    /// Deep-chain scaling gate: no counter below may grow faster than the
+    /// module count does, with headroom.
+    ///
+    /// WHY THIS EXISTS. The chain test above pins *dispatch* counts — frontier
+    /// roots, plan groups, reduced reads, certificate misses — and those bounds
+    /// caught the discovery-round regressions they were written for. They
+    /// cannot see a regression that dispatches nothing. Two such regressions
+    /// shipped and lived: projecting a parsed program resolved each module to
+    /// its file by scanning every file in the snapshot, and authorizing a
+    /// discovery batch resolved each accepted observation to its manifest entry
+    /// by scanning every accepted read. Each is one scan per module over a set
+    /// that grows with the program, so each is quadratic in chain depth — and
+    /// every counter this compiler published was unchanged by them, at 32
+    /// modules and at 1024. They were found by running callgrind over 256- and
+    /// 1024-module chains and reading a 15x instruction ratio for 4x the
+    /// modules. CI cannot run callgrind and wall clock on a shared host is far
+    /// too noisy to gate, so the answer is to make scan-shaped work countable:
+    /// `*_lookups` counts the identity questions asked, `*_visits` counts the
+    /// positions examined answering them, and their ratio is exactly what an
+    /// index-versus-scan regression moves.
+    ///
+    /// SIZES. 64 and 256 modules: a 4x span, wide enough that a quadratic term
+    /// shows as ~16x against the ~4x asserted here, and cheap enough for the
+    /// premerge tier — the two compiles together run in well under a second.
+    ///
+    /// HEADROOM. The bound is the size ratio times 1.5. Nothing here is
+    /// expected to beat linear, but several of these counters carry an honest
+    /// n-log-n term: the snapshot and the accepted-read manifest are
+    /// size-tiered segment sequences whose segment count grows with log n, and
+    /// discovery's ordered `BTreeMap`/`BTreeSet` bookkeeping costs log n per
+    /// element. Across this span that factor is log2(256)/log2(64) = 1.33, so
+    /// 1.5 admits n-log-n with margin while leaving a quadratic term — which
+    /// needs 4.0 — nowhere to hide.
+    #[test]
+    fn import_chain_identity_resolution_stays_linear_in_depth() {
+        const SMALL: usize = 64;
+        const LARGE: usize = 256;
+        const SIZE_RATIO: f64 = (LARGE / SMALL) as f64;
+        /// See HEADROOM above: admits an n-log-n term, excludes a quadratic one.
+        const HEADROOM: f64 = 1.5;
+
+        let small = chain_scaling_counters(SMALL);
+        let large = chain_scaling_counters(LARGE);
+
+        // A counter that stopped being incremented would make every ratio below
+        // pass for free, so require the two new counters to have observed at
+        // least one question per module before reading their growth.
+        for (label, counters, modules) in
+            [("64-module", &small, SMALL), ("256-module", &large, LARGE)]
+        {
+            assert!(
+                counters.module_resolutions >= modules as u64,
+                "{label} chain: every module is resolved to its file at least once"
+            );
+            assert!(
+                counters.module_resolution_visits >= counters.module_resolutions,
+                "{label} chain: a resolution examines at least one snapshot position"
+            );
+            assert!(
+                counters.identity_lookups >= modules as u64 - 1,
+                "{label} chain: every accepted import observation is authorized"
+            );
+            assert!(
+                counters.identity_visits >= counters.identity_lookups,
+                "{label} chain: a lookup examines at least one manifest entry"
+            );
+        }
+
+        let mut violations = Vec::new();
+        for (label, small_value, large_value) in [
+            (
+                "snapshot module resolutions",
+                small.module_resolutions,
+                large.module_resolutions,
+            ),
+            (
+                "snapshot module resolution visits",
+                small.module_resolution_visits,
+                large.module_resolution_visits,
+            ),
+            (
+                "accepted-read identity lookups",
+                small.identity_lookups,
+                large.identity_lookups,
+            ),
+            (
+                "accepted-read identity visits",
+                small.identity_visits,
+                large.identity_visits,
+            ),
+            (
+                "parse sources materialized",
+                small.parse_sources_materialized,
+                large.parse_sources_materialized,
+            ),
+            (
+                "parse key entries compared",
+                small.parse_key_entries_compared,
+                large.parse_key_entries_compared,
+            ),
+            (
+                "parse modules dispatched",
+                small.parse_modules_dispatched,
+                large.parse_modules_dispatched,
+            ),
+            (
+                "parse invalidation entries compared",
+                small.parse_invalidation_entries_compared,
+                large.parse_invalidation_entries_compared,
+            ),
+            ("import plan groups", small.plan_groups, large.plan_groups),
+            (
+                "import frontier roots",
+                small.frontier_roots,
+                large.frontier_roots,
+            ),
+            (
+                "plan reads reduced",
+                small.plan_reads_reduced,
+                large.plan_reads_reduced,
+            ),
+            (
+                "close records reduced",
+                small.close_records_reduced,
+                large.close_records_reduced,
+            ),
+            (
+                "overlay leaves published",
+                small.overlay_leaves_published,
+                large.overlay_leaves_published,
+            ),
+            (
+                "ledger entries cloned",
+                small.ledger_entries_cloned,
+                large.ledger_entries_cloned,
+            ),
+        ] {
+            let ratio = large_value as f64 / small_value.max(1) as f64;
+            if ratio > SIZE_RATIO * HEADROOM {
+                // Report every violating counter rather than only the first: a
+                // regression usually moves several at once, and which ones move
+                // together is what names the site.
+                violations.push(format!(
+                    "{label}: {small_value} at {SMALL} modules grew to {large_value} at \
+                     {LARGE} ({ratio:.2}x for {SIZE_RATIO}x the modules)"
+                ));
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "deep-chain work must stay linear in module count; the bound is {:.2}x \
+             ({SIZE_RATIO}x the modules times {HEADROOM} headroom):\n  {}",
+            SIZE_RATIO * HEADROOM,
+            violations.join("\n  ")
         );
     }
 

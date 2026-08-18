@@ -281,6 +281,46 @@ pub fn parse_invalidation_entries_compared(session: &crate::CompilerSession) -> 
     session.parse_invalidation_entries_compared()
 }
 
+/// Module-identity resolutions performed against published source snapshots
+/// ("which file is this module bound to?"), asked once per module by
+/// the parse projection and once more per module it rebinds.
+///
+/// This counter and [`snapshot_module_resolution_visits`] exist as a pair. The
+/// question count is linear in the program by construction; the *visit* count
+/// is what distinguishes an index from a scan, and only the ratio between them
+/// is a scaling property. A scan answered each question by walking the whole
+/// snapshot, so the visits grew as modules squared while nothing this compiler
+/// dispatched — parses, plan groups, frontier roots, certificate misses —
+/// changed at all.
+pub fn snapshot_module_resolutions(session: &crate::CompilerSession) -> u64 {
+    session.snapshot_module_resolutions()
+}
+
+/// Snapshot positions examined answering [`snapshot_module_resolutions`]: one
+/// probe per snapshot segment, plus the one record the answer reads. Segment
+/// count is bounded, so this stays linear in the program; growth toward
+/// resolutions-times-modules is the scan regression.
+pub fn snapshot_module_resolution_visits(session: &crate::CompilerSession) -> u64 {
+    session.snapshot_module_resolution_visits()
+}
+
+/// Physical-identity lookups performed against accepted-read manifests
+/// ("which manifest entry names this physical file?"), asked once per
+/// accepted import observation while authorizing a discovery batch. Paired with
+/// [`accepted_read_identity_visits`] exactly as the module pair above.
+pub fn accepted_read_identity_lookups(session: &crate::CompilerSession) -> u64 {
+    session.accepted_read_identity_lookups()
+}
+
+/// Accepted-read manifest entries examined answering
+/// [`accepted_read_identity_lookups`]. A manifest materializes its
+/// inverse physical-identity index once and shares it with every clone, so the
+/// whole build pays one pass per manifest value plus one entry per lookup;
+/// answering by scan instead cost one pass per lookup.
+pub fn accepted_read_identity_visits(session: &crate::CompilerSession) -> u64 {
+    session.accepted_read_identity_visits()
+}
+
 /// An owned snapshot of the provider-op observation counters (RUE-1091,
 /// ADR-0066 §4): how many facts of each §4 family the exact body-fact provider
 /// observed. Owned plain data, not a query-engine record. These are live
