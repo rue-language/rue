@@ -37,11 +37,12 @@ and it does not make `{name}` importable.
 
 {{ rule(id="10.1:5") }}
 
-If both module forms exist for the same import path — a file module
-`{path}.rue` and a directory module `{path}/_{basename}.rue` — the import is
-ambiguous and rejected at compile time; neither form takes precedence. This
-is specified as rule
-[4.13:89](@/04-expressions/13-intrinsics.md) (error E0708).
+Both module forms may coexist for the same name: an extensionless import
+path names the directory module `{path}/_{basename}.rue` alone, and the
+file module `{path}.rue` is reached only by its extensioned spelling
+(rule 10.2:1). Neither form can capture an import addressed to the other,
+so no ambiguity arises. (The former ambiguity rejection, E0708, is
+retired.)
 
 {{ rule(id="10.1:6", cat="example") }}
 
@@ -49,7 +50,7 @@ A project mixing both forms:
 
 ```text
 main.rue            # root file
-math.rue            # file module: @import("math")
+math.rue            # file module: @import("math.rue")
 utils/              # directory module: @import("utils")
 ├── _utils.rue      #   facade — the module root for "utils"
 └── strings.rue     #   helper file, reached via the facade's imports

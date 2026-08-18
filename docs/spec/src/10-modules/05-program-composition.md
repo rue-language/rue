@@ -56,8 +56,8 @@ pub fn shared() -> i32 { 2 }   // legal: names are module-scoped
 
 // main.rue
 fn main() -> i32 {
-    let a = @import("a");
-    let b = @import("b");
+    let a = @import("a.rue");
+    let b = @import("b.rue");
     a.shared() + b.shared()    // 3: each call resolves in its own module
 }
 ```
