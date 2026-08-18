@@ -8606,6 +8606,7 @@ impl QueryContext {
             self.task.core.clone(),
             self.task.batch_validation_authority.clone(),
         ));
+        batch_authority.seed_from_task(&self.task);
         // `tracing` dispatch is thread-local. Carry the caller's subscriber into
         // each child so scheduled evaluation keeps compiler timing/log events.
         let tracing_dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -9388,6 +9389,29 @@ impl BatchValidationAuthority {
             parent,
             state: RwLock::new(BatchValidationAuthorityState::default()),
         }
+    }
+
+    /// Seeds this batch's shared authority with every identity the spawning
+    /// task has already proven. A batch child starts with no task-local
+    /// endorsements, so without the seed every batch begins blind to the
+    /// parent's proofs and each child re-demands ubiquitous shared leaves —
+    /// primitive layouts, standard-library producers — the parent proved
+    /// moments earlier. The seeded identities carry no leases of their own:
+    /// they are backed by the parent task's held leases, which outlive this
+    /// authority because the parent joins every child before its rooted
+    /// request can release them.
+    fn seed_from_task(&self, task: &Task) {
+        let seeded: Vec<(u64, u64, Revision)> = {
+            let scopes = lock(&task.validation_endorsements);
+            let Some(scope) = scopes.first() else {
+                return;
+            };
+            if scope.identities.is_empty() {
+                return;
+            }
+            scope.identities.iter().copied().collect()
+        };
+        write(&self.state).endorsements.extend(seeded);
     }
 
     /// Atomically publishes one completed child's proof and its retention
@@ -17424,6 +17448,84 @@ mod tests {
         assert_eq!(borrowed.memo_hits, 1);
         assert_eq!(borrowed.endorsement_probes, 2);
         assert_eq!(borrowed.endorsement_hits, 1);
+    }
+
+    #[test]
+    fn registered_batch_seeds_parent_proofs_into_its_shared_authority() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(40, 13);
+        let second = Revision::new(41, 13);
+        let input = InputIdentity::new("source", "batch-seed");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 1)])
+            .unwrap();
+
+        let input_for_leaf = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("batch-seed-leaf", 8, move |context, _, _| {
+                context.input(input_for_leaf.clone())?;
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>("batch-seed-middle", 8, move |context, _, _| {
+                context.query_registered(&leaf_for_middle, Key("leaf"))?;
+                Ok(QueryOutput::success(2))
+            })
+            .unwrap();
+        let middle_for_top = middle.clone();
+        let top = runtime
+            .family_with_evaluator::<Key, u64, _>("batch-seed-top", 8, move |context, _, _| {
+                context.query_registered(&middle_for_top, Key("middle"))?;
+                Ok(QueryOutput::success(3))
+            })
+            .unwrap();
+
+        runtime
+            .request_registered(&top, first, Key("top"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        runtime
+            .request_registered(&top, second, Key("top"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let before = runtime.metrics().validation;
+        let root = runtime.family::<Key, u64>("batch-seed-root", 1).unwrap();
+        let top_for_root = top.clone();
+        runtime
+            .request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context.endorse_registered_validations();
+                    // The first batch pays the reacquisition demands and its
+                    // absorbed proofs land in this task's endorsement scope.
+                    context.query_registered_batch(&top_for_root, [Key("top")])?;
+                    // A later batch in the same proof scope starts with those
+                    // proofs seeded into its shared authority, so its children
+                    // borrow them instead of re-demanding the same cone.
+                    context.query_registered_batch(&top_for_root, [Key("top")])?;
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
+
+        let validation = runtime.metrics().validation.saturating_sub(before);
+        assert_validation_work_consistent(validation);
+        assert_eq!(validation.certificate_misses, 0);
+        assert_eq!(
+            validation.proof_reacquisition_misses, 2,
+            "only the first batch re-leases the cone; the second borrows the seed"
+        );
+        assert_eq!(validation.demand_reuses, 2);
     }
 
     #[test]
