@@ -1419,9 +1419,25 @@ pub(crate) fn parse_source_snapshot_modules(
         .into_owner_result()
 }
 
+#[cfg(test)]
 pub(crate) fn parse_source_snapshot_module(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
+) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
+    parse_source_snapshot_module_with_stage(snapshot, module, None)
+}
+
+/// The canonical parse entry with an optional staged wave parse (ADR-0075).
+///
+/// A staged parse is consumed only when its exact [`SourceId`] equals the
+/// snapshot's for this module, so it can never substitute for different bytes;
+/// on identity, `build_module_from_staged` skips the lexer and parser but runs
+/// the identical construction tail. Anything else — no stage, a content
+/// mismatch, or an unpublished module — falls through to the fresh parse.
+pub(crate) fn parse_source_snapshot_module_with_stage(
+    snapshot: &SourceSnapshot,
+    module: &ModuleId,
+    staged: Option<StagedModuleParse>,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
     let file_id = snapshot.file_id_for_module(module).ok_or_else(|| {
         CompileErrors::from(invalid_input(format!(
@@ -1429,8 +1445,43 @@ pub(crate) fn parse_source_snapshot_module(
         )))
     });
     match file_id {
-        Ok(file_id) => parse_snapshot_file(snapshot, file_id),
+        Ok(file_id) => {
+            if let Some(staged) = staged
+                && snapshot.source_id(file_id) == Some(&staged.source)
+            {
+                return build_module_from_staged(snapshot, file_id, staged);
+            }
+            parse_snapshot_file(snapshot, file_id)
+        }
         Err(errors) => (Err(errors), SyntaxWork::default()),
+    }
+}
+
+/// One wave-parsed module staged for the canonical parse query.
+///
+/// The discovery wave already ran the canonical lexer and parser on this exact
+/// source; the staged value hands that work to `compiler.parse-module` so the
+/// published revision does not lex and parse the same bytes a second time. The
+/// AST and token spans still carry the unpublished placeholder [`FileId`]; the
+/// consumer rebinds them to the snapshot's real file id before building the
+/// module, so no placeholder span survives into a published artifact.
+///
+/// Exact content identity guards consumption: a staged entry is used only when
+/// its [`SourceId`] equals the snapshot's, so a source rewritten between the
+/// wave and a later revision can never smuggle a stale syntax tree in.
+#[derive(Debug)]
+pub(crate) struct StagedModuleParse {
+    module: ModuleId,
+    source: SourceId,
+    ast: Arc<Ast>,
+    interner: ThreadedRodeo,
+    tokens: Arc<[rue_lexer::Token]>,
+    work: SyntaxWork,
+}
+
+impl StagedModuleParse {
+    pub(crate) fn module(&self) -> &ModuleId {
+        &self.module
     }
 }
 
@@ -1441,27 +1492,86 @@ pub(crate) fn parse_source_snapshot_module(
 /// the next hop's candidate policy needs the freshly read module's `@import`
 /// sites before any revision carries it. This runs the same lexer, parser, and
 /// projection collector `parse_snapshot_file` runs — it is the canonical
-/// recognition path invoked eagerly, not a second one — and returns only the
-/// valid directives, in the same AST order [`ParsedModule::imports`] carries.
+/// recognition path invoked eagerly, not a second one — and returns the valid
+/// directives, in the same AST order [`ParsedModule::imports`] carries, together
+/// with the parse itself as a [`StagedModuleParse`] so the published revision's
+/// canonical parse query reuses this work instead of repeating it.
 ///
 /// `None` means the source did not parse. The wave stops extending there and
 /// publishes; the canonical staging parse of the published revision then reports
 /// the diagnostics, exactly as it would have for the hop-granular round that
 /// read the same source.
-pub(crate) fn parse_unpublished_import_sites(
+pub(crate) fn parse_unpublished_module(
     module: &ModuleId,
     physical_path: &str,
-    source: &str,
-) -> Option<Vec<ImportDirective>> {
+    source: &Arc<String>,
+) -> Option<(Vec<ImportDirective>, StagedModuleParse)> {
     // Occurrence keys carry file-relative offsets, so the placeholder file id
-    // below never reaches a published span.
+    // below never reaches a published span; the staged consumer rebinds every
+    // retained span to the snapshot's real file id.
     let outcome = crate::syntax::parse_file(
         crate::queries::SourceView::new(physical_path, source, FileId::new(1)),
         ThreadedRodeo::new(),
     );
     let ast = outcome.result.ok()?;
     let projections = collect_module_projections(&ast, module, &outcome.interner).ok()?;
-    Some(projections.imports.valid)
+    Some((
+        projections.imports.valid,
+        StagedModuleParse {
+            module: module.clone(),
+            source: SourceId::from_shared_text(source.clone()),
+            ast,
+            interner: outcome.interner,
+            tokens: outcome.tokens,
+            work: outcome.work,
+        },
+    ))
+}
+
+/// Build the canonical parsed module from a staged wave parse.
+///
+/// Token and AST spans are rebound from the wave's placeholder file id to the
+/// snapshot's real one, then the exact `build_module` tail runs on the rebound
+/// syntax: the projection collector and definition index observe byte-identical
+/// input to a fresh parse, so the produced module is indistinguishable from one
+/// the skipped lexer/parser invocation would have yielded.
+fn build_module_from_staged(
+    snapshot: &SourceSnapshot,
+    file_id: FileId,
+    staged: StagedModuleParse,
+) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
+    let StagedModuleParse {
+        ast,
+        interner,
+        tokens,
+        work,
+        ..
+    } = staged;
+    let tokens: Arc<[rue_lexer::Token]> = tokens
+        .iter()
+        .cloned()
+        .map(|mut token| {
+            token.span = Span::with_file(file_id, token.span.start, token.span.end);
+            token
+        })
+        .collect::<Vec<_>>()
+        .into();
+    // The stage normally owns the last reference, so the rebind mutates the
+    // wave's tree in place rather than copying it.
+    let ast = match Arc::try_unwrap(ast) {
+        Ok(mut ast) => {
+            ast.rebind_file_id(file_id);
+            Arc::new(ast)
+        }
+        Err(shared) => {
+            let mut ast = (*shared).clone();
+            ast.rebind_file_id(file_id);
+            Arc::new(ast)
+        }
+    };
+    let result = build_module(snapshot, file_id, ast, interner, work.tokens, tokens)
+        .map_err(CompileErrors::from);
+    (result, work)
 }
 
 pub(crate) fn rebind_parsed_module(
@@ -3738,6 +3848,72 @@ extern "C" { fn getpid() -> i32; }
             error,
             "invalid compiler input: parsed program contains duplicate file ID 7 for modules a.rue and b.rue"
         );
+    }
+
+    #[test]
+    fn staged_wave_parse_is_consumed_only_on_exact_source_identity() {
+        let text = "const helper = @import(\"helper.rue\");\nfn main() -> i32 { 0 }";
+        let snap = snapshot(
+            &[
+                (3, "/main.rue", "main.rue", text),
+                (4, "/helper.rue", "helper.rue", "fn helper() -> i32 { 1 }"),
+            ],
+            3,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let shared = Arc::new(text.to_owned());
+        let (sites, mut staged) = parse_unpublished_module(&module, "/main.rue", &shared).unwrap();
+        assert_eq!(sites.len(), 1);
+        // A sentinel the fresh path cannot produce, proving which path ran.
+        staged.work.lexed_bytes = 424_242;
+
+        let (fresh, fresh_work) = parse_source_snapshot_module(&snap, &module);
+        let fresh = fresh.unwrap();
+        assert_eq!(fresh_work.lexed_bytes, text.len());
+
+        let (hit, hit_work) = parse_source_snapshot_module_with_stage(&snap, &module, Some(staged));
+        let hit = hit.unwrap();
+        assert_eq!(
+            hit_work.lexed_bytes, 424_242,
+            "the staged parse was consumed"
+        );
+
+        // The staged build is indistinguishable from the fresh parse: same
+        // revision, real file id on every retained span, and identical
+        // definition provenance.
+        assert_eq!(hit.revision(), fresh.revision());
+        assert_eq!(hit.file_id(), fresh.file_id());
+        assert_eq!(hit.tokens().len(), fresh.tokens().len());
+        assert!(
+            hit.tokens()
+                .iter()
+                .zip(fresh.tokens())
+                .all(|(staged, fresh)| staged.span == fresh.span),
+            "token spans must be rebound to the snapshot's file id"
+        );
+        assert_eq!(hit.imports().len(), fresh.imports().len());
+        assert_eq!(
+            hit.definitions.candidates.len(),
+            fresh.definitions.candidates.len()
+        );
+        assert!(
+            hit.definitions
+                .candidates
+                .iter()
+                .zip(fresh.definitions.candidates.iter())
+                .all(|(staged, fresh)| staged.name_span == fresh.name_span
+                    && staged.declaration_span == fresh.declaration_span),
+            "definition spans must match the fresh parse exactly"
+        );
+
+        // A stage for different bytes is discarded, never used: the fresh
+        // parse runs and its work shows the snapshot's own byte count.
+        let other = Arc::new("fn main() -> i32 { 1 }".to_owned());
+        let (_, stale) = parse_unpublished_module(&module, "/main.rue", &other).unwrap();
+        let (mismatch, mismatch_work) =
+            parse_source_snapshot_module_with_stage(&snap, &module, Some(stale));
+        assert_eq!(mismatch_work.lexed_bytes, text.len());
+        assert_eq!(mismatch.unwrap().revision(), fresh.revision());
     }
 
     #[test]
