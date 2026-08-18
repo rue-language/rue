@@ -390,6 +390,15 @@ enum StableCfgSpan {
     Absolute(Span),
 }
 
+/// The order `CfgDomainProjection::spans` is sorted and searched by.
+///
+/// `Span` is exactly these three fields, so this key is injective: two spans
+/// share a key only when they are equal. Both the sort and the binary search
+/// call this, because the search is only correct while they agree.
+fn span_sort_key(span: &Span) -> (u32, u32, u32) {
+    (span.file_id.index(), span.start, span.end)
+}
+
 impl StableCfgSpan {
     fn new(span: Span, body_span: Span) -> Self {
         if span.file_id == body_span.file_id {
@@ -422,6 +431,9 @@ pub(crate) struct CfgDomainProjection {
     types: Vec<(Type, CanonicalType)>,
     strings: Vec<(u32, Arc<str>)>,
     atoms: Vec<rue_air::SemanticBodyLocalAtom<crate::StableDefinitionKey, crate::ModuleId>>,
+    /// Sorted by `span_sort_key`, so `stable_span_anchor` can binary search.
+    /// Deduplication is by the whole pair, so one span may keep more than one
+    /// anchor; the lower bound is the first, which is the one a scan found.
     spans: Vec<(Span, StableCfgSpan)>,
     symbols: Vec<(Spur, StableCfgSymbol)>,
     incomplete_epoch: Option<Arc<()>>,
@@ -661,21 +673,32 @@ impl CfgDomainProjection {
                         .copied()
                         .ok_or(CfgDomainFailure::MissingString)
                 },
-                |value| {
-                    let anchor = old
-                        .spans
-                        .iter()
-                        .find(|(span, _)| *span == value)
-                        .map(|(_, anchor)| *anchor)
-                        .unwrap_or_else(|| StableCfgSpan::new(value, old.body_span));
-                    anchor.relocate(new_body_span)
-                },
+                |value| old.stable_span_anchor(value).relocate(new_body_span),
             )
             .map_err(|error| match error {
                 rue_cfg::CfgRemapError::Domain(error) => error,
                 rue_cfg::CfgRemapError::Edit(error) => CfgDomainFailure::Edit(error),
             })?;
         Ok((imported, string_map))
+    }
+
+    /// The stable anchor this domain recorded for `value`, falling back to an
+    /// anchor derived against this domain's own body span when the span is not
+    /// part of the domain.
+    ///
+    /// `spans` is sorted by `span_sort_key` and that key is injective, so the
+    /// lower bound is the first entry carrying this span. That matters where
+    /// `dedup` left two anchors for one span: the first is what the scan this
+    /// replaced returned, and stable sorting keeps it first.
+    fn stable_span_anchor(&self, value: Span) -> StableCfgSpan {
+        let key = span_sort_key(&value);
+        let position = self
+            .spans
+            .partition_point(|(span, _)| span_sort_key(span) < key);
+        match self.spans.get(position) {
+            Some((span, anchor)) if *span == value => *anchor,
+            _ => StableCfgSpan::new(value, self.body_span),
+        }
     }
 
     /// The live-handle order this searches is the same one insertion sorts by,
@@ -1200,7 +1223,7 @@ impl CfgDomainProjection {
         }
         stable_strings.sort_by_key(|(index, _)| *index);
         stable_strings.dedup();
-        spans.sort_by_key(|(span, _)| (span.file_id.index(), span.start, span.end));
+        spans.sort_by_key(|(span, _)| span_sort_key(span));
         spans.dedup();
         symbols.sort_by(|left, right| {
             (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
@@ -1307,6 +1330,7 @@ mod tests {
     use super::*;
     use lasso::Key;
     use rue_cfg::{Cfg, CfgInstData};
+    use rue_span::FileId;
 
     fn projection_with(symbol: Spur, stable: StableCfgSymbol) -> CfgDomainProjection {
         CfgDomainProjection {
@@ -1590,6 +1614,78 @@ mod tests {
         assert_eq!(
             imported.get_inst(rue_cfg::CfgValue::from_raw(0)).span,
             Span::new(52, 53)
+        );
+    }
+
+    #[test]
+    fn stable_span_anchor_matches_a_linear_scan_over_a_wide_domain() {
+        let symbol = lasso::ThreadedRodeo::new().get_or_intern("callee");
+        let mut projection = projection_with(symbol, StableCfgSymbol::Intrinsic(Arc::from("s")));
+        projection.body_span = Span::new(0, 4096);
+
+        // Two files so the search exercises the file component of the key, and
+        // an interleaved build order so sorting is doing real work.
+        let mut spans = Vec::new();
+        for index in 0..512u32 {
+            let start = index * 4;
+            spans.push((
+                Span::with_file(FileId::DEFAULT, start, start + 2),
+                StableCfgSpan::Relative {
+                    start: i64::from(start),
+                    end: i64::from(start) + 2,
+                },
+            ));
+            spans.push((
+                Span::with_file(FileId::new(1), start, start + 2),
+                StableCfgSpan::Absolute(Span::with_file(FileId::new(1), start, start + 2)),
+            ));
+        }
+        let scanned = spans.clone();
+        spans.sort_by_key(|(span, _)| span_sort_key(span));
+        spans.dedup();
+        projection.spans = spans;
+
+        // Every recorded span resolves to what a scan of the pre-sort order
+        // would have returned, and the fallback still covers absent spans.
+        for (span, _) in &scanned {
+            let expected = scanned
+                .iter()
+                .find(|(candidate, _)| candidate == span)
+                .map(|(_, anchor)| *anchor)
+                .unwrap();
+            assert_eq!(projection.stable_span_anchor(*span), expected);
+        }
+        let absent = Span::new(3, 5);
+        assert_eq!(
+            projection.stable_span_anchor(absent),
+            StableCfgSpan::new(absent, projection.body_span)
+        );
+    }
+
+    #[test]
+    fn stable_span_anchor_keeps_the_first_of_two_anchors_for_one_span() {
+        let symbol = lasso::ThreadedRodeo::new().get_or_intern("callee");
+        let mut projection = projection_with(symbol, StableCfgSymbol::Intrinsic(Arc::from("s")));
+        projection.body_span = Span::new(0, 64);
+        // `dedup` only drops equal pairs, so one span can keep two anchors.
+        // A scan answered with the first; the lower bound has to agree.
+        let repeated = Span::new(8, 12);
+        projection.spans = vec![
+            (
+                Span::new(4, 6),
+                StableCfgSpan::Relative { start: 4, end: 6 },
+            ),
+            (repeated, StableCfgSpan::Relative { start: 8, end: 12 }),
+            (repeated, StableCfgSpan::Absolute(Span::new(99, 100))),
+            (
+                Span::new(16, 20),
+                StableCfgSpan::Relative { start: 16, end: 20 },
+            ),
+        ];
+
+        assert_eq!(
+            projection.stable_span_anchor(repeated),
+            StableCfgSpan::Relative { start: 8, end: 12 }
         );
     }
 }
