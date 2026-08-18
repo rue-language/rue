@@ -13,24 +13,10 @@ pub struct CanonicalSemanticWork {
     pub binding: DeclarationBindingWork,
     /// Authoritative binding-manifest traversal used to validate body tokens.
     pub manifest: SemanticBindingManifestWork,
-    /// Public stable-ID issuance work, absent when IDs were not requested.
-    /// Exact work performed to make AIR body ownership authoritative.
-    pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
-    /// Durable body comparison, import, export, reuse, and fallback work.
-    pub durable_bodies: crate::DurableBodyWork,
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BodyOwnerTokenWork {
-    pub provisional_slots: usize,
-    pub authoritative_slots: usize,
-    pub slots_validated: usize,
-    pub tokens_installed: usize,
-    pub validation_failures: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -75,17 +61,6 @@ pub struct CfgConstructionWork {
     pub optimization_completions: usize,
     pub optimized_level_attempts: usize,
     pub cfg_warnings_emitted: usize,
-    pub implicit_destructor_targets_emitted: usize,
     pub cfg_reuse_candidates: usize,
-    pub cfg_import_attempts: usize,
-    pub cfg_import_successes: usize,
-    pub cfg_import_failures: usize,
-    pub cfg_schema_version_rejections: usize,
     pub cfg_reuses: usize,
-    pub cfg_fallbacks: usize,
-    pub cfg_warnings_reused: usize,
-    pub implicit_destructor_targets_reused: usize,
-    pub cfg_export_attempts: usize,
-    pub cfg_export_successes: usize,
-    pub cfg_export_rejections: usize,
 }
