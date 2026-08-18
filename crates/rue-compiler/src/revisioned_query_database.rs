@@ -12015,6 +12015,20 @@ impl RevisionedQueryDatabase {
                         importer.requested_path(),
                     )
                     .expect("accepted import provenance and captured context are canonical");
+                    if groups.is_empty() {
+                        // The occurrence's candidate escapes the project root
+                        // (ADR-0078): no filesystem request exists and the
+                        // rejection is deterministic, so the binding is a
+                        // first-class Missing terminal. The E0713 diagnostic
+                        // is owned by the diagnostic projection.
+                        return Ok(QueryOutput::success(ResolveImportValue {
+                            site_found: true,
+                            groups: Arc::from([]),
+                            requests: Arc::from([]),
+                            speculative_blocked: false,
+                            resolution: Some(crate::CanonicalImportResolution::Missing),
+                        }));
+                    }
                     for request in groups.iter().flat_map(|group| group.iter()) {
                         let present = context
                             .optional_input(import_observation_input(request))
@@ -30950,7 +30964,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn declaration_imports_preserve_canonical_ambiguity_and_category_boundaries() {
+    fn declaration_imports_preserve_canonical_resolution_and_category_boundaries() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
         let source = "const selected = @import(\"dep\"); struct Box { value: i32, fn get(borrow self) { @import(\"method\"); } fn make() -> Box { @import(\"associated\"); Box { value: 0 } } } drop fn Box(self) { @import(\"drop\"); } fn free() { @import(\"free\"); } enum Choice { A } extern \"C\" { fn foreign() -> i32; }";
@@ -30994,12 +31008,15 @@ fn main() -> i32 {
             CancellationToken::new(),
         );
         let selected_terminal = selected.terminal().unwrap();
+        // Policy v2: both module forms on disk are not ambiguous — the
+        // extensionless specifier names the facade alone; the sibling
+        // `dep.rue` is never probed.
         assert!(
             matches!(
                 selected_terminal.outcome(),
                 rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
-                    crate::CanonicalImportResolution::Ambiguous { .. }
-                ))
+                    crate::CanonicalImportResolution::Resolved(module)
+                )) if module.as_str() == "dep/_dep.rue"
             ),
             "unexpected declaration import outcome: {:#?}",
             selected_terminal.outcome()
@@ -31182,35 +31199,25 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn ambiguous_declaration_import_observes_both_winning_provenance_leaves() {
+    fn facade_declaration_import_observes_its_provenance_leaf_only() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
 
+        // Policy v2: the extensionless specifier owns exactly one candidate,
+        // the facade. The contract pinned here is provenance tracking at that
+        // single leaf: a physical remap of the winner re-stamps the terminal,
+        // while adding files the policy never probes — including the sibling
+        // `dep.rue` file-module spelling — validates green.
         let source = "const selected = @import(\"dep\"); fn main() {}";
         let (_, mut first_assembler, first_context) = import_fixture(308, source);
-        for (path, canonical, identity, value) in [
-            (
-                "/project/dep.rue",
-                "/physical/dep-file.rue",
-                PhysicalFileIdentity::new(2, 1),
-                1,
-            ),
-            (
+        first_assembler
+            .add_explicit(
                 "/project/dep/_dep.rue",
                 "/physical/dep-dir.rue",
                 PhysicalFileIdentity::new(3, 1),
-                2,
-            ),
-        ] {
-            first_assembler
-                .add_explicit(
-                    path,
-                    canonical,
-                    identity,
-                    FileMetadataFingerprint::new(value, 5, 6),
-                    Arc::new(format!("const value = {value};")),
-                )
-                .unwrap();
-        }
+                FileMetadataFingerprint::new(2, 5, 6),
+                Arc::new("const value = 2;".to_owned()),
+            )
+            .unwrap();
         let mut database = RevisionedQueryDatabase::default();
         let (first_snapshot, first_reads, first_revision, first_plan) =
             begin_database_plan(&mut database, &mut first_assembler, first_context);
@@ -31242,46 +31249,24 @@ fn main() -> i32 {
         assert!(matches!(
             first.terminal().unwrap().outcome(),
             rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
-                crate::CanonicalImportResolution::Ambiguous {
-                    file_module,
-                    directory_module,
-                }
-            )) if file_module.as_str() == "dep.rue"
-                && directory_module.as_str() == "dep/_dep.rue"
+                crate::CanonicalImportResolution::Resolved(module)
+            )) if module.as_str() == "dep/_dep.rue"
         ));
         let first_stamp = first.terminal().unwrap().stamp();
 
         let (_, mut remapped_assembler, remapped_context) = import_fixture(308, source);
-        for (path, canonical, identity, value) in [
-            (
-                "/project/left.rue",
-                "/physical/left.rue",
-                PhysicalFileIdentity::new(2, 1),
-                1,
-            ),
-            (
-                "/project/right.rue",
-                "/physical/right.rue",
+        remapped_assembler
+            .add_explicit(
+                "/project/facade.rue",
+                "/physical/facade.rue",
                 PhysicalFileIdentity::new(3, 1),
-                2,
-            ),
-        ] {
-            remapped_assembler
-                .add_explicit(
-                    path,
-                    canonical,
-                    identity,
-                    FileMetadataFingerprint::new(value, 5, 6),
-                    Arc::new(format!("const value = {value};")),
-                )
-                .unwrap();
-        }
+                FileMetadataFingerprint::new(2, 5, 6),
+                Arc::new("const value = 2;".to_owned()),
+            )
+            .unwrap();
         let (remapped_snapshot, remapped_reads, remapped_revision, remapped_plan) =
             begin_database_plan(&mut database, &mut remapped_assembler, remapped_context);
-        let remaps = [
-            ("/project/dep.rue", PhysicalFileIdentity::new(2, 1)),
-            ("/project/dep/_dep.rue", PhysicalFileIdentity::new(3, 1)),
-        ];
+        let remaps = [("/project/dep/_dep.rue", PhysicalFileIdentity::new(3, 1))];
         let remapped_revision = publish_remapped_observations(
             &mut database,
             &remapped_snapshot,
@@ -31304,23 +31289,19 @@ fn main() -> i32 {
         assert!(matches!(
             remapped_terminal.outcome(),
             rue_query::QueryOutcome::Success(DeclarationImportQueryValue::Available(
-                crate::CanonicalImportResolution::Ambiguous {
-                    file_module,
-                    directory_module,
-                }
-            )) if file_module.as_str() == "left.rue"
-                && directory_module.as_str() == "right.rue"
+                crate::CanonicalImportResolution::Resolved(module)
+            )) if module.as_str() == "facade.rue"
         ));
         let remapped_stamp = remapped_terminal.stamp();
 
         let mut green_assembler = remapped_assembler.clone();
         green_assembler
             .add_explicit(
-                "/project/unrelated.rue",
-                "/physical/unrelated.rue",
+                "/project/dep.rue",
+                "/physical/dep-file.rue",
                 PhysicalFileIdentity::new(9, 1),
                 FileMetadataFingerprint::new(9, 2, 3),
-                Arc::new("const unrelated = 9;".to_owned()),
+                Arc::new("const value = 1;".to_owned()),
             )
             .unwrap();
         let green_context =
@@ -31684,10 +31665,21 @@ fn main() -> i32 {
                 &first_plan.demand_roots(),
             )
             .unwrap();
+        // Policy v2 probes the vendored {root}/std/_std.rue before the
+        // toolchain root, so the first frontier round holds the vendored
+        // candidate; the captured std root still appears in the plan's
+        // later group.
         assert!(
             first
                 .requests()
                 .iter()
+                .any(|request| request.requested_path() == "/project/std/_std.rue")
+        );
+        assert!(
+            first_plan
+                .groups()
+                .iter()
+                .flat_map(|group| group.iter())
                 .any(|request| request.requested_path().starts_with("/sdk/"))
         );
 
@@ -31734,15 +31726,17 @@ fn main() -> i32 {
                 .all(|request| request.context() == &second_context)
         );
         assert!(
-            second
-                .requests()
+            second_plan
+                .groups()
                 .iter()
+                .flat_map(|group| group.iter())
                 .any(|request| request.requested_path().starts_with("/other-sdk/"))
         );
         assert!(
-            !second
-                .requests()
+            !second_plan
+                .groups()
                 .iter()
+                .flat_map(|group| group.iter())
                 .any(|request| request.requested_path().starts_with("/sdk/"))
         );
     }
