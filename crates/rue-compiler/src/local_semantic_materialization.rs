@@ -11,6 +11,8 @@
 use std::hash::Hash;
 use std::sync::Arc;
 
+use ahash::AHashSet;
+
 use crate::durable_semantics::{
     DurableAnonymousNominal, DurableAnonymousNominalShape, DurableDeclarationPayload,
     DurableDeclarationSemantic,
@@ -1228,6 +1230,8 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet<FunctionInstanceKey>,
         modules: std::collections::BTreeSet<ModuleId>,
         builtins: std::collections::BTreeSet<LocalBuiltinNominalRequest>,
+        seen_semantic_types: AHashSet<crate::durable_semantics::DurableType>,
+        seen_opaque_types: AHashSet<crate::durable_semantics::DurableType>,
     }
 
     impl Selection<'_, '_> {
@@ -1261,6 +1265,9 @@ pub(crate) fn select_materialization_facts(
         }
 
         fn semantic_type(&mut self, ty: &crate::durable_semantics::DurableType) {
+            if !self.seen_semantic_types.insert(ty.clone()) {
+                return;
+            }
             use rue_air::SemanticImportType as T;
             match ty {
                 T::Nominal(key) => self.nominal(&crate::NominalInstanceKey::Named(key.clone())),
@@ -1292,6 +1299,9 @@ pub(crate) fn select_materialization_facts(
         }
 
         fn opaque_semantic_type(&mut self, ty: &crate::durable_semantics::DurableType) {
+            if !self.seen_opaque_types.insert(ty.clone()) {
+                return;
+            }
             use rue_air::SemanticImportType as T;
             match ty {
                 T::Nominal(key) => {
@@ -1579,6 +1589,8 @@ pub(crate) fn select_materialization_facts(
         callables: std::collections::BTreeSet::new(),
         modules: std::collections::BTreeSet::new(),
         builtins: std::collections::BTreeSet::new(),
+        seen_semantic_types: AHashSet::new(),
+        seen_opaque_types: AHashSet::new(),
     };
     selection.callable(identity);
     let mut required_types = Vec::new();
