@@ -15726,28 +15726,34 @@ impl RevisionedQueryDatabase {
                     };
                     let mut anonymous_digest_owners = BTreeMap::new();
                     let mut anonymous_digest_collision = None;
-                    let body_closure_anonymous_digest = |identity: &crate::AnonymousNominalKey| {
-                        #[cfg(test)]
-                        {
-                            let canonical = identity.with_canonical_producer();
-                            if let Some(digest) = anonymous_digest_forcing_for_closure_aggregation
-                                .lock()
-                                .expect("body-closure forced-digest state is not poisoned")
-                                .digests
-                                .get(canonical.as_ref())
-                                .copied()
+                    let body_closure_anonymous_digest =
+                        |nominal: &crate::durable_semantics::DurableAnonymousNominal| {
+                            #[cfg(test)]
                             {
-                                return digest;
+                                let canonical = nominal.identity.with_canonical_producer();
+                                if let Some(digest) =
+                                    anonymous_digest_forcing_for_closure_aggregation
+                                        .lock()
+                                        .expect("body-closure forced-digest state is not poisoned")
+                                        .digests
+                                        .get(canonical.as_ref())
+                                        .copied()
+                                {
+                                    return digest;
+                                }
+                                compiler_anonymous_identity_digest(&nominal.identity)
                             }
-                        }
-                        compiler_anonymous_identity_digest(identity)
-                    };
+                            #[cfg(not(test))]
+                            {
+                                nominal.anonymous_identity_digest()
+                            }
+                        };
                     if let SemanticNucleusProjectionValue::Available(projection) = declarations {
                         for nominal in projection.anonymous_nominals.iter() {
                             register_body_closure_anonymous_digest(
                                 &mut anonymous_digest_owners,
                                 &mut anonymous_digest_collision,
-                                body_closure_anonymous_digest(&nominal.identity),
+                                body_closure_anonymous_digest(nominal),
                                 &nominal.identity,
                             );
                         }
@@ -15796,7 +15802,7 @@ impl RevisionedQueryDatabase {
                                     register_body_closure_anonymous_digest(
                                         &mut anonymous_digest_owners,
                                         &mut anonymous_digest_collision,
-                                        body_closure_anonymous_digest(&nominal.identity),
+                                        body_closure_anonymous_digest(nominal),
                                         &nominal.identity,
                                     );
                                 }
@@ -22463,6 +22469,7 @@ fn provider_definition_symbol_component(key: &crate::StableDefinitionKey) -> Str
 /// domain used by `CompilerBodyDurableSource`, then take the single AIR digest.
 /// Body closure aggregation calls this before any CFG/codegen consumer can
 /// materialize the collected nominal set.
+#[cfg(test)]
 fn compiler_anonymous_identity_digest(identity: &crate::AnonymousNominalKey) -> u128 {
     crate::semantic_identity::anonymous_nominal_digest(identity)
 }
