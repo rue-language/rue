@@ -1,11 +1,11 @@
 ---
 id: 0077
 title: "Endorsement inheritance for batch children"
-status: proposal
+status: accepted
 tags: [architecture, compiler, performance, query-engine, parallelization]
 feature-flag: null
 created: 2026-08-18
-accepted:
+accepted: 2026-08-18
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,7 +16,16 @@ relates: ["ADR-0063", "ADR-0071", "ADR-0073", "RUE-1577"]
 
 ## Status
 
-Proposed, pending review. Follows the measurement note
+Accepted 2026-08-18. Direction 1 was implemented while this record was
+under review: PR #2517 (RUE-1583) seeds each batch's shared authority
+with the spawning task's proved identities at construction
+(`BatchValidationAuthority::seed_from_task`), one point on the
+representation spectrum §"Implementation shape" leaves open, argued on
+exactly the structured-lifetime grounds §1 states. The remaining gap is
+the intra-batch first-touch race (RUE-1584), which lives inside §2's
+sibling-to-sibling direction.
+
+Follows the measurement note
 `docs/notes/compiler-worker-scaling.md` (RUE-1577): the first
 characterization of worker scaling found that adding workers makes
 semantic analysis slower — 0.462× paired at `-j4` on Lattice, dragging
@@ -59,7 +68,14 @@ children under a structured-lifetime argument, in two directions:
    shared `batch_validation_authority`), never by direct mutable sharing
    of another task's live scope. Published authority is already trusted
    cross-task; this direction adds no new trust edge either, only more
-   traffic through an existing one.
+   traffic through an existing one. Publication granularity within this
+   direction is the implementation's choice: publishing per completed
+   item, or per individually proved endorsement, before the proving
+   child itself completes is still publish-on-terminal and adds no new
+   trust edge — provided the atomicity invariant holds (an identity
+   becomes visible in the same write transaction that already retains
+   the lease or fallback backing it) and no task ever observes
+   another's incomplete validation state.
 
 What this ADR does NOT permit: honoring an identity no task in the
 batch's structured lineage proved; endorsements outliving the batch join
