@@ -1,10 +1,12 @@
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 
-// No left/shared.rue exists: both reordered siblings must resolve this import
-// relative to the explicitly designated root. The compiler unit regression
+// No left/shared.rue exists: both reordered siblings name the one shared
+// module by an explicit importer-relative path (ADR-0078 removed the
+// root-directory fallback this used to lean on), so the pair still resolves
+// to a single identity across FileId orderings. The compiler unit regression
 // separately proves that the root need not have the lowest numeric FileId.
-const shared = @import("shared.rue");
+const shared = @import("../shared.rue");
 
 struct Payload {
     value: i32,

@@ -3340,15 +3340,22 @@ mod tests {
         );
     }
 
-    /// ADR-0078: an existing but undeclared vendored `{root}/std/_std.rue` is
-    /// a hermetic denial, never absence. If denial fell through to the next
-    /// candidate, resolution would silently bind the declared toolchain std
-    /// and a manifest build would resolve `std` to a different file than an
-    /// unrestricted build of the same tree.
+    /// ADR-0078: under a source manifest an undeclared vendored
+    /// `{root}/std/_std.rue` is SKIPPED, and `std` resolves to the declared
+    /// toolchain facade.
+    ///
+    /// Hermetic denial is lexical and takes no probe, so the compiler cannot
+    /// distinguish "absent" from "present but undeclared". Treating the denial
+    /// as conclusive would fail every hermetic build whose program does not
+    /// vendor std — the vendored candidate is probed first and denied even
+    /// when nothing is there. The manifest is therefore the authority on which
+    /// std is in the build: declare the vendored copy and it wins (that arm is
+    /// covered by the CLI deps cases), omit it and the declared toolchain std
+    /// resolves.
     #[test]
-    fn undeclared_vendored_std_is_hermetic_denial_not_fallthrough() {
-        let project = TestDir::new("vendored-denied-project");
-        let stdlib = TestDir::new("vendored-denied-std");
+    fn undeclared_vendored_std_is_skipped_for_the_declared_toolchain_std() {
+        let project = TestDir::new("vendored-skipped-project");
+        let stdlib = TestDir::new("vendored-skipped-std");
         let main = project.write(
             "main.rue",
             "const s = @import(\"std\"); fn main() -> i32 { 0 }",
@@ -3360,16 +3367,21 @@ mod tests {
         let env_canonical = fs::canonicalize(&env_std).unwrap();
         let manifest = manifest_allowing(&project, &[&root_canonical, &env_canonical]);
 
-        let error = load_and_acquire(&main, Some(manifest), Some(&std_root))
-            .expect_err("an undeclared vendored std cannot be skipped");
-        // The vendored copy is an ordinary project candidate, so its denial
-        // surfaces as a typed compile diagnostic naming the read policy — not
-        // as toolchain-acquisition HermeticDenial, and never as absence.
-        let rendered = error_display(&error);
+        let result = load_and_acquire(&main, Some(manifest), Some(&std_root))
+            .expect("the undeclared vendored candidate is skipped, not conclusive");
         assert!(
-            rendered.contains("not listed in the source manifest read policy")
-                && rendered.contains("std/_std.rue"),
-            "expected fail-closed denial naming the vendored candidate, got {error:?}"
+            result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().as_str().starts_with("\0rue-std/")),
+            "std must resolve to the declared toolchain facade"
+        );
+        assert!(
+            !result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().as_str() == "std/_std.rue"),
+            "the undeclared vendored candidate must never be read"
         );
     }
 
