@@ -220,6 +220,26 @@ impl LocalSlotPlan {
         self.frame_local_slots < self.map.len() as u32
     }
 
+    /// The CFG local slots assigned to each emitted frame local cell, indexed
+    /// by frame slot and in CFG order within a cell.
+    ///
+    /// This is the plan read backwards. `--emit stackframe` reports the frame
+    /// as emitted, where a merged cell is indistinguishable from an unmerged
+    /// one; the whole point of RUE-768 is that two locals can land on one
+    /// cell, and a report that cannot say so cannot be used to review the
+    /// decision or pin it against regression.
+    pub(crate) fn cfg_slots_by_frame_slot(&self) -> Vec<Vec<u32>> {
+        let mut owners = vec![Vec::new(); self.frame_local_slots as usize];
+        for (cfg_slot, &frame_slot) in self.map.iter().enumerate() {
+            // A ZST local can sit one past the local area and is not mapped;
+            // it owns no cell, so it names none here either.
+            if let Some(cell) = owners.get_mut(frame_slot as usize) {
+                cell.push(cfg_slot as u32);
+            }
+        }
+        owners
+    }
+
     fn try_plan(
         cfg: &Cfg,
         type_pool: &FrozenTypeInternPool,
@@ -331,7 +351,7 @@ fn collect_slot_references(
     interner: &ThreadedRodeo,
 ) -> Option<SlotReferences> {
     let num_locals = cfg.num_locals();
-    let span_of = |ty: Type| crate::types::type_slot_count(type_pool, ty).max(1);
+    let span_of = |ty: Type| crate::types::type_slot_span(type_pool, ty);
     let mut per_value = vec![None; cfg.value_count()];
     let escaping = address_escaping_operands(cfg, interner);
 
@@ -722,6 +742,36 @@ fn verify_sharing(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_frame_cell_map_inverts_the_plan_and_skips_unmapped_zst_slots() {
+        // The identity plan gives every local its own cell, so every cell has
+        // exactly one owner and the report reads as it always did.
+        let identity = LocalSlotPlan::identity(3);
+        assert_eq!(
+            identity.cfg_slots_by_frame_slot(),
+            vec![vec![0], vec![1], vec![2]]
+        );
+
+        // A merged plan: CFG locals 0 and 2 share cell 0, local 1 keeps cell 1.
+        // Owners come back in CFG order within a cell, which is what makes the
+        // rendered name stable across runs.
+        let merged = LocalSlotPlan {
+            map: vec![0, 1, 0],
+            frame_local_slots: 2,
+        };
+        assert_eq!(merged.cfg_slots_by_frame_slot(), vec![vec![0, 2], vec![1]]);
+        assert!(merged.shares_any_slot());
+
+        // A ZST local may be rooted one past the local area and is not mapped
+        // to a cell. It must not be attributed to a cell it does not occupy,
+        // and must not index out of bounds.
+        let with_zst = LocalSlotPlan {
+            map: vec![0, 1],
+            frame_local_slots: 1,
+        };
+        assert_eq!(with_zst.cfg_slots_by_frame_slot(), vec![vec![0]]);
+    }
+
     use super::*;
 
     fn entity(base: u32, span: u32) -> SlotEntity {

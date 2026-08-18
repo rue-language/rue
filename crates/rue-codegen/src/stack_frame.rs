@@ -282,6 +282,28 @@ pub fn generate_stack_frame_info(
     }
 }
 
+/// The `--emit stackframe` name for one emitted frame local cell.
+///
+/// A cell holding one local reads as that local. A cell RUE-768 merged reads
+/// as its first local plus the others sharing it, because a report that shows
+/// only "local" cannot distinguish a merged frame from an unmerged one — and
+/// distinguishing them is the entire observable effect of slot sharing.
+fn local_slot_name(owners: &[u32]) -> Option<String> {
+    // The kind already renders as `local`, so this names the CFG slots alone.
+    match owners {
+        [] => None,
+        [only] => Some(format!("${only}")),
+        [first, shared @ ..] => {
+            let shared = shared
+                .iter()
+                .map(|slot| format!("${slot}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some(format!("${first} shared with {shared}"))
+        }
+    }
+}
+
 /// Generate stack frame info for x86-64.
 fn generate_x86_64_stack_frame(
     cfg: &ValidatedCfg,
@@ -334,9 +356,12 @@ fn generate_x86_64_stack_frame(
     }
 
     // Add local variables
+    let local_owners = prepared.local_storage.cfg_slots_by_frame_slot();
     for i in 0..num_locals {
         slots.push(StackSlot {
-            name: None, // We don't have variable names from CFG yet
+            name: local_owners
+                .get(i as usize)
+                .and_then(|owners| local_slot_name(owners)),
             offset: frame.slot_offset(i),
             size: frame.slot_size(i) as usize,
             ty: "i64".to_string(), // Generic - we don't track types at CFG level
@@ -519,9 +544,12 @@ fn generate_aarch64_stack_frame(
     }
 
     // Add local variables
+    let local_owners = prepared.local_storage.cfg_slots_by_frame_slot();
     for i in 0..num_locals {
         slots.push(StackSlot {
-            name: None,
+            name: local_owners
+                .get(i as usize)
+                .and_then(|owners| local_slot_name(owners)),
             offset: slot_offset(i),
             size: frame.slot_size(i) as usize,
             ty: "i64".to_string(),
@@ -779,6 +807,23 @@ mod tests {
             rue_air::AnalyzedCallableKind::Ordinary,
         );
         (cfg_output.cfg.unwrap(), type_pool, interner)
+    }
+
+    #[test]
+    fn a_merged_local_cell_names_every_slot_sharing_it() {
+        // RUE-768 lets two locals with disjoint storage windows overlay one
+        // cell. Before this the report showed both frames identically, so the
+        // sharing decision could not be reviewed or pinned from it.
+        assert_eq!(local_slot_name(&[]), None, "an unowned cell has no name");
+        assert_eq!(local_slot_name(&[0]), Some("$0".to_string()));
+        assert_eq!(
+            local_slot_name(&[1, 5]),
+            Some("$1 shared with $5".to_string())
+        );
+        assert_eq!(
+            local_slot_name(&[2, 6, 9]),
+            Some("$2 shared with $6, $9".to_string())
+        );
     }
 
     #[test]

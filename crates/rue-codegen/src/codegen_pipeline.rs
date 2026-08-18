@@ -76,6 +76,9 @@ pub(crate) struct PreparedMir<M, R> {
     /// Per-parameter storage decision shared by lowering, emission, and the
     /// stack-frame reporter (RUE-1170).
     pub(crate) param_storage: crate::param_storage::ParamStoragePlan,
+    /// Per-local frame-cell decision (RUE-768), carried for the same reason:
+    /// the stack-frame reporter names which CFG locals share a cell.
+    pub(crate) local_storage: crate::local_storage::LocalSlotPlan,
     /// Validated final layout consumed by emission and presentation paths.
     pub(crate) frame_layout: FrameLayout,
 }
@@ -271,6 +274,7 @@ where
             used_callee_saved,
             param_homing,
             param_storage,
+            local_storage,
             frame_layout,
         },
         artifacts,

@@ -67,6 +67,24 @@ pub fn type_slot_count(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
     type_pool.abi_slot_count(ty)
 }
 
+/// The number of frame slot positions `ty` occupies, clamped to at least one.
+///
+/// [`type_slot_count`] answers zero for a zero-sized type, which is the right
+/// answer for "how many cells hold this value". Frame bookkeeping asks a
+/// different question: which slot positions does a reference to this local
+/// *cover*. A ZST still sits at one addressable position, and a span of zero
+/// makes it invisible to the overlap and interference scans — a reference no
+/// scan can see is one that cannot be proved to conflict, which is how a ZST
+/// slot silently drops out of frame reasoning.
+///
+/// Both the local slot-reference scan (RUE-768) and the parameter home scan
+/// (RUE-1170) independently grew a `.max(1)` for exactly this, in different
+/// places and with the reason recorded in neither. This is that convention,
+/// named once.
+pub fn type_slot_span(type_pool: &FrozenTypeInternPool, ty: Type) -> u32 {
+    type_slot_count(type_pool, ty).max(1)
+}
+
 /// Whether `ty` needs a complete aggregate slot representation rather than a
 /// single primary vreg. Discriminant-only enums remain scalar values.
 pub fn is_multislot_aggregate(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
