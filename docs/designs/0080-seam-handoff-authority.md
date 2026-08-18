@@ -175,8 +175,14 @@ falsifiers below.
   schema, debug assertion, one-worker zero-miss pipeline gate; merged)
 - [x] **Phase 3a: Parent-proof seeding at batch creation** — RUE-1583
   (`BatchValidationAuthority::seed_from_task`; merged)
-- [ ] **Phase 3b: Intra-batch first-touch race** — RUE-1584, under the
-  trust edges ADR-0077 fixes
+- [x] **Phase 3b: Intra-batch first-touch race** — RUE-1584 (per-proof
+  publication into the shared batch authority, authority-held leases as
+  sibling-visible proof, and parent lease seeding across waves; merged).
+  Automatic-worker reacquisition misses fell 97.7% on Lattice, 95.5% on
+  Meridian, 89% on Caldera, with byte-identical executables at every
+  worker count. The residue is simultaneous first probes inside one
+  scheduling quantum, which only exact-identity inheritance
+  (ADR-0077 direction 1) can collapse further.
 - [ ] **Phase 4: Boundary audit** — sweep remaining publication
   boundaries for undocumented re-derivation; each either gains a
   handoff or a seam comment plus counter
