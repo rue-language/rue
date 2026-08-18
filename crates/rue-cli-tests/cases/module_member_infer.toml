@@ -25,7 +25,7 @@ description = "m.go() + 1 with a let-bound module (the originally failing shape)
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.go() + 1
 }
 """ },
@@ -40,7 +40,7 @@ name = "member_call_arithmetic_operand_const"
 description = "m.go() + 1 with a file-level const module (RUE-142's exact repro)."
 files = [
     { path = "main.rue", source = """
-const m = @import("m");
+const m = @import("m.rue");
 fn main() -> i32 { m.go() + 1 }
 """ },
     { path = "m.rue", source = """
@@ -54,7 +54,7 @@ name = "member_call_comparison_operand"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     if m.go() == 41 { 7 } else { 1 }
 }
 """ },
@@ -70,7 +70,7 @@ files = [
     { path = "main.rue", source = """
 fn twice(x: i32) -> i32 { x * 2 }
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     twice(m.go()) - 40
 }
 """ },
@@ -86,7 +86,7 @@ description = "The member's u64 return must anchor the literal it is compared wi
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     if m.big() == 5 { 3 } else { 1 }
 }
 """ },
@@ -102,7 +102,7 @@ description = "Untyped literal arguments are constrained against the member's pa
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.add(40, 2)
 }
 """ },
@@ -118,7 +118,7 @@ name = "member_call_tail_position_control"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.go()
 }
 """ },
@@ -133,7 +133,7 @@ name = "member_call_statement_and_let_init_control"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.go();
     let x = m.go();
     x + 1
@@ -152,7 +152,7 @@ name = "member_call_arg_type_mismatch_still_errors"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.add(true, 2)
 }
 """ },
@@ -168,7 +168,7 @@ name = "unknown_member_still_errors"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.nope()
 }
 """ },
@@ -203,7 +203,7 @@ description = "A module as the tail of a ()-returning function was silently acce
 files = [
     { path = "main.rue", source = """
 fn side() -> () {
-    let m = @import("m");
+    let m = @import("m.rue");
     m
 }
 fn main() -> i32 { side(); 0 }
@@ -221,7 +221,7 @@ description = "let u: () = m was silently accepted."
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     let _u: () = m;
     0
 }
@@ -239,7 +239,7 @@ description = "The mismatch must name '<module>', not misreport the found type a
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m
 }
 """ },
@@ -256,7 +256,7 @@ description = "A bare `m;` statement is a discarded value — still a no-op, sti
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m;
     5
 }

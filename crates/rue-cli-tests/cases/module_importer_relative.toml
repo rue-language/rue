@@ -20,8 +20,8 @@ description = "Relative @import resolves against the importing file's own direct
 name = "same_import_string_resolves_per_directory"
 files = [
     { path = "main.rue", source = """
-const a = @import("a/mod_a");
-const b = @import("b/mod_b");
+const a = @import("a/mod_a.rue");
+const b = @import("b/mod_b.rue");
 
 fn main() -> i32 {
     @dbg(a.a_val());
@@ -30,14 +30,14 @@ fn main() -> i32 {
 }
 """ },
     { path = "a/mod_a.rue", source = """
-const foo = @import("foo");
+const foo = @import("foo.rue");
 pub fn a_val() -> i32 { foo.a_foo() }
 """ },
     { path = "a/foo.rue", source = """
 pub fn a_foo() -> i32 { 10 }
 """ },
     { path = "b/mod_b.rue", source = """
-const foo = @import("foo");
+const foo = @import("foo.rue");
 pub fn b_val() -> i32 { foo.b_foo() }
 """ },
     { path = "b/foo.rue", source = """
@@ -74,8 +74,8 @@ exit_code = 15
 name = "file_module_and_facade_in_different_dirs_are_not_ambiguous"
 files = [
     { path = "main.rue", source = """
-const u1 = @import("sub/user1");
-const u2 = @import("facdir/user2");
+const u1 = @import("sub/user1.rue");
+const u2 = @import("facdir/user2.rue");
 
 fn main() -> i32 {
     @dbg(u1.one());
@@ -84,7 +84,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "sub/user1.rue", source = """
-const foo = @import("foo");
+const foo = @import("foo.rue");
 pub fn one() -> i32 { foo.sfoo() }
 """ },
     { path = "sub/foo.rue", source = """
@@ -100,14 +100,19 @@ pub fn dfoo() -> i32 { 4 }
 ]
 stdout = "3\n4\n"
 
-# A genuine dual-entity ambiguity within ONE directory still errors (E0708):
-# both `foo.rue` and `foo/_foo.rue` sit next to the importer.
+# Both forms in ONE directory coexist (ADR-0078): the extensionless spelling
+# names the facade, the extensioned spelling names the file. E0708 is retired.
 [[case]]
-name = "genuine_single_dir_ambiguity_still_errors"
+name = "both_forms_in_one_dir_resolve_by_spelling"
 files = [
     { path = "main.rue", source = """
-const foo = @import("foo");
-fn main() -> i32 { foo.v_file() }
+const facade = @import("foo");
+const file = @import("foo.rue");
+fn main() -> i32 {
+    @dbg(file.v_file());
+    @dbg(facade.v_dir());
+    0
+}
 """ },
     { path = "foo.rue", source = """
 pub fn v_file() -> i32 { 1 }
@@ -116,5 +121,4 @@ pub fn v_file() -> i32 { 1 }
 pub fn v_dir() -> i32 { 2 }
 """ },
 ]
-compile_fail = true
-error_contains = ["E0708", "foo"]
+stdout = "1\n2\n"

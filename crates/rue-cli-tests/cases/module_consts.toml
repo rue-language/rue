@@ -17,7 +17,7 @@ description = "Value consts as module members, module aliases, and const-context
 name = "value_const_as_module_member"
 files = [
     { path = "main.rue", source = """
-const math = @import("math");
+const math = @import("math.rue");
 
 fn main() -> i32 {
     math.ANSWER
@@ -33,8 +33,8 @@ exit_code = 42
 name = "same_named_value_consts_in_distinct_modules"
 files = [
     { path = "main.rue", source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     a.VALUE + b.VALUE
@@ -54,7 +54,7 @@ exit_code = 3
 name = "member_const_in_const_initializer"
 files = [
     { path = "main.rue", source = """
-const math = @import("math");
+const math = @import("math.rue");
 const COPY: i32 = math.ANSWER;
 
 fn main() -> i32 {
@@ -75,7 +75,7 @@ exit_code = 42
 name = "member_const_as_operator_operand"
 files = [
     { path = "main.rue", source = """
-const math = @import("math");
+const math = @import("math.rue");
 const A: i32 = 1 + math.ANSWER;
 const B: i32 = math.ANSWER * 2 - 4;
 
@@ -96,7 +96,7 @@ exit_code = 123
 name = "private_member_as_operator_operand_rejected"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 const A: i32 = 1 + lib.SECRET;
 
 fn main() -> i32 { A }
@@ -115,7 +115,7 @@ error_contains = ["E0706", "SECRET", "private"]
 name = "i64_member_const_keeps_width"
 files = [
     { path = "main.rue", source = """
-const cfg = @import("cfg");
+const cfg = @import("cfg.rue");
 
 fn main() -> i32 {
     if cfg.BIG / 1000000000 == 5 { 9 } else { 1 }
@@ -176,7 +176,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "outer/_outer.rue", source = """
-pub const inner = @import("inner");
+pub const inner = @import("inner.rue");
 """ },
     { path = "outer/inner.rue", source = """
 pub fn value() -> i32 { 42 }
@@ -189,7 +189,7 @@ exit_code = 42
 name = "pub_member_const_across_directories"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     lib.LIMIT
@@ -206,7 +206,7 @@ exit_code = 17
 name = "private_member_const_rejected_at_use"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     lib.SECRET
@@ -225,7 +225,7 @@ error_contains = ["E0706", "SECRET", "private"]
 name = "private_member_const_rejected_in_const_context"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 const S: i32 = lib.SECRET;
 
 fn main() -> i32 { S }
@@ -243,7 +243,7 @@ error_contains = ["E0706", "SECRET", "private"]
 name = "private_member_const_same_directory_ok"
 files = [
     { path = "main.rue", source = """
-const lib = @import("lib");
+const lib = @import("lib.rue");
 
 fn main() -> i32 {
     lib.SECRET
@@ -262,7 +262,7 @@ name = "fn_member_const_alias_call"
 description = "A module-member function const creates a callable alias (spec 6.5:15), and calling the alias is equivalent to calling the function (spec 4.10:12)."
 files = [
     { path = "main.rue", source = """
-const abs_alias = @import("math").abs;
+const abs_alias = @import("math.rue").abs;
 
 fn main() -> i32 { abs_alias(0 - 42) }
 """ },
@@ -310,7 +310,7 @@ error_contains = ["E0434", "a function reference is not supported in const conte
 name = "unknown_member_still_e0707"
 files = [
     { path = "main.rue", source = """
-const math = @import("math");
+const math = @import("math.rue");
 const X: i32 = math.NOPE;
 
 fn main() -> i32 { 0 }
@@ -329,7 +329,7 @@ name = "value_const_member_through_local_let"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("math");
+    let m = @import("math.rue");
     @dbg(m.ANSWER);
     0
 }

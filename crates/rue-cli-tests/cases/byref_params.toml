@@ -440,7 +440,7 @@ description = "Passing the same variable to two inout parameters of a module mem
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("mod_swap");
+    let m = @import("mod_swap.rue");
     let mut x = 1;
     m.swap(inout x, inout x);
     0
@@ -463,7 +463,7 @@ description = "Passing the same variable as both borrow and inout to a module me
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("mod_obs");
+    let m = @import("mod_obs.rue");
     let mut x = 1;
     m.observe(borrow x, inout x)
 }
@@ -486,7 +486,7 @@ fn observe(borrow a: i32, inout b: i32) -> i32 {
     a + b
 }
 fn main() -> i32 {
-    let m = @import("helper");
+    let m = @import("helper.rue");
     let _ = m.one();
     let mut x = 5;
     observe(borrow x, inout x)
@@ -507,7 +507,7 @@ description = "Control: distinct variables passed by-ref to a module member call
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let m = @import("mod_swap");
+    let m = @import("mod_swap.rue");
     let mut x = 1;
     let mut y = 41;
     m.swap(inout x, inout y);

@@ -18,7 +18,7 @@ description = "Cross-directory associated-function calls on a private struct are
 name = "cross_dir_unqualified_private_assoc_fn_rejected"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let s = Secret.make();
@@ -41,7 +41,7 @@ error_contains = ["E0201", "undefined variable 'Secret'"]
 name = "cross_dir_qualified_private_assoc_fn_rejected"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let s = lib.Secret.make();
@@ -63,7 +63,7 @@ error_contains = ["E0706", "struct `Secret` is private"]
 name = "cross_dir_pub_assoc_fn_allowed"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let p = lib.Point.origin();
@@ -109,7 +109,7 @@ exit_code = 42
 name = "cross_dir_comptime_bound_assoc_fn_allowed"
 files = [
     { path = "main.rue", source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let P = lib.Point;

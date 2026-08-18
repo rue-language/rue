@@ -3340,6 +3340,39 @@ mod tests {
         );
     }
 
+    /// ADR-0078: an existing but undeclared vendored `{root}/std/_std.rue` is
+    /// a hermetic denial, never absence. If denial fell through to the next
+    /// candidate, resolution would silently bind the declared toolchain std
+    /// and a manifest build would resolve `std` to a different file than an
+    /// unrestricted build of the same tree.
+    #[test]
+    fn undeclared_vendored_std_is_hermetic_denial_not_fallthrough() {
+        let project = TestDir::new("vendored-denied-project");
+        let stdlib = TestDir::new("vendored-denied-std");
+        let main = project.write(
+            "main.rue",
+            "const s = @import(\"std\"); fn main() -> i32 { 0 }",
+        );
+        project.write("std/_std.rue", "pub fn vendored() -> i32 { 21 }");
+        let env_std = stdlib.write("_std.rue", "pub fn env_std() -> i32 { 1 }");
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+        let root_canonical = fs::canonicalize(&main).unwrap();
+        let env_canonical = fs::canonicalize(&env_std).unwrap();
+        let manifest = manifest_allowing(&project, &[&root_canonical, &env_canonical]);
+
+        let error = load_and_acquire(&main, Some(manifest), Some(&std_root))
+            .expect_err("an undeclared vendored std cannot be skipped");
+        // The vendored copy is an ordinary project candidate, so its denial
+        // surfaces as a typed compile diagnostic naming the read policy — not
+        // as toolchain-acquisition HermeticDenial, and never as absence.
+        let rendered = error_display(&error);
+        assert!(
+            rendered.contains("not listed in the source manifest read policy")
+                && rendered.contains("std/_std.rue"),
+            "expected fail-closed denial naming the vendored candidate, got {error:?}"
+        );
+    }
+
     /// CLI classification: a hermetic denial is presented as a distinct
     /// build-configuration failure, NOT as toolchain corruption. The two error
     /// classes carry disjoint labels ("Hermetic build configuration error" vs

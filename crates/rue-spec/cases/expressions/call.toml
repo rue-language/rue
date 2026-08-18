@@ -117,7 +117,7 @@ name = "module_member_unmarked_param_rejects_borrow"
 spec = ["4.10:3"]
 description = "A module-qualified function call enforces the same exact source-mode contract as an unqualified call."
 source = """
-const m = @import("mode_helper");
+const m = @import("mode_helper.rue");
 
 fn main() -> i32 {
     let x = 42;

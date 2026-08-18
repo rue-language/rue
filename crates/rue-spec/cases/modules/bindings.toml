@@ -13,10 +13,10 @@ name = "const_and_let_bindings_equivalent"
 spec = ["10.4:1"]
 description = "A module bound by top-level const and by local let supports the same member access"
 source = """
-const math = @import("math");
+const math = @import("math.rue");
 
 fn main() -> i32 {
-    let m = @import("math");
+    let m = @import("math.rue");
     math.add(40, m.add(1, 1))
 }
 """
@@ -38,7 +38,7 @@ fn main() -> i32 {
 }
 """
 aux_files = { "a/_a.rue" = """
-pub const b = @import("a/b");
+pub const b = @import("b");
 """, "a/b/_b.rue" = """
 pub fn value() -> i32 { 42 }
 """ }
@@ -50,12 +50,12 @@ spec = ["10.4:4"]
 description = "A non-pub const re-export is accessible from a file in the same directory as its definer"
 source = """
 fn main() -> i32 {
-    let m = @import("mod");
+    let m = @import("mod.rue");
     m.helper.h()
 }
 """
 aux_files = { "mod.rue" = """
-const helper = @import("sub/helper");
+const helper = @import("sub/helper.rue");
 """, "sub/helper.rue" = """
 pub fn h() -> i32 { 42 }
 """ }
@@ -72,7 +72,7 @@ description = "Passing a module binding as a function argument is a compile erro
 source = """
 fn takes(m: i32) -> i32 { m }
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     takes(math)
 }
 """
@@ -87,7 +87,7 @@ description = "Using a module binding as a struct field value is a compile error
 source = """
 struct Holder { m: i32 }
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     let h = Holder { m: math };
     0
 }
@@ -102,8 +102,8 @@ spec = ["10.4:6"]
 description = "Comparing module bindings with == is a compile error"
 source = """
 fn main() -> i32 {
-    let a = @import("math");
-    let b = @import("math");
+    let a = @import("math.rue");
+    let b = @import("math.rue");
     if a == b { 1 } else { 0 }
 }
 """
@@ -120,7 +120,7 @@ spec = ["10.4:6"]
 description = "A module as the tail expression of a unit-typed block is E0206, not the unit value"
 source = """
 fn sink() {
-    let math = @import("math");
+    let math = @import("math.rue");
     math
 }
 fn main() -> i32 { sink(); 0 }
@@ -136,7 +136,7 @@ description = "Passing a module where a `()` parameter is expected is E0206"
 source = """
 fn sink(x: ()) -> i32 { 0 }
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     sink(math)
 }
 """
@@ -156,7 +156,7 @@ spec = ["10.4:7"]
 description = "A bare module expression statement is accepted and discarded"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     math;
     math.add(1, 2)
 }
@@ -170,7 +170,7 @@ spec = ["10.4:7"]
 description = "A block statement whose tail is a module expression is accepted and discarded"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     { math };
     math.add(2, 3)
 }
@@ -187,18 +187,18 @@ name = "same_binding_name_in_two_files"
 spec = ["10.4:8"]
 description = "Two files each bind `const utils = @import(...)` to the same module without conflict"
 source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     a.from_a() + b.from_b()
 }
 """
 aux_files = { "a.rue" = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 pub fn from_a() -> i32 { utils.one() }
 """, "b.rue" = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 pub fn from_b() -> i32 { utils.one() + 1 }
 """, "utils.rue" = """
 pub fn one() -> i32 { 1 }
@@ -210,18 +210,18 @@ name = "same_binding_name_different_modules"
 spec = ["10.4:8"]
 description = "Two files bind the same name to different modules; each file sees its own binding"
 source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     a.from_a() + b.from_b()
 }
 """
 aux_files = { "a.rue" = """
-const helper = @import("m1");
+const helper = @import("m1.rue");
 pub fn from_a() -> i32 { helper.ten() }
 """, "b.rue" = """
-const helper = @import("m2");
+const helper = @import("m2.rue");
 pub fn from_b() -> i32 { helper.twenty() }
 """, "m1.rue" = """
 pub fn ten() -> i32 { 10 }
@@ -235,8 +235,8 @@ name = "duplicate_binding_in_one_file_error"
 spec = ["10.4:8"]
 description = "Two module bindings with the same name in a single file are a duplicate-constant error"
 source = """
-const m = @import("m1");
-const m = @import("m2");
+const m = @import("m1.rue");
+const m = @import("m2.rue");
 
 fn main() -> i32 {
     m.ten()
@@ -259,7 +259,7 @@ name = "alias_of_module_binding"
 spec = ["10.4:10"]
 description = "A const initialized from another module binding aliases the same module"
 source = """
-const m = @import("math");
+const m = @import("math.rue");
 const m2 = m;
 
 fn main() -> i32 {
@@ -282,7 +282,7 @@ fn main() -> i32 {
 }
 """
 aux_files = { "outer/_outer.rue" = """
-pub const inner = @import("inner");
+pub const inner = @import("inner.rue");
 """, "outer/inner.rue" = """
 pub fn value() -> i32 { 42 }
 """ }
@@ -297,7 +297,7 @@ name = "value_const_member_at_use_site"
 spec = ["10.4:12"]
 description = "m.CONST yields the member constant's value with its declared type"
 source = """
-const math = @import("math");
+const math = @import("math.rue");
 
 fn main() -> i32 {
     math.ANSWER
@@ -311,7 +311,7 @@ name = "value_const_member_keeps_declared_width"
 spec = ["10.4:12"]
 description = "An i64 member constant keeps its width through the member access"
 source = """
-const cfg = @import("cfg");
+const cfg = @import("cfg.rue");
 
 fn main() -> i32 {
     if cfg.BIG / 1000000000 == 5 { 9 } else { 1 }
@@ -325,7 +325,7 @@ name = "value_const_member_in_const_initializer"
 spec = ["10.4:12", "10.4:14"]
 description = "Member access to a value const is itself compile-time evaluable"
 source = """
-const math = @import("math");
+const math = @import("math.rue");
 const COPY: i32 = math.ANSWER;
 
 fn main() -> i32 {
@@ -340,7 +340,7 @@ name = "pub_const_member_visible_across_directories"
 spec = ["10.4:13"]
 description = "A pub const member is accessible from any directory"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     lib.LIMIT
@@ -354,7 +354,7 @@ name = "private_const_member_rejected_across_directories"
 spec = ["10.4:13"]
 description = "A non-pub const member is private outside its directory (E0706)"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     lib.SECRET
@@ -380,7 +380,7 @@ name = "qualified_type_variant_and_assoc_fn_forms"
 spec = ["10.4:15"]
 description = "Struct literal, associated function, variant expression, and variant pattern are all usable through a module binding"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let p = lib.Point { x: 40, y: 2 };
@@ -409,7 +409,7 @@ name = "qualified_path_in_type_position_allowed"
 spec = ["10.4:16"]
 description = "A module-qualified path in a type-annotation position resolves through the importing module."
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let p: lib.Point = lib.Point { x: 1, y: 2 };
@@ -426,8 +426,8 @@ name = "same_named_structs_in_distinct_modules_are_distinct"
 spec = ["10.4:16"]
 description = "RUE-454: module-qualified type lookup uses the defining module, so sibling modules may each define `Point`."
 source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     let p: a.Point = a.Point { x: 10 };
@@ -447,8 +447,8 @@ name = "same_named_enums_in_distinct_modules_are_distinct"
 spec = ["10.4:15"]
 description = "RUE-454: module-qualified enum lookup uses the defining module, so sibling modules may each define `Color`."
 source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     let left = a.pick_a();
@@ -478,7 +478,7 @@ name = "qualified_private_struct_literal_rejected"
 spec = ["10.4:18"]
 description = "A private struct named in a module-qualified struct literal from another directory is E0706, uniform with every module-member privacy violation (RUE-525)"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let s = lib.Secret { n: 3 };
@@ -497,7 +497,7 @@ name = "qualified_private_enum_variant_rejected"
 spec = ["10.4:18"]
 description = "A private enum's variant named through a module from another directory is E0706 (routes through module-member resolution)"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let h = lib.Hidden.A;
@@ -522,7 +522,7 @@ name = "cross_dir_unqualified_private_assoc_fn_rejected"
 spec = ["10.4:19", "10.3:8"]
 description = "An unqualified associated-function call on another file's struct does not resolve at all (RUE-525): name-resolution error, never a flat-namespace hit"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let s = Secret.make();
@@ -543,7 +543,7 @@ name = "cross_dir_qualified_private_assoc_fn_rejected"
 spec = ["10.4:19", "10.4:18"]
 description = "A module-qualified associated-function call on a private struct from another directory is E0706, uniform with every module-member privacy violation (RUE-525)"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let s = lib.Secret.make();
@@ -564,7 +564,7 @@ name = "cross_dir_pub_assoc_fn_allowed"
 spec = ["10.4:19", "10.4:17"]
 description = "A module-qualified associated-function call on a pub struct across directories is allowed; the qualifier resolves the type in the named module"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let p = lib.Point.origin();
@@ -585,7 +585,7 @@ name = "same_dir_private_assoc_fn_allowed"
 spec = ["10.4:19"]
 description = "Intra-directory visibility is unchanged: an associated-function call on a private struct in an imported same-directory module is allowed"
 source = """
-const lib = @import("lib");
+const lib = @import("lib.rue");
 
 fn main() -> i32 {
     let s = lib.Secret.make();
@@ -605,7 +605,7 @@ name = "cross_dir_comptime_bound_assoc_fn_allowed"
 spec = ["10.4:19"]
 description = "A receiver type reached through a comptime binding (not by naming the struct) is exempt: `let P = lib.Point; P.origin()` is allowed"
 source = """
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     let P = lib.Point;

@@ -14,7 +14,7 @@ spec = ["10.1:2"]
 description = "@import('foo') resolves to foo.rue when it exists (verifies file is found)"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     0
 }
 """
@@ -92,7 +92,7 @@ spec = ["10.1:4"]
 description = "A sibling _math.rue is just a file, not a facade: math.rue resolves cleanly (the pre-RUE-137 sibling layout has no special meaning)"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     0
 }
 """
@@ -129,7 +129,7 @@ spec = ["10.2:1"]
 description = "@import('foo/bar') resolves to foo/bar.rue"
 source = """
 fn main() -> i32 {
-    let nested = @import("sub/helper");
+    let nested = @import("sub/helper.rue");
     0
 }
 """
@@ -148,7 +148,7 @@ spec = ["10.1:1", "10.1:2"]
 description = "A file's top-level items are the imported module's members"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     math.add(40, 2)
 }
 """
@@ -178,7 +178,7 @@ spec = ["10.1:4"]
 description = "A lone sibling _foo.rue does not make 'foo' importable: it is not a facade outside a foo/ directory"
 source = """
 fn main() -> i32 {
-    let m = @import("foo");
+    let m = @import("foo.rue");
     0
 }
 """
