@@ -9,6 +9,7 @@ implemented: 2026-01-04
 stabilized: 2026-01-04
 spec-sections: []
 superseded-by:
+amended-by: [0078]
 ---
 
 # ADR-0026: Module System
@@ -129,7 +130,8 @@ fn helper() -> i32 { 42 }  // private
 2. Directory `foo/` containing the facade file `foo/_foo.rue` (directory module)
 3. (Future) Dependency named `foo` in `rue.toml`
 
-Having BOTH `foo.rue` and `foo/_foo.rue` is a compile error (E0708, ambiguous
+Having BOTH `foo.rue` and `foo/_foo.rue` was a compile error (E0708, ambiguous;
+retired by ADR-0078 — the extensionless path now names the facade alone
 module) — mirroring Rust's E0761 rather than silently preferring one form.
 
 ### Directory Modules

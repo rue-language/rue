@@ -52,7 +52,7 @@ is the whole-initializer form `const N: i32 = m.LIMIT;`.
 {{ rule(id="6.5:15", cat="normative") }}
 
 A constant initializer may name a function item, either directly (`const f =
-some_fn;`) or as a module member (`const f = @import("math").abs;`). Such a
+some_fn;`) or as a module member (`const f = @import("math.rue").abs;`). Such a
 constant is a **callable alias**: it may appear as the callee of a call
 expression (`f(1, 2)`) and has the same call behavior as the aliased function.
 It is not a runtime value and may not be used as an ordinary expression,

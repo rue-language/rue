@@ -42,7 +42,7 @@ directory module see only the facade's `pub` members.
 
 ```rue
 // utils/_utils.rue — the facade
-const strings = @import("strings");
+const strings = @import("strings.rue");
 pub fn format() -> i32 { strings.internal_format() }  // OK: same directory
 
 // utils/strings.rue
@@ -92,7 +92,7 @@ pub struct Shared { n: i32, }
 pub const MAX: i32 = 16;
 
 // main.rue — a different directory
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 
 fn main() -> i32 {
     // secret()                    // error E0202: does not resolve here (10.3:8)

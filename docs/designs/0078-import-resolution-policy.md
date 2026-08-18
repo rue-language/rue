@@ -9,6 +9,7 @@ accepted: 2026-08-18
 implemented:
 spec-sections: ["10.1:5", "10.2:1", "10.2:2", "10.2:4", "10.2:6", "4.13:89"]
 superseded-by:
+amends: [0026]
 relates: ["ADR-0051", "ADR-0063", "ADR-0075", "RUE-1127", "RUE-266", "RUE-1100", "RUE-1023", "RUE-1586"]
 ---
 
@@ -127,7 +128,8 @@ already resolves a `.rue`-suffixed specifier exactly, so a file module is
 spelled `@import("math.rue")`.
 
 This *deletes* the file-versus-facade ambiguity rather than diagnosing it.
-Spec 10.1:5 and rule 4.13:89 are removed, and E0708 is retired.
+Spec 10.1:5 and rule 4.13:89 are reworded under their stable IDs (spec
+paragraph IDs are permanent), and E0708 is retired.
 
 ### 2. Relative specifiers are importer-relative only
 
@@ -200,8 +202,8 @@ only shrinks the set it applies to.
 ## Implementation Phases
 
 - [ ] **Phase 1: Spec amendment** — rewrite 10.2:1–2, restate 10.2:4's
-      canonical identity, replace 10.2:6 with the precedence chain, delete
-      10.1:5 and 4.13:89, retire E0708.
+      canonical identity, replace 10.2:6 with the precedence chain, reword
+      10.1:5 and 4.13:89 under their stable IDs, retire E0708.
 - [ ] **Phase 2: Candidate-policy collapse** — one candidate per relative
       specifier and one base directory in `discovery_candidate_groups` /
       `discovery_groups_for_occurrence`; std resolves through the precedence
