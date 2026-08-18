@@ -15926,14 +15926,24 @@ impl RevisionedQueryDatabase {
                                 )
                         });
                         if closure.kind() == QueryTerminalKind::Success {
-                            let pending = context
-                                .retain_observed_terminal_cone_from(&closure, &validation_fallbacks)
-                                .expect(
-                                    "registered closure validation retains its exact dependency cone",
-                                );
+                            let pending = Arc::new(
+                                context
+                                    .retain_observed_terminal_cone_from(
+                                        &closure,
+                                        &validation_fallbacks,
+                                    )
+                                    .expect(
+                                        "registered closure validation retains its exact dependency cone",
+                                    ),
+                            );
+                            // RUE-1584: sibling windows racing in this batch
+                            // captured the publication roots before this cone
+                            // was installed; hand it to them directly so they
+                            // borrow instead of re-leasing the shared leaves.
+                            context.publish_batch_retention_fallback(&pending);
                             context.register_attempt_handoff(PublishedBodyClosureTerminalHandoff {
                                 root: terminal_root_for_closure_publication.clone(),
-                                pending: Some(Arc::new(pending)),
+                                pending: Some(pending),
                                 pending_reached: Some(output.reached.iter().cloned().collect()),
                                 previous: None,
                                 installed: false,
@@ -16026,19 +16036,23 @@ impl RevisionedQueryDatabase {
                                     && reachability_output.fatal.is_none(),
                                 "a well-formed parked closure retains its exact reachability cone"
                             );
+                            let pending = Arc::new(
+                                context
+                                    .retain_observed_terminal_cone_from(
+                                        &reachability,
+                                        &validation_fallbacks,
+                                    )
+                                    .expect(
+                                        "registered reachability validation retains its exact dependency cone",
+                                    ),
+                            );
+                            // RUE-1584: same sibling handoff as the complete
+                            // closure arm above.
+                            context.publish_batch_retention_fallback(&pending);
                             context.register_attempt_handoff(
                                 PublishedBodyReachabilityTerminalHandoff {
                                     root: terminal_root_for_reachability_publication.clone(),
-                                    pending: Some(Arc::new({
-                                        context
-                                            .retain_observed_terminal_cone_from(
-                                                &reachability,
-                                                &validation_fallbacks,
-                                            )
-                                            .expect(
-                                                "registered reachability validation retains its exact dependency cone",
-                                            )
-                                    })),
+                                    pending: Some(pending),
                                     previous: None,
                                     installed: false,
                                 },

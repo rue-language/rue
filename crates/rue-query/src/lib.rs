@@ -4435,6 +4435,10 @@ enum InterposeSite {
     /// incarnation registry and missed its validation memo, immediately before
     /// re-demanding the key from family-owned authority.
     RetainedDependencyDemand,
+    /// A concurrent batch child has just published one freshly proved
+    /// endorsement (with its backing lease) into the batch's shared
+    /// authority, outside every lock.
+    BatchProofPublished,
 }
 
 const REVISION_RETENTION_LIMIT: usize = 64;
@@ -6837,6 +6841,9 @@ where
                         if endorse {
                             task.endorse_validation(&terminal);
                         }
+                        if endorsement_enabled && !endorsement_hit {
+                            self.publish_proof_to_batch(&task, &terminal, endorse);
+                        }
                         self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
                         if observe_result {
                             // Transfer the temporary discovery pin into the task's
@@ -6984,6 +6991,7 @@ where
                                 if endorse_join {
                                     task.endorse_validation(&terminal);
                                 }
+                                self.publish_proof_to_batch(&task, &terminal, endorse_join);
                                 task.observe(&terminal);
                                 self.lease_observed_pin(&task, pin);
                                 task.cache_query(self.inner.token, &lease.key, &terminal);
@@ -7821,6 +7829,33 @@ where
         self.insert_task_lease(task, pin);
     }
 
+    /// RUE-1584: a batch child's freshly proved terminal becomes visible to
+    /// concurrently running siblings now, not at this child's completion.
+    /// The authority receives a backing pin of its own, minted here, so the
+    /// published proof stays leased for the authority's whole lifetime even
+    /// if the proving child aborts before its ordinary completion
+    /// publication. `endorse` mirrors the task-local decision: endorsable
+    /// proofs publish their exact endorsement, while every proof publishes
+    /// its lease so siblings skip revalidating the exact terminal.
+    /// Sequential batches skip this: their completion publication already
+    /// precedes the next child's first probe.
+    fn publish_proof_to_batch(&self, task: &Task, terminal: &Arc<QueryTerminal<V>>, endorse: bool) {
+        let Some(authority) = task.batch_validation_authority.as_deref() else {
+            return;
+        };
+        let Some(target) = authority.nearest_concurrent() else {
+            return;
+        };
+        let Ok(pin) = self.pin_terminal(terminal) else {
+            return;
+        };
+        target.publish_proof(
+            (terminal.node_incarnation, terminal.stamp, terminal.revision),
+            Box::new(pin),
+            endorse,
+        );
+    }
+
     /// Inserts one exact terminal into the existing task lease set and reports
     /// whether this task had not already leased it.
     fn insert_task_lease(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) -> bool {
@@ -8605,6 +8640,7 @@ impl QueryContext {
         let batch_authority = Arc::new(BatchValidationAuthority::new(
             self.task.core.clone(),
             self.task.batch_validation_authority.clone(),
+            worker_claim.count > 0,
         ));
         batch_authority.seed_from_task(&self.task);
         // `tracing` dispatch is thread-local. Carry the caller's subscriber into
@@ -8718,6 +8754,29 @@ impl QueryContext {
     /// past request completion without an eviction window.
     pub fn retain_observed_terminals(&self) -> RetainedPinSet {
         retain_task_observations(&self.task)
+    }
+
+    /// RUE-1584: shares one completed retained cone with concurrently running
+    /// batch siblings, ahead of the publication root it is also headed for.
+    ///
+    /// A collection window captures its predecessor roots' leases when it
+    /// opens; siblings racing in one concurrent batch capture them before the
+    /// first finisher installs its cone, so every one of them re-leases the
+    /// shared leaves through demand cascades. Publishing the finished cone
+    /// into the batch's shared authority closes that window: sibling probes
+    /// and sibling promotion walks both consult authority fallbacks. The
+    /// authority retains the Arc until the batch joins, and the join absorbs
+    /// it into the parent scope, so the backing outlives every borrower. On a
+    /// sequential batch (or outside any batch) this is a no-op: completion
+    /// publication already precedes the next child's first probe.
+    pub fn publish_batch_retention_fallback(&self, fallback: &Arc<RetainedPinSet>) {
+        let Some(authority) = self.task.batch_validation_authority.as_deref() else {
+            return;
+        };
+        let Some(target) = authority.nearest_concurrent() else {
+            return;
+        };
+        target.publish_fallback(fallback);
     }
 
     /// Duplicates only the live terminals observed from one exact registered
@@ -8983,15 +9042,24 @@ enum ValidationEndorsementAuthority {
 
 /// Read-mostly retention authority shared by siblings in one structured batch.
 ///
-/// A child publishes only after its registered request reaches a terminal. Its
-/// exact endorsements become visible in the same write transaction as the
-/// leases and fallback roots which back them. Later siblings may therefore
-/// reuse current validation certificates without rebuilding a cone that the
-/// batch already owns. The authority is lexical: the batch and its children
-/// hold the sole Arcs, and its pins move into the parent before the join returns.
+/// A child publishes its whole proof universe when its registered request
+/// reaches a terminal, and a concurrent batch additionally publishes each
+/// freshly proved endorsement the moment it is endorsed, so siblings running
+/// at the same time stop re-demanding a cone the first toucher has already
+/// proved (RUE-1584). Under either path, exact endorsements become visible in
+/// the same write transaction as the leases and fallback roots which back
+/// them. Later siblings may therefore reuse current validation certificates
+/// without rebuilding a cone that the batch already owns. The authority is
+/// lexical: the batch and its children hold the sole Arcs, and its pins move
+/// into the parent before the join returns.
 struct BatchValidationAuthority {
     core: Arc<RuntimeCore>,
     parent: Option<Arc<BatchValidationAuthority>>,
+    /// Whether this batch claimed extra workers. A sequential batch drains
+    /// its queue one child at a time, so completion publication already
+    /// makes every proof visible before the next child starts; per-proof
+    /// publication would add write traffic with nothing to read it.
+    concurrent: bool,
     state: RwLock<BatchValidationAuthorityState>,
 }
 
@@ -9000,6 +9068,12 @@ struct BatchValidationAuthorityState {
     endorsements: AHashSet<(u64, u64, Revision)>,
     fallbacks: Vec<Arc<RetainedPinSet>>,
     leases: BatchValidationLeases,
+    /// Exact terminals the spawning task already leases (RUE-1584). They are
+    /// backed by the parent's held leases — which outlive this authority
+    /// because the parent joins every child before its rooted request can
+    /// release anything — so children may skip revalidating them without the
+    /// authority holding pins of its own.
+    seeded_leases: AHashSet<(u64, u64, Revision)>,
 }
 
 #[derive(Default)]
@@ -9383,11 +9457,85 @@ impl Drop for TaskLeases {
 }
 
 impl BatchValidationAuthority {
-    fn new(core: Arc<RuntimeCore>, parent: Option<Arc<BatchValidationAuthority>>) -> Self {
+    fn new(
+        core: Arc<RuntimeCore>,
+        parent: Option<Arc<BatchValidationAuthority>>,
+        concurrent: bool,
+    ) -> Self {
         Self {
             core,
             parent,
+            concurrent,
             state: RwLock::new(BatchValidationAuthorityState::default()),
+        }
+    }
+
+    /// The innermost enclosing authority whose batch actually claimed extra
+    /// workers — the nearest scope where a per-proof publication has
+    /// concurrent siblings to read it. Publishing at that level also covers
+    /// sequential inner batches nested inside it: visibility probes walk the
+    /// parent chain, so an outer sibling racing on the same cone finds the
+    /// proof wherever an inner child proved it.
+    fn nearest_concurrent(&self) -> Option<&BatchValidationAuthority> {
+        let mut authority = Some(self);
+        while let Some(current) = authority {
+            if current.concurrent {
+                return Some(current);
+            }
+            authority = current.parent.as_deref();
+        }
+        None
+    }
+
+    /// Atomically publishes one just-proved terminal together with a backing
+    /// lease minted for it, so concurrently running siblings can borrow the
+    /// proof before the proving child completes (RUE-1584). Same transaction
+    /// contract as [`Self::publish_child`]: an identity becomes visible only
+    /// in the write transaction that already retains its backing. `endorse`
+    /// additionally records the exact endorsement; a lease-only publication
+    /// still lets siblings skip revalidation of the exact terminal, while
+    /// the taint discipline for non-registered-only certificates stands. A
+    /// redundant lease is dropped outside the write lock, because releasing
+    /// the last pin may enforce the owning family's retention limit and a
+    /// sibling can validate through this authority while it owns the family
+    /// lock.
+    fn publish_proof(
+        &self,
+        identity: (u64, u64, Revision),
+        lease: Box<dyn ObservedLease>,
+        endorse: bool,
+    ) {
+        let mut duplicate = None;
+        {
+            let mut state = write(&self.state);
+            if state.leases.observed.insert(identity) {
+                state.leases.held.push(lease);
+                self.core.metrics.task_lease_acquired();
+            } else {
+                duplicate = Some(lease);
+            }
+            if endorse {
+                state.endorsements.insert(identity);
+            }
+        }
+        drop(duplicate);
+        #[cfg(test)]
+        self.core.interpose(InterposeSite::BatchProofPublished);
+    }
+
+    /// Retains one published pin set as shared borrowing and promotion
+    /// authority for this batch's siblings (RUE-1584). The Arc's pins back
+    /// every stamp it retains, so unlike [`Self::publish_proof`] no separate
+    /// lease transfer is needed; pointer identity deduplicates repeated
+    /// publications of one set.
+    fn publish_fallback(&self, fallback: &Arc<RetainedPinSet>) {
+        let mut state = write(&self.state);
+        if !state
+            .fallbacks
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, fallback))
+        {
+            state.fallbacks.push(fallback.clone());
         }
     }
 
@@ -9403,15 +9551,24 @@ impl BatchValidationAuthority {
     fn seed_from_task(&self, task: &Task) {
         let seeded: Vec<(u64, u64, Revision)> = {
             let scopes = lock(&task.validation_endorsements);
-            let Some(scope) = scopes.first() else {
-                return;
-            };
-            if scope.identities.is_empty() {
-                return;
-            }
-            scope.identities.iter().copied().collect()
+            scopes
+                .first()
+                .map(|scope| scope.identities.iter().copied().collect())
+                .unwrap_or_default()
         };
-        write(&self.state).endorsements.extend(seeded);
+        // The parent's held leases carry proofs that are not endorsable —
+        // shared leaves whose validation cannot participate in a
+        // registered-only proof — under the same structured-lifetime backing
+        // as the endorsements above (RUE-1584). Without them every batch
+        // re-leases those leaves once per child.
+        let seeded_leases: Vec<(u64, u64, Revision)> =
+            lock(&task.leases).observed.iter().copied().collect();
+        if seeded.is_empty() && seeded_leases.is_empty() {
+            return;
+        }
+        let mut state = write(&self.state);
+        state.endorsements.extend(seeded);
+        state.seeded_leases.extend(seeded_leases);
     }
 
     /// Atomically publishes one completed child's proof and its retention
@@ -9468,9 +9625,24 @@ impl BatchValidationAuthority {
         let mut authority = Some(self);
         while let Some(current) = authority {
             let state = read(&current.state);
+            // An exact lease held by the batch is the batch-level form of "this
+            // task has already leased the exact terminal": the authority holds
+            // it for the batch's whole duration and its pins move into the
+            // parent at the join, so a sibling may skip revalidation on it even
+            // for proofs that are not endorsable (RUE-1584). The certificate
+            // taint discipline is unchanged — a borrowed skip of a
+            // non-registered-only certificate still taints the enclosing
+            // proofs.
             if state
                 .endorsements
                 .contains(&(incarnation, stamp, exact_revision))
+                || state
+                    .leases
+                    .observed
+                    .contains(&(incarnation, stamp, exact_revision))
+                || state
+                    .seeded_leases
+                    .contains(&(incarnation, stamp, exact_revision))
                 || state
                     .fallbacks
                     .iter()
@@ -11911,6 +12083,8 @@ fn wait<'a, T>(condvar: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T>
 #[cfg(test)]
 mod tests {
     use std::sync::Barrier;
+    use std::sync::Condvar;
+    use std::sync::Mutex as StdMutex;
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -17526,6 +17700,265 @@ mod tests {
             "only the first batch re-leases the cone; the second borrows the seed"
         );
         assert_eq!(validation.demand_reuses, 2);
+    }
+
+    #[test]
+    fn batch_authority_publishes_proofs_atomically_with_backing() {
+        let runtime = QueryRuntime::new(1);
+        let revision = Revision::new(60, 19);
+        let input = InputIdentity::new("source", "publish-proof");
+        runtime
+            .publish_revision(revision, [(input.clone(), 1)])
+            .unwrap();
+        let input_for_leaf = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("publish-proof-leaf", 8, move |context, _, _| {
+                context.input(input_for_leaf.clone())?;
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let terminal = runtime
+            .request_registered(&leaf, revision, Key("leaf"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
+
+        // Only a batch that claimed extra workers is a per-proof publication
+        // target; a sequential batch inside it publishes upward to it.
+        let sequential = Arc::new(BatchValidationAuthority::new(
+            runtime.core.clone(),
+            None,
+            false,
+        ));
+        assert!(sequential.nearest_concurrent().is_none());
+        let concurrent = Arc::new(BatchValidationAuthority::new(
+            runtime.core.clone(),
+            Some(sequential.clone()),
+            true,
+        ));
+        assert!(std::ptr::eq(
+            concurrent.nearest_concurrent().unwrap(),
+            concurrent.as_ref()
+        ));
+        let nested_sequential =
+            BatchValidationAuthority::new(runtime.core.clone(), Some(concurrent.clone()), false);
+        assert!(std::ptr::eq(
+            nested_sequential.nearest_concurrent().unwrap(),
+            concurrent.as_ref()
+        ));
+
+        assert!(!concurrent.retains_endorsement(identity.0, identity.1, identity.2));
+        concurrent.publish_proof(
+            identity,
+            Box::new(leaf.pin_terminal(&terminal).unwrap()),
+            true,
+        );
+        assert!(concurrent.retains_endorsement(identity.0, identity.1, identity.2));
+        // Visibility probes walk the parent chain, so a sequential batch
+        // nested inside the concurrent one sees the published proof too.
+        assert!(nested_sequential.retains_endorsement(identity.0, identity.1, identity.2));
+
+        // A racing duplicate publication keeps exactly one backing lease and
+        // releases the redundant pin outside the authority's write lock.
+        concurrent.publish_proof(
+            identity,
+            Box::new(leaf.pin_terminal(&terminal).unwrap()),
+            true,
+        );
+        let state = read(&concurrent.state);
+        assert_eq!(state.leases.held.len(), 1);
+        assert!(state.endorsements.contains(&identity));
+    }
+
+    #[test]
+    fn concurrent_batch_children_borrow_proofs_published_before_sibling_completion() {
+        // RUE-1584: the intra-batch first-touch race. Two children start
+        // concurrently over the same certificate-valid cone; without
+        // per-proof publication, neither sees the other's proofs until a
+        // whole child completes, so both re-lease the shared cone. The
+        // choreography parks the second child before its first probe, lets
+        // the first child publish its cone proofs mid-item, and then holds
+        // the first child short of completion while the second validates —
+        // so any borrowed hit the second child gets can only come from the
+        // per-proof publication path.
+        let runtime = QueryRuntime::new(2);
+        let first = Revision::new(70, 23);
+        let second = Revision::new(71, 23);
+        let input = InputIdentity::new("source", "first-touch");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 1)])
+            .unwrap();
+
+        let input_for_leaf = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("first-touch-leaf", 8, move |context, _, _| {
+                context.input(input_for_leaf.clone())?;
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>("first-touch-middle", 8, move |context, _, _| {
+                context.query_registered(&leaf_for_middle, Key("leaf"))?;
+                Ok(QueryOutput::success(2))
+            })
+            .unwrap();
+        let middle_for_top = middle.clone();
+        let top = runtime
+            .family_with_evaluator::<Key, u64, _>("first-touch-top", 8, move |context, _, _| {
+                context.query_registered(&middle_for_top, Key("middle"))?;
+                Ok(QueryOutput::success(3))
+            })
+            .unwrap();
+
+        for key in ["top-a", "top-b"] {
+            for revision in [first, second] {
+                runtime
+                    .request_registered(&top, revision, Key(key), CancellationToken::new())
+                    .into_result()
+                    .unwrap();
+            }
+        }
+
+        // Install the choreography only after warm-up, so the batch's own
+        // workers are the first threads the hook ever sees. Both workers must
+        // rendezvous holding one item each before either validates: without
+        // that, one worker can drain the whole queue before the other wakes,
+        // and sequential completion publication alone would satisfy every
+        // assertion below without the per-proof path ever firing.
+        let rendezvous = Arc::new((StdMutex::new(0usize), Condvar::new()));
+        let rendezvoused: Arc<StdMutex<AHashSet<thread::ThreadId>>> =
+            Arc::new(StdMutex::new(AHashSet::new()));
+        let first_worker: Arc<StdMutex<Option<thread::ThreadId>>> = Arc::new(StdMutex::new(None));
+        let first_worker_publishes = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new((StdMutex::new((false, false)), Condvar::new()));
+        {
+            let rendezvous = rendezvous.clone();
+            let rendezvoused = rendezvoused.clone();
+            let first_worker = first_worker.clone();
+            let first_worker_publishes = first_worker_publishes.clone();
+            let gate = gate.clone();
+            runtime.set_interpose(Arc::new(move |site| {
+                let me = thread::current().id();
+                match site {
+                    InterposeSite::ReuseDiscovered => {
+                        if !rendezvoused.lock().unwrap().insert(me) {
+                            return;
+                        }
+                        {
+                            let (lock, condvar) = &*rendezvous;
+                            let mut arrivals = lock.lock().unwrap();
+                            *arrivals += 1;
+                            condvar.notify_all();
+                            let (arrivals, timeout) = condvar
+                                .wait_timeout_while(arrivals, Duration::from_secs(30), |arrivals| {
+                                    *arrivals < 2
+                                })
+                                .unwrap();
+                            drop(arrivals);
+                            assert!(
+                                !timeout.timed_out(),
+                                "the batch never ran its two items on two workers; \
+                                 the race under test cannot occur on one thread"
+                            );
+                        }
+                        let mut owner = first_worker.lock().unwrap();
+                        match *owner {
+                            None => *owner = Some(me),
+                            Some(claimed) if claimed == me => {}
+                            Some(_) => {
+                                drop(owner);
+                                let (lock, condvar) = &*gate;
+                                let released = lock.lock().unwrap();
+                                let (released, timeout) = condvar
+                                    .wait_timeout_while(
+                                        released,
+                                        Duration::from_secs(30),
+                                        |released| !released.0,
+                                    )
+                                    .unwrap();
+                                drop(released);
+                                assert!(
+                                    !timeout.timed_out(),
+                                    "the first toucher never published its third proof; \
+                                     per-proof batch publication is not happening"
+                                );
+                            }
+                        }
+                    }
+                    InterposeSite::BatchProofPublished => {
+                        let is_first = *first_worker.lock().unwrap() == Some(me);
+                        let (lock, condvar) = &*gate;
+                        if is_first {
+                            // leaf, middle, and the item's own root: after the
+                            // third publication the first child's whole cone
+                            // is visible while the child itself is still
+                            // running. Release the sibling, then park until it
+                            // has finished borrowing.
+                            if first_worker_publishes.fetch_add(1, Ordering::SeqCst) + 1 == 3 {
+                                let mut released = lock.lock().unwrap();
+                                released.0 = true;
+                                condvar.notify_all();
+                                let (released, timeout) = condvar
+                                    .wait_timeout_while(
+                                        released,
+                                        Duration::from_secs(30),
+                                        |released| !released.1,
+                                    )
+                                    .unwrap();
+                                drop(released);
+                                assert!(
+                                    !timeout.timed_out(),
+                                    "the sibling never published its own root after borrowing"
+                                );
+                            }
+                        } else {
+                            let mut released = lock.lock().unwrap();
+                            released.1 = true;
+                            condvar.notify_all();
+                        }
+                    }
+                    _ => {}
+                }
+            }));
+        }
+
+        let before = runtime.metrics().validation;
+        let root = runtime.family::<Key, u64>("first-touch-root", 1).unwrap();
+        let top_for_root = top.clone();
+        runtime
+            .request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context.endorse_registered_validations();
+                    context.query_registered_batch(&top_for_root, [Key("top-a"), Key("top-b")])?;
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
+        runtime.clear_interpose();
+
+        let validation = runtime.metrics().validation.saturating_sub(before);
+        assert_validation_work_consistent(validation);
+        assert_eq!(validation.certificate_misses, 0);
+        assert_eq!(
+            validation.proof_reacquisition_misses, 2,
+            "only the first toucher re-leases the shared cone; its sibling \
+             borrows the mid-item publications"
+        );
+        assert_eq!(validation.demands, 2);
+        assert_eq!(validation.demand_reuses, 2);
+        assert_eq!(
+            validation.memo_hits, 1,
+            "the second child's shared dependency validates as a borrowed memo hit"
+        );
     }
 
     #[test]
