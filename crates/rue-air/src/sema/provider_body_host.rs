@@ -1620,6 +1620,54 @@ where
             .get_or_intern(member_callable_name_for_owner(owner, method, has_self))
     }
 
+    /// The handle for a member callable of an owner whose own spelling the
+    /// shared space has already issued a handle for.
+    ///
+    /// Sharing the symbol space (ADR-0076) made the interner call a lookup
+    /// rather than an insertion, but a lookup still needs the rendered text, so
+    /// every body that mentions an owner re-rendered and re-hashed the same
+    /// fifty-character member name. The join is a total function of the owner
+    /// spelling, the member spelling, and the separator, so the generation's
+    /// derived-spelling memo holds that association and only the first body to
+    /// spell a member renders it.
+    ///
+    /// `owner_symbol` and `method_symbol` are the handles the space already
+    /// issued for the two components. A caller without an owner handle falls
+    /// back to rendering, which is what
+    /// [`Self::member_callable_symbol_for_owner`] has always done — both arms
+    /// spell through [`member_callable_name_for_owner`], the one renderer
+    /// (RUE-1236).
+    fn member_callable_symbol_for_issued_owner(
+        &self,
+        owner_symbol: Option<Spur>,
+        owner: &str,
+        method_symbol: Spur,
+        method: &str,
+        has_self: bool,
+    ) -> Spur {
+        let Some(owner_symbol) = owner_symbol else {
+            return self.member_callable_symbol_for_owner(owner, method, has_self);
+        };
+        self.state.symbol_space().derived_symbol(
+            owner_symbol,
+            method_symbol,
+            u8::from(has_self),
+            || member_callable_name_for_owner(owner, method, has_self),
+        )
+    }
+
+    /// The handle the shared space already holds for an owner's own spelling,
+    /// which is what keys its members' derived spellings.
+    ///
+    /// This is deliberately a lookup and never an insertion: the retention
+    /// counters are read from the interner's length and byte count, so a
+    /// spelling the unmemoized path never interned must not appear because the
+    /// memo wanted a key. An owner that is not already interned simply takes
+    /// the rendering path.
+    fn member_callable_owner_symbol(&self, owner: &str) -> Option<Spur> {
+        self.interner.get(owner)
+    }
+
     fn named_method_info_for_symbol(
         &self,
         struct_id: StructId,
@@ -2597,6 +2645,7 @@ where
         let mut infos = Vec::with_capacity(methods.len());
         let mut signatures = Vec::with_capacity(methods.len());
         let owner_name = self.member_callable_owner(struct_id);
+        let owner_symbol = self.member_callable_owner_symbol(&owner_name);
         for method in methods {
             let resolve = |ty: &crate::DurableAnonymousMethodType<K, M>| {
                 Some(match ty {
@@ -2616,8 +2665,13 @@ where
                 .collect::<Option<Vec<_>>>()?;
             let return_type = resolve(&method.result)?;
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable =
-                self.member_callable_symbol_for_owner(&owner_name, &method.name, method.has_self);
+            let callable = self.member_callable_symbol_for_issued_owner(
+                owner_symbol,
+                &owner_name,
+                name,
+                &method.name,
+                method.has_self,
+            );
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -2745,10 +2799,16 @@ where
             return Some(());
         }
         let owner_name = self.member_callable_owner(struct_id);
+        let owner_symbol = self.member_callable_owner_symbol(&owner_name);
         for method in methods {
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable =
-                self.member_callable_symbol_for_owner(&owner_name, &method.name, method.has_self);
+            let callable = self.member_callable_symbol_for_issued_owner(
+                owner_symbol,
+                &owner_name,
+                name,
+                &method.name,
+                method.has_self,
+            );
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {

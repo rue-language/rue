@@ -41,6 +41,28 @@ pub(crate) type IssuedCanonicalArguments =
 pub(crate) type IssuedStableProducerId =
     crate::StableProducerId<crate::SemanticDefinitionToken, crate::SemanticModuleToken>;
 
+/// The one spelling of a generated anonymous struct's name.
+///
+/// The name is a total function of the producer digest and nothing else, which
+/// is what lets a whole revision share one rendering of it, and what makes the
+/// pool's anonymity registry rather than the name the authority for whether a
+/// struct is generated (RUE-1050, RUE-1193). Both mints — the producer-nominal
+/// pool and the import epoch it byte-mirrors — spell it here, so the two cannot
+/// drift apart (RUE-1236).
+pub(crate) fn anonymous_struct_name(digest: u128) -> String {
+    format!("__anon_struct_{digest:032x}")
+}
+
+/// The one spelling of the prefix an anonymous enum's name opens with, before
+/// its variants and their rendered payloads.
+///
+/// Only the prefix is a function of the digest; the rest of the name renders
+/// the variants through the minting pool, so the whole name is not shareable
+/// the way [`anonymous_struct_name`] is.
+pub(crate) fn anonymous_enum_name_prefix(digest: u128) -> String {
+    format!("__anon_enum_{digest:032x} {{ ")
+}
+
 /// The root source definition a producer-nominal key ultimately derives from,
 /// unwinding function specializations, anonymous members, and drop glue down to
 /// the owning definition token. `None` for a producer with no source definition
