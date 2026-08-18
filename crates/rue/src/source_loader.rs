@@ -2717,43 +2717,45 @@ mod tests {
     }
 
     /// A candidate that misses on its first group is answered but NOT concluded:
-    /// the occurrence still owes its next candidate an operation. Here
-    /// `sub/leaf.rue` imports `shared.rue`, which is absent beside it and present
-    /// at the project root, so its precedence walk spans two hops while its
-    /// module is new in neither.
+    /// the occurrence still owes its next candidate an operation. Under policy
+    /// v2 the only multi-group occurrence is `std`: the vendored
+    /// `{root}/std/_std.rue` is probed absent here, so the occurrence is
+    /// answered but still owes the toolchain root's facade an operation.
     ///
     /// The contract this pins is unchanged by ADR-0075 — an occurrence that is
     /// answered but still open must be carried forward, and dropping it loses
-    /// `shared.rue` — but the carrying happens a level down: the wave keeps the
-    /// occurrence in its open set and derives its second candidate at the next
-    /// hop, instead of a later round re-rooting it. The three reads and the
-    /// resolution are identical; the three publications collapse to one.
+    /// the standard library — the wave keeps the occurrence in its open set and
+    /// derives its next candidate at the next hop, instead of a later round
+    /// re-rooting it.
     #[test]
     fn import_occurrence_answered_but_still_open_is_carried_across_wave_hops() {
         let dir = TestDir::new("open-occurrence-reroot");
+        let stdlib = TestDir::new("open-occurrence-reroot-std");
         let main = dir.write(
             "main.rue",
             r#"const leaf = @import("sub/leaf.rue"); fn main() -> i32 { leaf.value() }"#,
         );
         dir.write(
             "sub/leaf.rue",
-            r#"const shared = @import("shared.rue"); pub fn value() -> i32 { shared.value() }"#,
+            r#"const s = @import("std"); pub fn value() -> i32 { 7 }"#,
         );
-        dir.write("shared.rue", "pub fn value() -> i32 { 7 }");
+        stdlib.write("_std.rue", "pub fn std_value() -> i32 { 1 }");
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
 
-        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
 
         assert_eq!(result.read_manifest.len(), 3);
         assert!(
             result
                 .read_manifest
                 .iter()
-                .any(|entry| entry.module().as_str() == "shared.rue"),
+                .any(|entry| entry.module().as_str().starts_with("\0rue-std/")),
             "the second candidate of the still-open occurrence must be resolved"
         );
-        // One wave, three hops: the leaf, its missed sibling candidate, then the
-        // project-root `shared.rue` the second candidate resolves to. Publishing
-        // per hop minted three revisions for the same three reads.
+        // One wave: the leaf, the absent vendored std probe, then the toolchain
+        // facade the second candidate resolves to. Publishing per hop minted
+        // separate revisions for the same reads.
         assert_eq!(result.input_revision.frontier_round(), 1);
     }
 
