@@ -55,14 +55,8 @@ pub struct DependencyTopologyRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DependencyResolutionOutcome {
-    Resolved {
-        module: String,
-    },
+    Resolved { module: String },
     Missing,
-    Ambiguous {
-        file_module: String,
-        directory_module: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -150,7 +144,6 @@ impl DependencyEnvelope {
                         matches!(
                             problem,
                             CanonicalImportGraphProblem::MissingResolution { .. }
-                                | CanonicalImportGraphProblem::AmbiguousResolution { .. }
                         )
                     }) =>
             {
@@ -183,13 +176,6 @@ impl DependencyEnvelope {
                             }
                         }
                         CanonicalImportResolution::Missing => DependencyResolutionOutcome::Missing,
-                        CanonicalImportResolution::Ambiguous {
-                            file_module,
-                            directory_module,
-                        } => DependencyResolutionOutcome::Ambiguous {
-                            file_module: file_module.as_str().to_owned(),
-                            directory_module: directory_module.as_str().to_owned(),
-                        },
                     },
                 })
                 .collect(),
@@ -393,16 +379,29 @@ mod tests {
 
     #[test]
     fn complete_envelope_uses_canonical_graph_and_separate_ledgers() {
-        let source = "const a = @import(\"a\"); fn main() -> i32 { 0 }";
+        // Policy v2: the extensionless import resolves its facade candidate
+        // (PresentReadable), and the std chain's vendored miss before the
+        // toolchain hit supplies a benign Absent observation.
+        let source = "const a = @import(\"a\"); const s = @import(\"std\"); fn main() -> i32 { 0 }";
         let imported = "pub fn answer() -> i32 { 42 }";
+        let std_text = "pub fn parse_i64(s: str) -> i64 { 0 }";
         let mut assembler = assembler(source);
         assembler
             .add_explicit(
-                "/project/a.rue",
-                "/project/a.rue",
+                "/project/a/_a.rue",
+                "/project/a/_a.rue",
                 PhysicalFileIdentity::new(1, 2),
                 metadata(),
                 Arc::new(imported.into()),
+            )
+            .unwrap();
+        assembler
+            .add_explicit(
+                "/sdk/_std.rue",
+                "/sdk/_std.rue",
+                PhysicalFileIdentity::new(1, 3),
+                metadata(),
+                Arc::new(std_text.into()),
             )
             .unwrap();
         let snapshot = assembler.snapshot().unwrap();
@@ -422,15 +421,28 @@ mod tests {
                 break;
             }
             for request in pending {
-                let observation = if request.requested_path() == "/project/a.rue" {
+                let observation = if request.requested_path() == "/project/a/_a.rue" {
                     ImportObservation::accepted(
                         request.clone(),
                         AcceptedImportSource::new(
                             request.requested_path(),
-                            "/project/a.rue",
+                            "/project/a/_a.rue",
                             PhysicalFileIdentity::new(1, 2),
                             metadata(),
                             Arc::new(imported.into()),
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+                } else if request.requested_path() == "/sdk/_std.rue" {
+                    ImportObservation::accepted(
+                        request.clone(),
+                        AcceptedImportSource::new(
+                            request.requested_path(),
+                            "/sdk/_std.rue",
+                            PhysicalFileIdentity::new(1, 3),
+                            metadata(),
+                            Arc::new(std_text.into()),
                         )
                         .unwrap(),
                     )
@@ -448,7 +460,7 @@ mod tests {
         assert_eq!(envelope.topology.root, "main.rue");
         assert!(matches!(
             envelope.topology.records[0].outcome,
-            DependencyResolutionOutcome::Resolved { ref module } if module == "a.rue"
+            DependencyResolutionOutcome::Resolved { ref module } if module == "a/_a.rue"
         ));
         assert!(envelope.observations.iter().any(|observation| matches!(
             observation.outcome,
@@ -458,7 +470,7 @@ mod tests {
             observation.outcome,
             DependencyObservationOutcome::PresentReadable { .. }
         )));
-        assert_eq!(envelope.accepted_reads.len(), 2);
+        assert_eq!(envelope.accepted_reads.len(), 3);
         assert!(
             envelope
                 .revision

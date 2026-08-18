@@ -130,7 +130,7 @@ exit_code = 3
 name = "module_binding_exempt_from_annotation"
 files = [
     { path = "main.rue", source = """
-const cfg = @import("cfg");
+const cfg = @import("cfg.rue");
 const X: i32 = cfg.ANSWER;
 
 fn main() -> i32 {

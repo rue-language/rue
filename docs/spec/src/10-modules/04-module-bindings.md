@@ -22,10 +22,10 @@ Member access through either binding form has the same semantics.
 {{ rule(id="10.4:2", cat="example") }}
 
 ```rue
-const math = @import("math");      // top-level const binding
+const math = @import("math.rue");  // top-level const binding
 
 fn main() -> i32 {
-    let m = @import("math");       // local let binding
+    let m = @import("math.rue");   // local let binding
     math.add(1, m.add(2, 3))       // equivalent access through either
 }
 ```
@@ -72,8 +72,8 @@ non-`pub` re-export is private to the directory of its defining file.
 
 ```rue
 // outer/_outer.rue
-pub const inner = @import("inner");   // pub re-export
-const hidden = @import("inner");      // private outside outer/
+pub const inner = @import("inner.rue"); // pub re-export
+const hidden = @import("inner.rue");    // private outside outer/
 
 // outer/inner.rue
 pub fn value() -> i32 { 42 }
@@ -132,7 +132,7 @@ pub const ANSWER: i32 = 42;
 const SECRET: i32 = 99;          // private outside math.rue's directory
 
 // main.rue (same directory)
-const math = @import("math");
+const math = @import("math.rue");
 const COPY: i32 = math.ANSWER;   // const-evaluable member access
 
 fn main() -> i32 { math.ANSWER + COPY }   // 84
@@ -210,7 +210,7 @@ pub enum Color { Red, Green, Blue, }
 enum Hidden { A, B, }               // private outside sub/
 
 // main.rue — a different directory
-const lib = @import("sub/lib");
+const lib = @import("sub/lib.rue");
 fn main() -> i32 {
     let p = lib.Point { x: 40, y: 2 };     // qualified struct literal
     let q = lib.Point.origin();           // qualified associated fn

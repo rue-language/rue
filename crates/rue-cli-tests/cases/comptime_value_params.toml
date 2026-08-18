@@ -116,7 +116,7 @@ name = "module_member_call_with_comptime_param"
 description = "Calling a comptime-value function through a module object routes through specialization."
 files = [
     { path = "main.rue", source = """
-const util = @import("util");
+const util = @import("util.rue");
 fn main() -> i32 {
     @dbg(util.scale(5, 7));
     0

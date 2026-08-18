@@ -181,8 +181,6 @@ pub enum ImportResolution {
     /// Exactly one directive names it, but the specifier is malformed (it
     /// normalizes to an empty module path).
     Rejected,
-    /// Multiple directives in the consulting module name the same target.
-    Ambiguous,
 }
 
 /// Whether a receiver member is an instance method (takes a `self` receiver) or

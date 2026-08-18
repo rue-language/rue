@@ -143,7 +143,7 @@ name = "emit_air_resolves_modules"
 description = "--emit skipped sema.set_file_paths, so module programs failed E0704 only under --emit (RUE-130 item 4)."
 files = [
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     utils.triple(2)

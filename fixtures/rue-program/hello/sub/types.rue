@@ -1,5 +1,6 @@
-// "shared.rue" resolves root-relative to ../shared.rue; resolution observes
-// the absent importer-relative arm sub/shared.rue first.
-const shared = @import("shared.rue");
+// The shared module sits at the program root and is named by an explicit
+// importer-relative path (ADR-0078 removed the root-directory fallback this
+// used to reach it through).
+const shared = @import("../shared.rue");
 
 pub fn value() -> i32 { shared.base() }

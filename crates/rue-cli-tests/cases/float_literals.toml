@@ -131,7 +131,7 @@ points into the module that wrote it.
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let h = @import("helper");
+    let h = @import("helper.rue");
     h.scale()
 }
 """ },
@@ -152,7 +152,7 @@ description = "The gate follows the literal across the module boundary and repor
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let h = @import("helper");
+    let h = @import("helper.rue");
     h.scale()
 }
 """ },

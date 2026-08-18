@@ -118,7 +118,7 @@ name = "module_binding_needs_no_annotation"
 spec = ["6.5:4"]
 description = "Module bindings are not value constants: no annotation required"
 source = """
-const cfg = @import("cfg");
+const cfg = @import("cfg.rue");
 const X: i32 = cfg.LIMIT;
 
 fn main() -> i32 { X }
@@ -227,7 +227,7 @@ name = "forward_reference_across_files"
 spec = ["6.5:7", "6.5:10"]
 description = "A const may reference a const declared in another (imported) file"
 source = """
-const cfg = @import("cfg");
+const cfg = @import("cfg.rue");
 const BASE: i32 = cfg.LIMIT;
 const DERIVED: i32 = BASE + 1;
 
@@ -348,7 +348,7 @@ name = "string_const_module_member"
 spec = ["6.5:16"]
 description = "A pub string constant is usable through module member access"
 source = """
-const util = @import("util");
+const util = @import("util.rue");
 
 fn main() -> i32 {
     let n = util.NAME;

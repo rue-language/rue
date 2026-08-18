@@ -706,6 +706,44 @@ fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
     }
 }
 
+/// ADR-0078 migration help. An extensionless import names the directory
+/// facade alone under policy v2; when it misses but the sibling file module
+/// `{P}.rue` exists on disk, append the extensioned spelling as a help. The
+/// probe is presentation-only: it runs after discovery has closed, feeds no
+/// observation ledger, and creates no dependency edge, so it can never affect
+/// resolution, closure, or reuse.
+fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
+    let mut enriched = CompileErrors::new();
+    for error in errors.iter() {
+        let sibling = match &error.kind {
+            rue_error::ErrorKind::ModuleNotFound { path, candidates }
+                if !path.ends_with(".rue") =>
+            {
+                let basename = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(path);
+                let facade_suffix = format!("/_{basename}.rue");
+                candidates.iter().find_map(|candidate: &String| {
+                    let sibling = format!("{}.rue", candidate.strip_suffix(&facade_suffix)?);
+                    Path::new(&sibling)
+                        .is_file()
+                        .then_some((path.clone(), sibling))
+                })
+            }
+            _ => None,
+        };
+        match sibling {
+            Some((path, sibling)) => enriched.push(error.clone().with_help(format!(
+                "an extensionless import names the directory facade; the file module \
+                 '{sibling}' is imported with its extension: @import(\"{path}.rue\")"
+            ))),
+            None => enriched.push(error.clone()),
+        }
+    }
+    enriched
+}
+
 struct DiagnosticOutput<'a> {
     format: ErrorFormat,
     text: MultiFileFormatter<'a>,
@@ -1723,7 +1761,9 @@ fn main() {
     }
 
     if compiler_host.discovery_status() != ImportDiscoveryStatus::ClosedValid {
-        diagnostics.print_errors(compiler_host.discovery_revision().diagnostics());
+        diagnostics.print_errors(&with_import_migration_helps(
+            compiler_host.discovery_revision().diagnostics(),
+        ));
         std::process::exit(1);
     }
 
@@ -1879,7 +1919,7 @@ fn main() {
             exit_successful_native_compile();
         }
         Err(errors) => {
-            diagnostics.print_errors(&errors);
+            diagnostics.print_errors(&with_import_migration_helps(&errors));
             std::process::exit(1);
         }
     }

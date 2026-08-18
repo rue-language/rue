@@ -2879,6 +2879,7 @@ impl CompilerSession {
         }
         let diagnostics = crate::import_discovery::exact_import_diagnostics(
             &program,
+            plan.context(),
             &exact_groups,
             check_ledger,
         );
@@ -3012,7 +3013,6 @@ impl CompilerSession {
             matches!(
                 problem,
                 crate::CanonicalImportGraphProblem::MissingResolution { .. }
-                    | crate::CanonicalImportGraphProblem::AmbiguousResolution { .. }
             )
         });
         if !resolution_only {

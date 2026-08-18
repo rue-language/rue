@@ -414,7 +414,10 @@ impl ErrorCode {
     pub const STD_LIB_NOT_FOUND: Self = Self(705);
     pub const PRIVATE_MEMBER_ACCESS: Self = Self(706);
     pub const UNKNOWN_MODULE_MEMBER: Self = Self(707);
-    pub const AMBIGUOUS_MODULE: Self = Self(708);
+    // 708 (AMBIGUOUS_MODULE) is retired (ADR-0078): an extensionless import
+    // names the directory facade alone and a file module is spelled with its
+    // extension, so the file/facade ambiguity no longer exists. Keep the
+    // number retired rather than reusing it.
     pub const CANNOT_INFER_CAST_TARGET: Self = Self(709);
     pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
     pub const CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE: Self = Self(711);
@@ -422,6 +425,10 @@ impl ErrorCode {
     /// (`@alloc`/`@alloc_zeroed`/`@free`/`@realloc`/`@resize`, ADR-0059) was
     /// zero or not a power of two. Alignment must be a power of two.
     pub const INTRINSIC_ALIGN_NOT_POWER_OF_TWO: Self = Self(712);
+    /// A relative `@import` path resolves outside the project root (the root
+    /// source file's directory), so it can receive no project-relative module
+    /// identity (ADR-0078).
+    pub const IMPORT_ESCAPES_ROOT: Self = Self(713);
 
     // ========================================================================
     // Literal/operator errors (E0800-E0899)
@@ -1196,15 +1203,6 @@ fn format_array_length_mismatch(expected: u64, found: u64) -> String {
     }
 }
 
-/// Payload for [`ErrorKind::AmbiguousModule`], boxed to keep `ErrorKind`
-/// within its 64-byte size budget (three inline `String`s exceed it).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AmbiguousModuleData {
-    pub path: String,
-    pub file_module: String,
-    pub dir_module: String,
-}
-
 /// Payload for [`ErrorKind::PrivateUnqualifiedAccess`], boxed to keep
 /// `ErrorKind` within its 64-byte size budget (three inline `String`s
 /// exceed it).
@@ -1767,8 +1765,10 @@ pub enum ErrorKind {
         /// Candidates that were tried (for error message)
         candidates: Vec<String>,
     },
-    #[error("ambiguous module '{}': both '{}' and '{}' exist", .0.path, .0.file_module, .0.dir_module)]
-    AmbiguousModule(Box<AmbiguousModuleData>),
+    #[error(
+        "import '{path}' escapes the project root: '{candidate}' is outside the root source file's directory"
+    )]
+    ImportEscapesRoot { path: String, candidate: String },
     #[error("standard library not found")]
     StdLibNotFound,
     #[error("{item_kind} `{name}` is private")]
@@ -2230,7 +2230,7 @@ impl ErrorKind {
             }
             ErrorKind::ImportRequiresStringLiteral => ErrorCode::IMPORT_REQUIRES_STRING_LITERAL,
             ErrorKind::ModuleNotFound { .. } => ErrorCode::MODULE_NOT_FOUND,
-            ErrorKind::AmbiguousModule { .. } => ErrorCode::AMBIGUOUS_MODULE,
+            ErrorKind::ImportEscapesRoot { .. } => ErrorCode::IMPORT_ESCAPES_ROOT,
             ErrorKind::StdLibNotFound => ErrorCode::STD_LIB_NOT_FOUND,
             ErrorKind::PrivateMemberAccess { .. } => ErrorCode::PRIVATE_MEMBER_ACCESS,
             ErrorKind::PrivateUnqualifiedAccess(_) => ErrorCode::PRIVATE_UNQUALIFIED_ACCESS,

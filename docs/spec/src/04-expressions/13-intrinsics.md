@@ -1061,7 +1061,7 @@ fn helper() -> i32 { 42 }  // private, not exported
 
 // main.rue
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     math.add(1, 2)  // returns 3
 }
 ```
@@ -1073,7 +1073,7 @@ Private declarations (those without `pub`) are not visible to importers:
 ```rue
 // main.rue
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     // math.helper()  // Error: `helper` is not visible
     0
 }
@@ -1085,7 +1085,7 @@ The imported module can be bound to any name:
 
 ```rue
 fn main() -> i32 {
-    let m = @import("math");
+    let m = @import("math.rue");
     m.add(1, 2)
 }
 ```
@@ -1096,16 +1096,17 @@ Nested paths are supported for importing from subdirectories:
 
 ```rue
 fn main() -> i32 {
-    let strings = @import("utils/strings");
+    let strings = @import("utils/strings.rue");
     0
 }
 ```
 
 {{ rule(id="4.13:89", cat="legality-rule") }}
 
-It is a compile-time error if a module path resolves to both a file module
-`{path}.rue` and a directory module `{path}/_{basename}.rue` — the import is
-ambiguous, and neither form takes precedence.
+It is a compile-time error (E0713) if a relative import path's normalized
+candidate falls outside the project root (the root file's directory); see
+rule [10.2:7](@/10-modules/02-import-resolution.md). Module identity is
+project-root-relative, so a file outside the root can receive no identity.
 
 {{ rule(id="4.13:90", cat="legality-rule") }}
 

@@ -9,6 +9,7 @@ accepted: 2026-08-18
 implemented:
 spec-sections: ["10.1:5", "10.2:1", "10.2:2", "10.2:4", "10.2:6", "4.13:89"]
 superseded-by:
+amends: [0026]
 relates: ["ADR-0051", "ADR-0063", "ADR-0075", "RUE-1127", "RUE-266", "RUE-1100", "RUE-1023", "RUE-1586"]
 ---
 
@@ -30,8 +31,8 @@ with its `.rue` extension. Relative candidates are searched against the
 importing file's directory only — the root-file fallback is removed.
 Project-relative module identity becomes a total function, so an import may
 not escape the project root. The reserved specifier `std` is exempt from
-relative search entirely: it anchors to the program, resolving to an explicit
-`--std-path`, then a vendored `{root}/std/_std.rue`, then `$RUE_STD_PATH`.
+relative search entirely: it anchors to the program, resolving to a vendored
+`{root}/std/_std.rue`, then `$RUE_STD_PATH`.
 
 ## Context
 
@@ -108,8 +109,11 @@ un-break correct code. It would also make creating a file break a
 previously-working build — reintroducing at the `std` slot exactly the
 nonlocality this ADR removes elsewhere.
 
-The genuine "I am overriding this deliberately" case is served by an explicit
-`--std-path`, which is visible at the call site and in the build record. The
+A dedicated override flag (`--std-path`) was considered and deferred: no
+present workflow needs it — every harness in this repository overrides
+through the environment against non-vendoring programs — and CLI surface
+shipped now is surface the RUE-1586 distribution design must later honor or
+break. Adding a flag later is additive; it is deferred, not rejected. The
 supply-chain posture is served by `--source-manifest`, which already governs
 `std`: a std path the manifest does not declare is a hermetic denial with no
 probe.
@@ -124,7 +128,8 @@ already resolves a `.rue`-suffixed specifier exactly, so a file module is
 spelled `@import("math.rue")`.
 
 This *deletes* the file-versus-facade ambiguity rather than diagnosing it.
-Spec 10.1:5 and rule 4.13:89 are removed, and E0708 is retired.
+Spec 10.1:5 and rule 4.13:89 are reworded under their stable IDs (spec
+paragraph IDs are permanent), and E0708 is retired.
 
 ### 2. Relative specifiers are importer-relative only
 
@@ -156,9 +161,8 @@ against a fixed precedence chain, taking the first that exists:
 
 | Order | Source | Meaning |
 |-------|--------|---------|
-| 1 | `--std-path <p>` | explicit per-invocation override |
-| 2 | `{root}/std/_std.rue` | the program vendored its own |
-| 3 | `$RUE_STD_PATH` | toolchain installation default |
+| 1 | `{root}/std/_std.rue` | the program vendored its own |
+| 2 | `$RUE_STD_PATH` | toolchain installation default |
 | — | otherwise | E0705 |
 
 Each is a single candidate. `std` is never searched importer-relative, which
@@ -167,11 +171,38 @@ vendored location is anchored to the program root rather than to the
 importer.
 
 The governing property: **ambient environment can never replace a standard
-library the program shipped.** Only an explicit argument can, and that
-argument is visible on the command line and in the dependency record.
+library the program shipped.** Replacing a vendored standard library means
+editing the program's tree.
 
-`--std-path` is new CLI surface introduced by this ADR. It is what makes the
-precedence chain expressible without an error state.
+Under `--source-manifest`, the manifest is the authority on which standard
+library is in the build. A candidate the manifest does not declare is
+skipped and the walk continues: declare the vendored copy and it wins,
+omit it and the declared toolchain facade resolves.
+
+This narrows an earlier form of this decision, which required an existing
+but undeclared vendored std to fail closed. That rule is not implementable
+as stated. Hermetic denial is *lexical and takes no probe* — by design, so
+that a hermetic build never touches an undeclared path — so the compiler
+cannot distinguish "absent" from "present but undeclared". Treating the
+denial as conclusive fails every hermetic build whose program does not
+vendor std at all: the vendored candidate is probed first and denied even
+when nothing is there. The repository's own reproducibility fixture is
+exactly that shape.
+
+Preserving the stricter rule would require the host to stat undeclared
+candidates to separate absence from denial, weakening the no-probe
+guarantee to sharpen a case a correct manifest never reaches. The
+generator that produces a manifest sees a vendored `std/` and declares it;
+omitting it is a build-system defect, and its failure mode is the declared
+toolchain std rather than a silent read of an undeclared file.
+
+Because a candidate that cannot be read is skipped rather than conclusive,
+a failed observation is reported only when *no* candidate in the
+occurrence's chain resolved. Under policy v2 only `std` has more than one
+candidate, so this rule is confined to the std chain: every relative
+specifier still fails on its single candidate's failure. Denied and absent
+remain distinguishable typed observations, satisfying ADR-0063; they are
+merely both non-resolutions for precedence purposes.
 
 ### 5. Nonlocality, stated
 
@@ -193,12 +224,12 @@ only shrinks the set it applies to.
 ## Implementation Phases
 
 - [ ] **Phase 1: Spec amendment** — rewrite 10.2:1–2, restate 10.2:4's
-      canonical identity, replace 10.2:6 with the precedence chain, delete
-      10.1:5 and 4.13:89, retire E0708.
+      canonical identity, replace 10.2:6 with the precedence chain, reword
+      10.1:5 and 4.13:89 under their stable IDs, retire E0708.
 - [ ] **Phase 2: Candidate-policy collapse** — one candidate per relative
       specifier and one base directory in `discovery_candidate_groups` /
       `discovery_groups_for_occurrence`; std resolves through the precedence
-      chain; add `--std-path`.
+      chain; a test pins the undeclared-vendored-std hermetic denial.
 - [ ] **Phase 3: Total root-relative identity** — reject escaping imports
       with a new diagnostic; keep physical-identity aliasing.
 - [ ] **Phase 4: Migration diagnostics** — when an extensionless import finds
@@ -233,17 +264,16 @@ only shrinks the set it applies to.
 - Importer-relative-only leaves distant imports spelled
   `../../../core/registry`. The fix is a named-module namespace, which
   belongs to Packages; this ADR accepts the ergonomic gap in the interim.
-- `--std-path` adds CLI surface.
 - `std` now follows a different anchoring rule from relative specifiers. This
   is stated in the spec as a property of reserved names rather than left
   implicit, but it is a second rule where there had been one.
 
 ## Open Questions
 
-- Should `--source-manifest` mode reject a vendored `{root}/std/_std.rue`
-  that the manifest does not declare? The existing hermetic denial suggests
-  yes, and no change should be needed, but Phase 2 must confirm it rather
-  than assume it.
+None. The `--source-manifest` interaction and the override-flag question
+were both resolved after acceptance and folded into Decision 4: undeclared
+vendored std fails closed, and the explicit override flag is deferred to
+RUE-1586.
 
 ## Future Work
 

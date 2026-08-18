@@ -2748,43 +2748,45 @@ mod tests {
     }
 
     /// A candidate that misses on its first group is answered but NOT concluded:
-    /// the occurrence still owes its next candidate an operation. Here
-    /// `sub/leaf.rue` imports `shared.rue`, which is absent beside it and present
-    /// at the project root, so its precedence walk spans two hops while its
-    /// module is new in neither.
+    /// the occurrence still owes its next candidate an operation. Under policy
+    /// v2 the only multi-group occurrence is `std`: the vendored
+    /// `{root}/std/_std.rue` is probed absent here, so the occurrence is
+    /// answered but still owes the toolchain root's facade an operation.
     ///
     /// The contract this pins is unchanged by ADR-0075 — an occurrence that is
     /// answered but still open must be carried forward, and dropping it loses
-    /// `shared.rue` — but the carrying happens a level down: the wave keeps the
-    /// occurrence in its open set and derives its second candidate at the next
-    /// hop, instead of a later round re-rooting it. The three reads and the
-    /// resolution are identical; the three publications collapse to one.
+    /// the standard library — the wave keeps the occurrence in its open set and
+    /// derives its next candidate at the next hop, instead of a later round
+    /// re-rooting it.
     #[test]
     fn import_occurrence_answered_but_still_open_is_carried_across_wave_hops() {
         let dir = TestDir::new("open-occurrence-reroot");
+        let stdlib = TestDir::new("open-occurrence-reroot-std");
         let main = dir.write(
             "main.rue",
             r#"const leaf = @import("sub/leaf.rue"); fn main() -> i32 { leaf.value() }"#,
         );
         dir.write(
             "sub/leaf.rue",
-            r#"const shared = @import("shared.rue"); pub fn value() -> i32 { shared.value() }"#,
+            r#"const s = @import("std"); pub fn value() -> i32 { 7 }"#,
         );
-        dir.write("shared.rue", "pub fn value() -> i32 { 7 }");
+        stdlib.write("_std.rue", "pub fn std_value() -> i32 { 1 }");
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
 
-        let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let result =
+            discover_and_load_imports(main.to_str().unwrap(), None, Some(&std_root)).unwrap();
 
         assert_eq!(result.read_manifest.len(), 3);
         assert!(
             result
                 .read_manifest
                 .iter()
-                .any(|entry| entry.module().as_str() == "shared.rue"),
+                .any(|entry| entry.module().as_str().starts_with("\0rue-std/")),
             "the second candidate of the still-open occurrence must be resolved"
         );
-        // One wave, three hops: the leaf, its missed sibling candidate, then the
-        // project-root `shared.rue` the second candidate resolves to. Publishing
-        // per hop minted three revisions for the same three reads.
+        // One wave: the leaf, the absent vendored std probe, then the toolchain
+        // facade the second candidate resolves to. Publishing per hop minted
+        // separate revisions for the same reads.
         assert_eq!(result.input_revision.frontier_round(), 1);
     }
 
@@ -3366,6 +3368,51 @@ mod tests {
         assert!(
             error_display(&error).contains("hermetic build configuration"),
             "{error:?}"
+        );
+    }
+
+    /// ADR-0078: under a source manifest an undeclared vendored
+    /// `{root}/std/_std.rue` is SKIPPED, and `std` resolves to the declared
+    /// toolchain facade.
+    ///
+    /// Hermetic denial is lexical and takes no probe, so the compiler cannot
+    /// distinguish "absent" from "present but undeclared". Treating the denial
+    /// as conclusive would fail every hermetic build whose program does not
+    /// vendor std — the vendored candidate is probed first and denied even
+    /// when nothing is there. The manifest is therefore the authority on which
+    /// std is in the build: declare the vendored copy and it wins (that arm is
+    /// covered by the CLI deps cases), omit it and the declared toolchain std
+    /// resolves.
+    #[test]
+    fn undeclared_vendored_std_is_skipped_for_the_declared_toolchain_std() {
+        let project = TestDir::new("vendored-skipped-project");
+        let stdlib = TestDir::new("vendored-skipped-std");
+        let main = project.write(
+            "main.rue",
+            "const s = @import(\"std\"); fn main() -> i32 { 0 }",
+        );
+        project.write("std/_std.rue", "pub fn vendored() -> i32 { 21 }");
+        let env_std = stdlib.write("_std.rue", "pub fn env_std() -> i32 { 1 }");
+        let std_root = fs::canonicalize(&stdlib.path).unwrap();
+        let root_canonical = fs::canonicalize(&main).unwrap();
+        let env_canonical = fs::canonicalize(&env_std).unwrap();
+        let manifest = manifest_allowing(&project, &[&root_canonical, &env_canonical]);
+
+        let result = load_and_acquire(&main, Some(manifest), Some(&std_root))
+            .expect("the undeclared vendored candidate is skipped, not conclusive");
+        assert!(
+            result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().as_str().starts_with("\0rue-std/")),
+            "std must resolve to the declared toolchain facade"
+        );
+        assert!(
+            !result
+                .read_manifest
+                .iter()
+                .any(|entry| entry.module().as_str() == "std/_std.rue"),
+            "the undeclared vendored candidate must never be read"
         );
     }
 

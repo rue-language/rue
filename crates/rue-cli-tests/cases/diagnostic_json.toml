@@ -138,7 +138,7 @@ JSON formatter shares with the text formatter (RUE-175).
 """
 files = [
   { path = "main.rue", source = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
 
 fn main() -> i32 {
     let bad: i32 = true;

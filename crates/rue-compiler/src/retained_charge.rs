@@ -1127,12 +1127,6 @@ impl RetainedCharge for crate::CanonicalImportResolution {
     fn retained_charge(&self) -> u64 {
         match self {
             Self::Resolved(module) => module.retained_charge(),
-            Self::Ambiguous {
-                file_module,
-                directory_module,
-            } => file_module
-                .retained_charge()
-                .saturating_add(directory_module.retained_charge()),
             Self::Missing => 0,
         }
     }
@@ -1526,6 +1520,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             E::ModuleNotFound { path, candidates } => path
                 .retained_charge()
                 .saturating_add(candidates.retained_charge()),
+            E::ImportEscapesRoot { path, candidate } => path
+                .retained_charge()
+                .saturating_add(candidate.retained_charge()),
             E::MissingFields(value) => (std::mem::size_of_val(value.as_ref()) as u64)
                 .saturating_add(value.struct_name.retained_charge())
                 .saturating_add(value.missing_fields.retained_charge()),
@@ -1542,10 +1539,6 @@ impl RetainedCharge for rue_error::ErrorKind {
                 .saturating_add(value.name.retained_charge())
                 .saturating_add(value.expected.retained_charge())
                 .saturating_add(value.found.retained_charge()),
-            E::AmbiguousModule(value) => (std::mem::size_of_val(value.as_ref()) as u64)
-                .saturating_add(value.path.retained_charge())
-                .saturating_add(value.file_module.retained_charge())
-                .saturating_add(value.dir_module.retained_charge()),
             E::PrivateUnqualifiedAccess(value) => (std::mem::size_of_val(value.as_ref()) as u64)
                 .saturating_add(value.item_kind.retained_charge())
                 .saturating_add(value.name.retained_charge())
