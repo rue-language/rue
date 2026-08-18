@@ -1468,6 +1468,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Ok(None);
             }
         }
+        // The precompute's walk conveys runtime locals through this set rather
+        // than `runtime_locals`; the qualified-constant walk already honors it,
+        // and the same spec 4.14:6 shadowing applies to a qualified call.
+        if let Some(names) = env.runtime_binding_names
+            && names.contains(&recv_name)
+        {
+            return Ok(None);
+        }
         if env.type_subst.contains_key(&recv_name) || env.value_subst.contains_key(&recv_name) {
             return Ok(None);
         }
@@ -2568,9 +2576,18 @@ pub(super) fn initializer_may_evaluate_to_type_with_bindings(
         InstData::AnonStructType { .. }
         | InstData::AnonEnumType { .. }
         | InstData::TypeConst { .. }
-        | InstData::Call { .. }
-        | InstData::MethodCall { .. }
-        | InstData::FieldGet { .. } => true,
+        | InstData::Call { .. } => true,
+        // A dotted head reduces to a type only through a module or type
+        // binding, so its receiver spine must bottom out at a `VarRef` that a
+        // runtime binding does not shadow (spec 4.14:6). A call result, an
+        // index, or a runtime local's member is a genuine runtime value; the
+        // evaluator would return non-evaluable for it, so skip the evaluation.
+        InstData::MethodCall { receiver, .. } => {
+            spine_root_names_unshadowed_binding(rir, *receiver, runtime_bindings)
+        }
+        InstData::FieldGet { .. } => {
+            spine_root_names_unshadowed_binding(rir, inst_ref, runtime_bindings)
+        }
         InstData::VarRef { name, .. } => !runtime_bindings.contains(name),
         InstData::Comptime { expr } => {
             initializer_may_evaluate_to_type_with_bindings(rir, *expr, runtime_bindings)
@@ -2606,6 +2623,25 @@ pub(super) fn initializer_may_evaluate_to_type_with_bindings(
             initializer_may_evaluate_to_type_with_bindings(rir, body, runtime_bindings)
         }),
         _ => false,
+    }
+}
+
+/// Whether a dotted receiver spine could still name a module, type, or
+/// constant binding: it must be a chain of member accesses bottoming out at a
+/// `VarRef` whose name no runtime binding shadows (spec 4.14:6). This mirrors
+/// the reachability requirement of the evaluator's own qualified-call walk,
+/// which rejects every other receiver shape as a runtime call.
+fn spine_root_names_unshadowed_binding(
+    rir: &rue_rir::Rir,
+    mut cursor: InstRef,
+    runtime_bindings: &AHashSet<Spur>,
+) -> bool {
+    loop {
+        match &rir.get(cursor).data {
+            InstData::VarRef { name, .. } => return !runtime_bindings.contains(name),
+            InstData::FieldGet { base, .. } => cursor = *base,
+            _ => return false,
+        }
     }
 }
 

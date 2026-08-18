@@ -165,4 +165,65 @@ mod tests {
             assert_eq!(candidates.get(name), Some(&false), "must skip {name}");
         }
     }
+
+    #[test]
+    fn comptime_type_alias_filter_skips_runtime_rooted_member_heads() {
+        let source = r#"
+            fn main(value: i32) -> i32 {
+                let RuntimeMethod = value.reserve(1);
+                let RuntimeField = value.field;
+                let RuntimeChain = value.a.b;
+                let CallRootedField = make().field;
+                let CallRootedMethod = make().method(1);
+                let ModuleMethod = module.Make(i32);
+                let ModuleChainMethod = std.option.Option(i32);
+                let TypeMethod = SomeType.new();
+                let ModulePath = std.strbuf.StrBuf;
+                0
+            }
+        "#;
+        let (rir, interner) = lower_files(&[(source, FileId::DEFAULT)]);
+        let runtime: AHashSet<lasso::Spur> = [interner.get("value").unwrap()].into_iter().collect();
+        let mut candidates = AHashMap::new();
+        for (_, inst) in rir.iter() {
+            if let InstData::Alloc {
+                name: Some(name),
+                init,
+                ..
+            } = inst.data
+            {
+                candidates.insert(
+                    interner.resolve(&name).to_owned(),
+                    crate::sema::comptime_eval::initializer_may_evaluate_to_type_with_bindings(
+                        &rir, init, &runtime,
+                    ),
+                );
+            }
+        }
+
+        // A member head rooted at a runtime binding, or at anything other than
+        // a dotted name spine, can never reduce to a type: the evaluator's
+        // qualified walk rejects those receivers, so the filter skips the
+        // evaluation outright (spec 4.14:6 shadowing included).
+        for name in [
+            "RuntimeMethod",
+            "RuntimeField",
+            "RuntimeChain",
+            "CallRootedField",
+            "CallRootedMethod",
+        ] {
+            assert_eq!(candidates.get(name), Some(&false), "must skip {name}");
+        }
+        // Unshadowed dotted spines stay eligible: module-qualified type
+        // functions, re-export chains, type-rooted member heads, and module
+        // paths to types all still reach the evaluator.
+        for name in [
+            "ModuleMethod",
+            "ModuleChainMethod",
+            "TypeMethod",
+            "ModulePath",
+        ] {
+            assert_eq!(candidates.get(name), Some(&true), "must retain {name}");
+        }
+    }
 }
