@@ -2342,6 +2342,70 @@ mod tests {
     }
 
     #[test]
+    fn publication_seams_leave_no_lease_reacquisition_cascades() {
+        // RUE-1576 gate: the collection-scope handoffs replace per-node
+        // lease-reacquisition demand cascades with borrowed cone authority.
+        // Every remaining way a handoff can fail to cover a cone is
+        // structural and program-independent, so one full one-worker compile
+        // pinning both counters to zero is a complete regression detector:
+        // a nonzero value here means a seam silently degraded and the
+        // cascades returned. One worker is the exactness regime the scaling
+        // contract already pins for deterministic work; parallel workers
+        // carry a known residual seam in scope inheritance that a separate
+        // issue tracks, so the gate deliberately matches the structural
+        // probes rather than the worker matrix.
+        let root = FileId::new(1);
+        let helper = FileId::new(2);
+        let sources = [
+            SourceView::new(
+                "/checkout/main.rue",
+                "const helper = @import(\"helper.rue\");\n\
+                 struct Pair { left: i32, right: i32 }\n\
+                 fn main() -> i32 {\n\
+                     let pair = Pair { left: helper.answer(), right: 2 };\n\
+                     pair.left + pair.right\n\
+                 }",
+                root,
+            ),
+            SourceView::new(
+                "/checkout/helper.rue",
+                "pub fn answer() -> i32 { 40 }",
+                helper,
+            ),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            std::collections::HashMap::from([
+                (root, "main.rue".to_string()),
+                (helper, "helper.rue".to_string()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let mut session = CompilerSession::with_query_concurrency(1);
+        let discovery = crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut session)
+            .unwrap();
+        let output = crate::queries::compile_with_session(
+            &mut session,
+            &discovery.snapshot,
+            &CompileOptions::default(),
+        )
+        .unwrap();
+        let metrics = output.unstable_metrics();
+        assert_eq!(
+            metrics.publication.cone_retention_failures, 0,
+            "every publication seam must hand its retained cone forward"
+        );
+        assert_eq!(
+            metrics.query_runtime.validation.proof_reacquisition_misses, 0,
+            "no scope may re-lease a cone its predecessor collection certified"
+        );
+    }
+
+    #[test]
     fn canonical_batch_reports_one_pass_structural_work() {
         let root = FileId::new(7);
         let helper = FileId::new(2);

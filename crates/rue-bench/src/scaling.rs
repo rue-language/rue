@@ -1272,6 +1272,9 @@ mod tests {
                         retention_enforcements: 1,
                         retention_scan_entries: 4,
                     },
+                    publication: rue_perf_schema::PublicationWork {
+                        cone_retention_failures: 73,
+                    },
                 },
                 samples: vec![sample.clone(), sample],
             }],

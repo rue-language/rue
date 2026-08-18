@@ -399,6 +399,10 @@ pub(crate) struct RevisionedQueryDatabase {
     /// after each within one rooted compile.
     cfg_collection_root: Arc<Mutex<PublishedCollectionRoot>>,
     codegen_collection_root: Arc<Mutex<PublishedCollectionRoot>>,
+    /// Times the declaration publication could not retain its projection cone
+    /// and fell back to unassisted validation. Expected zero; nonzero means
+    /// the seam handoff silently degraded and the demand cascades returned.
+    publication_cone_retention_failures: Arc<std::sync::atomic::AtomicU64>,
     /// Wave-parsed modules staged for `compiler.parse-module` (ADR-0075). Each
     /// entry is consumed at most once, and only on exact `SourceId` identity,
     /// so the stage is a work handoff rather than a second parse authority.
@@ -14164,6 +14168,7 @@ impl RevisionedQueryDatabase {
         // artifacts alive until body closure atomically replaces that bridge
         // with the complete rooted body graph. They are initialized here so
         // both publication evaluators share the same handoff authority.
+        let publication_cone_retention_failures = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let declaration_semantics_root =
             Arc::new(Mutex::new(PublishedDeclarationSemanticsRoot::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
@@ -14172,6 +14177,8 @@ impl RevisionedQueryDatabase {
         let orders_for_declaration_projection = declaration_orders.clone();
         let nucleus_for_declaration_projection = semantic_nucleus.clone();
         let shells_for_declaration_projection = declaration_shells.clone();
+        let cone_retention_failures_for_declaration_publication =
+            publication_cone_retention_failures.clone();
         let declaration_semantics_projection = runtime
             .family_with_equality_and_evaluator(
                 "compiler.declaration-semantics-projection",
@@ -14265,13 +14272,25 @@ impl RevisionedQueryDatabase {
                     let mut pending = context
                         .retain_observed_family(&artifacts_for_declaration_publication)
                         .expect("candidate artifacts belong to this query runtime");
-                    // Best-effort: an incompletely observed cone leaves the
-                    // lease exactly as it is today; a complete one lets the
-                    // successor scope skip its per-node lease reacquisition.
-                    if let Ok(cone) = context
+                    // Best-effort: an unretained cone leaves the lease exactly
+                    // as it is today — the successor scope re-leases through
+                    // demand cascades instead of borrowing. That degradation is
+                    // counted (and asserted in debug builds) so it can never
+                    // read as the stronger run: the session gate pins the
+                    // counter and the miss count to zero on maintained
+                    // workloads.
+                    match context
                         .retain_observed_terminal_cone_from(&projection, &validation_fallbacks)
                     {
-                        pending.absorb(cone);
+                        Ok(cone) => pending.absorb(cone),
+                        Err(error) => {
+                            debug_assert!(
+                                false,
+                                "declaration publication could not retain its projection cone: {error:?}"
+                            );
+                            cone_retention_failures_for_declaration_publication
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     context.register_attempt_handoff(
                         PublishedDeclarationSemanticsTerminalHandoff {
@@ -16085,6 +16104,7 @@ impl RevisionedQueryDatabase {
             module_store,
             cfg_collection_root,
             codegen_collection_root,
+            publication_cone_retention_failures,
             parse_stage,
             #[cfg(test)]
             test_import_store,
@@ -19832,6 +19852,13 @@ impl RevisionedQueryDatabase {
         }
         groups.sort_by(|left, right| left[0].cmp(&right[0]));
         Ok(groups)
+    }
+
+    /// RUE-1576: how many declaration publications could not retain their
+    /// projection cone this session. Expected zero.
+    pub(crate) fn publication_cone_retention_failures(&self) -> u64 {
+        self.publication_cone_retention_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Stage a wave's eager parses for the canonical parse query.

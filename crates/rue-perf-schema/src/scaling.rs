@@ -217,6 +217,22 @@ pub struct CompilerWork {
     pub cfg_local_epoch: CfgLocalEpochWork,
     /// Work performed by the revisioned query runtime.
     pub query_runtime: QueryRuntimeWork,
+    /// Publication-seam health for the proof-lease handoffs (RUE-1576).
+    #[serde(default)]
+    pub publication: PublicationWork,
+}
+
+/// Deterministic publication-seam health for one compiler process.
+///
+/// The collection-scope handoffs replace per-node lease-reacquisition demand
+/// cascades with borrowed cone authority; this group records the times a
+/// handoff could not be produced and validation silently fell back. Expected
+/// zero; the compiler's pipeline gate pins it there on maintained workloads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublicationWork {
+    /// Declaration publications that could not retain their projection cone.
+    pub cone_retention_failures: u64,
 }
 
 /// Deterministic structural work behind successful body lowerings and
@@ -560,6 +576,15 @@ question = "small maintained compiler frontend"
     fn rejects_unknown_fields_instead_of_guessing() {
         let error = ScalingManifest::parse(&format!("{VALID}\nsurprise = true\n")).unwrap_err();
         assert!(error.contains("unknown field"), "{error}");
+    }
+
+    #[test]
+    fn older_compiler_work_defaults_publication_seam_health() {
+        let mut encoded = serde_json::to_value(CompilerWork::default()).unwrap();
+        let object = encoded.as_object_mut().unwrap();
+        object.remove("publication");
+        let decoded: CompilerWork = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.publication, PublicationWork::default());
     }
 
     #[test]
