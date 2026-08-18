@@ -237,6 +237,6 @@ The table is generated from ADR frontmatter. Run
 | [0072](0072-runtime-benchmarking-static-site-generator.md) | Runtime performance benchmarking anchored by a Rue static site generator | Accepted | performance, benchmarking, process, examples, stdlib |
 | [0073](0073-validation-certificate-durability.md) | Validation-certificate durability across append-only revisions | Implemented | architecture, compiler, incremental, performance, query-engine |
 | [0074](0074-structural-node-identity.md) | Structural node identity for dependency order and retained charge | Implemented | architecture, compiler, performance, query-engine |
-| [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Accepted | architecture, compiler, incremental, performance, query-engine |
+| [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Implemented | architecture, compiler, incremental, performance, query-engine |
 | [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Implemented | architecture, compiler, performance, query-engine, type-system |
 <!-- ADR-INDEX:END -->
