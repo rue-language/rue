@@ -2211,9 +2211,6 @@ pub struct SemanticCfgMetrics {
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
-    pub cfg_import_attempts: usize,
-    pub cfg_import_successes: usize,
-    pub cfg_import_failures: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2324,9 +2321,6 @@ impl SemanticMetrics {
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,
-                cfg_import_attempts: work.cfg.cfg_import_attempts,
-                cfg_import_successes: work.cfg.cfg_import_successes,
-                cfg_import_failures: work.cfg.cfg_import_failures,
             },
         }
     }

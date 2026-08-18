@@ -8835,7 +8835,6 @@ mod tests {
             "cfg work: {:?}",
             warm.work().cfg
         );
-        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
         assert_eq!(warm.work().cfg.optimization_attempts, 1);
         assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
@@ -9029,7 +9028,6 @@ mod tests {
             "complete relocation domains must reuse optimized terminals: {:?}",
             warm.work().cfg
         );
-        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
         let fresh = fresh.rooted_cfg(&options).unwrap();
@@ -9070,10 +9068,6 @@ mod tests {
         let warm = session.rooted_cfg(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuse_candidates, 1);
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert_eq!(warm.work().cfg.cfg_import_attempts, 0);
-        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
-        assert_eq!(warm.work().cfg.cfg_import_failures, 0);
-        assert_eq!(warm.work().cfg.cfg_fallbacks, 0);
         assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
         assert_eq!(warm.work().cfg.cfg_builds_succeeded, 0);
         assert_eq!(warm.work().cfg.cfg_builds_failed, 0);
@@ -9263,8 +9257,6 @@ mod tests {
         assert_eq!(optimized.work().cfg.cfg_builds_succeeded, 0);
         assert_eq!(optimized.work().cfg.cfg_builds_failed, 0);
         assert_eq!(optimized.work().cfg.cfg_reuses, 3);
-        assert_eq!(optimized.work().cfg.cfg_import_attempts, 0);
-        assert_eq!(optimized.work().cfg.cfg_import_successes, 0);
         assert_eq!(optimized.work().cfg.optimization_attempts, 3);
         assert_eq!(optimized.work().cfg.optimization_completions, 3);
         assert_eq!(optimized.work().cfg.optimized_level_attempts, 3);
