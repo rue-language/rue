@@ -241,4 +241,5 @@ The table is generated from ADR frontmatter. Run
 | [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Implemented | architecture, compiler, performance, query-engine, type-system |
 | [0077](0077-batch-endorsement-inheritance.md) | Endorsement inheritance for batch children | Accepted | architecture, compiler, performance, query-engine, parallelization |
 | [0078](0078-import-resolution-policy.md) | Single-candidate import resolution and program-anchored std | Accepted | language, modules, spec, compiler |
+| [0079](0079-request-scoped-immutable-semantic-universe.md) | Request-scoped immutable semantic universe | Proposal | architecture, compiler, performance, query-engine, type-system |
 <!-- ADR-INDEX:END -->
