@@ -42,7 +42,6 @@ pub struct CfgConstructionWork {
     pub materialization_required_types_selected: usize,
     pub prerequisite_stable_types_scanned: usize,
     pub prerequisite_layout_requests: usize,
-    pub prerequisite_type_fact_requests: usize,
     pub prerequisite_drop_glue_requests: usize,
     pub retained_interner_charge_scans: usize,
     pub retained_interner_entries_scanned: usize,

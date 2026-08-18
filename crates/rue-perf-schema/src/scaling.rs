@@ -388,7 +388,10 @@ pub struct CfgPrerequisiteWork {
     pub stable_types_scanned: u64,
     /// Unique layout terminals requested across all CFG bodies.
     pub layout_requests: u64,
-    /// Unique type-fact terminals requested for drop-relevant types.
+    /// Retired: always zero since drop-glue terminals took ownership of the
+    /// exact type-fact dependency and the duplicate top-level request was
+    /// removed. The field survives so stored reports keep deserializing under
+    /// `deny_unknown_fields`; nothing records it.
     pub type_fact_requests: u64,
     /// Unique drop-glue terminals requested for drop-relevant types.
     pub drop_glue_requests: u64,

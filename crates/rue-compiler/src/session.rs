@@ -5288,8 +5288,6 @@ impl CompilerSession {
         work.cfg.prerequisite_stable_types_scanned +=
             batch_work("cfg.prerequisite.stable-types-scanned");
         work.cfg.prerequisite_layout_requests += batch_work("cfg.prerequisite.layout-requests");
-        work.cfg.prerequisite_type_fact_requests +=
-            batch_work("cfg.prerequisite.type-fact-requests");
         work.cfg.prerequisite_drop_glue_requests +=
             batch_work("cfg.prerequisite.drop-glue-requests");
         work.cfg.retained_interner_charge_scans += batch_work("cfg.retained-interner-charge-scans");
@@ -8912,10 +8910,6 @@ mod tests {
         assert_eq!(
             cfg_work.retained_interner_charge_scans, 0,
             "logical interner charge is maintained during insertion, not reconstructed at CFG publication: {cfg_work:?}"
-        );
-        assert_eq!(
-            cfg_work.prerequisite_type_fact_requests, 0,
-            "drop-glue prerequisites already own the exact type-fact dependency: {cfg_work:?}"
         );
         assert_eq!(
             cfg_work.prerequisite_drop_glue_requests, 0,
