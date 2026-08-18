@@ -877,6 +877,7 @@ struct ProviderBodyHost<'a, P, S, K, M> {
     nominal_tokens: RefCell<AHashMap<Type, (SemanticDefinitionToken, K)>>,
     modules_by_file: RefCell<AHashMap<FileId, M>>,
     module_tokens: RefCell<AHashMap<ModuleId, (SemanticModuleToken, M)>>,
+    module_tokens_by_target: RefCell<AHashMap<M, SemanticModuleToken>>,
     next_module_file: Cell<u32>,
     generated_structs: AHashMap<Spur, StructId>,
     generated_enums: AHashMap<Spur, EnumId>,
@@ -1028,6 +1029,7 @@ where
             nominal_tokens: RefCell::new(AHashMap::new()),
             modules_by_file: RefCell::new(AHashMap::new()),
             module_tokens: RefCell::new(AHashMap::new()),
+            module_tokens_by_target: RefCell::new(AHashMap::new()),
             next_module_file: Cell::new(u32::MAX),
             generated_structs: AHashMap::new(),
             generated_enums: AHashMap::new(),
@@ -1341,10 +1343,10 @@ where
                     .ok_or(())
             },
             &|module| {
-                self.module_tokens
+                self.module_tokens_by_target
                     .borrow()
-                    .values()
-                    .find_map(|(token, candidate)| (candidate == module).then_some(*token))
+                    .get(module)
+                    .copied()
                     .ok_or(())
             },
         )
@@ -1405,13 +1407,12 @@ where
                 Ok::<SemanticDefinitionToken, ()>(token)
             },
             &|module| {
-                let (id, _) = self.register_module_target(module.clone()).ok_or(())?;
-                let token = self
-                    .module_tokens
+                self.register_module_target(module.clone()).ok_or(())?;
+                self.module_tokens_by_target
                     .borrow()
-                    .get(&id)
-                    .map(|(token, _)| *token);
-                token.ok_or(())
+                    .get(module)
+                    .copied()
+                    .ok_or(())
             },
         )
     }
@@ -1542,6 +1543,9 @@ where
         self.modules_by_file
             .borrow_mut()
             .insert(file, target.clone());
+        self.module_tokens_by_target
+            .borrow_mut()
+            .insert(target.clone(), token);
         self.module_tokens.borrow_mut().insert(id, (token, target));
         Some((id, file))
     }
