@@ -1573,11 +1573,8 @@ pub(crate) fn escape_diagnostics(
                     .module(site.importer())
                     .expect("import directive belongs to parsed program")
                     .file_id();
-                let span = rue_span::Span::with_file(
-                    file_id,
-                    site.source_offset(),
-                    site.source_end(),
-                );
+                let span =
+                    rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
                 errors.push(CompileError::new(
                     ErrorKind::ImportEscapesRoot {
                         path: site.specifier().to_owned(),
@@ -2620,7 +2617,11 @@ fn discovery_candidate_groups(
     };
     if specifier == "std" {
         return std::iter::once(vec![join(project_root, "std/_std.rue")])
-            .chain(std_root.into_iter().map(|root| vec![join(root, "_std.rue")]))
+            .chain(
+                std_root
+                    .into_iter()
+                    .map(|root| vec![join(root, "_std.rue")]),
+            )
             .collect();
     }
     if specifier.ends_with(".rue") {
