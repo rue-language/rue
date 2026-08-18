@@ -1,12 +1,12 @@
 ---
 id: 0074
 title: "Structural node identity for dependency order and retained charge"
-status: proposal
+status: implemented
 tags: [architecture, compiler, performance, query-engine]
 feature-flag: null
 created: 2026-08-17
-accepted:
-implemented:
+accepted: 2026-08-16
+implemented: 2026-08-17
 spec-sections: []
 superseded-by:
 relates: ["ADR-0063", "ADR-0071", "ADR-0073", "RUE-1381"]
@@ -16,9 +16,13 @@ relates: ["ADR-0063", "ADR-0071", "ADR-0073", "RUE-1381"]
 
 ## Status
 
-Proposed. Approved in principle by Steve Klabnik in session on 2026-08-16
-("yes, let's do all of those"); this document records the contract so the
-implementation has a falsifiable target. This is an internal query-engine
+Approved by Steve Klabnik in session on 2026-08-16; proposed via PR #2464
+and amended for collision safety on external review via PR #2465 (the
+text-tiebreaker fallback was unsound because display text may collide for
+unequal keys). Implemented 2026-08-17 via PR #2468 with the full falsifier
+suite: 32,912 eager display materializations dropped to zero on a fresh
+Lattice build with all other deterministic counters unchanged and emitted
+bytes identical. This is an internal query-engine
 design with no language-semantics change. It changes the *representation*
 of deterministic artifacts (published dependency order, retained-charge
 values) exactly once, never their determinism.
