@@ -375,7 +375,12 @@ enum PoolNominal {
 pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     type_pool: Rc<TypeInternPool>,
     /// The revision-shared equality space (ADR-0076 §1). Strings are interned
-    /// once per revision generation, not once per body.
+    /// once per revision generation, not once per body, and the generation's
+    /// spelling memos let the names that feed those interner calls be rendered
+    /// once per revision too.
+    space: SharedSymbolSpace,
+    /// The generation's interner, held directly because every mint reaches for
+    /// it.
     interner: Arc<ThreadedRodeo>,
     source: S,
     struct_ids: AHashMap<K, StructId>,
@@ -571,20 +576,12 @@ where
     /// Create the single identity universe for one provider-driven body over
     /// its own private symbol space.
     pub fn new(source: S) -> Self {
-        Self::with_interner_mode(
-            source,
-            Arc::clone(SharedSymbolSpace::private().interner()),
-            false,
-        )
+        Self::with_space_mode(source, SharedSymbolSpace::private(), false)
     }
 
-    fn with_interner_mode(
-        source: S,
-        interner: Arc<ThreadedRodeo>,
-        allow_post_seal_overlay: bool,
-    ) -> Self {
+    fn with_space_mode(source: S, space: SharedSymbolSpace, allow_post_seal_overlay: bool) -> Self {
         Self {
-            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source, interner))),
+            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source, space))),
             modules: Rc::new(RefCell::new(ProviderModuleRegistry::default())),
             methods: Rc::new(RefCell::new(ProviderMethodRegistry::default())),
             frozen: Rc::new(Cell::new(false)),
@@ -742,8 +739,7 @@ where
     S: DurableNominalSource<K, M>,
 {
     pub fn new(source: S, space: SharedSymbolSpace) -> Self {
-        let identity =
-            ProviderIdentityContext::with_interner_mode(source, Arc::clone(space.interner()), true);
+        let identity = ProviderIdentityContext::with_space_mode(source, space.clone(), true);
         let type_pool = identity.type_pool();
         Self {
             identity,
@@ -889,7 +885,8 @@ where
 {
     /// Create an empty pool with the builtin enums and the core `str` identity
     /// pre-registered, mirroring a fresh import epoch.
-    pub(in crate::sema) fn new(source: S, interner: Arc<ThreadedRodeo>) -> Self {
+    pub(in crate::sema) fn new(source: S, space: SharedSymbolSpace) -> Self {
+        let interner = Arc::clone(space.interner());
         let type_pool = Rc::new(TypeInternPool::new());
         let mut builtins = AHashMap::new();
 
@@ -945,6 +942,7 @@ where
 
         Self {
             type_pool,
+            space,
             interner,
             source,
             struct_ids: AHashMap::new(),
@@ -1633,6 +1631,11 @@ where
 /// destructor (RUE-312); mirrored from the epoch's `find_or_create_anon_struct`.
 const ANON_DROP_METHOD: &str = "__drop";
 
+/// Which name derived from an anonymous nominal's digest a generation's
+/// spelling memo holds: the nominal's own, or its destructor's.
+const ANON_NAME_SPELLING: u8 = 0;
+const ANON_DESTRUCTOR_SPELLING: u8 = 1;
+
 impl<K, M, S> BodyIdentityPool<K, M, S>
 where
     K: Clone + Eq + Hash,
@@ -1979,12 +1982,23 @@ where
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         method_names: &[Arc<str>],
     ) -> Result<Type, IdentityMintError> {
-        let name: Arc<str> = Arc::from(format!("__anon_struct_{digest:032x}").as_str());
-        let symbol = self.interner.get_or_intern(&name);
+        // Both spellings are a total function of the digest, so the generation
+        // renders and interns each once instead of once per body that mints
+        // this nominal — a hundred-fold redundancy on programs with a shared
+        // anonymous closure (ADR-0076).
+        let (name, symbol) = self
+            .space
+            .keyed_symbol_spelling(digest, ANON_NAME_SPELLING, || {
+                super::anon_structs::anonymous_struct_name(digest)
+            });
         let has_destructor = method_names
             .iter()
             .any(|method| method.as_ref() == ANON_DROP_METHOD);
-        let destructor = has_destructor.then(|| Arc::from(format!("{name}.__drop").as_str()));
+        let destructor = has_destructor.then(|| {
+            self.space.keyed_name(digest, ANON_DESTRUCTOR_SPELLING, || {
+                format!("{name}.__drop")
+            })
+        });
 
         // Declare the shell before resolving fields so a field that points back
         // at this nominal resolves the recursive reference to the shell id — the
@@ -2062,7 +2076,7 @@ where
             variant_payloads.push(resolved);
         }
 
-        let mut name = format!("__anon_enum_{digest:032x} {{ ");
+        let mut name = super::anon_structs::anonymous_enum_name_prefix(digest);
         for (i, vname) in variant_names.iter().enumerate() {
             if i > 0 {
                 name.push_str(", ");
@@ -2892,7 +2906,7 @@ impl BodyRirBundle {
         M: Eq + Hash,
         S: DurableNominalSource<K, M>,
     {
-        ProviderIdentityContext::with_interner_mode(source, self.shared_interner(), false)
+        ProviderIdentityContext::with_space_mode(source, self.space.clone(), false)
     }
 
     pub fn provider_body_state<K, M, S>(&self, source: S) -> ProviderBodyAnalysisState<K, M, S>
@@ -3497,7 +3511,7 @@ mod tests {
     fn pool(
         nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(source(nominals), Arc::new(ThreadedRodeo::new()))
+        BodyIdentityPool::new(source(nominals), SharedSymbolSpace::private())
     }
 
     /// A pool seeded with nominals, functions, and methods for the callable
@@ -3518,7 +3532,7 @@ mod tests {
                 anonymous_shapes: AHashMap::new(),
                 def_component_overrides: AHashMap::new(),
             },
-            Arc::new(ThreadedRodeo::new()),
+            SharedSymbolSpace::private(),
         )
     }
 
@@ -3538,7 +3552,7 @@ mod tests {
                 anonymous_shapes: AHashMap::new(),
                 def_component_overrides: AHashMap::new(),
             },
-            Arc::new(ThreadedRodeo::new()),
+            SharedSymbolSpace::private(),
         )
     }
 
@@ -3560,7 +3574,7 @@ mod tests {
                 anonymous_shapes: anonymous_shapes.into_iter().collect(),
                 def_component_overrides: def_component_overrides.into_iter().collect(),
             },
-            Arc::new(ThreadedRodeo::new()),
+            SharedSymbolSpace::private(),
         )
     }
 
@@ -5349,7 +5363,7 @@ mod tests {
             .step_by(2)
             .map(|key| (key, FileId::new(key + 1)))
             .collect();
-        let mut pool = BodyIdentityPool::new(provider, Arc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(provider, SharedSymbolSpace::private());
 
         for key in 0..MODULES {
             let ty = pool.resolve_provider_type(&DType::Nominal(key)).unwrap();
@@ -5399,7 +5413,7 @@ mod tests {
             ),
         ]);
         provider.nominal_file_ids = AHashMap::from([(0, FileId::new(41)), (1, FileId::new(41))]);
-        let mut pool = BodyIdentityPool::new(provider, Arc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(provider, SharedSymbolSpace::private());
 
         pool.resolve_provider_type(&DType::Nominal(0)).unwrap();
         assert_eq!(
@@ -5606,7 +5620,7 @@ mod tests {
         supplied_source.functions.insert(0, function.clone());
         supplied_source.function_reads = Rc::clone(&supplied_reads);
         let mut supplied_pool =
-            BodyIdentityPool::new(supplied_source, Arc::new(ThreadedRodeo::new()));
+            BodyIdentityPool::new(supplied_source, SharedSymbolSpace::private());
         let first = supplied_pool
             .resolve_function_call_from(&0, &function, returns_type, file)
             .unwrap();
@@ -5629,7 +5643,7 @@ mod tests {
         ordinary_source.functions.insert(0, function);
         ordinary_source.function_reads = Rc::clone(&ordinary_reads);
         let mut ordinary_pool =
-            BodyIdentityPool::new(ordinary_source, Arc::new(ThreadedRodeo::new()));
+            BodyIdentityPool::new(ordinary_source, SharedSymbolSpace::private());
         let ordinary = ordinary_pool
             .resolve_function_call(&0, returns_type, file)
             .unwrap();
@@ -5676,7 +5690,7 @@ mod tests {
         let mut durable_source = source([]);
         durable_source.functions.insert(0, broken.clone());
         durable_source.function_reads = Rc::clone(&reads);
-        let mut pool = BodyIdentityPool::new(durable_source, Arc::new(ThreadedRodeo::new()));
+        let mut pool = BodyIdentityPool::new(durable_source, SharedSymbolSpace::private());
         let returns_type = false;
         let file = FileId::new(19);
 

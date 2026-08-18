@@ -1090,7 +1090,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let digest = self.stable_anonymous_identity_digest(&identity);
         self.guard_anonymous_digest_collision(digest, &identity)?;
         let id = self.storage.body_type_pool().reserve_struct_id();
-        let name = format!("__anon_struct_{digest:032x}");
+        let name = super::anon_structs::anonymous_struct_name(digest);
         let name_spur = self.storage.body_interner().get_or_intern(&name);
         let drop_marker = self.storage.body_interner().get_or_intern("__drop");
         let has_destructor = sigs.iter().any(|sig| sig.name == drop_marker);
@@ -1146,7 +1146,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         let digest = self.stable_anonymous_identity_digest(&identity);
         self.guard_anonymous_digest_collision(digest, &identity)?;
-        let mut name = format!("__anon_enum_{digest:032x} {{ ");
+        let mut name = super::anon_structs::anonymous_enum_name_prefix(digest);
         for (index, variant) in names.iter().enumerate() {
             if index > 0 {
                 name.push_str(", ");

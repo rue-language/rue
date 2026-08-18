@@ -129,6 +129,18 @@ a fixed per-body cost the original closure-size argument did not model —
 so the chain fixture is a control for closure-scaled interning only, not
 a no-op shape for this ADR.
 
+*The formatting term was taken afterwards, by this ADR's own mechanism.*
+A shared space makes a rendered-name-to-handle association stable across
+every body of a revision, so the generation can hold that association
+instead of re-deriving the string per body. `SharedSymbolSpace` gained
+the memos (`derived_symbol` for names joined from interned components,
+`keyed_symbol_spelling` / `keyed_name` for names that are a function of a
+producer digest), governed by §4's retirement semantics like everything
+else in the generation and interning nothing the unmemoized path would
+not have interned. Measured a further −0.90% on Lattice and −0.63% on
+Mosaic with the digests and counters below unchanged; recorded in
+`docs/notes/per-body-identity-closure-materialization.md`.
+
 ## Falsifiers
 
 - **Byte identity**: executables and all `compiler_work` counters
@@ -167,7 +179,9 @@ a no-op shape for this ADR.
 - **C. Per-module pre-mint**: strictly dominated by A on Lattice's shape
   (61 named nominals span all 1,263 bodies).
 - **Caching formatted names without sharing the interner**: removes the
-  formatting but not the insertion, which is the expensive half.
+  formatting but not the insertion, which is the expensive half. Caching
+  them *with* the interner shared is the follow-up recorded under "What
+  this buys", and it reaches both halves.
 - **Lazy endpoint installation**: changes work counters by construction;
   a contract change with unestablished benefit, deferred until this ADR
   settles the symbol-space question.

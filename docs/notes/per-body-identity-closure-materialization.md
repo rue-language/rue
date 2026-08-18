@@ -298,6 +298,58 @@ fields, zero differences). Peak RSS is neutral: a -0.1672 percent paired median
 with 0.2842 percent paired MAD over sixteen balanced Lattice pairs. Compiler
 clock is not reported, for the reason given at the top.
 
+## Implemented: the rendering that fed the lookups
+
+Sharing the symbol space (ADR-0076) turned each body's interner insertion into a
+lookup, but a lookup still needs the rendered string, so the *rendering* was
+still performed once per body. Measured on trunk after ADR-0076, cold Lattice at
+6,771,047,268 instructions:
+
+| site | instructions | share | what it renders |
+| --- | ---: | ---: | --- |
+| `member_callable_name_for_owner` | 13,355,977 | 0.197% | `Owner.method` joins, ~80,300 per build |
+| `format_inner` under `find_or_create_anon` | 19,576,691 | 0.289% | `__anon_struct_<digest>` and its `.__drop` |
+| `try_get_or_intern` from the endpoint installer | 63,715,889 | 0.941% | hashing those rendered strings, 160,404 calls |
+
+Both families are a total function of data that does not vary across the
+bodies of one revision — a member name of the owner and member spellings and
+the separator; an anonymous nominal's name of its producer digest — so the
+generation memoizes the spelling-to-handle association in `SharedSymbolSpace`
+(`derived_symbol`, `keyed_symbol_spelling`, `keyed_name`). Only the first body
+to need a spelling renders it; the rest take a handle-keyed map lookup instead
+of a fifty-character render, hash, and compare. The memos live inside the
+generation, so ADR-0076's retirement semantics govern them unchanged, and they
+never intern a string the unrendered path would not have interned — the
+retention counters are read from the interner's length and byte count.
+
+Cold Lattice `member_callable_name_for_owner` falls to 471,179 instructions,
+`format_inner` to 84,228,020, and `try_get_or_intern` to 197,729,360, against a
+new `derived_symbol` term of 8,983,621. Retired instructions:
+
+| shape | before | after | delta |
+| --- | ---: | ---: | ---: |
+| Lattice | 6,771,047,268 | 6,709,961,467 | -61,085,801 (-0.9022%) |
+| Mosaic | 2,787,590,395 | 2,770,003,393 | -17,587,002 (-0.6309%) |
+| chain256 | 553,664,114 | 554,249,181 | +585,067 (+0.1057%) |
+
+chain256 mints no anonymous nominals and installs no anonymous methods, so it
+consults neither memo; its per-generation construction cost measures 5,194
+instructions there and the rest of its movement is inlining reshuffling in
+untouched code (`SourceMetadata::extend_with_appended` -3.1M against
+`Iterator::eq_by` +1.8M and `physical_path` +1.6M).
+
+Executables are byte-identical on all three shapes at `-j1` and `-j4`
+(Lattice `45784ce7c7cde992d7ea820912ca1692c05dc7582a367210d017b3765a9a89e7`,
+Mosaic `4cdead1a98e77fce940b5d6f9b693d8decba26b1c666896bcc78d48a1b79f97b`,
+chain256 `45f01130cbbae57a2fe22f95e23cb34902a8c28040cc677dce56ba84050c0b1a`), as
+are `compiler_work`, `source_metrics`, `emitted_output`, and
+`compiler_boundary` — 615, 381, and 903 compared fields, zero differences. The
+one exclusion is the `compiler_work.query_runtime` scheduling counters at `-j4`,
+which a baseline-versus-baseline pair of the *same* binary moves by the same
+magnitudes; they are identical at `-j1`. Peak RSS over twelve interleaved pairs:
+Lattice -0.22% (MAD 0.34%), Mosaic -0.03% (MAD 0.13%), chain256 +0.04%
+(MAD 0.06%).
+
 ## What needs an ADR
 
 Candidates A, C, and D all move a body-private index space into a shared one.
@@ -328,7 +380,11 @@ evaluated first, which inverts the ordering the pool-shaped framing suggests.
   target is not worth an implementation.
 - **Caching the formatted member callable name across bodies.** It removes the
   formatting but not the interning, because the body's interner is fresh and the
-  insertion is the expensive half. Subsumed by D.
+  insertion is the expensive half. Subsumed by D — *while the interner was
+  body-private*. D landed as ADR-0076 and made the interner revision-shared,
+  which turned this from subsumed into the remaining half: a shared-space lookup
+  still needs the rendered string, and a rendered-name-to-handle association is
+  now stable across the revision's bodies. Implemented above.
 - **Making anonymous-method endpoint installation lazy.** 76 endpoints are
   installed per body and it is not established how many are used. This changes
   work counters by construction, so it is a contract change, not a bounded
