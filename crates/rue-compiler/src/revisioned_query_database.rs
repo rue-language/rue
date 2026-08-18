@@ -5725,6 +5725,43 @@ fn evaluate_call_abi(
     } else {
         CallAbiConvention::Native
     };
+    // Every layout this ABI needs, in one batch: each by-value parameter in
+    // signature order, then the result. A reference parameter is passed as a
+    // pointer whatever it points at, so it contributes no key and no layout
+    // dependency.
+    //
+    // These requests are independent — one parameter's layout never feeds
+    // another's — but issuing them one at a time made them a serial chain
+    // through the query runtime. The adaptive batch keeps the same stable
+    // order and the same per-key observations while letting independent
+    // evaluators run concurrently, and degrades to in-task requests when the
+    // enclosing batch already owns every worker slot.
+    //
+    // Duplicate parameter types stay duplicated rather than deduplicated, so
+    // a signature observes the layout family exactly as often as it did
+    // before, and the repeats resolve against the family memo.
+    let layout_terminals = context.query_registered_adaptive_batch(
+        layouts,
+        signature
+            .parameters
+            .iter()
+            .filter(|(mode, _)| matches!(mode, DurableParameterMode::Value))
+            .map(|(_, ty)| ty)
+            .chain(std::iter::once(&signature.result))
+            .map(|ty| crate::type_queries::TypeQueryKey {
+                ty: ty.clone(),
+                configuration: key.configuration.clone(),
+            }),
+    )?;
+    let Some((return_terminal, parameter_terminals)) = layout_terminals.split_last() else {
+        unreachable!("the batch always carries the result layout")
+    };
+
+    // The batch resolves every layout before any is inspected, so a failing
+    // parameter no longer short-circuits the requests after it. Reporting
+    // still walks parameters in signature order and stops at the first
+    // failure, so which failure a caller sees is unchanged.
+    let mut parameter_terminals = parameter_terminals.iter();
     let mut arguments = Vec::with_capacity(signature.parameters.len());
     for (mode, ty) in &signature.parameters {
         if !matches!(mode, DurableParameterMode::Value) {
@@ -5735,14 +5772,10 @@ fn evaluate_call_abi(
             });
             continue;
         }
-        let layout = context.query_registered(
-            layouts,
-            crate::type_queries::TypeQueryKey {
-                ty: ty.clone(),
-                configuration: key.configuration.clone(),
-            },
-        )?;
-        let layout = match layout_from_terminal(&layout) {
+        let Some(terminal) = parameter_terminals.next() else {
+            unreachable!("the batch carries one layout per by-value parameter")
+        };
+        let layout = match layout_from_terminal(terminal) {
             Ok(layout) => layout,
             Err(failure) => {
                 return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
@@ -5797,14 +5830,7 @@ fn evaluate_call_abi(
             class,
         });
     }
-    let return_layout = context.query_registered(
-        layouts,
-        crate::type_queries::TypeQueryKey {
-            ty: signature.result.clone(),
-            configuration: key.configuration.clone(),
-        },
-    )?;
-    let return_layout = match layout_from_terminal(&return_layout) {
+    let return_layout = match layout_from_terminal(return_terminal) {
         Ok(layout) => layout,
         Err(failure) => {
             return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
@@ -32507,6 +32533,96 @@ fn main() -> i32 {
                 glue.arguments[0].class,
                 A::NativeDirect { slots: 1 }
             ));
+        }
+    }
+
+    #[test]
+    fn call_abi_batches_layouts_across_mixed_modes_and_duplicate_parameter_types() {
+        use crate::type_queries::{
+            CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
+        };
+        // `mixed` interleaves reference and by-value parameters and repeats
+        // `[u64; 7]`, so the batch is sparser than the parameter list and
+        // carries a duplicate key. `scalars` repeats `u32` under Target-C.
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Pair { a: i64, b: i64 }\n\
+                 fn mixed(borrow left: Pair, first: [u64; 7], inout right: Pair, \
+                 second: [u64; 7], tail: i32) -> [u64; 7] { second }\n\
+                 extern \"C\" { fn scalars(first: u32, second: u32, third: u64) -> u32; }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let mixed = free_function_instance(&module, "mixed");
+        let scalars = free_function_instance(&module, "scalars");
+
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let mixed = request_call_abi(&database, revision, mixed.clone(), target);
+            assert_eq!(mixed.convention, C::Native);
+            assert_eq!(mixed.arguments.len(), 5);
+
+            // Reference parameters stay layout-free and keep one value slot,
+            // and the by-value parameters keep their signature positions even
+            // though only they contributed a batch key.
+            for index in [0, 2] {
+                assert_eq!(mixed.arguments[index].class, A::Reference);
+                assert_eq!(mixed.arguments[index].value_slots, 1);
+            }
+            // The duplicated `[u64; 7]` classifies identically at both
+            // positions: one repeated key, one answer.
+            assert_eq!(mixed.arguments[1].class, mixed.arguments[3].class);
+            assert_eq!(mixed.arguments[1].value_slots, 7);
+            assert_eq!(mixed.arguments[3].value_slots, 7);
+            assert!(matches!(
+                mixed.arguments[1].class,
+                A::NativeDirect { slots: 7 } | A::NativeIndirect
+            ));
+            assert_eq!(mixed.arguments[4].class, A::NativeDirect { slots: 1 });
+            // The result layout is the last entry of the same batch.
+            assert_eq!(
+                mixed.return_class,
+                if target == crate::Target::X86_64Linux {
+                    R::NativeIndirect { slots: 7 }
+                } else {
+                    R::NativeRegisters { slots: 7 }
+                }
+            );
+
+            let scalars = request_call_abi(&database, revision, scalars.clone(), target);
+            assert_eq!(
+                scalars.convention,
+                C::TargetC(if target == crate::Target::X86_64Linux {
+                    rue_air::TargetCAbiFlavor::SysVAmd64
+                } else {
+                    rue_air::TargetCAbiFlavor::Aapcs64
+                })
+            );
+            assert_eq!(scalars.arguments.len(), 3);
+            assert_eq!(scalars.arguments[0].class, scalars.arguments[1].class);
+            assert_eq!(
+                scalars.arguments[0].class,
+                A::CScalar {
+                    extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
+                }
+            );
+            assert_eq!(
+                scalars.arguments[2].class,
+                A::CScalar {
+                    extension: rue_air::ScalarAbiExtension::None
+                }
+            );
+            assert_eq!(
+                scalars.return_class,
+                R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
+                }
+            );
         }
     }
 
