@@ -18,7 +18,12 @@ use crate::{
 };
 
 /// Version of the target-independent candidate policy represented by plans.
-pub const IMPORT_DISCOVERY_POLICY_VERSION: u32 = 1;
+///
+/// Version 2 (ADR-0078): one candidate per relative specifier — extensionless
+/// paths name the directory facade only, and the importing file's directory is
+/// the only search base. `std` anchors to the program: the vendored
+/// `{root}/std/_std.rue` precedes the captured toolchain std root.
+pub const IMPORT_DISCOVERY_POLICY_VERSION: u32 = 2;
 
 /// Immutable invocation inputs captured once for a discovery epoch.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1381,20 +1386,62 @@ fn canonicalize_accepted(mut accepted: Vec<&AcceptedImportSource>) -> Vec<&Accep
 
 /// Compute candidate precedence for one exact indexed occurrence from captured
 /// invocation context and the importer's accepted-read provenance.
+/// The normalized candidate a relative occurrence would probe, when that
+/// candidate lies outside the project root (ADR-0078: project-root-relative
+/// identity is total, so an escaping import is rejected before any filesystem
+/// request is derived). `std` is a reserved program-anchored specifier and a
+/// trusted standard-library importer resolves within its own root; neither is
+/// subject to the check.
+pub(crate) fn escaping_import_candidate(
+    context: &ImportDiscoveryContext,
+    specifier: &str,
+    importer_requested_path: &str,
+) -> CompileResult<Option<String>> {
+    if specifier == "std" {
+        return Ok(None);
+    }
+    let importer_path = normalize_absolute(importer_requested_path)?;
+    if let Some(std_root) = context.std_root() {
+        if Path::new(&importer_path).starts_with(std_root) {
+            return Ok(None);
+        }
+    }
+    let importer_dir = parent_dir(&importer_path);
+    let groups = discovery_candidate_groups(
+        specifier,
+        &importer_dir,
+        context.project_root(),
+        context.std_root(),
+    );
+    let candidate = normalize_path(&groups[0][0]);
+    if Path::new(&candidate).starts_with(context.project_root()) {
+        Ok(None)
+    } else {
+        Ok(Some(candidate))
+    }
+}
+
 pub(crate) fn discovery_groups_for_occurrence(
     context: &ImportDiscoveryContext,
     occurrence: &ImportOccurrenceKey,
     importer_requested_path: &str,
 ) -> CompileResult<Vec<Arc<[ImportDiscoveryRequest]>>> {
-    let root_dir = context.project_root().to_owned();
+    // An escaping occurrence derives no filesystem requests: its rejection is
+    // decided lexically from the importer anchor and project root alone, and
+    // the diagnostic projection recomputes the same check (`escape_diagnostics`).
+    if escaping_import_candidate(context, occurrence.specifier(), importer_requested_path)?
+        .is_some()
+    {
+        return Ok(Vec::new());
+    }
     let importer_path = normalize_absolute(importer_requested_path)?;
     let importer_dir = parent_dir(&importer_path);
-    let mut bases = vec![importer_dir];
-    if !bases.contains(&root_dir) {
-        bases.push(root_dir);
-    }
-    let candidate_groups =
-        discovery_candidate_groups(occurrence.specifier(), &bases, context.std_root());
+    let candidate_groups = discovery_candidate_groups(
+        occurrence.specifier(),
+        &importer_dir,
+        context.project_root(),
+        context.std_root(),
+    );
     let normalized_specifier = normalize_path(occurrence.specifier());
     candidate_groups
         .into_iter()
@@ -1418,7 +1465,7 @@ pub(crate) fn discovery_groups_for_occurrence(
                         group: group_index,
                         position,
                         requested_path: Arc::from(normalize_path(&candidate)),
-                        role: candidate_role(occurrence.specifier(), group_index, position),
+                        role: candidate_role(occurrence.specifier()),
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1503,12 +1550,57 @@ pub(crate) fn exact_import_has_failures(
     })
 }
 
+/// E0713 diagnostics for occurrences whose single candidate escapes the
+/// project root. Recomputed from the parsed program and captured context —
+/// escaping occurrences own no discovery requests, so they never appear in
+/// request groups or the observation ledger.
+pub(crate) fn escape_diagnostics(
+    program: &ParsedProgram,
+    context: &ImportDiscoveryContext,
+) -> CompileErrors {
+    let mut errors = CompileErrors::new();
+    for site in program.import_directives().iter() {
+        let importer_path = match requested_path_for_module(context, site.importer()) {
+            Ok(path) => path,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        match escaping_import_candidate(context, site.specifier(), &importer_path) {
+            Ok(Some(candidate)) => {
+                let file_id = program
+                    .module(site.importer())
+                    .expect("import directive belongs to parsed program")
+                    .file_id();
+                let span = rue_span::Span::with_file(
+                    file_id,
+                    site.source_offset(),
+                    site.source_end(),
+                );
+                errors.push(CompileError::new(
+                    ErrorKind::ImportEscapesRoot {
+                        path: site.specifier().to_owned(),
+                        candidate,
+                    },
+                    span,
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => errors.push(error),
+        }
+    }
+    errors
+}
+
 pub(crate) fn exact_import_diagnostics(
     program: &ParsedProgram,
+    context: &ImportDiscoveryContext,
     groups: &[Arc<[ImportDiscoveryRequest]>],
     ledger: &ImportObservationLedger,
 ) -> CompileErrors {
     let mut errors = ImportDiscoveryPlan::shape_diagnostics(program);
+    errors.extend(escape_diagnostics(program, context));
     let mut groups_by_site: BTreeMap<&ImportOccurrenceKey, Vec<&Arc<[ImportDiscoveryRequest]>>> =
         BTreeMap::new();
     for group in groups {
@@ -2506,21 +2598,32 @@ impl DiscoverySourceAssembler {
     }
 }
 
-fn candidate_role(specifier: &str, group: u32, position: u32) -> ImportCandidateRole {
-    if specifier == "std" && group == 0 {
+fn candidate_role(specifier: &str) -> ImportCandidateRole {
+    if specifier == "std" {
         ImportCandidateRole::StandardLibraryFacade
     } else if specifier.ends_with(".rue") {
         ImportCandidateRole::ExactFile
-    } else if position == 0 {
-        ImportCandidateRole::FileModule
     } else {
         ImportCandidateRole::DirectoryFacade
     }
 }
 
+/// Derive the ordered candidate groups for one occurrence under policy
+/// version 2 (ADR-0078). Every group holds exactly one candidate:
+///
+/// - `std` probes the program's vendored `{root}/std/_std.rue` first, then
+///   the captured toolchain root's facade. Ambient environment never replaces
+///   a standard library the program ships.
+/// - A `.rue`-suffixed specifier names exactly that path relative to the
+///   importing file's directory.
+/// - An extensionless specifier names the directory facade
+///   `{P}/_{basename}.rue`, importer-relative. File modules are spelled with
+///   their extension; there is no file/facade ambiguity and no root-relative
+///   fallback.
 fn discovery_candidate_groups(
     specifier: &str,
-    base_dirs: &[String],
+    importer_dir: &str,
+    project_root: &str,
     std_root: Option<&str>,
 ) -> Vec<Vec<String>> {
     let join = |base: &str, relative: &str| {
@@ -2530,35 +2633,21 @@ fn discovery_candidate_groups(
             .into_owned()
     };
     if specifier == "std" {
-        return std_root
-            .into_iter()
-            .map(|root| vec![join(root, "_std.rue")])
-            .chain(
-                base_dirs
-                    .iter()
-                    .map(|base| vec![join(base, "std/_std.rue")]),
-            )
+        return std::iter::once(vec![join(project_root, "std/_std.rue")])
+            .chain(std_root.into_iter().map(|root| vec![join(root, "_std.rue")]))
             .collect();
     }
     if specifier.ends_with(".rue") {
-        return base_dirs
-            .iter()
-            .map(|base| vec![join(base, specifier)])
-            .collect();
+        return vec![vec![join(importer_dir, specifier)]];
     }
     let basename = Path::new(specifier)
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or(specifier);
-    base_dirs
-        .iter()
-        .map(|base| {
-            vec![
-                join(base, &format!("{specifier}.rue")),
-                join(base, &format!("{specifier}/_{basename}.rue")),
-            ]
-        })
-        .collect()
+    vec![vec![join(
+        importer_dir,
+        &format!("{specifier}/_{basename}.rue"),
+    )]]
 }
 
 fn requested_path_for_module(
@@ -3131,7 +3220,7 @@ mod tests {
                     1,
                     "/project/main.rue",
                     "main.rue",
-                    "const a = @import(\"a\"); fn main() -> i32 { a.value() }",
+                    "const a = @import(\"a.rue\"); fn main() -> i32 { a.value() }",
                 ),
                 (2, "/project/a.rue", "a.rue", "pub fn value() -> i32 { 1 }"),
             ],
@@ -3214,7 +3303,7 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_is_non_closure_and_accepted_ambiguity_reads_both_candidates() {
+    fn cancellation_is_non_closure_and_denial_is_failure() {
         let snapshot = SourceSnapshot::single(
             "/project/main.rue",
             "const m = @import(\"thing\"); fn main() -> i32 { 0 }",
@@ -3223,8 +3312,12 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
         let plan = session.import_discovery_plan(context(7)).unwrap();
+        // Policy v2: an extensionless specifier owes exactly one candidate,
+        // the directory facade.
         let pending = plan.pending_requests(&ImportObservationLedger::default());
-        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].requested_path(), "/project/thing/_thing.rue");
+        assert_eq!(pending[0].role(), ImportCandidateRole::DirectoryFacade);
 
         let mut cancelled = ImportObservationLedger::default();
         cancelled
@@ -3237,39 +3330,25 @@ mod tests {
         assert!(plan.accepted_sources(&cancelled).is_empty());
 
         let mut complete = ImportObservationLedger::default();
-        for (request, canonical) in pending.into_iter().zip(["/real/file", "/real/facade"]) {
-            let source = AcceptedImportSource::new(
-                Arc::from(request.requested_path()),
-                Arc::from(canonical),
-                identity(),
-                metadata_fingerprint(),
-                Arc::new("pub fn answer() -> i32 { 42 }".into()),
-            )
-            .unwrap();
-            complete
-                .record(ImportObservation::accepted(request, source).unwrap())
-                .unwrap();
-        }
-        assert_eq!(plan.accepted_sources(&complete).len(), 2);
-        assert!(plan.pending_requests(&complete).is_empty());
-
-        let pending = plan.pending_requests(&ImportObservationLedger::default());
-        let mut denied_arm = ImportObservationLedger::default();
-        let accepted = AcceptedImportSource::new(
+        let source = AcceptedImportSource::new(
             Arc::from(pending[0].requested_path()),
-            Arc::from("/real/file"),
+            Arc::from("/real/facade"),
             identity(),
             metadata_fingerprint(),
             Arc::new("pub fn answer() -> i32 { 42 }".into()),
         )
         .unwrap();
-        denied_arm
-            .record(ImportObservation::accepted(pending[0].clone(), accepted).unwrap())
+        complete
+            .record(ImportObservation::accepted(pending[0].clone(), source).unwrap())
             .unwrap();
+        assert_eq!(plan.accepted_sources(&complete).len(), 1);
+        assert!(plan.pending_requests(&complete).is_empty());
+
+        let mut denied_arm = ImportObservationLedger::default();
         denied_arm
             .record(
                 ImportObservation::failure(
-                    pending[1].clone(),
+                    pending[0].clone(),
                     ImportObservationStatus::DeniedLexical,
                 )
                 .unwrap(),
@@ -3600,7 +3679,7 @@ mod tests {
 
     #[test]
     fn fixed_point_discovery_accumulates_exact_work_and_seeds_incremental_parse() {
-        let main_text = "const h = @import(\"helper\"); fn main() -> i32 { h.answer() }";
+        let main_text = "const h = @import(\"helper.rue\"); fn main() -> i32 { h.answer() }";
         let helper_text = "pub fn answer() -> i32 { 42 }";
         let root_only = snapshot(&[(1, "/project/main.rue", "main.rue", main_text)], 1);
         let complete = snapshot(
@@ -3907,13 +3986,13 @@ mod tests {
                     1,
                     "/project/main.rue",
                     "main.rue",
-                    "const a = @import(\"a\"); fn main() -> i32 { 0 }",
+                    "const a = @import(\"a.rue\"); fn main() -> i32 { 0 }",
                 ),
                 (
                     2,
                     "/project/a.rue",
                     "a.rue",
-                    "const root = @import(\"main\"); pub fn answer() -> i32 { 42 }",
+                    "const root = @import(\"main.rue\"); pub fn answer() -> i32 { 42 }",
                 ),
             ],
             1,
@@ -3940,9 +4019,9 @@ mod tests {
                     .find(|entry| entry.requested_path() == request.requested_path())
                 {
                     let text = if entry.module().as_str() == "a.rue" {
-                        "const root = @import(\"main\"); pub fn answer() -> i32 { 42 }"
+                        "const root = @import(\"main.rue\"); pub fn answer() -> i32 { 42 }"
                     } else {
-                        "const a = @import(\"a\"); fn main() -> i32 { 0 }"
+                        "const a = @import(\"a.rue\"); fn main() -> i32 { 0 }"
                     };
                     ImportObservation::accepted(
                         request,
@@ -4348,8 +4427,12 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_and_std_missing_close_as_attempted_with_typed_diagnostics() {
-        let ambiguous = snapshot(
+    fn both_forms_resolve_to_facade_and_std_missing_closes_attempted() {
+        // Policy v2: a tree containing BOTH thing.rue and thing/_thing.rue is
+        // not ambiguous — the extensionless specifier names the facade alone,
+        // and the file spelling requires its extension. The former E0708
+        // surface is deleted, not diagnosed.
+        let both_forms = snapshot(
             &[
                 (
                     1,
@@ -4370,42 +4453,46 @@ mod tests {
         let mut session = crate::CompilerSession::new();
         let plan = session
             .stage_import_discovery(
-                &ambiguous,
+                &both_forms,
                 context(10),
-                accepted_reads(&ambiguous),
+                accepted_reads(&both_forms),
                 ImportObservationLedger::default(),
             )
             .unwrap();
         let mut ledger = ImportObservationLedger::default();
-        for request in plan.pending_requests(&ledger) {
-            let (contents, identity) = if request.requested_path().ends_with("/_thing.rue") {
-                ("const x = 2;", PhysicalFileIdentity::new(1, 3))
-            } else {
-                ("const x = 1;", PhysicalFileIdentity::new(1, 2))
-            };
+        let pending = plan.pending_requests(&ledger);
+        assert_eq!(pending.len(), 1, "one facade candidate, never the file");
+        for request in pending {
+            assert!(request.requested_path().ends_with("/_thing.rue"));
             let source = AcceptedImportSource::new(
                 Arc::from(request.requested_path()),
                 Arc::from(request.requested_path()),
-                identity,
+                PhysicalFileIdentity::new(1, 3),
                 metadata_fingerprint(),
-                Arc::new(contents.into()),
+                Arc::new("const x = 2;".into()),
             )
             .unwrap();
             ledger
                 .record(ImportObservation::accepted(request, source).unwrap())
                 .unwrap();
         }
-        let errors = session.close_import_discovery(ledger).unwrap_err();
-        assert!(matches!(
-            &errors.first().unwrap().kind,
-            ErrorKind::AmbiguousModule(_)
-        ));
-        let attempted = session.discovery_attempt().unwrap();
+        let closed = session.close_import_discovery(ledger).unwrap();
         assert_eq!(
-            attempted.status(),
-            crate::ImportDiscoveryRevisionStatus::ClosedAttempted
+            closed.status(),
+            crate::ImportDiscoveryRevisionStatus::ClosedValid
         );
-        assert!(attempted.graph().is_some());
+        let graph = closed.graph().expect("valid close retains graph");
+        let record = graph
+            .graph()
+            .records()
+            .iter()
+            .find(|record| record.normalized_specifier() == "thing")
+            .expect("occurrence resolves");
+        assert!(matches!(
+            record.resolution(),
+            crate::CanonicalImportResolution::Resolved(module)
+                if module.as_str() == "thing/_thing.rue"
+        ));
 
         let std_missing = snapshot(
             &[(

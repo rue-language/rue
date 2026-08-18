@@ -1526,6 +1526,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             E::ModuleNotFound { path, candidates } => path
                 .retained_charge()
                 .saturating_add(candidates.retained_charge()),
+            E::ImportEscapesRoot { path, candidate } => path
+                .retained_charge()
+                .saturating_add(candidate.retained_charge()),
             E::MissingFields(value) => (std::mem::size_of_val(value.as_ref()) as u64)
                 .saturating_add(value.struct_name.retained_charge())
                 .saturating_add(value.missing_fields.retained_charge()),
