@@ -240,4 +240,5 @@ The table is generated from ADR frontmatter. Run
 | [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Implemented | architecture, compiler, incremental, performance, query-engine |
 | [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Implemented | architecture, compiler, performance, query-engine, type-system |
 | [0077](0077-batch-endorsement-inheritance.md) | Endorsement inheritance for batch children | Proposal | architecture, compiler, performance, query-engine, parallelization |
+| [0078](0078-import-resolution-policy.md) | Single-candidate import resolution and program-anchored std | Accepted | language, modules, spec, compiler |
 <!-- ADR-INDEX:END -->
