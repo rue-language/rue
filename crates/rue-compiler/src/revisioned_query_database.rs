@@ -2757,7 +2757,7 @@ struct ResolvedImportBinding {
     target: Option<ModuleId>,
 }
 
-/// A deterministic import-binding failure. Absent, rejected, and ambiguous are
+/// A deterministic import-binding failure. Absent and rejected are
 /// first-class terminal results and dependency edges (ADR-0066 §4 "A failed or
 /// absent module binding is a first-class terminal result and dependency
 /// edge"): a later edit that makes the path resolve changes this stamp and
@@ -2769,8 +2769,6 @@ enum ImportBindingFailure {
     /// Exactly one directive names it, but the specifier is malformed (it
     /// normalizes to an empty module path).
     Rejected,
-    /// Canonical resolution found more than one physical target.
-    Ambiguous,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7493,9 +7491,6 @@ impl SemanticConstEvaluator<'_, '_> {
             DeclarationImportQueryValue::Available(crate::CanonicalImportResolution::Missing) => {
                 Self::failure(format!("cannot find module `{specifier}`"))
             }
-            DeclarationImportQueryValue::Available(
-                crate::CanonicalImportResolution::Ambiguous { .. },
-            ) => Self::failure(format!("ambiguous module `{specifier}`")),
             DeclarationImportQueryValue::Failure(
                 crate::declaration_candidate::DeclarationImportFailure::ResolutionUnavailable(_),
             ) => Err(EvaluateSemanticConstError::Abort(QueryAbort::MissingInput(
@@ -11944,9 +11939,6 @@ impl RevisionedQueryDatabase {
                         match &resolved.resolution {
                             Some(crate::CanonicalImportResolution::Resolved(target)) => {
                                 binding.target = Some(target.clone());
-                            }
-                            Some(crate::CanonicalImportResolution::Ambiguous { .. }) => {
-                                value = LookupImportValue(Err(ImportBindingFailure::Ambiguous));
                             }
                             Some(crate::CanonicalImportResolution::Missing) => {
                                 value = LookupImportValue(Err(ImportBindingFailure::Absent));
@@ -21261,7 +21253,6 @@ fn import_resolution_from_value(value: &LookupImportValue) -> rue_air::ImportRes
         },
         Err(ImportBindingFailure::Absent) => rue_air::ImportResolution::Absent,
         Err(ImportBindingFailure::Rejected) => rue_air::ImportResolution::Rejected,
-        Err(ImportBindingFailure::Ambiguous) => rue_air::ImportResolution::Ambiguous,
     }
 }
 

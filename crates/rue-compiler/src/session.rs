@@ -2995,7 +2995,6 @@ impl CompilerSession {
             matches!(
                 problem,
                 crate::CanonicalImportGraphProblem::MissingResolution { .. }
-                    | crate::CanonicalImportGraphProblem::AmbiguousResolution { .. }
             )
         });
         if !resolution_only {

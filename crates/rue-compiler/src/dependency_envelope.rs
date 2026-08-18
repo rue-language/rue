@@ -55,14 +55,8 @@ pub struct DependencyTopologyRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum DependencyResolutionOutcome {
-    Resolved {
-        module: String,
-    },
+    Resolved { module: String },
     Missing,
-    Ambiguous {
-        file_module: String,
-        directory_module: String,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -150,7 +144,6 @@ impl DependencyEnvelope {
                         matches!(
                             problem,
                             CanonicalImportGraphProblem::MissingResolution { .. }
-                                | CanonicalImportGraphProblem::AmbiguousResolution { .. }
                         )
                     }) =>
             {
@@ -183,13 +176,6 @@ impl DependencyEnvelope {
                             }
                         }
                         CanonicalImportResolution::Missing => DependencyResolutionOutcome::Missing,
-                        CanonicalImportResolution::Ambiguous {
-                            file_module,
-                            directory_module,
-                        } => DependencyResolutionOutcome::Ambiguous {
-                            file_module: file_module.as_str().to_owned(),
-                            directory_module: directory_module.as_str().to_owned(),
-                        },
                     },
                 })
                 .collect(),
