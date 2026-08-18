@@ -1,7 +1,7 @@
 ---
 id: 0079
 title: "Request-scoped immutable semantic universe"
-status: proposed
+status: proposal
 tags: [architecture, compiler, performance, query-engine, type-system]
 feature-flag: null
 created: 2026-08-18
