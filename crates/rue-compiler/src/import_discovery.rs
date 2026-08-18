@@ -1112,6 +1112,9 @@ pub struct ImportDiscoveryWave {
     /// Accepted sources reduced hop by hop, in the canonical order each hop
     /// offers them to the assembler.
     accepted: Vec<AcceptedImportSource>,
+    /// Each accepted source's eager parse, staged for the published revision's
+    /// canonical parse query so the same bytes are not lexed and parsed twice.
+    staged_parses: Vec<crate::parsed_modules::StagedModuleParse>,
     /// A source that did not parse ends the wave at that hop's boundary, so the
     /// published revision holds exactly what the equivalent round would have and
     /// the canonical staging parse reports the diagnostics.
@@ -1151,6 +1154,7 @@ impl ImportDiscoveryWave {
             batch_fanout: Vec::new(),
             batch_observations: Vec::new(),
             accepted: Vec::new(),
+            staged_parses: Vec::new(),
             sealed: false,
         })
     }
@@ -1223,7 +1227,7 @@ impl ImportDiscoveryWave {
             if !self.known_modules.insert(module.clone()) {
                 continue;
             }
-            let Some(sites) = crate::parsed_modules::parse_unpublished_import_sites(
+            let Some((sites, staged)) = crate::parsed_modules::parse_unpublished_module(
                 &module,
                 source.canonical_path(),
                 source.source(),
@@ -1231,6 +1235,7 @@ impl ImportDiscoveryWave {
                 self.sealed = true;
                 continue;
             };
+            self.staged_parses.push(staged);
             let importer_path = requested_path_for_module(&self.context, &module)?;
             for site in &sites {
                 let occurrence = ImportOccurrenceKey::from_directive(site);
@@ -1290,6 +1295,13 @@ impl ImportDiscoveryWave {
             .into_iter()
             .map(Arc::<[ImportDiscoveryRequest]>::from)
             .collect();
+    }
+
+    /// Take the wave's staged eager parses for the parse-query stage. Called by
+    /// publication so a staged tree becomes consumable exactly when the revision
+    /// carrying its source does.
+    pub(crate) fn take_staged_parses(&mut self) -> Vec<crate::parsed_modules::StagedModuleParse> {
+        std::mem::take(&mut self.staged_parses)
     }
 
     /// The single batch this wave publishes: every hop's operations, fanout, and

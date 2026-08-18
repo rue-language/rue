@@ -374,6 +374,9 @@ where
     }
 }
 
+/// Wave-parsed modules awaiting their one canonical parse-query consumption.
+type ParseStage = Arc<Mutex<HashMap<ModuleId, crate::parsed_modules::StagedModuleParse>>>;
+
 #[cfg(test)]
 type DeclarationBodyPlanFailureInjection = Arc<
     Mutex<
@@ -391,6 +394,10 @@ pub(crate) struct RevisionedQueryDatabase {
     source_stamps: VecDeque<(super::session::ExactSourceInput, u64)>,
     import_store: Arc<Mutex<ImportInputStore>>,
     module_store: Arc<Mutex<ModuleInputStore>>,
+    /// Wave-parsed modules staged for `compiler.parse-module` (ADR-0075). Each
+    /// entry is consumed at most once, and only on exact `SourceId` identity,
+    /// so the stage is a work handoff rather than a second parse authority.
+    parse_stage: ParseStage,
     #[cfg(test)]
     test_import_store: Arc<Mutex<TestImportInputStore>>,
     #[cfg(test)]
@@ -11246,6 +11253,8 @@ impl RevisionedQueryDatabase {
         let declaration_body_plan_astgen_evaluations =
             Arc::new(std::sync::atomic::AtomicU64::new(0));
         let parse_store = module_store.clone();
+        let parse_stage: ParseStage = Arc::new(Mutex::new(HashMap::new()));
+        let parse_stage_for_parse_modules = parse_stage.clone();
         let parse_modules = runtime
             .family_with_equality_and_evaluator(
                 "compiler.parse-module",
@@ -11254,8 +11263,20 @@ impl RevisionedQueryDatabase {
                 move |context, _, key: &ModuleQueryKey| {
                     context.input(module_source_input(&key.0))?;
                     let view = module_input_view(&parse_store, context.revision())?;
+                    // Taking the staged wave parse is a pure work handoff: the
+                    // consumer verifies exact SourceId identity against the
+                    // snapshot this query's declared input pinned, so the value
+                    // remains a function of that input alone.
+                    let staged = parse_stage_for_parse_modules
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(&key.0);
                     let (result, work) =
-                        crate::parsed_modules::parse_source_snapshot_module(&view.snapshot, &key.0);
+                        crate::parsed_modules::parse_source_snapshot_module_with_stage(
+                            &view.snapshot,
+                            &key.0,
+                            staged,
+                        );
                     Ok(QueryOutput::success(ParseModuleValue { result, work }))
                 },
             )
@@ -15996,6 +16017,7 @@ impl RevisionedQueryDatabase {
             source_stamps: VecDeque::new(),
             import_store,
             module_store,
+            parse_stage,
             #[cfg(test)]
             test_import_store,
             #[cfg(test)]
@@ -19713,6 +19735,27 @@ impl RevisionedQueryDatabase {
         }
         groups.sort_by(|left, right| left[0].cmp(&right[0]));
         Ok(groups)
+    }
+
+    /// Stage a wave's eager parses for the canonical parse query.
+    ///
+    /// A newer stage for the same module replaces an older unconsumed one, and
+    /// consumption still verifies exact `SourceId` identity, so a stale entry
+    /// can only ever be discarded, never used.
+    pub(crate) fn stage_module_parses(
+        &self,
+        staged: Vec<crate::parsed_modules::StagedModuleParse>,
+    ) {
+        if staged.is_empty() {
+            return;
+        }
+        let mut stage = self
+            .parse_stage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for parse in staged {
+            stage.insert(parse.module().clone(), parse);
+        }
     }
 
     pub(crate) fn publish_import_batch(

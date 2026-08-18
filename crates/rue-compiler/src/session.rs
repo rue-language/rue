@@ -1800,10 +1800,11 @@ impl CompilerSession {
     /// the same order.
     pub(crate) fn publish_import_wave(
         &mut self,
-        wave: crate::ImportDiscoveryWave,
+        mut wave: crate::ImportDiscoveryWave,
         snapshot: &SourceSnapshot,
         accepted_reads: crate::AcceptedReadManifest,
     ) -> crate::CompileResult<(crate::ImportInputRevision, crate::ImportDemandFrontier)> {
+        let staged_parses = wave.take_staged_parses();
         let (frontier, observations) = wave.into_batch();
         let revision = self.queries.revisioned.publish_import_batch(
             &frontier,
@@ -1811,6 +1812,9 @@ impl CompilerSession {
             accepted_reads,
             observations,
         )?;
+        // Stage only after the revision carrying these sources exists, so the
+        // parse query can never observe a stage for unpublished content.
+        self.queries.revisioned.stage_module_parses(staged_parses);
         Ok((revision, frontier))
     }
 
