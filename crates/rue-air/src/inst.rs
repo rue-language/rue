@@ -2459,6 +2459,10 @@ impl Air {
         }
     }
 
+    pub(crate) fn reserve_instructions(&mut self, additional: usize) {
+        self.instructions.reserve(additional);
+    }
+
     /// Record a local slot as a non-owning borrow binding (see `borrow_slots`).
     pub(crate) fn add_borrow_slot(&mut self, slot: u32) {
         if !self.borrow_slots.contains(&slot) {

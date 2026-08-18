@@ -772,6 +772,7 @@ where
         let return_type = import_type(&body.return_type)?;
         let mut air = Air::new(return_type);
         let inst_len = body.instructions.len();
+        air.reserve_instructions(inst_len);
         let place_len = body.places.len();
         let check_ref = |r: u32, current: usize| -> Result<AirRef, F> {
             let index = r as usize;
