@@ -2007,6 +2007,24 @@ impl CompilerSession {
             .physical_identity_visits()
     }
 
+    /// Attempt-handoff lifecycles offered to a task's observation scope, and
+    /// the scope positions examined answering them. See
+    /// [`rue_query::RuntimeMetrics::handoff_observations`].
+    pub(crate) fn handoff_observations(&self) -> u64 {
+        self.queries
+            .revisioned
+            .runtime_retention_metrics()
+            .handoff_observations
+    }
+
+    /// See [`Self::handoff_observations`].
+    pub(crate) fn handoff_observation_visits(&self) -> u64 {
+        self.queries
+            .revisioned
+            .runtime_retention_metrics()
+            .handoff_observation_visits
+    }
+
     /// A snapshot of the production provider-op observation counters
     /// (ADR-0066 §4).
     pub(crate) fn provider_observation_metrics(

@@ -321,6 +321,24 @@ pub fn accepted_read_identity_visits(session: &crate::CompilerSession) -> u64 {
     session.accepted_read_identity_visits()
 }
 
+/// Attempt-handoff lifecycles offered to a task's observation scope ("has this
+/// scope already recorded this lifecycle?"), asked once per handoff a task
+/// observes or inherits from a structured child. Paired with
+/// [`handoff_observation_visits`] exactly as the two pairs above.
+pub fn handoff_observations(session: &crate::CompilerSession) -> u64 {
+    session.handoff_observations()
+}
+
+/// Observation-scope positions examined answering [`handoff_observations`]. An
+/// already committed lifecycle carries no obligation and is answered without
+/// being recorded, so a scope holds only what is still live and the ratio
+/// between these two counters sits at one; a scope that begins accumulating
+/// live lifecycles turns each observation into a walk over the ones before it,
+/// and that ratio is the only thing which moves.
+pub fn handoff_observation_visits(session: &crate::CompilerSession) -> u64 {
+    session.handoff_observation_visits()
+}
+
 /// An owned snapshot of the provider-op observation counters (RUE-1091,
 /// ADR-0066 §4): how many facts of each §4 family the exact body-fact provider
 /// observed. Owned plain data, not a query-engine record. These are live
