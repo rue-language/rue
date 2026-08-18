@@ -3879,6 +3879,55 @@ struct SemanticNucleusTypeProvider<'a> {
     dependency_kind: rue_air::DeclarationTypeDependencyKind,
     dependencies: BTreeSet<crate::semantic_query_nucleus::SemanticDeclarationDependency>,
     deferred_ownership: BTreeSet<crate::semantic_query_nucleus::DeferredOwnershipGate>,
+    /// Recursive ownership answers already proven for a nominal type, for the
+    /// life of this provider. See [`OwnershipProperties`].
+    ownership_properties: BTreeMap<crate::StableDefinitionKey, OwnershipProperties>,
+}
+
+/// One nominal type's recursive ownership answers, memoized per provider.
+///
+/// `type_carries_linear`, `type_has_drop_glue`, and `type_is_copy` each walk
+/// the durable type graph independently, and a body that mentions the same
+/// aggregate repeatedly re-walked it and re-resolved its signature every
+/// time. The three stay separate fields rather than one computed bundle
+/// because they are asked for independently and each costs its own traversal;
+/// filling one must not force the other two.
+///
+/// Only answers that did not depend on cycle-breaking are stored. Each walker
+/// breaks a recursive type by answering provisionally — `DoesNotCarry`,
+/// `false`, `true` respectively — for a key already on its own stack, so a
+/// result reached through such an answer is a property of that stack and not
+/// of the type. [`OwnershipWalk::tainted`] carries that condition back up, and
+/// a tainted result is returned without being stored. `Deferred` and every
+/// error are likewise never stored: they say the signature was not resolvable
+/// yet, which a later request may answer differently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct OwnershipProperties {
+    carries_linear: Option<LinearOwnershipFact>,
+    has_drop_glue: Option<bool>,
+    is_copy: Option<bool>,
+}
+
+/// The cycle-breaking stack of one ownership traversal, plus whether the
+/// subtree currently being computed reached an answer through that stack.
+struct OwnershipWalk {
+    visiting: BTreeSet<StableDefinitionKey>,
+    tainted: bool,
+}
+
+impl OwnershipWalk {
+    fn new() -> Self {
+        Self {
+            visiting: BTreeSet::new(),
+            tainted: false,
+        }
+    }
+
+    /// Record that the answer being computed came from breaking a cycle or
+    /// from a signature that is not resolvable yet.
+    fn taint(&mut self) {
+        self.tainted = true;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5368,6 +5417,7 @@ fn exact_specialized_callable_types(
         dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
         dependencies: BTreeSet::new(),
         deferred_ownership: BTreeSet::new(),
+        ownership_properties: BTreeMap::new(),
     };
     let mut resolve = |root: rue_rir::RirTypeSyntaxRef| {
         rue_air::resolve_structured_semantic_type_syntax(
@@ -8649,17 +8699,60 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        match self.type_carries_linear_inner(ty, &mut BTreeSet::new())? {
+        match self.type_carries_linear_inner(ty, &mut OwnershipWalk::new())? {
             LinearOwnershipFact::DoesNotCarry => Ok(false),
             LinearOwnershipFact::Carries => Ok(true),
             LinearOwnershipFact::Deferred => Ok(false),
         }
     }
 
+    /// The memoizing entry point every recursive call goes through.
+    ///
+    /// A nominal key is the only thing worth storing — reaching one costs a
+    /// signature resolution — so anything else goes straight to the walk. The
+    /// subtree's taint is measured on its own rather than inherited, then
+    /// folded back into the caller's, so one recursive branch cannot suppress
+    /// memoization of an unrelated sibling.
     fn type_carries_linear_inner(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
-        visiting: &mut BTreeSet<StableDefinitionKey>,
+        walk: &mut OwnershipWalk,
+    ) -> Result<
+        LinearOwnershipFact,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = ty else {
+            return self.type_carries_linear_walk(ty, walk);
+        };
+        if let Some(fact) = self
+            .ownership_properties
+            .get(key)
+            .and_then(|properties| properties.carries_linear)
+        {
+            return Ok(fact);
+        }
+        let outer = std::mem::replace(&mut walk.tainted, false);
+        let result = self.type_carries_linear_walk(ty, walk);
+        let tainted = walk.tainted;
+        walk.tainted = outer || tainted;
+        if let Ok(fact) = &result
+            && !tainted
+        {
+            self.ownership_properties
+                .entry(key.clone())
+                .or_default()
+                .carries_linear = Some(*fact);
+        }
+        result
+    }
+
+    fn type_carries_linear_walk(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        walk: &mut OwnershipWalk,
     ) -> Result<
         LinearOwnershipFact,
         rue_air::SemanticProviderError<
@@ -8672,16 +8765,19 @@ impl SemanticNucleusTypeProvider<'_> {
 
         match ty {
             T::Array { len: 0, .. } => Ok(LinearOwnershipFact::DoesNotCarry),
-            T::Array { element, .. } => self.type_carries_linear_inner(element, visiting),
+            T::Array { element, .. } => self.type_carries_linear_inner(element, walk),
             T::Nominal(key) => {
-                if !visiting.insert(key.clone()) {
+                if !walk.visiting.insert(key.clone()) {
+                    // Provisional: this key is already on the stack, so the
+                    // answer belongs to that stack rather than to the type.
+                    walk.taint();
                     return Ok(LinearOwnershipFact::DoesNotCarry);
                 }
                 let kind = match key.kind() {
                     crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
                     crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
                     _ => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Self::provider_failure(format!(
                             "non-nominal definition `{}` used as a nominal type",
                             key.name()
@@ -8707,7 +8803,10 @@ impl SemanticNucleusTypeProvider<'_> {
                             ..
                         },
                     )) if signature == *key => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
+                        // Not resolvable yet; a later request may answer
+                        // differently, so nothing here is a stable property.
+                        walk.taint();
                         return Ok(LinearOwnershipFact::Deferred);
                     }
                     Err(rue_air::SemanticProviderError::Abort(QueryAbort::Cycle(nodes)))
@@ -8716,11 +8815,14 @@ impl SemanticNucleusTypeProvider<'_> {
                                 && node.key() == signature_query.stable_identity()
                         }) =>
                     {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
+                        // Not resolvable yet; a later request may answer
+                        // differently, so nothing here is a stable property.
+                        walk.taint();
                         return Ok(LinearOwnershipFact::Deferred);
                     }
                     Err(error) => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Err(error);
                     }
                 };
@@ -8742,8 +8844,7 @@ impl SemanticNucleusTypeProvider<'_> {
                             LinearOwnershipFact::DoesNotCarry
                         };
                         for (_, field) in fields.iter() {
-                            carries =
-                                carries.combine(self.type_carries_linear_inner(field, visiting)?);
+                            carries = carries.combine(self.type_carries_linear_inner(field, walk)?);
                         }
                         carries
                     }
@@ -8751,21 +8852,21 @@ impl SemanticNucleusTypeProvider<'_> {
                         let mut carries = LinearOwnershipFact::DoesNotCarry;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                carries = carries
-                                    .combine(self.type_carries_linear_inner(field, visiting)?);
+                                carries =
+                                    carries.combine(self.type_carries_linear_inner(field, walk)?);
                             }
                         }
                         carries
                     }
                     _ => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Self::provider_failure(format!(
                             "nominal definition `{}` has a non-nominal signature",
                             key.name()
                         ));
                     }
                 };
-                visiting.remove(key);
+                walk.visiting.remove(key);
                 Ok(carries)
             }
             T::AnonymousNominal(key) => {
@@ -8778,8 +8879,7 @@ impl SemanticNucleusTypeProvider<'_> {
                     S::Struct { fields, .. } => {
                         let mut carries = LinearOwnershipFact::DoesNotCarry;
                         for (_, field) in fields.iter() {
-                            carries =
-                                carries.combine(self.type_carries_linear_inner(field, visiting)?);
+                            carries = carries.combine(self.type_carries_linear_inner(field, walk)?);
                         }
                         Ok(carries)
                     }
@@ -8787,8 +8887,8 @@ impl SemanticNucleusTypeProvider<'_> {
                         let mut carries = LinearOwnershipFact::DoesNotCarry;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                carries = carries
-                                    .combine(self.type_carries_linear_inner(field, visiting)?);
+                                carries =
+                                    carries.combine(self.type_carries_linear_inner(field, walk)?);
                             }
                         }
                         Ok(carries)
@@ -8826,13 +8926,51 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        self.type_has_drop_glue_inner(ty, &mut BTreeSet::new())
+        self.type_has_drop_glue_inner(ty, &mut OwnershipWalk::new())
     }
 
+    /// See [`Self::type_carries_linear_inner`] for why the memo is keyed on
+    /// nominal types and why a tainted answer is not stored.
     fn type_has_drop_glue_inner(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
-        visiting: &mut BTreeSet<StableDefinitionKey>,
+        walk: &mut OwnershipWalk,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = ty else {
+            return self.type_has_drop_glue_walk(ty, walk);
+        };
+        if let Some(has_glue) = self
+            .ownership_properties
+            .get(key)
+            .and_then(|properties| properties.has_drop_glue)
+        {
+            return Ok(has_glue);
+        }
+        let outer = std::mem::replace(&mut walk.tainted, false);
+        let result = self.type_has_drop_glue_walk(ty, walk);
+        let tainted = walk.tainted;
+        walk.tainted = outer || tainted;
+        if let Ok(has_glue) = &result
+            && !tainted
+        {
+            self.ownership_properties
+                .entry(key.clone())
+                .or_default()
+                .has_drop_glue = Some(*has_glue);
+        }
+        result
+    }
+
+    fn type_has_drop_glue_walk(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        walk: &mut OwnershipWalk,
     ) -> Result<
         bool,
         rue_air::SemanticProviderError<
@@ -8844,9 +8982,11 @@ impl SemanticNucleusTypeProvider<'_> {
         use crate::semantic_query_nucleus::DeclarationSignatureProjection as P;
         match ty {
             T::Array { len: 0, .. } => Ok(false),
-            T::Array { element, .. } => self.type_has_drop_glue_inner(element, visiting),
+            T::Array { element, .. } => self.type_has_drop_glue_inner(element, walk),
             T::Nominal(key) => {
-                if !visiting.insert(key.clone()) {
+                if !walk.visiting.insert(key.clone()) {
+                    // Provisional; see `type_carries_linear_walk`.
+                    walk.taint();
                     return Ok(false);
                 }
                 if key.kind() == crate::StableDefinitionKind::Struct {
@@ -8867,7 +9007,7 @@ impl SemanticNucleusTypeProvider<'_> {
                         unreachable!("LookupName publishes typed values")
                     };
                     if destructors.as_ref().is_ok_and(|facts| !facts.is_empty()) {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Ok(true);
                     }
                 }
@@ -8875,7 +9015,7 @@ impl SemanticNucleusTypeProvider<'_> {
                     crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
                     crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
                     _ => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Ok(false);
                     }
                 };
@@ -8887,7 +9027,7 @@ impl SemanticNucleusTypeProvider<'_> {
                     P::Struct { fields, .. } => {
                         let mut has_glue = false;
                         for (_, field) in fields.iter() {
-                            has_glue |= self.type_has_drop_glue_inner(field, visiting)?;
+                            has_glue |= self.type_has_drop_glue_inner(field, walk)?;
                         }
                         has_glue
                     }
@@ -8895,14 +9035,14 @@ impl SemanticNucleusTypeProvider<'_> {
                         let mut has_glue = false;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                has_glue |= self.type_has_drop_glue_inner(field, visiting)?;
+                                has_glue |= self.type_has_drop_glue_inner(field, walk)?;
                             }
                         }
                         has_glue
                     }
                     _ => false,
                 };
-                visiting.remove(key);
+                walk.visiting.remove(key);
                 Ok(has_glue)
             }
             T::AnonymousNominal(key) => {
@@ -8914,7 +9054,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 match nominal.shape {
                     S::Struct { fields, .. } => {
                         for (_, field) in fields.iter() {
-                            if self.type_has_drop_glue_inner(field, visiting)? {
+                            if self.type_has_drop_glue_inner(field, walk)? {
                                 return Ok(true);
                             }
                         }
@@ -8922,7 +9062,7 @@ impl SemanticNucleusTypeProvider<'_> {
                     S::Enum { variants } => {
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                if self.type_has_drop_glue_inner(field, visiting)? {
+                                if self.type_has_drop_glue_inner(field, walk)? {
                                     return Ok(true);
                                 }
                             }
@@ -8948,13 +9088,51 @@ impl SemanticNucleusTypeProvider<'_> {
             crate::semantic_query_nucleus::SemanticNucleusFailure,
         >,
     > {
-        self.type_is_copy_inner(ty, &mut BTreeSet::new())
+        self.type_is_copy_inner(ty, &mut OwnershipWalk::new())
     }
 
+    /// See [`Self::type_carries_linear_inner`] for why the memo is keyed on
+    /// nominal types and why a tainted answer is not stored.
     fn type_is_copy_inner(
         &mut self,
         ty: &crate::durable_semantics::DurableType,
-        visiting: &mut BTreeSet<StableDefinitionKey>,
+        walk: &mut OwnershipWalk,
+    ) -> Result<
+        bool,
+        rue_air::SemanticProviderError<
+            QueryAbort,
+            crate::semantic_query_nucleus::SemanticNucleusFailure,
+        >,
+    > {
+        let crate::durable_semantics::DurableType::Nominal(key) = ty else {
+            return self.type_is_copy_walk(ty, walk);
+        };
+        if let Some(is_copy) = self
+            .ownership_properties
+            .get(key)
+            .and_then(|properties| properties.is_copy)
+        {
+            return Ok(is_copy);
+        }
+        let outer = std::mem::replace(&mut walk.tainted, false);
+        let result = self.type_is_copy_walk(ty, walk);
+        let tainted = walk.tainted;
+        walk.tainted = outer || tainted;
+        if let Ok(is_copy) = &result
+            && !tainted
+        {
+            self.ownership_properties
+                .entry(key.clone())
+                .or_default()
+                .is_copy = Some(*is_copy);
+        }
+        result
+    }
+
+    fn type_is_copy_walk(
+        &mut self,
+        ty: &crate::durable_semantics::DurableType,
+        walk: &mut OwnershipWalk,
     ) -> Result<
         bool,
         rue_air::SemanticProviderError<
@@ -8986,16 +9164,18 @@ impl SemanticNucleusTypeProvider<'_> {
             T::GenericParameter(_) => {
                 Self::provider_failure("unsubstituted generic parameter reached Copy validation")
             }
-            T::Array { element, .. } => self.type_is_copy_inner(element, visiting),
+            T::Array { element, .. } => self.type_is_copy_inner(element, walk),
             T::Nominal(key) => {
-                if !visiting.insert(key.clone()) {
+                if !walk.visiting.insert(key.clone()) {
+                    // Provisional; see `type_carries_linear_walk`.
+                    walk.taint();
                     return Ok(true);
                 }
                 let kind = match key.kind() {
                     crate::StableDefinitionKind::Struct => DefinitionKind::Struct,
                     crate::StableDefinitionKind::Enum => DefinitionKind::Enum,
                     _ => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Self::provider_failure(format!(
                             "non-nominal definition `{}` used as a nominal type",
                             key.name()
@@ -9024,20 +9204,20 @@ impl SemanticNucleusTypeProvider<'_> {
                         let mut is_copy = true;
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                is_copy &= self.type_is_copy_inner(field, visiting)?;
+                                is_copy &= self.type_is_copy_inner(field, walk)?;
                             }
                         }
                         is_copy
                     }
                     _ => {
-                        visiting.remove(key);
+                        walk.visiting.remove(key);
                         return Self::provider_failure(format!(
                             "nominal definition `{}` has a non-nominal signature",
                             key.name()
                         ));
                     }
                 };
-                visiting.remove(key);
+                walk.visiting.remove(key);
                 Ok(is_copy)
             }
             T::AnonymousNominal(key) => {
@@ -9049,7 +9229,7 @@ impl SemanticNucleusTypeProvider<'_> {
                 match nominal.shape {
                     S::Struct { fields, .. } => {
                         for (_, field) in fields.iter() {
-                            if !self.type_is_copy_inner(field, visiting)? {
+                            if !self.type_is_copy_inner(field, walk)? {
                                 return Ok(false);
                             }
                         }
@@ -9057,7 +9237,7 @@ impl SemanticNucleusTypeProvider<'_> {
                     S::Enum { variants } => {
                         for (_, payload) in variants.iter() {
                             for field in payload.iter() {
-                                if !self.type_is_copy_inner(field, visiting)? {
+                                if !self.type_is_copy_inner(field, walk)? {
                                     return Ok(false);
                                 }
                             }
@@ -12933,6 +13113,7 @@ impl RevisionedQueryDatabase {
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
                                                 dependencies: BTreeSet::new(),
                                                 deferred_ownership: BTreeSet::new(),
+                                                ownership_properties: BTreeMap::new(),
                                             };
                                             match resolve_parsed_semantic_signature(
                                                 &mut provider,
@@ -12999,6 +13180,7 @@ impl RevisionedQueryDatabase {
                                     rue_air::DeclarationTypeDependencyKind::Signature,
                                 dependencies: BTreeSet::new(),
                                 deferred_ownership: BTreeSet::new(),
+                                ownership_properties: BTreeMap::new(),
                             };
                             match provider
                                 .validate_nominal_well_formedness(query.declaration.clone())
@@ -13095,6 +13277,7 @@ impl RevisionedQueryDatabase {
                                     rue_air::DeclarationTypeDependencyKind::Signature,
                                 dependencies: BTreeSet::new(),
                                 deferred_ownership: BTreeSet::new(),
+                                ownership_properties: BTreeMap::new(),
                             };
                             let result = match query.gate.kind {
                                 crate::semantic_query_nucleus::DeferredOwnershipGateKind::RequireDroppable => provider
@@ -13223,6 +13406,7 @@ impl RevisionedQueryDatabase {
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::DeclaredType,
                                                 dependencies: BTreeSet::new(),
                                                 deferred_ownership: BTreeSet::new(),
+                                                ownership_properties: BTreeMap::new(),
                                             };
                                             let expected_type = declared_type.as_ref().and_then(
                                                 |syntax| {
@@ -13711,6 +13895,7 @@ impl RevisionedQueryDatabase {
                                                 dependency_kind: rue_air::DeclarationTypeDependencyKind::Body,
                                                 dependencies: BTreeSet::new(),
                                                 deferred_ownership: BTreeSet::new(),
+                                                ownership_properties: BTreeMap::new(),
                                             };
                                             let canonical_arguments = crate::CanonicalArguments {
                                                 types: call
@@ -27274,6 +27459,131 @@ fn main() -> i32 {
                 None => assert_eq!(keyed, V::DeferredOwnership),
                 Some(expected) => {
                     assert_eq!(nucleus_failure_message(&keyed).as_deref(), Some(expected));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ownership_property_memo_preserves_decisions_across_repeats_and_recursion() {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        use crate::semantic_query_nucleus::{SemanticNucleusKey as Key, SemanticNucleusValue as V};
+
+        const LINEAR: &str = "`@require_droppable` requires a trivially-droppable type, but \
+             `Top` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet \
+             track element linearity, so the element would be leaked (RUE-388)";
+        const LINEAR_A: &str = "`@require_droppable` requires a trivially-droppable type, but \
+             `A` is `linear` — an owning growable container (e.g. `ArrayBuf`) cannot yet \
+             track element linearity, so the element would be leaked (RUE-388)";
+
+        // Each case gates one type behind `@require_droppable`, which runs the
+        // recursive ownership walks. The memo answers the repeated mentions
+        // from the first walk, so these pin that a reused answer is the same
+        // answer.
+        for (name, gated, source_text, expected_failure) in [
+            (
+                // Every aggregate is mentioned three times, so `Mid` and
+                // `Leaf` are each walked once and reused twice.
+                "repeated non-linear aggregates stay droppable",
+                "G",
+                "struct Leaf { a: i64, b: i64 }\n\
+                 struct Mid { p: Leaf, q: Leaf, r: Leaf }\n\
+                 struct Top { x: Mid, y: Mid, z: Mid }\n\
+                 fn Gated(comptime T: type) -> type { @require_droppable(T); T }\n\
+                 const G = Gated(Top);\n\
+                 fn main() {}",
+                None,
+            ),
+            (
+                // `Mid` carries a linear field and is mentioned twice. A memo
+                // that stored the wrong answer for the second mention would
+                // let this pass.
+                "linearity survives a reused aggregate answer",
+                "G",
+                "linear struct Token { v: i32 }\n\
+                 struct Mid { a: Token, b: i64 }\n\
+                 struct Top { x: Mid, y: Mid }\n\
+                 fn Gated(comptime T: type) -> type { @require_droppable(T); T }\n\
+                 const G = Gated(Top);\n\
+                 fn main() {}",
+                Some(LINEAR),
+            ),
+            (
+                // Mutually recursive through pointers. `B` reaches `A` and `A`
+                // reaches `B`, and only `A` owns the linear field, so the two
+                // must not share one answer.
+                "mutually recursive aggregate without the linear field passes",
+                "GB",
+                "linear struct T { v: i32 }\n\
+                 struct B { q: ptr const A, v: i32 }\n\
+                 struct A { p: ptr const B, t: T }\n\
+                 fn Gated(comptime X: type) -> type { @require_droppable(X); X }\n\
+                 const GB = Gated(B);\n\
+                 fn main() {}",
+                None,
+            ),
+            (
+                "mutually recursive aggregate with the linear field is rejected",
+                "GA",
+                "linear struct T { v: i32 }\n\
+                 struct B { q: ptr const A, v: i32 }\n\
+                 struct A { p: ptr const B, t: T }\n\
+                 fn Gated(comptime X: type) -> type { @require_droppable(X); X }\n\
+                 const GA = Gated(A);\n\
+                 fn main() {}",
+                Some(LINEAR_A),
+            ),
+        ] {
+            let source = source_snapshot(&[(1, "/main.rue", "main.rue", source_text)], 1);
+            let module = ModuleId::from_logical_path("main.rue").unwrap();
+            let mut database = RevisionedQueryDatabase::default();
+            let revision = database.source_revision(
+                &super::super::session::ExactSourceInput::new(&source),
+                &source,
+            );
+            let producer = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                declaration: declaration_candidate(
+                    &database,
+                    revision,
+                    &module,
+                    Category::ConstCandidate,
+                    gated,
+                ),
+                configuration: semantic_configuration(),
+            };
+            let (resolution, _) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::ConstResolution(producer.clone()),
+            );
+            let V::ConstResolution(
+                crate::semantic_query_nucleus::ConstResolutionProjection::Value {
+                    deferred_ownership,
+                    ..
+                },
+            ) = resolution
+            else {
+                panic!("{name}: producer failed before its ownership gate: {resolution:?}")
+            };
+            let [gate] = deferred_ownership.as_ref() else {
+                panic!("{name}: expected one ownership gate: {deferred_ownership:?}")
+            };
+            let (keyed, _) = request_semantic_nucleus_observed(
+                &database,
+                revision,
+                Key::DeferredOwnership(crate::semantic_query_nucleus::DeferredOwnershipQueryKey {
+                    producer,
+                    gate: gate.clone(),
+                }),
+            );
+            match expected_failure {
+                None => assert_eq!(keyed, V::DeferredOwnership, "{name}"),
+                Some(expected) => {
+                    assert_eq!(
+                        nucleus_failure_message(&keyed).as_deref(),
+                        Some(expected),
+                        "{name}"
+                    );
                 }
             }
         }
