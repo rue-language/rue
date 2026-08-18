@@ -153,3 +153,39 @@ such subset — a precomputed digest or interned handle would remove ~3.7
 percent without any sharing decision).
 
 The decision stays with the maintainers; RUE-1548 records it.
+
+## Phase 0 verdict: index order does not reach emitted output
+
+The maintainers accepted the universe direction on 2026-08-18 and asked for
+the gating unknown — contract question 1 — to be answered before the ADR.
+The spike answered it empirically with a mint-order perturbation rather
+than a prototype shared pool: an env-gated change to
+`BodyIdentityPool::mint_named_provider` resolved struct fields and enum
+variant payloads in reversed order, permuting the per-body pool ids of
+every nominal first reached through a field or payload while the completed
+definitions kept declaration order. A stderr witness confirmed the
+perturbation fired on real multi-field nominals (`StrBuf`, `Result`,
+application structs) rather than measuring a dead knob — an earlier
+attempt at the import-registration layer reversed only bookkeeping order,
+because `resolve_provider_type` on the parent mints fields before the
+registration recursion runs, and was discarded for exactly that reason.
+
+Result: emitted executables are byte-identical under the reversed mint
+order on the fixed Lattice workload, Caldera, and the chain shape, and
+`compiler_work` is identical except a three-count wobble in
+`query_runtime.reuses` on Lattice from shifted query timing. This matches
+the pool's design statement (`body_identity.rs`: transient pool indices,
+durable-keyed exports — the RUE-1091 pool-keystone) and retires the
+`expr_types` ordering concern for the named-nominal family: the one raw-id
+sort on that path (`string_literal_types`, sorted by `Type::as_u32`)
+feeds a dedup and an exact `Str(N)` match, not a selection.
+
+Answer to contract question 1: a request-scoped shared assignment is
+viable behind the existing byte-identity gate for the named-nominal
+family. Two bounded caveats for the ADR: the same perturbation test
+should be repeated per family as each vertical migrates (anonymous
+nominals, array/pointer interning — whose creation order today follows a
+fixed-seed `HashMap` iteration — and callable/parameter identities were
+not perturbed here), and sparse universe-wide id values in per-body dense
+tables are a memory-layout question the reversal cannot probe, though the
+durable-keyed export seam means they are not a byte-identity question.
