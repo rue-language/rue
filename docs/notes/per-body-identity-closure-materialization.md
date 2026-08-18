@@ -1,12 +1,21 @@
 # Per-body identity closure materialization
 
-Status: measurement and design note, 2026-08-17. It answers one question the
+Status: measurement and design note, 2026-08-17, extended 2026-08-18. It answers
+one question the
 [post-ADR-0063 cold audit](post-adr-0063-cold-compiler-architecture-audit.md)
 and the [ADR-0071 re-audit](adr-0071-horizontal-vertical-ownership-reaudit.md)
 left open: semantic analysis is roughly 45 percent of a cold Lattice build, and
 per-body semantic materialization is the suspected cause. Current source and
 the measurements below are authoritative; the suspicion that motivated the
 investigation is not.
+
+Read in two parts. Everything through "Rejected on the measurements" is the
+original per-body minting measurement and the sharing designs it does and does
+not support; the interning half of that diagnosis shipped as ADR-0076 and the
+spelling memos. "The other half: durable-source provider queries" re-measures
+the provider half on later trunk, with its own totals — the cold builds moved
+underneath the earlier numbers, so the two parts' absolute instruction counts
+are not comparable and each part states its own baseline.
 
 ## Result
 
@@ -390,3 +399,231 @@ evaluated first, which inverts the ordering the pool-shaped framing suggests.
   work counters by construction, so it is a contract change, not a bounded
   subset, and it should not be attempted before D settles whether the
   installation is expensive at all.
+
+## The other half: durable-source provider queries
+
+Status: re-measurement and verdict, 2026-08-18 (RUE-1580). The table above named
+durable-source provider queries as the second-largest leaf of the identity
+cluster, at 197,686,859 instructions and 2.73 percent of cold Lattice, and only
+the interning half was picked up — ADR-0076, then the spelling memos. This
+section re-measures the provider half on current trunk, establishes how much of
+it is redundant across bodies, and records why that redundancy is not reachable
+without an ADR.
+
+Same protocol as above: `valgrind --tool=callgrind` on a release build
+(`--target-platforms //platforms:release`), `RUE_STD_PATH` at the repository
+`std`, `-j1`, three shapes. Cold totals moved with trunk — Lattice
+6,889,260,664, Mosaic 2,779,780,516, chain256 510,415,731.
+
+### The boundary is larger than the earlier figure, and shape-independent
+
+The 2.73 percent counted only the durable-source calls reached from inside the
+identity cluster. Every call crossing from body analysis into
+`CompilerBodyDurableSource` costs:
+
+| shape | boundary calls | instructions | share of build |
+| --- | ---: | ---: | ---: |
+| Lattice | 102,848 | 361,075,319 | 5.241% |
+| Mosaic | 39,681 | 131,022,177 | 4.713% |
+| chain256 | 6,668 | 24,322,801 | 4.765% |
+
+chain256 is the result that reframes the problem. It mints no nominal at all and
+asks 26 questions per body against Lattice's 81, yet the boundary is the *same
+share* of its build. The durable-source boundary is therefore not a
+closure-shaped cost the way the minting cluster is. What sets its share is the
+price of one question, and every body pays that price for questions whose
+answers it could have been handed.
+
+### Question kinds, asks, and distinct answers
+
+Asks and instructions are the callgrind attribution. The distinct counts come
+from temporary process-global counters keyed on each question's exact argument,
+removed before commit. `per body` counts asks that are the first of their key
+*within one body*, which is the ceiling of what a body-local memo could reach;
+`program` counts distinct keys over the whole build, the ceiling of what a
+revision-scoped memo could reach.
+
+Cold Lattice:
+
+| question | asks | distinct per body | distinct in program | instructions | share | Ir/ask |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `DurableAnonymousSource::anonymous_shape_and_digest` | 13,823 | 13,823 | 42 | 91,955,776 | 1.335% | 6,652 |
+| `DurableNominalSource::nominal` | 10,159 | 6,502 | 61 | 61,787,716 | 0.897% | 6,082 |
+| `DurableBodyLookupSource::value_const` | 15,697 | 2,845 | 1,521 | 33,258,020 | 0.483% | 2,118 |
+| `DurableCallableSource::function` | 5,013 | 3,769 | 996 | 32,410,168 | 0.470% | 6,465 |
+| `DurableAnonymousSource::anonymous_methods` | 4,546 | 4,317 | 25 | 30,818,769 | 0.447% | 6,779 |
+| `DurableBodyLookupSource::qualified_free_function` | 1,841 | 1,841 | 254 | 16,334,368 | 0.237% | 8,872 |
+| `DurableBodyLookupSource::free_function` | 919 | 898 | 758 | 10,250,789 | 0.149% | 11,154 |
+| `DurableBodyLookupSource::nominal` | 12,132 | 1,358 | 595 | 9,429,536 | 0.137% | 777 |
+| `DurableBodyLookupSource::module_source` | 4,927 | — | — | 9,018,201 | 0.131% | 1,830 |
+| `DurableNominalSource::nominal_file_id` | 6,502 | — | — | 8,530,283 | 0.124% | 1,311 |
+| `DurableBodyLookupSource::language_item_nominal` | 456 | 456 | 100 | 8,494,677 | 0.123% | 18,628 |
+| `DurableBodyLookupSource::qualified_value_const` | 2,927 | — | — | 5,706,097 | 0.083% | 1,949 |
+| `DurableBodyLookupSource::named_member` | 250 | 250 | 61 | 3,613,587 | 0.052% | 14,454 |
+| `DurableCallableSource::method` | 311 | 311 | 61 | 3,269,785 | 0.047% | 10,513 |
+| `DurableConstSource::constant` | 306 | 153 | 91 | 2,529,269 | 0.037% | 8,265 |
+
+The redundancy the diagnosis predicted is there, and it is enormous: 13,823
+anonymous-shape consults for 42 answers, 10,159 nominal consults for 61, 4,546
+anonymous-method consults for 25. The answers are revision-stable — each is a
+total function of its key within a revision, which is why the query engine
+memoizes them at all.
+
+The column that decides the question is `distinct per body`. It equals or nearly
+equals `asks` for every expensive question: 13,823 of 13,823 for anonymous
+shapes, 1,841 of 1,841 for qualified free functions, 456 of 456 for language
+items. The per-provider `nucleus_cache` and `lookup_name_cache` and the per-body
+`BodyDurablePayloadCache` have already taken everything a body-local memo can
+take; they are exactly the gap between asks and `distinct per body` wherever one
+exists (10,159 against 6,502, 5,013 against 3,769). **All the remaining
+redundancy is across bodies, and none of it is within a body.**
+
+### Where an ask's instructions go
+
+Cold Lattice, everything the boundary's code calls out to, plus its own code:
+
+| leaf | instructions | share of build | calls |
+| --- | ---: | ---: | ---: |
+| `QueryContext::query_registered` | 104,673,896 | 1.519% | 63,852 |
+| the boundary's own code | 37,348,593 | 0.542% | — |
+| `definition_hash_accelerator` | 28,490,340 | 0.414% | 3,933 |
+| `BTreeMap` search (canonical anonymous registry) | 28,138,840 | 0.408% | 31,104 |
+| `CanonicalAnonymousNominalRegistry::extend` | 23,663,969 | 0.343% | 19,296 |
+| `Map::fold` (anonymous shape and method projections) | 23,401,991 | 0.340% | 7,742 |
+| `BTreeSet::insert` (the body's positive-reference set) | 23,323,316 | 0.339% | 37,859 |
+| `ObservedLookupRoot::record` | 15,978,274 | 0.232% | 20,117 |
+| `Rc::drop_slow` (registry entries displaced by re-merges) | 14,609,914 | 0.212% | 11,638 |
+| `HashMap::insert` (per-body payload caches) | 10,428,190 | 0.151% | 24,003 |
+
+The `query_registered` term is inclusive, so it carries both the
+once-per-revision evaluation of each distinct question and the per-body cost of
+asking a question that is already answered. Attribution alone does not separate
+them, and it is the term a cross-body memo would be trying to remove.
+
+### Why the redundancy is not reachable
+
+Three walls, and a candidate has to clear all three.
+
+**A memo hit must not drop an edge.** Every redundant ask reaches its answer
+through `QueryContext::query_registered`, and that call is what records the
+asking body's dependency edge on the answering node. A revision-scoped memo
+answering from another body's result would leave this body with no edge, so a
+later edit to the answering declaration would not invalidate it. Replaying the
+edge costs the round trip the memo was removing. This is not a new rule: the
+existing `nucleus_cache` and `lookup_name_cache` are legal precisely because
+they serve a repeat *within the one query task that already recorded the edge*,
+which their own comments state, and the `distinct per body` column above is the
+measurement that they have already consumed that allowance completely.
+
+**The ask counts are published.** `name_lookups` (50,864), `identity_facts`
+(11,349), `signature_facts` (10,582), `const_facts` (13,419), `producer_facts`
+(13,647), and the four `*_materializations` (10,888 combined) are metered at the
+ask site. Answering a question without asking it moves every one of them. Under
+a bar of byte identity plus unchanged deterministic counters that is a contract
+change, not a bounded subset. The existing `nominal_materialization_reuses` and
+`function_materialization_reuses` split is the shape an honest cross-body tier
+would have to take, and adding that tier is a `compiler_work` revision.
+
+**The residue needs shared state whose visibility is an ADR-0063 question.**
+Subtract the query round trips and the metered asks, and what is left is the
+per-body rebuild of derived state: the canonical anonymous registry — search,
+merge, and displaced-`Rc` churn together 66,412,723 instructions, 0.96 percent
+of the build — the anonymous shape and method projections (23,401,991, 0.34
+percent), and the stable-key hash accelerator (28,490,340 inside the boundary,
+0.41 percent). All three are total functions of revision-stable inputs, and each
+has its own obstruction:
+
+- The registry's merge rule is monotone: a methods-bearing entry never degrades,
+  so a revision-shared registry converges to the same value whatever order
+  bodies merge in. But a body reading a shared registry can see an entry that
+  *another* body upgraded, which is a richer answer than that body would have
+  derived from its own consults. That is a change in what one body observes
+  about another — the ADR-0063 body-independence boundary — not an optimization
+  a byte-identity gate can decide.
+- The projections are pure functions of a registry entry, so they ride on
+  whatever the registry decides and need no separate ruling.
+- `definition_hash_accelerator` is the surprise. Its docstring calls it a bucket
+  selector that "is recomputed at issuance and is not a durable or serialized
+  identity", and it is indeed reachable only through `Hash for
+  StableDefinitionKey`. But `BodyQueryKey::stable_hash` absorbs
+  `FunctionInstanceKey::hash`, and with it those accelerator bytes, into
+  `rue_query::stable_key_hash` — the content-derived, process-independent node
+  digest whose collision witness also orders colliding keys. The accelerator is
+  therefore part of a published deterministic identity, so making the digest
+  *cheaper* changes published values. Memoizing it does not. At 65,494,916
+  instructions build-wide over 8,921 issuances — 0.95 percent of cold Lattice,
+  7,341 instructions of SHA-256 per key — that is the largest single candidate
+  this measurement found. It needs a revision-scoped store reachable from
+  `StableDefinitionKey::from_stable_parts`, which today is a free constructor
+  with no revision in scope. *Taken up while this note was being written:*
+  RUE-1587 hashes durable anonymous nominals by their cached digest, which is
+  the memoization this paragraph asks for; the numbers above are the
+  pre-RUE-1587 attribution that motivated it.
+
+### Attempted and rejected on the measurements
+
+Two bounded subsets were implemented and measured before this verdict, on the
+theory that a body-local memo or a cheaper container could take the residue
+without touching an edge or a counter. Both were reverted.
+
+- **Remembering, per body, which producers' anonymous projections have already
+  been merged.** Sound: the merge is idempotent under the monotone rule, and the
+  producer fact is still requested every time, so no edge and no counter moves.
+  It reaches nothing. `CanonicalAnonymousNominalRegistry::extend` runs 19,296
+  times before and 19,296 times after, because the 13,436 producer consults on
+  that path are 13,436 *distinct* `(body, producer)` pairs. The repeats the
+  registry does see return early on a methods-bearing entry and never reach the
+  merge at all. Cost of the memo that never fires: 13,436 hash-set insertions
+  and key clones, +8,980,385 instructions.
+- **Keying the canonical anonymous registry by hash instead of by order.** The
+  registry has exactly two operations and nothing iterates it, so this is
+  byte-identical and counter-neutral by construction. Registry lookup falls from
+  28,138,840 to 20,035,197 instructions and merging rises from 23,663,969 to
+  26,054,746: a net -5,712,866, 0.083 percent of the build. That is below the bar
+  this note already set when it declined the `derive_overlay` fast path at 0.13
+  percent, and it spends a documented ordered container to get there.
+
+Measured together the pair is +3,893,137 (+0.0565 percent) on Lattice — the
+arithmetic of a memo that never fires, paid for out of a container change that
+barely does. Executables stayed byte-identical on all three shapes at `-j1` with
+both applied, which is the evidence that the two subsets were sound and merely
+worthless.
+
+### Input for RUE-1576
+
+The largest single term this measurement crossed is not a semantic-provider
+leaf. `Task::commit_handoffs` — the lookup-lease and retained-cone transport
+that publishes a body transaction's observed roots — costs 140,200,300
+instructions on cold Lattice, 2.035 percent of the build, over 1,270 calls.
+Inside it, `PublishedRootLookupLease::record_incarnation` spends 59,822,892
+instructions in 76,268 `BTreeMap` insertions and 24,417,121 in 35,974 removals.
+The two handoff commits, `PublishedBodyClosureLookupHandoff` and
+`PublishedLookupRootHandoff`, are 46,190,040 and 43,101,609 of the total over
+the same 19,067 lease records each, which is the shape of two transports
+carrying one observation set.
+
+The same term is 47,209,936 instructions on Mosaic (1.698 percent) and 6,426,955
+on chain256 (1.259 percent), so it scales with bodies rather than with closure
+size. `ObservedLookupRoot::record`, the provider-side half that pins each
+observed terminal while the request lease still protects it, adds 15,978,274
+(0.232 percent) inside the durable-source boundary.
+
+This is proof-lease transport, which is RUE-1576's scope rather than this one's.
+It is recorded here rather than acted on.
+
+### Verdict
+
+The provider half of the identity-closure cost is real, is 5.2 percent of cold
+Lattice, and is up to 329 times redundant across bodies. It is not the same kind
+of problem as the interning half ADR-0076 solved. The interner was a
+body-private *index space*, and sharing it needed a determinism audit; these are
+*questions asked of the query graph*, and the asking is the dependency record.
+Nothing here is reachable by a change confined to the semantic provider.
+
+What the measurements support is one candidate worth an ADR on its own — a
+revision-scoped memo for the stable-key hash accelerator, 0.95 percent of the
+build for a value that is a pure function of the key's fields and identical
+whoever computes it — and one that needs the ADR-0063 body-independence ruling
+before it can be designed at all: a revision-shared canonical anonymous
+registry, 1.3 percent of the build with its projections, whose merge converges
+but whose visibility does not stay per-body.
