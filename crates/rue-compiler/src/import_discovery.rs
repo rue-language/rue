@@ -1343,8 +1343,9 @@ fn accepted_sources_for<'a>(
 }
 
 /// One occurrence's winner: the first candidate group, in precedence order, that
-/// observed a present read. A failed candidate ends the occurrence's precedence
-/// walk, and a later group is never consulted once an earlier one won.
+/// observed a present read. A candidate that could not be read is skipped
+/// (ADR-0078) rather than ending the walk; a later group is never consulted
+/// once an earlier one won.
 fn extend_accepted_from_site<'a>(
     accepted: &mut Vec<&'a AcceptedImportSource>,
     groups: impl Iterator<Item = &'a Arc<[ImportDiscoveryRequest]>>,
@@ -1355,7 +1356,7 @@ fn extend_accepted_from_site<'a>(
             .iter()
             .any(|request| ledger.get(request).is_some_and(|o| o.status.is_failure()))
         {
-            break;
+            continue;
         }
         let present = group
             .iter()
@@ -1516,7 +1517,16 @@ pub(crate) fn exact_import_pending_requests(
                 .iter()
                 .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
             {
-                break;
+                // ADR-0078: a candidate that could not be read is not a
+                // resolution, so the precedence walk continues to the next
+                // candidate rather than concluding. Under a source manifest an
+                // undeclared candidate is denied lexically WITHOUT a probe, so
+                // the compiler cannot distinguish "absent" from "present but
+                // undeclared"; treating the denial as conclusive would break
+                // every hermetic build whose program does not vendor the
+                // candidate it denies. The failure is still reported if no
+                // later candidate resolves (`exact_import_has_failures`).
+                continue;
             }
             let missing = group
                 .iter()
@@ -1539,15 +1549,27 @@ pub(crate) fn exact_import_pending_requests(
     pending
 }
 
+/// Whether any occurrence failed *conclusively*: it owns a failed observation
+/// and no candidate of its precedence chain resolved. A failure behind a
+/// resolved candidate is a skipped candidate, not a build failure (ADR-0078).
 pub(crate) fn exact_import_has_failures(
     groups: &[Arc<[ImportDiscoveryRequest]>],
     ledger: &ImportObservationLedger,
 ) -> bool {
-    groups.iter().flat_map(|group| group.iter()).any(|request| {
-        ledger
-            .get(request)
-            .is_some_and(|observation| observation.status().is_failure())
-    })
+    let mut by_site: BTreeMap<&ImportOccurrenceKey, (bool, bool)> = BTreeMap::new();
+    for request in groups.iter().flat_map(|group| group.iter()) {
+        let Some(observation) = ledger.get(request) else {
+            continue;
+        };
+        let entry = by_site
+            .entry(request.occurrence())
+            .or_insert((false, false));
+        entry.0 |= observation.status().is_failure();
+        entry.1 |= observation.accepted_source().is_some();
+    }
+    by_site
+        .values()
+        .any(|(failed, resolved)| *failed && !*resolved)
 }
 
 /// E0713 diagnostics for occurrences whose single candidate escapes the
@@ -1613,11 +1635,20 @@ pub(crate) fn exact_import_diagnostics(
             .expect("indexed importer belongs to parsed program")
             .file_id();
         let span = rue_span::Span::with_file(file_id, site.source_offset(), site.source_end());
+        // A failure behind a resolved candidate is a skipped candidate, not a
+        // build failure (ADR-0078): report failures only when the occurrence's
+        // whole precedence chain produced no accepted source.
+        let resolved = groups
+            .iter()
+            .flat_map(|group| group.iter())
+            .filter_map(|request| ledger.get(request))
+            .any(|observation| observation.accepted_source().is_some());
         if let Some(failure) = groups
             .iter()
             .flat_map(|group| group.iter())
             .filter_map(|request| ledger.get(request))
             .find(|observation| observation.status().is_failure())
+            .filter(|_| !resolved)
         {
             let candidate = failure.request().requested_path();
             let message = match failure.status() {

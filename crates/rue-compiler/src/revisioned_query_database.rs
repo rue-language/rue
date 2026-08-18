@@ -3493,7 +3493,8 @@ fn pending_occurrence_requests(
             .iter()
             .any(|observation| observation.is_some_and(|value| value.status().is_failure()))
         {
-            break;
+            // ADR-0078: an unreadable candidate is skipped, not conclusive.
+            continue;
         }
         let missing = group
             .iter()

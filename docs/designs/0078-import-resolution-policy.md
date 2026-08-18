@@ -174,13 +174,35 @@ The governing property: **ambient environment can never replace a standard
 library the program shipped.** Replacing a vendored standard library means
 editing the program's tree.
 
-Under `--source-manifest`, the chain does not bend: a vendored
-`{root}/std/_std.rue` that exists but is not declared in the manifest is a
-hermetic denial error, exactly like every other undeclared path. Denial is
-never treated as absence, so a manifest build can never silently resolve
-`std` to a different file than an unrestricted build of the same tree —
-it resolves identically or fails loudly. This preserves ADR-0063's
-requirement that denied and absent remain distinguishable observations.
+Under `--source-manifest`, the manifest is the authority on which standard
+library is in the build. A candidate the manifest does not declare is
+skipped and the walk continues: declare the vendored copy and it wins,
+omit it and the declared toolchain facade resolves.
+
+This narrows an earlier form of this decision, which required an existing
+but undeclared vendored std to fail closed. That rule is not implementable
+as stated. Hermetic denial is *lexical and takes no probe* — by design, so
+that a hermetic build never touches an undeclared path — so the compiler
+cannot distinguish "absent" from "present but undeclared". Treating the
+denial as conclusive fails every hermetic build whose program does not
+vendor std at all: the vendored candidate is probed first and denied even
+when nothing is there. The repository's own reproducibility fixture is
+exactly that shape.
+
+Preserving the stricter rule would require the host to stat undeclared
+candidates to separate absence from denial, weakening the no-probe
+guarantee to sharpen a case a correct manifest never reaches. The
+generator that produces a manifest sees a vendored `std/` and declares it;
+omitting it is a build-system defect, and its failure mode is the declared
+toolchain std rather than a silent read of an undeclared file.
+
+Because a candidate that cannot be read is skipped rather than conclusive,
+a failed observation is reported only when *no* candidate in the
+occurrence's chain resolved. Under policy v2 only `std` has more than one
+candidate, so this rule is confined to the std chain: every relative
+specifier still fails on its single candidate's failure. Denied and absent
+remain distinguishable typed observations, satisfying ADR-0063; they are
+merely both non-resolutions for precedence purposes.
 
 ### 5. Nonlocality, stated
 
