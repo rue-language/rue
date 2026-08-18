@@ -134,7 +134,6 @@ struct Measure {
     body_analyses_reused: usize,
     body_analyses_invalidated: usize,
     cfg_builds: usize,
-    cfg_imports: usize,
     modules_projected: usize,
     rir_instructions_appended: usize,
 }
@@ -191,7 +190,6 @@ impl Measure {
             body_analyses_reused: body.body_analyses_reused,
             body_analyses_invalidated: body.body_analyses_invalidated,
             cfg_builds: work.cfg.cfg_builds_attempted,
-            cfg_imports: work.cfg.cfg_import_attempts,
             modules_projected: rir.modules_projected,
             rir_instructions_appended: rir.instructions_appended,
         }
@@ -867,11 +865,6 @@ fn scaling_smoke_fixed_reach_growing_unrelated_modules_keeps_body_work_flat() {
                 "module-universe CFG builds",
                 baseline.cfg_builds,
                 grown.cfg_builds,
-            ),
-            (
-                "module-universe CFG imports",
-                baseline.cfg_imports,
-                grown.cfg_imports,
             ),
             (
                 "module-universe AIR instructions",

@@ -359,6 +359,18 @@ pub(crate) fn project_semantic_signature(
 ) -> Result<ParsedSemanticSignature, Arc<str>> {
     use crate::parsed_modules::ParsedDeclarationAstRef;
 
+    // RUE-1510 deleted `declaration_signature_parsing` and replaced it with
+    // this projection, and RUE-1514 held the boundary to the deletion by
+    // rejecting any producer that reports a signature parse. That proves no
+    // parsing happens and says nothing about whether projection happens, so a
+    // regression that removed or short-circuited projection entirely would
+    // pass. This span is the positive half: RUE-1515 requires it non-zero.
+    let _projection_span = tracing::info_span!(
+        "declaration_signature_projection",
+        phase = "semantic_analysis"
+    )
+    .entered();
+
     if key.category == Category::ConstCandidate {
         return Err(Arc::from(
             "constant candidates have no signature projection",

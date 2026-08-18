@@ -403,6 +403,15 @@ pub struct CompilerCriticalPathEvidence {
     /// the deletion instead of the work.
     #[serde(default)]
     pub semantic_declaration_signature_parsing: DurationDistribution,
+    /// Exact signature projection from the canonical parsed declaration.
+    ///
+    /// The positive half of the pair above. RUE-1514 proved the deletion of
+    /// signature parsing, which constrains what must *not* happen; a producer
+    /// that removed or short-circuited projection entirely satisfied that and
+    /// published nothing here. RUE-1515 requires this non-zero so the boundary
+    /// covers the path that replaced parsing, not only the path it deleted.
+    #[serde(default)]
+    pub semantic_declaration_signature_projection: DurationDistribution,
     /// Inclusive rooted body-closure query and immediate work reduction.
     #[serde(default)]
     pub semantic_body_closure: DurationDistribution,
@@ -515,7 +524,7 @@ type SemanticEvidenceRow = (
     fn(&CompilerCriticalPathEvidence) -> &DurationDistribution,
 );
 
-const REQUIRED_SEMANTIC_EVIDENCE: [SemanticEvidenceRow; 26] = [
+const REQUIRED_SEMANTIC_EVIDENCE: [SemanticEvidenceRow; 27] = [
     ("semantic_prerequisite_bodies", |critical| {
         &critical.semantic_prerequisite_bodies
     }),
@@ -554,6 +563,9 @@ const REQUIRED_SEMANTIC_EVIDENCE: [SemanticEvidenceRow; 26] = [
     }),
     ("semantic_body_input_rir_index", |critical| {
         &critical.semantic_body_input_rir_index
+    }),
+    ("semantic_declaration_signature_projection", |critical| {
+        &critical.semantic_declaration_signature_projection
     }),
     ("semantic_provider_analysis", |critical| {
         &critical.semantic_provider_analysis
@@ -1069,6 +1081,7 @@ mod tests {
                 semantic_declaration_nuclei: distribution(),
                 // Zero for a current producer: RUE-1510 deleted the span.
                 semantic_declaration_signature_parsing: DurationDistribution::default(),
+                semantic_declaration_signature_projection: distribution(),
                 semantic_body_closure: distribution(),
                 semantic_body_graph_projection: distribution(),
                 semantic_body_input_lowering: distribution(),
@@ -1145,6 +1158,7 @@ mod tests {
             "semantic_declaration_occurrence_indexes",
             "semantic_declaration_nuclei",
             "semantic_declaration_signature_parsing",
+            "semantic_declaration_signature_projection",
             "semantic_body_closure",
             "semantic_body_graph_projection",
             "semantic_body_input_lowering",
@@ -1427,7 +1441,29 @@ mod tests {
              semantic_unification_resolution"
         );
 
-        assert_eq!(REQUIRED_SEMANTIC_EVIDENCE.len(), 26);
+        assert_eq!(REQUIRED_SEMANTIC_EVIDENCE.len(), 27);
+    }
+
+    #[test]
+    fn a_vanished_signature_projection_fails_closed() {
+        // The positive half of the pair below. RUE-1514 proved only that
+        // signature *parsing* is gone; a producer that removed or
+        // short-circuited signature *projection* satisfied that and published
+        // nothing at all for the path that replaced parsing. Under the old
+        // predicate the analogous regression was caught, which is how
+        // RUE-1510's change surfaced in the first place.
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+        let mut vanished = evidence();
+        vanished
+            .critical_path
+            .semantic_declaration_signature_projection = DurationDistribution::default();
+        assert_eq!(
+            vanished
+                .validate_current_producer_against(&policy, "x86-64-linux")
+                .unwrap_err(),
+            "compiler omitted semantic critical-path evidence: \
+             semantic_declaration_signature_projection"
+        );
     }
 
     #[test]

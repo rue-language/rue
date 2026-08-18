@@ -2184,6 +2184,8 @@ pub struct SemanticCfgMetrics {
     pub materialization_anonymous_nominals_scanned: usize,
     pub materialization_type_nodes_scanned: usize,
     pub materialization_fact_selections: usize,
+    pub materialization_fact_closures_allocated: usize,
+    pub materialization_fact_closures_reused: usize,
     pub materialization_declarations_selected: usize,
     pub materialization_anonymous_nominals_selected: usize,
     pub materialization_callables_selected: usize,
@@ -2211,9 +2213,6 @@ pub struct SemanticCfgMetrics {
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
-    pub cfg_import_attempts: usize,
-    pub cfg_import_successes: usize,
-    pub cfg_import_failures: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -2287,6 +2286,10 @@ impl SemanticMetrics {
                     .materialization_anonymous_nominals_scanned,
                 materialization_type_nodes_scanned: work.cfg.materialization_type_nodes_scanned,
                 materialization_fact_selections: work.cfg.materialization_fact_selections,
+                materialization_fact_closures_allocated: work
+                    .cfg
+                    .materialization_fact_closures_allocated,
+                materialization_fact_closures_reused: work.cfg.materialization_fact_closures_reused,
                 materialization_declarations_selected: work
                     .cfg
                     .materialization_declarations_selected,
@@ -2324,9 +2327,6 @@ impl SemanticMetrics {
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,
-                cfg_import_attempts: work.cfg.cfg_import_attempts,
-                cfg_import_successes: work.cfg.cfg_import_successes,
-                cfg_import_failures: work.cfg.cfg_import_failures,
             },
         }
     }

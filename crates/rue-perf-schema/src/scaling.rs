@@ -351,6 +351,12 @@ pub struct CfgMaterializationWork {
     pub type_nodes_scanned: u64,
     /// Exact body or drop-glue fact closures selected from the shared index.
     pub fact_selections: u64,
+    /// Distinct closures allocated, and selections served from a closure an
+    /// earlier body already built. These sum to `fact_selections`.
+    #[serde(default)]
+    pub fact_closures_allocated: u64,
+    #[serde(default)]
+    pub fact_closures_reused: u64,
     /// Durable declaration facts copied into selected body-local closures.
     #[serde(default)]
     pub declarations_selected: u64,
