@@ -74,6 +74,7 @@ pub(super) struct RirDeclarationIndex {
     anonymous_methods: Vec<InstRef>,
     destructors: Vec<RirDestructorDeclaration>,
     shell_declarations: Vec<RirShellDeclaration>,
+    inline_ctor_head_candidates: usize,
     work: RirDeclarationIndexWork,
 }
 
@@ -90,6 +91,7 @@ impl RirDeclarationIndex {
             build_invocations: 1,
             ..RirDeclarationIndexWork::default()
         };
+        let mut inline_ctor_head_candidates = 0_usize;
 
         // AstGen emits method FnDecls before their enclosing type. Retain all
         // function candidates during this single arena walk, collect owner
@@ -142,6 +144,37 @@ impl RirDeclarationIndex {
                 }
                 InstData::EnumDecl { .. } => {
                     nominal_candidates.push((source_order as u32, inst_ref));
+                }
+                _ => {}
+            }
+            // Whole-arena census of inline type-constructor head shapes
+            // (RUE-596), taken during the walk this index already performs. A
+            // zero census lets the inference precompute skip its per-body
+            // reachability scan outright: the scan's candidates are a subset of
+            // these arena occurrences, so zero here proves zero there.
+            match &inst.data {
+                InstData::MethodCall { receiver, .. } => {
+                    if matches!(
+                        rir.get(*receiver).data,
+                        InstData::Call { .. } | InstData::MethodCall { .. }
+                    ) {
+                        inline_ctor_head_candidates += 1;
+                    }
+                }
+                InstData::StructInit {
+                    ctor_head: Some(_), ..
+                } => {
+                    inline_ctor_head_candidates += 1;
+                }
+                InstData::Match { arms, .. } => {
+                    for (pattern, _) in rir.match_arms(arms).iter() {
+                        if let rue_rir::RirPatternView::Path {
+                            ctor_head: Some(_), ..
+                        } = pattern
+                        {
+                            inline_ctor_head_candidates += 1;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -208,8 +241,19 @@ impl RirDeclarationIndex {
             anonymous_methods,
             destructors,
             shell_declarations,
+            inline_ctor_head_candidates,
             work,
         }
+    }
+
+    /// Whole-arena count of inline type-constructor head shapes (RUE-596):
+    /// `.NAME(..)` receivers that are themselves calls, struct literals with an
+    /// explicit constructor head, and match patterns carrying one. The
+    /// inference precompute's reachability scan collects a subset of these
+    /// occurrences, so a zero census proves that scan would find nothing.
+    #[inline]
+    pub(super) fn inline_ctor_head_candidates(&self) -> usize {
+        self.inline_ctor_head_candidates
     }
 
     #[inline]

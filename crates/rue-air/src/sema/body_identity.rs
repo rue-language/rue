@@ -2986,6 +2986,13 @@ impl BodyRirIndex {
         Self::new_with_attribution(rir, false).0
     }
 
+    /// Whole-arena census of inline type-constructor head shapes, taken during
+    /// the declaration-index walk. See
+    /// [`RirDeclarationIndex::inline_ctor_head_candidates`].
+    pub(in crate::sema) fn inline_ctor_head_candidates(&self) -> usize {
+        self.declarations.inline_ctor_head_candidates()
+    }
+
     fn new_with_attribution(
         rir: &Rir,
         attribution_enabled: bool,

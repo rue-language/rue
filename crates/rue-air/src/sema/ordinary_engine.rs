@@ -215,6 +215,10 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisReadHost + Sized {
         producer: Option<(IssuedStableProducerId, IssuedCanonicalArguments)>,
     ) -> Option<(IssuedStableProducerId, IssuedCanonicalArguments)>;
     fn body_rir_ref(&self) -> &Rir;
+    /// Whole-arena census of inline type-constructor head shapes (RUE-596),
+    /// taken by the body RIR index build. Zero proves the inference
+    /// precompute's reachability scan would collect no candidates.
+    fn body_inline_ctor_head_candidates(&self) -> usize;
     fn active_anonymous_producer(
         &self,
     ) -> Option<&(IssuedStableProducerId, IssuedCanonicalArguments)>;
@@ -303,6 +307,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 
     pub(crate) fn body_rir_ref(&self) -> &Rir {
         self.storage.body_rir_ref()
+    }
+    pub(crate) fn body_inline_ctor_head_candidates(&self) -> usize {
+        self.storage.body_inline_ctor_head_candidates()
     }
     pub(crate) fn body_interner(&self) -> &ThreadedRodeo {
         self.storage.body_interner()

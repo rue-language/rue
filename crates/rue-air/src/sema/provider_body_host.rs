@@ -4246,6 +4246,9 @@ where
     fn body_rir_ref(&self) -> &Rir {
         self.rir.rir()
     }
+    fn body_inline_ctor_head_candidates(&self) -> usize {
+        self.rir.rir_index().inline_ctor_head_candidates()
+    }
     fn active_anonymous_producer(
         &self,
     ) -> Option<&(

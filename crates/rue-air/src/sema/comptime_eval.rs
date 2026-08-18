@@ -2461,6 +2461,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         comptime_local_types: &AHashMap<Spur, Type>,
         attribution_enabled: bool,
     ) -> (AHashMap<InstRef, Type>, ComptimePrecomputeAttribution) {
+        // The body RIR index walk already censused the whole arena for these
+        // shapes. Zero occurrences anywhere proves the reachability scan below
+        // — whose candidates are a subset of the arena's — would collect
+        // nothing, so the common candidate-free body skips the scan outright.
+        if self.body_inline_ctor_head_candidates() == 0 {
+            return (
+                AHashMap::new(),
+                ComptimePrecomputeAttribution {
+                    enabled: attribution_enabled,
+                    ..ComptimePrecomputeAttribution::default()
+                },
+            );
+        }
         // A head is the receiver of a `.NAME(..)` path whose receiver is
         // itself a call (`F(args).Ok(x)`, or module-qualified
         // `m.F(args).Ok(x)`, which RIR spells as a nested MethodCall), or a
