@@ -2184,6 +2184,8 @@ pub struct SemanticCfgMetrics {
     pub materialization_anonymous_nominals_scanned: usize,
     pub materialization_type_nodes_scanned: usize,
     pub materialization_fact_selections: usize,
+    pub materialization_fact_closures_allocated: usize,
+    pub materialization_fact_closures_reused: usize,
     pub materialization_declarations_selected: usize,
     pub materialization_anonymous_nominals_selected: usize,
     pub materialization_callables_selected: usize,
@@ -2284,6 +2286,10 @@ impl SemanticMetrics {
                     .materialization_anonymous_nominals_scanned,
                 materialization_type_nodes_scanned: work.cfg.materialization_type_nodes_scanned,
                 materialization_fact_selections: work.cfg.materialization_fact_selections,
+                materialization_fact_closures_allocated: work
+                    .cfg
+                    .materialization_fact_closures_allocated,
+                materialization_fact_closures_reused: work.cfg.materialization_fact_closures_reused,
                 materialization_declarations_selected: work
                     .cfg
                     .materialization_declarations_selected,

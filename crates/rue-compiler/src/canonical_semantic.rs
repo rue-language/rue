@@ -29,6 +29,10 @@ pub struct CfgConstructionWork {
     pub materialization_anonymous_nominals_scanned: usize,
     pub materialization_type_nodes_scanned: usize,
     pub materialization_fact_selections: usize,
+    /// Distinct fact closures allocated, and selections served from one an
+    /// earlier body already built. These sum to `materialization_fact_selections`.
+    pub materialization_fact_closures_allocated: usize,
+    pub materialization_fact_closures_reused: usize,
     pub materialization_declarations_selected: usize,
     pub materialization_anonymous_nominals_selected: usize,
     pub materialization_callables_selected: usize,

@@ -5016,6 +5016,11 @@ impl CompilerSession {
         work.cfg.materialization_anonymous_nominals_scanned +=
             index_work.anonymous_nominals_scanned;
         work.cfg.materialization_type_nodes_scanned += index_work.type_nodes_scanned;
+        // One table for this pass, covering both the body loop below and the
+        // drop-glue loop after it: drop glue for a type reached from several
+        // bodies selects the same closure each time.
+        let mut fact_closures =
+            crate::local_semantic_materialization::LocalMaterializationFactInterner::default();
         for closure_body in graph.closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
                 unreachable!("BodyAnalysisBundle publishes typed values")
@@ -5083,6 +5088,7 @@ impl CompilerSession {
                     semantic_body,
                     &materialization_index,
                     &callable_symbols,
+                    &mut fact_closures,
                 )
                 .map_err(|error| {
                     CompileError::new(
@@ -5130,6 +5136,7 @@ impl CompilerSession {
                     facts,
                     &materialization_index,
                     &callable_symbols,
+                    &mut fact_closures,
                 )
                 .map_err(|error| {
                     CompileError::new(
@@ -5161,6 +5168,13 @@ impl CompilerSession {
                 fallback_span,
             ));
         }
+        work.cfg.materialization_fact_closures_allocated += fact_closures.allocated;
+        work.cfg.materialization_fact_closures_reused += fact_closures.reused;
+        debug_assert_eq!(
+            fact_closures.allocated + fact_closures.reused,
+            fact_closures.selections * 8,
+            "each selection interns its seven slices and its index"
+        );
         // The selected facts now own everything carried by CFG memo keys. Do
         // not retain the request-wide lookup tables across CFG evaluation.
         drop(materialization_index);
