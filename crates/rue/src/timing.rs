@@ -1942,6 +1942,12 @@ mod tests {
         assert!(!session_edges.iter().any(|(parent, child)| {
             parent == "declaration_signature_parsing" || child == "declaration_signature_parsing"
         }));
+        // And the path that replaced it is present. Asserting only the absence
+        // above lets a producer that projects nothing at all pass (RUE-1515).
+        assert!(session_edges.contains(&(
+            "declaration_nucleus".to_owned(),
+            "declaration_signature_projection".to_owned()
+        )));
         assert!(
             !session_edges.contains(&("body_input_lowering".to_owned(), "parse_file".to_owned()))
         );
@@ -2084,11 +2090,16 @@ mod tests {
             .unwrap();
         // The rooted plan requests the declaration once while selecting the
         // entry point and once through the reached-body closure. The query
-        // database reuses the value; both requests remain visible timing
-        // leaves beneath the pipeline aggregate.
+        // database reuses the value; both requests remain visible beneath the
+        // pipeline aggregate.
+        //
+        // Only the second is a leaf. The first evaluates the signature and
+        // opens `declaration_signature_projection` inside itself (RUE-1515);
+        // the second reuses that value and nests nothing, so it stays a leaf.
+        // A regression that stopped projecting would put this back at 2.
         assert_eq!(declaration.invocations, 2);
         assert_eq!(declaration.root_invocations, 0);
-        assert_eq!(declaration.leaf_invocations, 2);
+        assert_eq!(declaration.leaf_invocations, 1);
         for phase in [
             Phase::SemanticAnalysis,
             Phase::CfgAndOptimization,
