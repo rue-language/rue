@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use rue_error::{AmbiguousModuleData, CompileError, CompileErrors, CompileResult, ErrorKind};
+use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use crate::{
@@ -1671,14 +1671,8 @@ pub(crate) fn exact_import_diagnostics(
         });
         match winning.as_deref() {
             Some([_]) => {}
-            Some([file, directory, ..]) => errors.push(CompileError::new(
-                ErrorKind::AmbiguousModule(Box::new(AmbiguousModuleData {
-                    path: site.specifier().into(),
-                    file_module: file.requested_path().into(),
-                    dir_module: directory.requested_path().into(),
-                })),
-                span,
-            )),
+            // Policy v2 derives exactly one candidate per group.
+            Some([_, _, ..]) => unreachable!("candidate groups hold one candidate"),
             Some([]) => unreachable!(),
             None if site.specifier() == "std" => {
                 errors.push(CompileError::new(ErrorKind::StdLibNotFound, span));
@@ -1796,10 +1790,6 @@ fn accepted_import_manifest(
 pub(crate) enum ExactImportWinner<'a> {
     Missing,
     Resolved(&'a AcceptedImportSource),
-    Ambiguous {
-        file: &'a AcceptedImportSource,
-        directory: &'a AcceptedImportSource,
-    },
 }
 
 pub(crate) fn exact_import_winner<'ledger, 'groups>(
@@ -1816,7 +1806,9 @@ pub(crate) fn exact_import_winner<'ledger, 'groups>(
     });
     match winning.as_deref() {
         Some([source]) => ExactImportWinner::Resolved(source),
-        Some([file, directory, ..]) => ExactImportWinner::Ambiguous { file, directory },
+        // Policy v2 derives exactly one candidate per group, so a group can
+        // never accept two sources.
+        Some([_, _, ..]) => unreachable!("candidate groups hold one candidate"),
         Some([]) => unreachable!(),
         None => ExactImportWinner::Missing,
     }
@@ -1833,12 +1825,6 @@ pub(crate) fn resolve_exact_import_winner<E>(
         ExactImportWinner::Missing => crate::CanonicalImportResolution::Missing,
         ExactImportWinner::Resolved(source) => {
             crate::CanonicalImportResolution::Resolved(module_for(source)?)
-        }
-        ExactImportWinner::Ambiguous { file, directory } => {
-            crate::CanonicalImportResolution::Ambiguous {
-                file_module: module_for(file)?,
-                directory_module: module_for(directory)?,
-            }
         }
     })
 }

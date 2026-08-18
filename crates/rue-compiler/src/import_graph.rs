@@ -132,10 +132,6 @@ impl std::fmt::Debug for ImportDirectives {
 pub enum CanonicalImportResolution {
     Resolved(ModuleId),
     Missing,
-    Ambiguous {
-        file_module: ModuleId,
-        directory_module: ModuleId,
-    },
 }
 
 /// One durable resolved-import value, with no source position or physical path.
@@ -393,12 +389,6 @@ pub enum CanonicalImportGraphProblem {
         importer: ModuleId,
         normalized_specifier: Arc<str>,
     },
-    AmbiguousResolution {
-        importer: ModuleId,
-        normalized_specifier: Arc<str>,
-        file_module: ModuleId,
-        directory_module: ModuleId,
-    },
     DuplicateRecord(CanonicalImportRecord),
     ConflictingCanonicalKey {
         importer: ModuleId,
@@ -573,26 +563,6 @@ fn validate_records(
                     normalized_specifier: record.normalized_specifier.clone(),
                 });
             }
-            CanonicalImportResolution::Ambiguous {
-                file_module,
-                directory_module,
-            } => {
-                for target in [file_module, directory_module] {
-                    if !modules.contains(target) {
-                        problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
-                            importer: record.importer.clone(),
-                            normalized_specifier: record.normalized_specifier.clone(),
-                            target: target.clone(),
-                        });
-                    }
-                }
-                problems.push(CanonicalImportGraphProblem::AmbiguousResolution {
-                    importer: record.importer.clone(),
-                    normalized_specifier: record.normalized_specifier.clone(),
-                    file_module: file_module.clone(),
-                    directory_module: directory_module.clone(),
-                });
-            }
         }
     }
     for ((importer, normalized_specifier), resolutions) in by_key {
@@ -691,26 +661,6 @@ pub(crate) fn validate_additive_successor(
                 problems.push(CanonicalImportGraphProblem::MissingResolution {
                     importer: record.importer.clone(),
                     normalized_specifier: record.normalized_specifier.clone(),
-                });
-            }
-            CanonicalImportResolution::Ambiguous {
-                file_module,
-                directory_module,
-            } => {
-                for target in [file_module, directory_module] {
-                    if !inputs.contains(target) {
-                        problems.push(CanonicalImportGraphProblem::ForeignResolvedTarget {
-                            importer: record.importer.clone(),
-                            normalized_specifier: record.normalized_specifier.clone(),
-                            target: target.clone(),
-                        });
-                    }
-                }
-                problems.push(CanonicalImportGraphProblem::AmbiguousResolution {
-                    importer: record.importer.clone(),
-                    normalized_specifier: record.normalized_specifier.clone(),
-                    file_module: file_module.clone(),
-                    directory_module: directory_module.clone(),
                 });
             }
         }
