@@ -74,9 +74,10 @@
 //     (a projection/yield accessor, Hylo-style) is the RUE-651 follow-up.
 //   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
 //     as they are trivially droppable: every aggregate is laid out
-//     ascending-in-address and `@ptr_read`/`@ptr_write` walk slots upward from
-//     the element base, matching the ascending heap layout (ADR-0040 / RUE-311).
-//     Elements are transferred by copy.
+//     ascending-in-address, matching the ascending heap layout (ADR-0040 /
+//     RUE-311). Elements are transferred by copy. The typed reads and writes
+//     that rest on that layout live in `std/rawbuf.rue`; ADR-0059 folded the
+//     byte family in and this module no longer calls them.
 //
 // The enclosing element type `T` is usable throughout the method bodies below —
 // e.g. to name `option.Option(T)` and bind `let O = option.Option(T)` (RUE-313).

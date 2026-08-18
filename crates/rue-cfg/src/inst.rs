@@ -2843,11 +2843,49 @@ impl Cfg {
         Ok(())
     }
 
+    /// The predecessors of one block, in block order.
+    ///
+    /// [`Self::compute_predecessors`] builds a row per block; a caller that
+    /// reads a single row pays that whole table — an allocation per block —
+    /// to look at one of them. This walks the same terminators and collects
+    /// only the row asked for.
+    ///
+    /// Like the table, this is computed on demand rather than cached, so it
+    /// is always in sync with the current terminators.
+    pub fn predecessors_of(&self, block: BlockId) -> Vec<BlockId> {
+        let mut preds = Vec::new();
+        for candidate in &self.blocks {
+            let reaches = match &candidate.terminator {
+                Terminator::Goto { target, .. } => *target == block,
+                Terminator::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => *then_block == block || *else_block == block,
+                Terminator::Switch { cases, default, .. } => {
+                    *default == block
+                        || self
+                            .switch_cases(cases)
+                            .iter()
+                            .any(|(_, target)| *target == block)
+                }
+                Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => false,
+            };
+            if reaches {
+                preds.push(candidate.id);
+            }
+        }
+        preds
+    }
+
     /// Compute predecessor lists for all blocks, indexed by block id.
     ///
     /// Predecessors are computed on demand from the current terminators
     /// (rather than cached on each block) so the result is always in sync
     /// with the CFG, even after optimization passes rewrite terminators.
+    ///
+    /// Reach for [`Self::predecessors_of`] when only one block's row is
+    /// wanted.
     pub fn compute_predecessors(&self) -> Vec<Vec<BlockId>> {
         let mut preds: Vec<Vec<BlockId>> = vec![Vec::new(); self.blocks.len()];
 
