@@ -14,7 +14,7 @@ spec = ["10.3:2"]
 description = "Files in same directory can access private functions"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     utils.internal_helper()
 }
 """
@@ -32,7 +32,7 @@ spec = ["10.3:4"]
 description = "Files in same directory can access public functions"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     utils.public_helper()
 }
 """
@@ -49,7 +49,7 @@ spec = ["10.3:2"]
 description = "Files in same directory can access private structs"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     let InternalPoint = utils.InternalPoint;
     let p = InternalPoint { x: 20, y: 22 };
     p.x + p.y
@@ -67,7 +67,7 @@ spec = ["10.3:2"]
 description = "Files in same directory can access private enums"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     let s = utils.InternalStatus.Active;
     match s {
         utils.InternalStatus.Active => 42,
@@ -92,7 +92,7 @@ spec = ["10.3:4"]
 description = "Files in different directories can access public functions"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     utils.public_fn()
 }
 """
@@ -109,7 +109,7 @@ spec = ["10.3:3"]
 description = "Files in different directories cannot access private functions"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     utils.private_fn()
 }
 """
@@ -127,7 +127,7 @@ spec = ["10.3:4"]
 description = "Files in different directories can access public structs"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     let PublicPoint = utils.PublicPoint;
     let p = PublicPoint { x: 10, y: 32 };
     p.x + p.y
@@ -144,7 +144,7 @@ spec = ["10.3:3"]
 description = "Files in different directories cannot access private structs"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     let PrivatePoint = utils.PrivatePoint;
     let p = PrivatePoint { x: 10, y: 32 };
     p.x + p.y
@@ -162,7 +162,7 @@ spec = ["10.3:4"]
 description = "Files in different directories can access public enums"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     let s = utils.PublicStatus.On;
     match s {
         utils.PublicStatus.On => 42,
@@ -181,7 +181,7 @@ spec = ["10.3:3"]
 description = "Files in different directories cannot access private enums"
 source = """
 fn main() -> i32 {
-    let utils = @import("subdir/utils");
+    let utils = @import("subdir/utils.rue");
     let s = utils.PrivateStatus.On;
     0
 }
@@ -209,7 +209,7 @@ fn main() -> i32 {
 """
 aux_files = { "utils/_utils.rue" = """
 // Re-export the strings module functions
-const strings = @import("utils/strings");
+const strings = @import("strings.rue");
 
 pub fn format() -> i32 {
     strings.internal_format()
@@ -235,7 +235,7 @@ name = "cross_dir_unqualified_private_fn_error"
 spec = ["10.3:8"]
 description = "Unqualified call to a private function of an imported module in another directory is rejected"
 source = """
-const utils = @import("subdir/utils");
+const utils = @import("subdir/utils.rue");
 
 fn main() -> i32 {
     internal_fn()
@@ -254,7 +254,7 @@ name = "cross_dir_unqualified_pub_fn_rejected"
 spec = ["10.3:8"]
 description = "Unqualified call to a pub function of an imported module is rejected; use module-qualified access"
 source = """
-const utils = @import("subdir/utils");
+const utils = @import("subdir/utils.rue");
 
 fn main() -> i32 {
     public_fn()
@@ -273,7 +273,7 @@ name = "same_dir_unqualified_private_fn_rejected"
 spec = ["10.3:2", "10.3:8"]
 description = "Unqualified call to a private function of an imported file in the SAME directory is rejected; use module-qualified access"
 source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     internal_fn()
@@ -299,7 +299,7 @@ name = "cross_dir_unqualified_private_struct_error"
 spec = ["10.3:7"]
 description = "Unqualified struct literal + annotation naming a private struct of an imported module in another directory is rejected"
 source = """
-const defs = @import("subdir/defs");
+const defs = @import("subdir/defs.rue");
 
 fn main() -> i32 {
     let p: Point = Point { x: 40, y: 2 };
@@ -320,7 +320,7 @@ name = "cross_dir_unqualified_private_const_error"
 spec = ["10.3:7"]
 description = "Unqualified read of a private constant of an imported module in another directory is rejected"
 source = """
-const defs = @import("subdir/defs");
+const defs = @import("subdir/defs.rue");
 
 fn main() -> i32 {
     LIMIT
@@ -344,7 +344,7 @@ name = "cross_dir_unqualified_private_enum_error"
 spec = ["10.3:7"]
 description = "Unqualified annotation + variant construction naming a private enum of an imported module in another directory is rejected"
 source = """
-const defs = @import("subdir/defs");
+const defs = @import("subdir/defs.rue");
 
 fn main() -> i32 {
     let c: Color = Color.Blue;

@@ -15,7 +15,7 @@ name = "import_resolves_adjacent_file"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     0
 }
 """ },
@@ -34,7 +34,7 @@ name = "import_call_through_local_let"
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let utils = @import("utils");
+    let utils = @import("utils.rue");
     @dbg(utils.triple(14));
     0
 }
@@ -47,13 +47,13 @@ pub fn triple(x: i32) -> i32 {
 ]
 stdout = "42\n"
 
-# Top-level `const utils = @import("utils")` — the idiomatic form from
+# Top-level `const utils = @import("utils.rue")` — the idiomatic form from
 # ADR-0026.
 [[case]]
 name = "import_call_through_top_level_const"
 files = [
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     @dbg(utils.triple(14));
@@ -78,7 +78,7 @@ with\\#hash.rue # comment after an escaped path character
 with\\#hash/_with\\#hash.rue # declared absent ambiguity arm
 """ },
     { path = "main.rue", source = """
-const helper = @import("with#hash");
+const helper = @import("with#hash.rue");
 
 fn main() -> i32 {
     @dbg(helper.answer());
@@ -102,10 +102,9 @@ files = [
 # One source path per line, relative to this manifest file.
 main.rue
 utils.rue
-utils/_utils.rue # declared absent ambiguity arm
 """ },
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     @dbg(utils.triple(14));
@@ -151,7 +150,7 @@ files = [
 main.rue
 """ },
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     utils.triple(14)
@@ -190,14 +189,14 @@ name = "emit_deps_reports_root_and_import_graph"
 description = "RUE-810: --emit deps reports the canonical topology, complete observations, and accepted reads as a versioned envelope."
 files = [
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     utils.answer()
 }
 """ },
     { path = "utils.rue", source = """
-const leaf = @import("leaf");
+const leaf = @import("leaf.rue");
 
 pub fn answer() -> i32 {
     leaf.value()
@@ -226,8 +225,8 @@ compile_stdout_contains = [
     "main.rue",
     "utils.rue",
     "leaf.rue",
-    "\"specifier\": \"utils\"",
-    "\"specifier\": \"leaf\"",
+    "\"specifier\": \"utils.rue\"",
+    "\"specifier\": \"leaf.rue\"",
     "\"status\": \"resolved\"",
     "\"observations\":",
     "\"status\": \"present_readable\"",
@@ -242,7 +241,7 @@ name = "emit_deps_ignores_unrelated_semantic_errors"
 description = "RUE-499: --emit deps reports the discovered import graph without requiring body/type validation to succeed."
 files = [
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     utils.answer() + nope
@@ -261,7 +260,7 @@ compile_stdout_contains = [
     "\"status\": \"complete\"",
     "main.rue",
     "utils.rue",
-    "\"specifier\": \"utils\"",
+    "\"specifier\": \"utils.rue\"",
 ]
 compile_stderr_not_contains = ["undefined variable", "nope", "E0201"]
 
@@ -292,8 +291,8 @@ compile_stdout_contains = [
 ]
 
 [[case]]
-name = "emit_deps_reports_ambiguous_staging_reads"
-description = "RUE-810: an ambiguous closed graph emits both canonical targets and both accepted staging reads before failing."
+name = "emit_deps_resolves_facade_when_both_forms_exist"
+description = "ADR-0078: both module forms on disk resolve deterministically to the facade; the file spelling is never probed and the migration help names the extensioned spelling on a facade miss."
 files = [
     { path = "main.rue", source = """
 const helper = @import("helper");
@@ -307,16 +306,39 @@ pub fn directory_value() -> i32 { 2 }
 """ },
 ]
 args = ["--emit", "deps", "main.rue"]
-compile_fail = true
-error_contains = ["E0708", "ambiguous", "helper.rue", "helper/_helper.rue"]
+compile_only = true
 compile_stdout_contains = [
-    "\"status\": \"incomplete\"",
-    "\"status\": \"ambiguous\"",
-    "\"file_module\": \"helper.rue\"",
-    "\"directory_module\": \"helper/_helper.rue\"",
-    "\"module\": \"helper.rue\"",
+    "\"status\": \"complete\"",
     "\"module\": \"helper/_helper.rue\"",
 ]
+compile_stderr_not_contains = ["E0708", "ambiguous"]
+
+[[case]]
+name = "extensionless_file_miss_suggests_extensioned_spelling"
+description = "ADR-0078 migration diagnostic: an extensionless import with only {P}.rue present reports E0704 plus a help naming @import(\"thing.rue\"); the probe is presentation-only."
+files = [
+    { path = "main.rue", source = """
+const thing = @import("thing");
+fn main() -> i32 { 0 }
+""" },
+    { path = "thing.rue", source = """
+pub fn t() -> i32 { 1 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0704", "imported with its extension", "@import(\"thing.rue\")"]
+
+[[case]]
+name = "import_escaping_root_is_e0713"
+description = "ADR-0078: a relative import whose normalized candidate leaves the project root is E0713 with no filesystem probe."
+files = [
+    { path = "main.rue", source = """
+const nope = @import("../outside.rue");
+fn main() -> i32 { 0 }
+""" },
+]
+compile_fail = true
+error_contains = ["E0713", "escapes the project root", "../outside.rue"]
 
 [[case]]
 name = "emit_deps_malformed_import_has_no_envelope"
@@ -344,7 +366,7 @@ name = "emit_deps_mixed_positional_with_missing_prefers_incomplete_graph"
 description = "RUE-767: a second positional source under --emit deps is refused before discovery."
 files = [
     { path = "main.rue", source = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
 const missing = @import("missing");
 fn main() -> i32 { 0 }
 """ },
@@ -366,7 +388,7 @@ name = "mixed_positional_with_missing_prefers_canonical_diagnostic"
 description = "RUE-767: a second positional source is refused before import discovery."
 files = [
     { path = "main.rue", source = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
 const missing = @import("missing");
 fn main() -> i32 { 0 }
 """ },
@@ -457,7 +479,7 @@ stdout = "42\n"
 name = "sibling_facade_is_not_a_directory_module"
 files = [
     { path = "main.rue", source = """
-const utils = @import("utils");
+const utils = @import("utils.rue");
 
 fn main() -> i32 {
     @dbg(utils.triple(14));
@@ -491,7 +513,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const math = @import("std/math.rue");
+pub const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -625,8 +647,8 @@ pub struct Item {
 }
 """ },
     { path = "main.rue", source = """
-const a = @import("a");
-const b = @import("b");
+const a = @import("a.rue");
+const b = @import("b.rue");
 
 fn main() -> i32 {
     let x: a.Item = a.Item { a: 19 };
@@ -644,7 +666,7 @@ exit_code = 42
 name = "import_transitive_chain"
 files = [
     { path = "main.rue", source = """
-const a = @import("a");
+const a = @import("a.rue");
 
 fn main() -> i32 {
     @dbg(a.double(21));
@@ -652,7 +674,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "a.rue", source = """
-const b = @import("b");
+const b = @import("b.rue");
 
 pub fn double(x: i32) -> i32 {
     b.add(x, x)
@@ -675,7 +697,7 @@ name = "mixed_positional_and_import_reachable_file_rejected"
 description = "RUE-767: a second positional source (even one reachable via @import) is refused."
 files = [
     { path = "main.rue", source = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
 
 fn main() -> i32 {
     helper.value()
@@ -726,8 +748,8 @@ description = "A pub function from another compiled file is not a member of an u
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let utils = @import("utils");
-    let other = @import("other");
+    let utils = @import("utils.rue");
+    let other = @import("other.rue");
     let _ = other.sneaky();
     utils.sneaky()
 }
@@ -752,8 +774,8 @@ description = "Control: a pub function defined in the imported file is still cal
 files = [
     { path = "main.rue", source = """
 fn main() -> i32 {
-    let utils = @import("utils");
-    let other = @import("other");
+    let utils = @import("utils.rue");
+    let other = @import("other.rue");
     let _ = other.sneaky();
     utils.real()
 }
@@ -1035,8 +1057,8 @@ name = "root_module_graph_same_file_reached_by_normalized_paths"
 description = "Root-only import discovery treats two normalized paths to the same file as one loaded module, not two semantic roots."
 files = [
     { path = "main.rue", source = """
-const left = @import("pkg/left");
-const right = @import("pkg/nested/right");
+const left = @import("pkg/left.rue");
+const right = @import("pkg/nested/right.rue");
 
 fn main() -> i32 {
     @dbg(left.left_value() + right.right_value());
@@ -1044,7 +1066,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "pkg/left.rue", source = """
-const shared = @import("shared");
+const shared = @import("shared.rue");
 
 pub fn left_value() -> i32 {
     shared.value()
@@ -1855,7 +1877,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const math = @import("math");
+pub const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -1880,7 +1902,7 @@ fn main() -> i32 {
 pub const b = @import("b");
 """ },
     { path = "a/b/_b.rue", source = """
-pub const c = @import("c");
+pub const c = @import("c.rue");
 """ },
     { path = "a/b/c.rue", source = """
 pub fn f() -> i32 { 42 }
@@ -1901,7 +1923,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const math = @import("math");
+pub const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -1921,7 +1943,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const math = @import("math");
+pub const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -1949,7 +1971,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const geo = @import("geo");
+pub const geo = @import("geo.rue");
 """ },
     { path = "std/geo.rue", source = """
 pub struct Point { x: i32, y: i32 }
@@ -1970,7 +1992,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-const math = @import("math");
+const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -1997,7 +2019,7 @@ fn main() -> i32 {
 pub const b = @import("b");
 """ },
     { path = "a/b/_b.rue", source = """
-const c = @import("c");
+const c = @import("c.rue");
 """ },
     { path = "a/b/c.rue", source = """
 pub fn f() -> i32 { 42 }
@@ -2019,7 +2041,7 @@ fn main() -> i32 {
 }
 """ },
     { path = "std/_std.rue", source = """
-pub const math = @import("math");
+pub const math = @import("math.rue");
 """ },
     { path = "std/math.rue", source = """
 pub fn abs(x: i32) -> i32 {
@@ -2355,8 +2377,8 @@ exit_code = 7
 # ---------------------------------------------------------------------------
 
 [[case]]
-name = "dotdot_import_reconciles_with_cli_listed_pub_fn"
-description = "RUE-317: `a/main.rue` @imports `../std/opt.rue`; the pub fn member resolves through one normalized module identity."
+name = "dotdot_import_escaping_root_is_rejected"
+description = "ADR-0078 (supersedes the RUE-317 reconciliation): a `../` import that leaves the project root is E0713 even when the target file exists on disk; escaping paths receive no module identity."
 files = [
     { path = "a/main.rue", source = """
 fn main() -> i32 {
@@ -2370,70 +2392,8 @@ pub fn make() -> i32 {
 }
 """ },
 ]
-exit_code = 42
-
-[[case]]
-name = "dotdot_import_reconciles_with_cli_listed_pub_const"
-description = "RUE-317: same normalized-path reconciliation for a pub const member accessed through a `../`-relative import."
-files = [
-    { path = "a/main.rue", source = """
-const opt = @import("../std/opt.rue");
-
-fn main() -> i32 {
-    opt.ANSWER
-}
-""" },
-    { path = "std/opt.rue", source = """
-pub const ANSWER: i32 = 7;
-""" },
-]
-exit_code = 7
-
-[[case]]
-name = "dotdot_import_unknown_member_still_errors"
-description = "RUE-317 negative control: path reconciliation must not mask a genuinely absent member — accessing a non-existent member of the reconciled module still fails with E0707."
-files = [
-    { path = "a/main.rue", source = """
-fn main() -> i32 {
-    let o = @import("../std/opt.rue");
-    o.nope()
-}
-""" },
-    { path = "std/opt.rue", source = """
-pub fn make() -> i32 {
-    42
-}
-""" },
-]
 compile_fail = true
-error_contains = ["E0707", "has no member `nope`"]
-
-[[case]]
-name = "dotdot_import_private_member_cross_dir_still_rejected"
-description = "RUE-317 negative control: reconciling the path must not weaken privacy — a NON-pub member of the reconciled module in another directory is still private (E0706)."
-files = [
-    { path = "a/main.rue", source = """
-fn main() -> i32 {
-    let o = @import("../std/opt.rue");
-    o.secret()
-}
-""" },
-    { path = "std/opt.rue", source = """
-fn secret() -> i32 {
-    42
-}
-""" },
-]
-compile_fail = true
-error_contains = ["E0706", "function `secret` is private"]
-
-# ---------------------------------------------------------------------------
-# Root-only module graph success smoke tests (RUE-433 / RUE-424).
-#
-# Broader successful-program coverage for root-module compilation: every case
-# compiles ONLY main.rue and relies on transitive @import discovery from disk.
-# All shapes were verified against the real CLI before being encoded here.
-# ---------------------------------------------------------------------------
+error_contains = ["E0713", "escapes the project root", "../std/opt.rue"]
 
 [[case]]
 name = "root_module_graph_shared_helper_diamond"

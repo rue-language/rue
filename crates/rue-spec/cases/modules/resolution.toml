@@ -5,22 +5,22 @@ name = "Import Resolution Order"
 description = "Base-directory search order, transitive loading, and cycle behavior (spec chapter 10.2)."
 
 # =============================================================================
-# Base directory order (10.2:2): importing file's directory first, then the
-# root file's directory; nearer wins.
+# Importer-relative resolution (10.2:2): one base directory, no fallback
+# (ADR-0078).
 # =============================================================================
 
 [[case]]
-name = "importer_relative_beats_root_relative"
+name = "importer_relative_is_the_only_base"
 spec = ["10.2:2"]
-description = "A module found relative to the importing file shadows one at the same relative path next to the root file"
+description = "A relative import resolves against the importing file's directory alone; a same-named file next to the root file is not a candidate"
 source = """
 fn main() -> i32 {
-    let m = @import("sub/mod");
+    let m = @import("sub/mod.rue");
     m.go()
 }
 """
 aux_files = { "sub/mod.rue" = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
 pub fn go() -> i32 { helper.h() }
 """, "sub/helper.rue" = """
 pub fn h() -> i32 { 42 }
@@ -30,17 +30,36 @@ pub fn h() -> i32 { 7 }
 exit_code = 42
 
 [[case]]
-name = "root_relative_fallback"
+name = "no_root_relative_fallback"
 spec = ["10.2:2"]
-description = "When the importing file's directory has no match, resolution falls back to the root file's directory"
+description = "When the importing file's directory has no match, resolution fails rather than falling back to the root file's directory"
 source = """
 fn main() -> i32 {
-    let m = @import("sub/mod");
+    let m = @import("sub/mod.rue");
     m.go()
 }
 """
 aux_files = { "sub/mod.rue" = """
-const helper = @import("helper");
+const helper = @import("helper.rue");
+pub fn go() -> i32 { helper.h() }
+""", "helper.rue" = """
+pub fn h() -> i32 { 42 }
+""" }
+compile_fail = true
+error_contains = "cannot find module"
+
+[[case]]
+name = "importer_reaches_root_sibling_by_explicit_path"
+spec = ["10.2:2", "10.2:7"]
+description = "A nested importer names a root-level module with an explicit ../ spelling that stays inside the project root"
+source = """
+fn main() -> i32 {
+    let m = @import("sub/mod.rue");
+    m.go()
+}
+"""
+aux_files = { "sub/mod.rue" = """
+const helper = @import("../helper.rue");
 pub fn go() -> i32 { helper.h() }
 """, "helper.rue" = """
 pub fn h() -> i32 { 42 }
@@ -57,12 +76,12 @@ spec = ["10.2:3"]
 description = "Importing a module loads that module's own imports without the user listing them"
 source = """
 fn main() -> i32 {
-    let outer = @import("outer");
+    let outer = @import("outer.rue");
     outer.go()
 }
 """
 aux_files = { "outer.rue" = """
-const inner = @import("inner");
+const inner = @import("inner.rue");
 pub fn go() -> i32 { inner.value() }
 """, "inner.rue" = """
 pub fn value() -> i32 { 42 }
@@ -79,16 +98,16 @@ spec = ["10.2:4"]
 description = "Two modules importing each other compile and run; each file is loaded once"
 source = """
 fn main() -> i32 {
-    let a = @import("a");
+    let a = @import("a.rue");
     a.a_uses_b()
 }
 """
 aux_files = { "a.rue" = """
-const b = @import("b");
+const b = @import("b.rue");
 pub fn from_a() -> i32 { 1 }
 pub fn a_uses_b() -> i32 { b.from_b() }
 """, "b.rue" = """
-const a = @import("a");
+const a = @import("a.rue");
 pub fn from_b() -> i32 { 42 }
 """ }
 exit_code = 42
@@ -99,16 +118,16 @@ spec = ["10.2:4"]
 description = "Two importers of the same module refer to the same single loaded file (no duplicate-definition error from loading it twice)"
 source = """
 fn main() -> i32 {
-    let left = @import("left");
-    let _right = @import("right");
+    let left = @import("left.rue");
+    let _right = @import("right.rue");
     left.go()
 }
 """
 aux_files = { "left.rue" = """
-const shared = @import("shared");
+const shared = @import("shared.rue");
 pub fn go() -> i32 { shared.value() }
 """, "right.rue" = """
-const shared2 = @import("shared");
+const shared2 = @import("shared.rue");
 pub fn go2() -> i32 { shared2.value() }
 """, "shared.rue" = """
 pub fn value() -> i32 { 42 }
@@ -121,13 +140,13 @@ spec = ["10.2:4"]
 description = "Two different relative import spellings that normalize to the same file refer to one loaded module"
 source = """
 fn main() -> i32 {
-    let left = @import("pkg/left");
-    let right = @import("pkg/nested/right");
+    let left = @import("pkg/left.rue");
+    let right = @import("pkg/nested/right.rue");
     left.left_value() + right.right_value()
 }
 """
 aux_files = { "pkg/left.rue" = """
-const shared = @import("shared");
+const shared = @import("shared.rue");
 pub fn left_value() -> i32 { shared.value() }
 """, "pkg/nested/right.rue" = """
 const shared = @import("../shared.rue");

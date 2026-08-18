@@ -10,8 +10,8 @@ spec = ["10.5:2"]
 description = "Two loaded files may define the same top-level function name when each is accessed through its own module"
 source = """
 fn main() -> i32 {
-    let a = @import("a");
-    let _b = @import("b");
+    let a = @import("a.rue");
+    let _b = @import("b.rue");
     a.shared()
 }
 """
@@ -24,8 +24,8 @@ spec = ["10.5:2"]
 description = "Top-level value constants may share a source name across imported files when accessed through their modules"
 source = """
 fn main() -> i32 {
-    let left = @import("left");
-    let _right = @import("right");
+    let left = @import("left.rue");
+    let _right = @import("right.rue");
     left.go()
 }
 """
@@ -44,7 +44,7 @@ spec = ["10.5:2", "6.1:38"]
 description = "A top-level `main` in a non-root (imported) module is an ordinary namespaced function: it does not conflict with the root's entry point and is callable through its module path, returning its own value"
 source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.main()
 }
 """
@@ -57,7 +57,7 @@ spec = ["10.5:2", "6.1:38"]
 description = "When both the root and an imported module define `main`, the root module's `main` is the program entry point"
 source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.value() + 3
 }
 """
@@ -94,8 +94,8 @@ spec = ["10.5:3"]
 description = "The 10.5:3 example: same-named functions in two modules, each call resolving in its own module"
 source = """
 fn main() -> i32 {
-    let a = @import("a");
-    let b = @import("b");
+    let a = @import("a.rue");
+    let b = @import("b.rue");
     a.shared() + b.shared()
 }
 """
@@ -108,7 +108,7 @@ spec = ["10.5:4"]
 description = "The guaranteed half of demand-driven analysis: an error in imported code the program reaches is always reported (the lazy half — unreferenced items possibly unanalyzed — is exercised by the real driver in CLI tests)"
 source = """
 fn main() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.broken()
 }
 """

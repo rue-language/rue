@@ -90,3 +90,23 @@ pub fn Option(comptime T: type) -> type {
 }
 """ }
 exit_code = 7
+
+[[case]]
+name = "vendored_std_resolves_from_nested_importer"
+spec = ["10.2:6"]
+description = "A vendored std/_std.rue under the project root serves @import(\"std\") from any depth; std is never searched importer-relative (ADR-0078)"
+source = """
+fn main() -> i32 {
+    let m = @import("sub/mod.rue");
+    m.go()
+}
+"""
+aux_files = { "sub/mod.rue" = """
+const s = @import("std");
+pub fn go() -> i32 { s.vendored() }
+""", "std/_std.rue" = """
+pub fn vendored() -> i32 { 21 }
+""", "sub/std/_std.rue" = """
+pub fn hijacked() -> i32 { 13 }
+""" }
+exit_code = 21

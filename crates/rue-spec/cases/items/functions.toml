@@ -47,7 +47,7 @@ spec = ["6.1:7", "6.1:38"]
 description = "The entry-point requirement (6.1:7) is checked against the root module: a root that lacks `main` is rejected even when an imported module defines one (6.1:38)"
 source = """
 fn start() -> i32 {
-    let m = @import("m");
+    let m = @import("m.rue");
     m.answer()
 }
 """

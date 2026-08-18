@@ -17,7 +17,7 @@ spec = ["4.13:79", "4.13:80", "4.13:82", "10.2:1"]
 description = "@import with string argument is accepted"
 source = """
 fn main() -> i32 {
-    let m = @import("foo");
+    let m = @import("foo.rue");
     0
 }
 """
@@ -30,7 +30,7 @@ spec = ["4.13:79", "4.13:80"]
 description = "@import can be used in a const binding (typical pattern)"
 source = """
 fn main() -> i32 {
-    let math = @import("math");
+    let math = @import("math.rue");
     0
 }
 """
@@ -43,8 +43,8 @@ spec = ["4.13:79"]
 description = "Multiple @import calls in same file"
 source = """
 fn main() -> i32 {
-    let a = @import("a");
-    let b = @import("b");
+    let a = @import("a.rue");
+    let b = @import("b.rue");
     0
 }
 """
@@ -57,7 +57,7 @@ spec = ["4.13:79", "4.13:82"]
 description = "@import with nested path"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils/strings");
+    let utils = @import("utils/strings.rue");
     0
 }
 """
@@ -121,22 +121,47 @@ compile_fail = true
 error_contains = "cannot find module"
 
 # =============================================================================
-# Ambiguous module forms (RUE-137)
+# Coexisting module forms and project-root identity (ADR-0078)
 # =============================================================================
 
 [[case]]
-name = "ambiguous_module_both_forms_error"
-spec = ["4.13:89"]
-description = "Both foo.rue and foo/_foo.rue existing is a compile error, not a precedence question"
+name = "both_forms_coexist_extensionless_names_facade"
+spec = ["10.1:5", "10.2:1"]
+description = "foo.rue and foo/_foo.rue may coexist; the extensionless import names the facade alone (E0708 is retired)"
 source = """
 fn main() -> i32 {
     let m = @import("foo");
-    0
+    m.b()
 }
 """
 aux_files = { "foo.rue" = "pub fn a() -> i32 { 1 }", "foo/_foo.rue" = "pub fn b() -> i32 { 2 }" }
+exit_code = 2
+
+[[case]]
+name = "both_forms_coexist_extension_names_file"
+spec = ["10.1:5", "10.2:1"]
+description = "With both forms present, the extensioned spelling reaches the file module"
+source = """
+fn main() -> i32 {
+    let m = @import("foo.rue");
+    m.a()
+}
+"""
+aux_files = { "foo.rue" = "pub fn a() -> i32 { 1 }", "foo/_foo.rue" = "pub fn b() -> i32 { 2 }" }
+exit_code = 1
+
+[[case]]
+name = "import_escaping_project_root_is_rejected"
+spec = ["4.13:89", "10.2:7"]
+description = "A relative import whose normalized candidate leaves the project root is E0713; no filesystem probe is attempted"
+source = """
+fn main() -> i32 {
+    let o = @import("../outside.rue");
+    0
+}
+"""
 compile_fail = true
-error_contains = "ambiguous module"
+error_contains = "escapes the project root"
 
 [[case]]
 name = "const_module_reexport_member_chain"
@@ -149,7 +174,7 @@ fn main() -> i32 {
 }
 """
 aux_files = { "outer/_outer.rue" = """
-pub const inner = @import("outer/inner.rue");
+pub const inner = @import("inner.rue");
 """, "outer/inner.rue" = """
 pub fn value() -> i32 { 42 }
 """ }
@@ -166,7 +191,7 @@ fn main() -> i32 {
 }
 """
 aux_files = { "outer/_outer.rue" = """
-const inner = @import("outer/inner.rue");
+const inner = @import("inner.rue");
 """, "outer/inner.rue" = """
 pub fn value() -> i32 { 42 }
 """ }
@@ -179,8 +204,8 @@ spec = ["4.13:90"]
 description = "A pub function from a different file in the same compilation is not a member of an unrelated module (RUE-140)"
 source = """
 fn main() -> i32 {
-    let utils = @import("utils");
-    let other = @import("other");
+    let utils = @import("utils.rue");
+    let other = @import("other.rue");
     let _ = other.sneaky();
     utils.sneaky()
 }
