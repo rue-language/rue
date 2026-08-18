@@ -125,6 +125,74 @@ struct SourceRecord {
     text: Arc<String>,
 }
 
+/// Deterministic work counters for the two identity questions a build asks once
+/// per module: "which file in this snapshot is bound to this module?" and
+/// "which accepted-read entry names this physical file?".
+///
+/// Both questions used to be answered by scanning the whole set, so each cost
+/// one pass over a set that grows with the program — quadratic in the depth of
+/// an import chain, and invisible to every counter the compiler published,
+/// because a scan dispatches nothing. These counters make the *examinations*
+/// countable, not just the dispatches: a question is one `*_lookups`, and each
+/// position examined while answering it is one `*_visits`. An index-answered
+/// question examines a bounded number of positions; a scan-answered one
+/// examines the whole set, so `visits / lookups` is the shape under test.
+///
+/// Determinism: every field counts work actually performed on the canonical
+/// query path, exactly like `parse_sources_materialized` and
+/// `plan_reads_reduced`. At `-j1` a fresh build of fixed sources performs a
+/// fixed sequence of query executions, so every field is reproducible. The
+/// counters are pure observation — they take part in no key, hash, equality,
+/// or rendered artifact, so no emitted byte depends on them.
+#[derive(Debug, Default)]
+pub(crate) struct IdentityResolutionMeter {
+    module_resolutions: std::sync::atomic::AtomicU64,
+    module_resolution_visits: std::sync::atomic::AtomicU64,
+    physical_identity_lookups: std::sync::atomic::AtomicU64,
+    physical_identity_visits: std::sync::atomic::AtomicU64,
+}
+
+impl IdentityResolutionMeter {
+    /// One module-identity resolution against a snapshot, examining `visited`
+    /// snapshot positions (segment probes plus the record the answer reads).
+    pub(crate) fn record_module_resolution(&self, visited: u64) {
+        self.module_resolutions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.module_resolution_visits
+            .fetch_add(visited, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// One physical-identity lookup against an accepted-read manifest,
+    /// examining `visited` manifest entries (including any entry examined while
+    /// materializing the inverse index that answers it).
+    pub(crate) fn record_physical_identity_lookup(&self, visited: u64) {
+        self.physical_identity_lookups
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.physical_identity_visits
+            .fetch_add(visited, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub(crate) fn module_resolutions(&self) -> u64 {
+        self.module_resolutions
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn module_resolution_visits(&self) -> u64 {
+        self.module_resolution_visits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn physical_identity_lookups(&self) -> u64 {
+        self.physical_identity_lookups
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn physical_identity_visits(&self) -> u64 {
+        self.physical_identity_visits
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 impl SourceSnapshot {
     /// Build a validated one-module snapshot for in-memory tools and tests.
     pub fn single(path: impl Into<String>, source: impl Into<String>) -> CompileResult<Self> {
@@ -440,13 +508,26 @@ impl SourceSnapshot {
     /// O(files) record lookups. Projecting a whole program is one such lookup
     /// per module, which is where the difference between linear and quadratic
     /// lives for a deep import chain.
-    pub(crate) fn file_id_for_module(&self, module: &ModuleId) -> Option<FileId> {
-        self.data.segments.iter().find_map(|segment| {
-            segment
-                .module_index
-                .get(module)
-                .map(|&position| segment.contents[position].file_id)
-        })
+    ///
+    /// `meter` records the resolution and the snapshot positions it examined,
+    /// so the difference above is a counter a test can read rather than an
+    /// instruction count only a profiler can see.
+    pub(crate) fn file_id_for_module(
+        &self,
+        module: &ModuleId,
+        meter: &IdentityResolutionMeter,
+    ) -> Option<FileId> {
+        let mut visited = 0;
+        let found = self.data.segments.iter().find_map(|segment| {
+            // One hash probe per segment, then one record read for the hit.
+            visited += 1;
+            segment.module_index.get(module).map(|&position| {
+                visited += 1;
+                segment.contents[position].file_id
+            })
+        });
+        meter.record_module_resolution(visited);
+        found
     }
 
     /// Load-order-independent root and module/content mapping.
@@ -955,12 +1036,13 @@ mod tests {
         // The per-segment module index answers exactly what an ascending scan
         // of the metadata's file ids answers, for every module and across every
         // compacted tier.
+        let meter = IdentityResolutionMeter::default();
         for (position, file_id) in snapshot.metadata().file_ids().enumerate() {
             let module = snapshot
                 .module_id(file_id)
                 .expect("every snapshot file has a module identity")
                 .clone();
-            assert_eq!(snapshot.file_id_for_module(&module), Some(file_id));
+            assert_eq!(snapshot.file_id_for_module(&module, &meter), Some(file_id));
             // The scan this replaces is quadratic, so compare against it on a
             // sample rather than on every module.
             if position % 64 == 0 {
@@ -968,14 +1050,27 @@ mod tests {
                     .metadata()
                     .file_ids()
                     .find(|candidate| snapshot.module_id(*candidate) == Some(&module));
-                assert_eq!(snapshot.file_id_for_module(&module), scanned);
+                assert_eq!(snapshot.file_id_for_module(&module, &meter), scanned);
             }
         }
         assert_eq!(
             snapshot.file_id_for_module(
-                &crate::ModuleId::from_logical_path("absent.rue").expect("valid module path")
+                &crate::ModuleId::from_logical_path("absent.rue").expect("valid module path"),
+                &meter
             ),
             None
+        );
+        // Every resolution above examined a bounded number of positions: at
+        // most one probe per segment plus the one record the answer reads.
+        // The scan this replaces examined the whole snapshot each time, which
+        // at this depth is two orders of magnitude more per resolution.
+        let bound = (crate::shared_segments::MAX_SIZE_TIERED_SEGMENTS as u64 + 1)
+            * meter.module_resolutions();
+        assert!(
+            meter.module_resolution_visits() <= bound,
+            "{} visits for {} resolutions exceeds the per-segment bound {bound}",
+            meter.module_resolution_visits(),
+            meter.module_resolutions()
         );
     }
 

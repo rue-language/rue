@@ -583,6 +583,14 @@ pub(crate) struct RevisionedQueryDatabase {
     /// structural-authority path never increments this, so the acquisition
     /// profile can require it zero.
     import_view_read_entries_compared: std::sync::atomic::AtomicU64,
+    /// Module-identity and physical-identity resolution work. Both
+    /// questions are asked once per module by the parse projection and by
+    /// discovery authorization, so answering either by a scan is quadratic in
+    /// the depth of an import chain while dispatching nothing that any other
+    /// counter can see. Shared by `Arc` because the parse-module and
+    /// resolve-import evaluators are `&self`-free closures installed at
+    /// construction.
+    identity_resolution: Arc<crate::source_snapshot::IdentityResolutionMeter>,
     /// The module revisions appended by overlay publications since the last
     /// committed close (RUE-1112): the session-owned recorded-additions lineage.
     /// The successor stage/close derive their module delta from THIS record —
@@ -3405,6 +3413,7 @@ fn release_orphaned_import_stamp_leases(
 fn accepted_import_topology<'a>(
     observations: impl IntoIterator<Item = &'a ImportObservation>,
     accepted_reads: &AcceptedReadManifest,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> CompileResult<Arc<[AcceptedImportTopologyFact]>> {
     let mut topology = observations
         .into_iter()
@@ -3412,7 +3421,7 @@ fn accepted_import_topology<'a>(
             let request = observation.request();
             let outcome = if let Some(source) = observation.accepted_source() {
                 AcceptedImportTopologyOutcome::Resolved(
-                    crate::import_discovery::accepted_import_module(source, accepted_reads)?,
+                    crate::import_discovery::accepted_import_module(source, accepted_reads, meter)?,
                 )
             } else {
                 use crate::ImportObservationStatus as S;
@@ -11240,6 +11249,8 @@ impl RevisionedQueryDatabase {
     ) -> Self {
         let runtime = CompilerQueryRuntime(QueryRuntime::new(query_concurrency));
         let body_reachability_meter = Arc::new(BodyReachabilityMeter::default());
+        let identity_resolution =
+            Arc::new(crate::source_snapshot::IdentityResolutionMeter::default());
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
         let test_import_store = Arc::new(Mutex::new(TestImportInputStore {
@@ -11255,6 +11266,7 @@ impl RevisionedQueryDatabase {
         let parse_store = module_store.clone();
         let parse_stage: ParseStage = Arc::new(Mutex::new(HashMap::new()));
         let parse_stage_for_parse_modules = parse_stage.clone();
+        let parse_identity_resolution = identity_resolution.clone();
         let parse_modules = runtime
             .family_with_equality_and_evaluator(
                 "compiler.parse-module",
@@ -11276,6 +11288,7 @@ impl RevisionedQueryDatabase {
                             &view.snapshot,
                             &key.0,
                             staged,
+                            &parse_identity_resolution,
                         );
                     Ok(QueryOutput::success(ParseModuleValue { result, work }))
                 },
@@ -11924,6 +11937,7 @@ impl RevisionedQueryDatabase {
         let import_store = Arc::new(Mutex::new(ImportInputStore::default()));
         let evaluator_store = import_store.clone();
         let index_for_import_resolution = module_indexes.clone();
+        let resolve_identity_resolution = identity_resolution.clone();
         let resolve_imports = runtime
             .family_with_evaluator(
                 "compiler.resolve-import",
@@ -12014,6 +12028,7 @@ impl RevisionedQueryDatabase {
                                     crate::import_discovery::accepted_import_module(
                                         source,
                                         &view.accepted_reads,
+                                        &resolve_identity_resolution,
                                     )
                                     .map_err(|_| ProvenanceLookupFailure::Invalid)
                                 },
@@ -16091,6 +16106,7 @@ impl RevisionedQueryDatabase {
             import_view_ledger_entries_cloned: std::sync::atomic::AtomicU64::new(0),
             import_view_source_entries_compared: std::sync::atomic::AtomicU64::new(0),
             import_view_read_entries_compared: std::sync::atomic::AtomicU64::new(0),
+            identity_resolution,
             lineage_additions: Vec::new(),
             provider_observation_meter,
             lookup_root_lease,
@@ -19681,6 +19697,12 @@ impl RevisionedQueryDatabase {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// The module-identity and physical-identity resolution counters.
+    /// See [`crate::source_snapshot::IdentityResolutionMeter`].
+    pub(crate) fn identity_resolution(&self) -> &crate::source_snapshot::IdentityResolutionMeter {
+        &self.identity_resolution
+    }
+
     /// The module revisions appended by overlay publications since the last
     /// committed close — the recorded-additions lineage (RUE-1112).
     pub(crate) fn lineage_additions(&self) -> &[ModuleRevision] {
@@ -19955,6 +19977,7 @@ impl RevisionedQueryDatabase {
         let accepted_topology = AcceptedImportTopologyValue::Full(accepted_import_topology(
             ledger.iter(),
             &accepted_reads,
+            &self.identity_resolution,
         )?);
         // RUE-1137/RUE-1202: the runtime revision's compatibility slot carries
         // one shared observation namespace for both ordinary updates and
@@ -20161,7 +20184,11 @@ impl RevisionedQueryDatabase {
                 .iter()
                 .filter_map(|observation| observation.accepted_source())
                 .map(|source| {
-                    crate::import_discovery::accepted_import_module(source, &accepted_reads)
+                    crate::import_discovery::accepted_import_module(
+                        source,
+                        &accepted_reads,
+                        &self.identity_resolution,
+                    )
                 })
                 .collect::<Result<_, _>>()?,
             OverlayJustification::TrustedLeaves(added) => {
@@ -20207,7 +20234,13 @@ impl RevisionedQueryDatabase {
             }
         }
         let added_topology = (!new_observations.is_empty())
-            .then(|| accepted_import_topology(&new_observations, &accepted_reads))
+            .then(|| {
+                accepted_import_topology(
+                    &new_observations,
+                    &accepted_reads,
+                    &self.identity_resolution,
+                )
+            })
             .transpose()?;
         let accepted_topology = added_topology.as_ref().map_or_else(
             || parent_view.accepted_topology.clone(),
@@ -20442,7 +20475,11 @@ impl RevisionedQueryDatabase {
             }
             match &value.result {
                 Ok(module) => {
-                    let projected = crate::parsed_modules::rebind_parsed_module(&snapshot, module);
+                    let projected = crate::parsed_modules::rebind_parsed_module(
+                        &snapshot,
+                        module,
+                        &self.identity_resolution,
+                    );
                     if !computed {
                         if Arc::ptr_eq(&projected, module) {
                             work.modules_reused += 1;
@@ -20500,7 +20537,7 @@ impl RevisionedQueryDatabase {
             work.modules_considered += 1;
             work.previous_module_lookups += 1;
             let current_file_id = snapshot
-                .file_id_for_module(&module)
+                .file_id_for_module(&module, &self.identity_resolution)
                 .expect("parse demand belongs to the published source revision");
             let attempt = self.runtime.request_registered(
                 &self.parse_modules,
@@ -20528,7 +20565,11 @@ impl RevisionedQueryDatabase {
             }
             match &value.result {
                 Ok(module) => {
-                    let projected = crate::parsed_modules::rebind_parsed_module(&snapshot, module);
+                    let projected = crate::parsed_modules::rebind_parsed_module(
+                        &snapshot,
+                        module,
+                        &self.identity_resolution,
+                    );
                     if !computed {
                         if Arc::ptr_eq(&projected, module) {
                             work.modules_reused += 1;
@@ -20599,7 +20640,11 @@ impl RevisionedQueryDatabase {
                 unreachable!("ParseModule publishes typed values")
             };
             let parsed = match &parsed_value.result {
-                Ok(parsed) => crate::parsed_modules::rebind_parsed_module(&snapshot, parsed),
+                Ok(parsed) => crate::parsed_modules::rebind_parsed_module(
+                    &snapshot,
+                    parsed,
+                    &self.identity_resolution,
+                ),
                 Err(module_errors) => {
                     errors.extend(module_errors.clone());
                     continue;

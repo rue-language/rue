@@ -1423,8 +1423,9 @@ pub(crate) fn parse_source_snapshot_modules(
 pub(crate) fn parse_source_snapshot_module(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
-    parse_source_snapshot_module_with_stage(snapshot, module, None)
+    parse_source_snapshot_module_with_stage(snapshot, module, None, meter)
 }
 
 /// The canonical parse entry with an optional staged wave parse (ADR-0075).
@@ -1438,8 +1439,9 @@ pub(crate) fn parse_source_snapshot_module_with_stage(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
     staged: Option<StagedModuleParse>,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
-    let file_id = snapshot.file_id_for_module(module).ok_or_else(|| {
+    let file_id = snapshot.file_id_for_module(module, meter).ok_or_else(|| {
         CompileErrors::from(invalid_input(format!(
             "source snapshot contains no module {module}"
         )))
@@ -1577,9 +1579,10 @@ fn build_module_from_staged(
 pub(crate) fn rebind_parsed_module(
     snapshot: &SourceSnapshot,
     module: &Arc<ParsedModule>,
+    meter: &crate::source_snapshot::IdentityResolutionMeter,
 ) -> Arc<ParsedModule> {
     let file_id = snapshot
-        .file_id_for_module(module.module_id())
+        .file_id_for_module(module.module_id(), meter)
         .expect("parsed module belongs to the projected source snapshot");
     if module.file_id() == file_id
         && module.physical_path()
@@ -3415,7 +3418,11 @@ extern "C" { fn getpid() -> i32; }
         }
 
         let moved = snapshot(&[(9, "/main.rue", "main.rue", source)], 9);
-        let moved = rebind_parsed_module(&moved, module);
+        let moved = rebind_parsed_module(
+            &moved,
+            module,
+            &crate::source_snapshot::IdentityResolutionMeter::default(),
+        );
         for key in keys {
             let span = match moved.declaration_ast(&key).unwrap() {
                 ParsedDeclarationAstRef::Function(value) => value.span,
@@ -3867,11 +3874,13 @@ extern "C" { fn getpid() -> i32; }
         // A sentinel the fresh path cannot produce, proving which path ran.
         staged.work.lexed_bytes = 424_242;
 
-        let (fresh, fresh_work) = parse_source_snapshot_module(&snap, &module);
+        let meter = crate::source_snapshot::IdentityResolutionMeter::default();
+        let (fresh, fresh_work) = parse_source_snapshot_module(&snap, &module, &meter);
         let fresh = fresh.unwrap();
         assert_eq!(fresh_work.lexed_bytes, text.len());
 
-        let (hit, hit_work) = parse_source_snapshot_module_with_stage(&snap, &module, Some(staged));
+        let (hit, hit_work) =
+            parse_source_snapshot_module_with_stage(&snap, &module, Some(staged), &meter);
         let hit = hit.unwrap();
         assert_eq!(
             hit_work.lexed_bytes, 424_242,
@@ -3910,8 +3919,12 @@ extern "C" { fn getpid() -> i32; }
         // parse runs and its work shows the snapshot's own byte count.
         let other = Arc::new("fn main() -> i32 { 1 }".to_owned());
         let (_, stale) = parse_unpublished_module(&module, "/main.rue", &other).unwrap();
-        let (mismatch, mismatch_work) =
-            parse_source_snapshot_module_with_stage(&snap, &module, Some(stale));
+        let (mismatch, mismatch_work) = parse_source_snapshot_module_with_stage(
+            &snap,
+            &module,
+            Some(stale),
+            &crate::source_snapshot::IdentityResolutionMeter::default(),
+        );
         assert_eq!(mismatch_work.lexed_bytes, text.len());
         assert_eq!(mismatch.unwrap().revision(), fresh.revision());
     }
@@ -3945,7 +3958,11 @@ extern "C" { fn getpid() -> i32; }
             .unwrap()
             .clone();
         let main_id = ModuleId::from_logical_path("main.rue").unwrap();
-        let (new_main, work) = parse_source_snapshot_module(&edited, &main_id);
+        let (new_main, work) = parse_source_snapshot_module(
+            &edited,
+            &main_id,
+            &crate::source_snapshot::IdentityResolutionMeter::default(),
+        );
         let new_main = new_main.unwrap();
         assert_eq!(work.lexer_invocations, 1);
         assert_eq!(work.parser_invocations, 1);

@@ -1963,6 +1963,42 @@ impl CompilerSession {
         self.parse_invalidation_entries_compared
     }
 
+    /// Module-identity resolutions asked of the published source snapshots, and
+    /// the snapshot positions examined to answer them. See
+    /// [`crate::source_snapshot::IdentityResolutionMeter`].
+    pub(crate) fn snapshot_module_resolutions(&self) -> u64 {
+        self.queries
+            .revisioned
+            .identity_resolution()
+            .module_resolutions()
+    }
+
+    /// See [`Self::snapshot_module_resolutions`].
+    pub(crate) fn snapshot_module_resolution_visits(&self) -> u64 {
+        self.queries
+            .revisioned
+            .identity_resolution()
+            .module_resolution_visits()
+    }
+
+    /// Physical-identity lookups asked of the accepted-read manifests, and the
+    /// manifest entries examined to answer them. See
+    /// [`crate::source_snapshot::IdentityResolutionMeter`].
+    pub(crate) fn accepted_read_identity_lookups(&self) -> u64 {
+        self.queries
+            .revisioned
+            .identity_resolution()
+            .physical_identity_lookups()
+    }
+
+    /// See [`Self::accepted_read_identity_lookups`].
+    pub(crate) fn accepted_read_identity_visits(&self) -> u64 {
+        self.queries
+            .revisioned
+            .identity_resolution()
+            .physical_identity_visits()
+    }
+
     /// A snapshot of the production provider-op observation counters
     /// (ADR-0066 §4).
     pub(crate) fn provider_observation_metrics(
