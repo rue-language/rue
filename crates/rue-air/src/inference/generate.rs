@@ -388,11 +388,12 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> Self {
         let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
         let string_literal_default = Type::ERROR;
+        let rir_capacity = rir.len();
         Self {
             rir,
             interner,
             type_vars: TypeVarAllocator::new(),
-            constraints: Vec::new(),
+            constraints: Vec::with_capacity(rir_capacity),
             expr_types: HashMap::new(),
             functions: Some(functions),
             builtin_structs: Some(builtin_structs),
@@ -440,11 +441,12 @@ impl<'a> ConstraintGenerator<'a> {
     ) -> Self {
         let strbuf_type = type_pool.lang_item_type(crate::LangItem::StrBuf);
         let string_literal_default = Type::ERROR;
+        let rir_capacity = rir.len();
         Self {
             rir,
             interner,
             type_vars: TypeVarAllocator::new(),
-            constraints: Vec::new(),
+            constraints: Vec::with_capacity(rir_capacity),
             expr_types: HashMap::new(),
             functions: None,
             builtin_structs: None,
