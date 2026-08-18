@@ -1,12 +1,12 @@
 ---
 id: 0073
 title: "Validation-certificate durability across append-only revisions"
-status: accepted
+status: implemented
 tags: [architecture, compiler, incremental, performance, query-engine]
 feature-flag: null
 created: 2026-08-16
 accepted: 2026-08-16
-implemented:
+implemented: 2026-08-16
 spec-sections: []
 superseded-by:
 relates: ["ADR-0051", "ADR-0063", "ADR-0067", "ADR-0071", "RUE-1112", "RUE-1473"]
@@ -17,9 +17,13 @@ relates: ["ADR-0051", "ADR-0063", "ADR-0067", "ADR-0071", "RUE-1112", "RUE-1473"
 ## Status
 
 Accepted by Steve Klabnik on 2026-08-16 after external design review recorded
-on PR #2449. This is an internal query-engine design with no language-semantics
-change. It changes only the cost of red/green validation, never what
-invalidates what; that boundary is a falsifier, not an aspiration.
+on PR #2449. Implemented the same day: epoch machinery, directional
+certificate gate, and publication-class routing merged via PR #2453, with
+the falsifier suite and the chain scaling gate; the certificate-miss gate
+followed in PR #2455. This is an internal query-engine design with no
+language-semantics change. It changes only the cost of red/green
+validation, never what invalidates what; that boundary is a falsifier, not
+an aspiration.
 
 ## Summary
 
