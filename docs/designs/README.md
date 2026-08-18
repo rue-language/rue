@@ -242,4 +242,5 @@ The table is generated from ADR frontmatter. Run
 | [0077](0077-batch-endorsement-inheritance.md) | Endorsement inheritance for batch children | Accepted | architecture, compiler, performance, query-engine, parallelization |
 | [0078](0078-import-resolution-policy.md) | Single-candidate import resolution and program-anchored std | Accepted | language, modules, spec, compiler |
 | [0079](0079-request-scoped-immutable-semantic-universe.md) | Request-scoped immutable semantic universe | Proposal | architecture, compiler, performance, query-engine, type-system |
+| [0080](0080-seam-handoff-authority.md) | Seam handoffs: derived knowledge crosses scope boundaries with its authority attached | Proposal | architecture, compiler, performance, query-engine, principle |
 <!-- ADR-INDEX:END -->
