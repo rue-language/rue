@@ -1,12 +1,12 @@
 ---
 id: 0076
 title: "Shared revision symbol space for body analysis"
-status: proposal
+status: implemented
 tags: [architecture, compiler, performance, query-engine, type-system]
 feature-flag: null
 created: 2026-08-17
-accepted:
-implemented:
+accepted: 2026-08-17
+implemented: 2026-08-17
 spec-sections: []
 superseded-by:
 relates: ["ADR-0063", "ADR-0071", "ADR-0074", "RUE-1236"]
@@ -16,7 +16,15 @@ relates: ["ADR-0063", "ADR-0071", "ADR-0074", "RUE-1236"]
 
 ## Status
 
-Proposed, pending review. Follows the measurement note
+Proposed via PR #2477 and implemented 2026-08-17: Phase 1 (the
+ordered-use audit and equality-only handle wrapper) via PR #2481, whose
+findings forced the dual symbol-space amendment in PR #2482, and Phase 2
+(the revision-shared equality space with body-private dense remaps) via
+PR #2483, measured at -2.84% of all instructions on a cold Lattice build
+with emitted bytes and every deterministic counter unchanged. The ADR was
+twice corrected by its own implementation evidence (dual spaces; the
+retention bound), recorded in the amended sections below. Follows the
+measurement note
 `docs/notes/per-body-identity-closure-materialization.md`: of the four
 candidate fixes for per-body identity-closure materialization, sharing the
 symbol interner has roughly five times the headroom of sharing the type

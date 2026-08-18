@@ -339,6 +339,158 @@ pub(crate) struct LocalMaterializationFacts {
     pub(crate) indexes: Arc<LocalMaterializationIndexes>,
 }
 
+/// Shares equal immutable slices across the fact closures of one CFG-input
+/// selection pass.
+///
+/// `select_materialization_facts` builds a fresh closure per body: seven
+/// `Arc` slices plus an index derived from two of them. Whole closures never
+/// repeat — every closure seeds its own callable identity, so each is unique
+/// by construction — but the slices inside them repeat heavily, because they
+/// are the transitive nominal universe a body reaches rather than anything
+/// about the body. On the maintained Lattice workload, across 1,280
+/// selections, `declarations` and `nominal_metadata` repeat 1,150 times each
+/// and `anonymous_nominals` 1,234 times.
+///
+/// So the sharing is per slice, not per closure. Each slice is interned by
+/// exact content in its existing deterministic order, so a shared slice is
+/// indistinguishable from the one each body would have built alone.
+///
+/// The tables are request-local and bounded by the number of distinct slices
+/// one pass selects. They are deliberately neither a process-global arena nor
+/// a whole-program store — nothing here outlives the selection that produced
+/// it, so an edit cannot find a stale slice to reuse.
+#[derive(Default)]
+pub(crate) struct LocalMaterializationFactInterner {
+    declarations: SliceInterner<DurableDeclarationSemantic>,
+    anonymous_nominals: SliceInterner<DurableAnonymousNominal>,
+    callables: SliceInterner<LocalCallableFact>,
+    nominal_metadata: SliceInterner<LocalNominalMetadataFact>,
+    modules: SliceInterner<ModuleId>,
+    builtin_nominals: SliceInterner<LocalBuiltinNominalRequest>,
+    required_types: SliceInterner<crate::durable_semantics::DurableType>,
+    /// Indexes keyed by the identity of the two interned slices they are
+    /// derived from. Once those slices are shared, pointer identity is an
+    /// exact key: equal content is the same allocation.
+    indexes: std::collections::HashMap<(usize, usize), Arc<LocalMaterializationIndexes>>,
+    /// Closures selected, slices newly allocated, and slice requests served
+    /// from a slice an earlier selection already built.
+    pub(crate) selections: usize,
+    pub(crate) allocated: usize,
+    pub(crate) reused: usize,
+}
+
+/// One slice kind's request-local content table.
+///
+/// Bucketed by content hash; a bucket resolves collisions by exact
+/// comparison, so a hash collision costs one comparison rather than sharing
+/// two slices that merely hash alike.
+struct SliceInterner<T> {
+    buckets: std::collections::HashMap<u64, Vec<Arc<[T]>>>,
+}
+
+impl<T> Default for SliceInterner<T> {
+    fn default() -> Self {
+        Self {
+            buckets: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl<T: Clone + Eq + Hash> SliceInterner<T> {
+    /// Share `values` with an equal slice from an earlier selection, or adopt
+    /// it as the shared copy. Returns whether the slice was reused.
+    fn intern(&mut self, values: Vec<T>) -> (Arc<[T]>, bool) {
+        use std::hash::Hasher;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        values.hash(&mut hasher);
+        let bucket = self.buckets.entry(hasher.finish()).or_default();
+        if let Some(shared) = bucket
+            .iter()
+            .find(|candidate| candidate.as_ref() == values.as_slice())
+        {
+            return (Arc::clone(shared), true);
+        }
+        let shared: Arc<[T]> = values.into();
+        bucket.push(Arc::clone(&shared));
+        (shared, false)
+    }
+}
+
+impl LocalMaterializationFactInterner {
+    /// Assemble one closure, sharing every slice that an earlier selection in
+    /// this pass already built.
+    ///
+    /// The index is derived from `declarations` and `nominal_metadata` alone,
+    /// so two closures sharing both share the index too — which also skips
+    /// rebuilding it, the part of assembly that walks the declarations again.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        &mut self,
+        declarations: Vec<DurableDeclarationSemantic>,
+        anonymous_nominals: Vec<DurableAnonymousNominal>,
+        callables: Vec<LocalCallableFact>,
+        nominal_metadata: Vec<LocalNominalMetadataFact>,
+        modules: Vec<ModuleId>,
+        builtin_nominals: Vec<LocalBuiltinNominalRequest>,
+        required_types: Vec<crate::durable_semantics::DurableType>,
+    ) -> LocalMaterializationFacts {
+        self.selections += 1;
+        let mut account = |reused: bool| {
+            if reused {
+                self.reused += 1;
+            } else {
+                self.allocated += 1;
+            }
+        };
+
+        let (declarations, hit) = self.declarations.intern(declarations);
+        account(hit);
+        let (nominal_metadata, hit) = self.nominal_metadata.intern(nominal_metadata);
+        account(hit);
+        let (anonymous_nominals, hit) = self.anonymous_nominals.intern(anonymous_nominals);
+        account(hit);
+        let (callables, hit) = self.callables.intern(callables);
+        account(hit);
+        let (modules, hit) = self.modules.intern(modules);
+        account(hit);
+        let (builtin_nominals, hit) = self.builtin_nominals.intern(builtin_nominals);
+        account(hit);
+        let (required_types, hit) = self.required_types.intern(required_types);
+        account(hit);
+
+        let index_key = (
+            Arc::as_ptr(&declarations).cast::<()>() as usize,
+            Arc::as_ptr(&nominal_metadata).cast::<()>() as usize,
+        );
+        let indexes = match self.indexes.get(&index_key) {
+            Some(indexes) => {
+                self.reused += 1;
+                Arc::clone(indexes)
+            }
+            None => {
+                self.allocated += 1;
+                let indexes = Arc::new(LocalMaterializationIndexes::new(
+                    &declarations,
+                    &nominal_metadata,
+                ));
+                self.indexes.insert(index_key, Arc::clone(&indexes));
+                indexes
+            }
+        };
+
+        LocalMaterializationFacts {
+            indexes,
+            declarations,
+            anonymous_nominals,
+            callables,
+            nominal_metadata,
+            modules,
+            builtin_nominals,
+            required_types,
+        }
+    }
+}
+
 impl LocalMaterializationFacts {
     pub(crate) fn union<'a>(facts: impl IntoIterator<Item = &'a Self>) -> Self {
         fn extend_unique<'a, T: Clone + Eq + Hash>(
@@ -1060,6 +1212,7 @@ pub(crate) fn select_materialization_facts(
     body: &rue_air::SemanticBody<StableDefinitionKey, ModuleId>,
     index: &LocalFactSelectionIndex<'_>,
     callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
+    interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     use rue_air::SemanticBodyInstDependency as Dependency;
 
@@ -1527,23 +1680,18 @@ pub(crate) fn select_materialization_facts(
         .selected_declarations
         .into_values()
         .collect::<Vec<_>>();
-    Ok(LocalMaterializationFacts {
-        indexes: Arc::new(LocalMaterializationIndexes::new(
-            &declarations,
-            &nominal_metadata,
-        )),
-        declarations: declarations.into(),
-        anonymous_nominals: selection
+    Ok(interner.assemble(
+        declarations,
+        selection
             .selected_anonymous
             .into_values()
-            .collect::<Vec<_>>()
-            .into(),
-        callables: callables.into(),
-        nominal_metadata: nominal_metadata.into(),
-        modules: selection.modules.into_iter().collect::<Vec<_>>().into(),
-        builtin_nominals: selection.builtins.into_iter().collect::<Vec<_>>().into(),
-        required_types: required_types.into(),
-    })
+            .collect::<Vec<_>>(),
+        callables,
+        nominal_metadata,
+        selection.modules.into_iter().collect::<Vec<_>>(),
+        selection.builtins.into_iter().collect::<Vec<_>>(),
+        required_types,
+    ))
 }
 
 pub(crate) fn select_drop_glue_materialization_facts(
@@ -1551,6 +1699,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
     facts: &crate::type_queries::DropGlueFacts,
     index: &LocalFactSelectionIndex<'_>,
     callable_symbols: &std::collections::BTreeMap<FunctionInstanceKey, Arc<str>>,
+    interner: &mut LocalMaterializationFactInterner,
 ) -> Result<LocalMaterializationFacts, LocalFactSelectionFailure> {
     let identity = FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
     let mut roots = vec![(0, crate::drop_glue::semantic_type_from_instance(owner))];
@@ -1577,7 +1726,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         warnings: Arc::new([]),
         method_references: Arc::new([]),
     };
-    select_materialization_facts(&identity, &body, index, callable_symbols)
+    select_materialization_facts(&identity, &body, index, callable_symbols, interner)
 }
 
 #[cfg(test)]
@@ -1595,6 +1744,97 @@ mod tests {
             required_types: Arc::new([]),
             indexes: Arc::new(LocalMaterializationIndexes::default()),
         }
+    }
+
+    #[test]
+    fn slice_interner_shares_equal_content_and_keeps_distinct_content_apart() {
+        let a = ModuleId::from_validated_canonical("a.rue");
+        let b = ModuleId::from_validated_canonical("b.rue");
+        let mut interner = SliceInterner::<ModuleId>::default();
+
+        let (first, reused) = interner.intern(vec![a.clone(), b.clone()]);
+        assert!(!reused, "the first slice of its content is allocated");
+        let (second, reused) = interner.intern(vec![a.clone(), b.clone()]);
+        assert!(reused, "equal content is served from the first slice");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "equal content must be one allocation, not two equal ones"
+        );
+
+        // Order is part of identity: these slices have the same members and
+        // are not interchangeable, because the order feeds body-local epoch
+        // construction.
+        let (reordered, reused) = interner.intern(vec![b.clone(), a.clone()]);
+        assert!(!reused, "a reordered slice is different content");
+        assert!(!Arc::ptr_eq(&first, &reordered));
+        assert_eq!(reordered.as_ref(), [b.clone(), a.clone()].as_slice());
+
+        let (subset, reused) = interner.intern(vec![a.clone()]);
+        assert!(!reused);
+        assert_eq!(subset.as_ref(), [a].as_slice());
+        // The original is unchanged by anything interned after it.
+        assert_eq!(first.as_ref(), [reordered[1].clone(), b].as_slice());
+    }
+
+    #[test]
+    fn interned_closures_share_slices_without_sharing_whole_closures() {
+        // Two closures that agree on six slices and differ on `callables` —
+        // the shape every real pair of bodies has, because each closure seeds
+        // its own callable identity. Whole-closure interning would share
+        // nothing here; per-slice interning shares six of seven plus the
+        // index.
+        let module = ModuleId::from_validated_canonical("a.rue");
+        let mut interner = LocalMaterializationFactInterner::default();
+        let callable = |name: &str| LocalCallableFact {
+            identity: FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I32)),
+            symbol: Arc::from(name),
+        };
+
+        let left = interner.assemble(
+            Vec::new(),
+            Vec::new(),
+            vec![callable("left")],
+            Vec::new(),
+            vec![module.clone()],
+            Vec::new(),
+            Vec::new(),
+        );
+        let right = interner.assemble(
+            Vec::new(),
+            Vec::new(),
+            vec![callable("right")],
+            Vec::new(),
+            vec![module],
+            Vec::new(),
+            Vec::new(),
+        );
+
+        assert!(Arc::ptr_eq(&left.declarations, &right.declarations));
+        assert!(Arc::ptr_eq(
+            &left.anonymous_nominals,
+            &right.anonymous_nominals
+        ));
+        assert!(Arc::ptr_eq(&left.nominal_metadata, &right.nominal_metadata));
+        assert!(Arc::ptr_eq(&left.modules, &right.modules));
+        assert!(Arc::ptr_eq(&left.builtin_nominals, &right.builtin_nominals));
+        assert!(Arc::ptr_eq(&left.required_types, &right.required_types));
+        // Derived from `declarations` and `nominal_metadata`, both shared, so
+        // the second closure skips rebuilding it.
+        assert!(Arc::ptr_eq(&left.indexes, &right.indexes));
+        // The one slice that genuinely differs stays separate.
+        assert!(!Arc::ptr_eq(&left.callables, &right.callables));
+        assert_eq!(left.callables[0].symbol.as_ref(), "left");
+        assert_eq!(right.callables[0].symbol.as_ref(), "right");
+
+        // Two selections, sixteen slice-or-index requests, seven of which are
+        // the second closure reusing the first's.
+        assert_eq!(interner.selections, 2);
+        assert_eq!(interner.reused, 7);
+        assert_eq!(interner.allocated, 9);
+        assert_eq!(
+            interner.allocated + interner.reused,
+            interner.selections * 8
+        );
     }
 
     #[test]
@@ -1832,6 +2072,7 @@ mod tests {
                 FunctionInstanceKey::Definition(function.clone()),
                 Arc::from("probe"),
             )]),
+            &mut LocalMaterializationFactInterner::default(),
         )
         .unwrap();
 
@@ -1898,7 +2139,10 @@ mod tests {
             Arc::from("probe"),
         )]);
 
-        let select = |return_type| {
+        // One interner across both selections, so this also exercises the
+        // sharing path rather than only the cold one.
+        let mut interner = LocalMaterializationFactInterner::default();
+        let mut select = |return_type| {
             let mut body = body();
             body.return_type = return_type;
             select_materialization_facts(
@@ -1906,6 +2150,7 @@ mod tests {
                 &body,
                 &index,
                 &symbols,
+                &mut interner,
             )
             .unwrap()
         };

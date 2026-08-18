@@ -36,7 +36,6 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
         include_str!("diagnostic_attempt_store.rs"),
     ),
     ("drop_glue", include_str!("drop_glue.rs")),
-    ("durable_body", include_str!("durable_body.rs")),
     ("durable_cfg", include_str!("durable_cfg.rs")),
     ("durable_semantics", include_str!("durable_semantics.rs")),
     ("import_discovery", include_str!("import_discovery.rs")),
@@ -2149,9 +2148,11 @@ pub fn leaked(
 #[test]
 fn durable_cache_schema_cannot_return_to_the_public_facade() {
     let facade = include_str!("lib.rs");
-    assert!(facade.contains("mod durable_body;"));
+    // `durable_body` held only inert accounting and was removed by RUE-1541.
+    // Asserting the module is absent is stronger than asserting it stayed
+    // private: the schema cannot leak from a module that does not exist.
+    assert!(!facade.contains("mod durable_body;"));
     assert!(facade.contains("mod durable_semantics;"));
-    assert!(!facade.contains("pub mod durable_body;"));
     assert!(!facade.contains("pub mod durable_semantics;"));
 
     let session = include_str!("session.rs");
@@ -2668,33 +2669,37 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
 
 #[test]
 fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
-    let durable_body = include_str!("durable_body.rs");
-    for removed in [
-        "pub enum DurableAirInstData",
-        "pub struct DurableAirInst",
-        "pub struct DurablePlace",
-        "pub enum DurableProjection",
-        "pub enum DurablePattern",
-        "pub struct DurableBodyAnchor",
-        "pub struct DurableSpecializationIdentity",
-    ] {
-        assert!(
-            !durable_body.contains(removed),
-            "compiler-owned canonical body mirror returned: {removed}"
-        );
-    }
-    assert!(!durable_body.contains("pub type DurableProjection"));
-    assert!(!durable_body.contains("pub type DurableAirInstData"));
-    for removed in [
-        "DurableOrdinaryBodyPayload",
-        "DurableSpecializedBodyPayload",
-        "convert_semantic_body_exports",
-        "convert_semantic_specialized_body_exports",
-    ] {
-        assert!(
-            !durable_body.contains(removed),
-            "removed peer body-export payload returned: {removed}"
-        );
+    // This guard used to read `durable_body.rs` alone. RUE-1541 removed that
+    // module, so the mirror would have to reappear in some other production
+    // module — which is what this now checks.
+    for (name, source) in PRODUCTION_MODULES {
+        for removed in [
+            "pub enum DurableAirInstData",
+            "pub struct DurableAirInst",
+            "pub struct DurablePlace",
+            "pub enum DurableProjection",
+            "pub enum DurablePattern",
+            "pub struct DurableBodyAnchor",
+            "pub struct DurableSpecializationIdentity",
+            "pub type DurableProjection",
+            "pub type DurableAirInstData",
+        ] {
+            assert!(
+                !source.contains(removed),
+                "compiler-owned canonical body mirror returned in {name}: {removed}"
+            );
+        }
+        for removed in [
+            "DurableOrdinaryBodyPayload",
+            "DurableSpecializedBodyPayload",
+            "convert_semantic_body_exports",
+            "convert_semantic_specialized_body_exports",
+        ] {
+            assert!(
+                !source.contains(removed),
+                "removed peer body-export payload returned in {name}: {removed}"
+            );
+        }
     }
 }
 

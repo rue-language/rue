@@ -675,6 +675,10 @@ pub(crate) struct ImportDiscoveryResult {
     pub(crate) revision: Arc<ImportDiscoveryView>,
     #[cfg(test)]
     pub(crate) input_revision: ImportInputRevision,
+    /// How this discovery discharged its ADR-0075 closing witness. Read by the
+    /// falsifier tests that pin both the cumulative proof and its fallback.
+    #[cfg(test)]
+    pub(crate) witness_discharge: WitnessDischarge,
     pub(crate) session: CompilerSession,
     /// Acquisition context threaded out for the host park/retry loop
     /// (`acquire_reached_toolchain_modules`). Host filesystem access lives
@@ -748,6 +752,72 @@ struct ClosedDiscovery {
     /// The final empty rooted frontier that witnessed closure — the closure
     /// witness a same-generation trusted-toolchain successor continues from.
     witness: ImportDemandFrontier,
+    /// How the ADR-0075 closing witness was discharged: proven from the
+    /// cumulative coverage record, or fallen back to the whole-plan rooting.
+    /// Read only by the falsifier tests that pin both paths as reachable.
+    #[cfg_attr(not(test), allow(dead_code))]
+    witness_discharge: WitnessDischarge,
+}
+
+// Test-only falsifier for the ADR-0075 cumulative witness: when armed, drop
+// one occurrence from the coverage record just before the closing check, so
+// the record can no longer prove it covers the plan.
+//
+// The witness is sound because the union of every round's roots is the whole
+// final plan by construction, which means the fallback is unreachable in
+// ordinary discovery — and an unreachable fallback is one nobody notices has
+// rotted. This forges the one condition that reaches it.
+//
+// Deliberately not a `mod`: `cli_executes_only_revision_pinned_compiler_frontiers`
+// reads this file's production half as everything before the first
+// `#[cfg(test)] mod`, and a test module here would hide the host boundaries
+// below it from that gate.
+#[cfg(test)]
+thread_local! {
+    static FORGE_UNCOVERED_PLAN_SEGMENT: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Arms the forge for the current thread; disarmed when dropped, so one test
+/// cannot leak the condition into another.
+#[cfg(test)]
+struct ForgedUncoveredSegment;
+
+#[cfg(test)]
+impl ForgedUncoveredSegment {
+    fn arm() -> Self {
+        FORGE_UNCOVERED_PLAN_SEGMENT.with(|armed| armed.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for ForgedUncoveredSegment {
+    fn drop(&mut self) {
+        FORGE_UNCOVERED_PLAN_SEGMENT.with(|armed| armed.set(false));
+    }
+}
+
+#[cfg(test)]
+fn forge_uncovered_plan_segment(
+    rooted: &mut std::collections::BTreeSet<rue_compiler::ImportOccurrenceKey>,
+) {
+    if FORGE_UNCOVERED_PLAN_SEGMENT.with(|armed| armed.replace(false))
+        && let Some(first) = rooted.iter().next().cloned()
+    {
+        rooted.remove(&first);
+    }
+}
+
+/// How one discovery discharged its closing witness (ADR-0075).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct WitnessDischarge {
+    /// Closures whose cumulative record already covered the plan, so the
+    /// whole-plan rooting was not dispatched.
+    pub(crate) cumulative: u32,
+    /// Closures that fell back to the whole-plan rooting because the record
+    /// could not prove coverage.
+    pub(crate) reroot: u32,
 }
 
 /// Reach the parser-owned import fixed point by executing compiler-generated
@@ -941,6 +1011,15 @@ fn drive_import_discovery_to_close(
     // conclusive when that frontier was built and stays conclusive for the whole
     // request generation.
     let mut previous_frontier: Option<ImportDemandFrontier> = None;
+    // Every occurrence this discovery has rooted, across all its rounds. This is
+    // the ADR-0075 cumulative coverage record that lets the closing witness be
+    // proven rather than re-dispatched; see the closing debt below.
+    let mut rooted_occurrences: std::collections::BTreeSet<rue_compiler::ImportOccurrenceKey> =
+        std::collections::BTreeSet::new();
+    // How the closing witness was discharged, for the falsifier: proven from the
+    // record, or fallen back to the whole-plan rooting.
+    let mut cumulative_witness_closures = 0_u32;
+    let mut reroot_witness_closures = 0_u32;
     loop {
         // One frontier round: plan and frontier construction (which owns the
         // canonical parse of everything read so far), then the host reads that
@@ -1010,6 +1089,7 @@ fn drive_import_discovery_to_close(
         let frontier = {
             let _span = tracing::info_span!("import_frontier").entered();
             loop {
+                rooted_occurrences.extend(roots.occurrences().iter().cloned());
                 let frontier = import_demand_frontier_for_roots(
                     staging,
                     input_revision,
@@ -1026,7 +1106,31 @@ fn drive_import_discovery_to_close(
                     break frontier;
                 }
                 closing_reroot_owed = false;
-                roots = plan.demand_roots();
+                // ADR-0075: pay the closing debt from the cumulative record when
+                // it already covers the plan. The first round roots the whole
+                // plan, every later round roots what its stage added plus what
+                // the previous frontier demanded, and the plan is append-only —
+                // so the union across rounds is the whole final plan, and every
+                // occurrence outside a round's roots was already conclusive for
+                // the generation. Re-dispatching them proves nothing the record
+                // does not already carry, and costs one root per plan occurrence
+                // on every discovery.
+                //
+                // Fail-closed: if the record cannot prove coverage, the
+                // whole-plan rooting runs exactly as before.
+                let whole_plan = plan.demand_roots();
+                #[cfg(test)]
+                forge_uncovered_plan_segment(&mut rooted_occurrences);
+                if whole_plan
+                    .occurrences()
+                    .iter()
+                    .all(|occurrence| rooted_occurrences.contains(occurrence))
+                {
+                    cumulative_witness_closures += 1;
+                    break frontier;
+                }
+                reroot_witness_closures += 1;
+                roots = whole_plan;
             }
         };
         drop(plan_span);
@@ -1144,6 +1248,10 @@ fn drive_import_discovery_to_close(
         closed,
         input_revision,
         witness,
+        witness_discharge: WitnessDischarge {
+            cumulative: cumulative_witness_closures,
+            reroot: reroot_witness_closures,
+        },
     })
 }
 
@@ -1242,6 +1350,8 @@ pub(crate) fn discover_and_load_imports(
         revision: close.closed,
         #[cfg(test)]
         input_revision: close.input_revision,
+        #[cfg(test)]
+        witness_discharge: close.witness_discharge,
         session: staging,
         assembler,
         std_root,
@@ -1327,6 +1437,10 @@ pub(crate) fn reload_from_filesystem(
     #[cfg(test)]
     {
         result.input_revision = close.input_revision;
+        #[cfg(test)]
+        {
+            result.witness_discharge = close.witness_discharge;
+        }
     }
     Ok(())
 }
@@ -1447,6 +1561,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
                 #[cfg(test)]
                 {
                     result.input_revision = reclosed.input_revision;
+                    result.witness_discharge = reclosed.witness_discharge;
                 }
             }
         }
@@ -2211,6 +2326,70 @@ mod tests {
         assert_eq!(result.read_manifest.len(), 4);
     }
 
+    /// ADR-0075 witness soundness. The cumulative record is what lets an
+    /// ordinary discovery skip the closing whole-plan rooting, so the fallback
+    /// it replaces has to stay reachable and correct. Forge a record that
+    /// cannot prove coverage and the whole-plan rooting must fire, producing
+    /// the same close.
+    #[test]
+    fn a_record_that_cannot_prove_coverage_falls_back_to_the_whole_plan_rooting() {
+        const MODULES: usize = 8;
+        let dir = TestDir::new("witness-fallback");
+        let main = dir.write(
+            "main.rue",
+            r#"const next = @import("m1.rue"); fn main() -> i32 { 0 }"#,
+        );
+        for index in 1..MODULES {
+            let source = if index + 1 == MODULES {
+                format!("pub fn value{index}() -> i32 {{ {index} }}")
+            } else {
+                format!(
+                    "pub const next = @import(\"m{}.rue\"); pub fn value{index}() -> i32 {{ {index} }}",
+                    index + 1
+                )
+            };
+            dir.write(&format!("m{index}.rue"), &source);
+        }
+        let root = main.to_str().unwrap();
+
+        let proven = discover_and_load_imports(root, None, None).unwrap();
+        assert_eq!(
+            proven.witness_discharge,
+            WitnessDischarge {
+                cumulative: 1,
+                reroot: 0
+            }
+        );
+
+        let forged = {
+            let _armed = ForgedUncoveredSegment::arm();
+            discover_and_load_imports(root, None, None).unwrap()
+        };
+        assert_eq!(
+            forged.witness_discharge,
+            WitnessDischarge {
+                cumulative: 0,
+                reroot: 1
+            },
+            "a record that cannot prove coverage must re-root the whole plan"
+        );
+
+        // The fallback is a proof strategy, not a different answer: same reads,
+        // same closed plan, same revision count.
+        assert_eq!(forged.read_manifest, proven.read_manifest);
+        assert_eq!(
+            forged.input_revision.frontier_round(),
+            proven.input_revision.frontier_round()
+        );
+        // And it costs exactly what it used to: one extra rooting per plan
+        // occurrence, which is the dispatch the cumulative record removes.
+        assert_eq!(
+            import_frontier_roots_requested(&forged.session),
+            import_frontier_roots_requested(&proven.session) + (MODULES as u64 - 1),
+            "the fallback re-dispatches the whole plan the record would have proven"
+        );
+    }
+
     #[test]
     fn import_chain_stages_only_each_new_module_and_import_group() {
         const MODULES: usize = 32;
@@ -2276,9 +2455,28 @@ mod tests {
         // plan one closure rooting (MODULES-1 again) — 1 + 31 + 31 = 63 here.
         // Publishing per hop instead cost 93 at this shape, and rooting the
         // whole plan every round cost 527 and grew quadratically with depth.
-        assert!(
-            import_frontier_roots_requested(&result.session) <= (MODULES as u64) * 2,
-            "frontier dispatch must stay linear in chain depth, not rounds times plan"
+        // The wave resolves the whole chain against its own running ledger, so
+        // the query frontier is dispatched exactly twice: once for the round's
+        // starting occurrence, and once more for the closing round, which roots
+        // in the wave's fanout (MODULES-1 occurrences) — 1 + 31 = 32 here.
+        //
+        // The closing round used to owe the whole plan one more rooting
+        // (MODULES-1 again, 63 total). ADR-0075's cumulative witness discharges
+        // that debt from the record instead, so the closing dispatch is gone
+        // and this is now an exact count rather than a bound.
+        assert_eq!(
+            import_frontier_roots_requested(&result.session),
+            MODULES as u64,
+            "frontier dispatch must be the wave's roots alone, with the closing \
+             witness proven from the cumulative record"
+        );
+        assert_eq!(
+            result.witness_discharge,
+            WitnessDischarge {
+                cumulative: 1,
+                reroot: 0
+            },
+            "an ordinary chain closes on the cumulative record"
         );
         // The read half of the same property: the wave reduces exactly the
         // occurrences each hop answered, one accepted source apiece, and the

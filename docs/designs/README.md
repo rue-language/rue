@@ -235,8 +235,8 @@ The table is generated from ADR frontmatter. Run
 | [0070](0070-rue-program-build-actions.md) | Rue program compilation as declared Buck actions | Accepted | build, ci, testing, tooling |
 | [0071](0071-release-quality-compiler-performance-contract.md) | Release-quality compiler performance contract | Accepted | architecture, compiler, performance, process |
 | [0072](0072-runtime-benchmarking-static-site-generator.md) | Runtime performance benchmarking anchored by a Rue static site generator | Accepted | performance, benchmarking, process, examples, stdlib |
-| [0073](0073-validation-certificate-durability.md) | Validation-certificate durability across append-only revisions | Accepted | architecture, compiler, incremental, performance, query-engine |
-| [0074](0074-structural-node-identity.md) | Structural node identity for dependency order and retained charge | Proposal | architecture, compiler, performance, query-engine |
-| [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Proposal | architecture, compiler, incremental, performance, query-engine |
-| [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Proposal | architecture, compiler, performance, query-engine, type-system |
+| [0073](0073-validation-certificate-durability.md) | Validation-certificate durability across append-only revisions | Implemented | architecture, compiler, incremental, performance, query-engine |
+| [0074](0074-structural-node-identity.md) | Structural node identity for dependency order and retained charge | Implemented | architecture, compiler, performance, query-engine |
+| [0075](0075-wave-granular-import-discovery.md) | Wave-granular import discovery revisions and cumulative exhaustion witness | Implemented | architecture, compiler, incremental, performance, query-engine |
+| [0076](0076-shared-revision-symbol-space.md) | Shared revision symbol space for body analysis | Implemented | architecture, compiler, performance, query-engine, type-system |
 <!-- ADR-INDEX:END -->

@@ -1084,6 +1084,8 @@ fn compiler_critical_path_evidence(
         semantic_declaration_nuclei: timing.pass_duration_distribution("declaration_nucleus"),
         semantic_declaration_signature_parsing: timing
             .pass_duration_distribution("declaration_signature_parsing"),
+        semantic_declaration_signature_projection: timing
+            .pass_duration_distribution("declaration_signature_projection"),
         semantic_body_closure: timing.pass_duration_distribution("body_closure_collection"),
         semantic_body_graph_projection: timing.pass_duration_distribution("body_graph_projection"),
         semantic_body_input_lowering: timing.pass_duration_distribution("body_input_lowering"),
@@ -1205,6 +1207,9 @@ fn benchmark_compiler_work(
                 as u64,
             type_nodes_scanned: metrics.semantic.cfg.materialization_type_nodes_scanned as u64,
             fact_selections: metrics.semantic.cfg.materialization_fact_selections as u64,
+            fact_closures_allocated: metrics.semantic.cfg.materialization_fact_closures_allocated
+                as u64,
+            fact_closures_reused: metrics.semantic.cfg.materialization_fact_closures_reused as u64,
             declarations_selected: metrics.semantic.cfg.materialization_declarations_selected
                 as u64,
             anonymous_nominals_selected: metrics

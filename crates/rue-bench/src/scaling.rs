@@ -1212,6 +1212,8 @@ mod tests {
                         anonymous_nominals_scanned: 1,
                         type_nodes_scanned: 7,
                         fact_selections: 4,
+                        fact_closures_allocated: 5,
+                        fact_closures_reused: 27,
                         declarations_selected: 11,
                         anonymous_nominals_selected: 13,
                         callables_selected: 17,

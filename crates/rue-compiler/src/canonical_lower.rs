@@ -262,11 +262,23 @@ impl DeclarationBodyPlan {
             )?;
         let rir_instructions = rir.len() as u64;
         let rir_payload_words = rir.extra_len() as u64;
-        let (bundle, index) = rue_air::BodyRirBundle::new_with_index_attribution(
+        // `BodyRirIndexAttribution::duration_ns` documents itself as charged by
+        // the compiler-owned contiguous lowering clock, and until RUE-1515
+        // nothing charged it: the field was summed into
+        // `semantic_body_input_attributed_total` and published as
+        // `body_rir_index_ns` while always reading zero, so published phase
+        // attribution understated the index build by exactly its own cost. The
+        // clock lives here rather than in `rue-air` because the doc says the
+        // compiler owns it, and because this is the only construction site.
+        let index_started = attribution_enabled.then(std::time::Instant::now);
+        let (bundle, mut index) = rue_air::BodyRirBundle::new_with_index_attribution(
             rir,
             space.clone(),
             attribution_enabled,
         );
+        index.duration_ns = index_started.map_or(0, |started| {
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        });
         checkpoint().map_err(BodyPlanMaterializationFailure::Query)?;
         Ok((
             bundle,

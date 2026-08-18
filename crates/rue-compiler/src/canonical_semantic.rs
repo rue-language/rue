@@ -13,24 +13,10 @@ pub struct CanonicalSemanticWork {
     pub binding: DeclarationBindingWork,
     /// Authoritative binding-manifest traversal used to validate body tokens.
     pub manifest: SemanticBindingManifestWork,
-    /// Public stable-ID issuance work, absent when IDs were not requested.
-    /// Exact work performed to make AIR body ownership authoritative.
-    pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
     pub body_analysis: BodyAnalysisWork,
-    /// Durable body comparison, import, export, reuse, and fallback work.
-    pub durable_bodies: crate::DurableBodyWork,
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BodyOwnerTokenWork {
-    pub provisional_slots: usize,
-    pub authoritative_slots: usize,
-    pub slots_validated: usize,
-    pub tokens_installed: usize,
-    pub validation_failures: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -43,6 +29,10 @@ pub struct CfgConstructionWork {
     pub materialization_anonymous_nominals_scanned: usize,
     pub materialization_type_nodes_scanned: usize,
     pub materialization_fact_selections: usize,
+    /// Distinct fact closures allocated, and selections served from one an
+    /// earlier body already built. These sum to `materialization_fact_selections`.
+    pub materialization_fact_closures_allocated: usize,
+    pub materialization_fact_closures_reused: usize,
     pub materialization_declarations_selected: usize,
     pub materialization_anonymous_nominals_selected: usize,
     pub materialization_callables_selected: usize,
@@ -75,17 +65,6 @@ pub struct CfgConstructionWork {
     pub optimization_completions: usize,
     pub optimized_level_attempts: usize,
     pub cfg_warnings_emitted: usize,
-    pub implicit_destructor_targets_emitted: usize,
     pub cfg_reuse_candidates: usize,
-    pub cfg_import_attempts: usize,
-    pub cfg_import_successes: usize,
-    pub cfg_import_failures: usize,
-    pub cfg_schema_version_rejections: usize,
     pub cfg_reuses: usize,
-    pub cfg_fallbacks: usize,
-    pub cfg_warnings_reused: usize,
-    pub implicit_destructor_targets_reused: usize,
-    pub cfg_export_attempts: usize,
-    pub cfg_export_successes: usize,
-    pub cfg_export_rejections: usize,
 }

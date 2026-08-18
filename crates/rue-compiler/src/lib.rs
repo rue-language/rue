@@ -50,7 +50,6 @@ mod dependency_envelope;
 mod diagnostic;
 mod diagnostic_attempt_store;
 mod drop_glue;
-mod durable_body;
 mod durable_cfg;
 mod durable_semantics;
 mod import_discovery;
@@ -162,7 +161,6 @@ pub(crate) use canonical_semantic::CanonicalSemanticWork;
 #[allow(unused_imports)]
 pub(crate) use definition_snapshot::DefinitionShardWork;
 #[allow(unused_imports)]
-pub(crate) use durable_body::DurableBodyWork;
 #[cfg(test)]
 pub(crate) use import_discovery::DiscoverySourceAssembler;
 pub(crate) use import_discovery::IMPORT_DISCOVERY_POLICY_VERSION;
