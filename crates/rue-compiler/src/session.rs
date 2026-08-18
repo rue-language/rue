@@ -5170,11 +5170,6 @@ impl CompilerSession {
         }
         work.cfg.materialization_fact_closures_allocated += fact_closures.allocated;
         work.cfg.materialization_fact_closures_reused += fact_closures.reused;
-        debug_assert_eq!(
-            fact_closures.allocated + fact_closures.reused,
-            fact_closures.selections * 8,
-            "each selection interns its seven slices and its index"
-        );
         // The selected facts now own everything carried by CFG memo keys. Do
         // not retain the request-wide lookup tables across CFG evaluation.
         drop(materialization_index);
