@@ -1235,7 +1235,12 @@ fn benchmark_compiler_work(
         cfg_prerequisites: rue_perf_schema::CfgPrerequisiteWork {
             stable_types_scanned: metrics.semantic.cfg.prerequisite_stable_types_scanned as u64,
             layout_requests: metrics.semantic.cfg.prerequisite_layout_requests as u64,
-            type_fact_requests: metrics.semantic.cfg.prerequisite_type_fact_requests as u64,
+            // Retired: the duplicate top-level TypeFacts request was removed
+            // when drop-glue terminals took ownership of the exact type-fact
+            // dependency, so nothing records this work item any more. The
+            // schema field survives for stored-report compatibility and is
+            // always zero.
+            type_fact_requests: 0,
             drop_glue_requests: metrics.semantic.cfg.prerequisite_drop_glue_requests as u64,
         },
         cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
@@ -1931,7 +1936,6 @@ mod tests {
                     materialization_required_types_selected: 31,
                     prerequisite_stable_types_scanned: 37,
                     prerequisite_layout_requests: 41,
-                    prerequisite_type_fact_requests: 43,
                     prerequisite_drop_glue_requests: 47,
                     ..Default::default()
                 },
@@ -2065,7 +2069,7 @@ mod tests {
         assert_eq!(projected.cfg_materialization.required_types_selected, 31);
         assert_eq!(projected.cfg_prerequisites.stable_types_scanned, 37);
         assert_eq!(projected.cfg_prerequisites.layout_requests, 41);
-        assert_eq!(projected.cfg_prerequisites.type_fact_requests, 43);
+        assert_eq!(projected.cfg_prerequisites.type_fact_requests, 0);
         assert_eq!(projected.cfg_prerequisites.drop_glue_requests, 47);
         let runtime = projected.query_runtime;
         assert_eq!(runtime.claims, 41);
