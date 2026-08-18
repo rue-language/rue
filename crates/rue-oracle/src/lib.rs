@@ -676,9 +676,9 @@ enum Value {
     /// discriminant-only enum (or C-like enum) stays a bare `Int` tag.
     Aggregate(Vec<Value>),
     /// A raw pointer into the abstract heap (RUE model-gap closure). `None` is
-    /// the null pointer (`@int_to_ptr(0)`, a failed `@alloc`/`@realloc`); `Some`
-    /// names a live cell inside an [`Allocation`]. Heap allocations
-    /// (`@alloc`/`@alloc_bytes`) and address-taken stack places
+    /// the null pointer (`@int_to_ptr` on a zero address, a failed
+    /// `@alloc`/`@realloc`); `Some` names a live cell inside an [`Allocation`].
+    /// Heap allocations (`@alloc`) and address-taken stack places
     /// (`@raw`/`@raw_mut`/`@field_ptr`) share this one provenance-carrying
     /// representation so a pointer read/write, offset, or int round-trip resolves
     /// to the same backing store the source place or allocation owns.
@@ -933,7 +933,7 @@ struct Interp<'a> {
     /// Current call-recursion depth (see [`MAX_DEPTH`]). Incremented on entry to
     /// each `call` and decremented on exit, bounding Rust-stack recursion.
     depth: u32,
-    /// The abstract heap: every `@alloc`/`@alloc_bytes` block and every promoted
+    /// The abstract heap: every `@alloc` block and every promoted
     /// address-taken stack place. Indexed by [`PtrTarget::alloc`]. It lives on
     /// the interpreter (not a frame) so a pointer read across a call boundary
     /// still resolves after the address is passed to a callee.
@@ -3908,7 +3908,7 @@ impl<'a> Interp<'a> {
         })))
     }
 
-    /// `@realloc`/`@realloc_bytes`: grow/shrink an allocation, preserving the
+    /// `@realloc`: grow/shrink an allocation, preserving the
     /// first `min(old, new)` cells and deterministically filling growth. This
     /// model keeps shrink-in-place and move-on-grow behavior; native pointer
     /// identity is deliberately unspecified. Returns null on `new == 0` or allocator failure, leaving the
