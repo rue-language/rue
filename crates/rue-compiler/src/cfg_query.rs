@@ -851,9 +851,9 @@ pub(crate) fn import_warnings(
 
 pub(crate) fn collect_type_dependencies(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
-    output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    output: &mut Vec<crate::TypeInstanceKey>,
 ) {
-    output.insert(type_instance_from_semantic(ty));
+    output.push(type_instance_from_semantic(ty));
     // Array representation and CFG indexing depend on the element layout.
     // Pointer and slice representation does not depend on the pointee.
     if let rue_air::SemanticImportType::Array { element, .. } = ty {
@@ -863,14 +863,14 @@ pub(crate) fn collect_type_dependencies(
 
 pub(crate) fn collect_type_and_drop_dependencies(
     ty: &rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>,
-    layout_output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
-    drop_output: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
+    layout_output: &mut Vec<crate::TypeInstanceKey>,
+    drop_output: &mut Vec<crate::TypeInstanceKey>,
 ) {
     let instance = type_instance_from_semantic(ty);
-    layout_output.insert(instance.clone());
     if type_may_need_drop_glue(ty) {
-        drop_output.insert(instance);
+        drop_output.push(instance.clone());
     }
+    layout_output.push(instance);
     // Array representation and CFG indexing depend on the element layout.
     // Pointer and slice representation does not depend on the pointee.
     if let rue_air::SemanticImportType::Array { element, .. } = ty {
@@ -1251,13 +1251,23 @@ fn materialize_and_build_cfg(
     let domain_projection_ns = elapsed_ns(domain_projection_started);
 
     let prerequisite_collection_started = std::time::Instant::now();
-    let mut layout_dependencies = std::collections::BTreeSet::new();
-    let mut drop_dependencies = std::collections::BTreeSet::new();
+    // The local type pool is already deduplicated, so per-type tree inserts
+    // buy nothing here: on the maintained workloads every scanned type yields
+    // exactly one unique layout key (the only collisions are array elements,
+    // whose keys the pool also carries). Collect into vectors and normalize
+    // once; the sort matches the ordered-set iteration this replaced, so the
+    // batch request order is unchanged.
+    let mut layout_dependencies: Vec<crate::TypeInstanceKey> = Vec::new();
+    let mut drop_dependencies: Vec<crate::TypeInstanceKey> = Vec::new();
     let mut stable_types_scanned = 0_u64;
     for ty in domains.stable_types() {
         stable_types_scanned = stable_types_scanned.saturating_add(1);
         collect_type_and_drop_dependencies(ty, &mut layout_dependencies, &mut drop_dependencies);
     }
+    layout_dependencies.sort_unstable();
+    layout_dependencies.dedup();
+    drop_dependencies.sort_unstable();
+    drop_dependencies.dedup();
     let layout_prerequisite_requests = layout_dependencies.len() as u64;
     let drop_prerequisite_requests = drop_dependencies.len() as u64;
     context.record_work(rue_query::WorkItem::new(
