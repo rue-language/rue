@@ -14243,26 +14243,6 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&validation_fallbacks)
                         .expect("semantic publication roots belong to this query runtime");
-                    // RUE-1576 seam 1: keep the projection's nested terminals
-                    // leased so its cone can be retained below. On a cold build
-                    // no predecessor body graph retains this cone, and the
-                    // body-closure scope that borrows this root's lease next
-                    // otherwise re-leases every certified node through one
-                    // demand cascade each.
-                    let _cone_attempts = context.retain_nested_attempts_for(&[
-                        "compiler.semantic-nucleus",
-                        "compiler.declaration-shell",
-                        "compiler.lookup-name",
-                        "compiler.lookup-import",
-                        "compiler.resolve-import",
-                        "compiler.declaration-import",
-                        "compiler.parse-module",
-                        "compiler.module-index",
-                        "compiler.module-source-basis",
-                        "compiler.declaration-order",
-                        "compiler.declaration-occurrence-index",
-                        "compiler.declaration-body-plan-artifacts",
-                    ]);
                     let projection = context.query_registered(
                         &projection_for_declaration_publication,
                         key.clone(),
