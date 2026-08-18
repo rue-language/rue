@@ -20272,10 +20272,7 @@ impl RevisionedQueryDatabase {
             work.modules_considered += 1;
             work.previous_module_lookups += 1;
             let current_file_id = snapshot
-                .files()
-                .find_map(|source| {
-                    (snapshot.module_id(source.file_id) == Some(&module)).then_some(source.file_id)
-                })
+                .file_id_for_module(&module)
                 .expect("parse demand belongs to the published source revision");
             let attempt = self.runtime.request_registered(
                 &self.parse_modules,

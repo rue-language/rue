@@ -6,7 +6,7 @@
 //! never recognize imports or choose resolution precedence. Plans remain a
 //! whole-graph compatibility projection for diagnostics and closure.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -1753,17 +1753,19 @@ pub(crate) fn accepted_import_module(
     source: &AcceptedImportSource,
     accepted_reads: &AcceptedReadManifest,
 ) -> CompileResult<ModuleId> {
-    let mut matches = accepted_reads
-        .iter()
-        .filter(|entry| entry.metadata_identity() == source.metadata_identity());
-    let entry = matches.next().ok_or_else(|| {
-        invalid_input("accepted observation is absent from accepted read provenance")
-    })?;
-    if matches.next().is_some() {
-        return Err(invalid_input(
-            "accepted read manifest contains duplicate physical identities",
-        ));
-    }
+    let entry = match accepted_reads.lookup_physical_identity(source.metadata_identity()) {
+        ManifestIdentityLookup::Unique(entry) => entry,
+        ManifestIdentityLookup::Absent => {
+            return Err(invalid_input(
+                "accepted observation is absent from accepted read provenance",
+            ));
+        }
+        ManifestIdentityLookup::Duplicate => {
+            return Err(invalid_input(
+                "accepted read manifest contains duplicate physical identities",
+            ));
+        }
+    };
     validate_accepted_import_source(source, entry)
 }
 
@@ -1849,6 +1851,30 @@ pub struct AcceptedReadManifest {
     /// Lazily materialized merged slice for consumers that need `Arc<[T]>`
     /// (the compiler-owned staging boundary and retained artifacts).
     merged: Arc<std::sync::OnceLock<Arc<[AcceptedReadManifestEntry]>>>,
+    /// Lazily materialized inverse of the entry sequence: host-observed
+    /// physical identity to its entry's segment position. The sequence is
+    /// sorted by module identity, so a physical identity has no binary search;
+    /// authorizing a discovery batch asks this question once per accepted
+    /// observation, which is a scan of every entry per observation without an
+    /// index. Derived state: it never participates in equality, hashing, or
+    /// rendering, and clones share it because they are the same value.
+    by_physical_identity: Arc<std::sync::OnceLock<HashMap<PhysicalFileIdentity, IdentitySlot>>>,
+}
+
+/// Where one physical identity lives in a manifest's segmented entry sequence,
+/// or that the manifest names it more than once.
+#[derive(Debug, Clone, Copy)]
+enum IdentitySlot {
+    Unique { segment: u32, position: u32 },
+    Duplicate,
+}
+
+/// The outcome of resolving one host-observed physical identity against a
+/// manifest.
+pub(crate) enum ManifestIdentityLookup<'a> {
+    Absent,
+    Unique(&'a AcceptedReadManifestEntry),
+    Duplicate,
 }
 
 fn accepted_read_order(
@@ -1894,6 +1920,7 @@ impl AcceptedReadManifest {
                 accepted_read_order,
             ),
             merged: Arc::new(std::sync::OnceLock::new()),
+            by_physical_identity: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1907,6 +1934,7 @@ impl AcceptedReadManifest {
         Self {
             entries: crate::shared_segments::SharedSegments::flat(entries, accepted_read_order),
             merged: Arc::new(merged),
+            by_physical_identity: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1920,6 +1948,7 @@ impl AcceptedReadManifest {
         Self {
             entries: crate::shared_segments::SharedSegments::extend(&base.entries, appended),
             merged: Arc::new(std::sync::OnceLock::new()),
+            by_physical_identity: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1944,6 +1973,41 @@ impl AcceptedReadManifest {
     /// The provenance entry for `module`, by per-segment binary search.
     pub(crate) fn find_module(&self, module: &ModuleId) -> Option<&AcceptedReadManifestEntry> {
         self.entries.find_by(|entry| entry.module.cmp(module))
+    }
+
+    /// The entry a host-observed physical identity names, by one hash lookup
+    /// into the lazily materialized inverse index.
+    ///
+    /// A manifest that names the same physical file twice reports
+    /// [`ManifestIdentityLookup::Duplicate`] rather than picking a winner, so
+    /// the ambiguity still reaches the caller that must reject it.
+    pub(crate) fn lookup_physical_identity(
+        &self,
+        identity: PhysicalFileIdentity,
+    ) -> ManifestIdentityLookup<'_> {
+        let index = self.by_physical_identity.get_or_init(|| {
+            let mut index: HashMap<PhysicalFileIdentity, IdentitySlot> =
+                HashMap::with_capacity(self.entries.len());
+            for (segment, entries) in self.entries.segments().iter().enumerate() {
+                for (position, entry) in entries.iter().enumerate() {
+                    index
+                        .entry(entry.metadata_identity)
+                        .and_modify(|slot| *slot = IdentitySlot::Duplicate)
+                        .or_insert(IdentitySlot::Unique {
+                            segment: segment as u32,
+                            position: position as u32,
+                        });
+                }
+            }
+            index
+        });
+        match index.get(&identity) {
+            None => ManifestIdentityLookup::Absent,
+            Some(IdentitySlot::Duplicate) => ManifestIdentityLookup::Duplicate,
+            Some(IdentitySlot::Unique { segment, position }) => ManifestIdentityLookup::Unique(
+                &self.entries.segments()[*segment as usize][*position as usize],
+            ),
+        }
     }
 
     /// Whether `entry` appears byte-identical in this manifest.
@@ -2677,6 +2741,54 @@ mod tests {
                 content_fingerprint: source_fingerprint(source.source),
             })
             .collect()
+    }
+
+    #[test]
+    fn physical_identity_lookup_matches_a_scan_across_compacted_segments() {
+        let entry = |index: u64, identity: u64| AcceptedReadManifestEntry {
+            module: ModuleId::from_logical_path(format!("module_{index:04}.rue")).unwrap(),
+            requested_path: Arc::from(format!("/project/module_{index:04}.rue").as_str()),
+            canonical_path: Arc::from(format!("/project/module_{index:04}.rue").as_str()),
+            metadata_identity: PhysicalFileIdentity::new(1, identity),
+            metadata_fingerprint: metadata_fingerprint(),
+            content_fingerprint: index,
+        };
+
+        // One-entry additive rounds. The entry count is deliberately not a
+        // power of two, so size-tiered compaction leaves the sequence spread
+        // over several segments rather than one flat tier.
+        const ENTRIES: u64 = 100;
+        let mut manifest = AcceptedReadManifest::from_entries(vec![entry(0, 0)]);
+        for index in 1..ENTRIES {
+            manifest =
+                AcceptedReadManifest::extend_with_appended(&manifest, vec![entry(index, index)]);
+        }
+        assert!(manifest.segments().segments().len() > 1);
+
+        for index in 0..ENTRIES {
+            let identity = PhysicalFileIdentity::new(1, index);
+            let scanned = manifest
+                .iter()
+                .filter(|candidate| candidate.metadata_identity() == identity)
+                .collect::<Vec<_>>();
+            assert_eq!(scanned.len(), 1);
+            match manifest.lookup_physical_identity(identity) {
+                ManifestIdentityLookup::Unique(found) => assert_eq!(found, scanned[0]),
+                _ => panic!("module {index} resolves to exactly one entry"),
+            }
+        }
+        assert!(matches!(
+            manifest.lookup_physical_identity(PhysicalFileIdentity::new(9, 9)),
+            ManifestIdentityLookup::Absent
+        ));
+
+        // Two modules naming one physical file stay an ambiguity the caller
+        // rejects rather than a silently chosen winner.
+        let ambiguous = AcceptedReadManifest::from_entries(vec![entry(0, 7), entry(1, 7)]);
+        assert!(matches!(
+            ambiguous.lookup_physical_identity(PhysicalFileIdentity::new(1, 7)),
+            ManifestIdentityLookup::Duplicate
+        ));
     }
 
     fn indexed_test_request(occurrence_index: u32, position: u32) -> ImportDiscoveryRequest {

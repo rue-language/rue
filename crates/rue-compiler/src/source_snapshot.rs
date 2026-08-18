@@ -56,6 +56,12 @@ struct SnapshotSegment {
     contents: Vec<SourceRecord>,
     /// Position within THIS segment for each of its file ids.
     index: HashMap<FileId, usize>,
+    /// Position within THIS segment for each of its module identities. A
+    /// snapshot binds each module to exactly one file, so resolving a module to
+    /// its file is a per-segment hash lookup instead of a scan of every file.
+    /// Where a segment somehow held one module twice, the lowest file id wins,
+    /// matching what an ascending scan of the metadata's file ids would find.
+    module_index: HashMap<ModuleId, usize>,
     min_file_index: u32,
     max_file_index: u32,
 }
@@ -77,9 +83,23 @@ impl SnapshotSegment {
             .enumerate()
             .map(|(index, record)| (record.file_id, index))
             .collect();
+        let mut module_index = HashMap::with_capacity(contents.len());
+        for (position, record) in contents.iter().enumerate() {
+            match module_index.entry(record.module_id.clone()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(position);
+                }
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    if record.file_id.index() < contents[*slot.get()].file_id.index() {
+                        slot.insert(position);
+                    }
+                }
+            }
+        }
         Self {
             contents,
             index,
+            module_index,
             min_file_index,
             max_file_index,
         }
@@ -408,6 +428,25 @@ impl SourceSnapshot {
     /// Canonical logical module identity for a request-local file.
     pub fn module_id(&self, file_id: FileId) -> Option<&ModuleId> {
         self.record(file_id).map(|record| &record.module_id)
+    }
+
+    /// The file this snapshot binds `module` to.
+    ///
+    /// A snapshot's [`SourceRevision`] rejects duplicate module identities, so
+    /// this inverse is a function. Segments hold disjoint ascending file-id
+    /// ranges, so the oldest segment carrying the module also holds its lowest
+    /// file id: the answer is exactly the one an ascending scan of the
+    /// metadata's file ids would find, at O(segments) hash lookups instead of
+    /// O(files) record lookups. Projecting a whole program is one such lookup
+    /// per module, which is where the difference between linear and quadratic
+    /// lives for a deep import chain.
+    pub(crate) fn file_id_for_module(&self, module: &ModuleId) -> Option<FileId> {
+        self.data.segments.iter().find_map(|segment| {
+            segment
+                .module_index
+                .get(module)
+                .map(|&position| segment.contents[position].file_id)
+        })
     }
 
     /// Load-order-independent root and module/content mapping.
@@ -911,6 +950,32 @@ mod tests {
                 .expect("the deepest module is present")
                 .file_id,
             FileId::new(DEPTH)
+        );
+
+        // The per-segment module index answers exactly what an ascending scan
+        // of the metadata's file ids answers, for every module and across every
+        // compacted tier.
+        for (position, file_id) in snapshot.metadata().file_ids().enumerate() {
+            let module = snapshot
+                .module_id(file_id)
+                .expect("every snapshot file has a module identity")
+                .clone();
+            assert_eq!(snapshot.file_id_for_module(&module), Some(file_id));
+            // The scan this replaces is quadratic, so compare against it on a
+            // sample rather than on every module.
+            if position % 64 == 0 {
+                let scanned = snapshot
+                    .metadata()
+                    .file_ids()
+                    .find(|candidate| snapshot.module_id(*candidate) == Some(&module));
+                assert_eq!(snapshot.file_id_for_module(&module), scanned);
+            }
+        }
+        assert_eq!(
+            snapshot.file_id_for_module(
+                &crate::ModuleId::from_logical_path("absent.rue").expect("valid module path")
+            ),
+            None
         );
     }
 

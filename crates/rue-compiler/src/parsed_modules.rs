@@ -1423,15 +1423,11 @@ pub(crate) fn parse_source_snapshot_module(
     snapshot: &SourceSnapshot,
     module: &ModuleId,
 ) -> (Result<Arc<ParsedModule>, CompileErrors>, SyntaxWork) {
-    let file_id = snapshot
-        .metadata()
-        .file_ids()
-        .find(|file_id| snapshot.module_id(*file_id) == Some(module))
-        .ok_or_else(|| {
-            CompileErrors::from(invalid_input(format!(
-                "source snapshot contains no module {module}"
-            )))
-        });
+    let file_id = snapshot.file_id_for_module(module).ok_or_else(|| {
+        CompileErrors::from(invalid_input(format!(
+            "source snapshot contains no module {module}"
+        )))
+    });
     match file_id {
         Ok(file_id) => parse_snapshot_file(snapshot, file_id),
         Err(errors) => (Err(errors), SyntaxWork::default()),
@@ -1473,9 +1469,7 @@ pub(crate) fn rebind_parsed_module(
     module: &Arc<ParsedModule>,
 ) -> Arc<ParsedModule> {
     let file_id = snapshot
-        .metadata()
-        .file_ids()
-        .find(|file_id| snapshot.module_id(*file_id) == Some(module.module_id()))
+        .file_id_for_module(module.module_id())
         .expect("parsed module belongs to the projected source snapshot");
     if module.file_id() == file_id
         && module.physical_path()
