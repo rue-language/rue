@@ -468,10 +468,13 @@ fn ensure_preheader_in(
 
     // Partition the header's predecessors: a pred inside the body is a latch
     // (a back edge, kept targeting the header); a pred outside is a loop entry.
-    let preds = cfg.compute_predecessors();
-    let outside: Vec<BlockId> = preds[header.as_u32() as usize]
-        .iter()
-        .copied()
+    //
+    // Only the header's row is read, and this runs once per loop, so building
+    // the whole predecessor table here allocated a vector per block per loop
+    // to look at one of them.
+    let outside: Vec<BlockId> = cfg
+        .predecessors_of(header)
+        .into_iter()
         .filter(|p| !lp.contains(*p))
         .collect();
 

@@ -241,13 +241,13 @@ fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamRe
         (slot >= num_locals && slot < num_locals + num_params as u32).then(|| slot - num_locals)
     };
     let mark_span = |v: &mut Vec<bool>, index: u32, span: u32| {
-        for offset in 0..span.max(1) {
+        for offset in 0..span {
             if let Some(flag) = v.get_mut((index + offset) as usize) {
                 *flag = true;
             }
         }
     };
-    let span_of = |ty: rue_cfg::Type| crate::types::type_slot_count(type_pool, ty);
+    let span_of = |ty: rue_cfg::Type| crate::types::type_slot_span(type_pool, ty);
 
     for block in cfg.blocks() {
         for &value in &block.insts {
