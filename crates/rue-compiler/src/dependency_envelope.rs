@@ -382,8 +382,7 @@ mod tests {
         // Policy v2: the extensionless import resolves its facade candidate
         // (PresentReadable), and the std chain's vendored miss before the
         // toolchain hit supplies a benign Absent observation.
-        let source =
-            "const a = @import(\"a\"); const s = @import(\"std\"); fn main() -> i32 { 0 }";
+        let source = "const a = @import(\"a\"); const s = @import(\"std\"); fn main() -> i32 { 0 }";
         let imported = "pub fn answer() -> i32 { 42 }";
         let std_text = "pub fn parse_i64(s: str) -> i64 { 0 }";
         let mut assembler = assembler(source);

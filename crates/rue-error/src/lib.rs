@@ -1765,7 +1765,9 @@ pub enum ErrorKind {
         /// Candidates that were tried (for error message)
         candidates: Vec<String>,
     },
-    #[error("import '{path}' escapes the project root: '{candidate}' is outside the root source file's directory")]
+    #[error(
+        "import '{path}' escapes the project root: '{candidate}' is outside the root source file's directory"
+    )]
     ImportEscapesRoot { path: String, candidate: String },
     #[error("standard library not found")]
     StdLibNotFound,

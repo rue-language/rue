@@ -706,7 +706,6 @@ fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
     }
 }
 
-
 /// ADR-0078 migration help. An extensionless import names the directory
 /// facade alone under policy v2; when it misses but the sibling file module
 /// `{P}.rue` exists on disk, append the extensioned spelling as a help. The
@@ -727,7 +726,9 @@ fn with_import_migration_helps(errors: &CompileErrors) -> CompileErrors {
                 let facade_suffix = format!("/_{basename}.rue");
                 candidates.iter().find_map(|candidate: &String| {
                     let sibling = format!("{}.rue", candidate.strip_suffix(&facade_suffix)?);
-                    Path::new(&sibling).is_file().then_some((path.clone(), sibling))
+                    Path::new(&sibling)
+                        .is_file()
+                        .then_some((path.clone(), sibling))
                 })
             }
             _ => None,
