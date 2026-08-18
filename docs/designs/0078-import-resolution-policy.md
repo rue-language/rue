@@ -30,8 +30,8 @@ with its `.rue` extension. Relative candidates are searched against the
 importing file's directory only — the root-file fallback is removed.
 Project-relative module identity becomes a total function, so an import may
 not escape the project root. The reserved specifier `std` is exempt from
-relative search entirely: it anchors to the program, resolving to an explicit
-`--std-path`, then a vendored `{root}/std/_std.rue`, then `$RUE_STD_PATH`.
+relative search entirely: it anchors to the program, resolving to a vendored
+`{root}/std/_std.rue`, then `$RUE_STD_PATH`.
 
 ## Context
 
@@ -108,8 +108,11 @@ un-break correct code. It would also make creating a file break a
 previously-working build — reintroducing at the `std` slot exactly the
 nonlocality this ADR removes elsewhere.
 
-The genuine "I am overriding this deliberately" case is served by an explicit
-`--std-path`, which is visible at the call site and in the build record. The
+A dedicated override flag (`--std-path`) was considered and deferred: no
+present workflow needs it — every harness in this repository overrides
+through the environment against non-vendoring programs — and CLI surface
+shipped now is surface the RUE-1586 distribution design must later honor or
+break. Adding a flag later is additive; it is deferred, not rejected. The
 supply-chain posture is served by `--source-manifest`, which already governs
 `std`: a std path the manifest does not declare is a hermetic denial with no
 probe.
@@ -156,9 +159,8 @@ against a fixed precedence chain, taking the first that exists:
 
 | Order | Source | Meaning |
 |-------|--------|---------|
-| 1 | `--std-path <p>` | explicit per-invocation override |
-| 2 | `{root}/std/_std.rue` | the program vendored its own |
-| 3 | `$RUE_STD_PATH` | toolchain installation default |
+| 1 | `{root}/std/_std.rue` | the program vendored its own |
+| 2 | `$RUE_STD_PATH` | toolchain installation default |
 | — | otherwise | E0705 |
 
 Each is a single candidate. `std` is never searched importer-relative, which
@@ -167,11 +169,16 @@ vendored location is anchored to the program root rather than to the
 importer.
 
 The governing property: **ambient environment can never replace a standard
-library the program shipped.** Only an explicit argument can, and that
-argument is visible on the command line and in the dependency record.
+library the program shipped.** Replacing a vendored standard library means
+editing the program's tree.
 
-`--std-path` is new CLI surface introduced by this ADR. It is what makes the
-precedence chain expressible without an error state.
+Under `--source-manifest`, the chain does not bend: a vendored
+`{root}/std/_std.rue` that exists but is not declared in the manifest is a
+hermetic denial error, exactly like every other undeclared path. Denial is
+never treated as absence, so a manifest build can never silently resolve
+`std` to a different file than an unrestricted build of the same tree —
+it resolves identically or fails loudly. This preserves ADR-0063's
+requirement that denied and absent remain distinguishable observations.
 
 ### 5. Nonlocality, stated
 
@@ -198,7 +205,7 @@ only shrinks the set it applies to.
 - [ ] **Phase 2: Candidate-policy collapse** — one candidate per relative
       specifier and one base directory in `discovery_candidate_groups` /
       `discovery_groups_for_occurrence`; std resolves through the precedence
-      chain; add `--std-path`.
+      chain; a test pins the undeclared-vendored-std hermetic denial.
 - [ ] **Phase 3: Total root-relative identity** — reject escaping imports
       with a new diagnostic; keep physical-identity aliasing.
 - [ ] **Phase 4: Migration diagnostics** — when an extensionless import finds
@@ -233,17 +240,16 @@ only shrinks the set it applies to.
 - Importer-relative-only leaves distant imports spelled
   `../../../core/registry`. The fix is a named-module namespace, which
   belongs to Packages; this ADR accepts the ergonomic gap in the interim.
-- `--std-path` adds CLI surface.
 - `std` now follows a different anchoring rule from relative specifiers. This
   is stated in the spec as a property of reserved names rather than left
   implicit, but it is a second rule where there had been one.
 
 ## Open Questions
 
-- Should `--source-manifest` mode reject a vendored `{root}/std/_std.rue`
-  that the manifest does not declare? The existing hermetic denial suggests
-  yes, and no change should be needed, but Phase 2 must confirm it rather
-  than assume it.
+None. The `--source-manifest` interaction and the override-flag question
+were both resolved after acceptance and folded into Decision 4: undeclared
+vendored std fails closed, and the explicit override flag is deferred to
+RUE-1586.
 
 ## Future Work
 
