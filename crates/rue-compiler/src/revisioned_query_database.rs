@@ -394,6 +394,11 @@ pub(crate) struct RevisionedQueryDatabase {
     source_stamps: VecDeque<(super::session::ExactSourceInput, u64)>,
     import_store: Arc<Mutex<ImportInputStore>>,
     module_store: Arc<Mutex<ModuleInputStore>>,
+    /// RUE-1576: the optimized-CFG and codegen collections' retained child
+    /// cones, borrowed as fallback authority by the backend scopes that run
+    /// after each within one rooted compile.
+    cfg_collection_root: Arc<Mutex<PublishedCollectionRoot>>,
+    codegen_collection_root: Arc<Mutex<PublishedCollectionRoot>>,
     /// Wave-parsed modules staged for `compiler.parse-module` (ADR-0075). Each
     /// entry is consumed at most once, and only on exact `SourceId` identity,
     /// so the stage is a work handoff rather than a second parse authority.
@@ -1348,11 +1353,21 @@ struct PublishedDeclarationSemanticsRoot {
     lease: Arc<rue_query::RetainedPinSet>,
 }
 
+/// RUE-1576: one backend collection's retained child cones, borrowed as
+/// fallback authority by the scopes that run after it in the same rooted
+/// compile so they do not re-lease a cone the predecessor just certified.
+#[derive(Default)]
+struct PublishedCollectionRoot {
+    lease: Arc<rue_query::RetainedPinSet>,
+}
+
 fn backend_retention_fallbacks(
     backend: &Arc<Mutex<PublishedBackendRoot>>,
     body_closure: &Arc<Mutex<PublishedBodyClosureRoot>>,
     body_reachability: &Arc<Mutex<PublishedBodyReachabilityRoot>>,
-) -> [Arc<rue_query::RetainedPinSet>; 3] {
+    cfg_collection: &Arc<Mutex<PublishedCollectionRoot>>,
+    codegen_collection: &Arc<Mutex<PublishedCollectionRoot>>,
+) -> [Arc<rue_query::RetainedPinSet>; 5] {
     [
         backend
             .lock()
@@ -1365,6 +1380,16 @@ fn backend_retention_fallbacks(
             .lease
             .clone(),
         body_reachability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .clone(),
+        cfg_collection
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .clone(),
+        codegen_collection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .lease
@@ -14233,13 +14258,41 @@ impl RevisionedQueryDatabase {
                     let _validated_registered = context
                         .endorse_registered_validations_from(&validation_fallbacks)
                         .expect("semantic publication roots belong to this query runtime");
+                    // RUE-1576 seam 1: keep the projection's nested terminals
+                    // leased so its cone can be retained below. On a cold build
+                    // no predecessor body graph retains this cone, and the
+                    // body-closure scope that borrows this root's lease next
+                    // otherwise re-leases every certified node through one
+                    // demand cascade each.
+                    let _cone_attempts = context.retain_nested_attempts_for(&[
+                        "compiler.semantic-nucleus",
+                        "compiler.declaration-shell",
+                        "compiler.lookup-name",
+                        "compiler.lookup-import",
+                        "compiler.resolve-import",
+                        "compiler.declaration-import",
+                        "compiler.parse-module",
+                        "compiler.module-index",
+                        "compiler.module-source-basis",
+                        "compiler.declaration-order",
+                        "compiler.declaration-occurrence-index",
+                        "compiler.declaration-body-plan-artifacts",
+                    ]);
                     let projection = context.query_registered(
                         &projection_for_declaration_publication,
                         key.clone(),
                     )?;
-                    let pending = context
+                    let mut pending = context
                         .retain_observed_family(&artifacts_for_declaration_publication)
                         .expect("candidate artifacts belong to this query runtime");
+                    // Best-effort: an incompletely observed cone leaves the
+                    // lease exactly as it is today; a complete one lets the
+                    // successor scope skip its per-node lease reacquisition.
+                    if let Ok(cone) = context
+                        .retain_observed_terminal_cone_from(&projection, &validation_fallbacks)
+                    {
+                        pending.absorb(cone);
+                    }
                     context.register_attempt_handoff(
                         PublishedDeclarationSemanticsTerminalHandoff {
                             root: root_for_declaration_publication.clone(),
@@ -14400,6 +14453,8 @@ impl RevisionedQueryDatabase {
             )
             .expect("the OptimizedCfg family has one canonical name");
         let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
+        let cfg_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
+        let codegen_collection_root = Arc::new(Mutex::new(PublishedCollectionRoot::default()));
         // Backend terminals extend the already-published semantic/body graph.
         // Keep those independent roots available as retention fallbacks while
         // each backend batch promotes its exact transitive cone.
@@ -14407,6 +14462,8 @@ impl RevisionedQueryDatabase {
         let backend_root_for_optimized_cfg_batch = backend_root.clone();
         let body_closure_root_for_optimized_cfg_batch = body_closure_root.clone();
         let body_reachability_root_for_optimized_cfg_batch = body_reachability_root.clone();
+        let cfg_collection_root_for_optimized_cfg_batch = cfg_collection_root.clone();
+        let codegen_collection_root_for_optimized_cfg_batch = codegen_collection_root.clone();
         let optimized_cfg_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.optimized-cfg-batch",
@@ -14424,6 +14481,8 @@ impl RevisionedQueryDatabase {
                         &backend_root_for_optimized_cfg_batch,
                         &body_closure_root_for_optimized_cfg_batch,
                         &body_reachability_root_for_optimized_cfg_batch,
+                        &cfg_collection_root_for_optimized_cfg_batch,
+                        &codegen_collection_root_for_optimized_cfg_batch,
                     );
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
@@ -14514,6 +14573,8 @@ impl RevisionedQueryDatabase {
         let backend_root_for_codegen_batch = backend_root.clone();
         let body_closure_root_for_codegen_batch = body_closure_root.clone();
         let body_reachability_root_for_codegen_batch = body_reachability_root.clone();
+        let cfg_collection_root_for_codegen_batch = cfg_collection_root.clone();
+        let codegen_collection_root_for_codegen_batch = codegen_collection_root.clone();
         let codegen_unit_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.codegen-unit-batch",
@@ -14533,6 +14594,8 @@ impl RevisionedQueryDatabase {
                         &backend_root_for_codegen_batch,
                         &body_closure_root_for_codegen_batch,
                         &body_reachability_root_for_codegen_batch,
+                        &cfg_collection_root_for_codegen_batch,
+                        &codegen_collection_root_for_codegen_batch,
                     );
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
@@ -14592,6 +14655,8 @@ impl RevisionedQueryDatabase {
             .expect("the ObjectProjection family has one canonical name");
         let object_projections_for_batch = object_projections.clone();
         let backend_root_for_object_projection_batch = backend_root.clone();
+        let cfg_collection_root_for_object_projection_batch = cfg_collection_root.clone();
+        let codegen_collection_root_for_object_projection_batch = codegen_collection_root.clone();
         let body_closure_root_for_object_projection_batch = body_closure_root.clone();
         let body_reachability_root_for_object_projection_batch = body_reachability_root.clone();
         let object_projection_batches = runtime
@@ -14611,6 +14676,8 @@ impl RevisionedQueryDatabase {
                         &backend_root_for_object_projection_batch,
                         &body_closure_root_for_object_projection_batch,
                         &body_reachability_root_for_object_projection_batch,
+                        &cfg_collection_root_for_object_projection_batch,
+                        &codegen_collection_root_for_object_projection_batch,
                     );
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
@@ -14658,6 +14725,8 @@ impl RevisionedQueryDatabase {
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let object_projections_for_backend_publication = object_projections.clone();
         let backend_root_for_publication = backend_root.clone();
+        let cfg_collection_root_for_backend_publication = cfg_collection_root.clone();
+        let codegen_collection_root_for_backend_publication = codegen_collection_root.clone();
         let body_closure_root_for_backend_publication = body_closure_root.clone();
         let body_reachability_root_for_backend_publication = body_reachability_root.clone();
         let backend_root_publications = runtime
@@ -14670,6 +14739,8 @@ impl RevisionedQueryDatabase {
                         &backend_root_for_publication,
                         &body_closure_root_for_backend_publication,
                         &body_reachability_root_for_backend_publication,
+                        &cfg_collection_root_for_backend_publication,
+                        &codegen_collection_root_for_backend_publication,
                     );
                     let _validated_registered = context
                         .endorse_registered_validations_from(&fallbacks)
@@ -16032,6 +16103,8 @@ impl RevisionedQueryDatabase {
             source_stamps: VecDeque::new(),
             import_store,
             module_store,
+            cfg_collection_root,
+            codegen_collection_root,
             parse_stage,
             #[cfg(test)]
             test_import_store,
@@ -16540,6 +16613,17 @@ impl RevisionedQueryDatabase {
             key.clone(),
             cancellation,
         );
+        // RUE-1576 seam 2: publish the batch's retained child cones for the
+        // codegen batch scope that runs next. Best-effort: an unsuccessful
+        // batch leaves the previous lease in place.
+        if let Some(terminal) = attempt.terminal() {
+            if let rue_query::QueryOutcome::Success(output) = terminal.outcome() {
+                self.cfg_collection_root
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lease = output._retained_children.clone();
+            }
+        }
         (key, attempt)
     }
 
@@ -16587,6 +16671,17 @@ impl RevisionedQueryDatabase {
             key.clone(),
             cancellation,
         );
+        // RUE-1576: publish the batch's retained child cones for the
+        // object-projection scope that runs next. Best-effort: an unsuccessful
+        // batch leaves the previous lease in place.
+        if let Some(terminal) = attempt.terminal() {
+            if let rue_query::QueryOutcome::Success(output) = terminal.outcome() {
+                self.codegen_collection_root
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lease = output._retained_children.clone();
+            }
+        }
         (key, attempt)
     }
 

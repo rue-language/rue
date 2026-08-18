@@ -9632,6 +9632,17 @@ impl RetainedPinSet {
         }
     }
 
+    /// Move every lease of `other` into this set, deduplicating by exact
+    /// terminal identity. Metrics stay balanced: each moved lease releases the
+    /// acquire its source set counted, then re-acquires only if this set
+    /// actually retains it; a rejected duplicate simply drops its pin.
+    pub fn absorb(&mut self, mut other: RetainedPinSet) {
+        for lease in std::mem::take(&mut other.held) {
+            lease.metrics().retained_pins_released(1);
+            self.lease_erased(lease);
+        }
+    }
+
     fn lease_erased(&mut self, lease: Box<dyn ObservedLease>) -> bool {
         let identity = lease.identity();
         if self.observed.insert(identity) {

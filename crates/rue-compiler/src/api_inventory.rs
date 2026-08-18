@@ -2417,9 +2417,12 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
     assert!(!runtime.contains("parse_semantic_signature("));
     assert_eq!(runtime.matches(".declaration_import(").count(), 1);
     assert_eq!(parsed.matches("fn declaration_import(").count(), 1);
+    // One family registration plus the declaration-publication retention
+    // filter that keeps the projection cone leased for its successor scope
+    // (RUE-1576); neither is a second resolution authority.
     assert_eq!(
         runtime.matches("\"compiler.declaration-import\"").count(),
-        1
+        2
     );
     assert!(!runtime.contains("Vec::remove"));
 
