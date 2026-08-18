@@ -1,13 +1,13 @@
 ---
 id: 0059
 title: "Byte-oriented memory intrinsics: unify the two low-level families"
-status: accepted
+status: implemented
 tags: [intrinsics, memory, pointers, allocator, bytes, semantics, stdlib, abi]
 feature-flag: raw_bytes
 created: 2026-07-17
 accepted: 2026-07-17
-implemented:
-spec-sections: []
+implemented: 2026-07-20
+spec-sections: ["4.13:5a", "9.2:7", "9.2:10", "9.2:11", "9.2:12", "9.2:13"]
 superseded-by:
 relates: ["RUE-937", "RUE-879", "RUE-971", "RUE-712", "ADR-0052", "ADR-0005", "ADR-0057"]
 ---
@@ -94,7 +94,7 @@ right intrinsics here" and Zig "is very good at this kind of stuff." Concretely:
   `ArrayBuf` needs), has **no alignment parameter** (`@alloc_bytes` guarantees
   only alignment 1 — flagged as an open question by ADR-0052), and has **no
   null-pointer primitive** (its consumers reach into the *typed* family's
-  `@int_to_ptr(0)` for the null idiom).
+  `@int_to_ptr` for the null idiom).
 - Every std consumer that copies bytes hand-rolls a one-byte-at-a-time `while`
   loop, because there is no bulk-copy primitive in either family.
 
@@ -266,9 +266,19 @@ demonstrated need).
 ```
 
 Kept unchanged. These stay distinct from arithmetic and access (principle 8).
-`@int_to_ptr(0)` remains the null-pointer idiom and `@ptr_to_int(p) == 0` the
-null check — the byte family never had these, and the unified set does not
-strand the consumers that borrow them. Names are chosen so a later strict/exposed
+`@int_to_ptr` on a zero address remains the null-pointer idiom and
+`@ptr_to_int(p) == 0` the null check — the byte family never had these, and the
+unified set does not strand the consumers that borrow them. Spelled out, since
+`@int_to_ptr(0)` as written does not compile twice over — the intrinsic is
+unchecked (E1300 outside a `checked` block) and takes `u64`, which an untyped
+`0` literal is not (E0702):
+
+```rue
+let zero: u64 = 0;
+let null: ptr mut u8 = checked { @int_to_ptr(zero) };
+```
+
+`std/fs.rue` and `std/mem.rue` use exactly this form. Names are chosen so a later strict/exposed
 provenance split does not force a rename of the common path.
 
 ### Reflection substrate — kept, made byte-accurate by RUE-971
@@ -365,15 +375,17 @@ reassessment; this ADR supplies its target shape.
 
 Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
 
-- [ ] **Phase 1: Bulk primitives (now, no RUE-971 dependency)** — RUE-937. Add
+- [x] **Phase 1: Bulk primitives (now, no RUE-971 dependency)** — RUE-937. Add
   `@byte_copy` and `@byte_set` to the `raw_bytes` surface; port
   `StrBuf::copy_packed_bytes`, the `std.fs` marshalling loops, and
   `std.mem.swap` off their per-byte loops; add spec coverage under the existing
-  gate.
-- [ ] **Phase 2: Alignment on the byte allocator (now)** — RUE-960. Add
+  gate. Landed in PR #1750.
+- [x] **Phase 2: Alignment on the byte allocator (now)** — RUE-960. Add
   the `align` parameter to the byte allocator, giving the interim surface the
   `(size, align)` contract; update the runtime operand plan (already
-  `(size, align)`-shaped) and `std` call sites.
+  `(size, align)`-shaped) and `std` call sites. Landed in PR #1752. The interim
+  `_bytes` surface it shaped no longer exists — Phase 3 folded it away — but the
+  `(size, align)` contract it established is the one the unified family carries.
 - [x] **Phase 3: Byte-oriented allocation family (post-/co-RUE-971)** —
   RUE-961. Re-shape `@alloc`/`@realloc`/`@free` to byte + align; fold
   the `_bytes` allocators in; move `ArrayBuf` typed allocation to source-computed
@@ -403,13 +415,15 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
   `@byte_write` are folded into `@ptr_read`/`@ptr_write` (hard removal, no
   alias window). The `*align(N)` re-evaluation this phase required was made and
   declined; see the fold ruling under "Resolved at acceptance".
-- [ ] **Phase 5: Specification sweep** — RUE-963. Rewrite `4.13:5a` and
-  `9.2:7`,`9.2:10`–`9.2:13`, and remove/fold `9.2:14a`–`9.2:14f`; update
-  traceability.
-- [ ] **Phase 6: Stabilize and de-gate** — RUE-937. Per ADR-0005: remove
-  `preview =` from spec tests, remove the five `require_preview()` sites, remove
-  the `trusted_std_raw_bytes` carve-out and `PreviewFeature::RawBytes`, set this
-  ADR `implemented`.
+- [x] **Phase 5: Specification sweep** — RUE-963. Rewrote `4.13:5a` and
+  `9.2:7`, `9.2:10`–`9.2:13`, and updated traceability. The `9.2:14a`–`9.2:14f`
+  removal this phase was written to perform had already happened: Phase 3
+  restructured that range, and the `14d`/`14e`/`14f` deletion is recorded under
+  the `@byte_read`/`@byte_write` fold ruling below.
+- [x] **Phase 6: Stabilize and de-gate** — RUE-937. Landed in PR #1829, done
+  2026-07-20. Removed `preview =` from spec tests, the `require_preview()`
+  sites, the `trusted_std_raw_bytes` carve-out, and `PreviewFeature::RawBytes`.
+  This ADR's `status` and `implemented:` date follow that landing.
 
 ## Consequences
 
@@ -497,9 +511,10 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   no alias window, matching the `_bytes` allocator ruling above: `@byte_read` is
   now an unknown intrinsic (E0700). Spec rules `9.2:14d`/`14e`/`14f` are deleted
   and their coverage re-homed onto `9.2:6b`/`9.2:6d`.
-- **Null primitive: keep the `@int_to_ptr(0)` idiom.** A dedicated `@null_ptr`
+- **Null primitive: keep the `@int_to_ptr` idiom.** A dedicated `@null_ptr`
   acquires design questions (typed or untyped result?) better answered by the
-  future provenance work.
+  future provenance work. See the spelled-out form above: it needs a `checked`
+  block and a `u64`-typed zero.
 - **Aligned/unaligned spelling: Rust-style `_unaligned` intrinsics, with a
   Phase 4 checkpoint.** Type-carried `*align(N)` alignment (Zig model) changes
   only the access split — the allocator still passes alignment explicitly even
@@ -509,7 +524,9 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   Phase 4 explicitly re-evaluates `*align(N)` before implementing the
   intrinsics; a byte-granular `@ptr_offset` variant is likewise deferred to
   demonstrated need (element-scaled at `T = u8` covers byte walking
-  post-RUE-971).
+  post-RUE-971). **Checkpoint answered:** Phase 4 made the re-evaluation and
+  declined `*align(N)`, shipping the `_unaligned` pair. Type-carried alignment
+  remains open as its own design question on RUE-965, not as a debt of this ADR.
 
 ## Future Work
 
