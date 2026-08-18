@@ -20,12 +20,13 @@ use rue_compiler::unstable::{
 #[cfg(test)]
 use rue_compiler::unstable::{
     accepted_read_identity_lookups, accepted_read_identity_visits, committed_successor_sharing,
-    exact_import_groups_dispatched, import_close_records_reduced, import_frontier_roots_requested,
-    import_plan_groups_constructed, import_view_full_leaves_published,
-    import_view_ledger_entries_cloned, import_view_overlay_leaves_published,
-    import_view_read_entries_compared, import_view_source_entries_compared,
-    parse_invalidation_entries_compared, parse_key_entries_compared, parse_modules_dispatched,
-    parse_sources_materialized, snapshot_module_resolution_visits, snapshot_module_resolutions,
+    exact_import_groups_dispatched, handoff_observation_visits, handoff_observations,
+    import_close_records_reduced, import_frontier_roots_requested, import_plan_groups_constructed,
+    import_view_full_leaves_published, import_view_ledger_entries_cloned,
+    import_view_overlay_leaves_published, import_view_read_entries_compared,
+    import_view_source_entries_compared, parse_invalidation_entries_compared,
+    parse_key_entries_compared, parse_modules_dispatched, parse_sources_materialized,
+    snapshot_module_resolution_visits, snapshot_module_resolutions,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{frontend_query_invalidations, rooted_cfg};
@@ -2502,6 +2503,8 @@ mod tests {
         module_resolution_visits: u64,
         identity_lookups: u64,
         identity_visits: u64,
+        handoff_observations: u64,
+        handoff_observation_visits: u64,
         parse_sources_materialized: u64,
         parse_key_entries_compared: u64,
         parse_modules_dispatched: u64,
@@ -2544,6 +2547,8 @@ mod tests {
             module_resolution_visits: snapshot_module_resolution_visits(&result.session),
             identity_lookups: accepted_read_identity_lookups(&result.session),
             identity_visits: accepted_read_identity_visits(&result.session),
+            handoff_observations: handoff_observations(&result.session),
+            handoff_observation_visits: handoff_observation_visits(&result.session),
             parse_sources_materialized: parse_sources_materialized(&result.session),
             parse_key_entries_compared: parse_key_entries_compared(&result.session),
             parse_modules_dispatched: parse_modules_dispatched(&result.session),
@@ -2579,6 +2584,14 @@ mod tests {
     /// `*_lookups` counts the identity questions asked, `*_visits` counts the
     /// positions examined answering them, and their ratio is exactly what an
     /// index-versus-scan regression moves.
+    ///
+    /// The handoff pair extends that shape past discovery into the query
+    /// runtime (RUE-1579). Recording an attempt handoff deduplicates it by
+    /// pointer identity against everything the same observation scope already
+    /// holds, so a scope that starts retaining live lifecycles turns each
+    /// observation into a walk over the ones before it — the same quadratic
+    /// with no dispatch to show for it. That site measured superlinear once
+    /// under callgrind and is linear now; counting it is what keeps it so.
     ///
     /// SIZES. 64 and 256 modules: a 4x span, wide enough that a quadratic term
     /// shows as ~16x against the ~4x asserted here, and cheap enough for the
@@ -2625,6 +2638,14 @@ mod tests {
                 counters.identity_visits >= counters.identity_lookups,
                 "{label} chain: a lookup examines at least one manifest entry"
             );
+            assert!(
+                counters.handoff_observations >= modules as u64,
+                "{label} chain: every module's published work is observed as a handoff"
+            );
+            assert!(
+                counters.handoff_observation_visits >= counters.handoff_observations,
+                "{label} chain: an observation examines at least one scope position"
+            );
         }
 
         let mut violations = Vec::new();
@@ -2648,6 +2669,16 @@ mod tests {
                 "accepted-read identity visits",
                 small.identity_visits,
                 large.identity_visits,
+            ),
+            (
+                "handoff observations",
+                small.handoff_observations,
+                large.handoff_observations,
+            ),
+            (
+                "handoff observation visits",
+                small.handoff_observation_visits,
+                large.handoff_observation_visits,
             ),
             (
                 "parse sources materialized",

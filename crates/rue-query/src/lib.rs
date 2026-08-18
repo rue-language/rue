@@ -3902,6 +3902,18 @@ pub struct RuntimeMetrics {
     /// Publish-side batching keeps this linear when a live protected closure
     /// grows past its configured soft floor.
     pub retention_scan_entries: u64,
+    /// Attempt-handoff lifecycles offered to a task's observation scope, and
+    /// the scope positions examined answering them.
+    ///
+    /// These are a pair. Recording a lifecycle deduplicates it by pointer
+    /// identity against every lifecycle the same scope already observed, so
+    /// the question count is linear in the work a program dispatches while
+    /// the visit count is what distinguishes a bounded scope from one that
+    /// accumulates. Only their ratio is a scaling property: a scope that
+    /// starts holding live lifecycles turns each observation into a walk over
+    /// the ones before it, and nothing else this runtime publishes moves.
+    pub handoff_observations: u64,
+    pub handoff_observation_visits: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
     /// Peak tasks simultaneously owning execution permits. Nested query bodies
@@ -3981,6 +3993,8 @@ struct Metrics {
     retention_growth: AtomicU64,
     retention_enforcements: AtomicU64,
     retention_scan_entries: AtomicU64,
+    handoff_observations: AtomicU64,
+    handoff_observation_visits: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
     active_query_workers: AtomicU64,
@@ -4074,6 +4088,8 @@ impl Metrics {
             retention_growth: self.retention_growth.load(Ordering::Relaxed),
             retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
             retention_scan_entries: self.retention_scan_entries.load(Ordering::Relaxed),
+            handoff_observations: self.handoff_observations.load(Ordering::Relaxed),
+            handoff_observation_visits: self.handoff_observation_visits.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
             peak_query_workers: self.peak_query_workers.load(Ordering::Relaxed),
             active_task_leases: self.active_task_leases.load(Ordering::Relaxed),
@@ -4121,6 +4137,16 @@ impl Metrics {
 
     fn body_left(&self) {
         self.active_bodies.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// One handoff-observation question and the scope positions it examined.
+    /// See the field docs on [`RuntimeMetrics::handoff_observations`]; `visits`
+    /// is never zero, so the pair's ratio starts at one and can only be moved
+    /// by a scope that accumulates.
+    fn handoff_observed(&self, visits: u64) {
+        self.handoff_observations.fetch_add(1, Ordering::Relaxed);
+        self.handoff_observation_visits
+            .fetch_add(visits, Ordering::Relaxed);
     }
 
     fn permit_acquired(&self) {
@@ -10005,6 +10031,15 @@ fn commit_handoff(
     }))
 }
 
+/// Positions a linear membership scan examined: everything up to and including
+/// a hit, or the whole list on a miss. Asking at all costs the one question, so
+/// this is never zero — which anchors a visits-per-lookup ratio at one instead
+/// of at zero, where a scope that stopped being consulted would read as an
+/// improvement.
+fn scan_visits(found: Option<usize>, len: usize) -> u64 {
+    found.map_or(len, |index| index + 1).max(1) as u64
+}
+
 fn abort_handoff(
     handoff: &mut dyn QueryAttemptHandoff,
 ) -> Result<(), Box<dyn std::any::Any + Send>> {
@@ -10869,32 +10904,47 @@ impl Task {
         true
     }
 
+    /// Record `handoff` in the innermost live observation scope.
+    ///
+    /// A scope holds only lifecycles that are still live: an already committed
+    /// one carries no obligation and is answered without being recorded. What
+    /// remains is deduplicated by pointer identity, which is a scan over what
+    /// the scope already holds — so this site is counted as a lookup/visit
+    /// pair. See [`RuntimeMetrics::handoff_observations`].
     fn observe_handoff(&self, handoff: Arc<AttemptHandoffLifecycle>) -> bool {
         if Arc::ptr_eq(&handoff, AttemptHandoffLifecycle::shared_committed_ref())
             || handoff.is_committed()
         {
+            self.core.metrics.handoff_observed(1);
             return true;
         }
         if !self.validate_handoff(&handoff) {
+            self.core.metrics.handoff_observed(1);
             return false;
         }
         let mut stack = lock(&self.stack);
         if let Some(frame) = stack.last_mut() {
-            if !frame
+            let recorded = frame
                 .observed_handoffs
                 .iter()
-                .any(|current| Arc::ptr_eq(current, &handoff))
-            {
+                .position(|current| Arc::ptr_eq(current, &handoff));
+            self.core
+                .metrics
+                .handoff_observed(scan_visits(recorded, frame.observed_handoffs.len()));
+            if recorded.is_none() {
                 frame.observed_handoffs.push(handoff);
             }
             return true;
         }
         drop(stack);
         let mut observed = lock(&self.observed_handoffs);
-        if !observed
+        let recorded = observed
             .iter()
-            .any(|current| Arc::ptr_eq(current, &handoff))
-        {
+            .position(|current| Arc::ptr_eq(current, &handoff));
+        self.core
+            .metrics
+            .handoff_observed(scan_visits(recorded, observed.len()));
+        if recorded.is_none() {
             // Keep only the returned root. It owns its dependency lifecycle
             // DAG, which the commit barrier expands once in dependency order.
             observed.push(handoff);
