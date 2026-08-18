@@ -21362,7 +21362,7 @@ struct SemanticNucleusCacheEntry {
 
 struct LookupNameCacheEntry {
     key: LookupNameKey,
-    terminal: Arc<rue_query::QueryTerminal<LookupNameValue>>,
+    resolution: rue_air::NameResolution,
 }
 
 // The maintained cold scaling curve selects 16 slots. Larger capacities remove
@@ -22955,10 +22955,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
             #[cfg(test)]
             self.lookup_name_cache_hits
                 .set(self.lookup_name_cache_hits.get() + 1);
-            return match entry.terminal.outcome() {
-                rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
-                _ => rue_air::NameResolution::IndexUnavailable,
-            };
+            return entry.resolution.clone();
         }
         let key = LookupNameKey {
             module: module.clone(),
@@ -22983,8 +22980,10 @@ impl<'a> CompilerBodyFactProvider<'a> {
                     rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
                     _ => rue_air::NameResolution::IndexUnavailable,
                 };
-                self.lookup_name_cache.borrow_mut()[cache_slot] =
-                    Some(LookupNameCacheEntry { key, terminal });
+                self.lookup_name_cache.borrow_mut()[cache_slot] = Some(LookupNameCacheEntry {
+                    key,
+                    resolution: resolution.clone(),
+                });
                 resolution
             }
             Err(abort) => {
