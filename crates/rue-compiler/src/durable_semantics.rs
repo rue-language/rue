@@ -30,8 +30,10 @@ pub struct DurableAnonymousNominal {
     source_symbol: Arc<str>,
     /// Canonical digest retained alongside the source symbol so body-local
     /// pools can use the exact durable computation without relocating the key.
-    /// This is presentation-only; semantic equality, ordering, and hashing
-    /// intentionally ignore it below.
+    /// Semantic equality and ordering intentionally ignore it below; hashing
+    /// uses it as the bucket key, which stays consistent with equality because
+    /// it is a pure function of `identity` and `identity` is part of the
+    /// compared tuple.
     anonymous_digest: u128,
     pub shape: DurableAnonymousNominalShape,
     pub type_captures: Arc<[(Arc<str>, DurableType)]>,
@@ -124,7 +126,15 @@ impl Ord for DurableAnonymousNominal {
 
 impl Hash for DurableAnonymousNominal {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.semantic_parts().hash(state);
+        // Hash the construction-time digest instead of walking the identity,
+        // shape, and capture slices. Equal values share an identity and
+        // therefore a digest, so this stays consistent with `Eq`; values that
+        // share an identity but differ in shape (`with_shape` produces them)
+        // collide into the same bucket and are separated by the full equality
+        // comparison. Per-body fact selection hashes every selected
+        // anonymous-nominal fact once, so the deep walk this replaces was paid
+        // per selecting body rather than per distinct nominal (RUE-1587).
+        self.anonymous_digest.hash(state);
     }
 }
 
@@ -330,16 +340,30 @@ mod tests {
             crate::semantic_identity::anonymous_nominal_digest(&identity)
         );
 
-        // The cache is not a durable semantic fact: even deliberately stale
-        // presentation caches compare and hash exactly like the original.
+        // The symbol cache is not a durable semantic fact: a deliberately
+        // stale spelling compares exactly like the original.
         let mut stale = nominal.clone();
         stale.source_symbol = Arc::from("stale");
-        stale.anonymous_digest = 0;
         assert_eq!(nominal, stale);
-        let mut nominal_hash = DefaultHasher::new();
-        nominal.hash(&mut nominal_hash);
-        let mut stale_hash = DefaultHasher::new();
-        stale.hash(&mut stale_hash);
-        assert_eq!(nominal_hash.finish(), stale_hash.finish());
+
+        // The digest, by contrast, is the hash bucket key. Every constructor
+        // derives it from `identity`, so independently constructed equal
+        // values hash identically, and a shape variant of the same identity
+        // (`with_shape`) shares the bucket while remaining unequal — the
+        // collision the full equality comparison exists to separate.
+        let rebuilt =
+            DurableAnonymousNominal::new(identity.clone(), shape, Arc::from([]), Arc::from([]));
+        assert_eq!(nominal, rebuilt);
+        let hash_of = |value: &DurableAnonymousNominal| {
+            let mut hasher = DefaultHasher::new();
+            value.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash_of(&nominal), hash_of(&rebuilt));
+        let variant = nominal.with_shape(DurableAnonymousNominalShape::Enum {
+            variants: Arc::from([]),
+        });
+        assert_ne!(nominal, variant);
+        assert_eq!(hash_of(&nominal), hash_of(&variant));
     }
 }
