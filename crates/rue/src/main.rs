@@ -1261,6 +1261,9 @@ fn benchmark_compiler_work(
             strings: metrics.semantic.cfg.local_strings as u64,
             local_atoms: metrics.semantic.cfg.local_atoms as u64,
         },
+        publication: rue_perf_schema::PublicationWork {
+            cone_retention_failures: metrics.publication.cone_retention_failures,
+        },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
             claims: runtime.claims,
             reuses: runtime.reuses,

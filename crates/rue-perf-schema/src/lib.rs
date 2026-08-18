@@ -98,9 +98,10 @@ pub use runtime::{
 pub use sanity::is_commit;
 pub use scaling::{
     CfgLocalEpochWork, CfgMaterializationWork, CfgPrerequisiteWork, CfgRetainedChargeWork,
-    CompilerWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity,
-    ScalingManifest, ScalingObservation, ScalingRegime, ScalingReport, ScalingWorkload,
-    SemanticBodyStructureWork, SemanticProviderWork, SemanticReachabilityWork, WorkloadShape,
+    CompilerWork, PublicationWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION,
+    ScalingIdentity, ScalingManifest, ScalingObservation, ScalingRegime, ScalingReport,
+    ScalingWorkload, SemanticBodyStructureWork, SemanticProviderWork, SemanticReachabilityWork,
+    WorkloadShape,
 };
 pub use series::{Metric, SeriesId};
 pub use stats::{

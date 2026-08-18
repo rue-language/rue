@@ -2383,6 +2383,15 @@ pub struct OneShotMetrics {
     pub query_runtime: QueryRuntimeMetrics,
     pub semantic_reachability: SemanticReachabilityMetrics,
     pub provider_observations: ProviderObservationMetrics,
+    pub publication: PublicationMetrics,
+}
+
+/// Deterministic publication-seam health for one compiler process (RUE-1576).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PublicationMetrics {
+    /// Times the declaration publication could not retain its projection cone
+    /// and validation fell back to per-node demand cascades. Expected zero.
+    pub cone_retention_failures: u64,
 }
 
 impl OneShotMetrics {
@@ -2392,6 +2401,7 @@ impl OneShotMetrics {
         query_runtime: QueryRuntimeMetrics,
         semantic_reachability: SemanticReachabilityMetrics,
         provider_observations: ProviderObservationMetrics,
+        publication: PublicationMetrics,
     ) -> Self {
         Self {
             files: stats.files,
@@ -2404,6 +2414,7 @@ impl OneShotMetrics {
             query_runtime,
             semantic_reachability,
             provider_observations,
+            publication,
         }
     }
 }

@@ -148,6 +148,7 @@ pub struct CompileOutput {
     pub(crate) query_runtime: crate::unstable::QueryRuntimeMetrics,
     pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
     pub(crate) provider_observations: crate::unstable::ProviderObservationMetrics,
+    pub(crate) publication: crate::unstable::PublicationMetrics,
 }
 
 impl CompileOutput {
@@ -160,6 +161,7 @@ impl CompileOutput {
             self.query_runtime,
             self.semantic_reachability,
             self.provider_observations,
+            self.publication,
         )
     }
 }
@@ -326,5 +328,8 @@ pub(crate) fn compile_rooted_with_session(
     output.query_runtime = query_runtime;
     output.semantic_reachability = semantic_reachability;
     output.provider_observations = provider_observations;
+    output.publication = crate::unstable::PublicationMetrics {
+        cone_retention_failures: session.publication_cone_retention_failures(),
+    };
     Ok(output)
 }

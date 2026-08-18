@@ -1826,6 +1826,14 @@ impl CompilerSession {
         self.queries.revisioned.import_ledger(revision)
     }
 
+    /// RUE-1576: how many declaration publications could not retain their
+    /// projection cone this session. Expected zero; the pipeline gate pins it.
+    pub(crate) fn publication_cone_retention_failures(&self) -> u64 {
+        self.queries
+            .revisioned
+            .publication_cone_retention_failures()
+    }
+
     /// Stages the current compiler-published import-input revision.
     ///
     /// Snapshot, context, accepted reads, and carried observations are read as
