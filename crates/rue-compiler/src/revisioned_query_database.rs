@@ -21422,8 +21422,10 @@ const LOOKUP_NAME_CACHE_HASHER: RandomState = RandomState::with_seeds(4, 5, 6, 7
 
 #[derive(Default)]
 struct CanonicalAnonymousNominalRegistry {
+    // This registry is queried only by canonical identity; its entries are
+    // never iterated, so map order cannot affect the durable projection.
     by_identity:
-        BTreeMap<crate::AnonymousNominalKey, Rc<crate::durable_semantics::DurableAnonymousNominal>>,
+        AHashMap<crate::AnonymousNominalKey, Rc<crate::durable_semantics::DurableAnonymousNominal>>,
 }
 
 impl CanonicalAnonymousNominalRegistry {
@@ -21434,10 +21436,10 @@ impl CanonicalAnonymousNominalRegistry {
         for nominal in nominals {
             let identity = nominal.identity.with_canonical_producer().into_owned();
             match self.by_identity.entry(identity) {
-                std::collections::btree_map::Entry::Vacant(entry) => {
+                std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(Rc::new(nominal));
                 }
-                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
                     // A declaration projection may carry only the anonymous
                     // shape while a later producer-body fact carries methods.
                     // Never replace that richer authority with a thin repeat;
