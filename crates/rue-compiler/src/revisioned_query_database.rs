@@ -445,6 +445,7 @@ pub(crate) struct RevisionedQueryDatabase {
         QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
     body_transactions:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyTransaction>,
+    shared_durable_payloads: Arc<SharedDurablePayloadCache>,
     #[allow(dead_code)]
     body_analysis_bundles:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyAnalysisBundle>,
@@ -12650,6 +12651,7 @@ impl RevisionedQueryDatabase {
         // bundle is installed after the mutually recursive semantic/body
         // families have all been registered, before the database can escape
         // this constructor.
+        let shared_durable_payloads = Arc::new(SharedDurablePayloadCache::default());
         let body_transaction_evaluator =
             Arc::new(std::sync::OnceLock::<BodyTransactionEvaluator>::new());
         let body_transaction_evaluator_for_family = body_transaction_evaluator.clone();
@@ -16102,6 +16104,7 @@ impl RevisionedQueryDatabase {
                     provider_observation_meter: provider_observation_meter.clone(),
                     lookup_root_lease: lookup_root_lease.clone(),
                     runtime: runtime.clone(),
+                    shared_durable_payloads: shared_durable_payloads.clone(),
                     symbol_space: RevisionSymbolSpace::default(),
                     #[cfg(test)]
                     inject_body_transaction_failure: inject_body_transaction_failure.clone(),
@@ -16151,6 +16154,7 @@ impl RevisionedQueryDatabase {
             body_source_bases,
             body_toolchain_demands,
             body_transactions,
+            shared_durable_payloads,
             body_analysis_bundles,
             body_reachability,
             body_closures,
@@ -17295,6 +17299,7 @@ struct BodyTransactionEvaluator {
     provider_observation_meter: Arc<ProviderObservationCounters>,
     lookup_root_lease: Arc<Mutex<PublishedRootLookupLease>>,
     runtime: QueryRuntime,
+    shared_durable_payloads: Arc<SharedDurablePayloadCache>,
     /// The ADR-0076 revision-shared symbol space. Every body of one semantic
     /// revision decodes its RIR into, and analyzes against, one append-only
     /// interner, so the program's nominal closure is interned once per
@@ -17405,6 +17410,7 @@ impl BodyTransactionEvaluator {
             observed,
             positive_references,
             meter: self.provider_observation_meter.clone(),
+            shared_durable_payloads: self.shared_durable_payloads.clone(),
         }
     }
 
@@ -18805,6 +18811,11 @@ impl RevisionedQueryDatabase {
         mut key: crate::body_query::BodyClosureQueryKey,
         cancellation: CancellationToken,
     ) -> Result<BodyClosureRequest, QueryAbort> {
+        // The query runtime can intentionally keep one semantic revision id
+        // across a successor source publication. The shared payload cache is
+        // request-scoped, so never let a prior closure's durable signatures
+        // cross that publication boundary.
+        self.shared_durable_payloads.reset(false);
         let mut modules = key.modules.iter().cloned().collect::<Vec<_>>();
         modules.sort();
         modules.dedup();
@@ -18820,6 +18831,8 @@ impl RevisionedQueryDatabase {
             }
             false
         });
+        self.shared_durable_payloads
+            .reset(retained_before.is_empty());
         let publication_attempt = self.runtime.request_registered(
             &self.body_closure_publications,
             revision,
@@ -21333,6 +21346,7 @@ pub(crate) struct CompilerBodyProviderQueries<'a> {
     positive_references:
         std::rc::Rc<std::cell::RefCell<BTreeSet<crate::body_query::BodyReference>>>,
     meter: Arc<ProviderObservationCounters>,
+    shared_durable_payloads: Arc<SharedDurablePayloadCache>,
 }
 
 #[allow(dead_code)]
@@ -21477,6 +21491,152 @@ struct BodyDurablePayloadCache {
     >,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SharedPayloadGeneration {
+    revision: rue_query::Revision,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+}
+
+struct SharedNominalPayload {
+    nominal: Arc<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>>,
+    anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+}
+
+struct SharedFunctionPayload {
+    function: Arc<rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>>,
+    anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+}
+
+#[derive(Default)]
+struct SharedDurablePayloadCacheState {
+    enabled: bool,
+    generation: Option<SharedPayloadGeneration>,
+    named_nominals: AHashMap<crate::StableDefinitionKey, SharedNominalPayload>,
+    named_functions: AHashMap<crate::StableDefinitionKey, SharedFunctionPayload>,
+}
+
+#[derive(Default)]
+struct SharedDurablePayloadCache {
+    state: Mutex<SharedDurablePayloadCacheState>,
+}
+
+impl SharedDurablePayloadCache {
+    fn reset(&self, enabled: bool) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.enabled = enabled;
+        state.generation = None;
+        state.named_nominals.clear();
+        state.named_functions.clear();
+    }
+
+    fn prepare(state: &mut SharedDurablePayloadCacheState, generation: SharedPayloadGeneration) {
+        if state.generation.as_ref() != Some(&generation) {
+            state.generation = Some(generation);
+            state.named_nominals.clear();
+            state.named_functions.clear();
+        }
+    }
+
+    fn nominal(
+        &self,
+        generation: SharedPayloadGeneration,
+        key: &crate::StableDefinitionKey,
+    ) -> Option<(
+        Arc<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>>,
+        Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    )> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.enabled {
+            return None;
+        }
+        Self::prepare(&mut state, generation);
+        state.named_nominals.get(key).map(|payload| {
+            (
+                Arc::clone(&payload.nominal),
+                Arc::clone(&payload.anonymous_nominals),
+            )
+        })
+    }
+
+    fn insert_nominal(
+        &self,
+        generation: SharedPayloadGeneration,
+        key: crate::StableDefinitionKey,
+        nominal: Arc<rue_air::DurableNominal<crate::StableDefinitionKey, ModuleId>>,
+        anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.enabled {
+            return;
+        }
+        Self::prepare(&mut state, generation);
+        state
+            .named_nominals
+            .entry(key)
+            .or_insert(SharedNominalPayload {
+                nominal,
+                anonymous_nominals,
+            });
+    }
+
+    fn function(
+        &self,
+        generation: SharedPayloadGeneration,
+        key: &crate::StableDefinitionKey,
+    ) -> Option<(
+        Arc<rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>>,
+        Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    )> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.enabled {
+            return None;
+        }
+        Self::prepare(&mut state, generation);
+        state.named_functions.get(key).map(|payload| {
+            (
+                Arc::clone(&payload.function),
+                Arc::clone(&payload.anonymous_nominals),
+            )
+        })
+    }
+
+    fn insert_function(
+        &self,
+        generation: SharedPayloadGeneration,
+        key: crate::StableDefinitionKey,
+        function: Arc<rue_air::DurableFunction<crate::StableDefinitionKey, ModuleId>>,
+        anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.enabled {
+            return;
+        }
+        Self::prepare(&mut state, generation);
+        state
+            .named_functions
+            .entry(key)
+            .or_insert(SharedFunctionPayload {
+                function,
+                anonymous_nominals,
+            });
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CompilerBodyDurableSource<'a> {
     provider: &'a CompilerBodyFactProvider<'a>,
@@ -21527,6 +21687,13 @@ impl<'a> CompilerBodyDurableSource<'a> {
                     identity,
                 })
             })
+    }
+
+    fn shared_payload_generation(&self) -> SharedPayloadGeneration {
+        SharedPayloadGeneration {
+            revision: self.provider.queries.context.revision(),
+            configuration: self.provider.queries.configuration.clone(),
+        }
     }
 
     fn anonymous_nominal(
@@ -22315,6 +22482,44 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Some(nominal);
         }
+        if let Some((nominal, anonymous_nominals)) = self
+            .provider
+            .queries
+            .shared_durable_payloads
+            .nominal(self.shared_payload_generation(), key)
+        {
+            let candidate = self.candidate(key)?;
+            let _signature = self.signature_for_candidate(&candidate.declaration)?;
+            self.dynamic_anonymous
+                .borrow_mut()
+                .extend(anonymous_nominals.iter().cloned());
+            self.provider.record_definition_reference(key.clone());
+            let mut nominal = (*nominal).clone();
+            nominal.lang_item = self.provider.language_item(
+                key.module(),
+                rue_air::ProviderNamespace::ModuleItem,
+                key.name(),
+            );
+            nominal.has_destructor = matches!(
+                self.provider
+                    .lookup_unqualified(
+                        key.module(),
+                        rue_air::ProviderNamespace::Destructor,
+                        key.name(),
+                    )
+                    .of_kind(rue_air::ProviderDefinitionKind::Destructor),
+                rue_air::NameResolution::Unique(_)
+            );
+            self.durable_payloads
+                .borrow_mut()
+                .named_nominals
+                .insert(key.clone(), nominal.clone());
+            self.provider
+                .meter()
+                .nominal_materialization_reuses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(nominal);
+        }
         self.provider
             .meter()
             .nominal_materializations
@@ -22372,6 +22577,15 @@ impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
             .borrow_mut()
             .named_nominals
             .insert(key.clone(), nominal.clone());
+        self.provider
+            .queries
+            .shared_durable_payloads
+            .insert_nominal(
+                self.shared_payload_generation(),
+                key.clone(),
+                Arc::new(nominal.clone()),
+                signature.anonymous_nominals,
+            );
         Some(nominal)
     }
 }
@@ -22396,6 +22610,32 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Some(function);
         }
+        if key.kind().requires_owner() {
+            return None;
+        }
+        if let Some((function, anonymous_nominals)) = self
+            .provider
+            .queries
+            .shared_durable_payloads
+            .function(self.shared_payload_generation(), key)
+        {
+            let candidate = self.candidate(key)?;
+            let _signature = self.signature_for_candidate(&candidate.declaration)?;
+            self.dynamic_anonymous
+                .borrow_mut()
+                .extend(anonymous_nominals.iter().cloned());
+            self.provider.record_definition_reference(key.clone());
+            let function = (*function).clone();
+            self.durable_payloads
+                .borrow_mut()
+                .named_functions
+                .insert(key.clone(), function.clone());
+            self.provider
+                .meter()
+                .function_materialization_reuses
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(function);
+        }
         self.provider
             .meter()
             .function_materializations
@@ -22413,9 +22653,6 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
         else {
             return None;
         };
-        if key.kind().requires_owner() {
-            return None;
-        }
         let function = rue_air::DurableFunction {
             parameters,
             result,
@@ -22428,6 +22665,15 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             .borrow_mut()
             .named_functions
             .insert(key.clone(), function.clone());
+        self.provider
+            .queries
+            .shared_durable_payloads
+            .insert_function(
+                self.shared_payload_generation(),
+                key.clone(),
+                Arc::new(function.clone()),
+                signature.anonymous_nominals,
+            );
         Some(function)
     }
 
@@ -24559,6 +24805,7 @@ impl RevisionedQueryDatabase {
             observed: std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new())),
             positive_references: std::rc::Rc::new(std::cell::RefCell::new(BTreeSet::new())),
             meter: self.provider_observation_meter.clone(),
+            shared_durable_payloads: Arc::new(SharedDurablePayloadCache::default()),
         }
     }
 }
