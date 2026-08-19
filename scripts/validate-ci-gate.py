@@ -488,6 +488,10 @@ def validate(
         # job the run's long pole, and would again: the cost returns silently,
         # as a slow job rather than a failing one (RUE-1542).
         "staleness-inputs",
+        # A retired epoch's baseline is outside the derived data by design, so
+        # the resolution check is a separate responsibility of this job rather
+        # than a rule inside the stall script (RUE-1543).
+        "check-baselines",
     ):
         if required not in staleness:
             errors.append(f"performance-staleness responsibility missing {required!r}")
