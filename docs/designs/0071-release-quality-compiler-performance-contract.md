@@ -539,11 +539,109 @@ different binary" from "a different schedule".
 Split, the invariant half stays shared and re-derivable under any worker
 setting, and the schedule-dependent half stays per-process and comparable.
 
+#### What each digest is taken over
+
+A digest a reader cannot recompute is a producer assertion, which is the
+objection this amendment raises against encoding A. So the preimage has to be a
+function of the stored record alone. Four rules settle it, and the implementing
+change owes a test for each.
+
+**1. The preimage is the complete original per-process value, not the residue
+left after hoisting.** Hoisting is a *lossless partition*: every field of a
+process's `runner` and `compiler` lands in exactly one of the run-level block
+or the workload-level block. A reader reassembles the whole `{runner,
+compiler}` pair from those two blocks and digests that, so the digest commits
+to the evidence as measured rather than to whatever survived the encoding.
+
+This is what makes the rule robust to the partition itself being adjusted: the
+digest does not depend on *where* a field was hoisted to, only on the partition
+being complete and disjoint. The implementing change must assert that
+round-trip — reassemble, compare against the original evidence, require
+equality — because a field landing in neither block, or in both, is otherwise
+invisible.
+
+One ambiguity in the supporting note's sketch is resolved here explicitly.
+"Output identity" is four fields, not two: `runner.output_sha256`,
+`runner.output_size_bytes`, `compiler.emitted_output_sha256` and
+`compiler.emitted_output_size_bytes`. All four are workload-level, and
+`accepted_inputs` joins them there.
+
+**2. Canonicalization is `canonical_json`, unchanged.** Object keys sorted by
+Unicode scalar sequence, no insignificant whitespace, floating point an error
+rather than a rounding decision (`canonical.rs:51`). This is deliberately the
+same function `content_address` already uses: a second canonicalization path
+would eventually disagree with the first, and the digests would then certify
+something other than what naming enforces.
+
+**3. There are no omission or default rules, and none may be added.**
+`RunnerBoundaryEvidence` and `CompilerBoundaryEvidence` are both
+`deny_unknown_fields` with no `skip_serializing_if` and no `serde(default)` on
+any field, so every field is always present and the preimage cannot depend on
+what a writer chose to emit. Adding `skip_serializing_if` to either type later
+would silently change the preimage for records already published — the same
+class of accident `Stored` exists to prevent — so this amendment forbids it for
+these two types by name.
+
+**4. Each digest is domain-separated, and `schema_version` does not
+participate.** The digest is `SHA-256(tag || canonical_json(value))` with a
+fixed ASCII tag ending in a newline:
+
+| Digest | Tag |
+| --- | --- |
+| `boundary_processes` (over `{runner, compiler}`) | `rue.boundary.identity.1\n` |
+| `boundary_work_processes` (over `compiler_work`) | `rue.boundary.work.1\n` |
+
+Without the tag, the two digests are computed over different types but by the
+same construction, and a record's `content_address` is a third — domain
+separation is what keeps a value from ever being read as the wrong kind. The
+trailing `.1` versions the *digest scheme*, which is why `schema_version` is
+deliberately not inside the preimage: the process evidence is a property of the
+process, not of the record encoding that carries it, and folding the record's
+version into it would change every digest on a re-encode that changed nothing
+about what was measured. If the preimage ever changes, the tag increments and
+the two are distinguishable by construction.
+
+A worked, byte-exact vector — the canonical JSON of one `runner` value, its
+domain tag, and the resulting digest, checkable with `sha256sum` — is in the
+supporting note.
+
 Keep one `critical_path` per workload observation (encoding **S4** in the
 supporting note). The strictly smaller variant that drops it entirely (**S1**)
 is the true floor, and either is defensible; S4 is recommended because it costs
 0.6 percentage points and preserves the only per-commit critical-path record
 the project has outside a scaling rerun.
+
+**Which process supplies it is part of the encoding, not left to the encoder.**
+`critical_path` is the one member measured to vary across processes, so "one per
+workload observation" is ambiguous until the choice is pinned: two conforming
+encoders could otherwise publish different per-commit critical paths for the
+same observation, and nothing downstream could tell.
+
+The rule is **the first process of the first sample** — `samples[0]`,
+`boundary_evidence[0]` — and the record states its provenance rather than
+relying on the convention:
+
+```
+workloads[i].boundary.critical_path
+workloads[i].boundary.critical_path_source = { sample_index: 0, process_index: 0 }
+```
+
+Three things make that the right choice rather than an arbitrary one. It is
+already the project's convention: every existing consumer takes
+`boundary_evidence.first()`, in six places in `scaling.rs`. The ordering it
+selects on is deterministic — `measure_sample` runs a batch serially and pushes
+each process's evidence in spawn order (`measure.rs:139-164`), so index 0 names
+the same process on every platform and every rerun. And carrying
+`critical_path_source` explicitly means a reader can tell *what* it is holding;
+without it the field is a number with no stated provenance, which is how a
+representative sample gets misread as a witness.
+
+A median over processes was considered and rejected: `CompilerCriticalPathEvidence`
+is a struct of histograms and counters rather than a scalar, so a median needs a
+per-field rule and a tie-break, and it would produce a value no process actually
+observed. The same selection rule and the same `_source` field carry the
+representative `compiler_work` a parallel epoch retains, so the encoding has one
+convention for "a sample, not a witness" rather than two.
 
 Measured against all 1,188 published records. The measured encodings carry one
 digest per process; the split adds a second, whose cost is derived beneath the
