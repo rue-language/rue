@@ -1006,6 +1006,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
         return Err(LocalMaterializationFailure::DuplicateNominalMetadata);
     }
     let mut nominals = Vec::new();
+    let mut named_nominal_count = 0;
     for declaration in declarations {
         let (kind, shape) = match &declaration.payload {
             DurableDeclarationPayload::Struct {
@@ -1029,6 +1030,7 @@ pub(crate) fn materialize_semantic_body_with_indexes(
             ),
             _ => continue,
         };
+        named_nominal_count += 1;
         let lang_item = indexes
             .nominal_metadata(&declaration.key)
             .ok_or(LocalMaterializationFailure::MissingNominalMetadata)?;
@@ -1042,15 +1044,6 @@ pub(crate) fn materialize_semantic_body_with_indexes(
             shape,
         });
     }
-    let named_nominal_count = declarations
-        .iter()
-        .filter(|declaration| {
-            matches!(
-                declaration.payload,
-                DurableDeclarationPayload::Struct { .. } | DurableDeclarationPayload::Enum { .. }
-            )
-        })
-        .count();
     if indexes.nominal_metadata.len() != named_nominal_count {
         return Err(LocalMaterializationFailure::ExtraNominalMetadata);
     }
