@@ -339,12 +339,14 @@ run object
   workloads[i]
     boundary:                        # workload-level, one per observation
       accepted_inputs: [...]
-      output_sha256, output_size_bytes
-      compiler_work: {...}
+      runner.output_sha256, runner.output_size_bytes,
+      compiler.emitted_output_sha256, compiler.emitted_output_size_bytes
+      compiler_work: {...}           # witness at one worker; sample otherwise
       critical_path: {...}           # S4 only
+      critical_path_source: { sample_index: 0, process_index: 0 }
     samples[j]
       boundary_processes:      [ "<sha256>", ... ]   # {runner, compiler}
-      boundary_work_processes: [ "<sha256>", ... ]   # compiler_work
+      boundary_work_processes: [ "<sha256>", ... ]   # one worker only
 ```
 
 Each process contributes **two** digests: one over its `{runner, compiler}` and
@@ -366,9 +368,73 @@ being re-derivable, because a mismatch could no longer be attributed to the
 binary rather than the schedule. Under the split, only
 `boundary_work_processes` is permitted to vary, and it stays comparable.
 
-Correspondingly, the workload-level `compiler_work` witness above is the shared
-value only where the manifest gates it as shared; a parallel boundary epoch
-carries the per-process work digests without a workload-level counterpart.
+#### The parallel case carries no work digest
+
+The paragraph above originally said a parallel boundary epoch keeps the
+per-process work digests without a workload-level `compiler_work` witness.
+That is not a guarantee, and the correction is Steve's on the pull request: with
+no stored preimage and no requirement that the values agree, a reader holding
+those digests can observe only that they differ, which is what
+`check_boundary_evidence` already expects there. A digest of discarded bytes
+that is *supposed* to differ certifies nothing — the same objection this note
+makes against encoding A, reached from the other side.
+
+So the encoding is stated per worker setting rather than uniformly:
+
+| | `worker_setting = "one"` | parallel (`two`/`four`/`eight`/`automatic`) |
+| --- | --- | --- |
+| workload-level `compiler_work` | witness; every process must equal it | one representative sample, from a named process |
+| `boundary_processes` (`{runner, compiler}`) | present; all equal the witness | present; all equal the witness |
+| `boundary_work_processes` | present; all equal the witness | **absent** |
+| full per-process `compiler_work` | workflow artifact | workflow artifact |
+
+`boundary_processes` is unconditional, which is the point of splitting the
+digest: output identity is enforced for every protocol-2 record, so it stays
+re-derivable under any worker setting. `boundary_work_processes` exists only
+where there is a witness to check it against.
+
+A parallel epoch still keeps one `compiler_work` per workload observation, by
+the same selection rule S4 uses for `critical_path`, and labelled the same way
+— a sample from a named process, not a witness. That keeps a per-commit work
+signal without claiming a cross-process guarantee the checker does not make.
+
+This does not move the size projections. Every boundary epoch in
+`performance/manifest.toml` is `worker_setting = "one"`, so every record in the
+store today carries both digests and the 6.7 MiB figure stands as measured. A
+future parallel epoch is strictly cheaper than these projections, not dearer.
+
+#### A worked digest vector
+
+The digest is `SHA-256(tag || canonical_json(value))`. Taking one
+`RunnerBoundaryEvidence` value, canonical JSON is 464 bytes:
+
+```
+{"clock_boundary":"monotonic_pre_spawn_through_exit_and_output_verification","compiler_binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","daemon_endpoint_supplied":false,"fresh_output_directory":true,"fresh_state_directory":true,"native_output_verified":true,"output_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","output_size_bytes":16384,"retained_session_handle_supplied":false,"successful_exit":true}
+```
+
+With the identity tag `rue.boundary.identity.1\n`:
+
+```
+2a095434f674a8c7d4096f6c69d45273c1f811a8ac05bd590f82649170a8501e
+```
+
+Two contrasts make the domain separation checkable rather than asserted. The
+same bytes with no tag digest to
+`354de1ad26a990020fb8548f8e29a8b3e5618562fa91e9b256224beb68433675`, and under
+the work tag `rue.boundary.work.1\n` to
+`b8b977f34591df2d3d8700988c6f0dd0a0a7da1a65e9ac5818bcce75af821155` — three
+different names for one value, which is the property the tag buys.
+
+Reproduce any of them with:
+
+```bash
+printf 'rue.boundary.identity.1\n{"clock_boundary":...}' | sha256sum
+```
+
+The real preimage is the two-key object `{"compiler": …, "runner": …}` over the
+reassembled per-process pair; this vector fixes the mechanism — tag,
+canonicalization, hex — which is the part two implementations could otherwise
+disagree about.
 G1–G5 are checked once per record or workload instead of once per process, over
 bytes that were identical anyway. G6 survives for one process per workload
 under S4 and is dropped under S1.
@@ -431,7 +497,8 @@ Found by reading the source, not by reasoning about it.
 | `performance/manifest.toml` — 9 `[epoch.baseline] run` pins | All 9 move under a full re-encode; 6 under retired-only (epochs 2 and 5). Six of the nine belong to retired epochs. | silent, see below |
 | `performance/manifest.toml:845` `reference_run` | Must equal its epoch's baseline. | `manifest.rs:695` rejects the manifest at parse — **loud** |
 | `derive.rs:1316` | Resolves the baseline by `stored.address() == baseline.run`. A miss yields `baseline_medians = None`. | **silent**: the epoch keeps plotting per-workload series and loses its headline index and every workload ratio |
-| `scripts/validate-performance-stall.py` `unindexed()` | Catches exactly that failure — but iterates `newest_epochs()` only. | catches a live epoch, **misses a retired one** |
+| `scripts/validate-performance-stall.py` `unindexed()` | Catches exactly that failure — but iterates `newest_epochs()` only, over data `staleness-inputs` restricted to the live epoch. | catches a live epoch, **misses a retired one**; not fixable in the rule, see below |
+| `rue-bench check-baselines` (added on this branch) | Every declared baseline must name a record of its own epoch and platform in `index.json`. | **loud**, exit 3, covers retired epochs |
 | `index.json` | Must be rewritten to the new addresses. | rewritten on every commit anyway |
 | `publish-performance-runs.py` | Refuses differing bytes under an existing name. | new addresses never collide; an *in-place* rewrite would trip it — **loud** |
 | `stored.rs` `Stored::read` | The naming property: a record is named by the bytes it was published as. Re-encoding creates a second published record, it does not rename the first. | n/a; the regression test `a_schema_change_does_not_rename_an_existing_record` still holds |
@@ -449,9 +516,17 @@ Declaring `schema_version = 2` makes that combination load-bearing rather than
 hypothetical. Six of the nine baseline pins that must be re-pinned belong to
 epochs 2 and 5, both `collection = false`, and `unindexed()` iterates
 `newest_epochs()` — so every one of those six sits outside the only gate that
-would report the mistake. Extending that gate to every epoch declaring a
-baseline is therefore a prerequisite of the compaction, not a recommendation
-alongside it.
+would report the mistake.
+
+Extending `unindexed()` does not fix it, because the gate never holds the
+records. `rue-bench staleness-inputs` selects the live epoch alone before
+`derive` (RUE-1542), and selecting every epoch with a baseline would mean
+reading 1,437 of the store's 1,440 records instead of 321 — the cost RUE-1542
+removed. The resolution question needs no derived data: `index.json` carries
+every record's platform, epoch and address, and the gate has already checked it
+out to decide what to read. `rue-bench check-baselines` asks it there, for
+every epoch, and is the prerequisite this note means. Measured against the
+store on 2026-08-18: nine declared baselines, nine resolving.
 
 ### What immutability and content addressing actually buy
 

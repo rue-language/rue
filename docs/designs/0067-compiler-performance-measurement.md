@@ -682,15 +682,36 @@ Two failure modes are worth naming because they differ sharply:
 - Getting the `reference_run` out of step with its baseline fails **loudly**:
   `manifest.rs` rejects the manifest at parse.
 - Getting a baseline address wrong fails **silently for a retired epoch**.
-  `derive` resolves the baseline by address and, on a miss, publishes no index
-  and no workload ratios while still plotting every per-workload series.
-  `validate-performance-stall.py`'s `unindexed()` gate catches exactly this —
-  but iterates `newest_epochs()`, so epochs 2 and 5 are unguarded. Six of the
-  nine pins that must move belong to those two retired epochs, so this is where
-  the compaction's most likely mistake lands. **Extending that gate to every
-  epoch that declares a baseline is a condition of accepting Question 2**, not
-  a recommendation alongside it: without it, the operation's characteristic
-  failure is one nothing reports.
+  `derive` resolves the baseline by address among that epoch's own records and,
+  on a miss, publishes no index and no workload ratios while still plotting
+  every per-workload series. `validate-performance-stall.py`'s `unindexed()`
+  gate reports exactly that — but iterates `newest_epochs()`, so epochs 2 and 5
+  are unguarded, and six of the nine pins that must move belong to those two
+  retired epochs.
+
+  An earlier draft of this amendment made "extend `unindexed()` to every epoch
+  declaring a baseline" the condition of acceptance. **That is not
+  implementable as stated**, and the correction is Steve's on the pull request:
+  the gate never sees a retired epoch's records. `rue-bench staleness-inputs`
+  selects the epoch holding each platform's newest point and nothing else
+  (RUE-1542), so those records are never materialized into the data root
+  `derive` reads. Editing the rule cannot make it inspect data that was not
+  checked out.
+
+  Restoring them is the wrong repair. Selecting every epoch that declares a
+  baseline means reading epochs 2, 5 and 6 — on 2026-08-18, 1,437 of 1,440
+  records against the 321 the gate reads now, which is the cost RUE-1542 was
+  merged to remove.
+
+  The check that catches this failure needs no derived data at all. Every
+  `[epoch.baseline] run` must name a record of its own epoch and platform, and
+  `index.json` already carries the platform, epoch and address of every record
+  — and is already checked out, because the selection above reads it. So the
+  condition of acceptance is **a manifest-against-index baseline resolution
+  check covering every epoch, live or retired**, which this branch implements
+  as `rue-bench check-baselines` and runs in the staleness job ahead of
+  `derive`. It reports all nine of today's baselines resolving, and exits 3
+  naming the epoch when one does not.
 
 ### What immutability and content addressing are actually protecting
 
