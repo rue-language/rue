@@ -1005,7 +1005,8 @@ pub(crate) fn materialize_semantic_body_with_indexes(
     if indexes.has_duplicate_nominal_metadata {
         return Err(LocalMaterializationFailure::DuplicateNominalMetadata);
     }
-    let mut nominals = Vec::new();
+    let mut nominals =
+        Vec::with_capacity(declarations.len() + anonymous_nominals.len() + builtin_facts.len());
     let mut named_nominal_count = 0;
     for declaration in declarations {
         let (kind, shape) = match &declaration.payload {
@@ -1586,7 +1587,9 @@ pub(crate) fn select_materialization_facts(
         seen_opaque_types: AHashSet::new(),
     };
     selection.callable(identity);
-    let mut required_types = Vec::new();
+    let mut required_types = Vec::with_capacity(
+        1 + body.instructions.len() + body.places.len() + body.param_drops.len(),
+    );
     let mut seen_required_types = AHashSet::new();
     let mut require_type = |ty: &crate::durable_semantics::DurableType| {
         if seen_required_types.insert(ty.clone()) {
