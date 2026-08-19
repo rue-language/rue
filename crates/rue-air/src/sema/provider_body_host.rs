@@ -2802,6 +2802,10 @@ where
         if methods.is_empty() {
             return Some(());
         }
+        self.anonymous_function_identities
+            .borrow_mut()
+            .reserve(methods.len());
+        self.anonymous_methods.borrow_mut().reserve(methods.len());
         let owner_name = self.member_callable_owner(struct_id);
         let owner_symbol = self.member_callable_owner_symbol(&owner_name);
         for method in methods {
