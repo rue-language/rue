@@ -726,6 +726,10 @@ impl CfgDomainProjection {
         self.types.iter().map(|(_, stable)| stable)
     }
 
+    pub(crate) fn stable_type_count(&self) -> usize {
+        self.types.len()
+    }
+
     /// Return the stable callable identities of the source-language calls that
     /// actually survived AIR lowering into this CFG. The durable symbol domain
     /// is deliberately broader: it also closes over compile-time constructors

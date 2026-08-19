@@ -1257,8 +1257,10 @@ fn materialize_and_build_cfg(
     // whose keys the pool also carries). Collect into vectors and normalize
     // once; the sort matches the ordered-set iteration this replaced, so the
     // batch request order is unchanged.
-    let mut layout_dependencies: Vec<crate::TypeInstanceKey> = Vec::new();
-    let mut drop_dependencies: Vec<crate::TypeInstanceKey> = Vec::new();
+    let stable_type_count = domains.stable_type_count();
+    let mut layout_dependencies: Vec<crate::TypeInstanceKey> =
+        Vec::with_capacity(stable_type_count);
+    let mut drop_dependencies: Vec<crate::TypeInstanceKey> = Vec::with_capacity(stable_type_count);
     let mut stable_types_scanned = 0_u64;
     for ty in domains.stable_types() {
         stable_types_scanned = stable_types_scanned.saturating_add(1);
