@@ -8426,10 +8426,10 @@ mod tests {
             "one exact function payload must serve every body-transaction consumer: {metrics:?}"
         );
         assert_eq!(metrics.signature_facts, 3, "{metrics:?}");
-        assert_eq!(metrics.materializations, 3, "{metrics:?}");
-        assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.materializations, 2, "{metrics:?}");
+        assert_eq!(metrics.function_materializations, 2, "{metrics:?}");
         assert_eq!(
-            metrics.function_materialization_reuses, 2,
+            metrics.function_materialization_reuses, 3,
             "the provider host must pass its already-read function payload into call-signature minting: {metrics:?}"
         );
         assert_eq!(
@@ -8487,12 +8487,12 @@ mod tests {
         assert_eq!(metrics.declaration_facts, 10, "{metrics:?}");
         assert_eq!(metrics.identity_facts, 5, "{metrics:?}");
         assert_eq!(metrics.signature_facts, 5, "{metrics:?}");
-        assert_eq!(metrics.materializations, 5, "{metrics:?}");
-        assert_eq!(metrics.nominal_materializations, 2, "{metrics:?}");
-        assert_eq!(metrics.nominal_materialization_reuses, 2, "{metrics:?}");
-        assert_eq!(metrics.function_materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.materializations, 3, "{metrics:?}");
+        assert_eq!(metrics.nominal_materializations, 1, "{metrics:?}");
+        assert_eq!(metrics.nominal_materialization_reuses, 3, "{metrics:?}");
+        assert_eq!(metrics.function_materializations, 2, "{metrics:?}");
         assert_eq!(
-            metrics.function_materialization_reuses, 2,
+            metrics.function_materialization_reuses, 3,
             "the provider host must not re-fetch an already-read callable payload: {metrics:?}"
         );
         assert_eq!(
