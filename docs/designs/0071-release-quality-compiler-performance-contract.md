@@ -506,13 +506,38 @@ one would produce a producer whose records every reader rejects.
 
 ### Recommendation
 
-**Retain one complete boundary witness per workload observation, and one
-SHA-256 per process, instead of one complete evidence entry per process.**
+**Retain one complete boundary witness per workload observation, and a pair of
+SHA-256 digests per process, instead of one complete evidence entry per
+process.**
 Concretely, a run object gains a run-level `boundary` block for the parts that
 are invariant across the whole run, each workload observation gains a
 workload-level `boundary` block for the parts invariant across its processes,
-and each sample carries `boundary_processes`: one digest per process, taken
-over that process's `{runner, compiler, compiler_work}`.
+and each sample carries **two digests per process**: one over that process's
+`{runner, compiler}` and one over its `compiler_work`.
+
+**The digest is split because the two cross-process guarantees it has to carry
+are not equally conditional.** `check_boundary_evidence` requires every
+process's `runner.output_sha256` to agree for every protocol-2 record
+(`validate.rs:569-580`), but requires `compiler_work` to agree only
+`if policy.worker_setting == WorkerSetting::One` (`validate.rs:588-600`), and
+says why: "Parallel rows deliberately include schedule-dependent joins, reuses,
+and validation paths; those are distribution evidence, not output identity."
+
+Every boundary epoch in `performance/manifest.toml` is `worker_setting = "one"`
+today, which is exactly why the measurement finds one distinct `compiler_work`
+per workload. A single combined digest would promote that observed fact to a
+structural assumption, and this ADR already commits to breaking it: Decision 2
+names the 150 ms automatic-worker target and Decision 7 requires the report
+across `WorkerSetting::REFERENCE_MATRIX`. On a `two`/`four`/`eight`/`automatic`
+boundary epoch, `compiler_work` varies across processes by design — so no
+workload-level witness could hold it, every combined digest would differ from
+the witness and from every other process, and a reader would lose the ability
+to re-derive the guarantee that is *not* gated. Output identity would become
+unverifiable, because a digest mismatch would no longer distinguish "a
+different binary" from "a different schedule".
+
+Split, the invariant half stays shared and re-derivable under any worker
+setting, and the schedule-dependent half stays per-process and comparable.
 
 Keep one `critical_path` per workload observation (encoding **S4** in the
 supporting note). The strictly smaller variant that drops it entirely (**S1**)
@@ -520,13 +545,32 @@ is the true floor, and either is defensible; S4 is recommended because it costs
 0.6 percentage points and preserves the only per-commit critical-path record
 the project has outside a scaling rerun.
 
-Measured against all 1,188 published records:
+Measured against all 1,188 published records. The measured encodings carry one
+digest per process; the split adds a second, whose cost is derived beneath the
+table.
 
 | | Branch total | Epoch-6 record, x86-64 | Epoch-6 record, macOS | Growth/day |
 | --- | ---: | ---: | ---: | ---: |
 | today | 1,481.2 MiB | 1,639.5 KiB | 15,933.7 KiB | 288.6 MiB |
-| S4 | 52.6 MiB (3.6%) | 203.8 KiB | 350.2 KiB | 11.4 MiB |
-| S1 | 44.9 MiB (3.0%) | 134.1 KiB | 280.1 KiB | 8.2 MiB |
+| S4, one digest (measured) | 52.6 MiB (3.6%) | 203.8 KiB | 350.2 KiB | 11.4 MiB |
+| **S4, split digest (derived)** | **59.3 MiB (4.0%)** | **210.2 KiB** | **412.1 KiB** | **12.5 MiB** |
+| S1, one digest (measured) | 44.9 MiB (3.0%) | 134.1 KiB | 280.1 KiB | 8.2 MiB |
+| S1, split digest (derived) | 51.6 MiB (3.5%) | 140.5 KiB | 342.0 KiB | 9.3 MiB |
+
+The split costs one extra 64-character digest per process, and the supporting
+note measures that quantity directly rather than estimating it: S1 stores one
+digest per process, S3 replaces it with a process count, and the difference is
+**6.7 MiB** across the branch's 105,489 process entries — 66.6 bytes each,
+which is a 64-hex string plus its quotes and separator. The second digest costs
+the same 6.7 MiB and 1.1 MiB/day. Per-record figures scale with that epoch's
+process count: 99 for an epoch-6 x86-64 record, 951 for macOS, which is why the
+macOS record moves most.
+
+The recommendation is unchanged by this: 4.0% instead of 3.6% is still a 25×
+reduction, and it buys an encoding that keeps working on the parallel boundary
+epoch Decision 7 already requires. The derived rows are arithmetic on a measured
+per-digest cost rather than a fresh serialization; re-measuring them belongs to
+the implementing change, with the derive-level A/B.
 
 ### Why this is not a loss of precision
 
@@ -600,7 +644,11 @@ evidence means anything.
 - Decision 7's critical-path and scaling questions are answered by the scaling
   report, which is unaffected.
 - A future boundary variant — retained-session, package-cache, daemon-backed —
-  inherits the same shape and the same per-process digest rule.
+  inherits the same shape and the same per-process digest rule. So does a
+  parallel boundary epoch: the split is what makes the shape survive
+  `worker_setting` other than `one`, since only the `compiler_work` digest is
+  permitted to vary across processes there, and the `{runner, compiler}` digest
+  must still equal the workload witness for every process.
 - The producer keeps building the full evidence in memory and keeps validating
   it in full. Only what reaches storage changes.
 
