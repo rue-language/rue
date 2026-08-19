@@ -517,7 +517,7 @@ splicing via shared workloads.
 ## Amendment 1 (2026-08-16): versioning the record encoding, and compacting the store (RUE-1543)
 
 **Status: proposal. Not accepted, not implemented.** ADR-0071 Amendment 1
-proposes a run-object encoding that is 3.6% of today's size. This amendment
+proposes a run-object encoding that is 4.0% of today's size. This amendment
 rules on the three questions that proposal raises about *this* ADR: which
 versioning axis owns the change, what that axis must become before it can carry
 one, and what happens to the 1,481.2 MiB already published. All three need a
@@ -641,6 +641,7 @@ So the two levers are not the same lever:
   repository size unchanged. Measured: `git repack -adq --window=250
   --depth=100` on the branch as fetched produces **no improvement at all**.
 - Changing the tip tree reclaims 1,428.6 MiB of checkout, and needs no rewrite.
+  (1,421.9 MiB once ADR-0071 Amendment 1's split digest is included.)
 
 The recommended operation is therefore a single commit on `performance-data-v1`
 that adds 1,188 re-encoded records under their own new content addresses,
@@ -651,13 +652,28 @@ that commit so the full evidence has a name a reader can quote. Measured
 result: the tip falls from 1,482.9 MiB to 54.3 MiB and parses in 0.34s instead
 of 18.48s.
 
-Only **311 of 1,188 addresses move**. Epochs 2 and 4 carry no boundary evidence
-and are byte-identical after re-encoding, as are six epoch-5 records. The
-required repository changes are exactly:
+Every re-encoded-tip figure in this amendment was serialized with **one digest
+per process**. ADR-0071 Amendment 1 now splits that digest in two so the
+encoding survives a parallel boundary epoch, which adds a measured 6.7 MiB of
+digests across the branch: the tip becomes **61.0 MiB** rather than 54.3, a 24×
+checkout reduction rather than 27×. Parse time is unaffected at this scale. The
+pack and fetch consequences are bounded by that same 6.7 MiB before compression
+and were not separately measured; the implementing change owes both
+re-measurements. The tables below are left at their measured values and labelled
+accordingly rather than restated with derived ones.
+
+**All 1,188 addresses move.** `schema_version` is an ordinary field of
+`RunObject` (`run.rs:457`) with no `skip_serializing_if`, so it is part of the
+canonical form `content_address` digests, and Question 1a requires every
+re-encoded record to declare `schema_version = 2`. A record whose only change is
+`1` → `2` therefore gets a new name. The 877 records carrying no boundary
+evidence — epoch 2's 868, epoch 4's 3, and six epoch-5 records — stay
+byte-identical *below* the version field, which is why the equivalence result
+holds, but they move too. The required repository changes are exactly:
 
 | Site | Change |
 | --- | --- |
-| `performance/manifest.toml` | re-pin 6 `[epoch.baseline] run` values (epochs 5 and 6, three platforms) and the epoch-5 `reference_run`. Epoch 2's three pins are untouched. |
+| `performance/manifest.toml` | re-pin all 9 `[epoch.baseline] run` values (epochs 2, 5 and 6, three platforms each) and the epoch-5 `reference_run`. |
 | `docs/notes/adr-0071-phase-1-…md`, `adr-0071-phase-2-…md` | four prose citations of epoch-5 record addresses |
 | everything else | nothing. `website/static/performance-data.json` is generated and untracked; no test pins a record address; no committed derived data exists. |
 
@@ -669,10 +685,12 @@ Two failure modes are worth naming because they differ sharply:
   `derive` resolves the baseline by address and, on a miss, publishes no index
   and no workload ratios while still plotting every per-workload series.
   `validate-performance-stall.py`'s `unindexed()` gate catches exactly this —
-  but iterates live epochs only, so epochs 2 and 5 are unguarded. **If this
-  amendment is accepted, that gate should be extended to every epoch that
-  declares a baseline**, not only the live one; otherwise the compaction's own
-  most likely mistake is the one nothing reports.
+  but iterates `newest_epochs()`, so epochs 2 and 5 are unguarded. Six of the
+  nine pins that must move belong to those two retired epochs, so this is where
+  the compaction's most likely mistake lands. **Extending that gate to every
+  epoch that declares a baseline is a condition of accepting Question 2**, not
+  a recommendation alongside it: without it, the operation's characteristic
+  failure is one nothing reports.
 
 ### What immutability and content addressing are actually protecting
 
@@ -712,12 +730,27 @@ no clone; it is a reason not to choose the force-push variant.
 
 Measured. "Loses" is what becomes unavailable to a reader holding only the tip.
 
+"Checkout after" is the working-tree cost — what RUE-1543 is about and what
+every consumer pays. It is not the fetch cost, and for the recommended option
+the fetch moves the *wrong* way. Each state below was measured as a standalone
+single commit (5.0 MiB of pack for the re-encoded S4 tip), but the append lands
+that commit on top of the existing 402, so the branch's fetch grows from
+53.69 MiB to roughly 59 MiB and stays there — under 66 MiB once the split
+digest's 6.7 MiB is added, taking that half as uncompressed. That is the one
+figure in this amendment where the storage side gets worse. At that size it
+remains an easy trade for a 24× checkout reduction, but since the whole argument
+rests on "the store's cost is a checkout cost, not a storage cost", it belongs
+in the text rather than inferred from the supporting note's tables.
+
+Checkout figures are as measured, with one digest per process; add 6.7 MiB to
+each re-encoded row for the split digest.
+
 | Option | Checkout after | Loses |
 | --- | ---: | --- |
 | do nothing | 1,482.9 MiB, +289/day | nothing; the trend continues |
 | new encoding for new records only | 1,482.9 MiB, +11/day | nothing |
 | **re-encode at the tip, no history rewrite** | **54.3 MiB** | per-process `critical_path` from the tip; still in history |
-| re-encode retired epochs only | 456.0 MiB | same, epochs 2–5 only; 242 addresses move |
+| re-encode retired epochs only | 456.0 MiB | same, epochs 2–5 only; 1,119 addresses move |
 | delete retired-epoch records | 420.0 MiB | epochs 2/4/5 vanish from the dashboard |
 | summarize a retired epoch to one record | ~420 MiB | per-commit resolution; needs a new record kind and a dashboard path |
 | archive the pre-compaction tip as a tag | unchanged | nothing; costs zero bytes, composes with the above |

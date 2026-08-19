@@ -15,8 +15,10 @@ Two findings shape everything below.
 part of every evidence entry is bit-identical across all N processes except
 `critical_path`, and `critical_path` is read by nothing that consumes the
 branch. Hoisting the invariant part to the level it is actually invariant at
-and committing to each process with one digest gives a record 3.6% of today's
-size while preserving every guarantee a reader can re-derive from the branch.
+and committing to each process with a pair of digests — one for
+`{runner, compiler}`, one for `compiler_work` — gives a record 4.0% of today's
+size while preserving every guarantee a reader can re-derive from the branch,
+under any worker setting.
 
 **The cost is a checkout cost, not a storage cost.** The whole branch — 402
 commits, 1,188 records — fetches in 53.69 MiB. It expands to 1,482.9 MiB on
@@ -89,7 +91,10 @@ expensive is materializing and parsing the **tip tree**, and the tip tree is
 determined by the newest commit alone — which an ordinary append changes.
 
 Measured consistently, each candidate state built as a single commit and
-repacked with identical aggressive settings:
+repacked with identical aggressive settings. Every re-encoded row carries one
+digest per process, as serialized; the split digest adds 6.7 MiB to the
+checkout column (S4: 54.3 → 61.0 MiB) and at most the same, uncompressed, to
+the pack column:
 
 | Branch state | Checkout | Pack |
 | --- | ---: | ---: |
@@ -338,12 +343,32 @@ run object
       compiler_work: {...}
       critical_path: {...}           # S4 only
     samples[j]
-      boundary_processes: [ "<sha256>", ... ]   # one per process
+      boundary_processes:      [ "<sha256>", ... ]   # {runner, compiler}
+      boundary_work_processes: [ "<sha256>", ... ]   # compiler_work
 ```
 
-Each digest is taken over that process's `{runner, compiler, compiler_work}` —
-the part measured invariant. A reader re-derives G7 and G8 exactly as today:
-all N digests must be equal and must equal the digest of the stored witness.
+Each process contributes **two** digests: one over its `{runner, compiler}` and
+one over its `compiler_work`. A reader re-derives G7 and G8 exactly as today —
+all N digests of a kind must be equal and must equal the digest of the
+corresponding stored witness.
+
+The pair is not decoration. `check_boundary_evidence` enforces output identity
+unconditionally for protocol-2 records (`validate.rs:569-580`) but enforces
+work identity only when `policy.worker_setting == WorkerSetting::One`
+(`validate.rs:588-600`), because parallel rows deliberately carry
+schedule-dependent joins and reuses. Every boundary epoch in the manifest is
+`worker_setting = "one"` today, which is precisely why this note measures one
+distinct `compiler_work` per workload — but ADR-0071 Decision 7 requires the
+report across `WorkerSetting::REFERENCE_MATRIX`, and on such an epoch a single
+combined digest would differ for every process. The workload witness could not
+hold it, and output identity — the guarantee that is *not* gated — would stop
+being re-derivable, because a mismatch could no longer be attributed to the
+binary rather than the schedule. Under the split, only
+`boundary_work_processes` is permitted to vary, and it stays comparable.
+
+Correspondingly, the workload-level `compiler_work` witness above is the shared
+value only where the manifest gates it as shared; a parallel boundary epoch
+carries the per-process work digests without a workload-level counterpart.
 G1–G5 are checked once per record or workload instead of once per process, over
 bytes that were identical anyway. G6 survives for one process per workload
 under S4 and is dropped under S1.
@@ -351,6 +376,15 @@ under S4 and is dropped under S1.
 The smallest representation preserving the load-bearing guarantees is **S1, at
 3.0%**. S4 costs 0.6 points more and buys back G6 plus one per-commit critical
 path per workload — the same projection `scaling.rs` takes when it wants one.
+
+Both figures are for one digest per process. The second digest the split
+requires costs the same as the first, and this table measures that directly:
+S1 minus S3 — one digest per process, versus a process count in its place — is
+**6.7 MiB** over 105,489 process entries, or 66.6 bytes each, a 64-hex string
+with its quotes and separator. So the split takes S1 to 51.6 MiB (3.5%) and S4
+to 59.3 MiB (4.0%), and daily growth to 9.3 and 12.5 MiB. Those four numbers
+are arithmetic on a measured per-digest cost, not a fresh serialization; the
+implementing change owes the re-measurement.
 
 ### What is lost
 
@@ -370,9 +404,23 @@ Measured by generating the re-encoded corpus and comparing it record by record.
 records are byte-identical, so every median, dispersion, ratio, index, ratchet
 and flag is unchanged by construction.
 
-**311 of 1,188 addresses move.** Epoch 2 (868) and epoch 4 (3) carry no
-evidence and are byte-identical, as are six epoch-5 records with no evidence in
-any sample. Under a retired-epochs-only re-encode, 242 move.
+**Every address moves: 1,188 of 1,188.** `schema_version` is an ordinary field
+of `RunObject` (`run.rs:457`) with no `skip_serializing_if`, so it is part of
+the canonical form `content_address` digests. A record whose only change is
+`1` → `2` therefore gets a new address, and Question 1a requires every
+re-encoded record to declare 2. Under a retired-epochs-only re-encode, 1,119
+move (epoch 2's 868, epoch 4's 3, epoch 5's 248).
+
+The evidence-free records remain byte-identical *below the version field* —
+epoch 2 (868) and epoch 4 (3) carry no evidence at all, as do six epoch-5
+records with no evidence in any sample, so 877 records change in that one field
+and nothing else. That distinction is why the equivalence result above holds,
+but it does not reduce the breakage inventory, which turns only on whether an
+address moved.
+
+An earlier revision of this note reported 311 moved addresses and 242 under
+retired-only. Those came from a prototype that left `schema_version` at 1,
+which Question 1a does not permit; they are superseded.
 
 ### Exhaustive breakage inventory
 
@@ -380,7 +428,7 @@ Found by reading the source, not by reasoning about it.
 
 | Site | What breaks | How it fails |
 | --- | --- | --- |
-| `performance/manifest.toml` — 9 `[epoch.baseline] run` pins | 6 records move under a full re-encode (3 under retired-only). Epoch 2's three pins never move. | silent, see below |
+| `performance/manifest.toml` — 9 `[epoch.baseline] run` pins | All 9 move under a full re-encode; 6 under retired-only (epochs 2 and 5). Six of the nine belong to retired epochs. | silent, see below |
 | `performance/manifest.toml:845` `reference_run` | Must equal its epoch's baseline. | `manifest.rs:695` rejects the manifest at parse — **loud** |
 | `derive.rs:1316` | Resolves the baseline by `stored.address() == baseline.run`. A miss yields `baseline_medians = None`. | **silent**: the epoch keeps plotting per-workload series and loses its headline index and every workload ratio |
 | `scripts/validate-performance-stall.py` `unindexed()` | Catches exactly that failure — but iterates `newest_epochs()` only. | catches a live epoch, **misses a retired one** |
@@ -396,6 +444,14 @@ epoch's baseline incorrectly loses that epoch's headline index from the
 dashboard with **no gate firing**, and the remediation text in the gate that
 would have caught it says "A record is named by the bytes it was published as;
 nothing may rename it afterwards."
+
+Declaring `schema_version = 2` makes that combination load-bearing rather than
+hypothetical. Six of the nine baseline pins that must be re-pinned belong to
+epochs 2 and 5, both `collection = false`, and `unindexed()` iterates
+`newest_epochs()` — so every one of those six sits outside the only gate that
+would report the mistake. Extending that gate to every epoch declaring a
+baseline is therefore a prerequisite of the compaction, not a recommendation
+alongside it.
 
 ### What immutability and content addressing actually buy
 
@@ -469,6 +525,14 @@ No history is rewritten, no address is reused for different bytes, and every
 original record stays reachable at `<pre-compaction-commit>:runs/<address>.json`
 in a 53.69 MiB history. Combined with option 6 — tag that commit — the full
 evidence has a name a reader can quote.
+
+The pack column above measures each candidate as a standalone single commit, so
+it understates the append: landing the 5.0 MiB S4 commit on top of the existing
+402 takes the branch's fetch from 53.69 MiB to roughly 59 MiB, permanently —
+under 66 MiB once the split digest's 6.7 MiB is counted uncompressed. The
+checkout falls 24× and the fetch rises 10–23%; that trade is the whole
+recommendation, and the rising half should be read off this paragraph rather
+than reconstructed from the table.
 
 ### Re-deriving a chart in six months
 
