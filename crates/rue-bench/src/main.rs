@@ -18,6 +18,7 @@
 //! appendability — over its own manifest and record kind.
 
 mod calibrate;
+mod check_baselines;
 mod check_pins;
 mod derive;
 mod digest;
@@ -111,6 +112,13 @@ Subcommands:
                        point. Lets that gate check out and parse the live epoch
                        instead of the whole append-only history.
 
+  check-baselines --manifest <path> --index <path>
+                       answer whether every declared `[epoch.baseline] run`
+                       still names a record of its own epoch, reading only the
+                       manifest and index.json. Covers retired epochs, which
+                       `staleness-inputs` deliberately keeps out of the derived
+                       data. Exits 3 when one does not resolve.
+
   check-pins --manifest <path> --compiler <path> [--repo-root <path>]
                        answer whether this tree still matches every collection
                        epoch. Exits 3 on drift, which is the change stalling
@@ -199,6 +207,15 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::from(exit::OK),
             Err(message) => {
                 eprintln!("rue-bench staleness-inputs: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("check-baselines") {
+        return match check_baselines::run() {
+            Ok(status) => ExitCode::from(status),
+            Err(message) => {
+                eprintln!("rue-bench check-baselines: {message}");
                 ExitCode::from(exit::USAGE)
             }
         };

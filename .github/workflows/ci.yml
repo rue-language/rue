@@ -653,6 +653,16 @@ jobs:
             git reset --quiet
           fi
           echo "reading $(wc -l < "$SELECTED") record(s) from the live epoch"
+          # Baseline resolution is asked here rather than in the derived data,
+          # because the selection above deliberately excludes retired epochs and
+          # a retired epoch's baseline is exactly the one whose loss is silent:
+          # `derive` publishes no index and no ratios while still plotting every
+          # series, and `unindexed()` iterates live epochs only. index.json is
+          # already checked out, so this covers every epoch for one pass over a
+          # file the step is holding anyway.
+          "$BENCH" check-baselines \
+            --manifest performance/manifest.toml \
+            --index "$DATA/index.json"
           DERIVED="$(mktemp)"
           "$BENCH" derive \
             --manifest performance/manifest.toml \

@@ -42,19 +42,24 @@ use serde::Deserialize;
 /// Deliberately a subset. This names the fields the selection needs and lets
 /// serde ignore the rest, so a later index field cannot fail the gate.
 #[derive(Debug, Deserialize)]
-struct IndexEntry {
-    platform: String,
-    epoch: u32,
-    finished_at: String,
-    run: String,
+pub(crate) struct IndexEntry {
+    pub(crate) platform: String,
+    pub(crate) epoch: u32,
+    pub(crate) finished_at: String,
+    pub(crate) run: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct Index {
+pub(crate) struct Index {
     /// Compiler runs (ADR-0067). The `runtime` list is deliberately not read:
     /// ADR-0072 Decision 9 keeps the runtime series out of this gate.
     #[serde(default)]
-    runs: Vec<IndexEntry>,
+    pub(crate) runs: Vec<IndexEntry>,
+}
+
+/// Parse `index.json`, naming the file in the error the way both readers want.
+pub(crate) fn parse_index(index_json: &str) -> Result<Index, String> {
+    serde_json::from_str(index_json).map_err(|error| format!("could not parse index.json: {error}"))
 }
 
 /// Return the data-branch paths the staleness gate needs, in a stable order.
@@ -63,8 +68,7 @@ struct Index {
 /// nothing on it is the honest first state of a suite that has not collected,
 /// and the gate reports that as "nothing to stall" rather than failing.
 pub fn select(index_json: &str) -> Result<Vec<String>, String> {
-    let index: Index = serde_json::from_str(index_json)
-        .map_err(|error| format!("could not parse index.json: {error}"))?;
+    let index = parse_index(index_json)?;
 
     // The newest entry per platform, and therefore the epoch to keep. Ties on
     // `finished_at` break on the content address so the choice is a function of
