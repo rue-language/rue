@@ -178,6 +178,7 @@ The following preview features completed this process and are now stable (their
 - `for_loops` and `method_receivers` — see ADR-0037; stabilized 2026-07-03.
 - `enum_payloads` — see ADR-0038; stabilized 2026-07-03.
 - `string_trio` — see ADR-0043; stabilized by RUE-876 on 2026-07-14.
+- `slices` — see ADR-0043; stabilized by RUE-936 on 2026-08-20.
 
 `test_infra` remains permanently unstable (it exists only to exercise the gating
 mechanism), so the `PreviewFeature` enum is not empty.

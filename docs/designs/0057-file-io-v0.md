@@ -220,7 +220,7 @@ row), because Linux and macOS disagree: `O_CREAT` is `0o100`=64 on Linux but
 `rename`/`unlink`, buffering layers, and any stdin/stdout/file unification.
 
 **Buffers ship on `ArrayBuf(u8)` with raw-pointer marshalling**, because slices
-(`[u8]`) remain preview-gated (ADR-0043's slice rung is not stabilized). `read`
+(`[u8]`) are available now that ADR-0043's slice rung is stabilized. `read`
 appends up to the buffer's **spare capacity** (`capacity() - len()`) and
 `write`/`write_all` send the buffer's bytes.
 
@@ -241,10 +241,10 @@ silent. Because `ArrayBuf`'s backing pointer is module-private and there
 is no cross-module accessor yet, v0 marshals through a **temporary contiguous
 `@alloc_bytes` buffer**, copying bytes in/out via the public `push`/`get_or`
 API, and issues the syscall on that temporary. This is a **known seam, recorded
-with migration intent**: when slices stabilize, the read/write signatures
-migrate to `borrow [u8]` / `inout [u8]` and the temporary-copy disappears — a
-signature change at one boundary, not a redesign. Committing to `ArrayBuf(u8)`
-now unblocks IO without waiting on the slice feature.
+with migration intent**: now that slices are stable, the read/write signatures
+can migrate to `borrow [u8]` / `inout [u8]` and the temporary-copy can disappear —
+a signature change at one boundary, not a redesign. Committing to `ArrayBuf(u8)`
+unblocked IO without waiting for the slice feature.
 
 `std.fs` source is trusted standard-library input (`ModuleOrigin::
 StandardLibrary`), so its use of the `raw_bytes` packed-byte intrinsics
@@ -289,7 +289,7 @@ Implemented under RUE-712 on 2026-07-16:
 - Until RUE-591, an ignored `close()` `Result` is silently dropped.
 - v0 is minimal: no seek/stat/dirs/rename/buffering.
 - The buffer API is on `ArrayBuf(u8)` and pays a temporary-copy per read/write;
-  both the signature and the copy change when slices stabilize.
+  both the signature and the copy can change now that slices are stable.
 
 ### Neutral
 - No language-semantics or preview-feature change; this is stdlib + intrinsic use.
@@ -325,6 +325,6 @@ Implemented under RUE-712 on 2026-07-16:
 - Seek, `stat`/metadata, directory iteration, `rename`/`unlink`.
 - Buffered IO and stdin/stdout/file unification.
 - Migrate read/write buffers from `ArrayBuf(u8)` to `borrow [u8]`/`inout [u8]`
-  once slices stabilize, dropping the temporary-copy marshalling.
+  now that slices are stable, dropping the temporary-copy marshalling.
 - Close the must-check hole once ADR-0038's linearity half (RUE-591) lands.
 - RUE-713 network IO, reusing this errno-normalization precedent.

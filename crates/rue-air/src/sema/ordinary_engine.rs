@@ -1245,11 +1245,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             self.body_rir_ref().type_syntax().node(syntax),
             Some(rue_rir::RirTypeSyntaxNode::Slice { .. })
         ) {
-            self.require_preview(
-                rue_error::PreviewFeature::Slices,
-                "the slice type `[T]`",
-                span,
-            )?;
             return Err(CompileError::new(kind, span));
         }
         Ok(())

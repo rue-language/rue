@@ -3,12 +3,12 @@
 # `@size_of`, `@align_of`, and the type position of `@offset_of` accept the
 # same type grammar annotations do. These cases exercise the forms that need
 # driver-level machinery the spec suite cannot reach: a module-qualified type
-# behind an `@import`, and the preview-gated slice type behind `--preview`.
+# behind an `@import`, and the slice type.
 
 [section]
 id = "cli.type_intrinsic_args"
 name = "Type-position intrinsic arguments (RUE-788)"
-description = "Qualified and preview-gated type forms in @size_of/@offset_of through the CLI."
+description = "Qualified and slice type forms in @size_of/@offset_of through the CLI."
 
 # A module-qualified struct is a valid type argument, and @offset_of computes
 # the field offset from the imported struct's layout: 16 + 8 = 24.
@@ -27,12 +27,12 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 exit_code = 24
 
-# The preview-gated slice type reaches @size_of through the driver flag; the
-# slice is a two-word fat pointer.
+# The slice type reaches @size_of through the driver; it is a two-word fat
+# pointer.
 [[case]]
-name = "slice_type_in_size_of_with_preview"
+name = "slice_type_in_size_of"
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { @size_of([i32]) }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 16

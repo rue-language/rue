@@ -3402,14 +3402,6 @@ where
             })
     }
 
-    fn type_syntax_require_slices(&mut self, span: Span) -> CompileResult<()> {
-        self.require_preview(
-            rue_error::PreviewFeature::Slices,
-            "the slice type `[T]`",
-            span,
-        )
-    }
-
     fn type_syntax_make_slice(
         &mut self,
         syntax: &str,

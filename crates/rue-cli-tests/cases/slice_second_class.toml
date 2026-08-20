@@ -1,7 +1,7 @@
 # Second-class slice enforcement through the real driver (ADR-0043 Phase 1,
 # RUE-322). A slice `[T]` is a second-class fat-pointer view (ADR-0037): valid
-# only in argument position. These cases drive the real `rue` binary with
-# `--preview slices` on real files and pin the escape-family diagnostics
+# only in argument position. These cases drive the real `rue` binary on real
+# files and pin the escape-family diagnostics
 # (E0487 return / E0488 aggregate field / E0489 let-or-const) and confirm the
 # one legal position (a parameter) is accepted.
 #
@@ -18,7 +18,7 @@ description = "A second-class slice `[T]` may only name a function parameter; ev
 [[case]]
 name = "slice_return_rejected_e0487"
 description = "fn -> [i32] is E0487: a slice cannot be returned."
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn f() -> [i32] { 0 }
 fn main() -> i32 { 0 }
@@ -30,7 +30,7 @@ error_contains = ["E0487", "cannot be returned"]
 [[case]]
 name = "slice_struct_field_rejected_e0488"
 description = "A struct field of slice type is E0488."
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 struct Holder { s: [i32] }
 fn main() -> i32 { 0 }
@@ -42,7 +42,7 @@ error_contains = ["E0488", "cannot be stored in a struct field"]
 [[case]]
 name = "slice_let_rejected_e0489"
 description = "A `let s: [i32]` local is E0489."
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 { let s: [i32] = 0; 0 }
 """ }]
@@ -56,20 +56,9 @@ error_contains = ["E0489", "can only name a function parameter"]
 [[case]]
 name = "slice_param_position_compiles"
 description = "A slice parameter is the one legal position; it compiles and runs."
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn sum(borrow s: [i32]) -> i32 { 0 }
 fn main() -> i32 { 0 }
 """ }]
 exit_code = 0
-
-# Without the preview flag, the same parameter is gated at E1100.
-[[case]]
-name = "slice_requires_preview_e1100"
-description = "Without --preview slices, a slice parameter is E1100."
-files = [{ path = "main.rue", source = """
-fn sum(borrow s: [i32]) -> i32 { 0 }
-fn main() -> i32 { 0 }
-""" }]
-compile_fail = true
-error_contains = ["E1100", "requires preview feature"]

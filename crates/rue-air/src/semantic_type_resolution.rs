@@ -388,12 +388,6 @@ pub trait SemanticTypeSyntaxProvider<S, M, A, K, N, T, V>:
     fn ptr_mut_type(&mut self, pointee: T)
     -> SemanticProviderResult<T, Self::Abort, Self::Failure>;
 
-    fn preflight_slice(
-        &mut self,
-        scope: &S,
-        syntax: &str,
-    ) -> SemanticProviderResult<(), Self::Abort, Self::Failure>;
-
     fn slice_type(
         &mut self,
         scope: &S,
@@ -1115,7 +1109,6 @@ where
         }
         R::Slice { element } => {
             let syntax = structured_syntax_display(arena, root, resolve_symbol);
-            lift_provider(provider.preflight_slice(root_scope, &syntax))?;
             let element = resolve_structured_semantic_type_syntax_with(
                 provider,
                 root_scope,
@@ -1210,7 +1203,6 @@ mod tests {
         module_aliases: BTreeMap<(&'static str, &'static str), Fact>,
         constructors: BTreeMap<(&'static str, &'static str), Head>,
         primitive_error: Option<SemanticProviderError<&'static str, &'static str>>,
-        slice_preflight_error: Option<SemanticProviderError<&'static str, &'static str>>,
         allow_qualified_paths: Option<bool>,
         allow_qualified_value_heads: Option<bool>,
     }
@@ -1398,14 +1390,6 @@ mod tests {
         fn ptr_mut_type(&mut self, _pointee: &'static str) -> FixtureResult<&'static str> {
             self.calls.push("ptr_mut".to_string());
             Ok("ptr mut")
-        }
-
-        fn preflight_slice(&mut self, scope: &&'static str, syntax: &str) -> FixtureResult<()> {
-            self.call("slice_preflight", scope, syntax);
-            if let Some(error) = self.slice_preflight_error.clone() {
-                return Err(error);
-            }
-            Ok(())
         }
 
         fn slice_type(
@@ -1689,7 +1673,6 @@ mod tests {
             (
                 "[i32]",
                 &[
-                    "slice_preflight:app/main.rue:[i32]",
                     "substitution:app/main.rue:i32",
                     "primitive:-:i32",
                     "slice:app/main.rue:[i32]",
@@ -1825,19 +1808,6 @@ mod tests {
                 "array_type",
             ]
         );
-    }
-
-    #[test]
-    fn slice_preflight_failure_stops_before_child_resolution() {
-        let mut fixture = Fixture {
-            slice_preflight_error: Some(SemanticProviderError::Failure("preview required")),
-            ..Fixture::default()
-        };
-        assert_eq!(
-            resolve_type(&mut fixture, "[Unknown]"),
-            Err(SemanticResolutionError::ProviderFailure("preview required"))
-        );
-        assert_eq!(fixture.calls, ["slice_preflight:app/main.rue:[Unknown]"]);
     }
 
     #[test]

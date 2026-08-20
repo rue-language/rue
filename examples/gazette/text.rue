@@ -12,7 +12,7 @@
 // offsets rather than copies, and the four escaping routines.
 //
 // OFFSETS, NOT COPIES. `trim_start_at`/`trim_end_at` and `line_end` return byte
-// offsets into a borrowed haystack. Slices are preview-gated in Rue, so a
+// offsets into a borrowed haystack. Slices are a stable Rue surface, so a
 // caller that genuinely needs the bytes calls `slice`, which allocates. Keeping
 // the scan/copy split explicit is what lets the parsers walk a 525 KiB document
 // without copying it: they copy a line only when the line becomes output.

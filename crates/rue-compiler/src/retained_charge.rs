@@ -1593,7 +1593,6 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::TypeAnnotationRequired
             | E::ExternVariadicUnsupported
             | E::ForeignEntryPointDeclaration
-            | E::SliceNotYetImplemented
             | E::FloatNotYetImplemented
             | E::SliceReturnNotAllowed
             | E::SliceInAggregateField
