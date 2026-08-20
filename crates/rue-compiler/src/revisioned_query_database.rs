@@ -10308,34 +10308,6 @@ impl rue_air::SemanticTypeSyntaxProvider<ModuleId, ModuleId, StableDefinitionKey
             pointee,
         )))
     }
-    fn preflight_slice(
-        &mut self,
-        _scope: &ModuleId,
-        _syntax: &str,
-    ) -> rue_air::SemanticProviderResult<
-        (),
-        QueryAbort,
-        crate::semantic_query_nucleus::SemanticNucleusFailure,
-    > {
-        if self
-            .configuration
-            .preview_features
-            .names()
-            .binary_search_by(|name| name.as_ref().cmp("slices"))
-            .is_ok()
-        {
-            Ok(())
-        } else {
-            Self::provider_domain_failure(
-                crate::semantic_query_nucleus::SemanticNucleusFailure::Diagnostic(
-                    rue_error::ErrorKind::PreviewFeatureRequired {
-                        feature: rue_error::PreviewFeature::Slices,
-                        what: "the slice type `[T]`".to_owned(),
-                    },
-                ),
-            )
-        }
-    }
     fn slice_type(
         &mut self,
         _scope: &ModuleId,
@@ -24376,14 +24348,6 @@ impl<'p, 'o, 'db>
         Ok(crate::DurableType::PtrMut(Box::new(pointee)))
     }
 
-    fn preflight_slice(
-        &mut self,
-        _scope: &ModuleId,
-        _syntax: &str,
-    ) -> rue_air::SemanticProviderResult<(), Self::Abort, Self::Failure> {
-        Ok(())
-    }
-
     fn slice_type(
         &mut self,
         _scope: &ModuleId,
@@ -37429,7 +37393,7 @@ fn main() -> i32 {
     fn provider_endpoint_facts_slice_arm_resolves_after_registration() {
         use rue_air::{SemanticImportType as D, TypeInstanceKey as T};
         // The signature slice `[i64]` names the generated slice struct the pool
-        // mints (slices are preview-gated, ADR-0043).
+        // mints (ADR-0043).
         let source = "fn take(s: [i64]) -> i64 { 0 }\n\
                       fn main() -> i32 { 0 }\n";
         let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);

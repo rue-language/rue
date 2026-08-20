@@ -629,8 +629,7 @@ fn abort_intrinsics_require_exact_runtime_value_shapes() {
 
 #[test]
 fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
-    let mut preview_features = PreviewFeatures::new();
-    preview_features.insert(rue_compiler::PreviewFeature::Slices);
+    let preview_features = PreviewFeatures::new();
     let source = r#"const ZERO: u64 = 0;
         fn slice_len(borrow s: [i32]) -> u64 { s.len() }
         fn user_pointer(borrow s: [i32]) -> u64 {
@@ -648,8 +647,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
             let values = [1, 2];
             @intCast(slice_len(borrow empty) + user_pointer(borrow values) + offset_probe())
         }"#;
-    let state = query_cfg_state_with_preview_features(source, &preview_features)
-        .expect("pointer provenance probe must compile");
+    let state = query_cfg_state(source).expect("pointer provenance probe must compile");
     let interp = Interp {
         state: &state,
         stdout: String::new(),

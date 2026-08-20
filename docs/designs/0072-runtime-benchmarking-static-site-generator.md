@@ -100,7 +100,7 @@ performance can be stated relative to software people already use.
 ### What does not exist yet
 
 Rue currently cannot list a directory, find a substring, split a string, or
-parse Markdown, TOML, or templates. Slices remain preview-gated, which makes
+parse Markdown, TOML, or templates. Slices are stabilized, which makes
 text processing more manual than in peer languages. Full Zola feature parity —
 syntax highlighting via Sublime syntaxes, an elasticlunr search index, HTML
 minification — is far out of reach for a v1 and is not required for an

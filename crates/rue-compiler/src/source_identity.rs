@@ -901,14 +901,14 @@ mod tests {
 
     #[test]
     fn preview_feature_identity_ignores_hash_set_insertion_order() {
-        let left = PreviewFeatures::from([PreviewFeature::Slices, PreviewFeature::TestInfra]);
-        let right = PreviewFeatures::from([PreviewFeature::TestInfra, PreviewFeature::Slices]);
+        let left = PreviewFeatures::from([PreviewFeature::CFfi, PreviewFeature::TestInfra]);
+        let right = PreviewFeatures::from([PreviewFeature::TestInfra, PreviewFeature::CFfi]);
         let left = StablePreviewFeatures::new(&left);
         let right = StablePreviewFeatures::new(&right);
         assert_eq!(left, right);
         assert_eq!(
             left.names().iter().map(AsRef::as_ref).collect::<Vec<_>>(),
-            ["slices", "test_infra"]
+            ["c_ffi", "test_infra"]
         );
     }
 

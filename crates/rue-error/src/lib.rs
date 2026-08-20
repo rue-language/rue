@@ -284,18 +284,6 @@ impl ErrorCode {
     /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
     /// reinterpret the value's bits as a pointer (RUE-274).
     pub const RAW_REQUIRES_PLACE: Self = Self(485);
-    /// A second-class slice type (`borrow [T]` / `inout [T]`) or range slice
-    /// (`x[a..b]`) was used with `--preview slices` enabled, but the
-    /// fat-pointer runtime (ABI + codegen on both backends) is not yet
-    /// implemented (ADR-0043 Phase 1, RUE-322). Emitted so the gated syntax
-    /// fails cleanly instead of reaching an unfinished codegen path.
-    ///
-    /// Note: the second-class-escape diagnostics named in the RUE-322 brief
-    /// (return / store-in-field / bind-past-scope) are allocated below
-    /// (E0487-E0489); the brief's suggested E0435-E0437 numbers were already
-    /// taken (`RESERVED_FUNCTION_NAME` / `DUPLICATE_FUNCTION_DEFINITION` /
-    /// `MOVE_OUT_OF_INOUT`).
-    pub const SLICE_NOT_YET_IMPLEMENTED: Self = Self(486);
     /// A slice type `[T]` was written in return position (`fn f(...) -> [T]`).
     /// A slice is a *second-class* fat-pointer view (ADR-0037, ADR-0043,
     /// RUE-322): it is valid only in argument position and may not be
@@ -672,11 +660,6 @@ pub enum PreviewFeature {
     /// Testing infrastructure feature - permanently unstable.
     /// Used to verify the preview feature gating mechanism works.
     TestInfra,
-    /// Second-class slice types `borrow [T]` / `inout [T]` and range slicing
-    /// `x[a..b]` (ADR-0043, RUE-322). The keystone view type of the
-    /// collection/string trio. Gated until the fat-pointer ABI lands on both
-    /// backends.
-    Slices,
     /// C FFI: `extern "C"` foreign-function declarations and static-archive
     /// linking (ADR-0064, RUE-1055). Gated until every phase of the guaranteed
     /// target-C boundary is proven on both backends.
@@ -714,7 +697,6 @@ impl PreviewFeature {
     pub fn name(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
-            PreviewFeature::Slices => "slices",
             PreviewFeature::CFfi => "c_ffi",
             PreviewFeature::BorrowAccessors => "borrow_accessors",
             PreviewFeature::Floats => "floats",
@@ -726,7 +708,6 @@ impl PreviewFeature {
     pub fn adr(&self) -> &'static str {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
-            PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::CFfi => "ADR-0064",
             PreviewFeature::BorrowAccessors => "ADR-0062",
             PreviewFeature::Floats => "ADR-0065",
@@ -737,7 +718,6 @@ impl PreviewFeature {
     pub fn all() -> &'static [PreviewFeature] {
         &[
             PreviewFeature::TestInfra,
-            PreviewFeature::Slices,
             PreviewFeature::CFfi,
             PreviewFeature::BorrowAccessors,
             PreviewFeature::Floats,
@@ -764,7 +744,6 @@ impl std::str::FromStr for PreviewFeature {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
-            "slices" => Ok(PreviewFeature::Slices),
             "c_ffi" => Ok(PreviewFeature::CFfi),
             "borrow_accessors" => Ok(PreviewFeature::BorrowAccessors),
             "floats" => Ok(PreviewFeature::Floats),
@@ -1972,19 +1951,12 @@ pub enum ErrorKind {
     #[error("`@repr(c)` struct `{}` is not FFI-eligible: {}", .0.struct_name, .0.reason)]
     ReprCStructIneligible(Box<ReprCIneligibleError>),
 
-    /// A slice type / range-slice was used under `--preview slices` but the
-    /// fat-pointer runtime is not implemented yet (ADR-0043 Phase 1, RUE-322).
-    #[error("slice types are not yet fully implemented (ADR-0043 Phase 1, RUE-322)")]
-    SliceNotYetImplemented,
-
     /// A float literal was written with `--preview floats` enabled, but the
     /// phases that give it a type do not exist yet (ADR-0065 Phase 4+,
     /// RUE-714). Phases 2 and 3 land the literal token, the parser node, and
     /// the untyped RIR node; semantic analysis has no `f32`/`f64` tag and no
     /// `comptime_float` to coerce it with, so the literal is rejected here
     /// with a clean diagnostic rather than reaching an unfinished typing path.
-    /// Modelled on [`ErrorKind::SliceNotYetImplemented`], the same
-    /// gate-is-on-but-phase-is-missing marker for ADR-0043.
     #[error(
         "floating-point literals are not yet supported at this compilation phase \
          (ADR-0065 Phase 4, RUE-714)"
@@ -2270,7 +2242,6 @@ impl ErrorKind {
             ErrorKind::ForeignSignatureConflict(_) => ErrorCode::FOREIGN_SIGNATURE_CONFLICT,
             ErrorKind::ForeignEntryPointDeclaration => ErrorCode::FOREIGN_ENTRY_POINT_DECLARATION,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
-            ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::FloatNotYetImplemented => ErrorCode::FLOAT_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,
             ErrorKind::SliceInAggregateField => ErrorCode::SLICE_IN_AGGREGATE_FIELD,
@@ -3109,7 +3080,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, c_ffi, borrow_accessors, floats");
+        assert_eq!(names, "test_infra, c_ffi, borrow_accessors, floats");
     }
 
     #[test]
@@ -3146,16 +3117,6 @@ mod tests {
             .code(),
             ErrorCode::PREVIEW_FEATURE_REQUIRED
         );
-    }
-
-    #[test]
-    fn test_preview_feature_slices() {
-        // ADR-0043 Phase 1 (RUE-322): the slice preview feature.
-        let feature: PreviewFeature = "slices".parse().unwrap();
-        assert_eq!(feature, PreviewFeature::Slices);
-        assert_eq!(feature.name(), "slices");
-        assert_eq!(feature.adr(), "ADR-0043");
-        assert!(PreviewFeature::all().contains(&PreviewFeature::Slices));
     }
 
     #[test]
@@ -3223,9 +3184,9 @@ mod tests {
     #[test]
     fn test_preview_feature_stabilized_are_unknown() {
         // for_loops, method_receivers, enum_payloads, array_repeat,
-        // field_init_shorthand, inline_type_ctor_paths, raw_bytes, and
-        // aggregate_layout were stabilized (no longer gated) — their names must
-        // now be rejected.
+        // field_init_shorthand, inline_type_ctor_paths, raw_bytes,
+        // aggregate_layout, and slices were stabilized (no longer gated) —
+        // their names must now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
@@ -3235,6 +3196,7 @@ mod tests {
             "inline_type_ctor_paths",
             "raw_bytes",
             "aggregate_layout",
+            "slices",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

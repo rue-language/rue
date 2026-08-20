@@ -66,7 +66,6 @@ pub(super) trait TypeSyntaxHost {
     ) -> CompileResult<Type>;
     fn type_syntax_make_ptr_const(&mut self, pointee: Type, span: Span) -> CompileResult<Type>;
     fn type_syntax_make_ptr_mut(&mut self, pointee: Type, span: Span) -> CompileResult<Type>;
-    fn type_syntax_require_slices(&mut self, span: Span) -> CompileResult<()>;
     fn type_syntax_make_slice(
         &mut self,
         syntax: &str,
@@ -432,10 +431,6 @@ impl<H: TypeSyntaxHost>
 
     fn ptr_mut_type(&mut self, pointee: Type) -> SemaProviderResult<Type> {
         provider_failure(self.host.type_syntax_make_ptr_mut(pointee, self.span))
-    }
-
-    fn preflight_slice(&mut self, _scope: &FileId, _syntax: &str) -> SemaProviderResult<()> {
-        provider_failure(self.host.type_syntax_require_slices(self.span))
     }
 
     fn slice_type(

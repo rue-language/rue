@@ -409,7 +409,7 @@ pub enum TypeExpr {
     /// Slice type: `[T]` — a second-class fat-pointer view (ptr + runtime len)
     /// over a fixed array or growable buffer (ADR-0043, RUE-322). In parameter
     /// position the `borrow`/`inout` mode selects the shared/exclusive form
-    /// (`borrow [T]` / `inout [T]`). Gated behind `--preview slices`.
+    /// (`borrow [T]` / `inout [T]`).
     Slice { element: Box<TypeExpr>, span: Span },
     /// Anonymous struct type: struct { field: Type, fn method(...) { ... }, ... }
     /// Used in comptime type construction (e.g., `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }`)

@@ -47,7 +47,7 @@ fn main() -> i32 {
     sum(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 60
 
 # Out-of-bounds read-index through a slice parameter must trap at runtime with
@@ -63,7 +63,7 @@ fn main() -> i32 {
     get(borrow a, 5)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 101
 
 # Signed negative indices must trap too. Slice indexing should match array
@@ -80,7 +80,7 @@ fn main() -> i32 {
     get(borrow a, -1)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 101
 
 # A constant read-index resolves the element position (discriminating value: the
@@ -96,7 +96,7 @@ fn main() -> i32 {
     second(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 5
 
 # `.len()` returns the runtime length word (whole-array borrow -> N).
@@ -111,7 +111,7 @@ fn main() -> i32 {
     ln(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 6
 
 # A `[u8]` view over a frame array is refused under the compact layout: the
@@ -137,7 +137,7 @@ fn main() -> i32 {
     sum(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["raw pointer", "frame-resident aggregate"]
 
@@ -161,7 +161,7 @@ fn main() -> i32 {
     sum(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 0
 
 # A slice parameter can be forwarded to another slice parameter (`borrow s`
@@ -187,7 +187,7 @@ fn main() -> i32 {
     outer(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 60
 
 # User-defined methods and associated functions share the same view
@@ -214,7 +214,7 @@ fn main() -> i32 {
     sum.method(borrow values) + Sum.assoc(borrow values)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # Forwarding an existing slice is a distinct physical case: the two-word view
@@ -245,7 +245,7 @@ fn main() -> i32 {
     forward(borrow values)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 exit_code = 42
 
 # Passing an array whose element type does not match the slice element type is
@@ -260,13 +260,13 @@ fn main() -> i32 {
     h(borrow a)
 }
 """ }]
-args = ["main.rue", "--preview", "slices", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["type mismatch"]
 
-# The slice surface stays gated behind `--preview slices`.
+# Passing the removed feature name uses the ordinary unknown-preview error.
 [[case]]
-name = "slice_param_requires_preview"
+name = "slices_preview_name_is_unknown"
 files = [{ path = "main.rue", source = """
 fn ln(borrow s: [i32]) -> i32 { @intCast(s.len()) }
 fn main() -> i32 {
@@ -274,6 +274,6 @@ fn main() -> i32 {
     ln(borrow a)
 }
 """ }]
-args = ["main.rue", "-o", "prog"]
+args = ["main.rue", "--preview", "slices", "-o", "prog"]
 compile_fail = true
-error_contains = ["requires preview feature"]
+error_contains = ["unknown preview feature", "slices"]

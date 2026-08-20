@@ -1628,7 +1628,7 @@ files = [{ path = "probe.rue", source = "not Rue" }]
     }
 
     #[test]
-    fn cli_invocation_classifier_accepts_the_supported_runner_subset() {
+    fn cli_invocation_classifier_rejects_removed_slice_preview() {
         let mut case = corpus_case("fn main() -> i32 { 0 }", false);
         assert_eq!(
             corpus_preview_features(&case),
@@ -1648,9 +1648,10 @@ files = [{ path = "probe.rue", source = "not Rue" }]
             .map(str::to_string)
             .collect(),
         );
-        let features = corpus_preview_features(&case).expect("supported invocation");
-        assert_eq!(features.len(), 1);
-        assert!(features.contains(&PreviewFeature::from_str("slices").unwrap()));
+        assert_eq!(
+            corpus_preview_features(&case),
+            Err(CliInvocationReason::UnknownPreviewFeature)
+        );
     }
 
     #[test]
