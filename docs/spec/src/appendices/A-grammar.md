@@ -32,10 +32,11 @@ intrinsic_arg  = type | expression ;
 (* Functions *)
 function       = directives [ "pub" ] [ "unchecked" ]
                  "fn" IDENT "(" [ params ] ")" [ result ] "{" block "}" ;
-result         = "->" [ "borrow" ] type ;   (* "borrow" marks a place-returning
-                                               accessor (ADR-0062, preview);
-                                               legal only on `borrow self`
-                                               methods — a legality rule *)
+result         = "->" [ "borrow" | "inout" ] type ; (* marks a place-returning
+                                                        accessor (ADR-0062,
+                                                        preview); result and
+                                                        receiver modes pair —
+                                                        a legality rule *)
 params         = param { "," param } [ "," ] ;
 param          = [ param_mode ] IDENT ":" type ;
 param_mode     = "comptime" | "inout" | "borrow" ;
@@ -75,13 +76,17 @@ yield_expr     = "yield" expression ;  (* the trailing exit of an accessor body
                                           (ADR-0062, preview); parsed as an
                                           expression form, valid only as the
                                           single trailing statement of a
-                                          `-> borrow` accessor body — a
-                                          legality rule *)
+                                          `-> borrow` or `-> inout` accessor
+                                          body — a legality rule *)
 
 (* Place expressions: a variable — or `self`, inside a method — followed by
-   zero or more field/index projections. Used as assignment targets. Assigning
-   to a bare `self` is legal only for a `mut self` receiver (a legality rule). *)
-place_expr     = ( IDENT | "self" ) { "." IDENT | "[" expression "]" } ;
+   zero or more field/index projections, or an accessor call followed by those
+   projections. Ordinary method calls are rejected semantically as targets.
+   Assigning to a bare `self` is legal only for a `mut self` receiver
+   (a legality rule). *)
+place_expr     = ( IDENT | "self" ) { place_postfix } ;
+place_postfix  = "." IDENT | "[" expression "]"
+               | "." IDENT "(" [ call_args ] ")" ;
 
 (* Types *)
 type           = "i8" | "i16" | "i32" | "i64"

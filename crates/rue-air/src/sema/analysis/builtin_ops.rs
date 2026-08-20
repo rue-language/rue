@@ -486,7 +486,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
                 ctx.param(*name).map(|param| param.ty)
             }
-            // A `-> borrow T` accessor call is a place of its element type
+            // A `-> borrow T` or `-> inout T` accessor call is a place of its element type
             // (ADR-0062); any other method call is not a place.
             InstData::MethodCall {
                 receiver, method, ..
@@ -494,7 +494,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let base_ty = self.peek_place_type(*receiver, ctx)?;
                 let struct_id = base_ty.as_struct()?;
                 let info = self.call_facts().call_method_info(struct_id, *method)?;
-                info.returns_borrow.then_some(info.return_type)
+                (info.returns_borrow || info.returns_inout).then_some(info.return_type)
             }
             InstData::FieldGet { base, field } => {
                 let base_ty = self.peek_place_type(*base, ctx)?;

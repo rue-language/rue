@@ -15,31 +15,34 @@ projection of its receiver: `v.get_ref(i)` produces a borrowed place naming
 element `i` in place — no copy, no move-out — checked by the ordinary
 law-of-exclusivity loan machinery and scoped to the enclosing full expression
 (core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Accessor-Call)`).
-This is the ADR-0062 read-accessor form; mutable accessors (`inout self` →
-exclusive result) are a later phase.
+The same preview also supports mutable accessors: `v.get_mut(i)` produces an
+exclusive place, and uses `inout self` with an `-> inout T` result.
 
 ## Declaration
 
 {{ rule(id="6.6:2", cat="syntax") }}
 
 ```ebnf
-accessor    = "fn" IDENT "(" "borrow" "self" [ "," params ] ")"
-              "->" "borrow" type "{" { statement } yield_expr [ ";" ] "}" ;
+accessor    = "fn" IDENT "(" accessor_self [ "," params ] ")"
+              "->" accessor_result type "{" { statement } yield_expr [ ";" ] "}" ;
+accessor_self   = "borrow" "self" | "inout" "self" ;
+accessor_result = "borrow" | "inout" ;
 yield_expr  = "yield" expression ;
 ```
 
 {{ rule(id="6.6:3", cat="legality-rule") }}
 
-A `-> borrow` result position and the `yield` form require the
+A `-> borrow` or `-> inout` result position and the `yield` form require the
 `borrow_accessors` preview feature. Without `--preview borrow_accessors`, a
 program using either is rejected at compile time (E1100), per 8.4.
 
 {{ rule(id="6.6:4", cat="legality-rule") }}
 
-An accessor **MUST** declare a `borrow self` receiver. A `-> borrow` result on
-a free function, an associated function, a by-value or `mut self` method, an
-`inout self` method, or a method of an anonymous struct type is rejected
-(E0257).
+An accessor **MUST** pair its result and receiver modes exactly: `borrow self`
+with `-> borrow T`, or `inout self` with `-> inout T`. A result on a free
+function, an associated function, a by-value or `mut self` method, or a method
+of an anonymous struct type is rejected (E0257); a mismatched pair reports the
+required pairing.
 
 {{ rule(id="6.6:5", cat="legality-rule") }}
 
@@ -70,12 +73,13 @@ accessor's guards.
 {{ rule(id="6.6:8", cat="normative") }}
 
 A call to an accessor requires its receiver to be a place, exactly as passing
-it as a `borrow` argument does (6.4:27), and evaluates its arguments by value.
-The result is a *borrowed place*, not a first-class value: a shared loan on
-the receiver's root variable whose extent is the enclosing full expression
-(core calculus `docs/formal/01-core-calculus.md` §5.8, rule
-`(Accessor-Call)`). Within that extent the result may be read, projected
-further (`v.get_ref(i).name`), passed as a `borrow` argument, or compared.
+it as a `borrow` or `inout` argument does (6.4:27), and evaluates its
+arguments by value. A `-> borrow` result is a *borrowed place*, not a
+first-class value: a shared loan on the receiver's root variable. A `-> inout`
+result is an exclusive place and requires the receiver to be mutable, with
+the same addressability and mutability rules as an `inout` argument. Both
+loans extend through the enclosing full expression (core calculus
+`docs/formal/01-core-calculus.md` §5.8, rule `(Accessor-Call)`).
 
 {{ rule(id="6.6:9", cat="legality-rule") }}
 
@@ -85,7 +89,10 @@ An accessor result **MUST NOT** escape its full expression: returning it
 
 {{ rule(id="6.6:10", cat="legality-rule") }}
 
-The law of exclusivity extends over the accessor loan's whole extent: an
+The law of exclusivity extends over the accessor loan's whole extent: shared
+accessor results may coexist with one another, while an exclusive accessor
+result conflicts with every shared or exclusive access to the same root, and
+an exclusive use conflicts with every active accessor loan. An
 exclusive use of the borrowed root — passing it `inout`, an `inout self`
 receiver access, assigning to it, or moving it — anywhere within the same full
 expression is rejected (E0259). `use(v.get_ref(i), g(inout v))` is ill-formed
@@ -129,3 +136,27 @@ legality rules of this chapter. A re-entrant call reached through any other
 receiver (a by-value guard of the owner's own type) is rejected when a call
 site demands the body's analysis and expansion. The rejection names the
 recursive accessor either way.
+
+{{ rule(id="6.6:15", cat="normative") }}
+
+An exclusive accessor result is expression-scoped and may be used as a place:
+`v.get_mut(i) = value`, projected assignment such as
+`v.get_mut(i).field = value`, and `set(inout v.get_mut(i))` are valid when the
+receiver is mutable. The right-hand side is evaluated first; when the yielded
+destination owns a droppable value, its old value is dropped before the new
+value is stored. Ordinary linear overwrite checks apply to the yielded place;
+an overwrite of a live linear value is rejected unless reinitialization is
+provable.
+
+{{ rule(id="6.6:16", cat="legality-rule") }}
+
+An accessor result **MUST NOT** escape its expression-scoped loan. It cannot be
+returned, captured in an aggregate, or assigned as a value. A mutable accessor
+cannot be called through an immutable or shared-borrowed receiver, and two
+mutable results (or a mutable result and a shared result) rooted at the same
+receiver are rejected in either evaluation order.
+
+{{ rule(id="6.6:17", cat="informative") }}
+
+Accessor exclusivity is root-granular in this phase. Path-granular disjointness,
+coroutine accessor bodies, and `Option(inout T)` results are outside scope.

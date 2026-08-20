@@ -150,10 +150,10 @@ pub(crate) struct PlaceTrace {
     /// read: every consumer that turns the trace into a value wraps these
     /// around it as a block prefix (see `finish_traced_value`).
     pending_stmts: Vec<AirRef>,
-    /// Whether the trace passed through a `-> borrow T` accessor call. Such
-    /// a place is a second-class shared borrow: it may be read, projected,
-    /// re-borrowed, and compared, but never written through or moved out of
-    /// (write paths reject with E0428, drop-glue value reads with E0258).
+    /// Whether the trace passed through a place-returning accessor call. A
+    /// shared result may be read/projected but not written; an exclusive
+    /// result may also be written after the receiver and loan checks. Neither
+    /// result may be moved out of when it would create an owner alias.
     via_accessor: bool,
 }
 
@@ -1127,6 +1127,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         air: &mut Air,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<PlaceTrace>> {
+        if let Some((place, root, ty, mutable)) = ctx.accessor_place_refs.get(&inst_ref).copied() {
+            let cached = air.get_place(place);
+            return Ok(Some(PlaceTrace {
+                base: cached.base,
+                base_type: ty,
+                projections: Vec::new(),
+                root_var: root,
+                is_root_mutable: mutable,
+                is_borrow_param: !mutable,
+                pending_stmts: Vec::new(),
+                via_accessor: true,
+            }));
+        }
         // Peek the receiver type without emitting anything: only proceed when
         // the method is a registered accessor.
         let Some(struct_id) = self
@@ -1138,7 +1151,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(info) = self.call_facts().call_method_info(struct_id, method) else {
             return Ok(None);
         };
-        if !info.returns_borrow {
+        if !info.returns_borrow && !info.returns_inout {
             return Ok(None);
         }
         let span = self.body_rir_ref().get(inst_ref).span;
@@ -1148,14 +1161,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         .map(Some)
     }
 
-    /// Lower a `-> borrow T` accessor call to a marked place-producing call.
+    /// Lower a place-returning accessor call to a marked place-producing call.
     ///
     /// Semantic analysis establishes only the call-site loan and escape
     /// contract. The callee body remains an exact CFG-query dependency and is
     /// mandatorily spliced before code generation; no calling convention for
     /// returning a place exists. Statically this is the
     /// (Accessor-Call) rule: the receiver must be a place; the result is a
-    /// second-class borrowed place whose loan `(root(receiver), shared)`
+    /// second-class place whose shared or exclusive loan on the receiver root
     /// spans the enclosing full expression (registered in
     /// `ctx.expression_loans`).
     #[allow(clippy::too_many_arguments)]
@@ -1201,15 +1214,26 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, receiver_span))?
         };
         let root = receiver_trace.root_var;
-        for frame in &ctx.call_loaned_roots {
-            if frame
-                .iter()
-                .any(|(r, kind)| *r == root && *kind == CallLoanKind::Inout)
-            {
+        let accessor_loan_kind = if info.returns_inout {
+            CallLoanKind::Inout
+        } else {
+            CallLoanKind::Borrow
+        };
+        // The innermost frame is the argument list currently being lowered.
+        // Its own `inout` entry is the accessor's enclosing exclusive access,
+        // not a second loan; outer frames still represent genuinely nested
+        // calls and must conflict.
+        let frame_count = ctx.call_loaned_roots.len();
+        for (frame_index, frame) in ctx.call_loaned_roots.iter().enumerate() {
+            if frame.iter().any(|(r, kind)| {
+                *r == root
+                    && !(frame_index + 1 == frame_count && *kind == CallLoanKind::Inout)
+                    && (*kind == CallLoanKind::Inout || accessor_loan_kind == CallLoanKind::Inout)
+            }) {
                 return Err(CompileError::new(
                     ErrorKind::AccessorLoanConflict {
                         variable: self.body_interner().resolve(&root).to_string(),
-                        conflict: "while it is passed `inout`",
+                        conflict: "as an accessor receiver",
                     },
                     span,
                 ));
@@ -1219,7 +1243,53 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if receiver_ty.as_struct() != Some(struct_id) {
             return Err(self.type_mismatch_error(Type::new_struct(struct_id), receiver_ty, span));
         }
-        ctx.expression_loans.push((root, span));
+        if info.returns_inout && !receiver_trace.is_root_mutable {
+            let root_name = self.body_interner().resolve(&root).to_string();
+            return Err(CompileError::new(
+                if receiver_trace.is_borrow_param {
+                    ErrorKind::MutateBorrowedValue {
+                        variable: root_name,
+                    }
+                } else {
+                    ErrorKind::AssignToImmutable(root_name)
+                },
+                span,
+            ));
+        }
+        // Mutable accessors carry an exclusive loan; shared and exclusive
+        // accessor results conflict on the same root. The existing root loan
+        // list is intentionally expression-scoped and root-granular.
+        let loan_kind = if info.returns_inout {
+            CallLoanKind::Inout
+        } else {
+            CallLoanKind::Borrow
+        };
+        if ctx.expression_loans.iter().any(|(r, _, kind)| {
+            *r == root && (*kind == CallLoanKind::Inout || loan_kind == CallLoanKind::Inout)
+        }) {
+            return Err(CompileError::new(
+                ErrorKind::AccessorLoanConflict {
+                    variable: self.body_interner().resolve(&root).to_string(),
+                    conflict: "for another accessor result",
+                },
+                span,
+            ));
+        }
+        if loan_kind == CallLoanKind::Inout
+            && ctx
+                .expression_shared_reads
+                .iter()
+                .any(|(read_root, _)| *read_root == root)
+        {
+            return Err(CompileError::new(
+                ErrorKind::AccessorLoanConflict {
+                    variable: self.body_interner().resolve(&root).to_string(),
+                    conflict: "for an exclusive accessor result after a shared read",
+                },
+                span,
+            ));
+        }
+        ctx.expression_loans.push((root, span, loan_kind));
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
         ctx.referenced_methods.insert((struct_id, method));
         self.record_body_method_dependency((struct_id, method));
@@ -1241,7 +1311,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut call_args = Vec::with_capacity(operands.args.len() + 1);
         call_args.push(AirCallArg {
             value: receiver_value,
-            mode: AirArgMode::Borrow,
+            mode: if info.returns_inout {
+                AirArgMode::Inout
+            } else {
+                AirArgMode::Borrow
+            },
         });
         call_args.extend(operands.args);
         let call = air.add_accessor_call(call_name, &call_args, info.return_type, span)?;
@@ -1250,14 +1324,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         receiver_trace.projections.clear();
         receiver_trace.pending_stmts.extend(operands.temp_scope);
         receiver_trace.via_accessor = true;
-        receiver_trace.is_borrow_param = true;
-        receiver_trace.is_root_mutable = false;
+        receiver_trace.is_borrow_param = !info.returns_inout;
+        receiver_trace.is_root_mutable = info.returns_inout;
+        let yielded_place = Self::build_place_ref(air, &receiver_trace)?;
+        ctx.accessor_place_refs.insert(
+            inst_ref,
+            (yielded_place, root, info.return_type, info.returns_inout),
+        );
         Ok(receiver_trace)
     }
 
-    /// Analyze a `-> borrow T` accessor call in value position (ADR-0062):
+    /// Analyze a place-returning accessor call in value position (ADR-0062):
     /// expand it to guards plus the yielded place, then read the place. The
-    /// read is a shared-borrow read, so a drop-glue element may only flow to
+    /// result remains a borrowed place, so a drop-glue element may only flow to
     /// a by-ref consumer (a `borrow` argument or by-ref receiver, which take
     /// the place's address); reading it out by value would mint an aliasing
     /// owner (E0258) — exactly the RUE-651 double-free the E0711 gate closes.
@@ -1322,7 +1401,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let base_ty = self.peek_place_type(*receiver, ctx)?;
                 let base_struct = base_ty.as_struct()?;
                 let info = self.call_facts().call_method_info(base_struct, *method)?;
-                if !info.returns_borrow {
+                if !info.returns_borrow && !info.returns_inout {
                     return None;
                 }
                 self.place_root_with_accessors(*receiver, ctx)
@@ -1750,6 +1829,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         resolved_ty: Option<Type>,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // An ordinary value read is a shared use of the root. It cannot
+        // overlap an exclusive accessor result in the same full expression.
+        if ctx.byref_arg_root != Some(name) {
+            self.reject_accessor_shared_loan_conflict(name, "by a shared read", span, ctx)?;
+            ctx.expression_shared_reads.push((name, span));
+        }
         // Check if it's a parameter — but a `let` that shadows the parameter
         // rebinds the name to a new local, and that local wins for all later
         // reads (spec 5.1:10, RUE-278). A same-named local can only exist by
@@ -2555,6 +2640,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Try to trace this expression to a place (lvalue)
         if let Some(mut trace) = self.try_trace_place(inst_ref, air, ctx)? {
+            if !trace.via_accessor && ctx.byref_arg_root != Some(trace.root_var) {
+                self.reject_accessor_shared_loan_conflict(
+                    trace.root_var,
+                    "by a shared read",
+                    span,
+                    ctx,
+                )?;
+                ctx.expression_shared_reads.push((trace.root_var, span));
+            }
             let field_type = trace.result_type();
 
             // Check if the root variable was fully moved (applies regardless of field type)
@@ -2733,6 +2827,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Emit PlaceRead instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
+            if trace.via_accessor {
+                ctx.accessor_place_refs.insert(
+                    inst_ref,
+                    (place_ref, trace.root_var, field_type, trace.is_root_mutable),
+                );
+            }
             let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: field_type,
@@ -2895,6 +2995,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Try to trace this expression to a place (lvalue)
         if let Some(mut trace) = self.try_trace_place(inst_ref, air, ctx)? {
+            if !trace.via_accessor && ctx.byref_arg_root != Some(trace.root_var) {
+                self.reject_accessor_shared_loan_conflict(
+                    trace.root_var,
+                    "by a shared read",
+                    span,
+                    ctx,
+                )?;
+                ctx.expression_shared_reads.push((trace.root_var, span));
+            }
             let elem_type = trace.result_type();
 
             // Reading through an index expression whose base place has been
@@ -3014,6 +3123,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Emit PlaceRead instruction
             let place_ref = Self::build_place_ref(air, &trace)?;
+            if trace.via_accessor {
+                ctx.accessor_place_refs.insert(
+                    inst_ref,
+                    (place_ref, trace.root_var, elem_type, trace.is_root_mutable),
+                );
+            }
             let mut air_ref = air.add_inst(AirInst {
                 data: AirInstData::PlaceRead { place: place_ref },
                 ty: elem_type,
@@ -3618,6 +3733,84 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze a field assignment through the shared place representation.
+    pub(crate) fn analyze_place_set(
+        &mut self,
+        air: &mut Air,
+        place: InstRef,
+        value: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        // Assignment evaluates the RHS before the target (spec 5.2:17-18).
+        // Peek only at the target type for contextual RHS analysis; tracing
+        // an accessor target is deferred until after the RHS so its loan
+        // cannot reject an otherwise valid RHS use of the receiver.
+        let cached_before_rhs = ctx.accessor_place_refs.get(&place).copied();
+        let destination_type = cached_before_rhs.map_or_else(
+            || {
+                self.peek_place_type(place, ctx)
+                    .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))
+            },
+            |(_, _, ty, _)| Ok(ty),
+        )?;
+        let previous_expected = ctx.expected_type.replace(destination_type);
+        let rhs_shared_reads_before = ctx.expression_shared_reads.len();
+        let value_result = self.analyze_inst(air, value, ctx);
+        ctx.expected_type = previous_expected;
+        let value_result = value_result?;
+        self.reject_accessor_result_escape(value, AccessorEscapeSite::Store, span, ctx)?;
+        // A plain assignment's RHS is complete before the LHS place is
+        // evaluated. Ordinary shared-read markers are expression-order
+        // bookkeeping and can be truncated before the target is traced;
+        // accessor loans, however, span the entire assignment expression and
+        // must remain live so two accessor results on one root conflict.
+        // Compound assignment analyzes the same target instruction as the
+        // RHS's read (the compound value is `target op rhs`). That read may
+        // populate the accessor-place cache only while analyzing the RHS, so
+        // refresh it before deciding whether the target has already been
+        // evaluated. A plain assignment's separately generated RHS cannot
+        // populate the target's instruction entry.
+        let cached = cached_before_rhs.or_else(|| ctx.accessor_place_refs.get(&place).copied());
+        if cached.is_none() {
+            ctx.expression_shared_reads
+                .truncate(rhs_shared_reads_before);
+        }
+        let (place_ref, root_var, mutable) = if let Some((place_ref, root, _, mutable)) = cached {
+            (place_ref, root, mutable)
+        } else {
+            let trace = self
+                .try_trace_place(place, air, ctx)?
+                .ok_or_else(|| CompileError::new(ErrorKind::InvalidAssignmentTarget, span))?;
+            if !trace.via_accessor || !trace.is_root_mutable {
+                return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+            }
+            let root = trace.root_var;
+            self.reject_mutate_iter_borrowed(root, span, ctx)?;
+            (
+                Self::build_place_ref(air, &trace)?,
+                root,
+                trace.is_root_mutable,
+            )
+        };
+        if !mutable {
+            return Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span));
+        }
+        if cached.is_some() {
+            self.reject_mutate_iter_borrowed(root_var, span, ctx)?;
+        }
+        self.check_linear_overwrite(destination_type, false, false, span)?;
+        let air_ref = air.add_inst(AirInst {
+            data: AirInstData::PlaceWrite {
+                place: place_ref,
+                value: value_result.air_ref,
+            },
+            ty: Type::UNIT,
+            span,
+        });
+        Ok(AnalysisResult::new(air_ref, Type::UNIT))
+    }
+
+    /// Analyze a field assignment through the shared place representation.
     pub(crate) fn analyze_field_set(
         &mut self,
         air: &mut Air,
@@ -3647,10 +3840,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // RUE-233) — E0428, like an explicit `borrow` parameter.
             self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
 
-            // Writing to a root an accessor result borrows in the same full
-            // expression is an exclusive use inside a shared loan's extent
-            // (ADR-0062, E0259).
-            self.reject_accessor_loan_conflict(trace.root_var, "by assignment", span, ctx)?;
+            // A write must not overlap an incompatible accessor-result loan
+            // on the same root (ADR-0062, E0259). A write through this trace's
+            // own exclusive accessor place is the operation that loan permits.
+            if !trace.is_root_mutable || !trace.via_accessor {
+                self.reject_accessor_loan_conflict(trace.root_var, "by assignment", span, ctx)?;
+            }
 
             // Check mutability
             let root_name = self.body_interner().resolve(&trace.root_var).to_string();
@@ -3817,10 +4012,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // RUE-233) — E0428, like an explicit `borrow` parameter.
             self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
 
-            // Writing to a root an accessor result borrows in the same full
-            // expression is an exclusive use inside a shared loan's extent
-            // (ADR-0062, E0259).
-            self.reject_accessor_loan_conflict(trace.root_var, "by assignment", span, ctx)?;
+            // A write must not overlap an incompatible accessor-result loan
+            // on the same root (ADR-0062, E0259). A write through this trace's
+            // own exclusive accessor place is the operation that loan permits.
+            if !trace.is_root_mutable || !trace.via_accessor {
+                self.reject_accessor_loan_conflict(trace.root_var, "by assignment", span, ctx)?;
+            }
 
             // Check mutability
             let root_name = self.body_interner().resolve(&trace.root_var).to_string();
@@ -3985,6 +4182,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Fallback: base is not a place
         Err(CompileError::new(ErrorKind::InvalidAssignmentTarget, span))
     }
+
     /// Check if directives contain @allow for a specific warning name.
     pub(crate) fn has_allow_directive<'r>(
         &self,
@@ -4657,11 +4855,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.reject_accessor_loan_conflict(root, "by value (move)", span, ctx)
     }
 
-    /// Reject an exclusive use — `inout`, mutation, or move — of a root that
-    /// an accessor result borrows within the same full expression (ADR-0062,
-    /// E0259). The accessor loan is shared and extends to the end of the
-    /// enclosing full expression, so any exclusive access within that extent
-    /// violates the law of exclusivity.
+    /// Reject an exclusive use — `inout`, mutation, or move — of a root with
+    /// an active accessor-result loan in the same full expression (ADR-0062,
+    /// E0259). Shared and exclusive accessor loans both exclude another
+    /// exclusive access for their full extent.
     pub(crate) fn reject_accessor_loan_conflict(
         &self,
         root: Spur,
@@ -4669,7 +4866,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
-        if let Some((_, loan_span)) = ctx.expression_loans.iter().find(|(r, _)| *r == root) {
+        if let Some((_, loan_span, _kind)) =
+            ctx.expression_loans.iter().find(|(r, _, _)| *r == root)
+        {
             return Err(CompileError::new(
                 ErrorKind::AccessorLoanConflict {
                     variable: self.body_interner().resolve(&root).to_string(),
@@ -4682,10 +4881,38 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
+    pub(crate) fn reject_accessor_shared_loan_conflict(
+        &self,
+        root: Spur,
+        conflict: &'static str,
+        span: Span,
+        ctx: &AnalysisContext,
+    ) -> CompileResult<()> {
+        if let Some((_, loan_span, _kind)) = ctx
+            .expression_loans
+            .iter()
+            .find(|(r, _, kind)| *r == root && *kind == CallLoanKind::Inout)
+        {
+            return Err(CompileError::new(
+                ErrorKind::AccessorLoanConflict {
+                    variable: self.body_interner().resolve(&root).to_string(),
+                    conflict,
+                },
+                span,
+            )
+            .with_label(
+                "exclusive accessor result borrows the value here",
+                *loan_span,
+            ));
+        }
+        Ok(())
+    }
+
     /// Reject a by-value move of a non-trivially-droppable value out of a
     /// place reached through an accessor result (ADR-0062, E0258): the
-    /// result is a shared borrow, not an owner, so moving an owning value
-    /// out of it would mint an aliasing second owner.
+    /// result is a borrowed place, not an owner, so moving an owning value
+    /// out of it would mint an aliasing second owner. Exclusive writes remain
+    /// legal after receiver mutability and loan checks.
     pub(super) fn reject_accessor_place_move(
         &self,
         trace: &PlaceTrace,
@@ -4921,12 +5148,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 };
                 root_variable_of(self.body_rir_ref(), arg.value)
                     .or_else(|| {
-                        // Accessor-call place chains join the shared set
-                        // (ADR-0062); exclusive accessor results do not exist
-                        // in this phase.
-                        (kind == CallLoanKind::Borrow)
-                            .then(|| self.place_root_with_accessors(arg.value, ctx))
-                            .flatten()
+                        // Both shared and exclusive accessor-call place chains
+                        // root their loan at the receiver (ADR-0062/RUE-1016).
+                        self.place_root_with_accessors(arg.value, ctx)
                     })
                     .map(|root| (root, kind))
             })
@@ -4936,16 +5160,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // frame construction (loans taken by earlier sibling arguments) and
         // again by accessor expansion itself (the reverse nesting order).
         for arg in args.clone() {
-            if !arg.is_inout() {
+            if !arg.is_inout() && !arg.is_borrow() {
                 continue;
             }
             if let Some(root) = root_variable_of(self.body_rir_ref(), arg.value) {
-                self.reject_accessor_loan_conflict(
-                    root,
-                    "as `inout`",
-                    self.body_rir_ref().get(arg.value).span,
-                    ctx,
-                )?;
+                if arg.is_inout() {
+                    self.reject_accessor_loan_conflict(
+                        root,
+                        "as `inout`",
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    )?;
+                } else {
+                    self.reject_accessor_shared_loan_conflict(
+                        root,
+                        "as `borrow`",
+                        self.body_rir_ref().get(arg.value).span,
+                        ctx,
+                    )?;
+                }
             }
         }
         let pushed = !frame.is_empty();
@@ -5093,7 +5326,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     Some(root) => root,
                     None => match self
                         .place_root_with_accessors(arg.value, ctx)
-                        .filter(|_| arg.is_borrow())
+                        .filter(|_| arg.is_borrow() || arg.is_inout())
                     {
                         Some(root) => root,
                         None => {

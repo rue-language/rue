@@ -1,7 +1,8 @@
-# Borrow accessors (ADR-0062 phases 0-1, RUE-662), behind the
+# Borrow accessors (ADR-0062 phases 0-2, RUE-662), behind the
 # `borrow_accessors` preview.
 #
-# Accessor calls survive semantic analysis as marked place-producing calls.
+# Shared and exclusive accessor calls survive semantic analysis as marked
+# place-producing calls.
 # The optimized-CFG query observes the exact accessor CFG dependencies and
 # mandatorily splices their guards and yielded place before code generation.
 
@@ -9,7 +10,7 @@
 id = "items.borrow-accessors"
 spec_chapter = "6.6"
 name = "Borrow Accessors"
-description = "Place-returning read accessors: `fn (borrow self, ...) -> borrow T` with a trailing-yield body (ADR-0062)."
+description = "Place-returning shared and exclusive accessors with trailing-yield bodies (ADR-0062 phases 0-2)."
 
 [[case]]
 name = "accessor_declaration_parses_and_compiles"
@@ -32,6 +33,50 @@ struct Grid {
 fn main() -> i32 {
     let g = Grid { cells: [1, 2, 3, 4] };
     if g.cells[0] == 1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "mutable_accessor_assignment_rejects_accessor_rhs"
+spec = ["5.2:14", "6.6:16"]
+description = "A plain assignment retains accessor loans from its RHS while evaluating the target."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+    fn xr(inout self) -> inout i64 { yield self.x; }
+    fn rr(borrow self) -> borrow i64 { yield self.x; }
+}
+fn main() -> i32 {
+    let mut p = P { x: 1 };
+    p.xr() = p.rr() + 1;
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "another accessor result"]
+
+[[case]]
+name = "mutable_accessor_projected_field_assignment_order"
+spec = ["5.2:14", "5.2:17", "5.2:18", "6.6:15"]
+description = "A projected exclusive accessor place evaluates a receiver-using RHS first and compounds once."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Cell { value: i64 }
+struct P {
+    cell: Cell,
+    y: i64,
+    fn cell_mut(inout self) -> inout Cell { yield self.cell; }
+}
+fn bump(inout x: i64) -> i64 { x = x + 1; x }
+fn main() -> i32 {
+    let mut p = P { cell: Cell { value: 1 }, y: 1 };
+    p.cell_mut().value = bump(inout p.y);
+    p.cell_mut().value += 3;
+    if p.cell.value == 5 && p.y == 2 { 0 } else { 1 }
 }
 """
 exit_code = 0
@@ -247,7 +292,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0257", "requires a `borrow self` receiver", "mutable accessors"]
+error_contains = ["E0257", "requires a `borrow self` receiver"]
 
 [[case]]
 name = "free_function_accessor_is_rejected"
@@ -340,7 +385,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0256", "only valid inside the body of a `-> borrow` accessor"]
+error_contains = ["E0256", "only valid inside the body of a `-> borrow` or `-> inout` accessor"]
 
 [[case]]
 name = "accessor_yield_must_root_at_receiver"
@@ -415,7 +460,7 @@ struct P {
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = ["E0257", "requires a `borrow self` receiver", "mutable accessors"]
+error_contains = ["E0257", "requires a `borrow self` receiver"]
 
 [[case]]
 name = "uncalled_associated_function_accessor_is_rejected"
@@ -926,3 +971,170 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0258"]
+
+[[case]]
+name = "mutable_accessor_direct_and_projected_assignment"
+spec = ["6.6:15"]
+description = "An exclusive accessor result is a writable place, including projected writes."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Cell { value: i64 }
+struct V {
+    cells: [Cell; 2],
+    fn get_mut(inout self, i: u64) -> inout Cell { yield self.cells[i]; }
+}
+fn main() -> i32 {
+    let mut v = V { cells: [Cell { value: 1 }, Cell { value: 2 }] };
+    v.get_mut(0) = Cell { value: 7 };
+    v.get_mut(1).value = 8;
+    if v.cells[0].value == 7 && v.cells[1].value == 8 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "mutable_accessor_inout_forwarding"
+spec = ["6.6:15"]
+description = "An exclusive accessor result can be forwarded as an inout place."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn set(inout x: i64) { x = 9; }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    set(inout v.get_mut(1));
+    if v.cells[1] == 9 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "mutable_accessor_exclusive_conflicts_are_symmetric"
+spec = ["6.6:16"]
+description = "Two exclusive results rooted at one receiver conflict regardless of evaluation order."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(inout a: i64, inout b: i64) { a = b; }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(inout v.get_mut(0), inout v.get_mut(1));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0426", "same variable"]
+
+[[case]]
+name = "mutable_and_shared_accessor_conflict_mutable_first"
+spec = ["6.6:16"]
+description = "An exclusive accessor conflicts with a shared accessor rooted at the same receiver."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_ref(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(v.get_mut(0), v.get_ref(1));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor"]
+
+[[case]]
+name = "mutable_accessor_conflicts_with_ordinary_read_mutable_first"
+spec = ["6.6:16"]
+description = "An exclusive accessor conflicts with an ordinary shared read of the same root."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(v.get_mut(0), v.cells[1]);
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "shared read"]
+
+[[case]]
+name = "mutable_accessor_conflicts_with_ordinary_read_shared_first"
+spec = ["6.6:16"]
+description = "The ordinary-read-then-exclusive evaluation order is rejected symmetrically."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(v.cells[1], v.get_mut(0));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "shared read"]
+
+[[case]]
+name = "mutable_accessor_projected_read_is_legal"
+spec = ["6.6:15"]
+description = "Reading a projection of an exclusive accessor result remains a read of its yielded place."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Cell { value: i64 }
+struct V {
+    cells: [Cell; 1],
+    fn get_mut(inout self, i: u64) -> inout Cell { yield self.cells[i]; }
+}
+fn main() -> i32 {
+    let mut v = V { cells: [Cell { value: 7 }] };
+    if v.get_mut(0).value == 7 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "mutable_and_shared_accessor_conflict_shared_first"
+spec = ["6.6:16"]
+description = "The shared-then-exclusive evaluation order is rejected symmetrically."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct V {
+    cells: [i64; 2],
+    fn get_ref(borrow self, i: u64) -> borrow i64 { yield self.cells[i]; }
+    fn get_mut(inout self, i: u64) -> inout i64 { yield self.cells[i]; }
+}
+fn use_two(a: i64, b: i64) -> i64 { a + b }
+fn main() -> i32 {
+    let mut v = V { cells: [1, 2] };
+    use_two(v.get_ref(0), v.get_mut(1));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "accessor"]

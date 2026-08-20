@@ -236,7 +236,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     && self
                         .call_facts()
                         .call_method_info(struct_id, *method)
-                        .is_some_and(|info| info.returns_borrow)
+                        .is_some_and(|info| info.returns_borrow || info.returns_inout)
                 {
                     return self.analyze_accessor_call_value(
                         air, inst_ref, *receiver, struct_id, *method, args, inst.span, ctx,
@@ -1078,12 +1078,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // An inlined accessor receiver arrives as a guards block whose
             // tail is the place read (ADR-0062); peel it for the address
             // check, exactly like the `inout str` view materialization.
-            let receiver_addressable_probe = if ctx.accessor_call_insts.contains_key(&receiver) {
-                self.peel_projected_rvalue_scope(air, receiver_result.air_ref)
-                    .0
-            } else {
-                receiver_result.air_ref
-            };
+            let receiver_is_accessor_place =
+                self.place_root_with_accessors(receiver, ctx).is_some();
+            let receiver_addressable_probe =
+                if receiver_is_accessor_place || ctx.accessor_call_insts.contains_key(&receiver) {
+                    self.peel_projected_rvalue_scope(air, receiver_result.air_ref)
+                        .0
+                } else {
+                    receiver_result.air_ref
+                };
             self.require_addressable_read(
                 air,
                 receiver_addressable_probe,
@@ -1092,6 +1095,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             )?;
 
             if receiver_var.is_none()
+                && !receiver_is_accessor_place
                 && (receiver_mode == AirArgMode::Inout || !receiver_is_source_strbuf)
             {
                 return Err(CompileError::new(
@@ -1185,7 +1189,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
                 Some(vec![(root, CallLoanKind::Inout)])
             }
-            (AirArgMode::Borrow, Some(root)) => Some(vec![(root, CallLoanKind::Borrow)]),
+            (AirArgMode::Borrow, Some(root)) => {
+                self.reject_accessor_shared_loan_conflict(
+                    root,
+                    "as a `borrow self` receiver",
+                    span,
+                    ctx,
+                )?;
+                Some(vec![(root, CallLoanKind::Borrow)])
+            }
             _ => None,
         };
         let receiver_frame_pushed = receiver_frame.is_some();

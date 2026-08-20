@@ -407,6 +407,7 @@ where
             body,
             self_is_mut,
             returns_borrow,
+            returns_inout,
             ..
         } = &inst.data
         else {
@@ -417,6 +418,7 @@ where
             span: inst.span,
             self_is_mut: *self_is_mut,
             returns_borrow: *returns_borrow,
+            returns_inout: *returns_inout,
         })
     }
 

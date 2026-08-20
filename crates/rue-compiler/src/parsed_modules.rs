@@ -2192,6 +2192,7 @@ impl<'a> ParsedBodyProjectionCollector<'a> {
                                 self.visit_expr(&index.base)?;
                                 self.visit_expr(&index.index)?;
                             }
+                            AssignTarget::Method(expr) => self.visit_expr(expr)?,
                         }
                         self.visit_expr(&assignment.value)?;
                     }
@@ -2813,7 +2814,7 @@ fn build_definition_index(
                 is_generic(&function.params)?,
                 function.is_unchecked,
                 false,
-                function.borrow_return.is_some(),
+                function.place_return.is_some(),
                 Arc::from([]),
                 function.span,
                 vec![signature_prefix(function.span, function.body.span())?],
@@ -2876,7 +2877,7 @@ fn build_definition_index(
                         is_generic(&method.params)?,
                         false,
                         false,
-                        method.borrow_return.is_some(),
+                        method.place_return.is_some(),
                         self_call_targets(&method.body)?,
                         method.span,
                         vec![signature_prefix(method.span, method.body.span())?],

@@ -18,7 +18,7 @@ use crate::{RirTypeSyntaxNode, RirTypeSyntaxRange, RirTypeSyntaxSymbol};
 use super::*;
 
 const MAGIC: &[u8; 4] = b"RIRP";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 const HEADER_LEN: usize = 64;
 
 /// One fallible source intrinsic whose result requires a trusted `Option`
@@ -1407,6 +1407,7 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                 self_mode,
                 self_is_mut,
                 returns_borrow,
+                returns_inout,
             } => {
                 self.byte(33)?;
                 self.directives(rir, instruction, directives, |ordinal| {
@@ -1419,7 +1420,8 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
                         | ((*is_c_export as u8) << 3)
                         | ((*has_self as u8) << 4)
                         | ((*self_is_mut as u8) << 5)
-                        | ((*returns_borrow as u8) << 6),
+                        | ((*returns_borrow as u8) << 6)
+                        | ((*returns_inout as u8) << 7),
                 )?;
                 self.symbol(*name)?;
                 let params = rir.params(params);
@@ -1524,6 +1526,11 @@ impl<E, C: FnMut() -> Result<(), E>, P: FnMut(RirSpanSlot, Span) -> Result<(u32,
             InstData::Assign { name, value } => {
                 self.byte(45)?;
                 self.symbol(*name)?;
+                self.reference(*value)?;
+            }
+            InstData::PlaceSet { place, value } => {
+                self.byte(63)?;
+                self.reference(*place)?;
                 self.reference(*value)?;
             }
             InstData::StructDecl {
@@ -2807,13 +2814,6 @@ impl<
                     RirSpanField::FunctionDirective { directive }
                 })?;
                 let flags = reader.byte()?;
-                if flags & !0x7f != 0 {
-                    return Err(PackedRirDecodeError::InvalidTag {
-                        family: "function flags",
-                        tag: flags,
-                    }
-                    .into());
-                }
                 let name = self.symbol(reader)?;
                 let count = Self::count(reader, "parameters", 4)?;
                 let mut params = Vec::new();
@@ -2844,7 +2844,7 @@ impl<
                 let return_type = self.type_reference(reader)?;
                 let body = self.reference(reader)?;
                 let self_mode = decode_param_mode(reader.byte()?)?;
-                self.destination.add_fn_decl(
+                self.destination.add_fn_decl_with_return_modes(
                     &directives,
                     flags & 1 != 0,
                     flags & 2 != 0,
@@ -2858,8 +2858,14 @@ impl<
                     self_mode,
                     flags & 32 != 0,
                     flags & 64 != 0,
+                    flags & 128 != 0,
                     span,
                 )?
+            }
+            63 => {
+                let place = self.reference(reader)?;
+                let value = self.reference(reader)?;
+                add!(InstData::PlaceSet { place, value })
             }
             34 => {
                 let directives = self.directives(reader, basis, |directive| {

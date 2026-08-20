@@ -59,6 +59,11 @@ pub(crate) enum ParsedSemanticSignature {
         is_extern: bool,
         is_c_export: bool,
         is_accessor: bool,
+        /// The declared accessor result qualifier. `Value` means no
+        /// place-returning qualifier; it is retained even for invalid
+        /// declarations so all signature producers validate the written
+        /// receiver/result pairing rather than inferring one from the other.
+        accessor_result_mode: crate::declaration_candidate::DeclarationParameterMode,
         /// What the accessor body's own syntax decides about spec 6.6:6 and
         /// 6.6:7, in the producer-neutral vocabulary every accessor producer
         /// shares (RUE-1232). Meaningful only when `is_accessor`; an ordinary
@@ -394,6 +399,7 @@ pub(crate) fn project_semantic_signature(
                     is_extern,
                     is_c_export,
                     is_accessor,
+                    accessor_result_mode,
                     body: Option<&rue_parser::ast::Expr>|
      -> Result<ParsedSemanticSignature, Arc<str>> {
         let mut syntax = rue_rir::RirTypeSyntaxBuilder::default();
@@ -414,6 +420,7 @@ pub(crate) fn project_semantic_signature(
             is_extern,
             is_c_export,
             is_accessor,
+            accessor_result_mode,
             accessor_body: if is_accessor {
                 body.map_or(AccessorBodyVerdict::MissingTrailingYield, |body| {
                     accessor_body_shape(body, resolve, &owner_methods)
@@ -434,7 +441,14 @@ pub(crate) fn project_semantic_signature(
             function.is_unchecked,
             false,
             function.export_abi.is_some(),
-            function.borrow_return.is_some(),
+            function.place_return.is_some(),
+            if function.place_return.is_some_and(|mode| mode.is_inout()) {
+                crate::declaration_candidate::DeclarationParameterMode::Inout
+            } else if function.place_return.is_some_and(|mode| mode.is_borrow()) {
+                crate::declaration_candidate::DeclarationParameterMode::Borrow
+            } else {
+                crate::declaration_candidate::DeclarationParameterMode::Value
+            },
             Some(&function.body),
         ),
         ParsedDeclarationAstRef::ExternFunction { function } => callable(
@@ -446,6 +460,7 @@ pub(crate) fn project_semantic_signature(
             true,
             false,
             false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
             None,
         ),
         ParsedDeclarationAstRef::Method { method, .. } => callable(
@@ -459,7 +474,14 @@ pub(crate) fn project_semantic_signature(
             false,
             false,
             false,
-            method.borrow_return.is_some(),
+            method.place_return.is_some(),
+            if method.place_return.is_some_and(|mode| mode.is_inout()) {
+                crate::declaration_candidate::DeclarationParameterMode::Inout
+            } else if method.place_return.is_some_and(|mode| mode.is_borrow()) {
+                crate::declaration_candidate::DeclarationParameterMode::Borrow
+            } else {
+                crate::declaration_candidate::DeclarationParameterMode::Value
+            },
             Some(&method.body),
         ),
         ParsedDeclarationAstRef::Struct(structure) => {
@@ -817,6 +839,7 @@ pub(crate) enum DeclarationSignatureProjection {
         has_self: bool,
         self_mode: crate::durable_semantics::DurableParameterMode,
         is_accessor: bool,
+        accessor_result_mode: crate::durable_semantics::DurableParameterMode,
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
@@ -1077,6 +1100,7 @@ impl DeclarationSemanticValue {
                 has_self,
                 self_mode,
                 is_accessor: _,
+                accessor_result_mode: _,
                 is_unchecked,
                 is_extern: _,
                 is_c_export: _,

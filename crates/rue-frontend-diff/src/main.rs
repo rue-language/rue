@@ -822,6 +822,7 @@ impl Shapes<'_> {
                     AssignTarget::Var(_) => self.ident(),
                     AssignTarget::Field(e) => self.expr(&Expr::Field(e.clone())),
                     AssignTarget::Index(e) => self.expr(&Expr::Index(e.clone())),
+                    AssignTarget::Method(e) => self.expr(e),
                 },
                 self.expr(&v.value),
                 "_".into(),

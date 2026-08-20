@@ -127,17 +127,12 @@ pub const ACCESSOR_PREVIEW_FEATURE: rue_error::PreviewFeature =
 /// The subject every producer names in the 6.6:3 gate diagnostic. The result
 /// position alone demands the preview, so this is reported before any shape
 /// rule about a form the program cannot yet name.
-pub const ACCESSOR_PREVIEW_SUBJECT: &str = "a `-> borrow` accessor";
+pub const ACCESSOR_PREVIEW_SUBJECT: &str = "a place-returning accessor (`-> borrow` or `-> inout`)";
 
-/// The note that points an `inout self` accessor at the phase that will admit
-/// it (6.6:4).
-pub const ACCESSOR_INOUT_SELF_NOTE: &str =
-    "mutable accessors (`inout self` -> exclusive result) are a later phase (RUE-1016)";
-
-/// What a producer found in the receiver position of a `-> borrow`
-/// declaration (6.6:4). Only [`AccessorReceiverForm::BorrowSelf`] is legal in
-/// ADR-0062 phase 1: an accessor hands out a shared projection of its
-/// receiver, so the receiver has to exist and be a shared borrow.
+/// What a producer found in the receiver position of a place-returning
+/// declaration (6.6:4). The result qualifier selects the required receiver
+/// mode: shared results pair with `borrow self`, exclusive results with
+/// `inout self`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessorReceiverForm {
     /// `borrow self`.
@@ -265,7 +260,18 @@ pub fn accessor_signature(
     receiver: AccessorReceiverForm,
     parameters: impl IntoIterator<Item = AccessorParameterForm>,
 ) -> Option<AccessorSignatureViolation> {
-    if let Some((kind, note)) = accessor_receiver_error(receiver) {
+    accessor_signature_for_mode(receiver, false, parameters)
+}
+
+/// Phase-aware accessor signature validation. Mutable accessors use the same
+/// receiver/argument pairing as an ordinary `inout` access: `-> inout T`
+/// requires `inout self`, while `-> borrow T` requires `borrow self`.
+pub fn accessor_signature_for_mode(
+    receiver: AccessorReceiverForm,
+    result_inout: bool,
+    parameters: impl IntoIterator<Item = AccessorParameterForm>,
+) -> Option<AccessorSignatureViolation> {
+    if let Some((kind, note)) = accessor_receiver_error_for_mode(receiver, result_inout) {
         return Some(AccessorSignatureViolation::Receiver { kind, note });
     }
     for (ordinal, parameter) in parameters.into_iter().enumerate() {
@@ -280,20 +286,34 @@ pub fn accessor_signature(
 pub fn accessor_receiver_error(
     receiver: AccessorReceiverForm,
 ) -> Option<(ErrorKind, Option<&'static str>)> {
+    accessor_receiver_error_for_mode(receiver, false)
+}
+
+pub fn accessor_receiver_error_for_mode(
+    receiver: AccessorReceiverForm,
+    result_inout: bool,
+) -> Option<(ErrorKind, Option<&'static str>)> {
     let (found, note) = match receiver {
-        AccessorReceiverForm::BorrowSelf => return None,
-        AccessorReceiverForm::InoutSelf => {
-            ("an `inout self` receiver", Some(ACCESSOR_INOUT_SELF_NOTE))
-        }
+        AccessorReceiverForm::BorrowSelf if !result_inout => return None,
+        AccessorReceiverForm::InoutSelf if result_inout => return None,
+        AccessorReceiverForm::BorrowSelf => ("a `borrow self` receiver", None),
+        AccessorReceiverForm::InoutSelf => ("an `inout self` receiver", None),
         AccessorReceiverForm::ValueSelf => ("a by-value `self` receiver", None),
         AccessorReceiverForm::FreeFunction => ("a free function", None),
         AccessorReceiverForm::AssociatedFunction => {
             ("an associated function with no receiver", None)
         }
     };
+    let (result, required) = if result_inout {
+        ("`-> inout`", "`inout self`")
+    } else {
+        ("`-> borrow`", "`borrow self`")
+    };
     Some((
         ErrorKind::AccessorRequiresBorrowSelf {
-            found: found.to_owned(),
+            found: format!(
+                "a {result} accessor requires a {required} receiver, but this is {found}"
+            ),
         },
         note,
     ))

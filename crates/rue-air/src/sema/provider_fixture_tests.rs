@@ -468,6 +468,8 @@ fn provider_accessor_body_analyzes_under_preview_gate() {
             has_self: true,
             self_mode: SemanticParameterMode::Borrow,
             is_accessor: true,
+            returns_borrow: true,
+            returns_inout: false,
         },
     );
     let body = fixture

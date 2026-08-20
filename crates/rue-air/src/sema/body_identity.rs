@@ -847,6 +847,7 @@ struct MethodSignature {
     params: ParamRange,
     return_type: Type,
     returns_borrow: bool,
+    returns_inout: bool,
 }
 
 fn anonymous_nominal_keys_canonically_equal<K: Eq, M: Eq>(
@@ -2270,6 +2271,8 @@ pub struct DurableMethod<K, M> {
     pub has_self: bool,
     pub self_mode: SemanticParameterMode,
     pub is_accessor: bool,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
 }
 
 /// The durable callable vocabulary the pool consults to mint callable
@@ -2332,6 +2335,7 @@ pub(in crate::sema) struct MethodIdentityHandle {
     /// Whether the declaration is a `-> borrow T` accessor (ADR-0062);
     /// carried from the RIR `FnDecl` like `self_is_mut`.
     pub returns_borrow: bool,
+    pub returns_inout: bool,
 }
 
 impl<K, M, S> BodyIdentityPool<K, M, S>
@@ -2431,6 +2435,7 @@ where
             body: handle.body,
             span: handle.span,
             returns_borrow: handle.returns_borrow,
+            returns_inout: handle.returns_inout,
         })
     }
 
@@ -2446,6 +2451,7 @@ where
             params: signature.params,
             return_type: signature.return_type,
             returns_borrow: signature.returns_borrow,
+            returns_inout: signature.returns_inout,
         })
     }
 
@@ -2523,7 +2529,9 @@ where
             type_syntax: _,
             has_self,
             self_mode,
-            is_accessor,
+            is_accessor: _,
+            returns_borrow,
+            returns_inout,
         } = self
             .source
             .method(key)
@@ -2543,7 +2551,8 @@ where
             },
             params,
             return_type,
-            returns_borrow: is_accessor,
+            returns_borrow,
+            returns_inout,
         };
         self.method_sigs.insert(key.clone(), signature);
         Ok(signature)
@@ -3122,6 +3131,7 @@ mod tests {
             body: InstRef::from_raw(body),
             span: Span::with_file(owner.0, 1, 2),
             returns_borrow: false,
+            returns_inout: false,
         };
         let named = info(10);
         let anonymous = info(11);
@@ -3657,6 +3667,8 @@ mod tests {
             has_self,
             self_mode,
             is_accessor: false,
+            returns_borrow: false,
+            returns_inout: false,
         }
     }
 
@@ -3686,6 +3698,7 @@ mod tests {
             span: Span::with_file(FileId::new(3), 1, 4),
             self_is_mut: true,
             returns_borrow: false,
+            returns_inout: false,
         }
     }
 
@@ -6211,6 +6224,7 @@ mod tests {
             body,
             self_is_mut,
             returns_borrow,
+            returns_inout,
             ..
         } = &inst.data
         else {
@@ -6221,6 +6235,7 @@ mod tests {
             span: inst.span,
             self_is_mut: *self_is_mut,
             returns_borrow: *returns_borrow,
+            returns_inout: *returns_inout,
         }
     }
 

@@ -1319,6 +1319,13 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Concrete(Type::UNIT)
             }
 
+            InstData::PlaceSet { place, value } => {
+                let place_info = self.generate(*place, ctx);
+                let value_info = self.generate(*value, ctx);
+                self.add_constraint(Constraint::equal(place_info.ty, value_info.ty, span));
+                InferType::Concrete(Type::UNIT)
+            }
+
             // Return statement
             InstData::Ret(value) => {
                 if let Some(val_ref) = value {

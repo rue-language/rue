@@ -1701,8 +1701,12 @@ pub(crate) fn evaluate_optimized_cfg(
         implicit_destructor_dependencies_complete &=
             callee.implicit_destructor_dependencies_complete;
         let callee_value_base = current.value_count() as u32;
-        let continuation = rue_cfg::BlockId::from_raw(current.block_count() as u32);
-        let callee_block_base = continuation.as_u32() + 1;
+        // `inline_call_in_block` appends copied callee blocks before its
+        // continuation so projected-place definitions dominate continuation
+        // consumers during lazy backend materialization.
+        let callee_block_base = current.block_count() as u32;
+        let continuation =
+            rue_cfg::BlockId::from_raw(callee_block_base + callee_cfg.block_count() as u32);
         let introduced_calls =
             attached_accessor_calls(&callee_cfg, callee_value_base, callee_block_base);
         current = match rue_cfg::inline_call_in_block(

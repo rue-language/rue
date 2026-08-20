@@ -289,7 +289,7 @@ impl Parser {
             }
         }
         self.expect(TokenKind::RParen)?;
-        let (return_type, borrow_return) = self.return_type_with_borrow()?;
+        let (return_type, place_return) = self.return_type_with_place_mode()?;
         let body = Expr::Block(self.block()?);
         Ok(Method {
             directives,
@@ -297,7 +297,7 @@ impl Parser {
             receiver,
             params,
             return_type,
-            borrow_return,
+            place_return,
             body,
             span: self.span_from(start),
         })
@@ -325,7 +325,7 @@ impl Parser {
             }),
             params: Vec::new(),
             return_type: None,
-            borrow_return: None,
+            place_return: None,
             body,
             span,
         })

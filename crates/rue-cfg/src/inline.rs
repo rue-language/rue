@@ -240,8 +240,10 @@ impl Splice<'_> {
 /// post-optimization contract. Existing caller values keep their indices, and
 /// callee arena value `v` is appended at `caller.value_count() + v`. Drivers
 /// may use that stable offset to discover work introduced by the splice. The
-/// continuation is appended at `caller.block_count()`, followed by callee block
-/// `b` at `caller.block_count() + 1 + b`.
+/// copied callee blocks are appended before the continuation. Keeping the
+/// defining callee blocks before the continuation is significant: lazy backend
+/// materialization of a projected place's index must occur in a dominating
+/// block before a by-reference consumer in the continuation.
 pub fn inline_call(
     caller: &ValidatedCfg,
     call: CfgValue,
@@ -381,11 +383,11 @@ pub fn inline_call_in_block(
     }
 
     // -- Copy the callee arena with uniform shifts. -------------------------
-    let continuation = dst.new_block();
     let block_base = dst.block_count() as u32;
     for _ in 0..callee.block_count() {
         dst.new_block();
     }
+    let continuation = dst.new_block();
     let splice = Splice {
         value_base: dst.value_count() as u32,
         local_base,
@@ -2368,6 +2370,25 @@ mod tests {
         assert!(
             matches!(entry.terminator, Terminator::Goto { .. }),
             "the split call block jumps into the spliced body"
+        );
+        let callee_entry = match &entry.terminator {
+            Terminator::Goto { target, .. } => *target,
+            _ => unreachable!(),
+        };
+        let continuation = inlined
+            .blocks()
+            .iter()
+            .find(|block| {
+                block
+                    .insts
+                    .iter()
+                    .any(|&value| matches!(inlined.get_inst(value).data, CfgInstData::Add(..)))
+            })
+            .expect("the continuation contains the moved post-call computation")
+            .id;
+        assert!(
+            callee_entry.as_u32() < continuation.as_u32(),
+            "spliced callee definitions must precede the continuation so projected-place index dependencies dominate by-ref consumers"
         );
         assert!(
             entry

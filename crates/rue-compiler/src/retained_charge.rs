@@ -130,6 +130,7 @@ fn statement_charge(statement: &ast::Statement) -> u64 {
                 ast::AssignTarget::Field(field) => boxed_charge(&field.base, expr_charge),
                 ast::AssignTarget::Index(index) => boxed_charge(&index.base, expr_charge)
                     .saturating_add(boxed_charge(&index.index, expr_charge)),
+                ast::AssignTarget::Method(expr) => expr_charge(expr),
             };
             target.saturating_add(boxed_charge(&statement.value, expr_charge))
         }
@@ -1346,6 +1347,8 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::InternalError(value)
             | E::InternalCodegenError(value) => value.retained_charge(),
 
+            E::AccessorRequiresBorrowSelf { found } => found.retained_charge(),
+
             E::InvalidArrayLength { reason: value }
             | E::DuplicatePatternBinding { name: value }
             | E::ReservedTypeName { type_name: value }
@@ -1376,7 +1379,6 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::MoveOutOfInout { variable: value }
             | E::AccessorYieldNotReceiverRooted { found: value }
             | E::AccessorBodyOtherExit { found: value }
-            | E::AccessorRequiresBorrowSelf { found: value }
             | E::AccessorResultMoved { ty: value }
             | E::AccessorLoanConflict {
                 variable: value, ..

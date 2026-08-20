@@ -121,7 +121,7 @@ impl Parser {
         self.expect(TokenKind::Fn)?;
         let name = self.ident()?;
         let params = self.params()?;
-        let (return_type, borrow_return) = self.return_type_with_borrow()?;
+        let (return_type, place_return) = self.return_type_with_place_mode()?;
         let body = Expr::Block(self.block()?);
         Ok(Function {
             directives,
@@ -130,26 +130,30 @@ impl Parser {
             name,
             params,
             return_type,
-            borrow_return,
+            place_return,
             body,
             export_abi,
             span: self.span_from(start),
         })
     }
 
-    /// Parse an optional `-> [borrow] type` result position. A leading
-    /// `borrow` marks a place-returning accessor (ADR-0062); the keyword's
-    /// span is carried so semantic analysis can gate and diagnose the form.
-    pub(super) fn return_type_with_borrow(&mut self) -> PResult<(Option<TypeExpr>, Option<Span>)> {
+    /// Parse an optional `-> [borrow|inout] type` result position. The
+    /// qualifier and its span are retained so semantic analysis can gate and
+    /// diagnose place-returning accessors (ADR-0062).
+    pub(super) fn return_type_with_place_mode(
+        &mut self,
+    ) -> PResult<(Option<TypeExpr>, Option<PlaceReturn>)> {
         if !self.eat(TokenKind::Arrow) {
             return Ok((None, None));
         }
-        let borrow_return = if self.at(TokenKind::Borrow) {
-            Some(self.bump().span)
+        let place_return = if self.at(TokenKind::Borrow) {
+            Some(PlaceReturn::Borrow(self.bump().span))
+        } else if self.at(TokenKind::Inout) {
+            Some(PlaceReturn::Inout(self.bump().span))
         } else {
             None
         };
-        Ok((Some(self.ty()?), borrow_return))
+        Ok((Some(self.ty()?), place_return))
     }
 
     /// Parse a foreign-declaration block: `extern "C" { fn name(...) -> T; }`.

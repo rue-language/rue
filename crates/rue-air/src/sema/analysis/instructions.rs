@@ -204,6 +204,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Alloc { .. } | InstData::VarRef { .. } | InstData::Assign { .. } => {
                 self.analyze_variable_ops(air, inst_ref, ctx)
             }
+            InstData::PlaceSet { place, value } => {
+                self.analyze_place_set(air, *place, *value, inst.span, ctx)
+            }
 
             // Struct operations
             InstData::StructDecl { .. }

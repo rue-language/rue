@@ -1696,17 +1696,19 @@ where
         let owner = self.source.definition_name(&receiver_key)?;
         let name = self.interner.resolve(&symbol);
         let (key, has_self) = self.source.named_member(&receiver_key, &owner, name)?;
-        // The signature-only durable subset cannot carry the `-> borrow T`
-        // accessor flag (ADR-0062); recover it from the owning struct's
-        // request-local RIR declaration when that declaration is present.
-        // (Provider body requests currently prune type declarations from
-        // their RIR, so this recovery only fires on hosts whose request
-        // carries the owner — see the RUE-662 provider-path limitation.)
+        // Durable method signatures carry the exact accessor result mode.
+        // Request-local RIR remains authoritative when the owner declaration
+        // is present, preserving parity for bodies materialized from a slice.
         let mut info = self.calls.method_signature_info(&key)?;
         if let Some(method_ref) = self.rir_struct_method_decl(struct_id, symbol)
-            && let InstData::FnDecl { returns_borrow, .. } = &self.rir.rir().get(method_ref).data
+            && let InstData::FnDecl {
+                returns_borrow,
+                returns_inout,
+                ..
+            } = &self.rir.rir().get(method_ref).data
         {
             info.returns_borrow = *returns_borrow;
+            info.returns_inout = *returns_inout;
         }
         let full_symbol = self.member_callable_symbol(struct_id, name, has_self);
         let token = self.endpoint.register_body_owner(
@@ -2721,9 +2723,10 @@ where
                     self_mode: method.self_mode,
                     params,
                     return_type,
-                    // Anonymous-struct methods cannot be accessors (ADR-0062
-                    // phase 1 rejects them at declaration).
+                    // Anonymous-struct methods cannot be place-returning
+                    // accessors; declaration validation rejects that mode.
                     returns_borrow: false,
+                    returns_inout: false,
                 },
             ));
             signatures.push(super::AnonMethodSig {
@@ -2846,9 +2849,10 @@ where
                     struct_type: owner_type,
                     has_self: method.has_self,
                     self_mode: method.self_mode,
-                    // Anonymous-struct methods cannot be accessors (ADR-0062
-                    // phase 1 rejects them at declaration).
+                    // Anonymous-struct methods cannot be place-returning
+                    // accessors; declaration validation rejects that mode.
                     returns_borrow: false,
+                    returns_inout: false,
                     params: self.state.allocate_params(
                         (0..method.parameters.len())
                             .map(|index| intern_synthetic_argument_name(&self.interner, index)),
@@ -4656,6 +4660,7 @@ where
                     info.self_mode,
                     info.self_is_mut,
                     info.returns_borrow,
+                    info.returns_inout,
                 )?,
                 body_span,
             )

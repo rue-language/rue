@@ -22,9 +22,9 @@ use crate::declaration_validation::{
     AccessorYieldRootForm,
 };
 
-/// The declaration legality of a `-> borrow T` accessor (ADR-0062): the result
-/// position requires the `borrow_accessors` preview (6.6:3), the receiver is a
-/// shared `borrow self` (6.6:4), every other parameter is a plain by-value
+/// The declaration legality of a place-returning accessor (ADR-0062): the
+/// result position requires the `borrow_accessors` preview (6.6:3), the
+/// receiver/result modes pair exactly (6.6:4), every other parameter is a plain by-value
 /// guard input (6.6:5), the body's only exit is its trailing `yield` (6.6:6),
 /// and that `yield` hands out a receiver-rooted place (6.6:7).
 ///
@@ -39,9 +39,9 @@ use crate::declaration_validation::{
 /// method-call link in the yielded chain names an accessor — is documented on
 /// [`accessor_yield_root`] and stays with the demanded path.
 ///
-/// The declaring `FnDecl` is the only carrier of `returns_borrow`: the durable
-/// signature records the result type's source spelling, which never contains
-/// the result-position `borrow` qualifier.
+/// The RIR declaration and durable signature both carry the result mode. The
+/// result qualifier is not encoded in the result type itself, so every
+/// declaration producer must preserve it through its signature facts.
 ///
 /// The preview gate runs first, so an ungated program reports E1100 rather
 /// than a shape error about a form it cannot name yet.
@@ -58,12 +58,16 @@ pub(super) fn check_accessor_declaration_shape(
         params,
         has_self,
         self_mode,
-        returns_borrow: true,
+        returns_borrow,
+        returns_inout,
         ..
     } = &inst.data
     else {
         return Ok(());
     };
+    if !*returns_borrow && !*returns_inout {
+        return Ok(());
+    }
     let span = inst.span;
     super::require_preview_feature(
         preview_features,
@@ -72,9 +76,9 @@ pub(super) fn check_accessor_declaration_shape(
         span,
     )?;
     // An accessor hands out a projection of its receiver, so the receiver is
-    // the first thing that has to exist and be a shared borrow. `self` is
-    // carried by `has_self`, so the parameter list is exactly the guard
-    // inputs.
+    // the first thing that has to exist and have the mode paired with the
+    // result. `self` is carried by `has_self`, so the parameter list is
+    // exactly the guard inputs.
     let receiver = if !has_named_owner {
         AccessorReceiverForm::FreeFunction
     } else if !*has_self {
@@ -87,8 +91,9 @@ pub(super) fn check_accessor_declaration_shape(
         }
     };
     let params = rir.params(params);
-    if let Some(violation) = crate::declaration_validation::accessor_signature(
+    if let Some(violation) = crate::declaration_validation::accessor_signature_for_mode(
         receiver,
+        *returns_inout,
         params
             .iter()
             .map(|param| accessor_parameter_form(param.mode, param.is_comptime)),
