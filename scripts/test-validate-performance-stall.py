@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gatelib import load_script
@@ -13,11 +17,15 @@ stall = load_script("validate-performance-stall.py", __file__)
 
 
 def data(*points: tuple[str, str, str]) -> dict:
-    """Build derived data from (platform, commit, finished_at) triples."""
+    """Build measured derived data from (platform, commit, finished_at) triples."""
     platforms: dict[str, list] = {}
     for platform, commit, finished_at in points:
         platforms.setdefault(platform, []).append(
-            {"commit": commit, "finished_at": finished_at}
+            {
+                "commit": commit,
+                "finished_at": finished_at,
+                "workloads": {"startup": {}},
+            }
         )
     return {
         "platforms": [
@@ -29,6 +37,22 @@ def data(*points: tuple[str, str, str]) -> dict:
 
 def fixed(count: int):
     return lambda _commit: count
+
+
+def run_main(subject: dict) -> tuple[int, str]:
+    """Run the validator's early empty-data path against a temporary file."""
+    with TemporaryDirectory() as directory:
+        path = Path(directory) / "derived.json"
+        path.write_text(json.dumps(subject))
+        original_argv = sys.argv
+        sys.argv = ["validate-performance-stall.py", "--data", str(path)]
+        output = StringIO()
+        try:
+            with redirect_stdout(output), redirect_stderr(output):
+                result = stall.main()
+        finally:
+            sys.argv = original_argv
+        return result, output.getvalue()
 
 
 def test_a_current_series_is_not_stalled() -> None:
@@ -79,6 +103,89 @@ def test_an_empty_dashboard_is_not_a_stall() -> None:
     assert stall.stalled({"platforms": []}, fixed(1000)) == []
 
 
+def test_a_genuinely_empty_dashboard_passes_main() -> None:
+    result, output = run_main({"platforms": []})
+    assert result == 0
+    assert "nothing to stall" in output
+
+
+def test_published_all_empty_points_alarm_instead_of_passing_main() -> None:
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 3,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    assert stall.newest_plotted(subject) == []
+    assert stall.unmeasured_platforms(subject) == [("x86_64-linux", 3, 1)]
+    result, output = run_main(subject)
+    assert result == 1
+    assert "contain no measurements" in output
+    assert "not the honest empty-dashboard state" in output
+
+
+def test_a_healthy_platform_cannot_mask_an_all_empty_platform() -> None:
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 3,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {"startup": {}},
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "platform": "aarch64-macos",
+                "epochs": [
+                    {
+                        "epoch": 3,
+                        "points": [
+                            {
+                                "commit": "b" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {},
+                            },
+                            {
+                                "commit": "c" * 40,
+                                "finished_at": "2026-08-08T01:00:00Z",
+                                "workloads": {},
+                            },
+                        ],
+                    }
+                ],
+            },
+            {"platform": "aarch64-linux", "epochs": [{"epoch": 3, "points": []}]},
+        ]
+    }
+    assert stall.unmeasured_platforms(subject) == [("aarch64-macos", 3, 2)]
+    result, output = run_main(subject)
+    assert result == 1
+    assert "aarch64-macos" in output
+    assert "x86_64-linux" not in output
+    assert "aarch64-linux" not in output
+
+
 def test_the_newest_point_wins_regardless_of_ordering() -> None:
     subject = {
         "platforms": [
@@ -88,8 +195,16 @@ def test_the_newest_point_wins_regardless_of_ordering() -> None:
                     {
                         "epoch": 2,
                         "points": [
-                            {"commit": "b" * 40, "finished_at": "2026-08-08T05:00:00Z"},
-                            {"commit": "a" * 40, "finished_at": "2026-08-08T01:00:00Z"},
+                            {
+                                "commit": "b" * 40,
+                                "finished_at": "2026-08-08T05:00:00Z",
+                                "workloads": {"startup": {}},
+                            },
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-08T01:00:00Z",
+                                "workloads": {"startup": {}},
+                            },
                         ],
                     }
                 ],
@@ -110,13 +225,21 @@ def test_the_newest_point_spans_epochs() -> None:
                     {
                         "epoch": 2,
                         "points": [
-                            {"commit": "a" * 40, "finished_at": "2026-08-01T00:00:00Z"}
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-01T00:00:00Z",
+                                "workloads": {"startup": {}},
+                            }
                         ],
                     },
                     {
                         "epoch": 3,
                         "points": [
-                            {"commit": "c" * 40, "finished_at": "2026-08-08T00:00:00Z"}
+                            {
+                                "commit": "c" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {"startup": {}},
+                            }
                         ],
                     },
                 ],
@@ -124,6 +247,129 @@ def test_the_newest_point_spans_epochs() -> None:
         ]
     }
     assert stall.newest_plotted(subject)[0][1] == "c" * 40
+
+
+def test_empty_points_do_not_advance_the_series_or_reset_grace() -> None:
+    # Failed records advance collection time but have no valid workload. The
+    # older measurement remains the staleness input, including its age.
+    old = "a" * 40
+    failures = ["b" * 40, "c" * 40, "d" * 40]
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 2,
+                        "points": [
+                            {
+                                "commit": old,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {"startup": {}},
+                            },
+                            {
+                                "commit": failures[0],
+                                "finished_at": "2026-08-08T01:00:00Z",
+                                "workloads": {},
+                            },
+                            {
+                                "commit": failures[1],
+                                "finished_at": "2026-08-08T02:00:00Z",
+                                "workloads": {},
+                            },
+                            {
+                                "commit": failures[2],
+                                "finished_at": "2026-08-08T03:00:00Z",
+                                "workloads": {},
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    assert stall.newest_plotted(subject)[0][1] == old
+    assert stall.unmeasured_platforms(subject) == []
+    assert stall.stalled(
+        subject, lambda commit: 6, commit_age=lambda commit: 3 * 60 * 60
+    ) == [("x86_64-linux", old, 6)]
+    assert stall.stalled(subject, lambda commit: 6, commit_age=lambda commit: 60) == []
+
+
+def test_a_partial_point_with_a_workload_remains_current() -> None:
+    # Partial runs have no headline index, but their valid workloads are real
+    # measurements and must retain the prior newest-point behavior.
+    partial = "b" * 40
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 2,
+                        "points": [
+                            {
+                                "commit": "a" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "index": {"latency": 1.0},
+                                "workloads": {"startup": {}},
+                            },
+                            {
+                                "commit": partial,
+                                "finished_at": "2026-08-08T01:00:00Z",
+                                "complete": False,
+                                "index": None,
+                                "workloads": {"startup": {}},
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+    assert stall.newest_plotted(subject)[0][1] == partial
+
+
+def test_empty_points_in_a_new_epoch_do_not_hide_an_older_measurement() -> None:
+    # This is the validator's cross-epoch behavior when both epochs are in the
+    # derived input: an empty newer epoch is not a live performance series.
+    old = "a" * 40
+    subject = {
+        "platforms": [
+            {
+                "platform": "x86_64-linux",
+                "epochs": [
+                    {
+                        "epoch": 2,
+                        "baseline_commit": "a" * 40,
+                        "points": [
+                            {
+                                "commit": old,
+                                "finished_at": "2026-08-01T00:00:00Z",
+                                "index": {"latency": 1.0},
+                                "workloads": {"startup": {}},
+                            }
+                        ],
+                    },
+                    {
+                        "epoch": 3,
+                        "baseline_commit": None,
+                        "points": [
+                            {
+                                "commit": "b" * 40,
+                                "finished_at": "2026-08-08T00:00:00Z",
+                                "workloads": {},
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    assert stall.newest_plotted(subject)[0][1] == old
+    assert stall.unmeasured_platforms(subject) == []
+    assert stall.newest_epochs(subject)[0][1]["epoch"] == 2
+    assert stall.unindexed(subject) == []
 
 
 def indexed_epoch(
@@ -146,6 +392,7 @@ def indexed_epoch(
                                 "commit": "a" * 40,
                                 "finished_at": f"2026-08-0{i + 1}T00:00:00Z",
                                 "index": None if value is None else {"latency": value},
+                                "workloads": {"startup": {}},
                             }
                             for i, value in enumerate(indexes)
                         ],
@@ -190,6 +437,7 @@ def test_a_retired_epoch_is_not_held_to_publishing_an_index() -> None:
                                 "commit": "a" * 40,
                                 "finished_at": "2026-08-01T00:00:00Z",
                                 "index": None,
+                                "workloads": {"startup": {}},
                             }
                         ],
                     },
@@ -201,6 +449,7 @@ def test_a_retired_epoch_is_not_held_to_publishing_an_index() -> None:
                                 "commit": "d" * 40,
                                 "finished_at": "2026-08-08T00:00:00Z",
                                 "index": {"latency": 1.0},
+                                "workloads": {"startup": {}},
                             }
                         ],
                     },
@@ -243,6 +492,7 @@ def collecting_epoch(
                                 "complete": complete,
                                 "finished_at": f"2026-08-15T00:{i:02d}:00Z",
                                 "index": None,
+                                "workloads": {"startup": {}},
                             }
                             for i, (commit, complete) in enumerate(points)
                         ],
@@ -271,6 +521,19 @@ def test_the_deadline_is_counted_in_points_not_trunk_commits() -> None:
         collecting_epoch(6, None, [("a" * 40, True)] * 11), max_points=10
     )
     assert late and late[0][4] == 11
+
+
+def test_empty_points_do_not_count_toward_the_unpinned_deadline() -> None:
+    # Collection failures are not complete measurements and cannot satisfy an
+    # epoch's baseline deadline merely by accumulating in its point list.
+    subject = collecting_epoch(
+        6,
+        None,
+        [("a" * 40, True)] + [(chr(98 + i) * 40, True) for i in range(11)],
+    )
+    for point in subject["platforms"][0]["epochs"][0]["points"][1:]:
+        point["workloads"] = {}
+    assert stall.unpinned(subject) == []
 
 
 def test_an_epoch_that_never_pins_its_baseline_is_a_failure() -> None:
@@ -326,6 +589,7 @@ def test_a_retired_unpinned_epoch_does_not_block_the_repository() -> None:
                                 "complete": True,
                                 "finished_at": "2026-08-01T00:00:00Z",
                                 "index": None,
+                                "workloads": {"startup": {}},
                             }
                         ],
                     },
@@ -339,6 +603,7 @@ def test_a_retired_unpinned_epoch_does_not_block_the_repository() -> None:
                                 "complete": True,
                                 "finished_at": "2026-08-08T00:00:00Z",
                                 "index": {"latency": 1.0},
+                                "workloads": {"startup": {}},
                             }
                         ],
                     },
