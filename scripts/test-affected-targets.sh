@@ -78,6 +78,7 @@ expect_full "scripts/ci-corpus-selected"
 expect_full "scripts/affected-targets"
 expect_full "btd"
 expect_full "scripts/provision-build-cache"
+expect_full "scripts/install-valgrind"
 expect_full "scripts/rue"
 expect_full "scripts/rue-bin"
 

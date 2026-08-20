@@ -19,7 +19,9 @@ ROOT_BUCK = Path(os.environ.get("RUE_ROOT_BUCK", MODULE.ROOT_BUCK))
 
 
 class GateValidatorTests(unittest.TestCase):
-    def validate_text(self, text, native_runner=None, test_runner=None, buck=None):
+    def validate_text(
+        self, text, native_runner=None, test_runner=None, buck=None, valgrind_install=None
+    ):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
             path.write_text(text)
@@ -39,7 +41,15 @@ class GateValidatorTests(unittest.TestCase):
             buck_path.write_text(
                 buck if buck is not None else ROOT_BUCK.read_text()
             )
-            return MODULE.validate(path, runner_path, test_runner_path, buck_path)
+            installer_path = Path(directory) / "install-valgrind"
+            installer_path.write_text(
+                valgrind_install
+                if valgrind_install is not None
+                else MODULE.VALGRIND_INSTALL_SCRIPT.read_text()
+            )
+            return MODULE.validate(
+                path, runner_path, test_runner_path, buck_path, installer_path
+            )
 
     def test_current_workflow_is_valid(self):
         self.assertEqual(
@@ -48,6 +58,30 @@ class GateValidatorTests(unittest.TestCase):
             ),
             [],
         )
+
+    def test_valgrind_cannot_return_to_inline_apt(self):
+        source = SOURCE.read_text().replace(
+            "run: scripts/install-valgrind",
+            "run: |\n          sudo apt-get update\n          sudo apt-get install -y valgrind",
+            1,
+        )
+        errors = "\n".join(self.validate_text(source))
+        self.assertIn("must invoke scripts/install-valgrind", errors)
+        self.assertIn("must not contain an inline unbounded apt-get operation", errors)
+
+    def test_valgrind_policy_drift_fails_contract(self):
+        installer = MODULE.VALGRIND_INSTALL_SCRIPT.read_text().replace(
+            "APT_ACQUIRE_TIMEOUT_SECONDS=30", "APT_ACQUIRE_TIMEOUT_SECONDS=45", 1
+        )
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), valgrind_install=installer))
+        self.assertIn("30-second per-acquisition timeout", errors)
+
+    def test_valgrind_cancellation_cleanup_is_required(self):
+        installer = MODULE.VALGRIND_INSTALL_SCRIPT.read_text().replace(
+            'kill -KILL -- "-$child_pid"', "# cleanup removed", 1
+        )
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), valgrind_install=installer))
+        self.assertIn("forced process-group cleanup", errors)
 
     def test_removing_or_renaming_job_fails_inventory(self):
         source = SOURCE.read_text()

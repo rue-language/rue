@@ -1173,6 +1173,9 @@ rue_sh_test(
     ],
     resources = [
         "scripts/ci-required-results.py",
+        # The gate pins the bounded apt timeout/retry/lock policy as well as
+        # the workflow wiring, so installer-only edits must invalidate it.
+        "scripts/install-valgrind",
         "scripts/run-native-platform-corpus.sh",
         # RUE-1265: NATIVE_CLI_FILTERS is imported from here, so the two gates
         # cannot disagree about which `scripts/rue cli` steps the native lanes
@@ -1252,6 +1255,7 @@ rue_sh_test(
         "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
         "scripts/validate-ci-gate.py",
+        "scripts/install-valgrind",
         "scripts/validate-test-duplication.py",
     ] + [":gatelib-sources"],
     env = {
@@ -1259,6 +1263,15 @@ rue_sh_test(
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
         "RUE_TEST_RUNNER_SOURCE": "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
         "RUE_ROOT_BUCK": "$(location :root-buck-file)/BUCK",
+    },
+)
+
+rue_sh_test(
+    name = "valgrind-installer-tool-tests",
+    test = "scripts/test-install-valgrind.py",
+    resources = ["scripts/install-valgrind"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
     },
 )
 

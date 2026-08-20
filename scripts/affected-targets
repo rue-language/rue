@@ -162,7 +162,7 @@ is_selectable_lane() {
 
 # Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
 # Anchored, repo-root-relative, extended-regex alternation.
-FORCE_FULL_REGEX='^crates/rue-runtime-asan/|(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
+FORCE_FULL_REGEX='^crates/rue-runtime-asan/|(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/install-valgrind$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
 
 # buck2 targets invocation BTD's own `targets` wrapper uses (td_util buck::run
 # targets_arguments). Both dumps use the identical command so their unconfigured

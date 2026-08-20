@@ -279,6 +279,17 @@ explicit jobs inside the CI aggregate: Valgrind provisions an external runtime
 tool, while ASan requires a pinned nightly Cargo toolchain that Buck does not
 model.
 
+The Valgrind job installs its required runtime through
+`scripts/install-valgrind`, not an inline `apt-get` block. Each of `apt-get
+update` and `apt-get install` has a 10-minute total bound, 30-second HTTP and
+HTTPS acquisition bounds, two apt-native retries, and a 60-second dpkg lock
+wait. GNU `timeout` kills the operation's process group after a 30-second grace
+period; cancellation cleanup also reaches the timeout process itself, so apt
+and dpkg descendants cannot outlive the step. A timeout remains exit 124 and
+other nonzero statuses (including 137) are surfaced unchanged. The CI contract
+validator pins this wiring and policy so a future workflow edit cannot restore
+an unbounded mirror wait or silently change the retry/lock budget.
+
 `./buck2 bxl //test_tiers.bxl:validate` queries Buck's live first-party test
 graph and fails unless every target has exactly one tier. Required formatting
 CI runs that validation, so adding a raw test rule or conflicting tier label
@@ -604,7 +615,8 @@ The selection is **conservative and fail-open** — under-selection silently
 drops coverage (the RUE-924 failure mode), so every uncertain path runs the
 whole corpus. `scripts/affected-targets` forces a full run whenever the diff
 touches an out-of-graph or graph-global input — the `./buck2` pin, `test.sh`,
-any `scripts/ci-*` runner, the selection engine itself, the workflow files, or
+any `scripts/ci-*` runner, the Valgrind installer, the selection engine itself,
+the workflow files, or
 `.buckconfig`/`BUCK`/`*.bzl`/`toolchains`/`platforms`/`prelude`/`rust-toolchain.toml`
 — and it falls back to full on any VCS, provisioning, `buck2`, `btd`, or output
 parsing error.

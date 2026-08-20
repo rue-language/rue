@@ -17,6 +17,7 @@ TEST_RUNNER_SOURCE = (
     Path(__file__).resolve().parents[1] / "crates/rue-test-runner/src/lib.rs"
 )
 ROOT_BUCK = Path(__file__).resolve().parents[1] / "BUCK"
+VALGRIND_INSTALL_SCRIPT = Path(__file__).with_name("install-valgrind")
 
 # RUE-1161: the platform each entry of the harness's CI_EXECUTED_TARGETS claims
 # a required lane for, and the workflow text that proves that lane exists. The
@@ -171,15 +172,58 @@ def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> 
     ]
 
 
+def valgrind_install_errors(workflow: str, script: str) -> list[str]:
+    """Keep Valgrind installation bounded and on its canonical script path."""
+    block = job_blocks(workflow).get("valgrind", "")
+    errors: list[str] = []
+    if "run: scripts/install-valgrind\n" not in block:
+        errors.append("valgrind must invoke scripts/install-valgrind")
+    if re.search(r"(?:sudo\s+)?apt-get\s+(?:update|install)", block):
+        errors.append("valgrind must not contain an inline unbounded apt-get operation")
+
+    # Keep this exact policy in the CI contract: changing a bound, retry, or
+    # lock option requires changing this reviewable contract and its tests.
+    required = {
+        "APT_OPERATION_TIMEOUT_SECONDS=600": "10-minute apt operation bound",
+        "APT_KILL_AFTER_SECONDS=30": "30-second timeout kill grace period",
+        "APT_ACQUIRE_TIMEOUT_SECONDS=30": "30-second per-acquisition timeout",
+        "APT_RETRIES=2": "two apt-native retries",
+        "APT_LOCK_TIMEOUT_SECONDS=60": "60-second package-manager lock wait",
+        "--kill-after=\"${APT_KILL_AFTER_SECONDS}s\"": "timeout descendant kill bound",
+        "--signal=TERM": "timeout termination signal",
+        '"${APT_OPERATION_TIMEOUT_SECONDS}s"': "timeout operation deadline",
+        "sudo -n apt-get": "non-interactive apt invocation",
+        "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT_SECONDS}": "explicit apt/dpkg lock wait",
+        "Acquire::Retries=${APT_RETRIES}": "apt-native retry policy",
+        "Acquire::http::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}": "HTTP acquisition bound",
+        "Acquire::https::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}": "HTTPS acquisition bound",
+        'kill -TERM -- "-$child_pid"': "cancellation process-group cleanup",
+        'kill -TERM "$child_pid"': "timeout process cleanup",
+        'kill -KILL -- "-$child_pid"': "forced process-group cleanup",
+        'kill -KILL "$child_pid"': "forced timeout cleanup",
+        "trap on_signal INT TERM": "cancellation signal handling",
+    }
+    for text, description in required.items():
+        if text not in script:
+            errors.append(f"install-valgrind lost its {description}")
+    return errors
+
+
 def validate(
     ci_path: Path,
     native_runner_path: Path = NATIVE_RUNNER_SCRIPT,
     test_runner_path: Path = TEST_RUNNER_SOURCE,
     buck_path: Path = ROOT_BUCK,
+    valgrind_install_path: Path = VALGRIND_INSTALL_SCRIPT,
 ) -> list[str]:
     workflow = ci_path.read_text()
     native_runner = native_runner_path.read_text()
     errors: list[str] = []
+    try:
+        valgrind_install = valgrind_install_path.read_text()
+    except OSError as error:
+        errors.append(f"Valgrind installer unreadable: {error}")
+        valgrind_install = ""
     try:
         jobs = job_blocks(workflow)
     except ValueError as error:
@@ -441,6 +485,7 @@ def validate(
             errors.append(f"{sanitizer} is no longer consolidated into CI")
     if "inputs.large_program" not in jobs.get("valgrind", ""):
         errors.append("manual Valgrind large_program selection was not preserved")
+    errors.extend(valgrind_install_errors(workflow, valgrind_install))
 
     errors.extend(undeclared_need_outputs(workflow, jobs))
     errors.extend(lane_target_drift(workflow))
