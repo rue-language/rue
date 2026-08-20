@@ -2054,9 +2054,9 @@ where
     }
 
     /// Mint the producer-nominal anonymous enum. Byte-mirror of the epoch's
-    /// `find_or_create_anon_enum` naming: `__anon_enum_{digest} { A(T), B }` where
-    /// the payload types render through the same `safe_name_with_pool` the epoch
-    /// spells them with, and the name never decides identity.
+    /// `find_or_create_anon_enum` naming: `__anon_enum_{digest}`. Variant and
+    /// payload vocabulary lives in the definition, and the name never decides
+    /// identity.
     fn mint_anon_enum(
         &mut self,
         key: &AnonymousNominalKey<K, M>,
@@ -2076,25 +2076,7 @@ where
             variant_payloads.push(resolved);
         }
 
-        let mut name = super::anon_structs::anonymous_enum_name_prefix(digest);
-        for (i, vname) in variant_names.iter().enumerate() {
-            if i > 0 {
-                name.push_str(", ");
-            }
-            name.push_str(vname);
-            let payload = &variant_payloads[i];
-            if !payload.is_empty() {
-                name.push('(');
-                for (j, ty) in payload.iter().enumerate() {
-                    if j > 0 {
-                        name.push_str(", ");
-                    }
-                    name.push_str(&ty.safe_name_with_pool(Some(&self.type_pool)));
-                }
-                name.push(')');
-            }
-        }
-        name.push_str(" }");
+        let name = super::anon_structs::anonymous_enum_name(digest);
 
         let symbol = self.interner.get_or_intern(&name);
         let (id, _) = self.type_pool.register_enum(
@@ -4665,11 +4647,10 @@ mod tests {
         );
     }
 
-    /// An anonymous enum mints the `__anon_enum_{digest} { A(i32), B }` name whose
-    /// payloads render through `safe_name_with_pool`, exactly as the epoch spells
-    /// them.
+    /// An anonymous enum mints the bare `__anon_enum_{digest}` source symbol;
+    /// variants and payloads remain in the definition metadata.
     #[test]
-    fn find_or_create_anon_enum_mints_with_payload_names() {
+    fn find_or_create_anon_enum_mints_with_bare_digest_name() {
         let key = anon_key(AnonymousNominalKind::Enum, 5, 0);
         let shape = DurableAnonymousShape::Enum {
             variants: vec![
@@ -4681,11 +4662,7 @@ mod tests {
         let ty = pool.find_or_create_anon(&key).unwrap();
         let def = pool.type_pool().enum_def(ty.as_enum().unwrap());
         assert!(def.name.starts_with("__anon_enum_"));
-        assert!(
-            def.name.ends_with(" { Some(i32), None }"),
-            "enum name renders payloads: {}",
-            def.name
-        );
+        assert_eq!(def.name.len(), "__anon_enum_".len() + 32);
         assert!(!def.is_pub);
         assert_eq!(
             def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
@@ -4905,11 +4882,7 @@ mod tests {
         let minted = pool.find_or_create_anon(&key).unwrap();
         let def = pool.type_pool().enum_def(minted.as_enum().unwrap());
         assert!(def.name.starts_with("__anon_enum_"));
-        assert!(
-            def.name.ends_with(" { Some(i64), None }"),
-            "the trusted enum renders its payloads: {}",
-            def.name
-        );
+        assert_eq!(def.name.len(), "__anon_enum_".len() + 32);
 
         // The export-as-produced ruling: the identity is recorded as
         // well-known, so the provider baseline subtraction exports it as a

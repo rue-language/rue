@@ -53,14 +53,13 @@ pub(crate) fn anonymous_struct_name(digest: u128) -> String {
     format!("__anon_struct_{digest:032x}")
 }
 
-/// The one spelling of the prefix an anonymous enum's name opens with, before
-/// its variants and their rendered payloads.
+/// The one spelling of a generated anonymous enum's name.
 ///
-/// Only the prefix is a function of the digest; the rest of the name renders
-/// the variants through the minting pool, so the whole name is not shareable
-/// the way [`anonymous_struct_name`] is.
-pub(crate) fn anonymous_enum_name_prefix(digest: u128) -> String {
-    format!("__anon_enum_{digest:032x} {{ ")
+/// The digest is the complete source symbol. Variant and payload vocabulary
+/// remains in the enum definition itself rather than in its nominal spelling,
+/// so the epoch and durable producer mints can share this exact helper.
+pub(crate) fn anonymous_enum_name(digest: u128) -> String {
+    format!("__anon_enum_{digest:032x}")
 }
 
 /// The root source definition a producer-nominal key ultimately derives from,
