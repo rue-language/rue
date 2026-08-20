@@ -1387,6 +1387,7 @@ fn benchmark_semantic_body_structure(
         precompute_inline_scan_pops: timing.counter_total("precompute_inline_scan_pops"),
         precompute_inline_scan_child_edges: timing
             .counter_total("precompute_inline_scan_child_edges"),
+        precompute_inline_scan_bodies: timing.counter_total("precompute_inline_scan_bodies"),
         precompute_inline_raw_candidates: timing.counter_total("precompute_inline_raw_candidates"),
         precompute_inline_final_candidates: timing
             .counter_total("precompute_inline_final_candidates"),

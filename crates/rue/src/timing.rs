@@ -2825,6 +2825,7 @@ mod phase_accounting_tests {
                 inference_precompute_structural_ns = 80_u64,
                 inference_precompute_eval_provider_ns = 48_u64,
                 precompute_alias_nodes_visited = 7_u64,
+                precompute_inline_scan_bodies = 1_u64,
                 constraint_generation_ns = 256_u64,
                 unification_resolution_ns = 512_u64,
                 air_emission_validation_ns = 1024_u64,
@@ -2852,6 +2853,7 @@ mod phase_accounting_tests {
         }
         assert_eq!(data.counter_total("precompute_bodies"), 1);
         assert_eq!(data.counter_total("precompute_alias_nodes_visited"), 7);
+        assert_eq!(data.counter_total("precompute_inline_scan_bodies"), 1);
     }
 
     #[test]

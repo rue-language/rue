@@ -943,7 +943,8 @@ impl BuildBoundaryEvidence {
             || structure.precompute_inline_scan_pops
                 != structure
                     .precompute_inline_scan_child_edges
-                    .saturating_add(structure.precompute_bodies)
+                    .saturating_add(structure.precompute_inline_scan_bodies)
+            || structure.precompute_inline_scan_bodies > structure.precompute_bodies
             || structure.precompute_inline_final_candidates
                 > structure.precompute_inline_raw_candidates
             || structure.precompute_inline_eval_attempts
@@ -1124,6 +1125,7 @@ mod tests {
                     index_builds: 1,
                     precompute_bodies: 1,
                     precompute_inline_scan_pops: 1,
+                    precompute_inline_scan_bodies: 1,
                     ..crate::SemanticBodyStructureWork::default()
                 },
                 ..CompilerWork::default()
@@ -1406,6 +1408,22 @@ mod tests {
                 .unwrap_err(),
             "compiler provider-analysis attribution is incomplete"
         );
+    }
+
+    #[test]
+    fn current_producer_accepts_census_zero_inline_scan() {
+        let policy = BuildBoundaryPolicy::fresh_source_to_native_v1(WorkerSetting::One);
+        let mut census_zero = evidence();
+        add_success(&mut census_zero.critical_path.semantic_body_input_lowering);
+        add_success(&mut census_zero.critical_path.semantic_provider_analysis);
+        let structure = &mut census_zero.compiler_work.semantic_body_structure;
+        assert_eq!(structure.precompute_bodies, 1);
+        structure.precompute_inline_scan_pops = 0;
+        structure.precompute_inline_scan_child_edges = 0;
+        structure.precompute_inline_scan_bodies = 0;
+        census_zero
+            .validate_current_producer_against(&policy, "x86-64-linux")
+            .unwrap();
     }
 
     #[test]

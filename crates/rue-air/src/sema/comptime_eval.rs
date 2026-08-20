@@ -2492,6 +2492,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             inline_ctor_head_candidates_with_work(self.body_rir_ref(), body, attribution_enabled);
         let mut attribution = ComptimePrecomputeAttribution {
             enabled: attribution_enabled,
+            inline_scan_bodies: u64::from(attribution_enabled),
             inline_scan_pops: scan.pops,
             inline_scan_child_edges: scan.child_edges,
             inline_raw_candidates: scan.raw_candidates,
@@ -2543,6 +2544,7 @@ pub(crate) struct ComptimePrecomputeAttribution {
     pub(crate) alias_type_successes: u64,
     pub(crate) inline_scan_pops: u64,
     pub(crate) inline_scan_child_edges: u64,
+    pub(crate) inline_scan_bodies: u64,
     pub(crate) inline_raw_candidates: u64,
     pub(crate) inline_final_candidates: u64,
     pub(crate) inline_eval_attempts: u64,
@@ -2562,6 +2564,7 @@ impl ComptimePrecomputeAttribution {
         self.alias_type_successes += other.alias_type_successes;
         self.inline_scan_pops += other.inline_scan_pops;
         self.inline_scan_child_edges += other.inline_scan_child_edges;
+        self.inline_scan_bodies += other.inline_scan_bodies;
         self.inline_raw_candidates += other.inline_raw_candidates;
         self.inline_final_candidates += other.inline_final_candidates;
         self.inline_eval_attempts += other.inline_eval_attempts;
