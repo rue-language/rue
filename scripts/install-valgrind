@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Install Valgrind for required CI with bounded package-manager operations.
+#
+# Ubuntu's package mirrors have occasionally stopped making progress while apt
+# is downloading an index or package.  apt's per-acquisition timeout and retry
+# policy handles transient failures; GNU timeout supplies the outer bound and
+# process-group cleanup so one wedged operation cannot consume the whole job.
+set -euo pipefail
+
+APT_OPERATION_TIMEOUT_SECONDS=600
+APT_KILL_AFTER_SECONDS=30
+APT_ACQUIRE_TIMEOUT_SECONDS=30
+APT_RETRIES=2
+APT_LOCK_TIMEOUT_SECONDS=60
+
+child_pid=""
+
+terminate_children() {
+    if [[ -n "$child_pid" ]]; then
+        # GNU timeout starts the operation in its own process group.  Killing
+        # that group also reaches sudo and apt/dpkg descendants if the runner
+        # cancels this step while an operation is active.
+        kill -TERM -- "-$child_pid" >/dev/null 2>&1 || true
+        kill -TERM "$child_pid" >/dev/null 2>&1 || true
+        sleep 1
+        kill -KILL -- "-$child_pid" >/dev/null 2>&1 || true
+        kill -KILL "$child_pid" >/dev/null 2>&1 || true
+        child_pid=""
+    fi
+}
+
+on_signal() {
+    terminate_children
+    exit 143
+}
+
+trap terminate_children EXIT
+trap on_signal INT TERM
+
+run_apt() {
+    local operation="$1"
+    shift
+
+    # Do not use an outer retry loop: Acquire::Retries is the one retry policy
+    # for both operations, so a failure cannot multiply its retry budget.
+    timeout \
+        --kill-after="${APT_KILL_AFTER_SECONDS}s" \
+        --signal=TERM \
+        "${APT_OPERATION_TIMEOUT_SECONDS}s" \
+        sudo -n apt-get \
+        -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT_SECONDS}" \
+        -o "Acquire::Retries=${APT_RETRIES}" \
+        -o "Acquire::http::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}" \
+        -o "Acquire::https::Timeout=${APT_ACQUIRE_TIMEOUT_SECONDS}" \
+        "$@" &
+    child_pid=$!
+    local status=0
+    wait "$child_pid" || status=$?
+    child_pid=""
+
+    case "$status" in
+        0)
+            return 0
+            ;;
+        124)
+            echo "install-valgrind: apt-get ${operation} timed out after ${APT_OPERATION_TIMEOUT_SECONDS}s" >&2
+            return 124
+            ;;
+        *)
+            echo "install-valgrind: apt-get ${operation} failed (exit ${status})" >&2
+            return "$status"
+            ;;
+    esac
+}
+
+echo "install-valgrind: updating package indexes (bounded to ${APT_OPERATION_TIMEOUT_SECONDS}s)" >&2
+run_apt update update
+
+echo "install-valgrind: installing valgrind (bounded to ${APT_OPERATION_TIMEOUT_SECONDS}s)" >&2
+run_apt install install --no-install-recommends -y valgrind
