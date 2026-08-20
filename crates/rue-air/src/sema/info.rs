@@ -96,10 +96,11 @@ pub struct MethodInfo {
     pub body: rue_rir::InstRef,
     /// Span of the method declaration
     pub span: Span,
-    /// Whether the result position is `-> borrow T` (ADR-0062): the method
-    /// is a place-returning accessor whose calls inline to guards plus the
-    /// yielded receiver projection. `return_type` holds the element type `T`.
+    /// Whether the result position is `-> borrow T` (ADR-0062) or `-> inout T`
+    /// (RUE-1016): the method is a place-returning accessor whose calls inline
+    /// to guards plus the yielded receiver projection. `return_type` holds T.
     pub returns_borrow: bool,
+    pub returns_inout: bool,
 }
 
 /// Signature-only callable metadata consumed at a call site. Imported
@@ -144,6 +145,7 @@ pub(crate) struct MethodCallInfo {
     /// calls do not dispatch as ordinary calls: they inline the accessor
     /// body at the call site via the dedicated accessor-body fact.
     pub returns_borrow: bool,
+    pub returns_inout: bool,
 }
 
 impl MethodCallInfo {
@@ -155,6 +157,7 @@ impl MethodCallInfo {
             params: info.params,
             return_type: info.return_type,
             returns_borrow: info.returns_borrow,
+            returns_inout: info.returns_inout,
         }
     }
 }

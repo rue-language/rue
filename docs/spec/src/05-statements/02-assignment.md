@@ -14,15 +14,22 @@ An assignment statement evaluates its right-hand side to a value and stores that
 
 ```ebnf
 assign_stmt   = assign_target "=" expression ";" ;
-assign_target = IDENT { "." IDENT | "[" expression "]" }
-              | "self" ( "." IDENT | "[" expression "]" ) { "." IDENT | "[" expression "]" } ;
+assign_target = place_expr ;
+place_expr   = ( IDENT | "self" ) { place_postfix } ;
+place_postfix = "." IDENT | "[" expression "]"
+              | "." IDENT "(" [ call_args ] ")" ;
 ```
 
 The assignment target is a *place*: a variable (or, inside a method, `self`)
 followed by any number of field (`.f`) and index (`[e]`) projections, freely
-mixed. All of `x`, `p.f`, `arr[i]`, `arr[i].f`, `p.arr[i]`, `a.b.c`, and
-`o.items[i].arr[j]` are valid targets. (Appendix A's `place_expr` is the
-normative statement of this production; see that appendix.)
+mixed. An exclusive place-returning accessor call may serve as a place root,
+so `v.get_mut(i)`, `v.get_mut(i).field`, and `v.get_mut(i)[j]` are also valid
+targets; nested method-call links are allowed when each resolves to an
+exclusive accessor. Ordinary value-returning or shared method calls are not
+assignment places and remain a semantic error. All of `x`, `p.f`, `arr[i]`,
+`arr[i].f`, `p.arr[i]`, `a.b.c`, and `o.items[i].arr[j]` are valid targets.
+(Appendix A's `place_expr` is the normative statement of this production; see
+that appendix.)
 
 ## Evaluation Order
 

@@ -1131,6 +1131,7 @@ fn statement_record(
                         expr_record(owner, &index.index),
                     ],
                 ),
+                rue_parser::AssignTarget::Method(expr) => expr_record(owner, expr),
             };
             syntax_record(
                 "assignment",
@@ -1632,6 +1633,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
         Alloc { .. } => "allocate",
         VarRef { .. } => "variable_reference",
         Assign { .. } => "assignment",
+        PlaceSet { .. } => "place_assignment",
         StructDecl { .. } => "struct_declaration",
         StructInit { .. } => "struct_initializer",
         FieldGet { .. } => "field_read",
@@ -1727,6 +1729,10 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
         FnDecl { body, .. } | DropFnDecl { body, .. } => push("body", *body),
         ConstDecl { init, .. } | Alloc { init, .. } => push("initializer", *init),
         Assign { value, .. } => push("value", *value),
+        PlaceSet { place, value } => {
+            push("place", *place);
+            push("value", *value);
+        }
         Call { args, .. } => {
             for argument in rir.call_args(args) {
                 push("argument", argument.value);

@@ -530,10 +530,14 @@ impl Parser {
 }
 
 fn expr_to_target(expr: Expr, self_value: Spur) -> Option<AssignTarget> {
+    if contains_method_call(&expr) {
+        return Some(AssignTarget::Method(Box::new(expr)));
+    }
     match expr {
         Expr::Ident(id) => Some(AssignTarget::Var(id)),
         Expr::Field(field) => Some(AssignTarget::Field(field)),
         Expr::Index(index) => Some(AssignTarget::Index(index)),
+        Expr::MethodCall(call) => Some(AssignTarget::Method(Box::new(Expr::MethodCall(call)))),
         // `self = value` targets the receiver binding; sema enforces that
         // only a `mut self` (or shadowing `let mut`) receiver is assignable.
         Expr::SelfExpr(se) => Some(AssignTarget::Var(Ident {
@@ -541,6 +545,16 @@ fn expr_to_target(expr: Expr, self_value: Spur) -> Option<AssignTarget> {
             span: se.span,
         })),
         _ => None,
+    }
+}
+
+fn contains_method_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::MethodCall(_) => true,
+        Expr::Field(field) => contains_method_call(&field.base),
+        Expr::Index(index) => contains_method_call(&index.base),
+        Expr::Paren(paren) => contains_method_call(&paren.inner),
+        _ => false,
     }
 }
 fn is_control_flow(expr: &Expr) -> bool {

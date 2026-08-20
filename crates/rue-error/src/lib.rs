@@ -170,11 +170,8 @@ impl ErrorCode {
     /// A `yield` expression appears outside the body of a `-> borrow T`
     /// accessor. `yield` is the accessor body's exit form (ADR-0062).
     pub const YIELD_OUTSIDE_ACCESSOR: Self = Self(256);
-    /// A `-> borrow T` result on a declaration that is not a `borrow self`
-    /// method: a free function, an associated function, or a method with a
-    /// by-value or `mut self` receiver. Phase 1 accessors are read-only
-    /// projections of a shared receiver borrow (ADR-0062); `inout self`
-    /// accessors are the phase-2 follow-up (RUE-1016).
+    /// An accessor result and receiver use different modes: `-> borrow T`
+    /// requires `borrow self`, while `-> inout T` requires `inout self`.
     pub const ACCESSOR_REQUIRES_BORROW_SELF: Self = Self(257);
     /// A value with drop glue was read out of an accessor result by value.
     /// The result is a borrowed place, not an owner (ADR-0062); copying a
@@ -182,10 +179,9 @@ impl ErrorCode {
     /// same double-free the E0711 gate closes (RUE-651). Only trivially
     /// droppable element values may be read out by value.
     pub const ACCESSOR_RESULT_MOVED: Self = Self(258);
-    /// A root was used exclusively (`inout`, mutation, or move) in the same
-    /// full expression in which an accessor result borrows it. The accessor
-    /// result's shared loan spans the enclosing full expression (ADR-0062),
-    /// so the exclusive use violates the law of exclusivity.
+    /// A root was used incompatibly in the same full expression as an
+    /// accessor result: an exclusive result conflicts with any other loan,
+    /// while a shared result conflicts with an exclusive use (ADR-0062).
     pub const ACCESSOR_LOAN_CONFLICT: Self = Self(259);
     /// An accessor declares a parameter mode other than by-value (`borrow`,
     /// `inout`, or `comptime` on a non-receiver parameter). Phase 1 accessor
@@ -664,10 +660,9 @@ pub enum PreviewFeature {
     /// linking (ADR-0064, RUE-1055). Gated until every phase of the guaranteed
     /// target-C boundary is proven on both backends.
     CFfi,
-    /// Place-returning borrow accessors (ADR-0062, RUE-662): methods with a
-    /// `-> borrow T` result whose `yield`-body hands out a second-class borrow
-    /// of a projection of the receiver. Gated until mutable accessors and std
-    /// adoption complete the rollout (RUE-1015).
+    /// Place-returning accessors (ADR-0062, RUE-662/RUE-1016): methods with a
+    /// `-> borrow T` or `-> inout T` result whose `yield` body hands out a
+    /// second-class projection of the receiver.
     BorrowAccessors,
     /// Floating point: `f32`/`f64`, IEEE-754 arithmetic, and `comptime_float`
     /// literals (ADR-0065, RUE-714). Gated until every phase of the M9 rollout
@@ -1596,11 +1591,10 @@ pub enum ErrorKind {
     #[error("an accessor must yield a place rooted at `self`, not {found}")]
     AccessorYieldNotReceiverRooted { found: String },
     /// A `yield` expression outside an accessor body.
-    #[error("`yield` is only valid inside the body of a `-> borrow` accessor")]
+    #[error("`yield` is only valid inside the body of a `-> borrow` or `-> inout` accessor")]
     YieldOutsideAccessor,
-    /// A `-> borrow T` result on a declaration that is not a `borrow self`
-    /// method.
-    #[error("a `-> borrow` accessor requires a `borrow self` receiver, but this is {found}")]
+    /// An accessor result and receiver use different reference modes.
+    #[error("accessor receiver/result modes do not match: {found}")]
     AccessorRequiresBorrowSelf { found: String },
     /// A drop-glue value read out of an accessor result by value.
     #[error(

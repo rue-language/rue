@@ -2188,16 +2188,44 @@ impl<'a> CfgBuilder<'a> {
                 // (RUE-62) holds nothing to drop.
                 let air_place = self.air.get_place(*place);
                 let val_ty = self.air.get(*value).ty;
+                let mut old_ty = air_place.base_type;
+                for projection in self.air.get_place_projections(air_place) {
+                    old_ty = match projection {
+                        AirProjection::Field {
+                            struct_id,
+                            field_index,
+                        } => self.type_pool.struct_def(*struct_id).fields[*field_index as usize].ty,
+                        AirProjection::Index { array_type, .. } => {
+                            let (element, _) = self.type_pool.array_def(
+                                array_type.as_array().expect("index projection array type"),
+                            );
+                            element
+                        }
+                    };
+                }
                 let base_key = match air_place.base {
-                    AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
-                    AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
-                    AirPlaceBase::Accessor(_) => {
-                        unreachable!("semantic analysis rejects accessor-place writes")
-                    }
+                    AirPlaceBase::Local(slot) => Some(MovedSlot::Local(slot)),
+                    AirPlaceBase::Param(slot) => Some(MovedSlot::Param(slot)),
+                    // Accessor places are replaced by the mandatory accessor
+                    // CFG splice. Their overwrite drop is elaborated by the
+                    // substituted ordinary place when one exists.
+                    AirPlaceBase::Accessor(_) => None,
                 };
+                if base_key.is_none() && self.type_pool.type_needs_drop(old_ty) {
+                    let old_val = self.emit(
+                        CfgInstData::PlaceRead {
+                            place: cfg_place.duplicate_with_owner(),
+                        },
+                        old_ty,
+                        span,
+                    );
+                    self.emit(CfgInstData::Drop { value: old_val }, Type::UNIT, span);
+                }
                 if air_place.projection_count() == 0 {
-                    self.emit_overwrite_drop(base_key, val_ty, span);
-                } else {
+                    if let Some(base_key) = base_key {
+                        self.emit_overwrite_drop(base_key, val_ty, span);
+                    }
+                } else if let Some(base_key) = base_key {
                     // A single top-level field OR constant-index element write:
                     // skip the old-value drop when that path was definitely
                     // moved out, and guard it with the path's runtime drop flag
@@ -2263,7 +2291,9 @@ impl<'a> CfgBuilder<'a> {
                 } else if let Some(slot) = air_place.as_param() {
                     self.moved.clear_slot(MovedSlot::Param(slot));
                     self.update_drop_flag(MovedSlot::Param(slot), true, span);
-                } else if air_place.projection_count() == 1 {
+                } else if air_place.projection_count() == 1
+                    && let Some(base_key) = base_key
+                {
                     match self.air.get_place_projections(air_place) {
                         [AirProjection::Field { field_index, .. }] => {
                             self.moved.clear_field(base_key, *field_index);

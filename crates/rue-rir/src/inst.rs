@@ -1395,6 +1395,44 @@ impl RirEditor {
         returns_borrow: bool,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
+        self.add_fn_decl_with_return_modes(
+            directives,
+            is_pub,
+            is_unchecked,
+            is_extern,
+            is_c_export,
+            name,
+            params,
+            return_type,
+            body,
+            has_self,
+            self_mode,
+            self_is_mut,
+            returns_borrow,
+            false,
+            span,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_fn_decl_with_return_modes(
+        &mut self,
+        directives: &[RirDirective],
+        is_pub: bool,
+        is_unchecked: bool,
+        is_extern: bool,
+        is_c_export: bool,
+        name: Spur,
+        params: &[RirParam],
+        return_type: RirTypeSyntaxRef,
+        body: InstRef,
+        has_self: bool,
+        self_mode: RirParamMode,
+        self_is_mut: bool,
+        returns_borrow: bool,
+        returns_inout: bool,
+        span: Span,
+    ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
             let directives = rir.add_directives(directives)?;
             let params = rir.add_params(params)?;
@@ -1413,6 +1451,7 @@ impl RirEditor {
                     self_mode,
                     self_is_mut,
                     returns_borrow,
+                    returns_inout,
                 },
                 span,
             }))
@@ -2102,6 +2141,7 @@ impl RirEditor {
                         self_mode,
                         self_is_mut,
                         returns_borrow,
+                        returns_inout,
                     } => {
                         let directives = source
                             .directives(directives)
@@ -2134,7 +2174,7 @@ impl RirEditor {
                                 })
                             })
                             .collect::<Result<Vec<_>, RirSpanRemapError<E>>>()?;
-                        self.add_fn_decl(
+                        self.add_fn_decl_with_return_modes(
                             &directives,
                             *is_pub,
                             *is_unchecked,
@@ -2148,6 +2188,7 @@ impl RirEditor {
                             *self_mode,
                             *self_is_mut,
                             *returns_borrow,
+                            *returns_inout,
                             span,
                         )?
                     }
@@ -2270,6 +2311,12 @@ impl RirEditor {
                     InstData::Assign { name, value } => {
                         self.add_inst(payload_free(InstData::Assign {
                             name: symbol(*name),
+                            value: remap_ref(*value),
+                        }))
+                    }
+                    InstData::PlaceSet { place, value } => {
+                        self.add_inst(payload_free(InstData::PlaceSet {
+                            place: remap_ref(*place),
                             value: remap_ref(*value),
                         }))
                     }
@@ -3813,6 +3860,10 @@ impl Rir {
                     symbols!(*name);
                     refs!(*value);
                 }
+                InstData::PlaceSet { place, value } => {
+                    refs!(*place);
+                    refs!(*value);
+                }
                 InstData::StructDecl {
                     directives,
                     name,
@@ -4048,6 +4099,7 @@ impl Rir {
             }
             InstData::Block { instructions } => out.extend(self.block_insts(instructions).values()),
             InstData::Assign { value, .. } => out.push(*value),
+            InstData::PlaceSet { place, value } => out.extend([*place, *value]),
             InstData::StructDecl { methods, .. } => {
                 out.extend(self.struct_methods(methods).values())
             }
@@ -5372,6 +5424,8 @@ pub enum InstData {
         /// second-class borrow of a receiver projection. `return_type` holds
         /// the borrowed element type `T`.
         returns_borrow: bool,
+        /// Whether the result position is `-> inout T` (ADR-0062 phase 2).
+        returns_inout: bool,
     },
 
     /// Constant declaration
@@ -5491,6 +5545,11 @@ pub enum InstData {
         /// Value to store
         value: InstRef,
     },
+
+    /// Assignment to an expression that produces a place (currently a
+    /// mutable accessor result). Kept distinct from field/index assignment so
+    /// source field names cannot collide with compiler-generated syntax.
+    PlaceSet { place: InstRef, value: InstRef },
 
     // Struct operations
     /// Struct type declaration
@@ -6129,6 +6188,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     self_mode,
                     self_is_mut,
                     returns_borrow,
+                    returns_inout,
                 } => {
                     let pub_str = if *is_c_export {
                         "pub extern \"C\" "
@@ -6176,7 +6236,13 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         })
                         .collect();
                     let directives_str = self.format_directives(directives);
-                    let borrow_str = if *returns_borrow { "borrow " } else { "" };
+                    let borrow_str = if *returns_borrow {
+                        "borrow "
+                    } else if *returns_inout {
+                        "inout "
+                    } else {
+                        ""
+                    };
                     writeln!(
                         out,
                         "{}{}{}fn {}({}{}) -> {}{} {{",
@@ -6307,6 +6373,15 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         out,
                         "assign {} = {}",
                         self.interner.resolve(&*name),
+                        self.display_ref(*value)
+                    )
+                    .unwrap();
+                }
+                InstData::PlaceSet { place, value } => {
+                    writeln!(
+                        out,
+                        "place_set {} = {}",
+                        self.display_ref(*place),
                         self.display_ref(*value)
                     )
                     .unwrap();
@@ -8619,6 +8694,7 @@ mod typed_payload_tests {
                 self_mode: RirParamMode::Normal,
                 self_is_mut: false,
                 returns_borrow: false,
+                returns_inout: false,
             },
         );
 

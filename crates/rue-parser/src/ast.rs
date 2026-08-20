@@ -223,14 +223,29 @@ pub struct Method {
     pub params: Vec<Param>,
     /// Return type (None means implicit unit `()`)
     pub return_type: Option<TypeExpr>,
-    /// When the result position is `-> borrow T`, the span of the `borrow`
-    /// keyword: the method is a place-returning accessor (ADR-0062) whose
-    /// body yields a second-class borrow of a receiver projection.
-    pub borrow_return: Option<Span>,
+    /// The optional place-returning qualifier and its keyword span.
+    pub place_return: Option<PlaceReturn>,
     /// Method body
     pub body: Expr,
     /// Span covering the entire method
     pub span: Span,
+}
+
+/// A place-returning function result qualifier (ADR-0062).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceReturn {
+    Borrow(Span),
+    Inout(Span),
+}
+
+impl PlaceReturn {
+    pub fn is_borrow(self) -> bool {
+        matches!(self, Self::Borrow(_))
+    }
+
+    pub fn is_inout(self) -> bool {
+        matches!(self, Self::Inout(_))
+    }
 }
 
 /// A self parameter in a method.
@@ -278,11 +293,9 @@ pub struct Function {
     pub params: Vec<Param>,
     /// Return type (None means implicit unit `()`)
     pub return_type: Option<TypeExpr>,
-    /// When the result position is `-> borrow T`, the span of the `borrow`
-    /// keyword (ADR-0062). Always rejected in sema for free functions —
-    /// accessors require a `borrow self` receiver — but parsed here so the
-    /// diagnostic can be semantic rather than a parse error.
-    pub borrow_return: Option<Span>,
+    /// The optional place-returning qualifier and its keyword span. Free
+    /// functions retain the syntax so sema can diagnose the missing receiver.
+    pub place_return: Option<PlaceReturn>,
     /// Function body
     pub body: Expr,
     /// The C ABI string when this function is a `pub extern "C" fn` export
@@ -1230,6 +1243,8 @@ pub enum AssignTarget {
     Field(FieldExpr),
     /// Index assignment (e.g., `arr[0] = 5`)
     Index(IndexExpr),
+    /// Direct assignment to a place-returning accessor result.
+    Method(Box<Expr>),
 }
 
 /// A while loop expression.
@@ -1400,6 +1415,7 @@ impl Expr {
                             AssignTarget::Index(index) => {
                                 out.extend([index.base.as_ref(), index.index.as_ref()])
                             }
+                            AssignTarget::Method(expr) => out.push(expr),
                         }
                         out.push(&assignment.value);
                     }
@@ -1916,6 +1932,7 @@ fn rebind_statement(statement: &mut Statement, file_id: FileId) {
                     rebind_expr(&mut index.index, file_id);
                     rebind_span(&mut index.span, file_id);
                 }
+                AssignTarget::Method(expr) => rebind_expr(expr, file_id),
             }
             rebind_expr(&mut assignment.value, file_id);
             rebind_span(&mut assignment.span, file_id);
@@ -2371,6 +2388,10 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
                     indent(f, level + 1)?;
                     writeln!(f, "Index:")?;
                     fmt_expr(f, &index.index, level + 2)?;
+                }
+                AssignTarget::Method(expr) => {
+                    writeln!(f, "Assign {}method", op)?;
+                    fmt_expr(f, expr, level + 1)?;
                 }
             }
             fmt_expr(f, &assign.value, level + 1)

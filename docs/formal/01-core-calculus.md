@@ -983,29 +983,31 @@ carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
 
-**Accessor calls (ADR-0062, preview).** A *read accessor* is a method of the
-form
+**Accessor calls (ADR-0062, preview).** An accessor is a method of the form
 
 ```
-  A.f : fn ( borrow self : A, x1:T1, ..., xk:Tk ) -> borrow T { e_guard ; yield p_y }
+  A.f : fn ( self_mode self : A, x1:T1, ..., xk:Tk ) -> result_mode T { e_guard ; yield p_y }
 ```
 
 whose body is well-formed iff every non-diverging exit is the single trailing
 `yield` of a place `p_y` rooted at the receiver parameter — a projection chain
 `self.f…[e]…` (possibly through a nested accessor call), whose guards `e_guard`
 either diverge (trap, `@panic`) or fall through, with an empty post-`yield`
-continuation. Value parameters are by-value (prose `6.6:4`–`6.6:7`). A call
-produces a **borrowed place**, not a value:
+continuation. Value parameters are by-value (prose `6.6:4`–`6.6:7`). The
+receiver and result modes pair exactly (`borrow`/`borrow` or `inout`/`inout`),
+and an `inout` result requires a mutable addressable receiver. A call produces
+a mode-bearing place, not a value:
 
 ```
   Γ;Σ;Λ ⊢ receiver place p ⇒ A     fully-owned(Σ, p)
   for each i, threading Σ left-to-right (Σ0 = Σ):
       Γ;Σ_{i-1};Λ ⊢ e_i ⇒ Ti ⊣ Σi                       -- by-value guard inputs, §4.2
-  A.f is a well-formed read accessor with element type T
-  add (root(p), shared) to Λ_expr    -- extent: the enclosing FULL EXPRESSION, not the call
+  A.f is a well-formed accessor with element type T
+  mode(result_mode) = shared if result_mode = borrow, exclusive if result_mode = inout
+  add (root(p), mode(result_mode)) to Λ_expr    -- extent: the enclosing FULL EXPRESSION
   Λ_expr ∪ Λ_call of every call in that extent is CONSISTENT   (law of exclusivity, §5.4)
   ─────────────────────────────────────────────────────────────────────── (Accessor-Call)
-  Γ;Σ;Λ ⊢ p.f(e1, ..., ek) ⇒ borrowed-place T ⊣ Σk
+  Γ;Σ;Λ ⊢ p.f(e1, ..., ek) ⇒ place(mode(result_mode), T) ⊣ Σk
 ```
 
 The **full expression** of an occurrence (RUE-1279 — the loan extent above,
@@ -1045,6 +1047,16 @@ allocation store would yield `view⟨A | o, k⟩`, §6.13.2 — deferred to the 
 phase, RUE-1017). No call frame is pushed and no calling convention for
 "returning a place" exists; that absence is the RUE-1012 forward-compatibility
 contract.
+
+For an exclusive result, assignment through the yielded place is a place write:
+the right-hand side is evaluated first, then the destination's old value is
+dropped, then the new value is stored. The ordinary linear-overwrite premise
+therefore applies to the yielded destination; a live linear value cannot be
+silently overwritten unless reinitialization is proven. Shared results may
+coexist, while an exclusive result conflicts with every shared or exclusive
+loan on the same root in either evaluation order. This phase remains
+root-granular and excludes coroutine bodies, `Option(inout T)`, and
+path-granular disjointness.
 
 ---
 
@@ -2229,7 +2241,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1/6/14, 4.3:1/2/5/6, 4.3a:3/4, 4.4:2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7, 6.1:36 |
-| §5.8 (Accessor-Call) + accessor body WF (preview, ADR-0062) | 6.6:2–6.6:12 |
+| §5.8 (Accessor-Call) + accessor body WF (preview, ADR-0062) | 6.6:2–6.6:17 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72, 3.8:77 |

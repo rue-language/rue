@@ -438,6 +438,8 @@ pub(crate) struct MethodShape {
     pub(crate) has_self: bool,
     pub(crate) self_mode: SemanticParameterMode,
     pub(crate) is_accessor: bool,
+    pub(crate) returns_borrow: bool,
+    pub(crate) returns_inout: bool,
 }
 
 impl Default for MethodShape {
@@ -446,6 +448,8 @@ impl Default for MethodShape {
             has_self: true,
             self_mode: SemanticParameterMode::Value,
             is_accessor: false,
+            returns_borrow: false,
+            returns_inout: false,
         }
     }
 }
@@ -613,6 +617,8 @@ impl ProviderFixture {
                 has_self: shape.has_self,
                 self_mode: shape.self_mode,
                 is_accessor: shape.is_accessor,
+                returns_borrow: shape.returns_borrow,
+                returns_inout: shape.returns_inout,
             },
         );
         key

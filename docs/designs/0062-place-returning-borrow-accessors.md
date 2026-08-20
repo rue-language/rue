@@ -95,7 +95,7 @@ projection of its borrowed receiver. Phase 1 is read-only:
 
 ```rue
 // Phase 1 (shared):    receiver borrow self  →  shared result borrow
-// Phase 2 (exclusive): receiver inout  self  →  exclusive result borrow
+// Phase 2 (exclusive): receiver inout self  →  exclusive result inout
 fn get_ref(borrow self, i: u64) -> borrow T { … }
 ```
 
@@ -256,12 +256,12 @@ sugar can still be layered on top later without disturbing this choice.)
 
 Tracked in Linear under the RUE-1015 epic:
 
-- [ ] **Phase 0: Ratify syntax; spec + grammar + preview gate scaffolding** — RUE-662
-- [ ] **Phase 1: Read accessors** (`borrow self` → shared result; parser,
+- [x] **Phase 0: Ratify syntax; spec + grammar + preview gate scaffolding** — RUE-662
+- [x] **Phase 1: Read accessors** (`borrow self` → shared result; parser,
       sema/AIR loan checking, mandatory inlining, formal-core amendment,
       spec coverage) — RUE-662
-- [ ] **Phase 2: Mutable accessors** (`inout self` → exclusive result;
-      assignment through the result) — RUE-1016 (blocked by RUE-662)
+- [x] **Phase 2: Mutable accessors** (`inout self` → exclusive result;
+      assignment through the result) — RUE-1016
 - [ ] **Phase 3: std adoption** (`ArrayBuf.get_ref` + E0711 diagnostic
       pointing at it; grid/deque/intmap accessors; owned-children tree
       example replacing an arena) — RUE-1017 (blocked by RUE-662)

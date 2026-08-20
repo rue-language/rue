@@ -569,10 +569,10 @@ impl<S> RirTypeSyntaxArena<S> {
                                 "anonymous receiver mode is invalid",
                             ));
                         }
-                        if header[2] > 1 {
+                        if header[2] > 2 {
                             return Err(invalid(
                                 Some(owner_ref),
-                                "anonymous borrow-return flag is invalid",
+                                "anonymous accessor result mode is invalid",
                             ));
                         }
                         position += 4;
@@ -766,7 +766,19 @@ impl<S: Clone + Eq + Hash> RirTypeSyntaxBuilder<S> {
                         .as_ref()
                         .map_or(u32::MAX, |receiver| stable_param_mode(receiver.mode));
                     method_words.push(receiver);
-                    method_words.push(u32::from(method.borrow_return.is_some()));
+                    // Anonymous methods use the existing result-mode header
+                    // word: 0 = by-value, 1 = borrow, 2 = inout. Keeping the
+                    // mode in the type-syntax carrier makes invalid anonymous
+                    // mutable accessors visible to the same declaration seam.
+                    method_words.push(
+                        if method.place_return.is_some_and(|mode| mode.is_borrow()) {
+                            1
+                        } else if method.place_return.is_some_and(|mode| mode.is_inout()) {
+                            2
+                        } else {
+                            0
+                        },
+                    );
                     method_words.push(
                         u32::try_from(method.params.len())
                             .map_err(|_| RirTypeSyntaxBuildError::TooMuchPayload)?,

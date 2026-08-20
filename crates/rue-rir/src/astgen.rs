@@ -748,7 +748,7 @@ impl<'a> AstGen<'a> {
         // Methods cannot be marked unchecked (that's a function-level modifier).
         let decl = self
             .rir
-            .add_fn_decl(
+            .add_fn_decl_with_return_modes(
                 &directives,
                 false,
                 false,
@@ -762,7 +762,8 @@ impl<'a> AstGen<'a> {
                 has_self,
                 self_mode,
                 self_is_mut,
-                method.borrow_return.is_some(),
+                method.place_return.is_some_and(|mode| mode.is_borrow()),
+                method.place_return.is_some_and(|mode| mode.is_inout()),
                 method.span,
             )
             .record_failure(&mut self.payload_error);
@@ -857,7 +858,7 @@ impl<'a> AstGen<'a> {
         // Regular functions don't have a self receiver
         let decl = self
             .rir
-            .add_fn_decl(
+            .add_fn_decl_with_return_modes(
                 &directives,
                 func.visibility == Visibility::Public,
                 func.is_unchecked,
@@ -871,7 +872,8 @@ impl<'a> AstGen<'a> {
                 false,
                 RirParamMode::Normal,
                 false,
-                func.borrow_return.is_some(),
+                func.place_return.is_some_and(|mode| mode.is_borrow()),
+                func.place_return.is_some_and(|mode| mode.is_inout()),
                 func.span,
             )
             .record_failure(&mut self.payload_error);
@@ -2064,6 +2066,14 @@ impl<'a> AstGen<'a> {
                             span: assign.span,
                         })
                     }
+                    AssignTarget::Method(expr) => {
+                        let base =
+                            self.gen_expr_at(crate::RirStructuralPathSegment::Operand(1), expr);
+                        self.rir.add_inst(Inst {
+                            data: InstData::PlaceSet { place: base, value },
+                            span: assign.span,
+                        })
+                    }
                 }
             }
             Statement::Expr(expr) => {
@@ -2147,6 +2157,10 @@ impl<'a> AstGen<'a> {
                 });
                 CompoundPlace::Projected { root, steps }
             }
+            AssignTarget::Method(expr) => CompoundPlace::Accessor(self.gen_expr_at(
+                crate::RirStructuralPathSegment::Operand(COMPOUND_ROOT_SEGMENT),
+                expr,
+            )),
         }
     }
 
@@ -2240,6 +2254,7 @@ impl<'a> AstGen<'a> {
                     let base = this.gen_place_root(root);
                     this.gen_place_projections(base, steps)
                 }
+                CompoundPlace::Accessor(place) => *place,
             },
         )
     }
@@ -2282,6 +2297,13 @@ impl<'a> AstGen<'a> {
                 );
                 self.rir.add_inst(Inst { data, span })
             }
+            CompoundPlace::Accessor(place) => self.rir.add_inst(Inst {
+                data: InstData::PlaceSet {
+                    place: *place,
+                    value,
+                },
+                span,
+            }),
         }
     }
 
@@ -2366,6 +2388,9 @@ enum CompoundPlace<'t> {
         root: CompoundRoot<'t>,
         steps: Vec<CompoundStep<'t>>,
     },
+    /// An accessor result is already a yielded place; evaluate it once and
+    /// reuse that value for the read and the typed place write.
+    Accessor(InstRef),
 }
 
 /// The base a projected place bottoms out in.

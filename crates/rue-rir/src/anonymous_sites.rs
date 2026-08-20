@@ -119,6 +119,9 @@ impl SiteWalker {
                         self.at(Seg::Operand(1), |this| this.walk_expr(&index.base));
                         self.at(Seg::Operand(2), |this| this.walk_expr(&index.index));
                     }
+                    AssignTarget::Method(expr) => {
+                        self.at(Seg::Operand(1), |this| this.walk_expr(expr));
+                    }
                 }
             }
             // A bare expression statement is lowered by `gen_expr` with no extra

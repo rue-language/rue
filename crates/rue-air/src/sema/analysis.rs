@@ -309,12 +309,11 @@ where
 
     for arg in args {
         let arg = &*arg;
-        // A `-> borrow T` accessor call is a place for `borrow` arguments
-        // (ADR-0062): it roots at its receiver's root and joins the shared
-        // set. `inout` accessor results stay rejected as non-lvalues (the
-        // exclusive form is the RUE-1016 phase).
+        // An accessor call is a place for both `borrow` and `inout` arguments
+        // (ADR-0062/RUE-1016): it roots at its receiver's root and joins the
+        // corresponding exclusivity set.
         let maybe_var_symbol = root_variable_of(rir, arg.value).or_else(|| {
-            arg.is_borrow()
+            (arg.is_borrow() || arg.is_inout())
                 .then(|| resolve_borrow_root(arg.value))
                 .flatten()
         });

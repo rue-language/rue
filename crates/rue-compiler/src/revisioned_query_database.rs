@@ -10730,6 +10730,7 @@ fn resolve_parsed_semantic_signature(
             is_extern,
             is_c_export,
             is_accessor,
+            accessor_result_mode,
             accessor_body,
             accessor_cycle,
             ..
@@ -10769,8 +10770,10 @@ fn resolve_parsed_semantic_signature(
                         }
                     }
                 };
-                if let Some(violation) = rules::accessor_signature(
+                if let Some(violation) = rules::accessor_signature_for_mode(
                     receiver,
+                    *accessor_result_mode
+                        == crate::declaration_candidate::DeclarationParameterMode::Inout,
                     parameters.iter().map(|parameter| {
                         if parameter.is_comptime {
                             return AccessorParameterForm::Comptime;
@@ -11024,6 +11027,11 @@ fn resolve_parsed_semantic_signature(
                     crate::declaration_candidate::DeclarationParameterMode::Inout => M::Inout,
                 },
                 is_accessor: *is_accessor,
+                accessor_result_mode: match accessor_result_mode {
+                    crate::declaration_candidate::DeclarationParameterMode::Value => M::Value,
+                    crate::declaration_candidate::DeclarationParameterMode::Borrow => M::Borrow,
+                    crate::declaration_candidate::DeclarationParameterMode::Inout => M::Inout,
+                },
                 is_unchecked: *is_unchecked,
                 is_extern: *is_extern,
                 is_c_export: *is_c_export,
@@ -22668,6 +22676,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             has_self,
             self_mode,
             is_accessor,
+            accessor_result_mode,
             ..
         } = signature.signature
         else {
@@ -22688,6 +22697,10 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             has_self,
             self_mode,
             is_accessor,
+            returns_borrow: accessor_result_mode
+                == crate::durable_semantics::DurableParameterMode::Borrow,
+            returns_inout: accessor_result_mode
+                == crate::durable_semantics::DurableParameterMode::Inout,
         })
     }
 
@@ -25222,6 +25235,8 @@ pub(crate) mod test_support {
                 has_self: *has_self,
                 self_mode: *self_mode,
                 is_accessor: false,
+                returns_borrow: false,
+                returns_inout: false,
             })
         }
     }
@@ -27378,6 +27393,7 @@ fn main() -> i32 {
                         is_unchecked,
                         is_extern,
                         is_c_export,
+                        ..
                     } = signature
                     else {
                         panic!("free must project a callable signature: {signature:?}")

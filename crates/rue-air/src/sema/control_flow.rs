@@ -1890,7 +1890,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze a return statement.
-    /// Analyze a `yield` — the exit form of a `-> borrow T` accessor body
+    /// Analyze a `yield` — the exit form of a place-returning accessor body
     /// (ADR-0062). Outside an accessor body it is E0256; inside one, only the
     /// body's single trailing `yield` is legal (E0254 otherwise). The
     /// trailing `yield` of an *inlined* accessor body never reaches this
@@ -2004,7 +2004,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .and_then(|struct_id| {
                             self.call_facts().call_method_info(struct_id, *method)
                         })
-                        .is_some_and(|info| info.returns_borrow);
+                        .is_some_and(|info| info.returns_borrow || info.returns_inout);
                     let link = if is_accessor {
                         AccessorMethodLink::Accessor
                     } else {
@@ -2156,6 +2156,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // clears. The tail expression's loans are part of the enclosing
             // full expression and survive the block.
             let expression_loans_before = ctx.expression_loans.len();
+            let expression_shared_reads_before = ctx.expression_shared_reads.len();
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
             } else {
@@ -2163,6 +2164,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             if !is_last {
                 ctx.expression_loans.truncate(expression_loans_before);
+                ctx.expression_shared_reads
+                    .truncate(expression_shared_reads_before);
             }
             let result = match outcome {
                 Ok(result) => result,

@@ -661,6 +661,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 self_mode,
                 self_is_mut,
                 returns_borrow,
+                returns_inout,
                 ..
             } = method_inst.data
             else {
@@ -669,7 +670,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             let key = (struct_id, method_name);
             // Accessors are not supported on anonymous structs (ADR-0062
             // phase 1).
-            if !seen_methods.insert(method_name) || self.has_method(key) || returns_borrow {
+            if !seen_methods.insert(method_name)
+                || self.has_method(key)
+                || returns_borrow
+                || returns_inout
+            {
                 return None;
             }
             let parameters = self.body_rir_ref().params(&params).to_vec();
@@ -716,6 +721,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     body,
                     span: method_inst.span,
                     returns_borrow: false,
+                    returns_inout: false,
                 },
             ));
         }
@@ -1612,6 +1618,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self_mode: RirParamMode,
         self_is_mut: bool,
         returns_borrow: bool,
+        returns_inout: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -1647,7 +1654,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             struct_type,
             self_is_mut,
             false,
-            returns_borrow,
+            returns_borrow || returns_inout,
         )
     }
 
@@ -2123,7 +2130,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: AHashMap::new(),
+            accessor_place_refs: AHashMap::new(),
             expression_loans: Vec::new(),
+            expression_shared_reads: Vec::new(),
             inline_resolved_types: Vec::new(),
             place_aliases: AHashMap::new(),
             try_operand: false,

@@ -495,7 +495,8 @@ pub(crate) struct AliasProjection {
 
 /// A name bound to a caller place during accessor inlining (ADR-0062).
 ///
-/// While a `-> borrow T` accessor call is expanded at its call site, the
+/// While a place-returning accessor call (`-> borrow T` or `-> inout T`) is
+/// expanded at its call site, the
 /// accessor body's `self` resolves to the *caller's* receiver place: the
 /// place tracer substitutes this alias where the body says `self`, so
 /// `self.f` composes to `<receiver place>.f` rooted at the caller's own
@@ -665,7 +666,7 @@ pub(crate) struct AnalysisContext<'a> {
     /// call expansion (ADR-0062) can run type inference for the accessor's
     /// body on demand before splicing it into the caller.
     pub infer_ctx: &'a super::inference_ctx::InferenceContext,
-    /// When analyzing a `-> borrow T` accessor body, the body block's single
+    /// When analyzing a place-returning accessor body, the body block's single
     /// trailing `yield` instruction — the only `yield` the body may contain.
     /// `None` outside accessor bodies; a `yield` analyzed while this is
     /// `None` is E0256, and one that is not this exact instruction is E0254.
@@ -676,13 +677,20 @@ pub(crate) struct AnalysisContext<'a> {
     /// consult this after analyzing an operand to reject binding a borrowed
     /// place beyond its full expression, naming the offending accessor.
     pub accessor_call_insts: AHashMap<InstRef, (Spur, Spur)>,
+    /// AIR place handles for accessor calls already materialized in this
+    /// expression. Compound assignment reuses the same yielded place rather
+    /// than expanding and loaning the accessor a second time.
+    pub accessor_place_refs: AHashMap<InstRef, (crate::inst::AirPlaceRef, Spur, Type, bool)>,
     /// Active accessor-result loans for the current full expression
-    /// (ADR-0062): each entry is the receiver root of an expanded accessor
-    /// call, shared mode, together with the call span. The statement loop
+    /// (ADR-0062): each entry is the receiver root, call span, and shared or
+    /// exclusive mode of an expanded accessor call. The statement loop
     /// truncates this to its pre-statement length after every statement, so
     /// an entry's extent is exactly the enclosing full expression. An
-    /// exclusive use of a listed root within that extent is E0259.
-    pub expression_loans: Vec<(Spur, Span)>,
+    /// incompatible use of a listed root within that extent is E0259.
+    pub expression_loans: Vec<(Spur, Span, CallLoanKind)>,
+    /// Ordinary shared reads in the current full expression. An exclusive
+    /// accessor result conflicts with these reads in either evaluation order.
+    pub expression_shared_reads: Vec<(Spur, Span)>,
     /// Resolved-type overlays for accessor bodies currently being inlined,
     /// innermost last. `resolved_type_of` consults these before the body's
     /// own `resolved_types`, letting the caller's analysis walk accessor-body
@@ -925,7 +933,9 @@ impl<'a> AnalysisContext<'a> {
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),
+            accessor_place_refs: self.accessor_place_refs.clone(),
             expression_loans: self.expression_loans.clone(),
+            expression_shared_reads: self.expression_shared_reads.clone(),
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),
             try_operand: false,

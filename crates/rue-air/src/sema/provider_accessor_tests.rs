@@ -39,6 +39,18 @@ fn accessor_shape() -> MethodShape {
         has_self: true,
         self_mode: SemanticParameterMode::Borrow,
         is_accessor: true,
+        returns_borrow: true,
+        returns_inout: false,
+    }
+}
+
+fn mutable_accessor_shape() -> MethodShape {
+    MethodShape {
+        has_self: true,
+        self_mode: SemanticParameterMode::Inout,
+        is_accessor: true,
+        returns_borrow: false,
+        returns_inout: true,
     }
 }
 
@@ -87,6 +99,56 @@ fn accessor_call_count(air: &crate::ValidatedAir) -> usize {
     air.iter()
         .filter(|(_, inst)| matches!(inst.data, AirInstData::AccessorCall { .. }))
         .count()
+}
+
+#[test]
+fn provider_mutable_accessor_marks_inout_receiver_and_place_result() {
+    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let grid = fixture.declare_struct(
+        "Grid",
+        vec![(
+            "cells",
+            SemanticImportType::Array {
+                element: Box::new(SemanticImportType::I64),
+                len: 2,
+            },
+        )],
+        false,
+    );
+    fixture.declare_method_with(
+        &grid,
+        "at_mut",
+        vec![value_param("i", SemanticImportType::U64)],
+        SemanticImportType::I64,
+        mutable_accessor_shape(),
+    );
+    fixture.declare_function(
+        "set",
+        vec![mode_param(
+            "x",
+            SemanticImportType::I64,
+            SemanticParameterMode::Inout,
+        )],
+        SemanticImportType::Unit,
+    );
+    fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
+    let body = fixture
+        .analyze(
+            "fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2] };
+    set(inout g.at_mut(1));
+    0
+}",
+            "main",
+        )
+        .expect("provider mutable accessor compiles");
+    assert_eq!(accessor_call_count(&body.function.air), 1);
+    assert!(
+        body.function
+            .air
+            .iter()
+            .any(|(_, inst)| matches!(inst.data, AirInstData::PlaceRead { .. }))
+    );
 }
 
 // Migrated from `tests::accessor_call_inlines_with_no_call_shape`: a call
@@ -664,7 +726,8 @@ fn free_function_cannot_be_an_accessor() {
     assert!(
         matches!(
             &error.kind,
-            ErrorKind::AccessorRequiresBorrowSelf { found } if found == "a free function"
+            ErrorKind::AccessorRequiresBorrowSelf { found, .. }
+                if found.contains("a free function")
         ),
         "unexpected diagnostic: {error:?}"
     );
@@ -689,7 +752,8 @@ fn free_function_accessor_without_yield_is_rejected() {
     assert!(
         matches!(
             &error.kind,
-            ErrorKind::AccessorRequiresBorrowSelf { found } if found == "a free function"
+            ErrorKind::AccessorRequiresBorrowSelf { found, .. }
+                if found.contains("a free function")
         ),
         "unexpected diagnostic: {error:?}"
     );
