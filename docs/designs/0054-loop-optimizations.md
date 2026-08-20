@@ -6,7 +6,7 @@ tags: [compiler, codegen, optimization]
 feature-flag: none
 created: 2026-07-16
 accepted:
-implemented:
+implemented: Phase 3 (RUE-928)
 spec-sections: []
 superseded-by:
 ---
@@ -24,9 +24,9 @@ issues below. Phases 1 and 2 shipped in July 2026: natural-loop analysis and
 preheader materialization landed with RUE-926
 (`crates/rue-cfg/src/opt/loops.rs`) and trap-free LICM landed with RUE-927
 (`crates/rue-cfg/src/opt/licm.rs`, run at `-O3` from `opt/mod.rs`), both built
-on the RUE-914 dominator tree. Constant-trip unrolling (RUE-928, Phase 3) and
-guarded trapping-op hoisting (RUE-934, Phase 4) remain tracked and
-unimplemented.
+on the RUE-914 dominator tree. Constant-trip unrolling (RUE-928, Phase 3) is
+implemented; guarded trapping-op hoisting (RUE-934, Phase 4) remains tracked
+and unimplemented.
 
 ADR-0044 places loop-invariant code motion (LICM) and unrolling at `-O3` (the
 speculative, size-spending, speed-chasing tier). This note designs the shared
@@ -423,10 +423,11 @@ implementation detail, but the *requirement* is not optional.
 - [x] **Phase 2: LICM (trap-free only)** — hoist pure invariant ops; never hoist
   trapping ops; differential trap-safety cases. `-O3`. (landed, RUE-927,
   July 2026)
-- [ ] **Phase 3: Constant-trip full unrolling** — canonical shape only (single
+- [x] **Phase 3: Constant-trip full unrolling** — canonical shape only (single
   header, single latch, recognized IV, no unsupported exits); full CFG-subgraph
   cloning; mandatory post-unroll const-fold/simplify/DCE cleanup; under the size
-  budget; shared code-growth budget with ADR-0049 inlining. `-O3`. (file RUE-928)
+  budget; shared code-growth budget with ADR-0049 inlining. `-O3`. (landed,
+  RUE-928, August 2026)
 - [ ] **Phase 4 (relaxation): guarded trapping-op hoisting** — after loop
   rotation/guard analysis exists. (file RUE-934)
 

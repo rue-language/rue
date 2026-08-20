@@ -162,7 +162,7 @@ fn has_side_effects(cfg: &Cfg, value: CfgValue) -> bool {
 /// Calls the provided function for each value used by the terminator.
 /// This avoids allocating a Vec for each call.
 #[inline]
-fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl FnMut(CfgValue)) {
+pub(super) fn visit_terminator_uses(cfg: &Cfg, term: &Terminator, mut f: impl FnMut(CfgValue)) {
     match term {
         Terminator::Goto { args: _, .. } => {
             for &arg in cfg.get_goto_args(term) {

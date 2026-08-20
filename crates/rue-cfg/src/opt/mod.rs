@@ -13,7 +13,8 @@
 //! - `-O2`: `-O1` plus value forwarding / copy propagation (RUE-914) and
 //!   block-local common-subexpression elimination (RUE-913)
 //! - `-O3`: `-O2` plus loop-invariant code motion (RUE-927), which hoists
-//!   trap-free invariant computations out of loops into their preheaders
+//!   trap-free invariant computations out of loops into their preheaders, and
+//!   bounded constant-trip full unrolling (RUE-928)
 //!
 //! ## Pipeline
 //!
@@ -33,6 +34,7 @@ mod licm;
 mod loops;
 mod peephole;
 mod simplify;
+mod unroll;
 
 use crate::{CfgEditError, CfgVerificationError, ValidatedCfg};
 use rue_air::FrozenTypeInternPool;
@@ -67,10 +69,9 @@ pub enum OptLevel {
 
     /// Aggressive optimizations (`-O3`).
     ///
-    /// Superset of `-O2`: adds loop-invariant code motion (RUE-927), which
-    /// hoists trap-free loop-invariant computations into each loop's preheader.
-    /// Trapping invariant ops are never moved (ADR-0054 §2). Further speculative
-    /// transforms (unrolling, RUE-928) will be added here.
+    /// Superset of `-O2`: adds loop-invariant code motion (RUE-927), bounded
+    /// constant-trip full unrolling (RUE-928), and their mandatory cleanup.
+    /// Trapping invariant ops are never moved (ADR-0054 §2).
     O3,
 }
 
@@ -115,6 +116,14 @@ pub enum CfgOptimizationError {
     Edit(CfgEditError),
     /// The optimized graph failed the publication-time verification boundary.
     Verification(CfgVerificationError),
+}
+
+/// Bounded optimizer work published alongside the optimized CFG.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct OptimizationStats {
+    pub loops_analyzed: u64,
+    pub loops_unrolled: u64,
+    pub budget_refusals: u64,
 }
 
 impl std::fmt::Display for CfgOptimizationError {
@@ -199,7 +208,16 @@ pub fn optimize(
     level: OptLevel,
     type_pool: &FrozenTypeInternPool,
 ) -> Result<ValidatedCfg, CfgOptimizationError> {
+    optimize_with_stats(cfg, level, type_pool).map(|(cfg, _)| cfg)
+}
+
+pub fn optimize_with_stats(
+    cfg: ValidatedCfg,
+    level: OptLevel,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<(ValidatedCfg, OptimizationStats), CfgOptimizationError> {
     let mut cfg = cfg.into_editor();
+    let mut stats = OptimizationStats::default();
 
     let pass_result = (|| {
         match level {
@@ -265,6 +283,16 @@ pub fn optimize(
                 // + loops per the ADR's recompute rule.
                 if matches!(level, OptLevel::O3) {
                     licm::run(&mut cfg, type_pool)?;
+                    // Full constant-trip unrolling follows LICM and is
+                    // followed by a mandatory cleanup fixpoint. Analyses are
+                    // recomputed by the pass after every CFG mutation.
+                    let unroll = unroll::run(&mut cfg)?;
+                    stats.loops_analyzed = unroll.loops_analyzed;
+                    stats.loops_unrolled = unroll.loops_unrolled;
+                    stats.budget_refusals = unroll.budget_refusals;
+                    constopt::run(&mut cfg);
+                    simplify::run(&mut cfg)?;
+                    dce::run(&mut cfg);
                 }
 
                 // Dead code elimination: remove unused values and unreachable blocks
@@ -274,7 +302,7 @@ pub fn optimize(
         Ok(())
     })();
 
-    publish_optimization(cfg, pass_result, type_pool)
+    publish_optimization(cfg, pass_result, type_pool).map(|cfg| (cfg, stats))
 }
 
 fn publish_optimization(
