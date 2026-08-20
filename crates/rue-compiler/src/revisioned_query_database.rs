@@ -37037,8 +37037,8 @@ fn main() -> i32 {
 
     // RUE-1091 r6b: the ENUM analog of the anonymous mint. The pool mints
     // through `mint_anon_enum` from the durable shape, spelling the
-    // `__anon_enum_{digest} { Variant(T), … }` payload-rendering name. The pool
-    // is fed the RAW projected identity (empty-argument specialization wrapper
+    // `__anon_enum_{digest}` bare source symbol. The pool is fed the RAW
+    // projected identity (empty-argument specialization wrapper
     // retained), so the enum path exercises entry canonicalization too.
     #[test]
     fn provider_endpoint_facts_anonymous_enum_mints_from_durable_identity() {
@@ -37084,6 +37084,13 @@ fn main() -> i32 {
         );
         // RAW identity — the wrapper collapse is the pool's entry obligation.
         let durable_identity = projection.anonymous_nominals[0].identity.clone();
+        let durable_source_symbol = projection.anonymous_nominals[0].source_symbol().clone();
+        let durable_drop_glue_symbol =
+            crate::local_semantic_materialization::rooted_callable_symbol(
+                &crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::Nominal(
+                    crate::NominalInstanceKey::Anonymous(durable_identity.clone()),
+                ))),
+            );
 
         let rir = &stages.rir;
         let rir_ref = rir.rir();
@@ -37093,6 +37100,8 @@ fn main() -> i32 {
         let adapter = DurableDeclSource::from_declarations(&projection.declarations)
             .with_anonymous_nominals(&projection.anonymous_nominals);
         let identity_for_probe = durable_identity.clone();
+        let expected_source_symbol = durable_source_symbol.clone();
+        let expected_drop_glue_symbol = durable_drop_glue_symbol.clone();
 
         let outcome = database.probe_ready_body_facts(
             revision,
@@ -37137,24 +37146,39 @@ fn main() -> i32 {
                     .expect("the seeded anonymous enum arm resolves");
                 assert_eq!(via_arm, minted, "the arm and direct mint agree");
 
-                facts.with_type_pool(|pool| endpoint_nominal_render(pool, minted))
+                facts.with_type_pool(|pool| {
+                    let render = endpoint_nominal_render(pool, minted);
+                    let frozen = pool.clone().freeze();
+                    let drop_glue = rue_air::drop_glue_names::enum_drop_glue_name(
+                        minted.as_enum().expect("the minted nominal is an enum"),
+                        &frozen,
+                    );
+                    (render, drop_glue)
+                })
             },
         );
-        let pool_render = outcome.result;
+        let (pool_render, pool_drop_glue_symbol) = outcome.result;
 
-        // The full materialization is pinned: the payload-rendering
-        // `__anon_enum_{digest} { … }` name (stable digest over the durable
-        // identity), copyability, visibility, and variant vocabulary.
+        assert_eq!(
+            pool_render.symbol,
+            expected_source_symbol.as_ref(),
+            "the live pool enum symbol must equal the durable source symbol"
+        );
+        assert_eq!(
+            pool_drop_glue_symbol,
+            expected_drop_glue_symbol.as_ref(),
+            "the live enum drop glue must equal the durable DropGlue symbol"
+        );
+
+        // The full materialization is pinned: the bare `__anon_enum_{digest}`
+        // name (stable digest over the durable identity), copyability,
+        // visibility, and variant vocabulary.
         assert!(
             pool_render.display.starts_with("__anon_enum_"),
             "the pool spells the enum digest name: {}",
             pool_render.display
         );
-        assert!(
-            pool_render.display.ends_with(" { Some(i32), None }"),
-            "the pool renders variant payloads into the name: {}",
-            pool_render.display
-        );
+        assert_eq!(pool_render.display.len(), "__anon_enum_".len() + 32);
         assert_eq!(
             pool_render
                 .members
@@ -37178,7 +37202,7 @@ fn main() -> i32 {
     // real `DurableDeclSource` adapter, starting from the declaration-level
     // durable truth (the nucleus `ComptimeCall` terminals the production demand
     // loop roots). The full materializations are pinned: the digest-spelled
-    // `__anon_enum_{digest} { … }` names, copyability, visibility, and variant
+    // `__anon_enum_{digest}` names, copyability, visibility, and variant
     // vocabulary.
     //
     // The export-as-produced ruling: the pool records each installed canonical
@@ -37388,16 +37412,8 @@ fn main() -> i32 {
             assert!(!render.is_pub, "an anonymous nominal is not `pub`");
             assert!(render.is_copy, "an integer-payload Option enum is copyable");
         }
-        assert!(
-            pool_i64_render.display.ends_with(" { Some(i64), None }"),
-            "the i64 registry entry is the Option(i64) enum: {}",
-            pool_i64_render.display
-        );
-        assert!(
-            pool_u32_render.display.ends_with(" { Some(u32), None }"),
-            "the u32 registry entry is the Option(u32) enum: {}",
-            pool_u32_render.display
-        );
+        assert_eq!(pool_i64_render.display.len(), "__anon_enum_".len() + 32);
+        assert_eq!(pool_u32_render.display.len(), "__anon_enum_".len() + 32);
         let mut registry_renders = vec![pool_i64_render, pool_u32_render];
         registry_renders.sort_by(|a, b| a.display.cmp(&b.display));
         assert_eq!(

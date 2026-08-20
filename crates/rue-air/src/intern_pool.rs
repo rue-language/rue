@@ -2414,7 +2414,7 @@ impl TypeInternPoolInner {
         };
         // See `struct_symbol_name`: unconditional qualification, with the
         // reserved built-in enums and the registry-marked generated anonymous
-        // enums (`__anon_enum_<digest> { … }`) keeping their bare names.
+        // enums (`__anon_enum_<digest>`) keeping their bare names.
         if rue_builtins::is_reserved_enum_name(&data.def.name) || self.is_anonymous_enum(id) {
             return data.def.name.to_string();
         }
