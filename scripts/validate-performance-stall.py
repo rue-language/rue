@@ -84,18 +84,58 @@ class HistoryUnavailable(Exception):
     """A measured commit is not present in the checkout's history."""
 
 
-def newest_plotted(data: dict) -> list[tuple[str, str, str]]:
-    """Return (platform, commit, finished_at) for each platform's newest point.
+def is_measurement(point: dict) -> bool:
+    """Whether a derived point contains at least one valid workload.
 
-    Points are ordered by measurement time within an epoch, and epochs are
-    ordered by identifier, so the newest point is the last point of the last
-    epoch that has any.
+    `derive` keeps a point for every accepted run so failures remain visible,
+    but leaves `workloads` empty when no valid sample survived.  Such a point
+    is useful collection-health evidence, not a current performance
+    measurement.  Partial runs still have one or more workload entries and
+    therefore remain measurements for staleness purposes.
+    """
+    return bool(point.get("workloads"))
+
+
+def unmeasured_platforms(data: dict) -> list[tuple[str, int, int]]:
+    """Return (platform, epoch, points) groups for all-unmeasured platforms.
+
+    This deliberately counts points before applying :func:`is_measurement`.
+    The distinction lets the gate tolerate a genuinely empty dashboard while
+    reporting a platform whose data branch contains only accepted records whose
+    samples all failed validation. A platform with at least one measurement
+    is omitted, even if it has newer empty records.
+    """
+    unmeasured = []
+    for platform in data.get("platforms", []):
+        groups = []
+        measured = False
+        for epoch in platform.get("epochs", []):
+            points = epoch.get("points", [])
+            if points:
+                groups.append(
+                    (platform["platform"], epoch.get("epoch"), len(points))
+                )
+                measured = measured or any(is_measurement(point) for point in points)
+        if groups and not measured:
+            unmeasured.extend(groups)
+    return unmeasured
+
+
+def newest_plotted(data: dict) -> list[tuple[str, str, str]]:
+    """Return (platform, commit, finished_at) for each platform's newest
+    measurement.
+
+    Empty points record collection failures but do not advance the published
+    performance series. Partial points are measurements because they retain
+    at least one valid workload and remain eligible here.
     """
     newest = []
     for platform in data.get("platforms", []):
         latest = None
         for epoch in platform.get("epochs", []):
             for point in epoch.get("points", []):
+                if not is_measurement(point):
+                    continue
                 if latest is None or point["finished_at"] > latest["finished_at"]:
                     latest = point
         if latest is not None:
@@ -104,16 +144,19 @@ def newest_plotted(data: dict) -> list[tuple[str, str, str]]:
 
 
 def newest_epochs(data: dict) -> list[tuple[str, dict]]:
-    """Return each platform's live epoch: the one holding its newest point.
+    """Return each platform's live epoch: the one holding its newest measurement.
 
     A retired epoch keeps whatever it published and is not the signal anyone
-    reads, so only the epoch still receiving points is held to publishing one.
+    reads, so only the epoch still receiving measurements is held to publishing
+    one. Empty points do not move a platform into a newer epoch.
     """
     live = []
     for platform in data.get("platforms", []):
         newest = None
         for epoch in platform.get("epochs", []):
             for point in epoch.get("points", []):
+                if not is_measurement(point):
+                    continue
                 if newest is None or point["finished_at"] > newest[0]:
                     newest = (point["finished_at"], epoch)
         if newest is not None:
@@ -135,7 +178,7 @@ def unindexed(data: dict) -> list[tuple[str, int, int]]:
     for platform, epoch in newest_epochs(data):
         if not epoch.get("baseline_commit"):
             continue
-        points = epoch.get("points", [])
+        points = [point for point in epoch.get("points", []) if is_measurement(point)]
         if points and not any(point.get("index") for point in points):
             missing.append((platform, epoch.get("epoch"), len(points)))
     return missing
@@ -170,7 +213,11 @@ def unpinned(
         if epoch.get("baseline_commit"):
             continue
         complete = sorted(
-            (point for point in epoch.get("points", []) if point.get("complete")),
+            (
+                point
+                for point in epoch.get("points", [])
+                if is_measurement(point) and point.get("complete")
+            ),
             key=lambda point: point["finished_at"],
         )
         if not complete:
@@ -317,6 +364,30 @@ def report_unindexed(missing: list[tuple[str, int, int]]) -> str:
     return "\n".join(lines)
 
 
+def report_unmeasured(published: list[tuple[str, int, int]]) -> str:
+    """Explain why published records with no measurements block the gate."""
+    lines = [
+        "The published performance records contain no measurements.",
+        "",
+    ]
+    for platform, epoch, points in published:
+        lines.append(
+            f"  {platform}: epoch {epoch} has {points} published point(s), "
+            "but none has a valid workload measurement"
+        )
+    lines += [
+        "",
+        "Records are present, so this is not the honest empty-dashboard state.",
+        "Every accepted run in the selected data has zero valid workloads, so",
+        "there is no measured commit whose age could make this gate pass.",
+        "",
+        "Check the collection-health failures and restore at least one valid",
+        "workload measurement. Once an older measurement is present, failed",
+        "records do not advance the series and the ordinary grace rule applies.",
+    ]
+    return "\n".join(lines)
+
+
 def report_unpinned(late: list[tuple[str, int, str, str, int]], max_points: int) -> str:
     lines = [
         "A collecting epoch has never pinned its baseline, so no index is published.",
@@ -381,6 +452,11 @@ def main() -> int:
     args = parser.parse_args()
 
     data = json.loads(args.data.read_text())
+
+    unmeasured = unmeasured_platforms(data)
+    if unmeasured:
+        print(report_unmeasured(unmeasured), file=sys.stderr)
+        return 1
 
     plotted = newest_plotted(data)
     if not plotted:
