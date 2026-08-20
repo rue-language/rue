@@ -1818,9 +1818,21 @@ fn finish_cfg_optimization(
         "cfg.optimize.nonzero-level",
         u64::from(key.opt_level != rue_cfg::OptLevel::O0),
     ));
-    match rue_cfg::opt::optimize(cfg, key.opt_level, type_pool) {
-        Ok(cfg) => {
+    match rue_cfg::opt::optimize_with_stats(cfg, key.opt_level, type_pool) {
+        Ok((cfg, stats)) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.optimize.loops-analyzed",
+                stats.loops_analyzed,
+            ));
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.optimize.loops-unrolled",
+                stats.loops_unrolled,
+            ));
+            context.record_work(rue_query::WorkItem::new(
+                "cfg.optimize.budget-refusals",
+                stats.budget_refusals,
+            ));
             QueryOutput::success(CfgValue::Available(Arc::new(build_record(cfg))))
         }
         Err(error) => {

@@ -936,3 +936,90 @@ fn main() -> i32 {
 """ }]
 stdout = "15\n"
 exit_code = 15
+
+# Constant-trip full unrolling (RUE-928): the canonical one-header/one-latch
+# loop is rewritten only at O3, while every observable result remains exact.
+[[case]]
+name = "unroll_constant_trip_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    let mut sum: i32 = 0;
+    while i < 4 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    @dbg(sum);
+    sum
+}
+""" }]
+stdout = "6\n"
+exit_code = 6
+
+# The third body iteration traps. A full clone must retain the trap and its
+# position rather than evaluating it early or deleting it.
+[[case]]
+name = "unroll_middle_iteration_trap_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    while i < 4 {
+        let d: i32 = i - 2;
+        let q: i32 = 10 / d;
+        @dbg(q);
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = "-5\n-10\n"
+exit_code = 101
+
+# Drops are observable through the destructor's debug marker and must retain
+# per-iteration ordering after the body is cloned.
+[[case]]
+name = "unroll_drop_observable_iteration_order_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Self { Self { v: x } }
+        drop fn(self) { @dbg(self.v); }
+    }
+}
+
+fn main() -> i32 {
+    let B = Box(i32);
+    let mut i: i32 = 0;
+    while i < 3 {
+        let b = B.make(i);
+        i = i + 1;
+    }
+    0
+}
+""" }]
+stdout = "0\n1\n2\n"
+exit_code = 0
+
+# A loop with an additional body exit is intentionally refused by the first
+# unroller; differential execution still pins unchanged behavior at O3.
+[[case]]
+name = "unroll_refused_extra_exit_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    let mut sum: i32 = 0;
+    while i < 4 {
+        if i == 2 { return sum; }
+        sum = sum + i;
+        i = i + 1;
+    }
+    sum
+}
+""" }]
+stdout = ""
+exit_code = 1

@@ -5368,6 +5368,9 @@ impl CompilerSession {
         work.cfg.optimization_attempts += batch_work("cfg.optimize.attempts");
         work.cfg.optimization_completions += batch_work("cfg.optimize.successes");
         work.cfg.optimized_level_attempts += batch_work("cfg.optimize.nonzero-level");
+        work.cfg.optimization_loops_analyzed += batch_work("cfg.optimize.loops-analyzed");
+        work.cfg.optimization_loops_unrolled += batch_work("cfg.optimize.loops-unrolled");
+        work.cfg.optimization_budget_refusals += batch_work("cfg.optimize.budget-refusals");
         work.cfg.cfg_warnings_emitted += batch_work("cfg.warnings");
         let optimized_reuses = executions
             .iter()
@@ -7235,6 +7238,39 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn o3_publishes_unrolled_work_for_canonical_slot_loop() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn main() -> i32 { let mut i: i32 = 0; while i < 3 { i = i + 1; } i }",
+            )],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let o2 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: OptLevel::O2,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert_eq!(o2.work().cfg.optimization_loops_unrolled, 0);
+        session.update(&source).into_result().unwrap();
+        let o3 = session
+            .rooted_cfg(&CompileOptions {
+                opt_level: OptLevel::O3,
+                ..CompileOptions::default()
+            })
+            .unwrap();
+        assert!(o3.work().cfg.optimization_loops_unrolled > 0);
+        assert!(
+            o3.work().cfg.optimization_loops_unrolled <= o3.work().cfg.optimization_loops_analyzed
+        );
+    }
+
     fn c_ffi_options() -> CompileOptions {
         CompileOptions {
             preview_features: PreviewFeatures::from([PreviewFeature::CFfi]),
@@ -8875,6 +8911,9 @@ mod tests {
         let cold = session.rooted_cfg(&options).unwrap();
         assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
         assert_eq!(cold.work().cfg.optimization_attempts, 3);
+        assert_eq!(cold.work().cfg.optimization_loops_analyzed, 0);
+        assert_eq!(cold.work().cfg.optimization_loops_unrolled, 0);
+        assert_eq!(cold.work().cfg.optimization_budget_refusals, 0);
         let cold_atoms = cold
             .functions()
             .iter()
