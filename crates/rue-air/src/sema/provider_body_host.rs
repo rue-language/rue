@@ -84,6 +84,7 @@ fn publish_provider_body_breakdown(
         precompute_alias_type_successes = precompute.alias_type_successes,
         precompute_inline_scan_pops = precompute.inline_scan_pops,
         precompute_inline_scan_child_edges = precompute.inline_scan_child_edges,
+        precompute_inline_scan_bodies = precompute.inline_scan_bodies,
         precompute_inline_raw_candidates = precompute.inline_raw_candidates,
         precompute_inline_final_candidates = precompute.inline_final_candidates,
         precompute_inline_eval_attempts = precompute.inline_eval_attempts,

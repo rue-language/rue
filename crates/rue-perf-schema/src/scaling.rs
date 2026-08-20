@@ -263,6 +263,8 @@ pub struct SemanticBodyStructureWork {
     pub precompute_alias_type_successes: u64,
     pub precompute_inline_scan_pops: u64,
     pub precompute_inline_scan_child_edges: u64,
+    #[serde(default)]
+    pub precompute_inline_scan_bodies: u64,
     pub precompute_inline_raw_candidates: u64,
     pub precompute_inline_final_candidates: u64,
     pub precompute_inline_eval_attempts: u64,
@@ -603,6 +605,41 @@ question = "small maintained compiler frontend"
         assert_eq!(
             decoded.semantic_body_structure,
             SemanticBodyStructureWork::default()
+        );
+    }
+
+    #[test]
+    fn older_semantic_body_structure_defaults_inline_scan_bodies() {
+        let mut structure = serde_json::to_value(SemanticBodyStructureWork {
+            precompute_inline_scan_bodies: 7,
+            ..SemanticBodyStructureWork::default()
+        })
+        .unwrap();
+        structure
+            .as_object_mut()
+            .unwrap()
+            .remove("precompute_inline_scan_bodies");
+        let decoded: SemanticBodyStructureWork = serde_json::from_value(structure).unwrap();
+        assert_eq!(decoded.precompute_inline_scan_bodies, 0);
+
+        let mut compiler = serde_json::to_value(CompilerWork {
+            semantic_body_structure: SemanticBodyStructureWork {
+                precompute_inline_scan_bodies: 7,
+                ..SemanticBodyStructureWork::default()
+            },
+            ..CompilerWork::default()
+        })
+        .unwrap();
+        compiler["semantic_body_structure"]
+            .as_object_mut()
+            .unwrap()
+            .remove("precompute_inline_scan_bodies");
+        let decoded: CompilerWork = serde_json::from_value(compiler).unwrap();
+        assert_eq!(
+            decoded
+                .semantic_body_structure
+                .precompute_inline_scan_bodies,
+            0
         );
     }
 
