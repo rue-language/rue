@@ -22,7 +22,7 @@ use crate::declaration_validation::{
     AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
     accessor_yield_root_error,
 };
-use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
+use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirPlaceBase, AirRef};
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
@@ -1923,6 +1923,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
+        // Trusted std accessors may yield the checked pointer-to-place bridge.
+        // Analyze the checked expression normally (so checked-depth and all
+        // pointer rules remain authoritative), then retain its pointer value
+        // as an indirect AIR place base. Mandatory accessor splicing embeds
+        // that ordinary place in the caller CFG; no accessor ABI is involved.
+        let bridge = match &self.body_rir_ref().get(operand).data {
+            InstData::Checked { expr } => matches!(
+                &self.body_rir_ref().get(*expr).data,
+                InstData::Intrinsic { name, .. } if *name == self.known_symbols().place
+            ),
+            _ => false,
+        };
+        if bridge {
+            let pointer = self.analyze_inst(air, operand, ctx)?;
+            let pointee = if let Some(id) = pointer.ty.as_ptr_const() {
+                self.body_type_pool().ptr_const_def(id)
+            } else if let Some(id) = pointer.ty.as_ptr_mut() {
+                self.body_type_pool().ptr_mut_def(id)
+            } else {
+                return Err(CompileError::new(
+                    accessor_yield_root_error(&AccessorYieldRootForm::Value),
+                    span,
+                ));
+            };
+            let place = air.make_place(AirPlaceBase::Indirect(pointer.air_ref), pointee, [])?;
+            let read = air.add_inst(crate::AirInst {
+                data: crate::AirInstData::PlaceRead { place },
+                ty: pointee,
+                span,
+            });
+            if !ctx.return_type.is_error() && !self.types_compatible(pointee, ctx.return_type) {
+                return Err(CompileError::new(
+                    ErrorKind::TypeMismatch {
+                        expected: ctx
+                            .return_type
+                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: pointee.safe_name_with_pool(Some(self.body_type_pool())),
+                    },
+                    span,
+                ));
+            }
+            return Ok(AnalysisResult::new(read, pointee));
+        }
+
         // The yielded place must be a projection chain rooted at the receiver
         // parameter (E0255). Checked syntactically before the operand is read
         // so a local or temporary is named as such rather than surfacing as a
@@ -1998,12 +2042,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // it decides every link: an unresolvable callee here is a
                     // plain method as far as 6.6:7 is concerned, since a
                     // legal link has to name an accessor.
-                    let is_accessor = ctx
+                    let resolved_method = ctx
                         .resolved_type_of(*receiver)
                         .and_then(|ty| ty.as_struct())
                         .and_then(|struct_id| {
                             self.call_facts().call_method_info(struct_id, *method)
-                        })
+                        });
+                    let is_accessor = resolved_method
                         .is_some_and(|info| info.returns_borrow || info.returns_inout);
                     let link = if is_accessor {
                         AccessorMethodLink::Accessor

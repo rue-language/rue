@@ -75,4 +75,10 @@ impl<M: Eq + Hash> ProviderModuleRegistry<M> {
     pub(in crate::sema) fn id_for_durable(&self, durable: &M) -> Option<ModuleId> {
         self.by_durable.get(durable).copied()
     }
+
+    pub(in crate::sema) fn durable_for_id(&self, id: ModuleId) -> Option<&M> {
+        self.by_durable
+            .iter()
+            .find_map(|(durable, candidate)| (*candidate == id).then_some(durable))
+    }
 }

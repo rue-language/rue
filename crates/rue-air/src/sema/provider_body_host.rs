@@ -356,6 +356,8 @@ pub struct SemanticProducedAnonymousMethodSignature {
     pub name: Arc<str>,
     pub has_self: bool,
     pub self_mode: crate::SemanticParameterMode,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
     pub parameters: Arc<
         [(
             SemanticProducedAnonymousMethodType,
@@ -577,6 +579,20 @@ pub enum DurableTryProducer {
 }
 
 pub trait DurableBodyLookupSource<K, M>: Clone {
+    /// Return the defining module for a body owner. The owner itself is not
+    /// necessarily registered as an imported module in the request-local
+    /// endpoint registry.
+    fn definition_module(&self, _definition: &K) -> Option<M> {
+        None
+    }
+
+    fn anonymous_definition_module(
+        &self,
+        _identity: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<M> {
+        None
+    }
+
     fn free_function(&self, current: &K, name: &str) -> Option<K>;
     fn value_const(&self, current: &K, name: &str) -> Option<K>;
     fn nominal(&self, current: &K, name: &str) -> Option<(K, crate::StableDefinitionKind)>;
@@ -1801,14 +1817,16 @@ where
             .get(&(struct_id, name))
             .copied()
         {
-            return Some(info);
+            return Some(self.recover_trusted_anonymous_accessor(struct_id, name, info));
         }
         if let Some(info) = self
             .endpoint
             .method_info(struct_id, name)
             .map(MethodCallInfo::from_body)
-            .or_else(|| self.named_method_info_for_symbol(struct_id, name))
         {
+            return Some(self.recover_trusted_anonymous_accessor(struct_id, name, info));
+        }
+        if let Some(info) = self.named_method_info_for_symbol(struct_id, name) {
             return Some(info);
         }
         let owner_type = Type::new_struct(struct_id);
@@ -1827,11 +1845,67 @@ where
             .borrow()
             .get(&(struct_id, name))
             .copied()
+            .map(|info| self.recover_trusted_anonymous_accessor(struct_id, name, info))
             .or_else(|| {
                 self.endpoint
                     .method_info(struct_id, name)
                     .map(MethodCallInfo::from_body)
+                    .map(|info| self.recover_trusted_anonymous_accessor(struct_id, name, info))
             })
+    }
+
+    fn recover_trusted_anonymous_accessor(
+        &self,
+        struct_id: StructId,
+        name: Spur,
+        mut info: MethodCallInfo,
+    ) -> MethodCallInfo {
+        if info.returns_borrow || info.returns_inout {
+            return info;
+        }
+        let owner_type = Type::new_struct(struct_id);
+        let durable = self
+            .durable_anonymous_types
+            .get(&owner_type)
+            .cloned()
+            .or_else(|| self.endpoint.durable_anonymous_identity(owner_type));
+        if let Some(durable) = durable {
+            let trusted = self
+                .source
+                .anonymous_definition_module(&durable)
+                .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
+            if trusted
+                && let Some(method) = self
+                    .source
+                    .anonymous_methods(&durable)
+                    .into_iter()
+                    .find(|method| method.name.as_ref() == self.interner.resolve(&name))
+            {
+                info.returns_borrow = method.returns_borrow;
+                info.returns_inout = method.returns_inout;
+                return info;
+            }
+        }
+        let definition = self.rir_struct_method_decl(struct_id, name);
+        let Some(definition) = definition else {
+            return info;
+        };
+        let trusted = self.endpoint_file_is_trusted_standard_library(
+            self.type_pool.struct_def(struct_id).file_id.index(),
+        );
+        if !trusted {
+            return info;
+        }
+        if let InstData::FnDecl {
+            returns_borrow,
+            returns_inout,
+            ..
+        } = &self.rir.rir().get(definition).data
+        {
+            info.returns_borrow = *returns_borrow;
+            info.returns_inout = *returns_inout;
+        }
+        info
     }
 
     fn const_info_for_symbol(&self, file: FileId, symbol: Spur) -> Option<ConstInfo> {
@@ -2517,6 +2591,8 @@ where
                                     name: Arc::from(self.interner.resolve(&method.name)),
                                     has_self: method.has_self,
                                     self_mode: mode(method.self_mode),
+                                    returns_borrow: method.returns_borrow,
+                                    returns_inout: method.returns_inout,
                                     parameters: method
                                         .param_types
                                         .iter()
@@ -2711,6 +2787,12 @@ where
                 method.parameters.iter().map(|(_, mode, _)| *mode),
                 method.parameters.iter().map(|(_, _, comptime)| *comptime),
             );
+            let returns_borrow = method.returns_borrow;
+            let returns_inout = method.returns_inout;
+            let trusted_std_accessor = self
+                .source
+                .anonymous_definition_module(identity)
+                .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
             // Consumer analysis needs only the signature. The producer-owned
             // anonymous-member transaction later lowers and analyzes the exact
             // body fragment; these locators are therefore deliberately opaque
@@ -2723,16 +2805,16 @@ where
                     self_mode: method.self_mode,
                     params,
                     return_type,
-                    // Anonymous-struct methods cannot be place-returning
-                    // accessors; declaration validation rejects that mode.
-                    returns_borrow: false,
-                    returns_inout: false,
+                    returns_borrow: trusted_std_accessor && returns_borrow,
+                    returns_inout: trusted_std_accessor && returns_inout,
                 },
             ));
             signatures.push(super::AnonMethodSig {
                 name,
                 has_self: method.has_self,
                 self_mode: method.self_mode,
+                returns_borrow,
+                returns_inout,
                 param_types: parameter_types
                     .into_iter()
                     .map(super::AnonMethodType::Concrete)
@@ -2812,6 +2894,10 @@ where
         self.anonymous_methods.borrow_mut().reserve(methods.len());
         let owner_name = self.member_callable_owner(struct_id);
         let owner_symbol = self.member_callable_owner_symbol(&owner_name);
+        let trusted_std_accessor_owner = self
+            .source
+            .anonymous_definition_module(identity)
+            .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
         for method in methods {
             let name = self.interner.get_or_intern(method.name.as_ref());
             let callable = self.member_callable_symbol_for_issued_owner(
@@ -2849,10 +2935,12 @@ where
                     struct_type: owner_type,
                     has_self: method.has_self,
                     self_mode: method.self_mode,
-                    // Anonymous-struct methods cannot be place-returning
-                    // accessors; declaration validation rejects that mode.
-                    returns_borrow: false,
-                    returns_inout: false,
+                    // Anonymous accessors remain forbidden for user types.
+                    // The durable std owner identity is the narrow exception,
+                    // and its second-class result mode must survive every
+                    // provider endpoint just like the direct declaration path.
+                    returns_borrow: trusted_std_accessor_owner && method.returns_borrow,
+                    returns_inout: trusted_std_accessor_owner && method.returns_inout,
                     params: self.state.allocate_params(
                         (0..method.parameters.len())
                             .map(|index| intern_synthetic_argument_name(&self.interner, index)),
@@ -2983,6 +3071,20 @@ where
     }
     fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         self.endpoint.endpoint_module_id_for_file(file)
+    }
+    fn endpoint_module_is_trusted_standard_library(&self, module: ModuleId) -> bool {
+        self.endpoint
+            .endpoint_module_is_trusted_standard_library(module)
+    }
+    fn endpoint_file_is_trusted_standard_library(&self, file: u32) -> bool {
+        if FileId::new(file) == self.owner_file {
+            return self
+                .source
+                .definition_module(&self.key)
+                .is_some_and(|module| self.source.module_is_trusted_standard_library(&module));
+        }
+        self.endpoint_module_id_for_file(file)
+            .is_some_and(|module| self.endpoint_module_is_trusted_standard_library(module))
     }
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
         self.type_pool.try_intern_array(element, len).ok()
@@ -5161,7 +5263,7 @@ where
         .cloned()
         .collect::<AHashSet<_>>();
 
-    let (params, body, has_self, self_mode, self_is_mut, span) =
+    let (params, body, has_self, self_mode, self_is_mut, returns_borrow, returns_inout, span) =
         match &host.rir.rir().get(declaration).data {
             InstData::FnDecl {
                 params,
@@ -5169,6 +5271,8 @@ where
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
+                returns_inout,
                 ..
             } => (
                 params.clone(),
@@ -5176,6 +5280,8 @@ where
                 *has_self,
                 *self_mode,
                 *self_is_mut,
+                *returns_borrow,
+                *returns_inout,
                 host.rir.rir().get(declaration).span,
             ),
             _ => {
@@ -5333,7 +5439,7 @@ where
         owner_type,
         self_is_mut,
         member.kind == crate::AnonymousMemberKind::Destructor,
-        false,
+        returns_borrow || returns_inout,
     )?;
     let expression_engine_ns = elapsed_ns(expression_engine_started);
     let expression_breakdown = host

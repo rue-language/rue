@@ -59,7 +59,8 @@
 //     drop, not discharge, its elements. Lifting that to true linear-element
 //     ownership needs container/element multiplicity propagation (a future ADR).
 //
-//     READING A NON-COPY ELEMENT — use `pop`, not `get` (RUE-651). `pop`/`pop_or`
+//     READING A NON-COPY ELEMENT — use `get_ref` for in-place reading, or `pop`
+//     to move it out (RUE-1017). `pop`/`pop_or`
 //     MOVE the element out (they retire the slot, so there is exactly one owner)
 //     and are sound for any `T`. `get`/`get_or` return the element *by copy*
 //     (`@ptr_read`): for a trivially-droppable `T` that is fine, but for a `T`
@@ -67,11 +68,12 @@
 //     copy and the still-live slot would run drop glue, a double-free. `get`/
 //     `get_or` therefore GATE on their element type: calling either with a
 //     drop-glue `T` is a compile error (E0711, via `@require_trivially_droppable`
-//     in their bodies) that directs you to `pop`. This is exactly Swift's rule
+//     in their bodies) that directs you to `get_ref` for a read, or `pop` to move
+//     it out. This is exactly Swift's rule
 //     that a non-copyable element cannot use a by-value `get` subscript. Storing,
 //     pushing, popping, and dropping a drop-glue element stay legal (RUE-646) —
 //     only the by-copy *read* is gated. Lifting that to borrow-returning reads
-//     (a projection/yield accessor, Hylo-style) is the RUE-651 follow-up.
+//     (a projection/yield accessor, Hylo-style) is now `get_ref` (RUE-1017).
 //   * Multi-slot aggregate element types (e.g. a two-field struct) work as long
 //     as they are trivially droppable: every aggregate is laid out
 //     ascending-in-address, matching the ascending heap layout (ADR-0040 /
@@ -150,15 +152,15 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // is in scope here, so the method can pass it to `option.Option(T)`
         // (RUE-313). COPY-ELEMENT-ONLY: for a non-Copy `T` the copy aliases the
         // element's owned buffer (double-free — RUE-651); read owned elements
-        // with `pop`.
+        // in place with `get_ref`, or move them out with `pop`.
         fn get(borrow self, i: u64) -> option.Option(T) {
             // By-copy reads are sound only for a trivially-droppable `T`
             // (RUE-651): reading a drop-glue element out by `@ptr_read` while the
             // slot stays live would alias its owned buffer and double-free at
             // scope exit. This gate fires only when a program actually calls
             // `get` (demand-driven analysis, ADR-0045); storing/pushing/popping a
-            // drop-glue element stays legal (RUE-646). Read owned elements out
-            // with `pop`, which moves the element (one owner).
+            // drop-glue element stays legal (RUE-646). Read it in place with
+            // `get_ref`, or use `pop` to move it out (one owner).
             @require_trivially_droppable(T);
             let O = option.Option(T);
             if i < self.len {
@@ -171,17 +173,30 @@ pub fn ArrayBuf(comptime T: type) -> type {
         // Element `i` by copy, or `default` when `i` is out of bounds. An
         // ergonomic default-based read for callers that don't want to match on
         // `Option`. COPY-ELEMENT-ONLY: aliases an owned element's buffer for a
-        // non-Copy `T` (double-free — RUE-651); read owned elements with `pop`.
+        // non-Copy `T` (double-free — RUE-651); read owned elements in place
+        // with `get_ref`, or move them out with `pop_or`.
         fn get_or(borrow self, i: u64, default: T) -> T {
             // Trivially-droppable `T` only, same reason as `get` (RUE-651): a
             // by-copy read of a drop-glue element would alias its owned buffer
-            // (double-free). Read owned elements out with `pop_or` instead.
+            // (double-free). Read them in place with `get_ref`, or move them
+            // out with `pop_or` instead.
             @require_trivially_droppable(T);
             if i < self.len {
                 self.core.read_at(i)
             } else {
                 default
             }
+        }
+
+        // Borrow the live cell in place. Unlike `get`, this never copies an
+        // owning element, so it is valid for drop-glue `T`. The checked
+        // pointer-to-place bridge is trusted only in this std accessor body;
+        // the guard makes the yielded cell lie within the initialized prefix.
+        fn get_ref(borrow self, i: u64) -> borrow T {
+            if i >= self.len {
+                @panic("index out of bounds");
+            }
+            yield checked { @place(@ptr_offset(self.core.buf, i)) };
         }
 
         // --- mutation ---

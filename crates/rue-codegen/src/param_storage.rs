@@ -307,6 +307,11 @@ fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamRe
                         PlaceBase::Accessor(_) => {
                             panic!("mandatory-inline accessor place reached codegen")
                         }
+                        // The pointer producer is an ordinary SSA value. Any
+                        // parameter storage it depends on is recorded by that
+                        // producer's own operands; the indirect base itself
+                        // names no parameter slot or home region.
+                        PlaceBase::Indirect(_) => {}
                     }
                 }
                 CfgInstData::Alloc { slot, .. }

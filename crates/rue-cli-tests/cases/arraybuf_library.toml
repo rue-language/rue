@@ -775,16 +775,17 @@ exit_code = 243
 # StrBuf that aliased its owned heap buffer; both the copy and the still-live
 # slot ran drop glue at scope exit — a double-free that segfaulted in safe code
 # (verified: this program exited 139 before the fix). The reader now gates on its
-# element type and directs the caller to `pop` (which moves the element out,
-# leaving one owner). Storing/pushing/popping a StrBuf element stays legal — the
+# element type and directs the caller to `get_ref` for an in-place read or `pop`
+# to move the element out, leaving one owner. Storing/pushing/popping a StrBuf
+# element stays legal — the
 # `arraybuf_strbuf_elements` case above (which uses `pop`) still runs.
 [[case]]
 name = "arraybuf_get_on_drop_glue_element_rejected"
-description = "A by-copy `get` of a drop-glue element (StrBuf) is rejected with E0711 and pointed at `pop`, instead of a double-free segfault (RUE-651)."
+description = "A by-copy `get` of a drop-glue element (StrBuf) is rejected with E0711 and pointed at `get_ref` or `pop`, instead of a double-free segfault (RUE-651/RUE-1017)."
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["E0711", "by copy", "move it out with `pop`"]
+error_contains = ["E0711", "by copy", "use `get_ref` for an in-place read", "move it out with `pop`/`pop_or`"]
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;

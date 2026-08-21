@@ -303,6 +303,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 || name == known.raw
                 || name == known.raw_mut
                 || name == known.field_ptr
+                || name == known.place
                 || name == known.alloc
                 || name == known.alloc_zeroed
                 || name == known.free
@@ -474,6 +475,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, true, raw_mut, "addr_of_mut")
         } else if name == known.field_ptr {
             self.analyze_field_ptr_intrinsic(air, &args, span, ctx)
+        } else if name == known.place {
+            self.analyze_place_intrinsic(air, inst_ref, &args, span, ctx)
         } else if name == known.syscall {
             self.analyze_syscall_intrinsic(air, name, &args, span, ctx)
         } else if name == known.target_arch {
@@ -488,6 +491,107 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             ))
         }
+    }
+
+    /// Validate the trusted std pointer-to-place bridge. The enclosing yield
+    /// converts this pointer-shaped AIR value into `AirPlaceBase::Indirect`;
+    /// keeping the intrinsic itself value-shaped means it can be spliced and
+    /// materialized with the ordinary pointer lowering path.
+    fn analyze_place_intrinsic(
+        &mut self,
+        air: &mut Air,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let Some(trailing) = ctx.accessor_trailing_yield else {
+            return Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic("place".to_owned()),
+                span,
+            ));
+        };
+        let legal_trailing_bridge = match self.body_rir_ref().get(trailing).data {
+            InstData::Yield(operand) => match self.body_rir_ref().get(operand).data {
+                InstData::Checked { expr } => match self.body_rir_ref().get(expr).data {
+                    InstData::Intrinsic { name, .. } => {
+                        name == self.known_symbols().place && expr == inst_ref
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
+            _ => false,
+        };
+        if !legal_trailing_bridge
+            || !self.file_module_is_trusted_standard_library(ctx.current_file_id)
+        {
+            return Err(CompileError::new(
+                ErrorKind::UnknownIntrinsic("place".to_owned()),
+                span,
+            ));
+        }
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "place".to_owned(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        // The bridge is representation-level, but the yielded place must
+        // still be rooted in the accessor receiver. Admit exactly
+        // `@place(@ptr_offset(<self field chain>, ...))`; this keeps the
+        // trusted escape hatch from manufacturing a loan into unrelated
+        // storage while leaving the index expression to the reviewed std
+        // accessor's bounds guard.
+        let ptr_offset_base = match &self.body_rir_ref().get(args[0].value).data {
+            InstData::Intrinsic { name, args } if *name == self.known_symbols().ptr_offset => {
+                let pointer_args = self.body_rir_ref().intrinsic_args(args);
+                (pointer_args.len() == 2)
+                    .then(|| pointer_args.values().next())
+                    .flatten()
+            }
+            _ => None,
+        };
+        let self_symbol = self.body_interner().get_or_intern("self");
+        let mut root = ptr_offset_base;
+        let receiver_rooted = loop {
+            let Some(current) = root else {
+                break false;
+            };
+            match &self.body_rir_ref().get(current).data {
+                InstData::VarRef { name, .. } => break *name == self_symbol,
+                InstData::FieldGet { base, .. } => root = Some(*base),
+                _ => break false,
+            }
+        };
+        if !receiver_rooted {
+            return Err(CompileError::new(
+                crate::declaration_validation::accessor_yield_root_error(
+                    &crate::declaration_validation::AccessorYieldRootForm::Value,
+                ),
+                span,
+            ));
+        }
+        let operand = self.analyze_inst(air, args[0].value, ctx)?;
+        if !operand.ty.is_ptr() && !operand.ty.is_error() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(rue_error::IntrinsicTypeMismatchError {
+                    name: "place".to_owned(),
+                    expected: "a raw pointer".to_owned(),
+                    found: operand.ty.name().to_owned(),
+                })),
+                span,
+            ));
+        }
+        // `@place` is a checked-language bridge, not a runtime operation.  The
+        // pointer remains the ordinary value used by the indirect place that
+        // the trailing-yield analysis constructs; emitting an intrinsic here
+        // would incorrectly expose a call-shaped operation to codegen.
+        Ok(AnalysisResult::new(operand.air_ref, operand.ty))
     }
 
     fn analyze_internal_intrinsic_impl(

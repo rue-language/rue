@@ -1082,8 +1082,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.place_root_with_accessors(receiver, ctx).is_some();
             let receiver_addressable_probe =
                 if receiver_is_accessor_place || ctx.accessor_call_insts.contains_key(&receiver) {
-                    self.peel_projected_rvalue_scope(air, receiver_result.air_ref)
-                        .0
+                    let (place, prefix) =
+                        self.peel_projected_rvalue_scope(air, receiver_result.air_ref);
+                    if !prefix.is_empty() {
+                        receiver_result = AnalysisResult::new(place, receiver_result.ty);
+                        receiver_temp_scope.extend(prefix);
+                    }
+                    place
                 } else {
                     receiver_result.air_ref
                 };

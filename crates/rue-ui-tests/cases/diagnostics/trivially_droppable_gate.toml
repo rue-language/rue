@@ -6,7 +6,8 @@ An owning container's by-copy read (`ArrayBuf(T)::get`/`get_or`, RUE-651) copies
 the element out with `@ptr_read` while the stored slot stays live. For a `T` with
 drop glue that copy would alias the element's owned resources — both the copy and
 the slot run drop glue at scope exit, a double-free. `@require_trivially_droppable(T)`
-in the reader's body rejects those reads (E0711), directing the caller to `pop`
+in the reader's body rejects those reads (E0711), directing the caller to `get_ref`
+for an in-place read or `pop`
 (which moves the element, leaving one owner). Because the gate lives in the method
 body, demand-driven analysis (ADR-0045) fires it only when a by-copy read is
 actually called — storing/pushing/popping/dropping a drop-glue element stays legal
@@ -17,7 +18,7 @@ tested independent of the std `ArrayBuf` source.
 
 [[case]]
 name = "e0711_drop_glue_element_read_rejected"
-description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 and pointed at `pop`."
+description = "Calling a by-copy read whose element type has drop glue is rejected with E0711 and pointed at `get_ref` or `pop`."
 source = """
 struct D { v: i32 }
 drop fn D(self) {}
@@ -41,7 +42,7 @@ compile_fail = true
 error_contains = [
     "E0711",
     "cannot read an element of type `D` by copy",
-    "move it out with `pop`",
+    "use `get_ref` for an in-place read, or move it out with `pop`/`pop_or`",
 ]
 
 [[case]]

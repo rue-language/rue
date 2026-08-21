@@ -79,6 +79,10 @@ pub(crate) trait BodyEndpointProvider {
     /// The module id whose definition lives in `file`.
     fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId>;
 
+    fn endpoint_module_is_trusted_standard_library(&self, module: ModuleId) -> bool;
+
+    fn endpoint_file_is_trusted_standard_library(&self, file: u32) -> bool;
+
     /// Intern an array type, or `None` on a type-validation failure.
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type>;
 
@@ -1049,6 +1053,16 @@ where
 
     fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         self.identity.modules().id_for_file(FileId::new(file))
+    }
+
+    fn endpoint_module_is_trusted_standard_library(&self, module: ModuleId) -> bool {
+        let durable = self.identity.modules().durable_for_id(module).cloned();
+        durable.is_some_and(|durable| self.identity.module_is_trusted_standard_library(&durable))
+    }
+
+    fn endpoint_file_is_trusted_standard_library(&self, file: u32) -> bool {
+        self.endpoint_module_id_for_file(file)
+            .is_some_and(|module| self.endpoint_module_is_trusted_standard_library(module))
     }
 
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {

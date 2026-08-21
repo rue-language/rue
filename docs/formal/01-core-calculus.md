@@ -1042,9 +1042,9 @@ handle-uniqueness quantify over it unchanged.
 Dynamically an accessor call is not a `(D-Call)`: the call reduces **by the
 accessor's inlined body** — the guards run in the caller (and may trap, §6.12)
 and the redex is then replaced by the projected place itself, `(ℓ, π·π_y)` for
-a user accessor over §6.9's by-ref place plumbing (a library accessor over the
-allocation store would yield `view⟨A | o, k⟩`, §6.13.2 — deferred to the std
-phase, RUE-1017). No call frame is pushed and no calling convention for
+a user accessor over §6.9's by-ref place plumbing, or `view⟨A | o, 1⟩` for the
+trusted `ArrayBuf(T).get_ref` bridge (§6.13.3). No call frame is pushed and no
+calling convention for
 "returning a place" exists; that absence is the RUE-1012 forward-compatibility
 contract.
 
@@ -1912,6 +1912,10 @@ byte-oriented allocation family takes (ADR-0059 Phase 3):
     i < len   →  Some(H(A).i)                               -- a COPY; the cell is untouched
     i ≥ len   →  None
 
+  get_ref(borrow self, i):      -- checked source-defined read accessor (RUE-1017)
+    i < len   →  view⟨A | i, 1⟩                             -- a §5.4-governed loaned place
+    i ≥ len   →  ↯bounds                                      -- guard traps before yield
+
   set(inout self, i, x):
     i ≥ len   →  ⟨⟩                                         -- out of bounds: ignored (the source's contract)
     i < len:     drop(H, H(A).i);  H[A.i ↦ x]   →  ⟨⟩       -- old element dropped first (RUE-646): no leak
@@ -1948,8 +1952,10 @@ citation:
   a second owner of that element's own buffer — in the model, two values
   holding the same inner `buf⟨A⟩`, violating (O1) and double-freeing at drop.
   The equation makes the aliasing visible. The borrow-returning read that
-  would lift the gate (`get_ref`, RUE-662) must produce a §5.4-governed loan,
-  not a value.
+  would lift the gate (`get_ref`, RUE-1017) must produce a §5.4-governed loan,
+  not a value. Its trusted source body is `yield checked {
+  @place(@ptr_offset(...)) };`; `@place` is not a general user intrinsic and
+  the checked bridge is accepted only in this receiver-rooted accessor context.
 - **Growth is identity death** (§6.13.1's `realloc`): a view into the old
   buffer held by an enclosing call would now be stuck — but §5.4's exclusivity
   already rejects that shape (`v[0..2] == g(inout v)`): the `inout` loan

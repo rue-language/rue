@@ -1501,11 +1501,12 @@ pub enum ErrorKind {
     /// field/payload that has one). Copying such an element by `@ptr_read` leaves
     /// the copy and the still-live slot both pointing at the same owned buffer, so
     /// both run drop glue at scope exit: a double-free (RUE-651). The read is
-    /// rejected; the element must be *moved* out with `pop`/`pop_or` instead (one
-    /// owner) until borrow-returning reads exist. Mirrors Swift's rule that a
-    /// non-copyable element cannot use a by-value `get` subscript.
+    /// rejected; use the borrow-returning `get_ref` accessor for an in-place
+    /// read, or move the element out with `pop`/`pop_or` instead (one owner).
+    /// Mirrors Swift's rule that a non-copyable element cannot use a by-value
+    /// `get` subscript.
     #[error(
-        "cannot read an element of type `{ty}` by copy: it owns resources (has drop glue), so a by-copy read would alias the owned value and double-free it at scope exit — move it out with `pop`/`pop_or` instead (RUE-651)"
+        "cannot read an element of type `{ty}` by copy: it owns resources (has drop glue), so a by-copy read would alias the owned value and double-free it at scope exit — use `get_ref` for an in-place read, or move it out with `pop`/`pop_or` (RUE-651)"
     )]
     ContainerElementNotTriviallyDroppable { ty: String },
     /// Inout argument is not an lvalue (variable, field, or array element)

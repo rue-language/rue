@@ -115,7 +115,7 @@ impl Place {
         if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Local(slot) => Some(slot),
-                PlaceBase::Param(_) | PlaceBase::Accessor(_) => None,
+                PlaceBase::Param(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => None,
             }
         } else {
             None
@@ -128,7 +128,7 @@ impl Place {
         if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Param(slot) => Some(slot),
-                PlaceBase::Local(_) | PlaceBase::Accessor(_) => None,
+                PlaceBase::Local(_) | PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => None,
             }
         } else {
             None
@@ -258,6 +258,7 @@ impl fmt::Display for Place {
             PlaceBase::Local(slot) => write!(f, "${}", slot)?,
             PlaceBase::Param(slot) => write!(f, "%{}", slot)?,
             PlaceBase::Accessor(value) => write!(f, "accessor%{}", value.as_u32())?,
+            PlaceBase::Indirect(pointer) => write!(f, "*ptr%{}", pointer.as_u32())?,
         }
         if !self.projections.is_empty() {
             write!(f, "[{} projections]", self.projections.extent())?;
@@ -276,6 +277,8 @@ pub enum PlaceBase {
     /// Mandatory-inline accessor call whose place result has not yet been
     /// substituted by the inter-procedural CFG splice.
     Accessor(CfgValue),
+    /// Indirect pointee address produced by the trusted std `@place` bridge.
+    Indirect(CfgValue),
 }
 
 /// A projection applied to a place to reach a nested location.
@@ -2155,6 +2158,7 @@ impl Cfg {
                 (value.as_u32() as usize) < self.values.len()
                     && matches!(self.get_inst(value).data, CfgInstData::AccessorCall { .. })
             }
+            PlaceBase::Indirect(value) => (value.as_u32() as usize) < self.values.len(),
         };
         if !base_valid {
             return Err(Self::invalid_edit(operation, "place base is out of bounds"));
@@ -2698,8 +2702,11 @@ impl Cfg {
                 | IntCast { value: v, .. }
                 | Drop { value: v } => *v = map(*v),
                 PlaceRead { place } => {
-                    if let PlaceBase::Accessor(value) = &mut place.base {
-                        *value = map(*value);
+                    match &mut place.base {
+                        PlaceBase::Accessor(value) | PlaceBase::Indirect(value) => {
+                            *value = map(*value)
+                        }
+                        PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                     }
                     place.projections = payload::push_projections(
                         &mut self.projections,
@@ -2722,8 +2729,9 @@ impl Cfg {
                 }
                 PlaceWrite { place, value } => {
                     *value = map(*value);
-                    if let PlaceBase::Accessor(base) = &mut place.base {
-                        *base = map(*base);
+                    match &mut place.base {
+                        PlaceBase::Accessor(base) | PlaceBase::Indirect(base) => *base = map(*base),
+                        PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                     }
                     place.projections = payload::push_projections(
                         &mut self.projections,
@@ -3276,6 +3284,9 @@ impl Cfg {
             }
             PlaceBase::Accessor(value) => {
                 let _ = write!(out, "accessor%{}", value.as_u32());
+            }
+            PlaceBase::Indirect(value) => {
+                let _ = write!(out, "*ptr%{}", value.as_u32());
             }
         }
         for proj in self.get_place_projections(place) {

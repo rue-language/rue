@@ -1770,7 +1770,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// (a destructor, or a field/payload/element that has one) that copy aliases
     /// the element's owned resources: both the copy and the still-live slot run
     /// drop glue at scope exit — a double-free. This gate rejects those reads at
-    /// their call site (E0711); the element must be *moved* out with `pop`/`pop_or`
+    /// their call site (E0711); use `get_ref` to read it in place or *move* it
+    /// out with `pop`/`pop_or`
     /// instead. It is deliberately placed in the `get`/`get_or` method bodies (not
     /// the constructor), so demand-driven analysis (ADR-0045) fires it only when a
     /// program actually calls a by-copy read — storing, pushing, popping, and

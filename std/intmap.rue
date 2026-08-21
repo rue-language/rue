@@ -7,6 +7,13 @@
 // has no generic zero-init); it is never read as a real value — the per-slot
 // state guards that.
 //
+// IntMap intentionally has no `get_ref` yet (RUE-1017): values live in a
+// filler-populated parallel array and rehashing copies occupied entries into a
+// fresh table. The current representation therefore admits only
+// trivially-droppable values; sound owning-value access first needs rehashing
+// to move initialized slots without duplicating ownership. Track that
+// representation change with RUE-679/RUE-687 before adding one.
+//
 //     const std = @import("std");
 //     let M = std.intmap.IntMap(i64);
 //     let mut m = M.new(0);

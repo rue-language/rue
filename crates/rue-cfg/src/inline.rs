@@ -340,9 +340,14 @@ pub fn inline_call_in_block(
                         dst.mark_param_address_taken(slot);
                     }
                 }
-                PlaceBase::Accessor(_) => {
-                    return Err(CfgInlineError::NonPlaceByRefArgument { arg_index: index });
-                }
+                // A nested accessor may be encountered before its producer is
+                // spliced. Preserve that second-class root through this splice;
+                // substituting the producer later composes the final place.
+                PlaceBase::Accessor(_) => {}
+                // Trusted std accessors yield an indirect place. A nested
+                // accessor reborrows that exact storage, so its pointer root
+                // must survive the following mandatory splice.
+                PlaceBase::Indirect(_) => {}
             }
             ParamRedirect::ByRefPlace {
                 base: place.base,
@@ -726,14 +731,14 @@ fn translate_data(
             ParamRedirect::Materialized { slot } => Load { slot },
             ParamRedirect::ByRefPlace {
                 base,
-                base_type: _,
+                base_type,
                 projections,
             } if projections.is_empty() => match base {
                 PlaceBase::Local(slot) => Load { slot },
                 PlaceBase::Param(index) => Param { index },
-                PlaceBase::Accessor(_) => {
-                    unreachable!("accessor roots are rejected at classification")
-                }
+                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => PlaceRead {
+                    place: dst.make_place(base, base_type, projections)?,
+                },
             },
             ParamRedirect::ByRefPlace {
                 base,
@@ -782,14 +787,15 @@ fn translate_data(
                 ParamRedirect::Materialized { slot } => Store { slot, value },
                 ParamRedirect::ByRefPlace {
                     base,
-                    base_type: _,
+                    base_type,
                     projections,
                 } if projections.is_empty() => match base {
                     PlaceBase::Local(slot) => Store { slot, value },
                     PlaceBase::Param(param_slot) => ParamStore { param_slot, value },
-                    PlaceBase::Accessor(_) => {
-                        unreachable!("accessor roots are rejected at classification")
-                    }
+                    PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => PlaceWrite {
+                        place: dst.make_place(base, base_type, projections)?,
+                        value,
+                    },
                 },
                 ParamRedirect::ByRefPlace {
                     base,
@@ -967,6 +973,11 @@ fn translate_place(
         },
         PlaceBase::Accessor(value) => (
             PlaceBase::Accessor(splice.value(value)),
+            place.base_type,
+            Vec::new(),
+        ),
+        PlaceBase::Indirect(value) => (
+            PlaceBase::Indirect(splice.value(value)),
             place.base_type,
             Vec::new(),
         ),

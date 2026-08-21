@@ -7961,6 +7961,8 @@ impl SemanticConstEvaluator<'_, '_> {
                             return_type,
                             has_self,
                             self_mode,
+                            returns_borrow,
+                            returns_inout,
                             ..
                         } = &method.data
                         else {
@@ -8011,6 +8013,8 @@ impl SemanticConstEvaluator<'_, '_> {
                             name: Arc::from(semantic_candidate_spelling(symbols, name)),
                             has_self: *has_self,
                             self_mode: mode(*self_mode),
+                            returns_borrow: *returns_borrow,
+                            returns_inout: *returns_inout,
                             parameters: parameters.into(),
                             result,
                             has_body: true,
@@ -21825,6 +21829,32 @@ fn unique_named_member_candidate<D>(
 impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
     for CompilerBodyDurableSource<'_>
 {
+    fn definition_module(&self, definition: &crate::StableDefinitionKey) -> Option<ModuleId> {
+        Some(definition.module().clone())
+    }
+
+    fn anonymous_definition_module(
+        &self,
+        identity: &rue_air::AnonymousNominalKey<crate::StableDefinitionKey, ModuleId>,
+    ) -> Option<ModuleId> {
+        fn function_module(
+            function: &rue_air::FunctionInstanceKey<crate::StableDefinitionKey, ModuleId>,
+        ) -> Option<ModuleId> {
+            match function {
+                rue_air::FunctionInstanceKey::Definition(definition) => {
+                    Some(definition.module().clone())
+                }
+                rue_air::FunctionInstanceKey::Specialization { base, .. } => function_module(base),
+                rue_air::FunctionInstanceKey::AnonymousMember { .. }
+                | rue_air::FunctionInstanceKey::DropGlue(_) => None,
+            }
+        }
+        match &identity.producer {
+            rue_air::StableProducerId::Definition(definition) => Some(definition.module().clone()),
+            rue_air::StableProducerId::Function(function) => function_module(function),
+        }
+    }
+
     fn free_function(
         &self,
         current: &crate::StableDefinitionKey,
@@ -22442,6 +22472,10 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
 impl rue_air::DurableNominalSource<crate::StableDefinitionKey, ModuleId>
     for CompilerBodyDurableSource<'_>
 {
+    fn module_is_trusted_standard_library(&self, module: &ModuleId) -> bool {
+        module.is_trusted_standard_library()
+    }
+
     fn nominal_file_id(&self, key: &crate::StableDefinitionKey) -> Option<crate::FileId> {
         rue_air::DurableBodyLookupSource::module_source(self, key.module())
             .map(|source| source.file_id)
@@ -22871,6 +22905,8 @@ fn project_provider_anonymous_methods(
             name: method.name.clone(),
             has_self: method.has_self,
             self_mode: mode(method.self_mode),
+            returns_borrow: method.returns_borrow,
+            returns_inout: method.returns_inout,
             parameters: method
                 .parameters
                 .iter()
@@ -22987,6 +23023,8 @@ fn project_provider_produced_anonymous_nominals(
                                     name: method.name.clone(),
                                     has_self: method.has_self,
                                     self_mode: mode(method.self_mode),
+                                    returns_borrow: method.returns_borrow,
+                                    returns_inout: method.returns_inout,
                                     parameters: method
                                         .parameters
                                         .iter()
@@ -25110,6 +25148,10 @@ pub(crate) mod test_support {
     }
 
     impl rue_air::DurableNominalSource<StableDefinitionKey, ModuleId> for DurableDeclSource {
+        fn module_is_trusted_standard_library(&self, module: &ModuleId) -> bool {
+            module.is_trusted_standard_library()
+        }
+
         fn nominal(
             &self,
             key: &StableDefinitionKey,
@@ -30457,6 +30499,8 @@ fn main() -> i32 {
                     name: Arc::from("method"),
                     has_self: false,
                     self_mode: crate::durable_semantics::DurableParameterMode::Value,
+                    returns_borrow: false,
+                    returns_inout: false,
                     parameters: Arc::from([]),
                     result: crate::durable_semantics::DurableAnonymousMethodType::Concrete(
                         rue_air::SemanticImportType::I32,

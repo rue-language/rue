@@ -171,6 +171,12 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                 }
                 crate::AirPlaceBase::Accessor(call)
             }
+            crate::AirPlaceBase::Indirect(pointer) => {
+                if pointer.as_u32() as usize >= instruction_count {
+                    return Err(F::InvalidInstructionReference);
+                }
+                crate::AirPlaceBase::Indirect(pointer)
+            }
         };
         places.push(SemanticBodyPlace {
             base,

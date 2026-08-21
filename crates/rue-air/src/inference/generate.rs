@@ -1825,6 +1825,15 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
+                } else if intrinsic_name == "place" {
+                    // The trusted `@place(ptr)` bridge is represented as a
+                    // pointer-shaped expression until accessor-yield analysis
+                    // turns it into an indirect place.
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    let result_var = self.fresh_var();
+                    InferType::Var(result_var)
                 } else if intrinsic_name == "raw"
                     || intrinsic_name == "raw_mut"
                     || intrinsic_name == "field_ptr"

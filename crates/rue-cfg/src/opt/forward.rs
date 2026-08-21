@@ -285,7 +285,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                                 // A parameter base writes through a parameter,
                                 // not a local slot: nothing to kill.
                                 PlaceBase::Param(_) => {}
-                                PlaceBase::Accessor(_) => {
+                                PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
                                     clear_all = true;
                                 }
                             },
