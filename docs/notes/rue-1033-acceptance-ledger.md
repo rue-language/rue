@@ -50,13 +50,13 @@ tracking performance changes.
 The ordinary compiler unit suite also proves the Phase 12 schedules through
 final executable bytes:
 
-- `joined_codegen_schedule_matches_fresh_linked_executable` forces an exact-key
+- `platform_native_joined_codegen_schedule_matches_fresh_linked_executable` forces an exact-key
   CodegenUnit join inside the registered production evaluator, then verifies
   that the ordinary image/fresh-link adapter matches a fresh session.
-- `canceled_codegen_waiter_schedule_matches_fresh_linked_executable` cancels
+- `platform_native_canceled_codegen_waiter_schedule_matches_fresh_linked_executable` cancels
   only a joined waiter while its owner remains live, then verifies the owner's
   terminal through the same fresh-link comparison.
-- `query_native_rooted_demand_warm_edit_locality_through_fresh_link` publishes
+- `platform_native_query_native_rooted_demand_warm_edit_locality_through_fresh_link` publishes
   two revisions through the rooted import-input protocol. Editing the reached
   imported function computes one body, CFG, and replacement CodegenUnit;
   editing an unreachable imported function computes none. Both cases compare
@@ -68,7 +68,7 @@ bounded-eviction histories with stepwise fresh sessions. Position-free trivia
 reuse is covered by the revisioned-query tests; reachability edge deletion by
 the body-closure and scaling-harness gates; and one-worker/many-worker linked
 executable parity by
-`one_and_many_query_workers_produce_identical_linked_executables`. The query
+`platform_native_one_and_many_query_workers_produce_identical_linked_executables`. The query
 runtime suite owns the underlying adversarial claim/join/cancellation and
 deterministic retention-budget schedules.
 

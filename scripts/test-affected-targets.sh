@@ -25,6 +25,26 @@ REPO_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 DECISION=(bash "$SCRIPTS_DIR/ci-corpus-decision")
 PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
 
+# Native lane membership is intentionally graph-derived. Keep these shell
+# tests hermetic by supplying a tiny live-graph stand-in for the representative
+# target checks; the integration case below provides its own Buck stand-in.
+native_graph_stub="$(mktemp)"
+cat >"$native_graph_stub" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' root//crates/rue-codegen:rue-codegen-test
+EOF
+chmod +x "$native_graph_stub"
+export RUE_AFFECTED_BUCK2="$native_graph_stub"
+
+integration_root=""
+test_cleanup() {
+  rm -f "$native_graph_stub"
+  if [ -n "$integration_root" ]; then
+    rm -rf "$integration_root"
+  fi
+}
+trap test_cleanup EXIT
+
 FAILURES=0
 TESTS=0
 
@@ -538,8 +558,6 @@ fi
 
 TESTS=$((TESTS + 1))
 integration_root="$(mktemp -d)"
-integration_cleanup() { rm -rf "$integration_root"; }
-trap integration_cleanup EXIT
 mkdir -p "$integration_root/scripts" "$integration_root/bin" "$integration_root/docs"
 cp "$SCRIPTS_DIR/affected-targets" "$SCRIPTS_DIR/parse-btd-impacted.py" "$integration_root/scripts/"
 chmod +x "$integration_root/scripts/affected-targets"
@@ -547,6 +565,10 @@ chmod +x "$integration_root/scripts/affected-targets"
 cat >"$integration_root/bin/fake-buck" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "uquery" ]; then
+  printf 'root//:spec-tests\n'
+  exit 0
+fi
 output=""
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--output" ]; then output="$2"; shift 2; continue; fi
@@ -595,6 +617,42 @@ if (
   pass "integration: BTD selects a corpus from Git status and receives pinned Buck wrapper"
 else
   fail "integration: selective BTD decision contract"
+fi
+
+# A native graph query is required only for selective lane planning. If it
+# fails, the planner must choose the safe full run rather than silently omit
+# both native lanes (RUE-1266).
+cat >"$integration_root/bin/failing-buck" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "uquery" ]; then
+  exit 1
+fi
+output=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then output="$2"; shift 2; continue; fi
+  shift
+done
+[ -n "$output" ]
+printf '{"target":"root//:spec-tests"}\n' >"$output"
+EOF
+chmod +x "$integration_root/bin/failing-buck"
+TESTS=$((TESTS + 1))
+failure_output="$integration_root/native-query-failure-output"
+if (
+  cd "$integration_root" &&
+  RUE_AFFECTED_BASE_SHA=HEAD~1 \
+  RUE_AFFECTED_HEAD_SHA=HEAD \
+  RUE_AFFECTED_BTD="$integration_root/bin/fake-btd" \
+  RUE_AFFECTED_BUCK2="$integration_root/bin/failing-buck" \
+  RUE_AFFECTED_BTD_ARGS="$integration_root/failure-btd-args" \
+  RUE_AFFECTED_EXPECTED_CHANGES="$integration_root/expected-changes" \
+  GITHUB_OUTPUT="$failure_output" \
+  scripts/affected-targets decide >/dev/null 2>&1
+) && grep -Fxq 'full=true' "$failure_output"; then
+  pass "decision: native graph query failure runs full suite"
+else
+  fail "decision: native graph query failure did not fail open to full suite"
 fi
 
 # ---------------------------------------------------------------------------

@@ -357,7 +357,7 @@ exit_code = 42
 #
 # Criterion 6 (both backends execute) is asserted programmatically against the
 # compiler API in `crates/rue-compiler/src/producer_nominal_acceptance_tests.rs`
-# (`wrap_payload_executes_on_both_backend_targets`), which needs per-target
+# (`platform_native_wrap_payload_executes_on_both_backend_targets`), which needs per-target
 # compile + native execution the spec runner does not express.
 [[case]]
 name = "c5_wrap_single_nominal_identity"

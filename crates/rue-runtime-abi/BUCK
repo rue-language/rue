@@ -10,4 +10,5 @@ export_file(
 # Keep it independent of compiler IR, target, linker, and runtime crates.
 rue_crate(
     name = "rue-runtime-abi",
+    test_platform = "native",
 )

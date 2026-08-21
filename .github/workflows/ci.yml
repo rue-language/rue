@@ -802,10 +802,11 @@ jobs:
         if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} native build" -- ./buck2 build //crates/rue:rue
 
-      # RUE-1130: the same eight targets, narrowed to the impacted ones. These
-      # are unit tests, never the critical path, but their binaries are the
-      # expensive part and an unimpacted one has nothing to prove.
-      - name: Run native backend, linker, runtime, ABI, allocator, and target tests
+      # RUE-1266: native unit membership comes from the live Buck graph's
+      # rue_platform_native label. These are unit tests, never the critical
+      # path, but their binaries are the expensive part and an unimpacted one
+      # has nothing to prove.
+      - name: Run graph-scoped native unit tests
         if: steps.sel.outputs.run == 'true'
         env:
           NARROW_COUNT: ${{ steps.narrow.outputs.count }}
@@ -813,22 +814,15 @@ jobs:
           LANE_NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
-          targets=(
-            //crates/rue-compiler:rue-compiler-test
-            //crates/rue-codegen:rue-codegen-test
-            //crates/rue-linker:rue-linker-test
-            //crates/rue-runtime:rue-runtime-test
-            //crates/rue-runtime:runtime-archives-test
-            //crates/rue-runtime-abi:rue-runtime-abi-test
-            //crates/rue-allocator:rue-allocator-test
-            //crates/rue-target:rue-target-test
-            # ADR-0070 (RUE-1404): the one place CI evaluates the rue
-            # toolchain's non-x64 native_target select branches and runs an
-            # internally-linked rue_program on aarch64-linux and
-            # aarch64-macos. Narrowed like every other entry: it only runs
-            # when the compiler, the rules, or the fixtures are impacted.
-            //fixtures/rue-program:hello-runs-test
-          )
+          native_targets="$(scripts/affected-targets native-targets)" || exit 1
+          if [ -z "$native_targets" ]; then
+            echo "native units: rue_platform_native graph selection is empty" >&2
+            exit 1
+          fi
+          targets=()
+          while IFS= read -r target; do
+            [ -n "$target" ] && targets+=("$target")
+          done <<< "$native_targets"
           if [ "$NARROW_COUNT" -gt 0 ]; then
             # macOS runners execute this with the stock Bash 3.2, which has no
             # `mapfile` (exit 127 killed every narrowed macOS run) and errors
@@ -1365,7 +1359,7 @@ jobs:
           --manifest-path crates/rue-runtime-asan/Cargo.toml
           --target x86_64-unknown-linux-gnu
 
-  # Independent structural proof that the aggregate dependency inventory and
+  # Independent live-graph proof that the aggregate dependency inventory and
   # platform responsibilities still match the reviewed contract. It has no
   # needs, uses always(), and itself feeds the aggregate.
   ci-contract:
@@ -1380,13 +1374,24 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v6
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
       - name: Validate aggregate gate and platform responsibilities
         run: scripts/validate-ci-gate.py .github/workflows/ci.yml
 
       # RUE-1117: `//:tier-ci-selector-validation` also runs this in the premerge
-      # Buck pass. Repeating it here needs no toolchain and keeps the structural
-      # answer to "does any job actually run this tier?" next to the rest of the
-      # CI contract, independent of whether the Buck lane got that far.
+      # Buck pass. Repeating it here needs no toolchain and keeps the reviewed
+      # answer to "does any job actually run this tier?" next to the rest of
+      # the CI contract, independent of whether the Buck lane got that far.
       - name: Validate deliberate CI selection of every test tier
         run: >-
           scripts/validate-tier-ci-selectors.py

@@ -9408,7 +9408,8 @@ mod tests {
     }
 
     #[test]
-    fn cfg_reuse_rejects_target_and_callable_identity_changes() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_cfg_reuse_rejects_target_and_callable_identity_changes() {
         let first = snapshot(
             &[(
                 1,

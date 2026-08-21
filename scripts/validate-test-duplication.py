@@ -13,9 +13,8 @@ tests for weeks to gain three, in the same lane, and every gate stayed green
 
 The invariant, from ADR-0069 §2: **no unit of work executes more than once per
 platform per run without a declared reason.** Cross-platform repetition is
-governed by the same ledger, because "the native lanes deliberately do not
-repeat the broad unit suite" is a claim about test contents too, and the same
-`--list` evidence either supports it or does not.
+governed by the same ledger. The broad compiler suite is now linux-premerge
+only; native compiler host assertions are a separate graph-owned target.
 
 How it works:
 
@@ -151,24 +150,6 @@ class Allowance:
 
 ALLOWANCES = (
     Allowance(
-        targets=("//crates/rue-compiler:rue-compiler-test",),
-        platforms=("linux-arm64", "linux-x64", "macos-arm64"),
-        reason=(
-            "The native lanes want this binary's ~27 host-conditional sites and "
-            "pay for its whole unit suite, because platform scope is declared "
-            "per target while it is a property of individual tests. ADR-0069 "
-            "Phase 4 splits the host-conditional tests into "
-            "their own target, following the precedent already set in this crate "
-            "by rue-compiler-public-api-test. RUE-1266 owns that Phase-4 "
-            "extraction with exact criteria: split the host-conditional tests "
-            "into a platform-scoped target that remains in linux-premerge and "
-            "self-enrolls in both ARM64 native lanes, while the target-independent "
-            "suite remains only in linux-premerge. Until it "
-            "lands, this allowance keeps the required broad suite running and "
-            "makes the tracked removal visible."
-        ),
-    ),
-    Allowance(
         kind="per-target",
         targets=(
             "//crates/rue-allocator:rue-allocator-test",
@@ -179,6 +160,7 @@ ALLOWANCES = (
             "//crates/rue-runtime:runtime-archives-test",
             "//crates/rue-target:rue-target-test",
             "//fixtures/rue-program:hello-runs-test",
+            "//crates/rue-compiler:rue-compiler-platform-native-test",
         ),
         platforms=("linux-arm64", "linux-x64", "macos-arm64"),
         reason=(
@@ -187,6 +169,10 @@ ALLOWANCES = (
             "path, runtime archive, syscalls, and platform behaviour that "
             "cross-compilation cannot, and a pass on x86-64 Linux is not "
             "evidence for AArch64 or Mach-O. The repetition is the coverage. "
+            "The focused compiler host-conditional target is included because "
+            "its ignored platform_native_ rows intentionally execute on Linux "
+            "premerge and both native hosts; the broad compiler test selection "
+            "is Linux-only. "
             "Each target here repeats on its own; an overlap BETWEEN any two of "
             "them is a different fact and is not covered by this entry."
         ),

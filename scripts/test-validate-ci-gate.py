@@ -364,36 +364,171 @@ class GateValidatorTests(unittest.TestCase):
 
 
     def test_lane_target_drift_fails_closed(self):
-        # RUE-1130. A target the native job runs but the determinator does not
-        # list is invisible to selection: the lane can be deselected, or
-        # narrowed away, by a diff that actually reaches it.
-        # Anchored on the array's LAST target so the splice keeps working as
-        # entries are appended; the inequality assertion turns a stale anchor
-        # into a clear failure here rather than a silent no-op that lets the
-        # drift assertion below fail with an empty error list (RUE-1404 hit
-        # exactly that when the fixture target joined the array).
+        # A direct Buck target in the native workflow is a second membership
+        # source and must be rejected; the live graph label is authoritative.
         changed = SOURCE.read_text().replace(
-            "            //fixtures/rue-program:hello-runs-test\n          )",
-            "            //fixtures/rue-program:hello-runs-test\n"
-            "            //crates/rue-query:rue-query-test\n          )",
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            "          ./buck2 test //crates/rue-query:rue-query-test\n",
             1,
         )
         self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//crates/rue-query:rue-query-test", errors)
-        self.assertIn("selection cannot see it", errors)
+        self.assertIn("must not name Buck targets", errors)
+
+    def test_second_native_buck_test_step_cannot_hide_a_target_list(self):
+        changed = SOURCE.read_text().replace(
+            "          scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"\n",
+            "          scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"\n"
+            "      - name: Another native test step\n"
+            "        run: ./buck2 test //crates/rue-query:rue-query-test\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must not name Buck targets", errors)
+
+    def test_native_target_cannot_be_appended_to_graph_derived_array(self):
+        changed = SOURCE.read_text().replace(
+            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
+            "          targets+=(//crates/rue-query:rue-query-test)\n"
+            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("unit membership must come only from the graph", errors)
+        self.assertIn("//crates/rue-query:rue-query-test", errors)
+
+    def test_dynamic_peer_lane_target_query_cannot_be_appended(self):
+        changed = SOURCE.read_text().replace(
+            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
+            "          targets+=(\"$(scripts/affected-targets lane-targets release)\")\n"
+            "          if [ \"$NARROW_COUNT\" -gt 0 ]; then\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("may use scripts/affected-targets only", errors)
+
+    def test_dynamic_peer_lane_query_cannot_share_the_native_assignment_line(self):
+        changed = SOURCE.read_text().replace(
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1; "
+            "targets+=(\"$(scripts/affected-targets lane-targets release)\")\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("may use scripts/affected-targets only", errors)
+
+    def test_native_job_cannot_run_a_second_direct_buck_query(self):
+        changed = SOURCE.read_text().replace(
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            "          ./buck2 uquery //...\n"
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must not run direct Buck graph queries", errors)
+
+    def test_native_job_cannot_hide_query_behind_buck_global_flags(self):
+        changed = SOURCE.read_text().replace(
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            "          targets+=(\"$(./buck2 --isolation-dir peer uquery \"attrfilter(labels, rue_other, //...)\")\")\n"
+            "          native_targets=\"$(scripts/affected-targets native-targets)\" || exit 1\n",
+            1,
+        )
+        self.assertNotEqual(changed, SOURCE.read_text(), "splice anchor no longer matches ci.yml")
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("must not run direct Buck graph queries", errors)
+
+    def test_renamed_native_step_cannot_bypass_graph_derived_invocation(self):
+        changed = SOURCE.read_text().replace(
+            "      - name: Run graph-scoped native unit tests\n",
+            "      - name: Renamed native step\n",
+            1,
+        ).replace(
+            "scripts/ci-timed \"$LANE_NAME native units\" -- ./buck2 test \"${targets[@]}\"",
+            "./buck2 test //crates/rue-query:rue-query-test",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("exactly one graph-derived unit invocation", errors)
+        self.assertIn("must not name Buck targets", errors)
+
+    def test_native_build_and_comment_labels_are_not_unit_target_drift(self):
+        changed = SOURCE.read_text().replace(
+            "# rue_platform_native label.",
+            "# rue_platform_native label; //:comment-only-target is documentation.",
+            1,
+        )
+        self.assertEqual(MODULE.lane_target_drift(changed), [])
+
+    def test_ci_contract_installs_dotslash_before_live_validator(self):
+        source = SOURCE.read_text()
+        prefix, contract = source.split("  ci-contract:\n", 1)
+        contract = contract.replace(
+            "      - name: Install dotslash\n        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18\n",
+            "",
+            1,
+        )
+        changed = prefix + "  ci-contract:\n" + contract
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("ci-contract must install dotslash before the live Buck validator", errors)
 
     def test_lane_targets_and_job_agree_today(self):
         self.assertEqual(MODULE.lane_target_drift(SOURCE.read_text()), [])
 
     def test_unreadable_lane_script_fails_closed(self):
-        # The gate must not pass silently when it cannot read the lane list.
+        # Ownership validation fails closed when its canonical graph query is
+        # unavailable.
         self.assertIn(
-            "produced nothing",
+            "graph query failed",
             "\n".join(
-                MODULE.lane_target_drift(SOURCE.read_text(), script=Path("/nonexistent/affected-targets"))
+                MODULE.native_lane_ownership(SOURCE.read_text(), script=Path("/nonexistent/affected-targets"))
             ),
         )
+
+    def test_native_graph_ownership_fails_on_an_unowned_graph_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in\n"
+                "native-targets) echo //:native-one //:native-two;;\n"
+                "lane-targets) echo //:native-one //:spec-tests //:cli-tests;;\n"
+                "esac\n"
+            )
+            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
+        rendered = "\n".join(errors)
+        self.assertIn("native-linux-arm64 is missing graph-owned targets", rendered)
+        self.assertIn("native-macos-arm64 is missing graph-owned targets", rendered)
+
+    def test_native_graph_ownership_rejects_unexpected_targets_in_both_lanes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "case \"$1\" in\n"
+                "native-targets) echo //:native-one;;\n"
+                "lane-targets) echo //:native-one //:unit-two //:spec-tests //:cli-tests;;\n"
+                "esac\n"
+            )
+            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
+        rendered = "\n".join(errors)
+        self.assertIn("native-linux-arm64 selected unlabelled or unexpected targets", rendered)
+        self.assertIn("native-macos-arm64 selected unlabelled or unexpected targets", rendered)
+
+    def test_native_graph_ownership_rejects_empty_graph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "affected-targets"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"$1\" = native-targets ]; then exit 0; fi\n"
+            )
+            errors = MODULE.native_lane_ownership(SOURCE.read_text(), script=script)
+        self.assertIn("graph selection is empty", "\n".join(errors))
 
 
 if __name__ == "__main__":

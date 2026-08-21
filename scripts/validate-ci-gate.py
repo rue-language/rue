@@ -175,29 +175,138 @@ def lane_targets(lane: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> set[str]:
 
 
 def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> list[str]:
-    """Targets a lane's job runs that its determinator entry does not represent.
+    """Reject native target lists in YAML; membership belongs to the graph.
 
-    RUE-1130 gates and narrows lanes against `lane_targets`, so a target the job
-    runs but the determinator does not know about is invisible to selection: the
-    lane can be deselected, or narrowed away, by a diff that actually reaches
-    it. That is the RUE-924 failure mode arriving through a stale list rather
-    than a missing job, and the two lists are far apart in the tree, so nothing
-    but a gate keeps them together.
+    The normal command-line entry point always performs the live graph checks
+    in ``native_lane_ownership``. This structural half remains deterministic
+    for source-only validator tests and prevents a workflow author from
+    reintroducing a second membership source.
     """
     jobs = job_blocks(workflow)
     native = jobs.get("native-platforms", "")
-    ran = set(re.findall(r"^\s+(//[A-Za-z0-9_./-]+:[A-Za-z0-9_.-]+)$", native, re.MULTILINE))
-    if not ran:
-        return ["native-platforms declares no Buck targets; the lane gate cannot be checked"]
-    known = lane_targets("native-linux-arm64", script)
-    if not known:
-        return ["scripts/affected-targets lane-targets native-linux-arm64 produced nothing"]
-    missing = sorted(ran - known)
-    return [
-        f"native-platforms runs {target} but scripts/affected-targets does not list it "
-        "for native-linux-arm64, so selection cannot see it"
-        for target in missing
-    ]
+    errors = []
+    # The unit step may be renamed or moved. Inspect every executable line in
+    # the job instead of anchoring to a display name, while ignoring comments
+    # so explanatory target labels cannot become false positives.
+    unit_invocation = './buck2 test "${targets[@]}"'
+    native_query = 'native_targets="$(scripts/affected-targets native-targets)" || exit 1'
+    intersect_query = 'scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}"'
+    native_query_count = 0
+    test_invocations = []
+    direct_targets = set()
+    executable_targets = set()
+    for line in native.splitlines():
+        code = line.split("#", 1)[0]
+        stripped = code.strip()
+        is_native_query = stripped == native_query
+        is_intersect_query = stripped == f'narrowed="$({intersect_query})"'
+        if is_native_query:
+            native_query_count += 1
+        if "scripts/affected-targets" in code:
+            if not (is_native_query or is_intersect_query):
+                errors.append(
+                    "native-platforms may use scripts/affected-targets only for "
+                    "the exact native-targets assignment or narrowing intersect"
+                )
+        buck_commands = re.finditer(
+            r"(?<![A-Za-z0-9_.-])(?:\./)?buck2(?P<args>[^;&|]*)", code
+        )
+        if any(
+            re.search(r"(?:^|\s)(?:query|uquery|targets)(?=\s|$)", match.group("args"))
+            for match in buck_commands
+        ):
+            errors.append(
+                "native-platforms must not run direct Buck graph queries; use "
+                "the canonical affected-targets command"
+            )
+        executable_targets.update(
+            re.findall(
+                r"(?<![A-Za-z0-9_.-])//[A-Za-z0-9_./-]+:[A-Za-z0-9_.-]+(?![A-Za-z0-9_.-])",
+                code,
+            )
+        )
+        if re.search(r"(?:^|\s)(?:\./)?buck2\s+test(?:\s|$)", code):
+            test_invocations.append(code.strip())
+            if unit_invocation not in code:
+                direct_targets.update(
+                    re.findall(
+                        r"(?<![A-Za-z0-9_.-])//[A-Za-z0-9_./-]+:[A-Za-z0-9_.-]+(?![A-Za-z0-9_.-])",
+                        code,
+                    )
+                )
+    if native_query_count != 1:
+        errors.append(
+            "native-platforms must derive unit membership exactly once with "
+            "scripts/affected-targets native-targets"
+        )
+    if len(test_invocations) != 1 or unit_invocation not in test_invocations[0]:
+        errors.append(
+            "native-platforms must have exactly one graph-derived unit invocation: "
+            './buck2 test "${targets[@]}"'
+        )
+    if direct_targets:
+        errors.append(
+            "native-platforms must not name Buck targets; graph labels own native membership: "
+            + ", ".join(sorted(direct_targets))
+        )
+    # The compiler build is deliberately explicit and is not unit membership.
+    # Every other executable target literal would be a peer source that could
+    # be appended to the graph-derived array without appearing in lane-targets.
+    unexpected_literals = executable_targets - {"//crates/rue:rue"}
+    if unexpected_literals:
+        errors.append(
+            "native-platforms unit membership must come only from the graph; "
+            "unexpected executable target literals: "
+            + ", ".join(sorted(unexpected_literals))
+        )
+    return errors
+
+
+NATIVE_CORPUS_PROXIES = {"//:spec-tests", "//:cli-tests"}
+
+
+def native_graph_targets(script: Path = AFFECTED_TARGETS_SCRIPT) -> tuple[set[str], list[str]]:
+    """Read the canonical live graph selection and report query failures."""
+    result = subprocess.run(
+        ["bash", str(script), "native-targets"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        return set(), [
+            "rue_platform_native graph query failed"
+            + (f": {detail}" if detail else "")
+        ]
+    targets = {target.strip() for target in result.stdout.split() if target.strip()}
+    if not targets:
+        return set(), ["rue_platform_native graph selection is empty"]
+    return targets, []
+
+
+def native_lane_ownership(
+    workflow: str,
+    script: Path = AFFECTED_TARGETS_SCRIPT,
+) -> list[str]:
+    """Require both native lanes to equal the graph-owned native selection."""
+    native_targets, errors = native_graph_targets(script)
+    if errors:
+        return errors
+    expected = native_targets | NATIVE_CORPUS_PROXIES
+    for lane in ("native-linux-arm64", "native-macos-arm64"):
+        selected = lane_targets(lane, script)
+        if not selected:
+            errors.append(f"{lane} graph selection is empty or unavailable")
+            continue
+        missing = sorted(expected - selected)
+        extras = sorted(selected - expected)
+        if missing:
+            errors.append(f"{lane} is missing graph-owned targets: {', '.join(missing)}")
+        if extras:
+            errors.append(f"{lane} selected unlabelled or unexpected targets: {', '.join(extras)}")
+    errors.extend(lane_target_drift(workflow, script))
+    return errors
 
 
 def valgrind_install_errors(workflow: str, script: str) -> list[str]:
@@ -294,7 +403,15 @@ def validate(
     if "    needs:" in contract:
         errors.append("ci-contract must not depend on another CI job")
     if "scripts/validate-ci-gate.py .github/workflows/ci.yml" not in contract:
-        errors.append("ci-contract no longer runs the structural validator")
+        errors.append("ci-contract no longer runs the live graph validator")
+    validator_invocation = "scripts/validate-ci-gate.py .github/workflows/ci.yml"
+    validator_position = contract.find(validator_invocation)
+    if "facebook/install-dotslash@v2" not in contract:
+        errors.append("ci-contract must install dotslash before the live Buck validator")
+    elif validator_position < 0 or contract.index("facebook/install-dotslash@v2") > validator_position:
+        errors.append("ci-contract must install dotslash before the live Buck validator")
+    if "--structural-only" in contract:
+        errors.append("ci-contract must run live graph ownership validation, not structural-only mode")
     if "scripts/validate-tier-ci-selectors.py" not in contract:
         errors.append("ci-contract no longer proves every test tier is CI-selected")
     # RUE-1507: the scheduled-workflow health check is the only thing that reads
@@ -420,11 +537,7 @@ def validate(
         "name: linux-arm64",
         "os: macos-15",
         "name: macos-arm64",
-        "//crates/rue-compiler:rue-compiler-test",
-        "//crates/rue-codegen:rue-codegen-test",
-        "//crates/rue-linker:rue-linker-test",
-        "//crates/rue-runtime:rue-runtime-test",
-        "//crates/rue-runtime-abi:rue-runtime-abi-test",
+        "scripts/affected-targets native-targets",
         "scripts/run-native-platform-corpus.sh",
     ) + tuple(
         "scripts/rue cli " + " ".join(invocation)
@@ -542,17 +655,33 @@ def main() -> int:
         default=TEST_RUNNER_SOURCE,
         help="rue-test-runner source declaring the platform responsibility matrix",
     )
+    parser.add_argument(
+        "--structural-only",
+        action="store_true",
+        help=(
+            "skip live Buck graph ownership; reserved for the Buck sh_test, "
+            "whose nested Buck query would deadlock"
+        ),
+    )
     args = parser.parse_args()
     errors = validate(
         args.workflow, NATIVE_RUNNER_SCRIPT, args.test_runner_source, args.buck
     )
+    if not args.structural_only:
+        errors.extend(native_lane_ownership(args.workflow.read_text()))
     if errors:
         for error in errors:
             print(f"error: {error}")
         return 1
     print(
-        "CI gate valid: stable aggregate covers the exact required inventory "
-        "and platform responsibilities"
+        (
+            "CI gate valid: stable aggregate covers the exact required inventory"
+            + (
+                " and platform responsibilities"
+                if not args.structural_only
+                else "; structural-only Buck check defers live graph ownership"
+            )
+        )
     )
     return 0
 

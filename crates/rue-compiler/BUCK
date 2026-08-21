@@ -44,6 +44,17 @@ rue_crate(
     ],
 )
 
+# The compiler's host-only assertions are intentionally a separate scheduled
+# unit. It consumes the same compiled test binary but invokes only ignored
+# tests whose names carry the platform_native_ filter; the target-independent
+# compiler suite therefore remains owned by linux-premerge alone.
+rue_sh_test(
+    name = "rue-compiler-platform-native-test",
+    platform = "native",
+    test = ":rue-compiler-test",
+    args = ["--ignored", "platform_native_"],
+)
+
 # Heavy-matrix scaling targets (Finding 6, RUE-1086). Both wrap the ordinary
 # `rue-compiler-test` binary and select the `#[ignore]`d `scaling_matrix_*`
 # rows out of it by name.

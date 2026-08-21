@@ -27599,7 +27599,8 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn direct_target_selected_comptime_evaluates_under_the_host_arch() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_direct_target_selected_comptime_evaluates_under_the_host_arch() {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         use crate::semantic_query_nucleus::{
             ComptimeCallQueryKey, ComptimeCallResultProjection as ResultProjection,

@@ -704,7 +704,8 @@ mod temp_link_dir_tests {
     use super::*;
 
     #[test]
-    fn workspace_is_owner_only() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_workspace_is_owner_only() {
         let workspace = TempLinkDir::new().unwrap();
         let mode = workspace
             .directory
@@ -718,7 +719,8 @@ mod temp_link_dir_tests {
     }
 
     #[test]
-    fn precreated_workspace_is_rejected_and_not_cleaned_up() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_precreated_workspace_is_rejected_and_not_cleaned_up() {
         let parent = tempfile::tempdir().unwrap();
         let occupied = parent.path().join("occupied");
         std::fs::create_dir(&occupied).unwrap();
@@ -743,7 +745,8 @@ mod temp_link_dir_tests {
     }
 
     #[test]
-    fn symlinked_object_leaf_is_rejected() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_symlinked_object_leaf_is_rejected() {
         let (_outside, target) = symlink_target();
         let mut workspace = TempLinkDir::new().unwrap();
         symlink(&target, workspace.directory.path().join("obj0.o")).unwrap();
@@ -753,7 +756,8 @@ mod temp_link_dir_tests {
     }
 
     #[test]
-    fn symlinked_runtime_leaf_is_rejected() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_symlinked_runtime_leaf_is_rejected() {
         let (_outside, target) = symlink_target();
         let workspace = TempLinkDir::new().unwrap();
         symlink(&target, &workspace.runtime_path).unwrap();
@@ -763,7 +767,8 @@ mod temp_link_dir_tests {
     }
 
     #[test]
-    fn symlinked_output_leaf_is_rejected_on_creation_and_read() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_symlinked_output_leaf_is_rejected_on_creation_and_read() {
         let (_outside, target) = symlink_target();
         let workspace = TempLinkDir::new().unwrap();
         symlink(&target, &workspace.output_path).unwrap();
@@ -1062,7 +1067,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn strict_archive_validation_rejects_malformed_native_object_member() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_strict_archive_validation_rejects_malformed_native_object_member() {
         let malformed = archive_with_member("broken.o", b"\x7fELFnot-an-object");
         let err = validate_runtime_archive(&malformed, Target::host().unwrap()).unwrap_err();
         assert!(
@@ -1072,7 +1078,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn strict_archive_validation_rejects_unsupported_macho_cpu() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_strict_archive_validation_rejects_unsupported_macho_cpu() {
         let mut object = ObjectBuilder::new(Target::Aarch64Macos, "wrong_cpu")
             .code(vec![0; 4])
             .build();
@@ -1086,7 +1093,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn strict_archive_validation_skips_true_metadata_and_bitcode_members() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_strict_archive_validation_skips_true_metadata_and_bitcode_members() {
         let archive = archive_with_member("metadata", b"rust metadata");
         let archive = append_archive_member(&archive, "module.bc", b"BC\xc0\xdebitcode");
         let archive = append_archive_member(&archive, "valid.o", &host_object("fixture"));
@@ -1095,7 +1103,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_missing_and_misspelled_helper() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_missing_and_misspelled_helper() {
         let bytes = replace_export_name(
             host_runtime(),
             RuntimeHelperId::Alloc.symbol(),
@@ -1113,7 +1122,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_duplicate_helper() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_duplicate_helper() {
         let duplicate = host_object(RuntimeHelperId::Alloc.symbol());
         let bytes = append_archive_member(host_runtime(), "duplicate.o", &duplicate);
         let err = validation_error(&bytes);
@@ -1124,7 +1134,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_stale_marker() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_stale_marker() {
         let bytes = replace_export_name(
             host_runtime(),
             RUNTIME_ABI_VERSION_SYMBOL,
@@ -1140,7 +1151,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_missing_and_duplicate_current_marker() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_missing_and_duplicate_current_marker() {
         let missing = replace_export_name(
             host_runtime(),
             RUNTIME_ABI_VERSION_SYMBOL,
@@ -1166,7 +1178,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_wrong_target_object() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_wrong_target_object() {
         let object = ObjectBuilder::new(foreign_target(), "foreign")
             .code(vec![0; 4])
             .build();
@@ -1177,7 +1190,8 @@ mod runtime_archive_validation_tests {
     }
 
     #[test]
-    fn archive_bytes_reject_non_applicable_reserved_export() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_archive_bytes_reject_non_applicable_reserved_export() {
         let object = host_object(non_applicable_export());
         let bytes = append_archive_member(host_runtime(), "wrong-os.o", &object);
         let err = validation_error(&bytes);
@@ -1192,7 +1206,8 @@ mod runtime_archive_validation_tests {
 
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
     #[test]
-    fn x86_64_linux_sigreturn_export_is_callable_code() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_x86_64_linux_sigreturn_export_is_callable_code() {
         let archive = parse_runtime_archive(host_runtime()).unwrap();
         let inventory = runtime_archive_inventory(&archive).unwrap();
         let symbol = inventory
@@ -1297,7 +1312,8 @@ mod runtime_archive_validation_tests {
 
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     #[test]
-    fn real_macho_marker_mutations_reject_nonzero_value_and_nonunit_extent() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_real_macho_marker_mutations_reject_nonzero_value_and_nonunit_extent() {
         let (data_offset, value_offset, value) = macho_marker_offsets(host_runtime());
 
         let mut nonzero = host_runtime().to_vec();

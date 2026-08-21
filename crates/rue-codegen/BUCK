@@ -2,6 +2,7 @@ load("//crates:defs.bzl", "rue_crate")
 
 rue_crate(
     name = "rue-codegen",
+    test_platform = "native",
     deps = [
         "//crates/rue-air:rue-air",
         "//crates/rue-builtins:rue-builtins",

@@ -2,6 +2,7 @@ load("//crates:defs.bzl", "rue_crate")
 
 rue_crate(
     name = "rue-linker",
+    test_platform = "native",
     deps = [
         "//crates/rue-target:rue-target",
         "//third-party:tracing",

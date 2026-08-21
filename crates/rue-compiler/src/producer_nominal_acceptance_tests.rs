@@ -210,7 +210,8 @@ fn main() -> i32 {
 /// enum carries the trusted producer's stable digest (distinct from the digest a
 /// local `Option` producer yields), and the program links and executes to 42.
 #[test]
-fn well_known_parse_binds_trusted_std_option() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_well_known_parse_binds_trusted_std_option() {
     let options = CompileOptions::default();
     let source = r#"
 const opt = @import("std/option.rue");
@@ -1203,7 +1204,8 @@ fn anonymous_enum_count(semantic: &RootedCfgOutput) -> usize {
 /// anonymous enum in the type pool.
 #[cfg(unix)]
 #[test]
-fn wrap_single_nominal_identity_executes_to_the_payload() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_wrap_single_nominal_identity_executes_to_the_payload() {
     let options = CompileOptions::default();
     let semantic = fresh_rooted_cfg(WRAP_REPRO, &options).expect("Wrap repro compiles");
 
@@ -1220,7 +1222,8 @@ fn wrap_single_nominal_identity_executes_to_the_payload() {
     let output = crate::queries::compile_with_session(&mut session, &snapshot, &options)
         .expect("Wrap repro links");
     // The default target is `x86-64-linux`; only run the linked ELF when the
-    // host triple matches it (mirrors `wrap_payload_executes_on_both_backend_targets`).
+    // host triple matches it (mirrors
+    // `platform_native_wrap_payload_executes_on_both_backend_targets`).
     // The semantic/compile/link assertions above stay unconditional.
     if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         let execution = execute_wrap(&output, "single");
@@ -1247,7 +1250,8 @@ fn wrap_single_nominal_identity_executes_to_the_payload() {
 /// suite is green on non-Linux hosts too.
 #[cfg(unix)]
 #[test]
-fn wrap_payload_executes_on_both_backend_targets() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_wrap_payload_executes_on_both_backend_targets() {
     for target in [Target::X86_64Linux, Target::Aarch64Linux] {
         let options = CompileOptions {
             target,
@@ -1347,7 +1351,8 @@ fn retired_resolve_transport_markers_are_inert() {
 /// inert by default and the fault behavior above is caused by the injection.
 #[cfg(unix)]
 #[test]
-fn fault_probe_compiles_and_runs_cleanly_without_a_marker() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_fault_probe_compiles_and_runs_cleanly_without_a_marker() {
     let options = CompileOptions::default();
     let program = fault_probe_program("no fault here");
     fresh_rooted_cfg(&program, &options).expect("the unmarked probe must compile");
@@ -1382,7 +1387,8 @@ fn fault_probe_compiles_and_runs_cleanly_without_a_marker() {
 /// anchor) could not resolve. Both selections, in both source orders, must
 /// compile and run correctly — a set-equality check alone would miss a swap.
 #[test]
-fn evaluator_correspondence_two_same_kind_sites_do_not_swap() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_evaluator_correspondence_two_same_kind_sites_do_not_swap() {
     let options = CompileOptions::default();
     // `A` bound first, `B` second; the field names differ so a swap changes the
     // constructed field and fails to compile or returns the wrong value.

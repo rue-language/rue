@@ -348,7 +348,7 @@ _rue_program_test = rule(
 )
 
 
-def rue_program_test(name, tier = "premerge", labels = [], **kwargs):
+def rue_program_test(name, tier = "premerge", platform = None, labels = [], **kwargs):
     """One runtime scenario over a prebuilt rue_program, with tier ownership.
 
     The rule name keeps the `_test` suffix and exposes `labels` because
@@ -357,7 +357,7 @@ def rue_program_test(name, tier = "premerge", labels = [], **kwargs):
     """
     _rue_program_test(
         name = name,
-        labels = rue_test_labels(tier, labels),
+        labels = rue_test_labels(tier, platform, labels),
         **kwargs
     )
 

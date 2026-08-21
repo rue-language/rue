@@ -38,6 +38,7 @@
 #                      deliberately added here.
 #   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
 #   lane-targets       Print the Buck targets a gated lane executes.
+#   native-targets     Print every live-graph target carrying native scope.
 #   corpus-targets     Print the corpus targets the platform-corpus matrix runs.
 #   lanes              Print the gated workflow lane names.
 #   intersect          Print a lane's targets that appear in an impacted list.
@@ -116,19 +117,11 @@ SELECTABLE_LANES=(
 lane_targets() {
     case "$1" in
         native-linux-arm64|native-macos-arm64)
-            # The eight native unit targets, plus the two manifest-driven
-            # corpora whose `only_on` cases these lanes register.
-            echo //crates/rue-compiler:rue-compiler-test \
-                 //crates/rue-codegen:rue-codegen-test \
-                 //crates/rue-linker:rue-linker-test \
-                 //crates/rue-runtime:rue-runtime-test \
-                 //crates/rue-runtime:runtime-archives-test \
-                 //crates/rue-runtime-abi:rue-runtime-abi-test \
-                 //crates/rue-allocator:rue-allocator-test \
-                 //crates/rue-target:rue-target-test \
-                 //:spec-tests \
-                 //:cli-tests \
-                 //fixtures/rue-program:hello-runs-test ;;
+            # Unit membership is graph-owned. The two corpus targets remain
+            # selection proxies because their host-evaluated only_on cases are
+            # executed by the native corpus runner below.
+            native_platform_targets || return 1
+            printf '%s\n' //:spec-tests //:cli-tests ;;
         release)
             echo //:release-smoke ;;
         valgrind)
@@ -150,6 +143,25 @@ lane_targets() {
         *)
             return 1 ;;
     esac
+}
+
+# The one canonical native unit selection. Keep this query here so the
+# affected-target planner and the workflow's unit step consume identical live
+# graph membership. An empty or failed query is a coverage error, not an empty
+# lane (RUE-1266).
+native_platform_targets() {
+    local buck2 targets
+    buck2="$(buck2_bin)"
+    if ! targets="$("$buck2" uquery "attrfilter(labels, 'rue_platform_native', set(//... toolchains//...))")"; then
+        echo "affected-targets: could not query rue_platform_native targets" >&2
+        return 1
+    fi
+    targets="$(normalize_cell <<<"$targets" | grep . || true)"
+    if [[ -z "$targets" ]]; then
+        echo "affected-targets: rue_platform_native graph selection is empty" >&2
+        return 1
+    fi
+    printf '%s\n' "$targets"
 }
 
 is_selectable_lane() {
@@ -644,14 +656,18 @@ cmd_decide() {
     done
 
     # RUE-1130: a lane runs when any target it executes is impacted.
-    local lanes="" lane
+    local lanes="" lane lane_inventory target
     for lane in "${SELECTABLE_LANES[@]}"; do
-        for target in $(lane_targets "$lane"); do
+        if ! lane_inventory="$(lane_targets "$lane")"; then
+            decide_full "could not query ${lane} live target membership"
+        fi
+        while IFS= read -r target; do
+            [[ -n "$target" ]] || continue
             if grep -Fxq "$target" <<<"$impacted"; then
                 lanes+="${lanes:+ }$lane"
                 break
             fi
-        done
+        done <<<"$lane_inventory"
     done
 
     local impacted_file="$work/impacted-targets.txt"
@@ -691,12 +707,15 @@ main() {
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;
+        native-targets)
+            [[ $# -eq 1 ]] || { echo "usage: scripts/affected-targets native-targets" >&2; exit 2; }
+            native_platform_targets ;;
         corpus-targets)
             corpus_targets ;;
         lanes)
             lanes ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|corpus-targets|lanes|intersect|build-scope]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|native-targets|corpus-targets|lanes|intersect|build-scope]" >&2
             exit 2 ;;
     esac
 }

@@ -1171,6 +1171,10 @@ rue_sh_test(
         # platform-corpus entry.
         "--buck",
         "$(location :root-buck-file)/BUCK",
+        # This target runs inside Buck; a nested `buck2 uquery` would contend
+        # with its own daemon. The required GitHub invocation omits this flag
+        # and performs live graph ownership validation.
+        "--structural-only",
     ],
     resources = [
         "scripts/ci-required-results.py",

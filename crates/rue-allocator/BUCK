@@ -10,4 +10,5 @@ export_file(
 # platform syscall implementations. Consumers provide the page mapper.
 rue_crate(
     name = "rue-allocator",
+    test_platform = "native",
 )
