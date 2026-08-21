@@ -565,7 +565,6 @@ fn substitute_accessor_places(
     yielded_value: CfgValue,
 ) -> Result<(), CfgInlineError> {
     let mut replacements = Vec::new();
-    let mut value_replacements = ValueReplacementIndex::new(cfg.value_count());
     for index in 0..cfg.value_count() {
         let value = CfgValue::from_raw(index as u32);
         let place = match &cfg.get_inst(value).data {
@@ -576,12 +575,6 @@ fn substitute_accessor_places(
             }
             _ => continue,
         };
-        if matches!(cfg.get_inst(value).data, CfgInstData::PlaceRead { .. })
-            && cfg.get_place_projections(place).is_empty()
-        {
-            value_replacements.insert(value);
-            continue;
-        }
         let mut projections = cfg.get_place_projections(yielded).to_vec();
         projections.extend_from_slice(cfg.get_place_projections(place));
         let composed = cfg.make_place(yielded.base, yielded.base_type, projections)?;
@@ -594,74 +587,21 @@ fn substitute_accessor_places(
             _ => unreachable!(),
         }
     }
-    if !value_replacements.is_empty() {
-        cfg.rewrite_value_uses(|value| {
-            if value_replacements.contains(value) {
-                yielded_value
-            } else {
-                value
-            }
-        })?;
-        for block_index in 0..cfg.block_count() {
-            let block = BlockId::from_raw(block_index as u32);
-            cfg.get_block_mut(block)
-                .insts
-                .retain(|value| !value_replacements.contains(*value));
-        }
+
+    // The callee's trailing `PlaceRead` is the CFG encoding of `yield place`,
+    // not a dynamic read that survives expansion. Every caller consumer now
+    // names the composed yielded place directly, matching 6.6:12's reduction.
+    // Detaching this structural read is also required for nested accessors:
+    // otherwise its indirect pointer can be lazily materialized in an
+    // earlier-numbered continuation block and then used before definition in
+    // the appended inner guard blocks.
+    for block_index in 0..cfg.block_count() {
+        let block = BlockId::from_raw(block_index as u32);
+        cfg.get_block_mut(block)
+            .insts
+            .retain(|value| *value != yielded_value);
     }
     Ok(())
-}
-
-/// Compact membership index for accessor reads replaced by one yielded value.
-/// `CfgValue` is an arena index, so no hashing or candidate scan is needed.
-struct ValueReplacementIndex {
-    members: Option<Vec<bool>>,
-    value_count: usize,
-    len: usize,
-    #[cfg(test)]
-    membership_probes: std::cell::Cell<u64>,
-}
-
-impl ValueReplacementIndex {
-    fn new(value_count: usize) -> Self {
-        Self {
-            members: None,
-            value_count,
-            len: 0,
-            #[cfg(test)]
-            membership_probes: std::cell::Cell::new(0),
-        }
-    }
-
-    fn insert(&mut self, value: CfgValue) {
-        let members = self
-            .members
-            .get_or_insert_with(|| vec![false; self.value_count]);
-        let member = &mut members[value.as_u32() as usize];
-        if !*member {
-            *member = true;
-            self.len += 1;
-        }
-    }
-
-    fn contains(&self, value: CfgValue) -> bool {
-        #[cfg(test)]
-        self.membership_probes.set(self.membership_probes.get() + 1);
-        self.members
-            .as_ref()
-            .and_then(|members| members.get(value.as_u32() as usize))
-            .copied()
-            .unwrap_or(false)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-
-    #[cfg(test)]
-    fn membership_probes(&self) -> u64 {
-        self.membership_probes.get()
-    }
 }
 
 /// The callee's per-source-parameter grouping: the recorded ABI descriptors
@@ -1302,24 +1242,7 @@ mod tests {
     }
 
     #[test]
-    fn accessor_replacement_membership_is_one_probe_per_value() {
-        let value_count = 4_096usize;
-        let mut replacements = ValueReplacementIndex::new(value_count);
-        for index in (0..384u32).step_by(3) {
-            replacements.insert(CfgValue::from_raw(index));
-        }
-
-        for index in 0..value_count {
-            assert_eq!(
-                replacements.contains(CfgValue::from_raw(index as u32)),
-                index < 384 && index % 3 == 0
-            );
-        }
-        assert_eq!(replacements.membership_probes(), value_count as u64);
-    }
-
-    #[test]
-    fn many_accessor_reads_are_rewritten_and_detached_together() {
+    fn many_accessor_reads_are_composed_and_structural_yield_is_detached() {
         let mut cfg = Cfg::new(Type::I64, 1, 0, "caller".to_string(), Vec::<bool>::new());
         let entry = cfg.new_block();
         cfg.entry = entry;
@@ -1369,12 +1292,16 @@ mod tests {
         let yielded = Place::local(0, Type::I64);
         substitute_accessor_places(&mut cfg, call, &yielded, yielded_value).unwrap();
 
-        for user in users {
+        for (read, user) in reads.iter().copied().zip(users) {
             assert!(matches!(
                 cfg.get_inst(user).data,
                 CfgInstData::Add(left, right)
-                    if left == yielded_value && right == yielded_value
+                    if left == read && right == read
             ));
+            let CfgInstData::PlaceRead { place } = &cfg.get_inst(read).data else {
+                panic!("accessor consumer must remain a place read");
+            };
+            assert_eq!(place.base, PlaceBase::Local(0));
         }
         let attached = cfg
             .get_block(entry)
@@ -1382,7 +1309,8 @@ mod tests {
             .iter()
             .copied()
             .collect::<Vec<_>>();
-        assert!(reads.iter().all(|read| !attached.contains(read)));
+        assert!(reads.iter().all(|read| attached.contains(read)));
+        assert!(!attached.contains(&yielded_value));
     }
 
     fn count_matching(cfg: &Cfg, predicate: impl Fn(&CfgInstData) -> bool) -> usize {
