@@ -23,7 +23,7 @@ use crate::declaration_validation::{
 };
 
 /// The declaration legality of a place-returning accessor (ADR-0062): the
-/// result position requires the `borrow_accessors` preview (6.6:3), the
+/// result position and the `yield` form are legal only for an accessor, the
 /// receiver/result modes pair exactly (6.6:4), every other parameter is a plain by-value
 /// guard input (6.6:5), the body's only exit is its trailing `yield` (6.6:6),
 /// and that `yield` hands out a receiver-rooted place (6.6:7).
@@ -43,15 +43,12 @@ use crate::declaration_validation::{
 /// result qualifier is not encoded in the result type itself, so every
 /// declaration producer must preserve it through its signature facts.
 ///
-/// The preview gate runs first, so an ungated program reports E1100 rather
-/// than a shape error about a form it cannot name yet.
 pub(super) fn check_accessor_declaration_shape(
     rir: &rue_rir::Rir,
     interner: &lasso::ThreadedRodeo,
     declaration: InstRef,
     body: Option<InstRef>,
     has_named_owner: bool,
-    preview_features: &rue_error::PreviewFeatures,
 ) -> CompileResult<()> {
     let inst = rir.get(declaration);
     let InstData::FnDecl {
@@ -69,12 +66,6 @@ pub(super) fn check_accessor_declaration_shape(
         return Ok(());
     }
     let span = inst.span;
-    super::require_preview_feature(
-        preview_features,
-        crate::declaration_validation::ACCESSOR_PREVIEW_FEATURE,
-        crate::declaration_validation::ACCESSOR_PREVIEW_SUBJECT,
-        span,
-    )?;
     // An accessor hands out a projection of its receiver, so the receiver is
     // the first thing that has to exist and have the mode paired with the
     // result. `self` is carried by `has_self`, so the parameter list is

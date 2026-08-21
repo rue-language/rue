@@ -53,7 +53,8 @@ fn accessor_producers_do_not_spell_their_own_declaration_diagnostics() {
             "an accessor producer regained its own copy of a declaration rule: {kind}"
         );
     }
-    // The preview subject is a rule too: 6.6:3 names the same form everywhere.
+    // The declaration subject is a rule too: 6.6:3 names the same form
+    // everywhere.
     assert!(
         !producers.contains("\"a `-> borrow` accessor\""),
         "an accessor producer regained its own 6.6:3 gate subject"

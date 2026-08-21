@@ -1908,11 +1908,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        self.require_preview(
-            rue_error::PreviewFeature::BorrowAccessors,
-            "a `yield` accessor exit",
-            span,
-        )?;
         let Some(trailing) = ctx.accessor_trailing_yield else {
             return Err(CompileError::new(ErrorKind::YieldOutsideAccessor, span));
         };

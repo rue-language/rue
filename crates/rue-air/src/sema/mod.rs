@@ -126,34 +126,6 @@ pub(crate) struct DeferredOwnershipGate {
     span: Span,
 }
 
-/// Reject a use of an incomplete language feature that the request did not
-/// enable (`docs/designs/0005-preview-features.md`). Declaration rules run
-/// before any body host is available, so the gate is a free function over the
-/// request's feature set.
-pub(crate) fn require_preview_feature(
-    preview_features: &rue_error::PreviewFeatures,
-    feature: rue_error::PreviewFeature,
-    what: &str,
-    span: Span,
-) -> rue_error::CompileResult<()> {
-    if preview_features.contains(&feature) {
-        Ok(())
-    } else {
-        Err(rue_error::CompileError::new(
-            rue_error::ErrorKind::PreviewFeatureRequired {
-                feature,
-                what: what.to_string(),
-            },
-            span,
-        )
-        .with_help(format!(
-            "use `--preview {}` to enable this feature ({})",
-            feature.name(),
-            feature.adr()
-        )))
-    }
-}
-
 #[cfg(test)]
 mod consistency_tests;
 #[cfg(test)]

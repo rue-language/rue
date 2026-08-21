@@ -489,12 +489,6 @@ impl ProviderFixture {
         }
     }
 
-    pub(crate) fn with_preview(preview: PreviewFeatures) -> Self {
-        let mut fixture = Self::new();
-        fixture.preview = preview;
-        fixture
-    }
-
     pub(crate) fn declare_function(
         &mut self,
         name: &str,

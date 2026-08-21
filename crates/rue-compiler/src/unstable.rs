@@ -1168,11 +1168,7 @@ mod codegen_unit_tests {
     }
 
     fn borrow_accessor_options() -> crate::CompileOptions {
-        let mut options = crate::CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
-        options
+        crate::CompileOptions::default()
     }
 
     #[test]
@@ -1392,10 +1388,7 @@ mod codegen_unit_tests {
         };
         let plain = "i64 { self.x }";
         let accessor = "borrow i64 { yield self.x; }";
-        let mut options = crate::CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let options = crate::CompileOptions::default();
 
         let mut session = crate::CompilerSession::new();
         session.update(&source(plain)).into_result().unwrap();
@@ -1435,10 +1428,7 @@ mod codegen_unit_tests {
             )
             .unwrap()
         };
-        let mut options = crate::CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
 
         session.update(&source(7)).into_result().unwrap();
@@ -1757,10 +1747,7 @@ pub fn Buf(comptime T: type) -> type {{
              fn main() -> i32 { let p = P { x: 3 }; if caller_a(borrow p) + caller_b(borrow p) == 9 { 0 } else { 1 } }",
         )
         .unwrap();
-        let mut options = crate::CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let options = crate::CompileOptions::default();
         let mut session = crate::CompilerSession::new();
         session.update(&snapshot).into_result().unwrap();
         let rooted = session.rooted_cfg(&options).unwrap();

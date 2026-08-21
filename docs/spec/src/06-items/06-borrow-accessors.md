@@ -6,8 +6,6 @@ template = "spec/page.html"
 
 # Borrow Accessors
 
-{{ preview_feature(feature="borrow_accessors", adr="ADR-0062") }}
-
 {{ rule(id="6.6:1", cat="informative") }}
 
 A *borrow accessor* is a method that hands out a second-class borrow of a
@@ -15,7 +13,7 @@ projection of its receiver: `v.get_ref(i)` produces a borrowed place naming
 element `i` in place — no copy, no move-out — checked by the ordinary
 law-of-exclusivity loan machinery and scoped to the enclosing full expression
 (core calculus `docs/formal/01-core-calculus.md` §5.8, rule `(Accessor-Call)`).
-The same preview also supports mutable accessors: `v.get_mut(i)` produces an
+The same accessor form also supports mutable accessors: `v.get_mut(i)` produces an
 exclusive place, and uses `inout self` with an `-> inout T` result.
 
 ## Declaration
@@ -30,13 +28,11 @@ accessor_result = "borrow" | "inout" ;
 yield_expr  = "yield" expression ;
 ```
 
-{{ rule(id="6.6:3", cat="legality-rule") }}
+{{ rule(id="6.6:3", cat="normative") }}
 
-A `-> borrow` or `-> inout` result position and the `yield` form require the
-`borrow_accessors` preview feature. Without `--preview borrow_accessors`, a
-program using either is rejected at compile time (E1100), per 8.4.
-Stable standard-library loading may analyze its trusted accessor declarations
-without the preview; calling any such accessor remains subject to E1100.
+A `-> borrow` or `-> inout` result position and the `yield` form are stable
+accessor syntax. Programs using either are checked by the declaration and
+call-site legality rules below.
 
 {{ rule(id="6.6:4", cat="legality-rule") }}
 

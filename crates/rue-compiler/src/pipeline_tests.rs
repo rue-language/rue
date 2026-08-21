@@ -641,10 +641,7 @@ mod tests {
              fn main() -> i32 { let p = P { x: 7 }; if p.value() + helper() == 8 { 0 } else { 1 } }",
         )
         .unwrap();
-        let mut options = CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session
             .update_for_presentation(&snapshot)
@@ -735,10 +732,7 @@ mod tests {
              fn main() -> i32 { let p = P { x: 7 }; if p.value() == 7 { 0 } else { 1 } }",
         )
         .unwrap();
-        let mut options = CompileOptions::default();
-        options
-            .preview_features
-            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let options = CompileOptions::default();
         let mut session = CompilerSession::new();
         session
             .update_for_presentation(&snapshot)

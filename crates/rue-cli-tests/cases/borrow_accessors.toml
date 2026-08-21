@@ -15,7 +15,7 @@ fn main() -> i32 {
     if b.get_ref(0) + 1 == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 0
 
@@ -31,7 +31,7 @@ fn main() -> i32 {
     if b.get_ref(0) == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_only = true
 compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
@@ -54,7 +54,7 @@ fn main() -> i32 {
     if read_second(borrow b) == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 0
 
@@ -70,14 +70,14 @@ fn main() -> i32 {
     if b.get_ref(1) == 1 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 101
 runtime_error_contains = ["panic: index out of bounds"]
 
 [[case]]
-name = "trusted_std_accessor_call_requires_preview"
-description = "The trusted declaration exemption does not remove the call-site preview gate."
+name = "trusted_std_accessor_call_is_stable"
+description = "Trusted standard-library accessor calls compile as a stable feature."
 files = [{ path = "main.rue", source = """
 const std = @import("std");
 fn main() -> i32 {
@@ -90,8 +90,20 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "borrow_accessors_preview_name_is_unknown"
+description = "The retired borrow_accessors preview spelling is rejected and the active feature list omits it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["main.rue", "--preview", "borrow_accessors", "-o", "prog"]
 compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+error_contains = [
+    "unknown preview feature 'borrow_accessors'",
+    "Available features: test_infra, c_ffi, floats",
+]
 
 [[case]]
 name = "trusted_std_grid_get_ref"
@@ -104,7 +116,7 @@ fn main() -> i32 {
     if g.get_ref(0, 0) + 1 == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 0
 
@@ -131,7 +143,7 @@ fn main() -> i32 {
     if root.kids.get_ref(0).kids.get_ref(0).tag == 3 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = "1\n2\n3\n"
 exit_code = 0
@@ -167,7 +179,7 @@ fn main() -> i32 {
     if grid.get_ref(0).get_ref(0) == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 exit_code = 0
 
@@ -185,7 +197,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_fail = true
 error_contains = ["E0259", "while an accessor result borrows it"]
@@ -203,7 +215,7 @@ fn main() -> i32 {
     @intCast(first(borrow b))
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 compile_fail = true
 error_contains = ["E0250", "cannot return an accessor result"]
@@ -225,7 +237,7 @@ fn main() -> i32 {
     if stack.peek_ref().value == 7 && queue.peek_ref().value == 8 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
 stdout = "8\n7\n"
 exit_code = 0
@@ -259,7 +271,7 @@ fn main() -> i32 {
     if g.at(0) + g.at(3) == 50 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
 compile_stdout_not_contains = [".at:"]
@@ -279,7 +291,7 @@ fn main() -> i32 {
     if v.cells[1] == 42 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -306,7 +318,7 @@ fn main() -> i32 {
     if p.value() == 9 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+args = ["main.rue", "-o", "prog"]
 stdout = "77\n"
 exit_code = 0
 
@@ -326,14 +338,14 @@ fn main() -> i32 {
     if g.at(0) + g.at(3) == 50 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "x86-64-linux", "main.rue"]
+args = ["--emit", "asm", "--target", "x86-64-linux", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly (x86-64-linux) ===", "main:"]
 compile_stdout_not_contains = [".at:"]
 
 [[case]]
-name = "mutable_accessor_requires_preview"
-description = "The mutable place-returning form remains gated when the preview is disabled."
+name = "mutable_accessor_is_stable"
+description = "The stabilized mutable place-returning form compiles as a stable feature."
 files = [{ path = "main.rue", source = """
 struct P {
     x: i64,
@@ -345,9 +357,8 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["main.rue"]
-compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+args = ["main.rue", "-o", "prog"]
+exit_code = 0
 
 [[case]]
 name = "mutable_accessor_rejects_live_linear_overwrite"
@@ -365,7 +376,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue"]
+args = ["main.rue"]
 compile_fail = true
 error_contains = ["E0493", "overwrite a live linear value"]
 
@@ -385,7 +396,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 stdout = "1\n2\n"
 exit_code = 0
 
@@ -406,7 +417,7 @@ fn main() -> i32 {
     if v.cells[1] == 5 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 stdout = "7\n"
 exit_code = 0
 
@@ -426,7 +437,7 @@ fn main() -> i32 {
     if p.x == 2 && p.y == 2 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 exit_code = 0
 
 [[case]]
@@ -444,7 +455,7 @@ fn main() -> i32 {
     0
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue"]
+args = ["main.rue"]
 compile_fail = true
 error_contains = ["E0259", "another accessor result"]
 
@@ -466,7 +477,7 @@ fn main() -> i32 {
     if p.cell.value == 5 && p.y == 2 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 stdout = "7\n7\n"
 exit_code = 0
 
@@ -490,6 +501,6 @@ fn main() -> i32 {
     if p.a.items[0] == 2 && p.a.items[1] == 5 && p.y == 2 { 0 } else { 1 }
 }
 """ }]
-args = ["--preview", "borrow_accessors", "main.rue", "-O0", "-o", "prog"]
+args = ["main.rue", "-O0", "-o", "prog"]
 stdout = "8\n8\n9\n"
 exit_code = 0

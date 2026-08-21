@@ -120,15 +120,6 @@ pub fn duplicate_destructor(type_name: &str) -> ErrorKind {
 // here exactly once; without that, the two declaration producers drift on
 // wording the way they did before RUE-1232.
 
-/// The preview feature the accessor form is gated behind (6.6:3).
-pub const ACCESSOR_PREVIEW_FEATURE: rue_error::PreviewFeature =
-    rue_error::PreviewFeature::BorrowAccessors;
-
-/// The subject every producer names in the 6.6:3 gate diagnostic. The result
-/// position alone demands the preview, so this is reported before any shape
-/// rule about a form the program cannot yet name.
-pub const ACCESSOR_PREVIEW_SUBJECT: &str = "a place-returning accessor (`-> borrow` or `-> inout`)";
-
 /// What a producer found in the receiver position of a place-returning
 /// declaration (6.6:4). The result qualifier selects the required receiver
 /// mode: shared results pair with `borrow self`, exclusive results with
@@ -242,16 +233,6 @@ pub enum AccessorSignatureViolation {
     /// 6.6:5. `ordinal` indexes the non-receiver parameter list the caller
     /// passed, so a producer holding parameter positions can anchor there.
     Parameter { kind: ErrorKind, ordinal: usize },
-}
-
-/// 6.6:3: the accessor form requires its preview gate. `enabled` is the
-/// caller's answer for [`ACCESSOR_PREVIEW_FEATURE`], since producers carry
-/// their preview set in different shapes.
-pub fn accessor_preview_gate(enabled: bool) -> Option<ErrorKind> {
-    (!enabled).then(|| ErrorKind::PreviewFeatureRequired {
-        feature: ACCESSOR_PREVIEW_FEATURE,
-        what: ACCESSOR_PREVIEW_SUBJECT.to_owned(),
-    })
 }
 
 /// 6.6:4 then 6.6:5 over one accessor declaration's signature. `parameters`

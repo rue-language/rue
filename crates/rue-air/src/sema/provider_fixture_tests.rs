@@ -448,16 +448,11 @@ fn provider_body_constructs_declared_enum_variant() {
     assert_eq!(body.function.air.return_type(), crate::types::Type::I32);
 }
 
-// A legal accessor body analyzed directly under the preview gate: the
-// accessor flag and receiver mode cross as durable method facts.
+// A legal accessor body is analyzed directly from durable method facts.
 #[test]
-fn provider_accessor_body_analyzes_under_preview_gate() {
+fn provider_accessor_body_analyzes_stably() {
     use crate::SemanticParameterMode;
-    use rue_error::PreviewFeature;
-
-    let mut preview = rue_error::PreviewFeatures::new();
-    preview.insert(PreviewFeature::BorrowAccessors);
-    let mut fixture = ProviderFixture::with_preview(preview);
+    let mut fixture = ProviderFixture::new();
     let holder = fixture.declare_struct("Holder", vec![("x", SemanticImportType::I64)], true);
     fixture.declare_method_with(
         &holder,

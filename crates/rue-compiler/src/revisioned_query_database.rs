@@ -10749,14 +10749,6 @@ fn resolve_parsed_semantic_signature(
                 use rue_air::declaration_validation::{
                     AccessorParameterForm, AccessorReceiverForm,
                 };
-                if let Some(kind) = rules::accessor_preview_gate(
-                    provider
-                        .configuration
-                        .preview_features
-                        .contains(rules::ACCESSOR_PREVIEW_FEATURE),
-                ) {
-                    return Err(diagnostic(kind));
-                }
                 let receiver = if provider.dependency_source.owner().is_none() {
                     AccessorReceiverForm::FreeFunction
                 } else if !*has_self {
