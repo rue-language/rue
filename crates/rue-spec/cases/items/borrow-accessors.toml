@@ -1,5 +1,4 @@
-# Borrow accessors (ADR-0062 phases 0-3, RUE-662/RUE-1017), behind the
-# `borrow_accessors` preview.
+# Borrow accessors (ADR-0062 phases 0-4, RUE-662/RUE-1017/RUE-1018).
 #
 # Shared and exclusive accessor calls survive semantic analysis as marked
 # place-producing calls.
@@ -15,9 +14,7 @@ description = "Place-returning shared and exclusive accessors with trailing-yiel
 [[case]]
 name = "accessor_declaration_parses_and_compiles"
 spec = ["6.6:1", "6.6:2"]
-description = "The S2 surface: an ordinary fn with `-> borrow T` and a trailing-yield body is accepted under the preview."
-preview = "borrow_accessors"
-preview_should_pass = true
+description = "The S2 surface: an ordinary fn with `-> borrow T` and a trailing-yield body is accepted."
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -41,8 +38,6 @@ exit_code = 0
 name = "mutable_accessor_assignment_rejects_accessor_rhs"
 spec = ["5.2:14", "6.6:16"]
 description = "A plain assignment retains accessor loans from its RHS while evaluating the target."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -62,8 +57,6 @@ error_contains = ["E0259", "another accessor result"]
 name = "mutable_accessor_projected_field_assignment_order"
 spec = ["5.2:14", "5.2:17", "5.2:18", "6.6:15"]
 description = "A projected exclusive accessor place evaluates a receiver-using RHS first and compounds once."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Cell { value: i64 }
 struct P {
@@ -85,8 +78,6 @@ exit_code = 0
 name = "nested_accessor_splices_are_repeatable"
 spec = ["6.6:8"]
 description = "Nested accessor calls form a callee-first splice graph and repeated/diamond-shaped uses do not look recursive."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -105,8 +96,6 @@ exit_code = 0
 name = "indirect_accessor_recursion_is_rejected"
 spec = ["6.6:8"]
 description = "An indirect accessor cycle is diagnosed as E0261 before mandatory splicing."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -129,8 +118,6 @@ error_contains = ["E0261", "directly or through other accessors"]
 name = "uncalled_direct_accessor_recursion_is_rejected"
 spec = ["6.6:14"]
 description = "A directly self-recursive accessor is E0261 at its declaration, with no call site."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -149,8 +136,6 @@ error_contains = ["E0261", "an accessor may not invoke itself"]
 name = "uncalled_indirect_accessor_recursion_is_rejected"
 spec = ["6.6:14"]
 description = "A mutual accessor cycle over `self`-receiver calls is E0261 at the declarations, with no call site."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -172,8 +157,6 @@ error_contains = ["E0261", "directly or through other accessors"]
 name = "guard_receiver_accessor_cycle_is_rejected"
 spec = ["6.6:14"]
 description = "An accessor cycle whose re-entrant link runs through a by-value guard receiver is still E0261 when demanded."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -199,8 +182,6 @@ error_contains = ["E0261"]
 name = "projected_receiver_accessor_executes_in_place"
 spec = ["6.6:8"]
 description = "A projected receiver remains a place when its accessor CFG is spliced."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Inner {
     x: i64,
@@ -218,8 +199,6 @@ exit_code = 0
 name = "callee_only_nominal_relocates_into_caller_domain"
 spec = ["6.6:8"]
 description = "Types used only by an accessor body are rematerialized in the caller domain before splicing."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Marker { value: i64 }
 struct P {
@@ -238,9 +217,9 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "accessor_requires_preview_gate"
+name = "accessor_compiles_stably"
 spec = ["6.6:3"]
-description = "Using the accessor form without --preview borrow_accessors is E1100."
+description = "The stabilized accessor form compiles as a stable feature."
 source = """
 struct P {
     x: i64,
@@ -254,30 +233,30 @@ fn main() -> i32 {
     if p.xr() == 1 { 0 } else { 1 }
 }
 """
-compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+exit_code = 0
 
 [[case]]
-name = "accessor_result_position_requires_preview_gate"
+name = "uncalled_mutable_accessor_compiles_stably"
 spec = ["6.6:3"]
-description = "The `-> borrow` result position alone is E1100 without the preview, with no `yield` anywhere in the body."
+description = "The stabilized exclusive accessor declaration is accepted even when no call demands its body."
 source = """
-fn make() -> borrow i64 {
-    5
+struct P {
+    x: i64,
+
+    fn xr(inout self) -> inout i64 {
+        yield self.x;
+    }
 }
 fn main() -> i32 {
-    if make() == 5 { 0 } else { 1 }
+    0
 }
 """
-compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+exit_code = 0
 
 [[case]]
 name = "accessor_requires_borrow_self"
 spec = ["6.6:4"]
 description = "An `inout self` accessor is rejected: phase 1 accessors are shared projections (E0257)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -298,8 +277,6 @@ error_contains = ["E0257", "requires a `borrow self` receiver"]
 name = "free_function_accessor_is_rejected"
 spec = ["6.6:4"]
 description = "A `-> borrow` result on a free function is rejected (E0257); the accessor identity is the declared result, not a trailing `yield`."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 fn make() -> borrow i64 {
     5
@@ -315,8 +292,6 @@ error_contains = ["E0257", "this is a free function"]
 name = "generic_free_function_accessor_is_rejected"
 spec = ["6.6:4"]
 description = "A generic free function, which is analyzed only through its specializations, is rejected on the same rule (E0257)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 fn make(comptime T: type, v: T) -> borrow T {
     v
@@ -332,8 +307,6 @@ error_contains = ["E0257", "this is a free function"]
 name = "accessor_params_are_by_value"
 spec = ["6.6:5"]
 description = "A `borrow`-mode accessor parameter is rejected (E0260)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -355,8 +328,6 @@ error_contains = ["E0260", "must be by-value"]
 name = "accessor_body_requires_trailing_yield"
 spec = ["6.6:6"]
 description = "An accessor body whose final statement is not a yield is rejected (E0254)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -377,8 +348,6 @@ error_contains = ["E0254", "single trailing `yield`"]
 name = "yield_outside_accessor_rejected"
 spec = ["6.6:6"]
 description = "A `yield` outside an accessor body is rejected (E0256)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 fn main() -> i32 {
     yield 1;
@@ -391,8 +360,6 @@ error_contains = ["E0256", "only valid inside the body of a `-> borrow` or `-> i
 name = "accessor_yield_must_root_at_receiver"
 spec = ["6.6:7"]
 description = "Yielding a place not rooted at `self` is rejected (E0255)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -425,9 +392,9 @@ error_contains = ["E0255", "place rooted at `self`"]
 # ---------------------------------------------------------------------------
 
 [[case]]
-name = "uncalled_accessor_requires_preview_gate"
+name = "uncalled_accessor_compiles_stably"
 spec = ["6.6:3"]
-description = "An accessor nothing calls is still accessor surface: E1100 without the preview."
+description = "An uncalled accessor declaration is accepted after stabilization."
 source = """
 struct P {
     x: i64,
@@ -439,15 +406,12 @@ struct P {
 }
 fn main() -> i32 { 0 }
 """
-compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+exit_code = 0
 
 [[case]]
 name = "uncalled_accessor_requires_borrow_self"
 spec = ["6.6:4"]
 description = "The receiver rule holds on a declaration nothing calls (E0257)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -466,8 +430,6 @@ error_contains = ["E0257", "requires a `borrow self` receiver"]
 name = "uncalled_associated_function_accessor_is_rejected"
 spec = ["6.6:4"]
 description = "An associated function has no receiver to project from, called or not (E0257)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -486,8 +448,6 @@ error_contains = ["E0257", "an associated function with no receiver"]
 name = "uncalled_accessor_params_are_by_value"
 spec = ["6.6:5"]
 description = "The parameter-mode rule holds on a declaration nothing calls (E0260)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -506,8 +466,6 @@ error_contains = ["E0260", "must be by-value"]
 name = "uncalled_accessor_body_requires_trailing_yield"
 spec = ["6.6:6"]
 description = "An accessor body with no trailing `yield` is rejected with no call site (E0254)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -526,8 +484,6 @@ error_contains = ["E0254", "single trailing `yield`"]
 name = "uncalled_accessor_body_rejects_a_second_yield"
 spec = ["6.6:6"]
 description = "A second `yield` bypasses the trailing exit, with no call site (E0254)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -547,8 +503,6 @@ error_contains = ["E0254", "single trailing `yield`", "a second `yield`"]
 name = "uncalled_accessor_body_rejects_return"
 spec = ["6.6:6"]
 description = "An accessor body may not contain `return`, with no call site (E0254)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -570,8 +524,6 @@ error_contains = ["E0254", "single trailing `yield`", "a `return`"]
 name = "uncalled_accessor_body_rejects_try"
 spec = ["6.6:6"]
 description = "An accessor body may not contain `?`, with no call site (E0254)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -591,8 +543,6 @@ error_contains = ["E0254", "single trailing `yield`", "a `?`"]
 name = "uncalled_accessor_yield_must_root_at_receiver"
 spec = ["6.6:7"]
 description = "Yielding a parameter other than the receiver is rejected with no call site (E0255)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -611,8 +561,6 @@ error_contains = ["E0255", "place rooted at `self`", "`other`"]
 name = "uncalled_accessor_yield_of_a_computed_value_is_rejected"
 spec = ["6.6:7"]
 description = "Yielding a computed value, not a place, is rejected with no call site (E0255)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -631,8 +579,6 @@ error_contains = ["E0255", "place rooted at `self`", "a value expression"]
 name = "uncalled_nested_accessor_yield_compiles"
 spec = ["6.6:7"]
 description = "Control: a nested accessor call is a legal projection link, so an uncalled accessor chain compiles."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -660,8 +606,6 @@ exit_code = 0
 name = "accessor_yield_through_plain_method_is_rejected"
 spec = ["6.6:7"]
 description = "A projection link through a non-accessor method of the receiver is rejected (E0255) with nothing calling the accessor: whether a `self.m()` link names an accessor is a parsed fact of the owner's other declarations."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -681,8 +625,6 @@ error_contains = ["E0255", "not an accessor projection"]
 name = "called_accessor_yield_through_plain_method_is_rejected"
 spec = ["6.6:7"]
 description = "The same link is rejected from the call site, where the demanded body walk decides every link from the receiver's resolved type."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -702,8 +644,6 @@ error_contains = ["E0255", "not an accessor projection"]
 name = "accessor_yield_through_a_chained_type_s_accessor_compiles"
 spec = ["6.6:7"]
 description = "A link whose receiver is not the accessor's own `self` names a method of another type, which the declaration cannot resolve; it stays permissive there and the demanded path decides it."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Inner {
     v: i64,
@@ -727,8 +667,6 @@ exit_code = 0
 name = "uncalled_legal_accessor_compiles"
 spec = ["6.6:1", "6.6:2"]
 description = "Control: a well-formed accessor nothing calls compiles, so the unconditional declaration rules reject only ill-formed ones."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -746,8 +684,6 @@ exit_code = 0
 name = "accessor_may_not_call_itself"
 spec = ["6.6:14"]
 description = "A directly self-recursive accessor has no finite inline expansion (E0261)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -773,8 +709,6 @@ error_contains = ["E0261", "an accessor may not invoke itself"]
 name = "accessor_read_executes_in_place"
 spec = ["6.6:8", "6.6:12"]
 description = "A guarded accessor call reads the projected element in place; guards run at the call site."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -800,8 +734,6 @@ exit_code = 0
 name = "accessor_guard_traps_out_of_bounds"
 spec = ["6.6:12"]
 description = "The accessor's guard panics at the call site for an out-of-bounds index."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -825,8 +757,6 @@ stderr_contains = "panic: index out of bounds"
 name = "accessor_result_cannot_be_returned"
 spec = ["6.6:9"]
 description = "Returning an accessor result escapes its full expression (E0250)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -850,8 +780,6 @@ error_contains = ["E0250", "cannot return an accessor result"]
 name = "accessor_result_cannot_be_let_bound"
 spec = ["6.6:9"]
 description = "A plain `let` binding of an accessor result escapes its full expression (E0252)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -873,8 +801,6 @@ error_contains = ["E0252", "cannot bind an accessor result with `let`"]
 name = "accessor_result_cannot_be_stored"
 spec = ["6.6:9"]
 description = "Assigning an accessor result into storage escapes its full expression (E0251)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -897,8 +823,6 @@ error_contains = ["E0251", "cannot store an accessor result"]
 name = "accessor_result_cannot_be_captured"
 spec = ["6.6:9"]
 description = "Capturing an accessor result in an array literal escapes its full expression (E0253)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -920,8 +844,6 @@ error_contains = ["E0253", "cannot capture an accessor result"]
 name = "accessor_loan_conflicts_with_inout"
 spec = ["6.6:10"]
 description = "An exclusive use of the borrowed root in the same full expression violates exclusivity (E0259)."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -948,8 +870,6 @@ error_contains = ["E0259", "while an accessor result borrows it"]
 name = "accessor_result_drop_glue_read_rejected"
 spec = ["6.6:11"]
 description = "Reading an owning (drop-glue) value out of an accessor result by value is rejected (E0258)."
-preview = "borrow_accessors"
-preview_should_pass = true
 real_std = true
 source = """
 const std = @import("std");
@@ -976,8 +896,6 @@ error_contains = ["E0258"]
 name = "arraybuf_get_ref_projects_drop_glue_element_in_place"
 spec = ["6.6:7", "6.6:8", "6.6:11", "6.6:12"]
 description = "The trusted ArrayBuf bridge yields a receiver-rooted place, so a destructor-bearing element can be projected without copying its owner."
-preview = "borrow_accessors"
-preview_should_pass = true
 real_std = true
 source = """
 const std = @import("std");
@@ -993,9 +911,9 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "arraybuf_get_ref_call_requires_preview"
+name = "arraybuf_get_ref_call_is_stable"
 spec = ["6.6:3"]
-description = "Trusted standard-library declarations load stably, but calling get_ref without borrow_accessors is E1100."
+description = "Trusted standard-library get_ref calls compile as a stable feature."
 real_std = true
 source = """
 const std = @import("std");
@@ -1006,15 +924,12 @@ fn main() -> i32 {
     if b.get_ref(0) == 1 { 0 } else { 1 }
 }
 """
-compile_fail = true
-error_contains = ["E1100", "borrow_accessors"]
+exit_code = 0
 
 [[case]]
 name = "mutable_accessor_direct_and_projected_assignment"
 spec = ["6.6:15"]
 description = "An exclusive accessor result is a writable place, including projected writes."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Cell { value: i64 }
 struct V {
@@ -1034,8 +949,6 @@ exit_code = 0
 name = "mutable_accessor_inout_forwarding"
 spec = ["6.6:15"]
 description = "An exclusive accessor result can be forwarded as an inout place."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],
@@ -1054,8 +967,6 @@ exit_code = 0
 name = "mutable_accessor_exclusive_conflicts_are_symmetric"
 spec = ["6.6:16"]
 description = "Two exclusive results rooted at one receiver conflict regardless of evaluation order."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],
@@ -1075,8 +986,6 @@ error_contains = ["E0426", "same variable"]
 name = "mutable_and_shared_accessor_conflict_mutable_first"
 spec = ["6.6:16"]
 description = "An exclusive accessor conflicts with a shared accessor rooted at the same receiver."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],
@@ -1097,8 +1006,6 @@ error_contains = ["E0259", "accessor"]
 name = "mutable_accessor_conflicts_with_ordinary_read_mutable_first"
 spec = ["6.6:16"]
 description = "An exclusive accessor conflicts with an ordinary shared read of the same root."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],
@@ -1118,8 +1025,6 @@ error_contains = ["E0259", "shared read"]
 name = "mutable_accessor_conflicts_with_ordinary_read_shared_first"
 spec = ["6.6:16"]
 description = "The ordinary-read-then-exclusive evaluation order is rejected symmetrically."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],
@@ -1139,8 +1044,6 @@ error_contains = ["E0259", "shared read"]
 name = "mutable_accessor_projected_read_is_legal"
 spec = ["6.6:15"]
 description = "Reading a projection of an exclusive accessor result remains a read of its yielded place."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct Cell { value: i64 }
 struct V {
@@ -1158,8 +1061,6 @@ exit_code = 0
 name = "mutable_and_shared_accessor_conflict_shared_first"
 spec = ["6.6:16"]
 description = "The shared-then-exclusive evaluation order is rejected symmetrically."
-preview = "borrow_accessors"
-preview_should_pass = true
 source = """
 struct V {
     cells: [i64; 2],

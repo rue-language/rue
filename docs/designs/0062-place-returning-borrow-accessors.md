@@ -1,13 +1,13 @@
 ---
 id: 0062
 title: "Place-returning borrow accessors: projection reads of owned elements"
-status: accepted
+status: implemented
 tags: [ownership, borrows, collections, accessors, stdlib, formal-semantics]
-feature-flag: borrow_accessors
+feature-flag: (none - feature stabilized)
 created: 2026-07-18
 accepted: 2026-07-18
-implemented:
-spec-sections: []
+implemented: 2026-08-21
+spec-sections: ["6.6"]
 superseded-by:
 relates: ["RUE-662", "RUE-286", "RUE-651", "RUE-646", "RUE-1012", "RUE-1013", "RUE-219", "RUE-390", "ADR-0037", "ADR-0043"]
 ---
@@ -16,7 +16,7 @@ relates: ["RUE-662", "RUE-286", "RUE-651", "RUE-646", "RUE-1012", "RUE-1013", "R
 
 ## Status
 
-Accepted — ratified by Steve on 2026-07-18. Direction and syntax were both
+Implemented — stabilized by RUE-1018 on 2026-08-21. Direction and syntax were both
 decided in the 2026-07-18 design session: build the restricted
 place-returning form now, with the **S2 surface** (`fn` + `-> borrow T` +
 `yield` body — see §"The syntax decision"), conditional on (a) it remaining
@@ -256,7 +256,7 @@ sugar can still be layered on top later without disturbing this choice.)
 
 Tracked in Linear under the RUE-1015 epic:
 
-- [x] **Phase 0: Ratify syntax; spec + grammar + preview gate scaffolding** — RUE-662
+- [x] **Phase 0: Ratify syntax; spec + grammar scaffolding** — RUE-662
 - [x] **Phase 1: Read accessors** (`borrow self` → shared result; parser,
       sema/AIR loan checking, mandatory inlining, formal-core amendment,
       spec coverage) — RUE-662
@@ -266,11 +266,10 @@ Tracked in Linear under the RUE-1015 epic:
       pointing at it; sound grid/stack/queue accessors; the deque and intmap
       exclusions documented until their filler/copy representations change;
       owned-children tree example replacing an arena) — RUE-1017
-- [ ] **Phase 4: preview-gate removal** after dogfooding — RUE-1018
-      (blocked by RUE-1016 and RUE-1017)
+- [x] **Phase 4: preview-gate removal** after dogfooding — RUE-1018
 
-Each phase follows the `docs/designs/0005-preview-features.md` layer
-checklist under the single `borrow-accessors` flag.
+The feature is now part of Rue's stable language surface; no preview flag is
+required.
 
 ## Consequences
 

@@ -21,7 +21,6 @@ fn main() -> i32 {
     @intCast(read(borrow p))
 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0250", "cannot return an accessor result", "`xr`", "`p`"]
 
@@ -40,7 +39,6 @@ struct P {
 }
 fn main() -> i32 { 0 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = [
     "E0254",
@@ -62,7 +60,6 @@ struct P {
 }
 fn main() -> i32 { 0 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0255", "place rooted at `self`", "`other`"]
 
@@ -80,7 +77,6 @@ struct P {
 }
 fn main() -> i32 { 0 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0257", "inout self", "-> inout"]
 
@@ -98,7 +94,6 @@ fn main() -> i32 {
     0
 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0203"]
 
@@ -119,7 +114,6 @@ fn main() -> i32 {
     0
 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0250", "cannot return an accessor result"]
 
@@ -137,7 +131,6 @@ fn main() -> i32 {
     0
 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0259", "accessor result"]
 
@@ -155,6 +148,5 @@ struct P {
 }
 fn main() -> i32 { 0 }
 """
-preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0254", "second `yield`"]

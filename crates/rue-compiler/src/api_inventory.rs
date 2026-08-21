@@ -142,7 +142,6 @@ fn the_driver_reads_accessor_declaration_rules_from_the_shared_rule_module() {
     );
     for required in [
         "use rue_air::declaration_validation as rules;",
-        "rules::accessor_preview_gate(",
         "rules::accessor_signature_for_mode(",
         "rules::accessor_body_error(",
         "accessor_method_link_error(",

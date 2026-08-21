@@ -983,7 +983,7 @@ carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
 
-**Accessor calls (ADR-0062, preview).** An accessor is a method of the form
+**Accessor calls (ADR-0062).** An accessor is a method of the form
 
 ```
   A.f : fn ( self_mode self : A, x1:T1, ..., xk:Tk ) -> result_mode T { e_guard ; yield p_y }
@@ -2247,7 +2247,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1/6/14, 4.3:1/2/5/6, 4.3a:3/4, 4.4:2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7, 6.1:36 |
-| §5.8 (Accessor-Call) + accessor body WF (preview, ADR-0062) | 6.6:2–6.6:17 |
+| §5.8 (Accessor-Call) + accessor body WF (ADR-0062) | 6.6:2–6.6:17 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72, 3.8:77 |

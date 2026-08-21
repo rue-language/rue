@@ -660,10 +660,6 @@ pub enum PreviewFeature {
     /// linking (ADR-0064, RUE-1055). Gated until every phase of the guaranteed
     /// target-C boundary is proven on both backends.
     CFfi,
-    /// Place-returning accessors (ADR-0062, RUE-662/RUE-1016): methods with a
-    /// `-> borrow T` or `-> inout T` result whose `yield` body hands out a
-    /// second-class projection of the receiver.
-    BorrowAccessors,
     /// Floating point: `f32`/`f64`, IEEE-754 arithmetic, and `comptime_float`
     /// literals (ADR-0065, RUE-714). Gated until every phase of the M9 rollout
     /// — types and inference, both backends, the dtoa runtime — is complete
@@ -693,7 +689,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::CFfi => "c_ffi",
-            PreviewFeature::BorrowAccessors => "borrow_accessors",
             PreviewFeature::Floats => "floats",
         }
     }
@@ -704,7 +699,6 @@ impl PreviewFeature {
         match *self {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::CFfi => "ADR-0064",
-            PreviewFeature::BorrowAccessors => "ADR-0062",
             PreviewFeature::Floats => "ADR-0065",
         }
     }
@@ -714,7 +708,6 @@ impl PreviewFeature {
         &[
             PreviewFeature::TestInfra,
             PreviewFeature::CFfi,
-            PreviewFeature::BorrowAccessors,
             PreviewFeature::Floats,
         ]
     }
@@ -740,7 +733,6 @@ impl std::str::FromStr for PreviewFeature {
         match s {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "c_ffi" => Ok(PreviewFeature::CFfi),
-            "borrow_accessors" => Ok(PreviewFeature::BorrowAccessors),
             "floats" => Ok(PreviewFeature::Floats),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
@@ -3075,7 +3067,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, c_ffi, borrow_accessors, floats");
+        assert_eq!(names, "test_infra, c_ffi, floats");
     }
 
     #[test]
@@ -3180,8 +3172,8 @@ mod tests {
     fn test_preview_feature_stabilized_are_unknown() {
         // for_loops, method_receivers, enum_payloads, array_repeat,
         // field_init_shorthand, inline_type_ctor_paths, raw_bytes,
-        // aggregate_layout, and slices were stabilized (no longer gated) —
-        // their names must now be rejected.
+        // aggregate_layout, slices, and borrow_accessors were stabilized (no
+        // longer gated) — their names must now be rejected.
         for name in [
             "for_loops",
             "method_receivers",
@@ -3192,6 +3184,7 @@ mod tests {
             "raw_bytes",
             "aggregate_layout",
             "slices",
+            "borrow_accessors",
         ] {
             assert!(
                 name.parse::<PreviewFeature>().is_err(),

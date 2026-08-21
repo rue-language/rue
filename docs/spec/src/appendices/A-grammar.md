@@ -33,8 +33,8 @@ intrinsic_arg  = type | expression ;
 function       = directives [ "pub" ] [ "unchecked" ]
                  "fn" IDENT "(" [ params ] ")" [ result ] "{" block "}" ;
 result         = "->" [ "borrow" | "inout" ] type ; (* marks a place-returning
-                                                        accessor (ADR-0062,
-                                                        preview); result and
+                                                        accessor (ADR-0062);
+                                                        result and
                                                         receiver modes pair —
                                                         a legality rule *)
 params         = param { "," param } [ "," ] ;
@@ -73,7 +73,7 @@ expr_stmt      = expression ";"
                | control_flow_expr
                | block_expr ;          (* block-like expressions need no semicolon *)
 yield_expr     = "yield" expression ;  (* the trailing exit of an accessor body
-                                          (ADR-0062, preview); parsed as an
+                                          (ADR-0062); parsed as an
                                           expression form, valid only as the
                                           single trailing statement of a
                                           `-> borrow` or `-> inout` accessor

@@ -2,7 +2,7 @@
 //! migrated from the retired whole-program `Sema` accessor suite (RUE-1538).
 //!
 //! Production splits the accessor rules across two planes. Declaration
-//! legality — the 6.6:3 preview gate, the 6.6:4/6.6:5 signature shape, the
+//! legality — the 6.6:3 accessor rule, the 6.6:4/6.6:5 signature shape, the
 //! 6.6:6/6.6:7 body shape, and the 6.6:14 `self`-call cycle — is decided at
 //! the declaration query seam in `rue-compiler`
 //! (`revisioned_query_database.rs`, through
@@ -21,16 +21,10 @@
 //! `rue-compiler/src/revisioned_query_database.rs` and the spec suite
 //! `rue-spec/cases/items/borrow-accessors.toml` (6.6:3-6.6:14).
 
-use rue_error::{ErrorKind, PreviewFeature, PreviewFeatures};
+use rue_error::ErrorKind;
 
 use super::provider_fixture::{FixtureKey, MethodShape, ProviderFixture, mode_param, value_param};
 use crate::{AirInstData, SemanticImportType, SemanticParameterMode, StableDefinitionKind};
-
-fn accessor_preview() -> PreviewFeatures {
-    let mut features = PreviewFeatures::new();
-    features.insert(PreviewFeature::BorrowAccessors);
-    features
-}
 
 /// The durable method shape of a phase-1 accessor: `borrow self` receiver
 /// with the accessor flag set.
@@ -59,8 +53,8 @@ fn mutable_accessor_shape() -> MethodShape {
 /// against these facts alone — caller-side accessor analysis establishes the
 /// place/loan contract from the durable signature and never reads the callee
 /// body (RUE-1208).
-fn grid_fixture(preview: PreviewFeatures) -> (ProviderFixture, FixtureKey) {
-    let mut fixture = ProviderFixture::with_preview(preview);
+fn grid_fixture() -> (ProviderFixture, FixtureKey) {
+    let mut fixture = ProviderFixture::new();
     let grid = fixture.declare_struct(
         "Grid",
         vec![(
@@ -82,19 +76,6 @@ fn grid_fixture(preview: PreviewFeatures) -> (ProviderFixture, FixtureKey) {
     (fixture, grid)
 }
 
-/// The accessor's own declaration, for tests that analyze the accessor body
-/// itself (the single declaration the member body plan carries).
-const GRID_ACCESSOR_DECL: &str = r#"struct Grid {
-    cells: [i64; 4],
-
-    fn at(borrow self, i: u64) -> borrow i64 {
-        if i >= 4 {
-            @panic("index out of bounds");
-        }
-        yield self.cells[i];
-    }
-}"#;
-
 fn accessor_call_count(air: &crate::ValidatedAir) -> usize {
     air.iter()
         .filter(|(_, inst)| matches!(inst.data, AirInstData::AccessorCall { .. }))
@@ -103,7 +84,7 @@ fn accessor_call_count(air: &crate::ValidatedAir) -> usize {
 
 #[test]
 fn provider_mutable_accessor_marks_inout_receiver_and_place_result() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let grid = fixture.declare_struct(
         "Grid",
         vec![(
@@ -158,7 +139,7 @@ fn provider_mutable_accessor_marks_inout_receiver_and_place_result() {
 // instruction exists.
 #[test]
 fn accessor_call_inlines_with_no_call_shape() {
-    let (mut fixture, _) = grid_fixture(accessor_preview());
+    let (mut fixture, _) = grid_fixture();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let body = fixture
         .analyze(
@@ -192,7 +173,7 @@ fn accessor_call_inlines_with_no_call_shape() {
 // CFG query to splice.
 #[test]
 fn accessor_calls_remain_marked_for_mandatory_cfg_splicing() {
-    let (mut fixture, _) = grid_fixture(accessor_preview());
+    let (mut fixture, _) = grid_fixture();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let body = fixture
         .analyze(
@@ -211,7 +192,7 @@ fn accessor_calls_remain_marked_for_mandatory_cfg_splicing() {
 // (6.6:9).
 #[test]
 fn accessor_result_cannot_be_returned() {
-    let (mut fixture, grid) = grid_fixture(accessor_preview());
+    let (mut fixture, grid) = grid_fixture();
     fixture.declare_function(
         "read",
         vec![mode_param(
@@ -240,7 +221,7 @@ fn accessor_result_cannot_be_returned() {
 // value is an implicit return, so the same escape rule applies.
 #[test]
 fn accessor_result_cannot_be_tail_returned() {
-    let (mut fixture, grid) = grid_fixture(accessor_preview());
+    let (mut fixture, grid) = grid_fixture();
     fixture.declare_function(
         "read",
         vec![mode_param(
@@ -269,7 +250,7 @@ fn accessor_result_cannot_be_tail_returned() {
 // binding would outlive the full-expression loan (6.6:9).
 #[test]
 fn accessor_result_cannot_be_let_bound() {
-    let (mut fixture, _) = grid_fixture(accessor_preview());
+    let (mut fixture, _) = grid_fixture();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let error = fixture
         .analyze(
@@ -292,7 +273,7 @@ fn accessor_result_cannot_be_let_bound() {
 // escape site too (6.6:9).
 #[test]
 fn accessor_result_cannot_be_stored() {
-    let (mut fixture, _) = grid_fixture(accessor_preview());
+    let (mut fixture, _) = grid_fixture();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let error = fixture
         .analyze(
@@ -317,7 +298,7 @@ fn accessor_result_cannot_be_stored() {
 // (6.6:9).
 #[test]
 fn accessor_result_cannot_be_captured_in_aggregate() {
-    let (mut fixture, _) = grid_fixture(accessor_preview());
+    let (mut fixture, _) = grid_fixture();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let error = fixture
         .analyze(
@@ -342,7 +323,7 @@ fn accessor_result_cannot_be_captured_in_aggregate() {
 // exclusive `inout` loan on the same root (6.6:10, ADR-0062 §2).
 #[test]
 fn accessor_loan_conflicts_with_inout_in_same_expression() {
-    let (mut fixture, grid) = grid_fixture(accessor_preview());
+    let (mut fixture, grid) = grid_fixture();
     fixture.declare_function(
         "using",
         vec![
@@ -387,7 +368,7 @@ fn accessor_loan_conflicts_with_inout_in_same_expression() {
 // `uncalled_accessor_body_requires_trailing_yield` (6.6:6).
 #[test]
 fn accessor_body_requires_trailing_yield() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -422,7 +403,7 @@ fn accessor_body_requires_trailing_yield() {
 // bypassing exit (6.6:6).
 #[test]
 fn accessor_body_rejects_a_second_yield() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -460,7 +441,7 @@ fn accessor_body_rejects_a_second_yield() {
 // is a non-diverging exit that bypasses the trailing `yield` (6.6:6).
 #[test]
 fn accessor_body_rejects_return() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -502,7 +483,7 @@ fn accessor_body_rejects_return() {
 // the receiver parameter `self` (6.6:7).
 #[test]
 fn accessor_yield_must_root_at_receiver() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -540,7 +521,7 @@ fn accessor_yield_must_root_at_receiver() {
 // (6.6:14, E0261) rather than a compiler stack overflow (RUE-1211).
 #[test]
 fn accessor_cannot_yield_a_call_to_itself() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -575,7 +556,7 @@ fn accessor_cannot_yield_a_call_to_itself() {
 // position (RUE-1211).
 #[test]
 fn accessor_cannot_call_itself_from_a_guard() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -632,7 +613,7 @@ const MUTUAL_ACCESSORS_DECL: &str = "struct P {
 // transaction — and each retains its one marked call.
 #[test]
 fn mutually_recursive_accessors_retain_marked_calls_for_cfg_cycle_rejection() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -686,7 +667,7 @@ fn mutually_recursive_accessors_retain_marked_calls_for_cfg_cycle_rejection() {
 // ordinary function body is rejected during that body's analysis (E0256).
 #[test]
 fn yield_outside_accessor_is_rejected() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     let error = fixture
         .analyze("fn main() -> i32 { yield 1; }", "main")
@@ -704,7 +685,7 @@ fn yield_outside_accessor_is_rejected() {
 // (`reject_free_function_accessor`), so this rejection stays on the seam.
 #[test]
 fn free_function_cannot_be_an_accessor() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     fixture.declare_function(
         "first",
         vec![mode_param(
@@ -738,7 +719,7 @@ fn free_function_cannot_be_an_accessor() {
 // trailing `yield` in the body (6.6:4, RUE-1213).
 #[test]
 fn free_function_accessor_without_yield_is_rejected() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     fixture.declare_function("make", Vec::new(), SemanticImportType::I64);
     let error = fixture
         .analyze(
@@ -761,11 +742,11 @@ fn free_function_accessor_without_yield_is_rejected() {
 
 // Migrated from `tests::plain_free_function_is_not_an_accessor`: only the
 // result-position `borrow` marks an accessor, so an ordinary `-> T` free
-// function keeps compiling with the preview enabled — as does a caller
+// function keeps compiling as a stable function — as does a caller
 // reaching it through its durable signature fact.
 #[test]
 fn plain_free_function_is_not_an_accessor() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     fixture.declare_function("make", Vec::new(), SemanticImportType::I64);
     fixture.declare_function("main", Vec::new(), SemanticImportType::I32);
     fixture
@@ -792,7 +773,7 @@ fn plain_free_function_is_not_an_accessor() {
 // callee's resolved `returns_borrow` fact.
 #[test]
 fn nested_accessor_yield_compiles() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -831,7 +812,7 @@ fn nested_accessor_yield_compiles() {
 // body-shape rules misfire on the legal form.
 #[test]
 fn legal_accessor_body_compiles() {
-    let mut fixture = ProviderFixture::with_preview(accessor_preview());
+    let mut fixture = ProviderFixture::new();
     let p = fixture.declare_struct("P", vec![("x", SemanticImportType::I64)], false);
     fixture.declare_method_with(
         &p,
@@ -855,61 +836,4 @@ fn legal_accessor_body_compiles() {
         )
         .expect("a legal accessor compiles");
     assert_eq!(body.function.air.return_type(), crate::types::Type::I64);
-}
-
-// Migrated from `tests::accessor_declaration_requires_preview_gate` (and its
-// uncalled twin, which the fixture cannot distinguish): with the gate off,
-// the accessor's demanded body is rejected at its `yield` exit
-// (`require_preview` in `analyze_yield`). The declaration-plane 6.6:3 gate —
-// which fires with no body demanded — is `rules::accessor_preview_gate` at
-// the `rue-compiler` signature query, covered by spec cases
-// `accessor_requires_preview_gate` and `uncalled_accessor_requires_preview_gate`.
-#[test]
-fn accessor_body_requires_preview_gate() {
-    let (fixture, _) = grid_fixture(PreviewFeatures::new());
-    let error = fixture
-        .analyze_member(
-            GRID_ACCESSOR_DECL,
-            "Grid",
-            "at",
-            StableDefinitionKind::Method,
-        )
-        .map(|_| ())
-        .expect_err("the gate is off");
-    assert!(
-        matches!(
-            &error.kind,
-            ErrorKind::PreviewFeatureRequired { feature, .. }
-                if *feature == PreviewFeature::BorrowAccessors
-        ),
-        "unexpected diagnostic: {error:?}"
-    );
-}
-
-// Migrated from `tests::free_function_accessor_without_yield_requires_preview`:
-// 6.6:3 is disjunctive — the `-> borrow` result position alone demands the
-// preview, whether or not the body contains a `yield` (RUE-1213). The
-// provider body path enforces this through the free-function declaration
-// shape check at body entry.
-#[test]
-fn free_function_accessor_without_yield_requires_preview() {
-    let mut fixture = ProviderFixture::new();
-    fixture.declare_function("make", Vec::new(), SemanticImportType::I64);
-    let error = fixture
-        .analyze(
-            "fn make() -> borrow i64 {
-    5
-}",
-            "make",
-        )
-        .map(|_| ())
-        .expect_err("the gate is off");
-    assert!(
-        matches!(
-            &error.kind,
-            ErrorKind::PreviewFeatureRequired { feature, .. }
-                if *feature == PreviewFeature::BorrowAccessors
-        ),
-        "unexpected diagnostic: {error:?}"
-    );
 }

@@ -3719,7 +3719,6 @@ where
             declaration,
             None,
             false,
-            &self.preview,
         )
     }
 }
