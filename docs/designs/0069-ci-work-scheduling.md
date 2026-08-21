@@ -16,9 +16,9 @@ relates: ["RUE-1250", "RUE-1262", "RUE-1265", "RUE-1164", "RUE-1130", "RUE-1131"
 
 ## Status
 
-Accepted. Phase 2 (determination on every lane, RUE-1130) is implemented in
-the same change that accepted this ADR. Phase 1 (RUE-1262) and Phase 3
-(the duplication gate, RUE-1265) have since landed; Phases 4-6 are unstarted.
+Accepted. Phases 1-4 are implemented: determination on every lane (RUE-1130),
+duplicate-target removal (RUE-1262), the duplication gate (RUE-1265), and
+graph-owned platform scope (RUE-1266). Phases 5-6 remain unstarted.
 
 **Amendment 1 (2026-08-14)** records the remote-execution evaluation this ADR's
 open questions invite and declines RE as a scheduling lever: it is accepted as
@@ -74,13 +74,13 @@ The finding that motivates this ADR is concentration, not imbalance:
   `//crates/rue-compiler:scaling-matrix-test` turns out to be a strict superset
   of `//crates/rue-compiler:rue-compiler-test`: 816 tests versus 813, all 813
   shared. The lane runs those 813 twice to gain three.
-- Both native lanes are one step, and that step is **99.1%**
+- Both native lanes were one step, and that step was **99.1%**
   `rue-compiler-test`, contradicting `docs/process/ci.md:46` ("Linux ARM64 and
   macOS ARM64 deliberately do not repeat the broad unit suite") while
   `scripts/validate-ci-gate.py:204` pins the repetition in place. RUE-1265
   resolved the contradiction in the only direction available without a coverage
-  ruling: the contract now describes what runs, and names Phase 4 as the work
-  that makes the original claim true again.
+  ruling. RUE-1266 now makes the original claim true: broad compiler tests stay
+  in linux-premerge and the host-conditional subset has a focused native target.
 - Inside that target, **one test function is 181.7s** against a 5.7s runner-up.
   It is compiled into two targets and runs on three platforms: **four executions
   per CI run**, together 56–59% of the critical path (RUE-1262).
@@ -198,7 +198,8 @@ unshardable — and where a 181.7s test hid on two platforms for weeks.
 ### 1. One unit of work, and no workflow file names a target
 
 Every piece of pre-merge work is a Buck target carrying its execution tier
-(RUE-1157) *and* its platform scope as attributes. Lanes are generated
+(RUE-1157) and, where needed, the validated `rue_platform_native` platform
+scope label. Lanes are generated
 selections over the live graph. `.github/workflows/*.yml` contains no target
 label.
 
@@ -211,7 +212,7 @@ lanes become a label selection rather than a list `validate-ci-gate.py` must pin
 It also fixes a granularity error the measurement exposed: **platform scope is
 declared per target but is a property of individual tests.** `rue-compiler-test`
 contains ~27 host-conditional sites and 813 tests; the native lanes want the
-former and pay for the latter. Host-conditional compiler tests move into their
+former and no longer pay for the latter. Host-conditional compiler tests move into their
 own target, following the precedent already set in the same crate by
 `rue-compiler-public-api-test`, `rue-compiler-differential-oracle-test`, and
 `rue-compiler-payload-schema-test`.
@@ -222,15 +223,14 @@ No unit of work executes more than once per platform per run without a declared
 reason.
 
 This is stated first among the behavioural rules because it is the only lever
-that pays in every regime. Three violations exist today and **no current gate can
-see any of them**, because every gate compares *target lists* while these are
-overlaps in *test contents*:
+that pays in every regime. The original measurements found three violations;
+two remain represented in the current ledger, while RUE-1266 removed the
+compiler cross-platform one:
 
 - `scaling-matrix-test` re-runs 813 of `rue-compiler-test`'s tests, in the same
   lane, to add three;
-- `rue-compiler-test` runs on linux-x64, linux-arm64, and macOS, against a
-  documented contract that says the native lanes do not repeat the broad unit
-  suite;
+- the focused compiler host-conditional target repeats on linux-arm64 and
+  macOS, while `rue-compiler-test` is now owned only by linux-premerge;
 - `release-smoke` runs in the premerge lane under the debug platform and again in
   the `release` job under the release platform — defensible, but undecided.
 
@@ -398,7 +398,7 @@ from the graph later, or gated so that drift fails closed rather than silently:
 | `CLI_TEST_SHARD_COUNT` + the `platform-corpus` matrix | count and matrix drift | gated (`//:cli-shard-coverage-validation`); derive in phase 6 |
 | `SELECTABLE_CORPUS` | a new corpus job is ungated, so it always runs | fails open (runs); not yet gated |
 | `SELECTABLE_LANES` / `lane_targets` | a lane's job runs a target selection cannot see | **gated** (`lane_target_drift`) |
-| the native lanes' eight-target list, in the job and in the contract | new platform-sensitive tests are not enrolled | partly gated; phase 4 removes the list |
+| the native lanes' platform unit list | new platform-sensitive tests are not enrolled | graph-owned `rue_platform_native` query (RUE-1266) |
 | `RUE_AFFECTED_NARROW_LIMIT` (600) | a threshold nobody revisits | unmeasured; should follow measurement |
 | the platform responsibility matrix | a responsibility silently moves | gated (`validate-ci-gate.py`) |
 | `shard-weights.json` refresh | weights go stale, shards skew | manual (RUE-1222); guard is vacuous (§6) |
@@ -436,13 +436,12 @@ completely.
       as a step in the premerge lane, where the binaries it lists are already
       built, and costs 0.29s wall. `docs/process/ci.md` now states the invariant
       — with the scope it actually checks, and a section naming where it cannot
-      see — and no longer claims the native lanes skip the broad unit suite;
-      that repetition is a declared, provisional allowance until Phase 4
-      removes it.
-- [ ] **Phase 4: Platform scope as a target attribute** — new (RUE-1262 scope C).
-      Removes the `validate-ci-gate.py:204` pin and the per-test/per-target
-      granularity error. Phase 2 already stops peripheral changes from reaching
-      the native lanes; this makes compiler changes stop over-selecting them too.
+      see. The compiler cross-platform allowance was removed by Phase 4.
+- [x] **Phase 4: Platform scope as a target attribute** — RUE-1266.
+      `rue_platform_native` is validated by the shared wrappers and selected
+      from the live Buck graph. The workflow names no native unit target, and
+      the focused compiler target removes broad cross-platform repetition while
+      preserving host-conditional coverage.
 - [ ] **Phase 5: Real input-keyed compile actions** — RUE-1164, milestone
       "Buck-native test actions"; RUE-1222 for the timing-refresh and
       undeclared-input follow-ups.

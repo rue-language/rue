@@ -149,19 +149,16 @@ explicitly for both architectures on Linux, while native ARM64 lanes prove the
 host ABI, object/linker path, runtime archive, syscalls, and platform behavior
 that cross-compilation cannot.
 
-They **do** repeat the broad compiler unit suite, and that is a defect rather
-than the design. This paragraph used to claim otherwise while
-`scripts/validate-ci-gate.py` pinned `//crates/rue-compiler:rue-compiler-test`
-into both native lanes; the two statements contradicted each other for weeks
-because nothing compared them (ADR-0069 "What was measured"). What the native
-lanes want is that binary's ~27 host-conditional sites; what they pay for is
-all 902 of its tests, because platform scope is declared per target while it is
-a property of individual tests. ADR-0069 Phase 4 (RUE-1266) moves the
-host-conditional tests into their own target — the precedent
-`rue-compiler-public-api-test` already sets in the same crate — and the
-repetition ends there rather than by dropping coverage now. Until then it is a
-declared allowance in the duplication gate below, so the cost stays visible
-and priced until that tracked extraction lands.
+They do not repeat the broad compiler test selection. Platform scope is a
+validated target label (`rue_platform_native`) attached by the shared Buck
+wrappers, and the native lanes query that label from the live graph. The focused
+`rue-compiler-platform-native-test` target owns the compiler's host-conditional
+assertions by selecting the `#[ignore = "platform_native_ ..."]` rows whose
+names carry the `platform_native_` prefix; the target-independent compiler test
+selection remains in linux-premerge. A new compiler host assertion self-enrolls
+by following that ignore-and-prefix convention. A new native unit target
+self-enrolls through its graph attribute. Neither requires a workflow or
+validator target-list edit.
 
 The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
 `scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then
@@ -170,8 +167,8 @@ unscoped target-independent cases and automatic examples are not registered.
 This makes new platform-scoped cases self-enrolling. The native lanes also
 retain the explicit ABI, linker, and filesystem CLI filters because those
 suites contain native-execution cases with empty `only_on` lists. The CI
-contract pins both parts of this union, along with the host-conditional
-`rue-compiler-test` unit target.
+contract preserves both corpus filters along with the graph-owned
+`rue_platform_native` unit selection.
 
 The build jobs use the shared BuildBuddy remote action cache when the
 `BUILDBUDDY_API_KEY` secret is available (merge_group runs; fork PRs build
@@ -276,6 +273,10 @@ Every first-party Buck test target carries exactly one execution-tier label:
 repository, crate, and toolchain tests; generated crate unit tests default to
 `premerge`. A test that belongs outside pre-merge must opt into `slow` or
 `stress` at its definition rather than returning success from a skipped body.
+Platform-sensitive unit targets may additionally carry the validated
+`rue_platform_native` label through the same wrappers. Native lane membership
+is an `attrfilter(labels, 'rue_platform_native', ...)` query over the live Buck
+graph; the workflow does not carry a parallel target list.
 The required Valgrind and ASan jobs are logical `premerge` coverage and remain
 explicit jobs inside the CI aggregate: Valgrind provisions an external runtime
 tool, while ASan requires a pinned nightly Cargo toolchain that Buck does not
@@ -356,7 +357,7 @@ canary target in the Linux premerge graph;
 keep their 4x configurations in dedicated stress targets.
 
 Both scaling-matrix targets wrap the ordinary
-`//crates/rue-compiler:rue-compiler-test` binary and select its `#[ignore]`d
+`//crates/rue-compiler:rue-compiler-test` test selection and select its `#[ignore]`d
 `scaling_matrix_*` rows with `--ignored scaling_matrix`. They do not compile
 the crate again. Excluding heavy rows with `#[ignore]` rather than a
 target-specific `--cfg` is what keeps a dedicated target from silently
@@ -553,14 +554,11 @@ How it decides:
   Rosters go stale per target, not per entry. Absence never implies permission.
 
 Four duplication families are declared today. The native lanes' repetition of
-the eight platform unit targets, and their
+the graph-owned platform unit targets, and their
 `scripts/rue cli abi|cli.linker|cli.fs_file_io` steps re-running cases the CLI
 shards run, are both the platform responsibility matrix doing its job. The
-broad `rue-compiler-test` repetition remains a tracked removal owned by
-RUE-1266: its Phase-4 acceptance criteria split
-host-conditional tests into a platform-scoped target that remains in
-linux-premerge and self-enrolls in both ARM64 native lanes, while the broad
-target-independent suite remains only in linux-premerge. The release-smoke
+compiler split is now represented by its focused native target, so no broad
+compiler cross-platform allowance remains. The release-smoke
 overlap is deliberately retained only between the debug CLI shards and the
 release-configured release job; `rue_ci_dedicated_lane` prevents a third debug
 execution in linux-premerge. The broad native ABI filter carries an exact skip for

@@ -2003,7 +2003,8 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
 /// owner of the canonical query graph.
 #[cfg(unix)]
 #[test]
-fn query_native_rooted_demand_warm_edit_locality_through_fresh_link() {
+#[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+fn platform_native_query_native_rooted_demand_warm_edit_locality_through_fresh_link() {
     #[derive(Debug)]
     struct Locality {
         bodies_computed: usize,

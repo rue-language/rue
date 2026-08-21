@@ -24,6 +24,7 @@ rue_program(
 
 rue_program_test(
     name = "hello-runs-test",
+    platform = "native",
     program = ":hello",
     exit_code = 42,
 )

@@ -135,7 +135,18 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn warm_specialization_with_strings_matches_fresh_link_and_execution() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_self_enrollment_probe() {
+        // This assertion is intentionally tiny: its purpose is to prove that
+        // a newly added host-conditional test is picked up by the focused
+        // platform target through its graph label, without a workflow edit.
+        assert!(cfg!(unix));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_warm_specialization_with_strings_matches_fresh_link_and_execution() {
         let snapshot = SourceSnapshot::single(
             "<specialization-strings>",
             r#"
@@ -245,7 +256,8 @@ mod tests {
     /// executable as a fresh session for the edited source.
     #[cfg(unix)]
     #[test]
-    fn warm_single_function_edit_recomputes_one_codegen_unit_then_fresh_links() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_warm_single_function_edit_recomputes_one_codegen_unit_then_fresh_links() {
         let before = SourceSnapshot::single(
             "<warm-single-function-edit>",
             "fn callee() -> i32 { 1 } fn main() -> i32 { callee() }",
@@ -1237,7 +1249,8 @@ mod tests {
     /// same executable bytes with either serial or parallel codegen work.
     #[cfg(unix)]
     #[test]
-    fn one_and_many_query_workers_produce_identical_linked_executables() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_one_and_many_query_workers_produce_identical_linked_executables() {
         let snapshot = SourceSnapshot::single(
             "<worker-executable-determinism>",
             "fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn c() -> i32 { 3 } fn main() -> i32 { a() + b() + c() }",
@@ -1330,7 +1343,8 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn backend_batches_preserve_all_one_and_many_worker_projections() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_backend_batches_preserve_all_one_and_many_worker_projections() {
         let snapshot = SourceSnapshot::single(
             "<backend-batch-determinism>",
             "fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn c() -> i32 { 3 } \
@@ -1783,7 +1797,8 @@ mod tests {
     /// fresh execution through final executable bytes.
     #[cfg(unix)]
     #[test]
-    fn joined_codegen_schedule_matches_fresh_linked_executable() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_joined_codegen_schedule_matches_fresh_linked_executable() {
         assert_scheduled_codegen_matches_fresh_link(false);
     }
 
@@ -1792,13 +1807,15 @@ mod tests {
     /// ordinary fresh-link adapter and match a fresh compiler session.
     #[cfg(unix)]
     #[test]
-    fn canceled_codegen_waiter_schedule_matches_fresh_linked_executable() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_canceled_codegen_waiter_schedule_matches_fresh_linked_executable() {
         assert_scheduled_codegen_matches_fresh_link(true);
     }
 
     #[cfg(unix)]
     #[test]
-    fn named_const_strings_keep_stable_atoms_across_warm_reorder_and_codegen() {
+    #[ignore = "platform_native_ host coverage; run by rue-compiler-platform-native-test"]
+    fn platform_native_named_const_strings_keep_stable_atoms_across_warm_reorder_and_codegen() {
         let first = SourceSnapshot::single(
             "<named-const-strings>",
             r#"

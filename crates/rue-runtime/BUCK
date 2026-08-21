@@ -56,6 +56,7 @@ runtime_staticlib(
 
 rue_sh_test(
     name = "runtime-archives-test",
+    platform = "native",
     labels = ["rue_not_quick"],
     test = "tests/validate_runtime_archives.py",
     env = {
@@ -72,6 +73,7 @@ rue_sh_test(
 # so each CI platform exercises its own syscall layer.
 rue_rust_test(
     name = "rue-runtime-test",
+    platform = "native",
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_runtime",
     deps = [

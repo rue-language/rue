@@ -97,7 +97,7 @@ def cached_corpus_suite(
 
     native.sh_test(
         name = name,
-        labels = rue_test_labels(tier, labels),
+        labels = rue_test_labels(tier, labels = labels),
         test = "//:corpus-stamp-check",
         args = ["$(location :{}-action)".format(name)],
     )

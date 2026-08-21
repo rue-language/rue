@@ -10,23 +10,23 @@ and the subsets do not overlap where it matters.
 
 ## The native lanes, profiled
 
-Completing the picture. Both native lanes are one step, and that step is one
-target:
+Completing the picture as measured during the RUE-1250 investigation, both
+native lanes were one step, and that step was one target:
 
 | lane | median | dominant step | share |
 | --- | --- | --- | --- |
 | `native (linux-arm64)` | 351s (341–407) | "Run native backend, linker, runtime, ABI, allocator, and target tests" | **87.2%** |
 | `native (macos-arm64)` | 230s (184–385) | the same step | **76.5%** |
 
-That step runs eight targets. Measured locally, seven of them total **2.1s** and
-`//crates/rue-compiler:rue-compiler-test` is **225.6s — 99.1% of the step**. And
+That step ran eight targets. Measured locally, seven of them totaled **2.1s** and
+`//crates/rue-compiler:rue-compiler-test` took **225.6s — 99.1% of the step**. And
 that target is 94% one test function
 (`failed_wide_batches_release_their_unpublished_child_cones_under_pressure`,
 181.7s, RUE-1262).
 
-So the same test function runs **four times per CI run**: twice in the premerge
+So the same test function ran **four times per CI run**: twice in the premerge
 lane (`rue-compiler-test` and its duplicate `scaling-matrix-test`), once on
-linux-arm64, once on macOS. It is the dominant cost in all three lanes.
+linux-arm64, once on macOS. It was the dominant cost in all three lanes.
 
 The "ARM64 floor" that an earlier draft of the topology note treated as an
 immovable platform constraint is not a platform constraint. It is the same
@@ -39,16 +39,20 @@ defect, seen from a third angle.
 > Linux ARM64 and macOS ARM64 deliberately do not repeat the broad unit suite or
 > the specification corpus.
 
-They do. `rue-compiler-test` is 813 tests — the broad compiler unit suite — and
-`scripts/validate-ci-gate.py:204` pins it into the native lanes' required list.
-The gate that exists to prevent coverage drift is what enforces the repetition.
+They did. `rue-compiler-test` was 813 tests — the broad compiler unit suite —
+and `scripts/validate-ci-gate.py` pinned it into the native lanes' required
+list. The gate that existed to prevent coverage drift was what enforced the
+repetition. RUE-1266 subsequently replaced that list with graph-owned
+`rue_platform_native` membership: the broad compiler suite remains Linux-only,
+while `rue-compiler-platform-native-test` runs the focused host assertions on
+Linux premerge and both native lanes.
 
-What the native lanes actually want is the host-conditional coverage: roughly 27
+What the native lanes actually wanted was the host-conditional coverage: roughly 27
 `#[cfg(unix)]` / `#[cfg(target_os = "macos")]` / `#[cfg(target_arch = ...)]`
 sites in the crate. They get all 813 tests, including a query-eviction pressure
 test with no platform dependence whatsoever.
 
-That is the general shape of the bug: **platform requirements are declared
+That was the general shape of the bug: **platform requirements were declared
 per-target, but they are a property of individual tests.** A whole test binary is
 too coarse a unit to express "this needs a real Mach-O linker."
 
@@ -117,12 +121,12 @@ Every piece of premerge work is a Buck target carrying its tier and its platform
 requirement as attributes. **No workflow file contains a target label.** Every
 lane is a generated selection over the live graph.
 
-The repository already does this well for corpus cases — `only_on` plus
-`RUE_PLATFORM_CASE_SELECTION=native` makes platform-scoped cases self-enrolling,
-and `docs/process/ci.md` correctly calls that out as the reason new cases do not
-need a workflow edit. Extend exactly that idea to unit targets, and the native
-lanes become `attrfilter(labels, 'rue_platform_native', …)` instead of a list
-that `validate-ci-gate.py` has to pin.
+The repository already did this well for corpus cases — `only_on` plus
+`RUE_PLATFORM_CASE_SELECTION=native` made platform-scoped cases self-enrolling,
+and `docs/process/ci.md` correctly called that out as the reason new cases did
+not need a workflow edit. RUE-1266 extended exactly that idea to unit targets:
+the native lanes now use `attrfilter(labels, 'rue_platform_native', …)` instead
+of a list that `validate-ci-gate.py` had to pin.
 
 This also fixes the granularity mismatch. If platform need is per-test, the unit
 must be per-test: split the host-conditional compiler tests into their own target
@@ -201,9 +205,10 @@ detectable by any existing gate:
 
 - `scaling-matrix-test` re-runs 813 of `rue-compiler-test`'s tests, in the same
   lane, to add three;
-- `rue-compiler-test`'s 813 tests run on linux-x64, linux-arm64, and macOS, while
-  the documented contract says the native lanes do not repeat the broad unit
-  suite;
+- `rue-compiler-test`'s 813 tests ran on linux-x64, linux-arm64, and macOS, while
+  the documented contract said the native lanes did not repeat the broad unit
+  suite; RUE-1266 now keeps that broad suite on Linux and separately runs the
+  graph-owned focused host rows where required;
 - `release-smoke` runs in the premerge lane under the debug platform and again in
   the `release` job under the release platform — arguably intentional, but nobody
   decided it.
@@ -220,13 +225,16 @@ recur," which is the difference between a faster CI system and a robust one.
 
 ## Ordering
 
+The order below records the historical investigation. RUE-1266 implements the
+native-lane selection item and its focused compiler coverage.
+
 1. **RUE-1262** — the pressure test and the `scaling-matrix-test` duplicate. It
    is 56–59% of the critical path, its scope is three lanes rather than one, and
    it needs no new machinery.
 2. **The duplication gate** (§5). Cheap, and it is what stops the class from
    recurring. Doing it second means it lands while the evidence is fresh.
-3. **Native-lane selection by attribute** (§1). Deletes the pinned target list
-   and fixes the per-test/per-target granularity mismatch.
+3. **Native-lane selection by attribute** (§1). This deleted the pinned target
+   list and fixed the per-test/per-target granularity mismatch in RUE-1266.
 4. **Determinate every lane and generate the matrix** (§2). Largest workflow
    change; safest once §1 has removed the hand-written lists it would otherwise
    have to reproduce.

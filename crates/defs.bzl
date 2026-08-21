@@ -74,7 +74,7 @@ def _fmt_check(name, srcs):
         resources = srcs + [_RUSTFMT_CONFIG],
         # Premerge tier; excluded from quick iteration so `scripts/rue quick`
         # keeps meaning "unit tests only" (see quick-test.sh).
-        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+        labels = rue_test_labels("premerge", labels = ["rue_not_quick"]),
     )
 
 _DEBUG_ASSERT_GATE = "//:debug-assert-policy-script"
@@ -115,7 +115,7 @@ def _debug_assert_check(name, srcs):
         resources = srcs + [_GATELIB],
         # Premerge tier; excluded from quick iteration so `scripts/rue quick`
         # keeps meaning "unit tests only" (see quick-test.sh).
-        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+        labels = rue_test_labels("premerge", labels = ["rue_not_quick"]),
     )
 
 def _clippy_check(name):
@@ -136,7 +136,7 @@ def _clippy_check(name):
         args = ["$(location :" + name + "[clippy.txt])"],
         # Premerge tier; excluded from quick iteration so `scripts/rue quick`
         # keeps meaning "unit tests only" (see quick-test.sh).
-        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+        labels = rue_test_labels("premerge", labels = ["rue_not_quick"]),
     )
 
 def rue_crate(
@@ -144,6 +144,7 @@ def rue_crate(
         deps = [],
         test_deps = [],
         test_tier = "premerge",
+        test_platform = None,
         tests = True,
         visibility = ["PUBLIC"],
         **kwargs):
@@ -171,7 +172,7 @@ def rue_crate(
             name = name + "-test",
             srcs = srcs,
             deps = deps + test_deps,
-            labels = rue_test_labels(test_tier),
+            labels = rue_test_labels(test_tier, test_platform),
             **kwargs
         )
 
@@ -180,6 +181,7 @@ def rue_binary(
         deps = [],
         test_deps = [],
         test_tier = "premerge",
+        test_platform = None,
         tests = True,
         visibility = ["PUBLIC"],
         **kwargs):
@@ -206,6 +208,6 @@ def rue_binary(
             name = name + "-test",
             srcs = srcs,
             deps = deps + test_deps,
-            labels = rue_test_labels(test_tier),
+            labels = rue_test_labels(test_tier, test_platform),
             **kwargs
         )
