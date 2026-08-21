@@ -63,6 +63,7 @@ pub const DROP_FN: u64 = 51;
 pub const CONST_DECL: u64 = 52;
 pub const ANON_ENUM_TYPE: u64 = 53;
 pub const SLICE_TYPE: u64 = 54;
+pub const YIELD: u64 = 55;
 
 pub struct Node {
     kind: u64,
@@ -153,6 +154,7 @@ pub struct Arena {
         else if kind == BREAK { "break" }
         else if kind == CONTINUE { "continue" }
         else if kind == RETURN { "return" }
+        else if kind == YIELD { "yield" }
         else if kind == LET { "let" }
         else if kind == ASSIGN { "assign" }
         else if kind == EXPR_STMT { "expr-stmt" }
@@ -267,7 +269,7 @@ pub struct Arena {
             let statement = self.at(link.b);
             let expr = self.at(statement.a);
             if link.kind == LIST && statement.kind == EXPR_STMT &&
-                (expr.kind == BREAK || expr.kind == CONTINUE || expr.kind == RETURN || expr.kind == LOOP) {
+                (expr.kind == BREAK || expr.kind == CONTINUE || expr.kind == RETURN || expr.kind == YIELD || expr.kind == LOOP) {
                 out.push_str(" ");
                 self.dump_shape_node(link.a, inout out);
                 out.push_str(" ");

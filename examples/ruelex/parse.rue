@@ -190,6 +190,8 @@ pub struct Parser {
             self.add(ast.CONTINUE, 0, x.start, x.end, 0, 0, 0)
         } else if t.kind == token.RETURN {
             self.parse_return()
+        } else if t.kind == token.YIELD {
+            self.parse_yield()
         } else if t.kind == token.AT {
             self.parse_intrinsic()
         } else if t.kind == token.MINUS || t.kind == token.BANG || t.kind == token.TILDE {
@@ -485,7 +487,7 @@ pub struct Parser {
         kind == token.COMPTIME || kind == token.CHECKED || kind == token.IF ||
         kind == token.MATCH || kind == token.WHILE || kind == token.LOOP ||
         kind == token.FOR || kind == token.BREAK || kind == token.CONTINUE ||
-        kind == token.RETURN || kind == token.AT || kind == token.MINUS ||
+        kind == token.RETURN || kind == token.YIELD || kind == token.AT || kind == token.MINUS ||
         kind == token.BANG || kind == token.TILDE || kind == token.STRUCT || kind == token.ENUM || Self.is_primitive(kind)
     }
 
@@ -501,6 +503,12 @@ pub struct Parser {
         let value = if Self.expression_starts(self.kind()) && !self.at(token.RBRACE) && !self.at(token.COMMA) { self.parse_expr(0, true) } else { 0 };
         let end = if value == 0 { self.previous().end } else { self.arena.at(value).end };
         self.add(ast.RETURN, 0, start, end, value, 0, 0)
+    }
+
+    fn parse_yield(inout self) -> u64 {
+        let start = self.bump().start;
+        let value = self.parse_expr(0, true);
+        self.add(ast.YIELD, 0, start, self.arena.at(value).end, value, 0, 0)
     }
 
     fn parse_block(inout self) -> u64 {
@@ -543,7 +551,7 @@ pub struct Parser {
 
     fn can_omit_semi(kind: u64) -> bool {
         kind == ast.BLOCK || kind == ast.IF || kind == ast.MATCH || kind == ast.WHILE ||
-        kind == ast.LOOP || kind == ast.FOR || kind == ast.BREAK || kind == ast.CONTINUE || kind == ast.RETURN
+        kind == ast.LOOP || kind == ast.FOR || kind == ast.BREAK || kind == ast.CONTINUE || kind == ast.RETURN || kind == ast.YIELD
     }
 
     // Directives and intrinsics share the same `@ IDENT (...)` prefix. Scan
@@ -716,7 +724,12 @@ pub struct Parser {
         let start = self.expect(token.FN).start;
         let name = self.expect(token.IDENT);
         let params = self.parse_params(method);
-        let ret = if self.eat(token.ARROW) { self.parse_type() } else { 0 };
+        let ret = if self.eat(token.ARROW) {
+            // The structural oracle intentionally erases the accessor result
+            // mode, but it must still consume it before parsing the type.
+            let _ = if self.at(token.BORROW) || self.at(token.INOUT) { self.bump().kind } else { 0 };
+            self.parse_type()
+        } else { 0 };
         let body = self.parse_block();
         let kind = if method { ast.METHOD } else { ast.FUNCTION };
         self.add_meta(kind, name.value, flags, start, self.arena.at(body).end, directives, params, ret, body)

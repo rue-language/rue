@@ -12,6 +12,7 @@ pub const ERROR: u64 = 1;
 pub const IDENT: u64 = 2;
 pub const INT: u64 = 3;
 pub const STRING: u64 = 4;
+pub const YIELD: u64 = 5;
 
 pub const BORROW: u64 = 10;
 pub const FN: u64 = 11;
@@ -141,6 +142,7 @@ pub fn kind_from_name(borrow name: StrBuf) -> u64 {
     if eq(borrow name, "IN") { return IN; }
     if eq(borrow name, "MATCH") { return MATCH; }
     if eq(borrow name, "RETURN") { return RETURN; }
+    if eq(borrow name, "YIELD") { return YIELD; }
     if eq(borrow name, "BREAK") { return BREAK; }
     if eq(borrow name, "COMPTIME") { return COMPTIME; }
     if eq(borrow name, "CONTINUE") { return CONTINUE; }
