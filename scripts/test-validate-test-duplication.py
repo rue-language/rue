@@ -258,6 +258,21 @@ class AllowanceTests(unittest.TestCase):
                 tuple(sorted(allowance.platforms)), allowance.platforms, allowance
             )
 
+    def test_native_abi_selection_excludes_only_the_accidental_intersection(self):
+        self.assertEqual(
+            GATE.NATIVE_CLI_INVOCATIONS[0],
+            ("abi", "--skip", GATE.AGGREGATE_ABI_DIFFERENTIAL),
+        )
+
+    def test_aggregate_abi_intersection_cannot_be_absorbed(self):
+        schedule = [
+            scheduled("linux-x64", "platform-corpus", "//:cli-tests", ["abi::aggregate"]),
+            scheduled("linux-x64", "release", "//:release-smoke", ["abi::aggregate"]),
+            scheduled("linux-arm64", "native-linux-arm64", "//crates/rue-cli-tests:cli", ["abi::aggregate"]),
+        ]
+        errors = GATE.review(GATE.duplicate_sets(schedule))
+        self.assertTrue(any("undeclared duplication" in error for error in errors), errors)
+
     def test_every_not_listable_entry_says_what_its_opacity_hides(self):
         # A NOT_LISTABLE entry removes a target from the comparison entirely,
         # which is a larger claim than an allowance makes. The reason has to
@@ -265,6 +280,8 @@ class AllowanceTests(unittest.TestCase):
         for target, reason in GATE.NOT_LISTABLE.items():
             self.assertTrue(target.startswith("//"), target)
             self.assertGreater(len(reason), 120, target)
+        self.assertIn("distinct assertion", GATE.NOT_LISTABLE["//crates/rue-oracle-diff:oracle-diff-test"])
+        self.assertNotIn("provisional", " ".join(GATE.NOT_LISTABLE.values()))
 
 
 class InventoryTests(unittest.TestCase):

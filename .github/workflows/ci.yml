@@ -856,7 +856,7 @@ jobs:
 
       - name: Run native ABI programs
         if: steps.sel.outputs.run == 'true'
-        run: scripts/ci-timed "${{ matrix.name }} ABI" -- scripts/rue cli abi
+        run: scripts/ci-timed "${{ matrix.name }} ABI" -- scripts/rue cli abi --skip cli.differential_opt::aggregate_abi_across_opt_levels
 
       - name: Run native linker programs
         if: steps.sel.outputs.run == 'true'
@@ -1247,7 +1247,7 @@ jobs:
         run: scripts/ci-timed "release configuration" -- scripts/validate-release-configuration.py
 
       # Builds only the Rue driver and CLI harness under the release platform,
-      # then runs the 24 representative differential-opt cases (96 produced
+      # then runs the 29 representative differential-opt cases (116 produced
       # programs across -O0/-O1/-O2/-O3) through the release-built compiler.
       - name: Run focused release smoke
         if: steps.sel.outputs.run == 'true'
