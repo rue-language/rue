@@ -164,11 +164,15 @@ fn main() -> i32 {
     let mut rows = Rows.new();
     rows.push(row);
     let grid = Grid { rows: rows };
-    if grid.get_ref(0).get_ref(0) == 42 { 0 } else { 1 }
+    @dbg(1017);
+    let matches = grid.get_ref(0).get_ref(0) == 42;
+    @dbg(1018);
+    if matches { 0 } else { 1 }
 }
 """ }]
 args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "1017\n1018\n"
 exit_code = 0
 
 [[case]]
