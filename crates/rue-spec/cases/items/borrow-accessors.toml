@@ -1,4 +1,4 @@
-# Borrow accessors (ADR-0062 phases 0-2, RUE-662), behind the
+# Borrow accessors (ADR-0062 phases 0-3, RUE-662/RUE-1017), behind the
 # `borrow_accessors` preview.
 #
 # Shared and exclusive accessor calls survive semantic analysis as marked
@@ -10,7 +10,7 @@
 id = "items.borrow-accessors"
 spec_chapter = "6.6"
 name = "Borrow Accessors"
-description = "Place-returning shared and exclusive accessors with trailing-yield bodies (ADR-0062 phases 0-2)."
+description = "Place-returning shared and exclusive accessors with trailing-yield bodies and trusted standard-library collection adoption (ADR-0062 phases 0-3)."
 
 [[case]]
 name = "accessor_declaration_parses_and_compiles"
@@ -971,6 +971,43 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = ["E0258"]
+
+[[case]]
+name = "arraybuf_get_ref_projects_drop_glue_element_in_place"
+spec = ["6.6:7", "6.6:8", "6.6:11", "6.6:12"]
+description = "The trusted ArrayBuf bridge yields a receiver-rooted place, so a destructor-bearing element can be projected without copying its owner."
+preview = "borrow_accessors"
+preview_should_pass = true
+real_std = true
+source = """
+const std = @import("std");
+struct D { value: i64 }
+drop fn D(self) {}
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(D);
+    let mut b = B.new();
+    b.push(D { value: 42 });
+    if b.get_ref(0).value == 42 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "arraybuf_get_ref_call_requires_preview"
+spec = ["6.6:3"]
+description = "Trusted standard-library declarations load stably, but calling get_ref without borrow_accessors is E1100."
+real_std = true
+source = """
+const std = @import("std");
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(1);
+    if b.get_ref(0) == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "borrow_accessors"]
 
 [[case]]
 name = "mutable_accessor_direct_and_projected_assignment"

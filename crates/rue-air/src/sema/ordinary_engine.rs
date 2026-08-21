@@ -352,6 +352,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn module_def(&self, module: ModuleId) -> ModuleDef {
         OrdinaryBodyAnalysisHost::module_def(self.storage, module)
     }
+    pub(crate) fn file_module_is_trusted_standard_library(&self, file: FileId) -> bool {
+        self.storage
+            .endpoint_file_is_trusted_standard_library(file.index())
+    }
     pub(crate) fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
         OrdinaryBodyAnalysisHost::struct_in_file(self.storage, file, name)
     }
@@ -578,6 +582,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 return_type,
                 has_self,
                 self_mode,
+                returns_borrow,
+                returns_inout,
                 ..
             } = method_inst.data
             {
@@ -592,6 +598,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     name,
                     has_self,
                     self_mode,
+                    returns_borrow,
+                    returns_inout,
                     param_types,
                     param_modes,
                     param_comptime,
@@ -668,12 +676,15 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 continue;
             };
             let key = (struct_id, method_name);
-            // Accessors are not supported on anonymous structs (ADR-0062
-            // phase 1).
+            // Anonymous accessors remain a user-language restriction. The
+            // trusted std source path is the deliberate exception required by
+            // generic `ArrayBuf(T)`/collection bodies (RUE-1017).
+            let trusted_std_accessor = self
+                .file_module_is_trusted_standard_library(method_inst.span.file_id)
+                && (returns_borrow || returns_inout);
             if !seen_methods.insert(method_name)
                 || self.has_method(key)
-                || returns_borrow
-                || returns_inout
+                || ((returns_borrow || returns_inout) && !trusted_std_accessor)
             {
                 return None;
             }
@@ -720,8 +731,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     return_type: return_ty,
                     body,
                     span: method_inst.span,
-                    returns_borrow: false,
-                    returns_inout: false,
+                    returns_borrow: trusted_std_accessor && returns_borrow,
+                    returns_inout: trusted_std_accessor && returns_inout,
                 },
             ));
         }

@@ -205,6 +205,20 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
                 dynamic_offset,
             )
         }
+        crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
+            let byte_offset = offsets.static_slot_offset as i32 * allocation::SLOT_BYTES as i32;
+            if let Some(dynamic) = dynamic_offset {
+                let addr = b.alloc_vreg();
+                b.emit_reg_move(addr, ptr);
+                if byte_offset != 0 {
+                    b.emit_addr_add_imm(addr, byte_offset);
+                }
+                b.emit_addr_add(addr, dynamic);
+                ProjectedAccess::PointerAddr(addr)
+            } else {
+                ProjectedAccess::PointerOffset { ptr, byte_offset }
+            }
+        }
     }
 }
 
@@ -263,6 +277,7 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
                 slot,
                 by_ref: false,
             } => b.emit_load_slot(dst, b.ctx().param_frame_slot(slot)),
+            crate::value_plan::PlaceBasePlan::Pointer(ptr) => b.emit_load_ptr_base(dst, ptr),
         }
         return;
     }
@@ -296,6 +311,9 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
                 slot,
                 by_ref: false,
             } => agg_slots::store_slots(b, vals, b.ctx().param_frame_slot(slot)),
+            crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
+                agg_slots::store_slots_through_ptr(b, vals, ptr, 0)
+            }
         }
         return;
     }
@@ -356,6 +374,16 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
                 dst,
                 projected_low_slot(base_slot, root_count, offsets.static_slot_offset),
             );
+            if let Some(dynamic) = dynamic {
+                b.emit_addr_add(dst, dynamic);
+            }
+        }
+        crate::value_plan::PlaceBasePlan::Pointer(ptr) => {
+            b.emit_reg_move(dst, ptr);
+            let byte_offset = offsets.static_slot_offset as i32 * allocation::SLOT_BYTES as i32;
+            if byte_offset != 0 {
+                b.emit_addr_add_imm(dst, byte_offset);
+            }
             if let Some(dynamic) = dynamic {
                 b.emit_addr_add(dst, dynamic);
             }
@@ -481,7 +509,9 @@ mod tests {
         let seed = match base {
             PlaceBase::Local(slot) => Place::local(slot, base_type),
             PlaceBase::Param(slot) => Place::param(slot, base_type),
-            PlaceBase::Accessor(_) => unreachable!("accessor places are spliced before lowering"),
+            PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {
+                unreachable!("non-materialized places are spliced before lowering")
+            }
         };
         let instruction = value(
             cfg,

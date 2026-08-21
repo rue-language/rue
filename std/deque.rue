@@ -5,6 +5,12 @@
 // unused ring slots (Rue has no generic zero-init, same convention as IntMap);
 // it is never read as a live value (the `count` guards that).
 //
+// Deque intentionally has no `front_ref`/`back_ref` yet (RUE-1017): growth
+// rebuilds the ring by copying from a filler-populated buffer. The current
+// representation therefore admits only trivially-droppable elements; a sound
+// owning-element accessor first needs the ring growth path to move initialized
+// slots without duplicating ownership. Keep that work in RUE-687.
+//
 //     const std = @import("std");
 //     let D = std.deque.Deque(i64);
 //     let mut d = D.new(0);

@@ -191,6 +191,10 @@ pub struct AnonMethodSig {
     /// Receiver passing mode. Meaningful when `has_self` is true; associated
     /// functions carry Normal.
     pub self_mode: rue_rir::RirParamMode,
+    /// Whether this signature returns a shared second-class place.
+    pub returns_borrow: bool,
+    /// Whether this signature returns an exclusive second-class place.
+    pub returns_inout: bool,
     /// Parameter type symbols (excluding self parameter)
     pub param_types: Vec<AnonMethodType>,
     /// Explicit parameter passing modes, parallel to `param_types`.

@@ -286,7 +286,9 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
 
         // Place operations
         CfgInstData::PlaceRead { place } => {
-            if let crate::PlaceBase::Accessor(value) = place.base {
+            if let crate::PlaceBase::Accessor(value) | crate::PlaceBase::Indirect(value) =
+                place.base
+            {
                 f(value);
             }
             // Visit any index values used in projections
@@ -298,7 +300,9 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
         }
         CfgInstData::PlaceWrite { place, value } => {
             f(*value);
-            if let crate::PlaceBase::Accessor(value) = place.base {
+            if let crate::PlaceBase::Accessor(value) | crate::PlaceBase::Indirect(value) =
+                place.base
+            {
                 f(value);
             }
             // Visit any index values used in projections

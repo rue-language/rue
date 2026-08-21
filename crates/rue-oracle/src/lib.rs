@@ -1392,6 +1392,7 @@ impl<'a> Interp<'a> {
                 };
                 (slot, cfg.num_params(), width, Some(slot))
             }
+            PlaceBase::Indirect(_) => return None,
             PlaceBase::Accessor(_) => return Some(ContractViolationKind::UnsplicedAccessor),
         };
         let out_of_bounds = if width == 0 {
@@ -2794,6 +2795,12 @@ impl<'a> Interp<'a> {
                                                 "accessor place reached call writeback",
                                             ));
                                         }
+                                        PlaceBase::Indirect(_) => {
+                                            return Err(unsupported(
+                                                unsupported_intrinsic_kind("ptr_write"),
+                                                "indirect place reached simple call writeback",
+                                            ));
+                                        }
                                     };
                                     self.place_write(cfg, frame, &place, val)?;
                                 }
@@ -3176,12 +3183,23 @@ impl<'a> Interp<'a> {
                 UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
                 "accessor place reached oracle storage",
             )),
+            PlaceBase::Indirect(_) => Err(unsupported(
+                unsupported_intrinsic_kind("ptr_read"),
+                "indirect place requires evaluated pointer storage",
+            )),
         }
     }
 
     fn place_read(&mut self, cfg: &'a Cfg, frame: &mut Frame, place: &Place) -> Step<Value> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
-        let mut cur = self.base_value_of(frame, base)?;
+        let mut cur = match base {
+            PlaceBase::Indirect(pointer) => {
+                let pointer = self.eval(cfg, frame, pointer)?;
+                let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_read"))?;
+                self.ptr_cell_read(&target, unsupported_intrinsic_kind("ptr_read"))?
+            }
+            _ => self.base_value_of(frame, base)?,
+        };
         for (idx, _projection) in path {
             cur = match cur {
                 Value::Aggregate(mut v) if idx < v.len() => v.swap_remove(idx),
@@ -3213,6 +3231,37 @@ impl<'a> Interp<'a> {
         val: Value,
     ) -> Step<()> {
         let (base, path) = self.resolve_path(cfg, frame, place)?;
+        if let PlaceBase::Indirect(pointer) = base {
+            let pointer = self.eval(cfg, frame, pointer)?;
+            let target = self.expect_ptr(pointer, unsupported_intrinsic_kind("ptr_write"))?;
+            if path.is_empty() {
+                return self
+                    .ptr_cell_write(&target, val, unsupported_intrinsic_kind("ptr_write"))
+                    .map_err(Flow::from);
+            }
+            let mut root = self.ptr_cell_read(&target, unsupported_intrinsic_kind("ptr_write"))?;
+            let mut cur = &mut root;
+            for (idx, _) in &path {
+                cur = match cur {
+                    Value::Aggregate(values) if *idx < values.len() => &mut values[*idx],
+                    Value::Aggregate(_) => {
+                        return Err(Flow::Panic(Panic::runtime(TrapKind::IndexOutOfBounds)));
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            UnsupportedKind::ContractViolation(
+                                ContractViolationKind::NonAggregateProjectionWrite,
+                            ),
+                            "projection of non-aggregate indirect place",
+                        ));
+                    }
+                };
+            }
+            *cur = val;
+            return self
+                .ptr_cell_write(&target, root, unsupported_intrinsic_kind("ptr_write"))
+                .map_err(Flow::from);
+        }
         // Select the storage root. A promoted (address-taken) base writes through
         // its heap allocation so the mutation is observed by both a later direct
         // read and any live pointer. Otherwise write frame storage directly;
@@ -3240,6 +3289,7 @@ impl<'a> Interp<'a> {
                         "accessor place reached oracle write",
                     ));
                 }
+                PlaceBase::Indirect(_) => unreachable!("indirect places return above"),
             };
             if slot >= store.len() {
                 store.resize(slot + 1, None);
@@ -4075,9 +4125,14 @@ fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
 /// Stable map key for a promoted place base within a frame.
 fn promotion_key(base: PlaceBase) -> u64 {
     match base {
-        PlaceBase::Local(slot) => (slot as u64) << 1,
-        PlaceBase::Param(slot) => ((slot as u64) << 1) | 1,
-        PlaceBase::Accessor(value) => ((value.as_u32() as u64) << 2) | 3,
+        // Every payload is u32, so two high tag bits give the four base kinds
+        // disjoint key spaces. In particular, an indirect value must never
+        // alias an odd local's promoted allocation before the oracle reports
+        // the unsupported address-of-indirect shape.
+        PlaceBase::Local(slot) => slot as u64,
+        PlaceBase::Param(slot) => (1u64 << 32) | slot as u64,
+        PlaceBase::Accessor(value) => (2u64 << 32) | value.as_u32() as u64,
+        PlaceBase::Indirect(value) => (3u64 << 32) | value.as_u32() as u64,
     }
 }
 

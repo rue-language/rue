@@ -1139,6 +1139,42 @@ impl crate::CompilerSession {
 mod codegen_unit_tests {
     use super::*;
 
+    fn trusted_accessor_snapshot(root: &str, module: &str) -> crate::SourceSnapshot {
+        use std::collections::{HashMap, HashSet};
+
+        let root_file = crate::FileId::new(1);
+        let module_file = crate::FileId::new(2);
+        let metadata = crate::SourceMetadata::new_with_trusted_standard_library(
+            root_file,
+            HashMap::from([
+                (root_file, "/project/main.rue".to_owned()),
+                (module_file, "/project/std/bridge.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root_file, "main.rue".to_owned()),
+                (module_file, "\0rue-std/bridge.rue".to_owned()),
+            ]),
+            HashSet::from([module_file]),
+        )
+        .expect("trusted accessor fixture metadata is valid");
+        crate::SourceSnapshot::new(
+            metadata,
+            vec![
+                (root_file, Arc::new(root.to_owned())),
+                (module_file, Arc::new(module.to_owned())),
+            ],
+        )
+        .expect("trusted accessor fixture snapshot is valid")
+    }
+
+    fn borrow_accessor_options() -> crate::CompileOptions {
+        let mut options = crate::CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        options
+    }
+
     #[test]
     fn codegen_presentation_is_available_before_and_after_normal_codegen() {
         let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 7 }").unwrap();
@@ -1493,6 +1529,217 @@ mod codegen_unit_tests {
                 (
                     &product.unit.defined_symbol,
                     product.unit.text_atom().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(warm, fresh);
+    }
+
+    #[test]
+    fn trusted_place_bridge_is_confined_to_the_exact_receiver_rooted_form() {
+        let root = r#"
+const bridge = @import("std/bridge.rue");
+
+fn main() -> i32 {
+    let value: i64 = 7;
+    let pointer: ptr const i64 = checked { @raw(value) };
+    let P = bridge.Buf(i64);
+    let p = P { buf: pointer, value };
+    @intCast(p.get_ref(pointer))
+}
+"#;
+        let module = |body: &str| {
+            format!(
+                r#"
+pub fn Buf(comptime T: type) -> type {{
+    struct {{
+        buf: ptr const T,
+        value: T,
+
+        fn get_ref(borrow self, other: ptr const T) -> borrow T {{
+            {body}
+        }}
+    }}
+}}
+"#
+            )
+        };
+        let options = borrow_accessor_options();
+        let compile = |body: &str| {
+            let snapshot = trusted_accessor_snapshot(root, &module(body));
+            let mut session = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            session.rooted_cfg(&options)
+        };
+
+        compile("yield checked { @place(@ptr_offset(self.buf, 0)) };")
+            .expect("the exact trusted receiver-rooted bridge is accepted");
+
+        let errors = compile("yield checked { @place(@ptr_offset(other, 0)) };").unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                rue_error::ErrorKind::AccessorYieldNotReceiverRooted { .. }
+            )),
+            "{errors:?}"
+        );
+
+        for body in [
+            "yield @place(@ptr_offset(self.buf, 0));",
+            "let ignored = checked { @place(@ptr_offset(self.buf, 0)) }; yield self.value;",
+        ] {
+            let errors = compile(body).unwrap_err();
+            assert!(
+                errors.iter().any(|error| matches!(
+                    &error.kind,
+                    rue_error::ErrorKind::UnknownIntrinsic(name) if name == "place"
+                ) || matches!(
+                    &error.kind,
+                    rue_error::ErrorKind::AccessorYieldNotReceiverRooted { .. }
+                )),
+                "{errors:?}"
+            );
+        }
+
+        let errors = compile("yield checked { @place() };").unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                rue_error::ErrorKind::IntrinsicWrongArgCount { name, expected: 1, found: 0 }
+                    if name == "place"
+            )),
+            "{errors:?}"
+        );
+
+        let errors = compile("yield checked { @place(@ptr_offset(self.value, 0)) };").unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                rue_error::ErrorKind::IntrinsicTypeMismatch(mismatch)
+                    if mismatch.name == "ptr_offset"
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn trusted_anonymous_accessor_edit_recomputes_only_its_caller_without_an_abi_unit() {
+        let root = r#"
+const bridge = @import("std/bridge.rue");
+
+fn helper() -> i32 { 1 }
+
+fn main() -> i32 {
+    let value: i64 = 7;
+    let pointer: ptr const i64 = checked { @raw(value) };
+    let B = bridge.Buf(i64);
+    let b = B { buf: pointer };
+    @intCast(b.get_ref(0)) + helper()
+}
+"#;
+        let module = |guard: u64| {
+            format!(
+                r#"
+pub fn Buf(comptime T: type) -> type {{
+    struct {{
+        buf: ptr const T,
+
+        fn get_ref(borrow self, i: u64) -> borrow T {{
+            if i == {guard} {{ @panic("index out of bounds"); }}
+            yield checked {{ @place(@ptr_offset(self.buf, i)) }};
+        }}
+    }}
+}}
+"#
+            )
+        };
+        let options = borrow_accessor_options();
+        let source = |guard| trusted_accessor_snapshot(root, &module(guard));
+        let mut session = crate::CompilerSession::new();
+
+        let cold_source = source(11);
+        crate::publish_test_snapshot(&mut session, &cold_source).unwrap();
+        let cold_semantic = session.rooted_cfg(&options).unwrap();
+        let cold = session
+            .codegen_units(
+                &cold_semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            cold.len(),
+            2,
+            "trusted accessors have no out-of-line ABI unit"
+        );
+        assert!(
+            cold.iter()
+                .all(|unit| !unit.unit.defined_symbol.contains("get_ref"))
+        );
+        let cold_helper_key = cold_semantic
+            .cfgs
+            .iter()
+            .find(|unit| crate::cfg_query::accessor_source_name(&unit.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key
+            .clone();
+
+        let warm_source = source(12);
+        crate::publish_test_snapshot(&mut session, &warm_source).unwrap();
+        let warm_semantic = session.rooted_cfg(&options).unwrap();
+        let warm_helper_key = &warm_semantic
+            .cfgs
+            .iter()
+            .find(|unit| crate::cfg_query::accessor_source_name(&unit.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key;
+        assert_eq!(cold_helper_key, *warm_helper_key);
+        let execution = |name: &str| {
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .find_map(|(identity, execution)| {
+                    matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == name)
+                        .then_some(*execution)
+                })
+                .unwrap()
+        };
+        assert_eq!(execution("main"), rue_query::RequestExecution::Computed);
+        assert_eq!(execution("helper"), rue_query::RequestExecution::Reused);
+
+        let warm = session
+            .codegen_units(
+                &warm_semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let mut fresh = crate::CompilerSession::new();
+        let fresh_source = source(12);
+        crate::publish_test_snapshot(&mut fresh, &fresh_source).unwrap();
+        let fresh_semantic = fresh.rooted_cfg(&options).unwrap();
+        let fresh = fresh
+            .codegen_units(
+                &fresh_semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let warm = warm
+            .iter()
+            .map(|product| {
+                (
+                    product.unit.defined_symbol.clone(),
+                    product.unit.text_atom().unwrap().to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let fresh = fresh
+            .iter()
+            .map(|product| {
+                (
+                    product.unit.defined_symbol.clone(),
+                    product.unit.text_atom().unwrap().to_vec(),
                 )
             })
             .collect::<Vec<_>>();

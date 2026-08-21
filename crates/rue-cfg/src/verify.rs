@@ -279,7 +279,7 @@ impl Cfg {
     /// Collect the `CfgValue` operands hiding inside a place's `Index`
     /// projections.
     fn collect_place_operands(&self, place: &crate::inst::Place, out: &mut Vec<CfgValue>) {
-        if let PlaceBase::Accessor(value) = place.base {
+        if let PlaceBase::Accessor(value) | PlaceBase::Indirect(value) = place.base {
             out.push(value);
         }
         for proj in self.get_place_projections(place) {
@@ -884,6 +884,14 @@ impl<'a> Verifier<'a> {
                     )));
                 }
             }
+            PlaceBase::Indirect(pointer) => {
+                let inst = self.cfg.get_inst(pointer);
+                if !inst.ty.is_ptr() {
+                    return Err(self.error(format!(
+                        "{block}: {value} has an invalid indirect place pointer"
+                    )));
+                }
+            }
         }
         let projections = self.cfg.get_place_projections(place);
         if let Some(pool) = self.type_pool {
@@ -1224,8 +1232,11 @@ impl<'a> Verifier<'a> {
                 f(*value, "stored value")
             }
             CfgInstData::PlaceRead { place } => {
-                if let PlaceBase::Accessor(producer) = place.base {
-                    f(producer, "accessor place producer");
+                match place.base {
+                    PlaceBase::Accessor(producer) | PlaceBase::Indirect(producer) => {
+                        f(producer, "place base producer")
+                    }
+                    PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                 }
                 for projection in self.cfg.get_place_projections(place) {
                     if let Projection::Index { index, .. } = projection {
@@ -1234,8 +1245,11 @@ impl<'a> Verifier<'a> {
                 }
             }
             CfgInstData::PlaceWrite { place, value } => {
-                if let PlaceBase::Accessor(producer) = place.base {
-                    f(producer, "accessor place producer");
+                match place.base {
+                    PlaceBase::Accessor(producer) | PlaceBase::Indirect(producer) => {
+                        f(producer, "place base producer")
+                    }
+                    PlaceBase::Local(_) | PlaceBase::Param(_) => {}
                 }
                 for projection in self.cfg.get_place_projections(place) {
                     if let Projection::Index { index, .. } = projection {

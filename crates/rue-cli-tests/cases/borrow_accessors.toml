@@ -4,6 +4,246 @@ name = "Borrow accessor CFG splicing"
 description = "Marked place-returning accessor calls are mandatorily spliced before both backends."
 
 [[case]]
+name = "trusted_std_arraybuf_get_ref_splices_indirect_place"
+description = "The trusted ArrayBuf bridge reads the live cell through an ordinary indirect place."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(41);
+    if b.get_ref(0) + 1 == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "trusted_std_arraybuf_get_ref_aarch64"
+description = "The indirect ArrayBuf place lowers on AArch64 without publishing a get_ref symbol."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(42);
+    if b.get_ref(0) == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stdout_not_contains = ["get_ref:"]
+
+[[case]]
+name = "trusted_std_get_ref_in_provider_helper"
+description = "A helper body retains the durable accessor mode and lowers an indirect place rooted in a borrow parameter."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const B = std.arraybuf.ArrayBuf(i64);
+fn read_second(borrow b: B) -> i64 {
+    let value = b.get_ref(1) + 1;
+    value
+}
+fn main() -> i32 {
+    let mut b = B.new();
+    b.push(1);
+    b.push(41);
+    if read_second(borrow b) == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "trusted_std_arraybuf_get_ref_bounds_guard"
+description = "ArrayBuf.get_ref runs its source-defined bounds guard before forming the indirect place."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(1);
+    if b.get_ref(1) == 1 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 101
+runtime_error_contains = ["panic: index out of bounds"]
+
+[[case]]
+name = "trusted_std_accessor_call_requires_preview"
+description = "The trusted declaration exemption does not remove the call-site preview gate."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(1);
+    b.get_ref(0);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_fail = true
+error_contains = ["E1100", "borrow_accessors"]
+
+[[case]]
+name = "trusted_std_grid_get_ref"
+description = "The real-std Grid2D accessor reads a flattened cell through the trusted place bridge."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn main() -> i32 {
+    let G = std.grid.Grid2D(i64);
+    let mut g = G.new(1, 1, 41);
+    if g.get_ref(0, 0) + 1 == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "owned_children_tree_get_ref_drop_glue"
+description = "Unlike examples/ruelex's POD ArrayBuf(Node) arena with u64 child IDs, an owned-children Node tree traverses nested ArrayBuf(Node) storage through get_ref and drops every node exactly once."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct Node {
+    tag: i64,
+    kids: std.arraybuf.ArrayBuf(Node),
+}
+drop fn Node(self) { @dbg(self.tag); }
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(Node);
+    let mut root = Node { tag: 1, kids: B.new() };
+    let mut child = Node { tag: 2, kids: B.new() };
+    let grandchild = Node { tag: 3, kids: B.new() };
+    child.kids.push(grandchild);
+    root.kids.push(child);
+    // This is the core shape the ruelex arena cannot currently express:
+    // child edges own Nodes directly, yet traversal borrows through both
+    // ArrayBuf levels without copying either owner.
+    if root.kids.get_ref(0).kids.get_ref(0).tag == 3 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "1\n2\n3\n"
+exit_code = 0
+
+[[case]]
+name = "nested_grid_row_and_arraybuf_accessors"
+description = "A receiver-rooted grid row accessor composes with ArrayBuf.get_ref as grid.get_ref(i).get_ref(j)."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct Row {
+    values: std.arraybuf.ArrayBuf(i64),
+
+    fn get_ref(borrow self, i: u64) -> borrow i64 {
+        yield self.values.get_ref(i);
+    }
+}
+struct Grid {
+    rows: std.arraybuf.ArrayBuf(Row),
+
+    fn get_ref(borrow self, i: u64) -> borrow Row {
+        yield self.rows.get_ref(i);
+    }
+}
+fn main() -> i32 {
+    let Values = std.arraybuf.ArrayBuf(i64);
+    let Rows = std.arraybuf.ArrayBuf(Row);
+    let mut values = Values.new();
+    values.push(42);
+    let row = Row { values: values };
+    let mut rows = Rows.new();
+    rows.push(row);
+    let grid = Grid { rows: rows };
+    if grid.get_ref(0).get_ref(0) == 42 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+exit_code = 0
+
+[[case]]
+name = "trusted_std_get_ref_conflicts_with_inout"
+description = "A live ArrayBuf.get_ref loan conflicts with an inout use of the same buffer in the enclosing expression."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+fn use_two(a: i64, b: ()) -> i64 { a }
+fn main() -> i32 {
+    let B = std.arraybuf.ArrayBuf(i64);
+    let mut b = B.new();
+    b.push(1);
+    use_two(b.get_ref(0), b.push(2));
+    0
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_fail = true
+error_contains = ["E0259", "while an accessor result borrows it"]
+
+[[case]]
+name = "trusted_std_get_ref_cannot_escape"
+description = "The standard-library accessor retains the ordinary expression-scoped lifetime rule."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const B = std.arraybuf.ArrayBuf(i64);
+fn first(borrow b: B) -> i64 { return b.get_ref(0); }
+fn main() -> i32 {
+    let mut b = B.new();
+    b.push(1);
+    @intCast(first(borrow b))
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+compile_fail = true
+error_contains = ["E0250", "cannot return an accessor result"]
+
+[[case]]
+name = "trusted_std_stack_and_queue_peek_ref"
+description = "Stack and Queue peeks reuse ArrayBuf.get_ref and read destructor-bearing elements without copying them."
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+struct D { value: i64 }
+drop fn D(self) { @dbg(self.value); }
+fn main() -> i32 {
+    let S = std.stack.Stack(D);
+    let Q = std.queue.Queue(D);
+    let mut stack = S.new();
+    stack.push(D { value: 7 });
+    let mut queue = Q.new();
+    queue.enqueue(D { value: 8 });
+    if stack.peek_ref().value == 7 && queue.peek_ref().value == 8 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+stdout = "8\n7\n"
+exit_code = 0
+
+[[case]]
+name = "place_bridge_rejected_in_user_code"
+description = "The trusted pointer-to-place bridge is not a user-visible intrinsic."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    checked { @place(1) };
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0700", "place"]
+
+[[case]]
 name = "guarded_splice_aarch64"
 files = [{ path = "main.rue", source = """
 struct Grid {

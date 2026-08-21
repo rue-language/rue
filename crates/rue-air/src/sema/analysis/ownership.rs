@@ -766,7 +766,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let AirInstData::PlaceRead { place } = air.get(projected).data else {
             return (original, Vec::new());
         };
-        let AirPlaceBase::Local(owner_slot) = air.get_place(place).base else {
+        let place_base = air.get_place(place).base;
+        // An accessor guards block is also a scope around an addressable place.
+        // A by-ref consumer must receive the tail PlaceRead itself while the
+        // guards stay as prefix statements around that consumer; otherwise CFG
+        // lowering turns the block value into a join value and loses its place
+        // identity before mandatory splicing.
+        if matches!(place_base, AirPlaceBase::Accessor(_)) {
+            return (projected, statements);
+        }
+        let AirPlaceBase::Local(owner_slot) = place_base else {
             return (original, Vec::new());
         };
         let owns_projected_place = statements.windows(2).any(|pair| {
@@ -2798,7 +2807,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .params
                         .iter()
                         .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
-                    AirPlaceBase::Accessor(_) => false,
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => false,
                 };
                 if is_droppable_param_base {
                     emit_move_marker = true;
@@ -2844,7 +2853,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let (slot, is_param) = match trace.base {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
-                    AirPlaceBase::Accessor(_) => {
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
                         unreachable!("accessor places never receive move markers")
                     }
                 };
@@ -3872,7 +3881,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             span,
                         ));
                     }
-                    AirPlaceBase::Accessor(_) => {
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
                         unreachable!("accessor places are classified as borrowed")
                     }
                 }
@@ -4043,7 +4052,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             span,
                         ));
                     }
-                    AirPlaceBase::Accessor(_) => {
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
                         unreachable!("accessor places are classified as borrowed")
                     }
                 }
@@ -4603,7 +4612,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .params
                 .iter()
                 .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
-            AirPlaceBase::Accessor(_) => false,
+            AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => false,
         };
         if !droppable_base {
             return Ok(value);
@@ -4611,7 +4620,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let (slot, is_param) = match trace.base {
             AirPlaceBase::Local(slot) => (slot, false),
             AirPlaceBase::Param(slot) => (slot, true),
-            AirPlaceBase::Accessor(_) => {
+            AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
                 unreachable!("accessor places never receive element move markers")
             }
         };
@@ -5373,7 +5382,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ctx.expected_type = previous;
             }
             ctx.byref_arg_root = prev_byref_root;
-            let arg_result = arg_result?;
+            let mut arg_result = arg_result?;
             if elaborates_borrow {
                 let span = self.body_rir_ref().get(arg.value).span;
                 let elaborated = self.elaborate_borrow_operand(
@@ -5398,7 +5407,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // tail is the place read (ADR-0062); peel it for the address
                 // check, like the `inout str` view materialization below.
                 let addressable_probe = if ctx.accessor_call_insts.contains_key(&arg.value) {
-                    self.peel_projected_rvalue_scope(air, arg_result.air_ref).0
+                    let (place, prefix) = self.peel_projected_rvalue_scope(air, arg_result.air_ref);
+                    if !prefix.is_empty() {
+                        arg_result = AnalysisResult::new(place, arg_result.ty);
+                        temp_scope.extend(prefix);
+                    }
+                    place
                 } else {
                     arg_result.air_ref
                 };

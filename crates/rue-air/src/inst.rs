@@ -451,7 +451,9 @@ impl AirPlace {
         if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Local(slot) => Some(slot),
-                AirPlaceBase::Param(_) | AirPlaceBase::Accessor(_) => None,
+                AirPlaceBase::Param(_) | AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
+                    None
+                }
             }
         } else {
             None
@@ -464,7 +466,9 @@ impl AirPlace {
         if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Param(slot) => Some(slot),
-                AirPlaceBase::Local(_) | AirPlaceBase::Accessor(_) => None,
+                AirPlaceBase::Local(_) | AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => {
+                    None
+                }
             }
         } else {
             None
@@ -560,6 +564,10 @@ pub enum AirPlaceBase {
     /// second-class place producer, not a value-producing ABI call; CFG
     /// construction preserves it only until the accessor CFG splice.
     Accessor(AirRef),
+    /// Pointee address produced by the trusted std `@place` bridge. The
+    /// address is an ordinary value; after mandatory accessor splicing this
+    /// base is lowered as an ordinary indirect place, never as an accessor ABI.
+    Indirect(AirRef),
 }
 
 /// A projection applied to a place to reach a nested location.
@@ -1598,6 +1606,16 @@ impl Air {
                             format!(
                                 "place {place_ref} accessor base type does not match its producer"
                             ),
+                        ));
+                    }
+                }
+                if let AirPlaceBase::Indirect(pointer) = place.base {
+                    check_ref(pointer)?;
+                    let pointer_ty = self.get(pointer).ty;
+                    if !pointer_ty.is_ptr() {
+                        return Err(fail(
+                            Some(index),
+                            format!("place {place_ref} indirect base is not a pointer"),
                         ));
                     }
                 }
@@ -4005,6 +4023,7 @@ impl Air {
             AirPlaceBase::Local(slot) => write!(f, "${}", slot)?,
             AirPlaceBase::Param(slot) => write!(f, "param%{}", slot)?,
             AirPlaceBase::Accessor(call) => write!(f, "accessor%{}", call.as_u32())?,
+            AirPlaceBase::Indirect(pointer) => write!(f, "*ptr%{}", pointer.as_u32())?,
         }
 
         // Write the projections

@@ -262,9 +262,10 @@ Tracked in Linear under the RUE-1015 epic:
       spec coverage) — RUE-662
 - [x] **Phase 2: Mutable accessors** (`inout self` → exclusive result;
       assignment through the result) — RUE-1016
-- [ ] **Phase 3: std adoption** (`ArrayBuf.get_ref` + E0711 diagnostic
-      pointing at it; grid/deque/intmap accessors; owned-children tree
-      example replacing an arena) — RUE-1017 (blocked by RUE-662)
+- [x] **Phase 3: std adoption** (`ArrayBuf.get_ref` + E0711 diagnostic
+      pointing at it; sound grid/stack/queue accessors; the deque and intmap
+      exclusions documented until their filler/copy representations change;
+      owned-children tree example replacing an arena) — RUE-1017
 - [ ] **Phase 4: preview-gate removal** after dogfooding — RUE-1018
       (blocked by RUE-1016 and RUE-1017)
 

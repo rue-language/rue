@@ -55,6 +55,16 @@ pub fn Grid2D(comptime T: type) -> type {
             }
         }
 
+        // Borrow cell `(r, c)` in place. The flattening guard is checked before
+        // delegating to the canonical ArrayBuf accessor, so an invalid
+        // coordinate traps and a valid result remains rooted in this grid.
+        fn get_ref(borrow self, r: u64, c: u64) -> borrow T {
+            if r >= self.rows || c >= self.cols {
+                @panic("index out of bounds");
+            }
+            yield self.cells.get_ref(r * self.cols + c);
+        }
+
         // Set cell `(r, c)` to `x`. Out-of-bounds indices are ignored.
         fn set(inout self, r: u64, c: u64, x: T) {
             if r < self.rows && c < self.cols {

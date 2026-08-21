@@ -66,5 +66,15 @@ pub fn Queue(comptime T: type) -> type {
                 self.buf.get(self.head)
             }
         }
+
+        // Borrow the front live element in place, trapping when the queue is
+        // empty. The head cursor is part of the guard and the nested accessor
+        // keeps the loan rooted in this queue's backing buffer.
+        fn peek_ref(borrow self) -> borrow T {
+            if self.head >= self.buf.len() {
+                @panic("queue is empty");
+            }
+            yield self.buf.get_ref(self.head);
+        }
     }
 }

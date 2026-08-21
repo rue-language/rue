@@ -422,7 +422,12 @@ pub enum ByRefAddressPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlaceBasePlan {
     Local(u32),
-    Param { slot: u32, by_ref: bool },
+    Param {
+        slot: u32,
+        by_ref: bool,
+    },
+    /// An address value produced by the trusted std pointer-to-place bridge.
+    Pointer(VReg),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionPlan {
@@ -754,6 +759,11 @@ fn place_plan<A: ValueLowerAdapter>(
             by_ref: ctx.cfg.is_param_by_ref(slot),
         },
         PlaceBase::Accessor(_) => panic!("mandatory-inline accessor place reached codegen"),
+        PlaceBase::Indirect(pointer) => PlaceBasePlan::Pointer(
+            adapter
+                .materialize_value(pointer, ValuePlan::for_value(ctx, pointer))
+                .primary,
+        ),
     };
     let projections = ctx
         .cfg

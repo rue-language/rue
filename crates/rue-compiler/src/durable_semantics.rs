@@ -154,6 +154,8 @@ pub struct DurableAnonymousMethodSignature {
     pub name: Arc<str>,
     pub has_self: bool,
     pub self_mode: DurableParameterMode,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
     pub parameters: Arc<[(DurableAnonymousMethodType, DurableParameterMode, bool)]>,
     pub result: DurableAnonymousMethodType,
     /// Whether the producer declared a body for this member. The body itself

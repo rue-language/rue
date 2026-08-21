@@ -155,6 +155,13 @@ pub trait DurableNominalSource<K, M> {
     fn nominal_file_id(&self, _key: &K) -> Option<FileId> {
         None
     }
+
+    /// Whether this durable module is the trusted standard-library namespace.
+    /// The compiler supplies this from its canonical `ModuleId` identity; the
+    /// default keeps fixture sources conservative.
+    fn module_is_trusted_standard_library(&self, _module: &M) -> bool {
+        false
+    }
 }
 
 /// The durable body of an anonymous nominal: its field / variant vocabulary. The
@@ -196,6 +203,8 @@ pub struct DurableAnonymousMethod<K, M> {
     pub name: Arc<str>,
     pub has_self: bool,
     pub self_mode: RirParamMode,
+    pub returns_borrow: bool,
+    pub returns_inout: bool,
     pub parameters: Vec<(DurableAnonymousMethodType<K, M>, RirParamMode, bool)>,
     pub result: DurableAnonymousMethodType<K, M>,
 }
@@ -632,6 +641,13 @@ where
 
     pub(in crate::sema) fn modules(&self) -> Ref<'_, ProviderModuleRegistry<M>> {
         self.modules.borrow()
+    }
+
+    pub(in crate::sema) fn module_is_trusted_standard_library(&self, module: &M) -> bool {
+        self.pool
+            .borrow()
+            .source
+            .module_is_trusted_standard_library(module)
     }
 
     pub(in crate::sema) fn modules_mut(&self) -> RefMut<'_, ProviderModuleRegistry<M>> {

@@ -53,6 +53,16 @@ pub fn Stack(comptime T: type) -> type {
             }
         }
 
+        // Borrow the top element in place, trapping when the stack is empty.
+        // This remains sound for drop-glue `T` because no owning copy is made.
+        fn peek_ref(borrow self) -> borrow T {
+            let n = self.buf.len();
+            if n == 0 {
+                @panic("stack is empty");
+            }
+            yield self.buf.get_ref(n - 1);
+        }
+
         // Drop all elements, keeping capacity.
         fn clear(inout self) {
             self.buf.clear();

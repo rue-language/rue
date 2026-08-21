@@ -35,14 +35,18 @@ yield_expr  = "yield" expression ;
 A `-> borrow` or `-> inout` result position and the `yield` form require the
 `borrow_accessors` preview feature. Without `--preview borrow_accessors`, a
 program using either is rejected at compile time (E1100), per 8.4.
+Stable standard-library loading may analyze its trusted accessor declarations
+without the preview; calling any such accessor remains subject to E1100.
 
 {{ rule(id="6.6:4", cat="legality-rule") }}
 
 An accessor **MUST** pair its result and receiver modes exactly: `borrow self`
 with `-> borrow T`, or `inout self` with `-> inout T`. A result on a free
-function, an associated function, a by-value or `mut self` method, or a method
-of an anonymous struct type is rejected (E0257); a mismatched pair reports the
-required pairing.
+function, an associated function, or a by-value or `mut self` method is rejected
+(E0257); user-defined anonymous-struct accessors are also rejected. The
+trusted standard-library anonymous collection path is the narrow exception
+needed by `ArrayBuf(T)` and remains subject to the declaration and call-site
+gates below. A mismatched pair reports the required pairing.
 
 {{ rule(id="6.6:5", cat="legality-rule") }}
 
@@ -67,6 +71,16 @@ parameter: `self`, or a projection chain from `self` through fields, indices,
 or nested accessor calls (E0255). Yielding a local, a parameter other than the
 receiver, or a computed value would hand out a place that dies with the
 accessor's guards.
+
+The trusted standard-library `ArrayBuf(T).get_ref` accessor is the narrow
+representation-level exception. It may use the checked pointer-to-place bridge
+`yield checked { @place(@ptr_offset(...)) };` after its bounds guard. This
+bridge is recognized only for a trusted standard-library accessor whose pointer
+base is a field chain rooted at `self`; user code may not use `@place` to
+manufacture an arbitrary accessor result. Other owning collections compose
+this canonical accessor rather than duplicate the privileged bridge. Its
+defining equation is `i < len -> view⟨A | i, 1⟩` and `i >= len -> bounds trap`
+(ADR-0062, RUE-1017).
 
 ## Calls
 

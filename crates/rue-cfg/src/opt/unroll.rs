@@ -526,6 +526,7 @@ fn remap_data(
         CfgInstData::PlaceRead { place } => {
             let base = match place.base {
                 PlaceBase::Accessor(v) => PlaceBase::Accessor(m(v)),
+                PlaceBase::Indirect(v) => PlaceBase::Indirect(m(v)),
                 b => b,
             };
             let ps = source
@@ -552,6 +553,7 @@ fn remap_data(
         CfgInstData::PlaceWrite { place, value } => {
             let base = match place.base {
                 PlaceBase::Accessor(v) => PlaceBase::Accessor(m(v)),
+                PlaceBase::Indirect(v) => PlaceBase::Indirect(m(v)),
                 b => b,
             };
             let ps = source

@@ -1378,7 +1378,7 @@ impl<'a> CfgBuilder<'a> {
                             // them) — record it so CSE's param keying skips
                             // the slot (RUE-914 hunt finding).
                             PlaceBase::Param(slot) => self.cfg.mark_param_address_taken(slot),
-                            PlaceBase::Accessor(_) => {}
+                            PlaceBase::Accessor(_) | PlaceBase::Indirect(_) => {}
                         },
                         // A bare scalar parameter lowers directly to a Param
                         // value with no backing local; its address escaping
@@ -2209,7 +2209,7 @@ impl<'a> CfgBuilder<'a> {
                     // Accessor places are replaced by the mandatory accessor
                     // CFG splice. Their overwrite drop is elaborated by the
                     // substituted ordinary place when one exists.
-                    AirPlaceBase::Accessor(_) => None,
+                    AirPlaceBase::Accessor(_) | AirPlaceBase::Indirect(_) => None,
                 };
                 if base_key.is_none() && self.type_pool.type_needs_drop(old_ty) {
                     let old_val = self.emit(
@@ -3491,6 +3491,7 @@ impl<'a> CfgBuilder<'a> {
             AirPlaceBase::Local(slot) => PlaceBase::Local(slot),
             AirPlaceBase::Param(slot) => PlaceBase::Param(slot),
             AirPlaceBase::Accessor(call) => PlaceBase::Accessor(self.lower_value(call)?),
+            AirPlaceBase::Indirect(pointer) => PlaceBase::Indirect(self.lower_value(pointer)?),
         };
 
         // Convert projections, lowering any index expressions

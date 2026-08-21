@@ -133,6 +133,8 @@ pub struct KnownSymbols {
     /// The `field_ptr` intrinsic symbol - raw `ptr mut` to a struct field place
     /// without forming a reference (RUE-301), the `&raw mut (*p).field` analog.
     pub field_ptr: Spur,
+    /// The trusted checked pointer-to-place bridge used by std accessors.
+    pub place: Spur,
     /// The `syscall` intrinsic symbol - direct OS syscall.
     pub syscall: Spur,
     /// The unified byte-and-alignment allocation family (ADR-0059 Phase 3,
@@ -226,6 +228,7 @@ impl KnownSymbols {
             raw: interner.get_or_intern_static("raw"),
             raw_mut: interner.get_or_intern_static("raw_mut"),
             field_ptr: interner.get_or_intern_static("field_ptr"),
+            place: interner.get_or_intern_static("place"),
             syscall: interner.get_or_intern_static("syscall"),
             alloc: interner.get_or_intern_static("alloc"),
             free: interner.get_or_intern_static("free"),
