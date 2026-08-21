@@ -165,6 +165,7 @@ fn main() -> i32 {
     rows.push(row);
     let grid = Grid { rows: rows };
     @dbg(1017);
+    @dbg(grid.rows.get_ref(0).values.len());
     @dbg(grid.get_ref(0).values.len());
     let matches = grid.get_ref(0).get_ref(0) == 42;
     @dbg(1018);
@@ -173,7 +174,7 @@ fn main() -> i32 {
 """ }]
 args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
 env = { RUE_STD_PATH = "${REAL_STD}" }
-stdout = "1017\n1\n1018\n"
+stdout = "1017\n1\n1\n1018\n"
 exit_code = 0
 
 [[case]]
