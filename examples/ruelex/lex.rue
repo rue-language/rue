@@ -189,6 +189,7 @@ pub struct Lexer {
         if word_eq(borrow key, "in") { return "IN"; }
         if word_eq(borrow key, "match") { return "MATCH"; }
         if word_eq(borrow key, "return") { return "RETURN"; }
+        if word_eq(borrow key, "yield") { return "YIELD"; }
         if word_eq(borrow key, "break") { return "BREAK"; }
         if word_eq(borrow key, "comptime") { return "COMPTIME"; }
         if word_eq(borrow key, "continue") { return "CONTINUE"; }
