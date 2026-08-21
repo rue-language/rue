@@ -139,13 +139,15 @@ from those corpora: the three explicit `scripts/rue cli` filters below use the
 developer entry point, which sets neither `RUE_CLI_CASE_TIER` nor
 `RUE_PLATFORM_CASE_SELECTION`, so every case matching `abi`, `cli.linker`, or
 `cli.fs_file_io` runs whatever its tier and whether or not it declares
-`only_on`. `cases/abi.toml` declares none, so those cases do run on all three
-platforms. That is the responsibility matrix working as written, and the
-duplication gate scores it as a declared allowance rather than leaving it to
-this paragraph. Backend encoding logic is still tested explicitly for both
-architectures on Linux, while native ARM64 lanes prove the host ABI,
-object/linker path, runtime archive, syscalls, and platform behavior that
-cross-compilation cannot.
+`only_on`. The ABI selection exactly skips
+`cli.differential_opt::aggregate_abi_across_opt_levels`: that one release-smoke
+case was an accidental substring match, while the other 61 ABI-named cases are
+the native responsibility. That is the responsibility matrix working as
+written, and the duplication gate scores it as a declared allowance rather
+than leaving it to this paragraph. Backend encoding logic is still tested
+explicitly for both architectures on Linux, while native ARM64 lanes prove the
+host ABI, object/linker path, runtime archive, syscalls, and platform behavior
+that cross-compilation cannot.
 
 They **do** repeat the broad compiler unit suite, and that is a defect rather
 than the design. This paragraph used to claim otherwise while
@@ -153,13 +155,13 @@ than the design. This paragraph used to claim otherwise while
 into both native lanes; the two statements contradicted each other for weeks
 because nothing compared them (ADR-0069 "What was measured"). What the native
 lanes want is that binary's ~27 host-conditional sites; what they pay for is
-all 850 of its tests, because platform scope is declared per target while it is
-a property of individual tests. ADR-0069 Phase 4 (RUE-1262 scope C) moves the
+all 902 of its tests, because platform scope is declared per target while it is
+a property of individual tests. ADR-0069 Phase 4 (RUE-1266) moves the
 host-conditional tests into their own target — the precedent
 `rue-compiler-public-api-test` already sets in the same crate — and the
 repetition ends there rather than by dropping coverage now. Until then it is a
 declared allowance in the duplication gate below, so the cost stays visible
-and priced.
+and priced until that tracked extraction lands.
 
 The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
 `scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then
@@ -181,7 +183,7 @@ linux-x64 test lane may use BuildBuddy.
 Required release coverage is intentionally focused (RUE-1129). The
 `release (linux-x64)` job analyzes Buck's configured `rustc_cfg` actions and
 fails unless `//platforms:release` supplies `-Copt-level=3 -Clto=thin` while
-`//platforms:debug` supplies neither. It then runs `//:release-smoke`, the 24
+`//platforms:debug` supplies neither. It then runs `//:release-smoke`, the 29
 representative differential-opt cases, through a release-built Rue compiler.
 It does not build every crate target or run the exhaustive suite.
 
@@ -540,7 +542,7 @@ How it decides:
   answers instead — only a Rust binary can carry libtest — and a Rust harness
   that *does* refuse `--list` must be declared in `NOT_LISTABLE` with a reason
   stating what its opacity hides. An undeclared refusal fails the gate, because
-  the alternative is 850 tests silently collapsing into one opaque unit under a
+  the alternative is 902 tests silently collapsing into one opaque unit under a
   green check.
 - **Allowances are declared with a reason** in the script's `ALLOWANCES`
   ledger. An entry is either `per-target` — a roster of targets that each
@@ -550,16 +552,20 @@ How it decides:
   two-target entry cannot absorb a duplication between two CLI shards.
   Rosters go stale per target, not per entry. Absence never implies permission.
 
-Five duplications are declared today. The native lanes' repetition of the eight
-platform unit targets, and their `scripts/rue cli abi|cli.linker|cli.fs_file_io`
-steps re-running cases the CLI shards run, are both the platform responsibility
-matrix doing its job. Three are provisional and await a maintainer ruling:
-`rue-compiler-test`'s whole suite on three platforms (above); `//:release-smoke`
-running its 25 differential-opt cases three times on linux-x64 — once in the
-shards under `//platforms:debug`, once in the `release` job under
-`//platforms:release`, and once more inside `linux-premerge`, which carries no
-release configuration and looks like an oversight; and the single case that
-falls in the intersection of those two.
+Four duplication families are declared today. The native lanes' repetition of
+the eight platform unit targets, and their
+`scripts/rue cli abi|cli.linker|cli.fs_file_io` steps re-running cases the CLI
+shards run, are both the platform responsibility matrix doing its job. The
+broad `rue-compiler-test` repetition remains a tracked removal owned by
+RUE-1266: its Phase-4 acceptance criteria split
+host-conditional tests into a platform-scoped target that remains in
+linux-premerge and self-enrolls in both ARM64 native lanes, while the broad
+target-independent suite remains only in linux-premerge. The release-smoke
+overlap is deliberately retained only between the debug CLI shards and the
+release-configured release job; `rue_ci_dedicated_lane` prevents a third debug
+execution in linux-premerge. The broad native ABI filter carries an exact skip for
+`cli.differential_opt::aggregate_abi_across_opt_levels`, so all other ABI
+coverage remains and that case cannot return as an accidental substring match.
 
 Cost, measured on a 4-core-class host with the binaries already built: **0.29s
 wall for 73 `--list` invocations**, 1.6s of process time run concurrently. The
@@ -584,18 +590,14 @@ verdict covers. Three groups:
 - **Harnesses that are not libtest.** `//:reproducible-programs`,
   `//:oracle-diff-generated-smoke`, `//:frontend-diff-test`, and
   `//:spec-traceability` each count as one unit.
-- **The oracle differentials**, and this is the largest known gap:
+- **The oracle differentials**, which are intentionally distinct assertions:
   `//crates/rue-oracle-diff:oracle-diff-test` and `:oracle-diff-spec-test` drive
   every runnable CLI and specification case through the reference interpreter
-  and compare it against the compiler, so they re-execute the same ~1,858- and
-  ~2,100-case corpora that the CLI shards and `//:spec-tests` run in the same
-  run on the same platform. That is far larger than the 25-case release-smoke
-  overlap the ledger does score. It is a differential rather than a repetition
-  — the assertion is agreement between two implementations, which no single
-  execution can make — but nobody has priced it, and the gate cannot, because
-  the harness owns its own argument grammar. Making it listable would move it
-  from this list into `ALLOWANCES`, where a written reason would have to stand
-  up. Recorded in `NOT_LISTABLE` as provisional in the meantime.
+  and compare it against the compiler. They may execute overlapping corpus
+  inputs, but the interpreter comparison is the assertion and is not repeated
+  coverage. Their harness-owned runtime eligibility and argument grammar make a
+  `--list` inventory non-authoritative, so they remain explicitly classified in
+  `NOT_LISTABLE` and outside ordinary duplicate accounting.
 
 ## Affected-corpus selection on pull requests (RUE-1119)
 

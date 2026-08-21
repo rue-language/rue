@@ -48,13 +48,30 @@ def dedicated_lane_targets(buck_source: str) -> list[str]:
     return [f"//:{match.group('name')}" for match in DEDICATED_LANE_RE.finditer(buck_source)]
 
 
-def uncovered_dedicated_lanes(buck_source: str, corpus_block: str) -> list[str]:
-    """Labeled corpora that no platform-corpus matrix entry actually runs.
+def _workflow_mentions_target(block: str, target: str) -> bool:
+    """Whether executable workflow text names a dedicated target."""
+    for line in block.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.search(rf"(?<![A-Za-z0-9_.-]){re.escape(target)}(?![A-Za-z0-9_.-])", stripped):
+            return True
+    return False
+
+
+def uncovered_dedicated_lanes(
+    buck_source: str,
+    corpus_block: str,
+    owner_blocks=None,
+) -> list[str]:
+    """Labeled corpora that do not have exactly one dedicated owner.
 
     A corpus carrying the label is skipped by the linux-premerge suite, so if
-    the matrix does not run it — directly or through its shards — it stops being
-    covered at all. That is the RUE-924 false-green shape, reached by way of a
-    label instead of a log line, so it fails the CI contract.
+    the matrix or an explicitly supplied owner job does not run it — directly or
+    through its shards — it stops being covered at all. Conversely, two owners
+    would reintroduce the same work under two lane contracts. Both are the
+    RUE-924 false-green shape, reached by way of a label instead of a log line,
+    so they fail the CI contract.
     """
     matrix_targets = set(re.findall(r"target: (\S+)", corpus_block))
     uncovered = []
@@ -64,8 +81,19 @@ def uncovered_dedicated_lanes(buck_source: str, corpus_block: str) -> list[str]:
             for candidate in matrix_targets
             if candidate.startswith(f"{target}-shard-")
         }
-        if target not in matrix_targets and not sharded:
+        owners = []
+        if target in matrix_targets or sharded:
+            owners.append("platform-corpus")
+        if owner_blocks:
+            owners.extend(
+                owner
+                for owner, block in owner_blocks.items()
+                if _workflow_mentions_target(block, target)
+            )
+        if not owners:
             uncovered.append(target)
+        elif len(owners) > 1:
+            uncovered.append(f"{target} (owned by {', '.join(sorted(owners))})")
     return uncovered
 
 
@@ -399,7 +427,8 @@ def validate(
         "//crates/rue-runtime-abi:rue-runtime-abi-test",
         "scripts/run-native-platform-corpus.sh",
     ) + tuple(
-        f"scripts/rue cli {filter_}" for filter_ in DUPLICATION.NATIVE_CLI_FILTERS
+        "scripts/rue cli " + " ".join(invocation)
+        for invocation in DUPLICATION.NATIVE_CLI_INVOCATIONS
     ):
         if required not in native:
             errors.append(f"native-platforms responsibility missing {required!r}")
@@ -473,10 +502,13 @@ def validate(
                 "no corpus carries rue_ci_dedicated_lane; linux-premerge would "
                 "re-run the corpora that have their own jobs"
             )
-        for target in uncovered_dedicated_lanes(buck_source, corpus):
+        owners = {
+            "release": jobs.get("release", ""),
+        }
+        for target in uncovered_dedicated_lanes(buck_source, corpus, owners):
             errors.append(
                 f"{target} is marked {DEDICATED_LANE_LABEL} (so the premerge "
-                "suite skips it) but no platform-corpus entry runs it"
+                "suite skips it) but has no exactly-one dedicated owner"
             )
 
     for sanitizer in ("valgrind", "asan"):

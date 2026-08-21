@@ -532,6 +532,7 @@ cached_corpus_suite(
 # path (RUE-1129).
 cached_corpus_suite(
     name = "release-smoke",
+    labels = ["rue_ci_dedicated_lane"],
     harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "differential_opt"],
     env = dict(_CLI_TEST_BASE_ENV.items() + [
@@ -1177,7 +1178,7 @@ rue_sh_test(
         # the workflow wiring, so installer-only edits must invalidate it.
         "scripts/install-valgrind",
         "scripts/run-native-platform-corpus.sh",
-        # RUE-1265: NATIVE_CLI_FILTERS is imported from here, so the two gates
+        # RUE-1265: NATIVE_CLI_INVOCATIONS is imported from here, so the two gates
         # cannot disagree about which `scripts/rue cli` steps the native lanes
         # run.
         "scripts/validate-test-duplication.py",

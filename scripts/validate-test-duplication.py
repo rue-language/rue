@@ -89,13 +89,17 @@ SELECTION_PROXY_LANES = {
     "rue-program-digests",
 }
 
-# The native lanes run three CLI filters as workflow steps rather than as Buck
-# test targets (`scripts/rue cli abi` → `buck2 run //crates/rue-cli-tests:cli --
-# abi`). Everything but the filter strings is derived from the alias's own graph
-# node; `scripts/validate-ci-gate.py` imports these so the workflow and this
-# gate cannot disagree about which filters run.
+# The native lanes run three CLI selections as workflow steps rather than as
+# Buck test targets. Everything but their arguments is derived from the
+# alias's own graph node; `scripts/validate-ci-gate.py` imports these so the
+# workflow and this gate cannot disagree about what runs.
 NATIVE_CLI_ALIAS = "//crates/rue-cli-tests:cli"
-NATIVE_CLI_FILTERS = ("abi", "cli.linker", "cli.fs_file_io")
+AGGREGATE_ABI_DIFFERENTIAL = "cli.differential_opt::aggregate_abi_across_opt_levels"
+NATIVE_CLI_INVOCATIONS = (
+    ("abi", "--skip", AGGREGATE_ABI_DIFFERENTIAL),
+    ("cli.linker",),
+    ("cli.fs_file_io",),
+)
 
 
 @dataclass(frozen=True)
@@ -123,11 +127,6 @@ class Allowance:
     platforms: tuple[str, ...]
     reason: str
     kind: str = "between-targets"
-    # True when the allowance records the current behaviour rather than a
-    # decision. ADR-0069 leaves several of these open, and inventing the ruling
-    # here would be worse than carrying it visibly.
-    provisional: bool = False
-
     def covers(self, duplicate: "DuplicateSet") -> bool:
         if duplicate.platforms != self.platforms:
             return False
@@ -158,13 +157,16 @@ ALLOWANCES = (
             "The native lanes want this binary's ~27 host-conditional sites and "
             "pay for its whole unit suite, because platform scope is declared "
             "per target while it is a property of individual tests. ADR-0069 "
-            "Phase 4 (RUE-1262 scope C) splits the host-conditional tests into "
+            "Phase 4 splits the host-conditional tests into "
             "their own target, following the precedent already set in this crate "
-            "by rue-compiler-public-api-test; the repetition ends there, not by "
-            "dropping coverage here. Until then this is what runs, and "
-            "docs/process/ci.md says so rather than claiming otherwise."
+            "by rue-compiler-public-api-test. RUE-1266 owns that Phase-4 "
+            "extraction with exact criteria: split the host-conditional tests "
+            "into a platform-scoped target that remains in linux-premerge and "
+            "self-enrolls in both ARM64 native lanes, while the target-independent "
+            "suite remains only in linux-premerge. Until it "
+            "lands, this allowance keeps the required broad suite running and "
+            "makes the tracked removal visible."
         ),
-        provisional=True,
     ),
     Allowance(
         kind="per-target",
@@ -193,25 +195,22 @@ ALLOWANCES = (
         targets=("//:cli-tests", "//:release-smoke"),
         platforms=("linux-x64",),
         reason=(
-            "Three executions of the same 25 cases on linux-x64: the CLI shards "
-            "run them under //platforms:debug, the `release` job runs "
-            "//:release-smoke under //platforms:release, and //:release-smoke "
-            "carries no `rue_ci_dedicated_lane` label so `test.sh` ALSO runs it "
-            "inside linux-premerge under the debug platform — where the shards "
-            "have already run those cases. The release-configured execution is "
-            "the coverage ADR-0069 calls 'defensible but undecided'; the "
-            "premerge one is a third pass with no configuration of its own, and "
-            "looks like an oversight rather than a decision. Both need the same "
-            "maintainer ruling, so both are declared rather than acted on."
+            "The CLI shards run these cases under //platforms:debug and the "
+            "release job runs //:release-smoke under //platforms:release. The "
+            "release-configured execution is intentionally retained because it "
+            "proves the release optimization configuration; //:release-smoke "
+            "is marked rue_ci_dedicated_lane so linux-premerge no longer runs a "
+            "third debug execution. The exact overlap remains declared because "
+            "debug and release configurations are deliberately distinct."
         ),
-        provisional=True,
     ),
     Allowance(
         targets=("//:cli-tests", "//crates/rue-cli-tests:cli"),
         platforms=("linux-arm64", "linux-x64", "macos-arm64"),
         reason=(
-            "The native lanes run `scripts/rue cli abi`, `cli.linker`, and "
-            "`cli.fs_file_io` — the developer entry point, with neither "
+            "The native lanes run `scripts/rue cli abi` with one exact skip, "
+            "plus `cli.linker` and `cli.fs_file_io` — the developer entry point, "
+            "with neither "
             "RUE_CLI_CASE_TIER nor RUE_PLATFORM_CASE_SELECTION set, so every "
             "matching case of every tier runs. Those sections contain "
             "native-execution cases with empty `only_on` lists, which is "
@@ -221,25 +220,6 @@ ALLOWANCES = (
             "the x86-64 Linux pass in the CLI shards is not evidence for it. "
             "The repetition is the coverage the responsibility matrix asks for."
         ),
-    ),
-    Allowance(
-        targets=(
-            "//:cli-tests",
-            "//:release-smoke",
-            "//crates/rue-cli-tests:cli",
-        ),
-        platforms=("linux-arm64", "linux-x64", "macos-arm64"),
-        reason=(
-            "Exactly one case sits in the intersection of the two overlaps "
-            "above: `cli.differential_opt::aggregate_abi_across_opt_levels`. "
-            "libtest filters are substring matches, so the native lanes' `abi` "
-            "filter selects it as well as everything in cases/abi.toml, and it "
-            "is a differential-opt case so //:release-smoke selects it too. "
-            "Nothing new is decided here — it is the two allowances above "
-            "meeting on one case — but it is a distinct target set, and this "
-            "gate does not let one entry vouch for a set it does not name."
-        ),
-        provisional=True,
     ),
 )
 
@@ -255,23 +235,22 @@ ALLOWANCES = (
 # whole suite (see `Listing.listable`).
 NOT_LISTABLE = {
     "//crates/rue-oracle-diff:oracle-diff-test": (
-        "rue-oracle-diff owns its own argument grammar and exits 1 on --list. "
-        "What this opacity hides is the largest overlap in the repository: this "
-        "target drives every runnable CLI case through the reference "
-        "interpreter and compares it against the compiler's own result, so it "
-        "re-executes the ~1,858-case corpus the CLI shards run in the same lane "
-        "on the same platform. It is a differential rather than a repetition — "
-        "the assertion is agreement between two implementations, which no "
-        "single execution can make — but it is second execution of the same "
-        "compiles, it is far larger than the 25-case release-smoke overlap "
-        "below, and nobody has priced it. Provisional: it needs the same "
-        "maintainer ruling, and making the target listable would let the gate "
-        "score it instead of this note."
+        "distinct-assertion opaque target: rue-oracle-diff owns its own argument "
+        "grammar and exits 1 on --list. It drives every runnable CLI case through "
+        "the reference interpreter and compares that result with the compiler. "
+        "The interpreter differential is a distinct assertion, not repeated "
+        "coverage, so this target is intentionally excluded from ordinary "
+        "duplicate accounting. Its runtime eligibility and corpus selection are "
+        "harness-owned, making a --list inventory non-authoritative; keeping it "
+        "opaque avoids running the corpus merely to classify it."
     ),
     "//crates/rue-oracle-diff:oracle-diff-spec-test": (
-        "The same harness and the same trade against the specification corpus "
-        "//:spec-tests runs, ~2,100 cases, on the same platform in the same "
-        "run. Provisional for the same reason."
+        "distinct-assertion opaque target: the harness drives the specification "
+        "corpus through the reference interpreter and compares compiler behavior. "
+        "That interpreter differential is a distinct assertion, not repeated "
+        "coverage, and therefore is not ordinary duplicate accounting. The "
+        "harness owns runtime eligibility and argument grammar, so --list would "
+        "not provide an authoritative inventory; it remains intentionally opaque."
     ),
     "//:spec-traceability": (
         "rue-spec's `--traceability` is a reporting mode, not a filter: handed "
@@ -528,7 +507,7 @@ class Inventory:
     units: dict[str, list[str]] = field(default_factory=dict)
     # Targets that name a Buck target as their harness and whose attributes
     # could not be read. Falling back to "opaque" here would be the one failure
-    # mode this gate cannot tolerate: a wrapper that lists 850 tests would
+    # mode this gate cannot tolerate: a wrapper that lists 902 tests would
     # silently count as one unit and its duplication would disappear. Loud
     # instead.
     unresolved: dict[str, str] = field(default_factory=dict)
@@ -981,7 +960,8 @@ def lane_membership(buck: Buck, script: Path = AFFECTED_TARGETS) -> dict[str, li
 
     for lane in ("native-linux-arm64", "native-macos-arm64"):
         lanes[lane].extend(
-            f"{NATIVE_CLI_ALIAS} {filter_}" for filter_ in NATIVE_CLI_FILTERS
+            f"{NATIVE_CLI_ALIAS} {' '.join(invocation)}"
+            for invocation in NATIVE_CLI_INVOCATIONS
         )
 
     known = set(affected_targets("lanes", script=script)) | {"linux-premerge", "platform-corpus"}
@@ -1017,14 +997,15 @@ def owner_of(target: str, shards: set[str]) -> str:
 
 
 def workflow_step_listings(buck: Buck) -> dict[str, Listing]:
-    """Listings for the native lanes' three `scripts/rue cli <filter>` steps.
+    """Listings for the native lanes' three `scripts/rue cli` selections.
 
     RUE-1265's first revision modelled only Buck test targets, and these three
-    steps are not one: `scripts/rue cli abi` runs
-    `buck2 run //crates/rue-cli-tests:cli -- abi`. The alias is a real graph
-    node carrying its own env, so everything except the filter string is
-    derived; the filters themselves live in `ci.yml` and
-    `scripts/validate-ci-gate.py` imports `NATIVE_CLI_FILTERS` from here so the
+    steps are not one. The ABI selection runs the historical broad `abi`
+    substring filter but exactly skips the unrelated differential-opt case;
+    that preserves all 61 native ABI assertions instead of narrowing to the 16
+    cases in the `cli.abi` section. The alias is a real graph node carrying its
+    own env, so only these arguments are declared here. They also live in
+    `ci.yml`, and `scripts/validate-ci-gate.py` imports them from here so the
     two cannot drift.
 
     It matters because the alias leaves both `RUE_CLI_CASE_TIER` and
@@ -1050,14 +1031,14 @@ def workflow_step_listings(buck: Buck) -> dict[str, Listing]:
     harness = buck.uquery(f"set({binary})", ATTRIBUTES).get(binary, {})
     namespace = namespace_key(binary, harness)
     return {
-        f"{NATIVE_CLI_ALIAS} {filter_}": Listing(
-            target=f"{NATIVE_CLI_ALIAS} {filter_}",
+        f"{NATIVE_CLI_ALIAS} {' '.join(invocation)}": Listing(
+            target=f"{NATIVE_CLI_ALIAS} {' '.join(invocation)}",
             binary=binary,
-            args=[filter_],
+            args=list(invocation),
             env=env,
             namespace_key=namespace,
         )
-        for filter_ in NATIVE_CLI_FILTERS
+        for invocation in NATIVE_CLI_INVOCATIONS
     }
 
 
@@ -1231,12 +1212,6 @@ def main() -> int:
         f"no test executes twice per platform per run: {len(duplicates)} declared "
         f"duplicate set(s) covering {allowed} test(s), none undeclared"
     )
-    for entry in ALLOWANCES:
-        if entry.provisional:
-            print(
-                f"note: the allowance for {', '.join(entry.targets)} is provisional "
-                "and awaits a maintainer ruling (ADR-0069 open questions)"
-            )
     return 0
 
 

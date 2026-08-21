@@ -111,6 +111,20 @@ class GateValidatorTests(unittest.TestCase):
         errors = "\n".join(self.validate_text(source, runner))
         self.assertIn("export RUE_PLATFORM_CASE_SELECTION=native", errors)
 
+    def test_native_abi_filter_excludes_only_the_accidental_intersection(self):
+        changed = SOURCE.read_text().replace(
+            "scripts/rue cli abi --skip "
+            "cli.differential_opt::aggregate_abi_across_opt_levels",
+            "scripts/rue cli abi",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn(
+            "scripts/rue cli abi --skip "
+            "cli.differential_opt::aggregate_abi_across_opt_levels",
+            errors,
+        )
+
     def test_unexpected_skip_policy_and_platform_drift_fail(self):
         source = SOURCE.read_text()
         changed = source.replace(
@@ -186,6 +200,28 @@ class GateValidatorTests(unittest.TestCase):
         changed = SOURCE.read_text().replace("            target: //:spec-tests\n", "", 1)
         errors = "\n".join(self.validate_text(changed))
         self.assertIn("//:spec-tests is marked rue_ci_dedicated_lane", errors)
+        self.assertIn("no exactly-one dedicated owner", errors)
+
+    def test_release_smoke_label_is_owned_by_release_job(self):
+        # The label removes release-smoke from linux-premerge; its release job
+        # is therefore the required dedicated owner.
+        changed = SOURCE.read_text().replace(
+            "run: scripts/ci-timed \"release smoke\" -- ./buck2 test //:release-smoke --target-platforms //platforms:release",
+            "run: scripts/ci-timed \"release smoke\" -- ./buck2 test //:other --target-platforms //platforms:release",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("//:release-smoke is marked rue_ci_dedicated_lane", errors)
+        self.assertIn("no exactly-one dedicated owner", errors)
+
+    def test_release_smoke_cannot_be_owned_by_two_dedicated_jobs(self):
+        changed = SOURCE.read_text().replace(
+            "            target: //:spec-tests\n",
+            "            target: //:release-smoke\n            target: //:spec-tests\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("//:release-smoke (owned by platform-corpus, release)", errors)
 
     def test_unlabeled_buck_fails_closed(self):
         buck = ROOT_BUCK.read_text().replace('"rue_ci_dedicated_lane"', '"unused"')
