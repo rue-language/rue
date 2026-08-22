@@ -15,6 +15,33 @@ diagnostics.
 
 
 [[case]]
+name = "slice_narrow_frame_array_coercion_e0908"
+description = "Borrowing a non-slot-width frame array as a slice is rejected at the source-level coercion boundary with E0908."
+source = """
+fn take(borrow s: [i32]) -> i32 { 0 }
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 3];
+    take(borrow a)
+}
+"""
+compile_fail = true
+error_contains = ["E0908", "frame array", "non-slot-width", "coerce or borrow", "i32"]
+
+[[case]]
+name = "slice_non_slot_identical_enum_frame_array_e0908"
+description = "An equal-stride aggregate element with a non-slot-width tag is rejected at the same source-level coercion boundary rather than leaking backend E9001."
+source = """
+enum E { A(i64), B }
+fn take(borrow s: [E]) -> i32 { 0 }
+fn main() -> i32 {
+    let a: [E; 2] = [E.A(1), E.B];
+    take(borrow a)
+}
+"""
+compile_fail = true
+error_contains = ["E0908", "frame array", "non-slot-width", "coerce or borrow", "E"]
+
+[[case]]
 name = "slice_return_is_second_class_e0487"
 description = "A slice in return position is second-class: E0487 (cannot be returned)."
 source = """

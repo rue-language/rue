@@ -391,7 +391,7 @@ impl<'a> NativeCallAbi<'a> {
 /// call-ABI transitional rule above and code generation's narrow-access refusal
 /// (RUE-974) consult, so they cannot disagree about which types the compact
 /// layout leaves unchanged.
-pub fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Type) -> bool {
+pub fn is_slot_identical_layout<P: crate::FfiTypePool + ?Sized>(type_pool: &P, ty: Type) -> bool {
     match ty.kind() {
         // Eight-byte leaves and the recovery scalar: identical in both models.
         TypeKind::I64
@@ -410,12 +410,11 @@ pub fn is_slot_identical_layout(type_pool: &FrozenTypeInternPool, ty: Type) -> b
         | TypeKind::I32
         | TypeKind::U32 => false,
         TypeKind::Struct(id) => type_pool
-            .struct_def(id)
-            .fields
-            .iter()
-            .all(|field| is_slot_identical_layout(type_pool, field.ty)),
+            .ffi_struct_field_types(id)
+            .into_iter()
+            .all(|field_ty| is_slot_identical_layout(type_pool, field_ty)),
         TypeKind::Array(id) => {
-            let (element, _length) = type_pool.array_def(id);
+            let element = type_pool.ffi_array_element(id);
             is_slot_identical_layout(type_pool, element)
         }
         // Enums narrow their tag (u8/u16/u32 vs an eight-byte slot).

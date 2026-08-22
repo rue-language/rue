@@ -5533,6 +5533,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
         }
 
+        // A non-slot-width element's compact memory image is not byte-identical
+        // to the full-slot representation used by frame arrays. For narrow
+        // scalars this makes the slice's compact element stride differ from the
+        // frame stride; aggregate elements can also differ in tags, fields, or
+        // padding. Keep the deliberate refusal, but report it at the source-level
+        // coercion boundary rather than letting the synthesized pointer reach the
+        // backend's raw-pointer safety gate (RUE-1595). Empty arrays remain valid:
+        // their null pointer is never dereferenced.
+        if arr_len != 0 && !crate::is_slot_identical_layout(self.body_type_pool(), arr_elem) {
+            return Err(CompileError::new(
+                ErrorKind::SliceFrameArrayNotSupported {
+                    element_type: self.format_type_name(arr_elem),
+                },
+                span,
+            ));
+        }
+
         let zero_ref = air.add_inst(AirInst {
             data: AirInstData::Const(0),
             ty: Type::U64,

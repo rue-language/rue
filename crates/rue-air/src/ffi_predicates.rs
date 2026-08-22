@@ -153,6 +153,14 @@ pub trait FfiTypePool {
     fn ffi_struct_has_destructor(&self, id: StructId) -> bool;
     /// The struct's fields as `(name, type)` in declaration order.
     fn ffi_struct_fields(&self, id: StructId) -> Vec<(String, Type)>;
+    /// The struct's field types in declaration order, without cloning names.
+    /// Shared representation predicates use this narrower projection.
+    fn ffi_struct_field_types(&self, id: StructId) -> Vec<Type> {
+        self.ffi_struct_fields(id)
+            .into_iter()
+            .map(|(_, ty)| ty)
+            .collect()
+    }
     /// The element type of a fixed-size array.
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type;
 }

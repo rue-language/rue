@@ -1400,6 +1400,9 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::ArrayRepeatNonCopy {
                 element_type: value,
             }
+            | E::SliceFrameArrayNotSupported {
+                element_type: value,
+            }
             | E::TypeTooLarge {
                 type_name: value, ..
             }
