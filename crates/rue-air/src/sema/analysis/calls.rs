@@ -1221,6 +1221,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx.call_loaned_roots.pop();
         }
         let args_result = args_result?;
+        // Re-check the receiver after the argument list is analyzed
+        // (RUE-1593): an accessor expanded among this call's own arguments
+        // (`p.bump_with(p.f())`) registered its loan only during argument
+        // analysis, after the pre-frame receiver check above. The by-ref
+        // receiver access spans the same full expression as that loan, so it
+        // is rejected in either evaluation order (spec 6.6:10, 6.6:16,
+        // E0259). A receiver reached through an accessor result has already
+        // been checked against its own loan above.
+        match (receiver_mode, receiver_var) {
+            (AirArgMode::Inout, Some(root)) => {
+                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
+            }
+            (AirArgMode::Borrow, Some(root)) => {
+                self.reject_accessor_shared_loan_conflict(
+                    root,
+                    "as a `borrow self` receiver",
+                    span,
+                    ctx,
+                )?;
+            }
+            _ => {}
+        }
         air_args.extend(args_result.args);
         // The receiver's materialized owner is entered first: it is created
         // before any explicit operand, so its scope must be the outer one.
