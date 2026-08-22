@@ -1467,6 +1467,10 @@ impl RetainedCharge for rue_error::ErrorKind {
                 enum_name: left,
                 variant_name: right,
             }
+            | E::LinearPayloadDiscarded {
+                position: left,
+                type_name: right,
+            }
             | E::BufferNotFirstClassStr {
                 found: left,
                 site: right,

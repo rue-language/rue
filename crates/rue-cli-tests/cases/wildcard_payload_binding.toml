@@ -1,13 +1,28 @@
 # `_` as a tuple-variant payload binding (RUE-601): matches and discards a
 # payload field without binding it. Driven through the real binary, including
-# the drop-semantics guarantee — a discarded non-Copy payload is not moved out
-# of the scrutinee, so its destructor runs exactly once (via the scrutinee's
-# drop), same as a bound-but-unused binding.
+# the drop-semantics guarantee — a discarded non-Copy payload's destructor
+# runs exactly once.
+#
+# RUE-1592 (Steve's ruling, recorded 2026-08-22) settled WHEN and IN WHAT
+# ORDER that drop happens, and what happens for a linear field. A discarded
+# payload position — an explicit `_`, or any position of the *bare* variant
+# pattern `E.A`, which is the all-wildcard form — is a fresh UNNAMEABLE
+# binding governed by the ordinary scope rules:
+#
+#   - AFFINE: it drops at the ARM'S END, interleaved with the arm's named
+#     bindings in reverse declaration order. NOT eagerly before the arm body
+#     (the pre-RUE-1592 behavior), and NOT together with the scrutinee.
+#   - LINEAR: nothing can name it, so its must-consume obligation could never
+#     be discharged — a compile-time error (E0486). Binding it by name and
+#     consuming it (or `@drop`-ing it) is the escape hatch.
+#
+# The ordering cases below pin EXACT stdout at both -O0 and -O2, so a drop
+# that is missed, doubled, or re-scheduled by an optimization is caught.
 
 [section]
 id = "cli.wildcard_payload_binding"
 name = "Wildcard payload binding"
-description = "`Err(_)` / `Rect(_, _)` discard payload fields; a discarded non-Copy field is dropped exactly once (RUE-601)."
+description = "`Err(_)` / `Rect(_, _)` / bare `E.A` discard payload fields as fresh unnameable bindings, dropped once at the arm's end (RUE-601, RUE-1592)."
 
 [[case]]
 name = "discard_partial_and_multiple"
@@ -49,6 +64,270 @@ enum Res { Ok(i32), Err(i32) }
 fn div(a: i32, b: i32) -> Res { if b == 0 { Res.Err(1) } else { Res.Ok(a / b) } }
 fn main() -> i32 {
     match div(84, 2) { Res.Ok(v) => v, Res.Err(_) => -1 }
+}
+""" }]
+exit_code = 42
+
+# ---------------------------------------------------------------------------
+# RUE-1592: arm-end drop timing and reverse-declaration interleaving.
+# ---------------------------------------------------------------------------
+
+# The canonical repro. `E.A(x, _)`: the arm BODY runs first (1), then the arm's
+# bindings drop in reverse declaration order — `_` (position 1, prints 22)
+# before `x` (position 0, prints 11) — and only then does execution continue
+# past the match (2). Before RUE-1592 this printed "22 1 11 2": the discarded
+# sibling was extracted and dropped eagerly, ahead of the arm body.
+[[case]]
+name = "discarded_sibling_drops_at_arm_end_in_reverse_order"
+description = "Arm body first, then `_` and the named sibling drop at the arm's end in reverse declaration order (RUE-1592)."
+files = [{ path = "main.rue", source = """
+struct D1 { v: i32 }
+struct D2 { v: i32 }
+
+drop fn D1(self) { @dbg(self.v); }
+drop fn D2(self) { @dbg(self.v); }
+
+enum E { A(D1, D2) }
+
+fn main() -> i32 {
+    let e = E.A(D1 { v: 11 }, D2 { v: 22 });
+    match e {
+        E.A(x, _) => { @dbg(1); }
+    }
+    @dbg(2);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1\n22\n11\n2\n"
+exit_code = 0
+
+[[case]]
+name = "discarded_sibling_drops_at_arm_end_in_reverse_order_o2"
+description = "Same drop schedule at -O2: optimization must not re-order, drop, or duplicate the arm-end drops (RUE-1592)."
+files = [{ path = "main.rue", source = """
+struct D1 { v: i32 }
+struct D2 { v: i32 }
+
+drop fn D1(self) { @dbg(self.v); }
+drop fn D2(self) { @dbg(self.v); }
+
+enum E { A(D1, D2) }
+
+fn main() -> i32 {
+    let e = E.A(D1 { v: 11 }, D2 { v: 22 });
+    match e {
+        E.A(x, _) => { @dbg(1); }
+    }
+    @dbg(2);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+stdout = "1\n22\n11\n2\n"
+exit_code = 0
+
+# A three-field variant with the bound field in the middle: the discarded
+# positions are NOT hoisted ahead of the body, and all three drops interleave
+# strictly by reverse declaration order (3, 2, 1).
+[[case]]
+name = "three_field_discards_interleave_with_named_binding"
+description = "`E.Trip(_, y, _)`: body first, then fields 2, 1, 0 drop in reverse declaration order (RUE-1592)."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+
+drop fn A(self) { @dbg(self.v); }
+
+enum E { Trip(A, A, A), None }
+
+fn main() -> i32 {
+    let e = E.Trip(A { v: 1 }, A { v: 2 }, A { v: 3 });
+    match e {
+        E.Trip(_, y, _) => { @dbg(100); },
+        E.None => {},
+    }
+    @dbg(200);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "100\n3\n2\n1\n200\n"
+exit_code = 0
+
+# The bare payload-carrying variant pattern is the all-wildcard form: same
+# elaboration, same schedule, and each payload destructor runs EXACTLY once.
+[[case]]
+name = "bare_variant_pattern_drops_payload_once_at_arm_end"
+description = "`E.A =>` on an arity-2 variant: body first, then both fields drop once each in reverse order (RUE-1592 bare-path carve-out)."
+files = [{ path = "main.rue", source = """
+struct Big { v: i32 }
+
+drop fn Big(self) { @dbg(self.v); }
+
+enum E { A(Big, Big), B }
+
+fn main() -> i32 {
+    let e = E.A(Big { v: 41 }, Big { v: 42 });
+    let r = match e {
+        E.A => { @dbg(1); 7 },
+        E.B => 0,
+    };
+    @dbg(99);
+    r - 7
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1\n42\n41\n99\n"
+exit_code = 0
+
+[[case]]
+name = "bare_variant_pattern_drops_payload_once_at_arm_end_o2"
+description = "Same bare-variant drop schedule at -O2 — exactly once per field, no reordering (RUE-1592)."
+files = [{ path = "main.rue", source = """
+struct Big { v: i32 }
+
+drop fn Big(self) { @dbg(self.v); }
+
+enum E { A(Big, Big), B }
+
+fn main() -> i32 {
+    let e = E.A(Big { v: 41 }, Big { v: 42 });
+    let r = match e {
+        E.A => { @dbg(1); 7 },
+        E.B => 0,
+    };
+    @dbg(99);
+    r - 7
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+stdout = "1\n42\n41\n99\n"
+exit_code = 0
+
+# The non-taken arm's payload must not be dropped: the drop schedule is
+# per-arm, and the scrutinee's active variant is the one that runs.
+[[case]]
+name = "only_the_selected_arms_payload_is_dropped"
+description = "A bare-variant arm that is not selected drops nothing; only the active variant's payload runs its glue (RUE-1592, 6.3:20)."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+
+drop fn A(self) { @dbg(self.v); }
+
+enum E { Left(A), Right(A, A) }
+
+fn pick(n: i32) -> E {
+    if n == 0 { E.Left(A { v: 5 }) } else { E.Right(A { v: 6 }, A { v: 7 }) }
+}
+
+fn main() -> i32 {
+    match pick(0) { E.Left => { @dbg(1); }, E.Right(_, _) => { @dbg(2); } }
+    @dbg(50);
+    match pick(1) { E.Left => { @dbg(3); }, E.Right(_, _) => { @dbg(4); } }
+    @dbg(60);
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "1\n5\n50\n4\n7\n6\n60\n"
+exit_code = 0
+
+# ---------------------------------------------------------------------------
+# RUE-1592 linearity: a discarded LINEAR payload is a compile-time error.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "linear_payload_discarded_by_wildcard_is_e0486"
+description = "`E.A(_)` over a linear payload is rejected: the unnameable binding could never be consumed (E0486)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+enum E { A(L), B }
+fn main() -> i32 {
+    let e = E.A(L { v: 5 });
+    match e {
+        E.A(_) => 1,
+        E.B => 2,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0486"]
+
+[[case]]
+name = "linear_payload_discarded_by_bare_variant_is_e0486"
+description = "The bare form `E.A` over a linear payload is rejected identically — it is the all-wildcard form (E0486)."
+files = [{ path = "main.rue", source = """
+linear struct L { v: i32 }
+enum E { A(L), B }
+fn main() -> i32 {
+    let e = E.A(L { v: 5 });
+    match e {
+        E.A => 1,
+        E.B => 2,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0486"]
+
+[[case]]
+name = "linear_sibling_discarded_beside_named_binding_is_e0486"
+description = "A linear field discarded by `_` beside a named sibling is rejected; the diagnostic names the variant and the position (E0486)."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+linear struct L { v: i32 }
+enum E { Pair(A, L), None }
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, L { v: 2 });
+    match e {
+        E.Pair(x, _) => x.v,
+        E.None => 0,
+    }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0486", "discarded payload field 1 of `E.Pair`"]
+
+[[case]]
+name = "linear_payload_escape_hatch_bind_and_drop"
+description = "The escape hatch: bind the linear field by name and `@drop` it — legal, and the glue runs exactly once at the `@drop` site."
+files = [{ path = "main.rue", source = """
+struct A { v: i32 }
+linear struct L { v: i32 }
+
+drop fn A(self) { @dbg(self.v); }
+drop fn L(self) { @dbg(self.v); }
+
+enum E { Pair(A, L), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, L { v: 2 });
+    let r = match e {
+        E.Pair(x, l) => { @dbg(9); @drop(l); @dbg(10); x.v },
+        E.None => 0,
+    };
+    @dbg(50);
+    r - 1
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "9\n2\n10\n1\n50\n"
+exit_code = 0
+
+# Control (RUE-1592 repro 1's control): the same shapes over a NON-linear
+# payload keep compiling and running.
+[[case]]
+name = "non_linear_payload_discard_still_compiles"
+description = "Control: `_` and the bare form over an affine payload stay legal (RUE-1592 must not over-reject)."
+files = [{ path = "main.rue", source = """
+struct P { v: i32 }
+enum E { A(P), B }
+fn main() -> i32 {
+    let e = E.A(P { v: 5 });
+    let a = match e { E.A(_) => 20, E.B => 0 };
+    let f = E.A(P { v: 5 });
+    let b = match f { E.A => 22, E.B => 0 };
+    a + b
 }
 """ }]
 exit_code = 42

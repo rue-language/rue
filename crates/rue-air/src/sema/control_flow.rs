@@ -1197,21 +1197,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut binding_stmts =
                 self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
 
-            // RUE-238: a non-binding arm (a wildcard `_`, a variant matched
-            // without binding its payload, or a variant whose payload
-            // positions are all `_`) still *consumes* the scrutinee — the
-            // match marked it moved (see the `mark_moved` in the emitted AIR) —
-            // but extracts nothing, so its active-variant payload would leak.
-            // Emit a drop of the whole scrutinee value; for an enum this lowers
-            // to the variant-dispatched drop glue (`__rue_drop_E`), which drops
-            // exactly the active variant's payload (a no-op when that variant
-            // carries nothing droppable). Arms that bind ANY payload position
-            // by name must not also drop the scrutinee, or the moved-out
-            // fields would be dropped twice; `binding_stmts.is_empty()` is
-            // precisely that guard. Those arms account for every field
-            // themselves: named positions move into binding locals (dropped
-            // at scope exit), and `_` positions are extracted and dropped in
-            // the binding statements (RUE-1270 — previously they leaked).
+            // RUE-238: an arm that extracts NO payload — a wildcard `_` arm,
+            // or an arm matching a discriminant-only variant — still
+            // *consumes* the scrutinee (the match marked it moved; see the
+            // `mark_moved` in the emitted AIR), so its active-variant payload
+            // would leak. Emit a drop of the whole scrutinee value; for an
+            // enum this lowers to the variant-dispatched drop glue
+            // (`__rue_drop_E`), which drops exactly the active variant's
+            // payload (a no-op when that variant carries nothing droppable).
+            //
+            // An arm on a payload-carrying variant must NOT also drop the
+            // scrutinee, or its moved-out fields would be dropped twice.
+            // `binding_stmts.is_empty()` is precisely that guard: since
+            // RUE-1592 `materialize_match_bindings` moves out EVERY payload
+            // position of such a variant — named, `_`-discarded, or covered by
+            // the bare-path form `E.A` — so those arms are never empty and
+            // account for the whole payload themselves, each field dropped at
+            // the arm's end in reverse declaration order.
             if binding_stmts.is_empty() && scrutinee_type.is_enum() {
                 let drop_ref = air.add_inst(AirInst {
                     data: AirInstData::Drop {
@@ -1733,9 +1735,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// the AIR statement refs (StorageLive + Alloc per binding) that must run
     /// before the arm body (RUE-221, ADR-0038).
     ///
-    /// Returns an empty vector for patterns without payload bindings. Assumes
-    /// the pattern has already been validated against the scrutinee type by
-    /// the caller (`analyze_match`); re-resolves the enum for convenience.
+    /// EVERY payload position of a payload-carrying variant is materialized,
+    /// including the ones that bind no source name (RUE-1592, ratified
+    /// 2026-08-22). A `_` position — and every position of the all-wildcard
+    /// *bare* variant pattern `E.A` (spec 4.7:30's bare-path carve-out) —
+    /// becomes a fresh **unnameable** binding, exactly as the formal core's §2
+    /// elaboration note states: it is registered in no scope, so nothing can
+    /// name or consume it, but it owns a real frame slot and is therefore
+    /// dropped by the ordinary §5.6 scope-exit machinery at the ARM'S END,
+    /// interleaved with its named siblings in reverse declaration order.
+    /// A linear such field can never discharge its must-consume obligation,
+    /// so it is rejected here (E0486).
+    ///
+    /// Returns an empty vector only for a pattern that is not a path pattern,
+    /// or for a discriminant-only variant (no payload to materialize) — the
+    /// two cases where the caller's whole-scrutinee drop still applies.
+    /// Assumes the pattern has already been validated against the scrutinee
+    /// type by the caller (`analyze_match`); re-resolves the enum for
+    /// convenience.
     fn materialize_match_bindings(
         &mut self,
         air: &mut Air,
@@ -1754,9 +1771,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         else {
             return Ok(Vec::new());
         };
-        if bindings.is_empty() {
-            return Ok(Vec::new());
-        }
         let pattern_span = *span;
 
         let enum_id = self
@@ -1775,10 +1789,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             },
             pattern_span,
         )? as u32;
+        let enum_name = def.name.to_string();
         let payload = def.variant_payload(variant_index as usize).to_vec();
 
-        // The number of bindings must equal the variant's payload arity.
-        if bindings.len() != payload.len() {
+        // The bare-path carve-out (spec 4.7:30, RUE-1592): a payload-carrying
+        // variant written with no binding list at all (`E.A`) IS the
+        // all-wildcard form `E.A(_, …, _)`, so it is exempt from the arity
+        // rule rather than being an arity error. Every other pattern must
+        // supply exactly as many binding positions as the variant's arity —
+        // `E.A(x, y)` on an arity-1 variant stays E0207.
+        let bare_path = bindings.is_empty();
+        if !bare_path && bindings.len() != payload.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
                     expected: payload.len(),
@@ -1786,6 +1807,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 pattern_span,
             ));
+        }
+
+        // A discriminant-only variant has nothing to materialize. The caller's
+        // whole-scrutinee drop (the RUE-238 guard) covers such an arm, exactly
+        // as it covers a bare `_` arm.
+        if payload.is_empty() {
+            return Ok(Vec::new());
         }
 
         // Every payload binding must be a fresh name (spec 4.7:30). Reusing an
@@ -1807,53 +1835,55 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
 
-        // Whether any payload position is moved out by name. When one is, the
-        // arm's binding statements suppress the whole-scrutinee drop (see the
-        // RUE-238 guard at the call site), so every `_`-discarded sibling must
-        // be dropped HERE — extract-and-drop per field — or its payload leaks
-        // (RUE-1270: for a linear sibling this silently bypassed must-consume).
-        // When every position is `_`, no statement is emitted and the
-        // whole-scrutinee drop covers the entire payload via the enum's
-        // variant-dispatched glue, exactly as before.
-        let any_named = bindings
-            .iter()
-            .any(|name| self.body_interner().resolve(name) != "_");
+        // Every payload position — named, `_`-discarded, or covered by the
+        // bare-path form — is moved out of the scrutinee into its own frame
+        // slot, so the arm's binding statements always suppress the
+        // whole-scrutinee drop (the RUE-238 guard at the call site) and the
+        // payload is accounted for field by field. An enum's drop glue is
+        // exactly "drop the active variant's payload" (6.3:20), so the two
+        // accountings coincide; what differs is *when* and in what order,
+        // which is the RUE-1592 ruling below.
+        let mut stmts: Vec<u32> = Vec::with_capacity(payload.len() * 2);
+        for (i, field_ty) in payload.iter().copied().enumerate() {
+            // The source name at this position, or `None` when the position
+            // binds nothing: an explicit `_` discard (RUE-601), or any
+            // position of the bare-path all-wildcard form `E.A` (RUE-1592).
+            let binding_name = if bare_path {
+                None
+            } else {
+                let name = bindings[i];
+                (self.body_interner().resolve(&name) != "_").then_some(name)
+            };
 
-        let mut stmts: Vec<u32> = Vec::with_capacity(bindings.len() * 2);
-        for (i, binding_name) in bindings.iter().enumerate() {
-            // A `_` payload (RUE-601) discards its field: bind nothing. With
-            // no named sibling, the field is not moved out of the scrutinee
-            // and is dropped together with it — exactly like a
-            // discriminant-only match on a payload-carrying variant. With a
-            // named sibling, the scrutinee's own drop is suppressed, so the
-            // discarded field is read out and dropped in place (4.7:30's
-            // "dropped together with it", 6.3:20's exactly-once), in field
-            // order — matching the glue's order for the all-discarded case.
-            // The enumerate index `i` still tracks the real field position
-            // for the other bindings.
-            if self.body_interner().resolve(binding_name) == "_" {
-                if any_named {
-                    let field_ty = payload[i];
-                    let get_ref = air.add_inst(AirInst {
-                        data: AirInstData::EnumPayloadGet {
-                            base: scrutinee_ref,
-                            enum_id,
-                            variant_index,
-                            field_index: i as u32,
-                        },
-                        ty: field_ty,
-                        span: pattern_span,
-                    });
-                    let drop_ref = air.add_inst(AirInst {
-                        data: AirInstData::Drop { value: get_ref },
-                        ty: Type::UNIT,
-                        span: pattern_span,
-                    });
-                    stmts.push(drop_ref.as_u32());
-                }
-                continue;
+            // A non-binding position is a fresh UNNAMEABLE binding (formal
+            // core §2; RUE-1592, ratified 2026-08-22) — not an eager
+            // extract-and-drop (the pre-RUE-1592 behavior), and not a leak
+            // into the scrutinee's own drop. It owns a slot like any other
+            // binding, so §5.6 drops it at the ARM'S END in reverse
+            // declaration order, interleaved with its named siblings.
+            //
+            // Nothing can name it, so a LINEAR field here could never
+            // discharge its must-consume obligation (3.8:52). Rather than let
+            // the ordinary machinery report an unnameable binding, reject the
+            // position up front with a diagnostic that names the variant and
+            // the position (E0486) and points at the escape hatches.
+            if binding_name.is_none() && self.type_requires_consumption(field_ty) {
+                let position = format!("field {i} of `{enum_name}.{variant_name}`");
+                let err = CompileError::new(
+                    ErrorKind::LinearPayloadDiscarded {
+                        position,
+                        type_name: field_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    },
+                    pattern_span,
+                )
+                .with_help(if bare_path {
+                    "bind the payload — `Enum.Variant(x, ...)` — and consume each linear field, \
+                     or `@drop` it"
+                } else {
+                    "replace `_` with a name and consume the value, or `@drop` it"
+                });
+                return Err(self.attach_infectious_linear_note(err, field_ty));
             }
-            let field_ty = payload[i];
 
             // Read the payload field out of the scrutinee.
             let get_ref = air.add_inst(AirInst {
@@ -1869,18 +1899,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
             // Allocate the binding through the canonical local-storage owner,
             // then register the match arm's source-level name in this scope.
+            // An unnameable binding skips only that registration: it is in no
+            // scope, so no expression can refer to it, while its slot still
+            // participates in scope-exit drop elaboration.
             let (slot, storage_live, alloc) =
                 self.allocate_local_storage(air, get_ref, field_ty, pattern_span, ctx)?;
-            ctx.insert_local(
-                *binding_name,
-                LocalVar {
-                    slot,
-                    ty: field_ty,
-                    is_mut: false,
-                    span: pattern_span,
-                    allow_unused: false,
-                },
-            );
+            if let Some(binding_name) = binding_name {
+                ctx.insert_local(
+                    binding_name,
+                    LocalVar {
+                        slot,
+                        ty: field_ty,
+                        is_mut: false,
+                        span: pattern_span,
+                        allow_unused: false,
+                    },
+                );
+            }
 
             stmts.push(storage_live.as_u32());
             stmts.push(alloc.as_u32());

@@ -1000,6 +1000,78 @@ fn main() -> i32 {
 """
 exit_code = 42
 
+# The bare-path carve-out (4.7:30, RUE-1592): a payload-carrying variant
+# written with no binding list IS the all-wildcard form, so it is exempt from
+# the arity rule that rejects `Shape.Rect(w)` above with E0207.
+[[case]]
+name = "match_bare_variant_pattern_is_all_wildcard_form"
+spec = ["4.7:30", "4.7:34"]
+source = """
+enum Shape { Circle(i32), Rect(i32, i32), Empty }
+fn main() -> i32 {
+    let a = match Shape.Rect(3, 4) { Shape.Rect => 40, Shape.Circle(r) => r, Shape.Empty => 0 };
+    let b = match Shape.Circle(9)  { Shape.Rect(_, _) => 0, Shape.Circle => 2, Shape.Empty => 0 };
+    a + b
+}
+"""
+exit_code = 42
+
+# A discarded payload field is a fresh unnameable binding, so a LINEAR one can
+# never discharge its must-consume obligation and is rejected (4.7:30, 3.8:50;
+# RUE-1592 ruling of 2026-08-22 — this previously compiled silently).
+[[case]]
+name = "match_payload_wildcard_over_linear_rejected"
+spec = ["4.7:30", "3.8:50"]
+source = """
+linear struct L { v: i32 }
+enum E { A(L), B }
+fn main() -> i32 {
+    let e = E.A(L { v: 5 });
+    match e {
+        E.A(_) => 1,
+        E.B => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = "[E0486]"
+
+# The bare form is the all-wildcard form, so it is rejected identically
+# (4.7:30 bare-path carve-out, RUE-1592).
+[[case]]
+name = "match_bare_variant_over_linear_payload_rejected"
+spec = ["4.7:30", "3.8:50"]
+source = """
+linear struct L { v: i32 }
+enum E { A(L), B }
+fn main() -> i32 {
+    let e = E.A(L { v: 5 });
+    match e {
+        E.A => 1,
+        E.B => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = "[E0486]"
+
+# Control: the same shapes over a NON-linear payload keep compiling (4.7:30).
+[[case]]
+name = "match_payload_wildcard_over_affine_payload_is_legal"
+spec = ["4.7:30"]
+source = """
+struct P { v: i32 }
+enum E { A(P), B }
+fn main() -> i32 {
+    let e = E.A(P { v: 5 });
+    let a = match e { E.A(_) => 20, E.B => 0 };
+    let f = E.A(P { v: 5 });
+    let b = match f { E.A => 22, E.B => 0 };
+    a + b
+}
+"""
+exit_code = 42
+
 # Bindings move the payload out in value context and are usable in the arm
 # body (4.7:31).
 [[case]]

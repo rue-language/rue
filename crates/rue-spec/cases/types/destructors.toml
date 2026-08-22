@@ -1301,7 +1301,7 @@ expected_stdout = "5\n5\n100\n"
 [[case]]
 name = "partial_payload_bind_drops_discarded_sibling"
 spec = ["4.7:30", "6.3:20"]
-description = "A match arm binding one payload field drops the `_`-discarded sibling exactly once (RUE-1270: it previously leaked)"
+description = "A match arm binding one payload field drops the `_`-discarded sibling exactly once, at the arm's end (RUE-1270 leak; RUE-1592 timing)"
 source = """
 struct A { v: i32 }
 
@@ -1314,7 +1314,7 @@ enum E { Pair(A, A), None }
 fn main() -> i32 {
     let e = E.Pair(A { v: 1 }, A { v: 2 });
     let r = match e {
-        E.Pair(x, _) => x.v,   // discarded sibling (2) drops in the arm, bound x (1) at scope exit
+        E.Pair(x, _) => x.v,   // both fields drop at the arm's end, reverse order: `_` (2), then x (1)
         E.None => 0,
     };
     @dbg(500);
@@ -1324,10 +1324,16 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "2\n1\n500\n"
 
+# RUE-1592 ruling (Steve, 2026-08-22): `_` in payload position is a fresh
+# unnameable binding governed by §5.6 exactly like its named siblings, so a
+# discarded AFFINE field drops at the ARM'S END — interleaved with the named
+# siblings in reverse declaration order — not eagerly before the arm body.
+# This case previously pinned the eager pre-body order ("1\n3\n2\n500\n");
+# the flip is the ruling, not a regression.
 [[case]]
-name = "partial_payload_bind_drops_every_discarded_sibling_in_field_order"
+name = "partial_payload_bind_drops_every_discarded_sibling_in_reverse_order"
 spec = ["4.7:30", "6.3:20"]
-description = "Both `_`-discarded fields of a three-field variant drop, in field order, before the bound field's scope exit (RUE-1270)"
+description = "The `_`-discarded fields of a three-field variant drop at the arm's end, interleaved with the bound field in reverse declaration order (RUE-1592)"
 source = """
 struct A { v: i32 }
 
@@ -1348,12 +1354,18 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-expected_stdout = "1\n3\n2\n500\n"
+expected_stdout = "3\n2\n1\n500\n"
 
+# RUE-1592 ruling (Steve, 2026-08-22): a LINEAR payload covered by `_` is a
+# COMPILE-TIME ERROR — the unnameable binding it elaborates to can never be
+# consumed, so its must-consume obligation could never be discharged. This
+# case previously asserted that the linear sibling was silently drop-glued
+# (RUE-1270's compiler-side resolution); the ruling overturns that in favor of
+# the formal core's §2 story. `@drop` is the escape hatch (see the case below).
 [[case]]
-name = "partial_payload_bind_linear_sibling_is_dropped_not_leaked"
-spec = ["6.3:19", "6.3:20"]
-description = "A linear sibling discarded by `_` in a partial bind runs its drop glue; the match consumed the enum (RUE-1270: it previously neither dropped nor errored)"
+name = "partial_payload_bind_linear_sibling_is_rejected"
+spec = ["6.3:19", "4.7:30"]
+description = "A linear sibling discarded by `_` in a partial bind is rejected at compile time (E0486, RUE-1592)"
 source = """
 struct A { v: i32 }
 
@@ -1379,13 +1391,49 @@ fn main() -> i32 {
     r - 1
 }
 """
+compile_fail = true
+error_contains = "[E0486]"
+
+[[case]]
+name = "partial_payload_bind_linear_sibling_named_and_dropped"
+spec = ["6.3:19", "4.7:30"]
+description = "The escape hatch for a linear payload field: bind it by name and `@drop` it (RUE-1592)"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+linear struct L { v: i32 }
+
+drop fn L(self) {
+    @dbg(self.v);
+}
+
+enum E { Pair(A, L), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, L { v: 2 });
+    let r = match e {
+        E.Pair(x, l) => { @drop(l); x.v },
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 1
+}
+"""
 exit_code = 0
 expected_stdout = "2\n1\n500\n"
 
+# RUE-1592 ruling: an all-`_` payload is N fresh unnameable bindings, so the
+# fields drop at the arm's end in REVERSE declaration order — not through the
+# scrutinee's variant-dispatched glue in field order. This case previously
+# pinned that glue order ("1\n2\n500\n").
 [[case]]
-name = "all_discarded_payload_drops_through_enum_glue"
+name = "all_discarded_payload_drops_at_arm_end_in_reverse_order"
 spec = ["4.7:30", "6.3:20"]
-description = "A variant arm discarding every payload field drops the whole active payload via the enum's glue, in field order"
+description = "A variant arm discarding every payload field drops each field at the arm's end, in reverse declaration order (RUE-1592)"
 source = """
 struct A { v: i32 }
 
@@ -1398,7 +1446,7 @@ enum E { Pair(A, A), None }
 fn main() -> i32 {
     let e = E.Pair(A { v: 1 }, A { v: 2 });
     let r = match e {
-        E.Pair(_, _) => 7,
+        E.Pair(_, _) => { @dbg(7); 7 },
         E.None => 0,
     };
     @dbg(500);
@@ -1406,7 +1454,62 @@ fn main() -> i32 {
 }
 """
 exit_code = 0
-expected_stdout = "1\n2\n500\n"
+expected_stdout = "7\n2\n1\n500\n"
+
+# The bare payload-carrying variant pattern `E.Pair` is the all-wildcard form
+# (spec 4.7:30 bare-path carve-out, RUE-1592): identical elaboration, identical
+# drop schedule, and the payload destructor runs EXACTLY once.
+[[case]]
+name = "bare_variant_pattern_drops_payload_at_arm_end"
+spec = ["4.7:30", "4.7:34", "6.3:20"]
+description = "A bare payload-carrying variant pattern is the all-wildcard form: each field drops once, at the arm's end, in reverse declaration order (RUE-1592)"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+enum E { Pair(A, A), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, A { v: 2 });
+    let r = match e {
+        E.Pair => { @dbg(7); 7 },
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 7
+}
+"""
+exit_code = 0
+expected_stdout = "7\n2\n1\n500\n"
+
+# The bare form is governed by the same linearity rule as an explicit `_`
+# (RUE-1592 ruling (a)): a linear payload it covers is a compile-time error.
+[[case]]
+name = "bare_variant_pattern_over_linear_payload_is_rejected"
+spec = ["6.3:19", "4.7:30"]
+description = "A bare variant pattern covering a linear payload is rejected identically to `_` (E0486, RUE-1592)"
+source = """
+linear struct L { v: i32 }
+
+drop fn L(self) {
+    @dbg(self.v);
+}
+
+enum E { A(L), B }
+
+fn main() -> i32 {
+    let e = E.A(L { v: 5 });
+    match e {
+        E.A => 1,
+        E.B => 2,
+    }
+}
+"""
+compile_fail = true
+error_contains = "[E0486]"
 
 [[case]]
 name = "full_payload_bind_drops_bindings_at_scope_exit"

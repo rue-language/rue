@@ -110,9 +110,17 @@ Notes on what is **absent by design** (lives in elaboration, `02-elaboration.md`
   specified in `02-elaboration.md` rather than treated as transparent sugar;
 - **`_` in payload-binding position** → a fresh, unnameable binding, governed
   by §5.6 exactly like its named siblings (an `Affine` payload it covers drops
-  at the arm's end; a `Linear` one makes the arm ill-formed). RUE-1270 records
-  a compiler divergence in this area (sibling drops skipped by a partial
-  payload binding); the core states the fresh-binding rule;
+  at the arm's end, interleaved with the named siblings in the §5.6
+  reverse-declaration order; a `Linear` one makes the arm ill-formed).
+  The **bare payload-carrying variant pattern** `E.A` — a variant of arity
+  `n ≥ 1` written with no binding list — elaborates to the all-wildcard form
+  `E.A(_, …, _)` and therefore to `n` such fresh unnameable bindings; it is not
+  a separate core form and carries no separate rule. The compiler agrees with
+  this story as of RUE-1592 (ratified 2026-08-22): the earlier divergence
+  RUE-1270 recorded here — sibling drops skipped, then eagerly pre-body dropped,
+  by a partial payload binding, and a linear discarded payload silently
+  drop-glued rather than rejected — is resolved in the core's favor, so no
+  divergence remains in this area;
 - **no-argument `@panic()`** → the message form (§6.12, D-Panic) with the
   fixed message `panic` (verified: the compiler emits the bare word and exits
   101).
