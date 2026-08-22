@@ -42,7 +42,7 @@ struct Point { y: i32 }
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = "duplicate type"
+error_contains = ["E0405", "duplicate type"]
 
 [[case]]
 name = "duplicate_enum_definitions"
@@ -54,7 +54,7 @@ enum Color { Blue, Yellow }
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = "duplicate type"
+error_contains = ["E0405", "duplicate type"]
 
 [[case]]
 name = "struct_and_enum_same_name"
@@ -66,7 +66,7 @@ enum Point { Up, Down }
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = "duplicate type"
+error_contains = ["E0405", "duplicate type"]
 
 # =============================================================================
 # Valid Type Names

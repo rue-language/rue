@@ -39,7 +39,7 @@ The following words are keywords and cannot be used as identifiers:
 | `false` | Boolean literal |
 | `struct` | Struct definition |
 | `enum` | Enum definition |
-| `impl` | Impl block |
+| `impl` | Reserved syntax; Rue has no impl-block construct (6.0:1a) |
 | `self` | Self parameter in methods |
 | `drop` | Destructor declaration |
 | `pub` | Public visibility modifier |

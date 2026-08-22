@@ -179,7 +179,7 @@ drop fn TypeName(self) {
 
 {{ rule(id="3.9:25", cat="normative") }}
 
-A user-defined destructor for a *named* struct type **MUST** be declared at the top level, outside of any `impl` block. It **MUST** take exactly one parameter named `self` and return nothing (implicit unit type). (A destructor for an *anonymous* struct type is declared inside the struct body instead; see 3.9:41.)
+A user-defined destructor for a *named* struct type **MUST** be declared as a top-level declaration. Methods and associated functions are declared inline in struct bodies (6.4), not as separate top-level declarations. The destructor **MUST** take exactly one parameter named `self` and return nothing (implicit unit type). (A destructor for an *anonymous* struct type is declared inside the struct body instead; see 3.9:41.)
 
 {{ rule(id="3.9:26", cat="legality-rule") }}
 
@@ -208,7 +208,7 @@ drop fn FileHandle(self) {
 
 {{ rule(id="3.9:30", cat="informative") }}
 
-The `drop fn` syntax was chosen because it clearly indicates the purpose of the function while being distinct from regular functions and methods. The destructor is not part of any impl block because it has special calling semantics: it is invoked automatically by the compiler when values go out of scope.
+The `drop fn` syntax was chosen because it clearly indicates the purpose of the function while being distinct from regular functions and methods. The destructor is a top-level declaration rather than an inline struct-body method or associated function because it has special calling semantics: it is invoked automatically by the compiler when values go out of scope.
 
 {{ rule(id="3.9:31", cat="legality-rule") }}
 
