@@ -65,6 +65,31 @@ impl Entry {
 /// host. Entries are generated from production typed diagnostics and reviewed
 /// against the authoritative, post-template-expansion corpus.
 const ENTRIES: &[Entry] = &[
+    // Borrowing an EMPTY fixed array as a slice (7.2:14) materializes the
+    // pointer word as `@int_to_ptr(0)` rather than `@raw(arr[0])`, because
+    // `[T; 0]` has no element 0 to address. The oracle models neither that
+    // conventional null pointer nor a read through it — and it never needs to:
+    // every slice read is guarded by `i < len`, and `len` is 0, so the pointer
+    // is unobservable. Non-empty slice cases in this section are fully modeled
+    // and diffed; only the empty-view cases are debt.
+    Entry::new(
+        "arrays.slices",
+        "slice_coercion_empty_array_is_exempt_from_narrow_restriction",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
+    Entry::new(
+        "arrays.slices",
+        "slice_index_into_empty_view_traps",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
+    Entry::new(
+        "arrays.slices",
+        "slice_len_of_empty_view_is_zero",
+        intrinsic(UnsupportedIntrinsicKind::EmptySlicePointer),
+        &[],
+    ),
     // Source-defined StrBuf methods expose their first unmodeled ordinary
     // projection, allocation, pointer, or inout operation to the oracle.
     Entry::new(

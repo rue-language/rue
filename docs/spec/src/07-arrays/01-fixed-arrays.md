@@ -290,7 +290,11 @@ Functions **MAY** accept arrays as parameters.
 
 {{ rule(id="7.1:23", cat="normative") }}
 
-Array parameters are passed by value; the entire array is copied to the function.
+Array parameters are passed by value. What that does to the argument follows the
+element type's value category (3.8:2): `[T; N]` is a Copy type when `T` is, so the
+whole array is copied and the caller's array stays valid; when `T` is a move type
+the array is a move type too, so the by-value argument *moves* the whole array
+(3.8:7) and the caller's array is invalid afterwards.
 
 {{ rule(id="7.1:24") }}
 

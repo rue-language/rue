@@ -1,0 +1,674 @@
+# Normative coverage for spec section 7.2 (Slices), the second rung of the
+# fixed/slice/growable structure of ADR-0043. Every case here was verified by
+# execution against the compiler before the rule it cites was written
+# (RUE-1594).
+#
+# Two current restrictions are pinned deliberately, because the spec states
+# what the compiler does today, not what ADR-0043 eventually wants:
+#   * the exclusive `inout [T]` view is unimplemented, so an `inout [T]` (or
+#     unmarked `[T]`) parameter is uncallable — 7.2:10;
+#   * a non-empty frame array of a non-slot-width element cannot coerce —
+#     7.2:14 (E0908, RUE-1595).
+# When either restriction lifts, these cases fail loudly and the rule they cite
+# is what must be re-decided.
+
+[section]
+id = "arrays.slices"
+spec_chapter = "7.2"
+name = "Slices"
+description = "The second-class slice view `[T]`: its type form, argument-only position, fixed-array coercion, length, and bounds-checked indexing."
+
+# =============================================================================
+# The slice type form and its meaning (7.2:1, 7.2:2)
+# =============================================================================
+
+# The bracketed type without a length parses and names the slice type.
+[[case]]
+name = "slice_type_form_parses"
+spec = ["7.2:1", "7.2:7"]
+source = """
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let a: [i64; 1] = [42];
+    head(borrow a)
+}
+"""
+exit_code = 42
+
+# The length is a runtime value carried by the view, not part of the type: one
+# `[i64]` parameter accepts backing arrays of two different lengths.
+[[case]]
+name = "slice_length_is_not_part_of_the_type"
+spec = ["7.2:2", "7.2:17"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 2, 3];
+    let b: [i64; 4] = [1, 2, 3, 4];
+    ln(borrow a) * 10 + ln(borrow b)
+}
+"""
+exit_code = 34
+
+# Viewing an array does not move or otherwise disturb it: the backing array is
+# still readable, and viewable again, after the call returns.
+[[case]]
+name = "slice_view_does_not_own_the_backing_array"
+spec = ["7.2:2"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    let n = ln(borrow a);
+    let v: i64 = a[0] + a[1];
+    n + @intCast(v)
+}
+"""
+exit_code = 44
+
+# =============================================================================
+# Second-class status: the escaping positions (7.2:3 – 7.2:6)
+# =============================================================================
+
+# Return position (E0487).
+[[case]]
+name = "slice_return_type_rejected"
+spec = ["7.2:3", "7.2:4"]
+compile_fail = true
+error_contains = ["E0487", "cannot be returned"]
+source = """
+fn f() -> [i32] { 0 }
+fn main() -> i32 { 0 }
+"""
+
+# A slice return is rejected at the signature, even when the body could
+# plausibly produce a view (it has one in scope).
+[[case]]
+name = "slice_return_type_rejected_with_view_in_scope"
+spec = ["7.2:4"]
+compile_fail = true
+error_contains = ["E0487", "cannot be returned"]
+source = """
+fn f(borrow s: [i64]) -> [i64] { s }
+fn main() -> i32 { 0 }
+"""
+
+# Struct field (E0488).
+[[case]]
+name = "slice_struct_field_rejected"
+spec = ["7.2:3", "7.2:5"]
+compile_fail = true
+error_contains = ["E0488", "cannot be stored in a struct field"]
+source = """
+struct Holder { s: [i64] }
+fn main() -> i32 { 0 }
+"""
+
+# Enum tuple-variant payload: the same aggregate rule.
+[[case]]
+name = "slice_enum_payload_rejected"
+spec = ["7.2:5"]
+compile_fail = true
+error_contains = ["E0488"]
+source = """
+enum Wrapper { View([i64]) }
+fn main() -> i32 { 0 }
+"""
+
+# `let` binding (E0489).
+[[case]]
+name = "slice_let_binding_rejected"
+spec = ["7.2:3", "7.2:6"]
+compile_fail = true
+error_contains = ["E0489", "can only name a function parameter"]
+source = """
+fn main() -> i32 {
+    let a: [i64; 2] = [1, 2];
+    let s: [i64] = a;
+    0
+}
+"""
+
+# `const` item: the same binding rule.
+[[case]]
+name = "slice_const_item_rejected"
+spec = ["7.2:6"]
+compile_fail = true
+error_contains = ["E0489"]
+source = """
+const S: [i64] = 0;
+fn main() -> i32 { 0 }
+"""
+
+# =============================================================================
+# The one legal position: a parameter (7.2:7, 7.2:9)
+# =============================================================================
+
+# A free function reading through a shared view.
+[[case]]
+name = "slice_parameter_position_runs"
+spec = ["7.2:7", "7.2:9", "7.2:20"]
+source = """
+fn total(borrow s: [i64]) -> i32 {
+    let mut acc: i64 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        acc = acc + s[i];
+        i = i + 1;
+    }
+    @intCast(acc)
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 12];
+    total(borrow a)
+}
+"""
+exit_code = 42
+
+# A method and an associated function are parameter positions too.
+[[case]]
+name = "slice_parameter_on_method_and_assoc_fn"
+spec = ["7.2:7"]
+source = """
+struct Sum {
+    bias: i32,
+
+    fn method(borrow self, borrow s: [i64]) -> i32 {
+        self.bias + @intCast(s[0])
+    }
+
+    fn assoc(borrow s: [i64]) -> i32 {
+        @intCast(s[1])
+    }
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [5, 7];
+    let sum = Sum { bias: 30 };
+    sum.method(borrow a) + Sum.assoc(borrow a)
+}
+"""
+exit_code = 42
+
+# =============================================================================
+# Parameter modes: only the shared `borrow` form is callable (7.2:10)
+# =============================================================================
+
+# `inout [T]` parameter, `inout` argument: view materialization produces only
+# the shared form, so the argument is refused.
+[[case]]
+name = "inout_slice_parameter_inout_argument_rejected"
+spec = ["7.2:10"]
+compile_fail = true
+error_contains = ["E0432"]
+source = """
+fn head(inout s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let mut a: [i64; 2] = [40, 2];
+    head(inout a)
+}
+"""
+
+# `inout [T]` parameter, `borrow` argument: the argument-mode rule (4.10:3)
+# demands the declared mode. No argument mode satisfies the parameter.
+[[case]]
+name = "inout_slice_parameter_borrow_argument_rejected"
+spec = ["7.2:10"]
+compile_fail = true
+error_contains = ["E0431"]
+source = """
+fn head(inout s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let mut a: [i64; 2] = [40, 2];
+    head(borrow a)
+}
+"""
+
+# An unmarked `[T]` parameter is uncallable for the same reason.
+[[case]]
+name = "unmarked_slice_parameter_rejected"
+spec = ["7.2:10"]
+compile_fail = true
+error_contains = ["E0432"]
+source = """
+fn head(s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    head(a)
+}
+"""
+
+# =============================================================================
+# A slice is a read-only view (7.2:11)
+# =============================================================================
+
+# Constant-index write through the shared form.
+[[case]]
+name = "slice_element_write_constant_index_rejected"
+spec = ["7.2:11"]
+compile_fail = true
+error_contains = ["E0428", "cannot mutate borrowed value"]
+source = """
+fn setfirst(borrow s: [i64]) -> i32 {
+    s[0] = 5;
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    setfirst(borrow a)
+}
+"""
+
+# Runtime-index write through the shared form.
+[[case]]
+name = "slice_element_write_runtime_index_rejected"
+spec = ["7.2:11"]
+compile_fail = true
+error_contains = ["E0428", "cannot mutate borrowed value"]
+source = """
+fn setat(borrow s: [i64], i: u64) -> i32 {
+    s[i] = 5;
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    setat(borrow a, 1)
+}
+"""
+
+# Through the exclusive form the write is rejected as well. The assertion pins
+# the *location* — a diagnostic is reported at the write itself — rather than
+# the code or the message: the current message (E0900, "cannot index into
+# non-array type '[i64]'") is misleading, its wording fix is tracked separately,
+# and 7.2:11 is stated diagnostic-agnostically so that fix does not invalidate
+# either the rule or this case. The call is separately rejected by 7.2:10.
+[[case]]
+name = "inout_slice_element_write_rejected"
+spec = ["7.2:11"]
+compile_fail = true
+error_contains = ["s[0] = 5"]
+source = """
+fn setfirst(inout s: [i64]) -> i32 {
+    s[0] = 5;
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let mut a: [i64; 2] = [40, 2];
+    setfirst(inout a)
+}
+"""
+
+# =============================================================================
+# Fixed-array-to-slice coercion (7.2:12 – 7.2:15)
+# =============================================================================
+
+# The coercion materializes {address of element 0, N}: element order and the
+# length both come from the backing array.
+[[case]]
+name = "fixed_array_to_slice_coercion_at_argument"
+spec = ["7.2:12"]
+source = """
+fn probe(borrow s: [i64]) -> i32 {
+    @intCast(s[0] * 100 + s[2] * 10 + @intCast(s.len()))
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 9, 2];
+    probe(borrow a)
+}
+"""
+exit_code = 123
+
+# A local variable place and a struct-field place both coerce.
+[[case]]
+name = "slice_coercion_operand_may_be_a_field_place"
+spec = ["7.2:12", "7.2:13"]
+source = """
+struct Row { cells: [i64; 3] }
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let r = Row { cells: [42, 1, 2] };
+    head(borrow r.cells)
+}
+"""
+exit_code = 42
+
+# A temporary is not a coercion operand: unlike an ordinary `borrow` argument
+# (4.10:10, 6.1:39), a slice coercion is not elaborated into a place.
+[[case]]
+name = "slice_coercion_operand_must_be_a_place"
+spec = ["7.2:13"]
+compile_fail = true
+error_contains = ["E0427"]
+source = """
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn make() -> [i64; 2] { [40, 2] }
+fn main() -> i32 {
+    head(borrow make())
+}
+"""
+
+# The element type must match exactly; a merely convertible element type is a
+# type mismatch, not a coercion.
+[[case]]
+name = "slice_coercion_element_type_must_match"
+spec = ["7.2:13"]
+compile_fail = true
+error_contains = ["type mismatch"]
+source = """
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn main() -> i32 {
+    let a: [i16; 2] = [40, 2];
+    head(borrow a)
+}
+"""
+
+# A non-empty frame array of a narrow (non-slot-width) element cannot coerce:
+# the view's element stride would differ from the frame's slot stride
+# (E0908, RUE-1595).
+[[case]]
+name = "slice_coercion_narrow_element_i32_rejected"
+spec = ["7.2:14"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "i32"]
+source = """
+fn head(borrow s: [i32]) -> i32 {
+    s[0]
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [42, 1, 2];
+    head(borrow a)
+}
+"""
+
+# The same restriction at byte width.
+[[case]]
+name = "slice_coercion_narrow_element_u8_rejected"
+spec = ["7.2:14"]
+compile_fail = true
+error_contains = ["E0908", "non-slot-width", "u8"]
+source = """
+fn ln(borrow s: [u8]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [u8; 4] = [1, 2, 3, 4];
+    ln(borrow a)
+}
+"""
+
+# An EMPTY array is exempt from the narrow-element restriction: its pointer
+# word is never dereferenced, because every read is guarded by `i < len` and
+# `len` is 0.
+[[case]]
+name = "slice_coercion_empty_array_is_exempt_from_narrow_restriction"
+spec = ["7.2:14"]
+source = """
+fn ln(borrow s: [i32]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i32; 0] = [];
+    ln(borrow a)
+}
+"""
+exit_code = 0
+
+# A forwarded slice argument is passed through, not re-materialized: the view
+# keeps describing the storage the original coercion viewed, at any depth.
+[[case]]
+name = "slice_argument_forwarding_preserves_the_view"
+spec = ["7.2:15"]
+source = """
+fn inner(borrow s: [i64]) -> i32 {
+    @intCast(s[1] * 10 + @intCast(s.len()))
+}
+fn middle(borrow s: [i64]) -> i32 {
+    inner(borrow s)
+}
+fn outer(borrow s: [i64]) -> i32 {
+    middle(borrow s)
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [1, 4, 3];
+    outer(borrow a)
+}
+"""
+exit_code = 43
+
+# =============================================================================
+# Length (7.2:17, 7.2:18)
+# =============================================================================
+
+# `.len()` is the runtime length word; for a whole-array view it is N.
+[[case]]
+name = "slice_len_is_the_backing_array_length"
+spec = ["7.2:17"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 6] = [9, 9, 9, 9, 9, 9];
+    ln(borrow a)
+}
+"""
+exit_code = 6
+
+# An empty view has length 0.
+[[case]]
+name = "slice_len_of_empty_view_is_zero"
+spec = ["7.2:17"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    @intCast(s.len())
+}
+fn main() -> i32 {
+    let a: [i64; 0] = [];
+    ln(borrow a)
+}
+"""
+exit_code = 0
+
+# `len` is the only method on a slice.
+[[case]]
+name = "slice_has_no_method_other_than_len"
+spec = ["7.2:18"]
+compile_fail = true
+error_contains = ["E0411", "no method named 'first'", "[i64]"]
+source = """
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s.first())
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    head(borrow a)
+}
+"""
+
+# =============================================================================
+# Indexing (7.2:20 – 7.2:22)
+# =============================================================================
+
+# Positions are numbered from 0 in ascending order, matching the backing array.
+[[case]]
+name = "slice_index_positions_match_the_backing_array"
+spec = ["7.2:20"]
+source = """
+fn pick(borrow s: [i64], i: u64) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 4] = [3, 5, 7, 9];
+    pick(borrow a, 0) * 10 + pick(borrow a, 3)
+}
+"""
+exit_code = 39
+
+# The read copies the element out; it does not consume the view, which can be
+# indexed again.
+[[case]]
+name = "slice_index_read_does_not_consume_the_view"
+spec = ["7.2:20"]
+source = """
+fn twice(borrow s: [i64]) -> i32 {
+    @intCast(s[0] + s[0])
+}
+fn main() -> i32 {
+    let a: [i64; 1] = [21];
+    twice(borrow a)
+}
+"""
+exit_code = 42
+
+# A non-integer index is a compile-time error.
+[[case]]
+name = "slice_index_must_be_an_integer"
+spec = ["7.2:21"]
+compile_fail = true
+error_contains = ["E0206", "expected integer type", "bool"]
+source = """
+fn pick(borrow s: [i64], b: bool) -> i32 {
+    @intCast(s[b])
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    pick(borrow a, true)
+}
+"""
+
+# A signed index is accepted.
+[[case]]
+name = "slice_index_may_be_signed"
+spec = ["7.2:21"]
+source = """
+fn pick(borrow s: [i64], i: i32) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 42, 30];
+    pick(borrow a, 1)
+}
+"""
+exit_code = 42
+
+# An index at or past the runtime length traps with exit code 101.
+[[case]]
+name = "slice_index_past_length_traps"
+spec = ["7.2:22"]
+source = """
+fn pick(borrow s: [i64], i: u64) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 30];
+    pick(borrow a, 5)
+}
+"""
+exit_code = 101
+
+# The trap fires before the element is read: an index one past the end is out
+# of range even though the storage beyond it is the caller's own frame.
+[[case]]
+name = "slice_index_one_past_end_traps"
+spec = ["7.2:22"]
+source = """
+fn pick(borrow s: [i64], i: u64) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 30];
+    let guard: i64 = 7;
+    pick(borrow a, 3) + @intCast(guard)
+}
+"""
+exit_code = 101
+
+# A negative index is out of range, not a backwards offset.
+[[case]]
+name = "slice_negative_index_traps"
+spec = ["7.2:22"]
+source = """
+fn pick(borrow s: [i64], i: i32) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 3] = [10, 20, 30];
+    pick(borrow a, -1)
+}
+"""
+exit_code = 101
+
+# An empty view rejects every index, including 0.
+[[case]]
+name = "slice_index_into_empty_view_traps"
+spec = ["7.2:22"]
+source = """
+fn pick(borrow s: [i64], i: u64) -> i32 {
+    @intCast(s[i])
+}
+fn main() -> i32 {
+    let a: [i64; 0] = [];
+    pick(borrow a, 0)
+}
+"""
+exit_code = 101
+
+# =============================================================================
+# Representation (7.2:24)
+# =============================================================================
+
+# A slice is passed by value and is freely copyable: one backing array can be
+# viewed by two shared slice arguments of the same call, and the view passed to
+# the first parameter is not consumed by that pass.
+[[case]]
+name = "slice_is_a_by_value_copyable_two_word_view"
+spec = ["7.2:24"]
+source = """
+fn pair(borrow s: [i64], borrow t: [i64]) -> i32 {
+    @intCast(s[0] + t[1])
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [40, 2];
+    pair(borrow a, borrow a)
+}
+"""
+exit_code = 42
+
+# The two words travel together through a forward: the length word is not
+# recomputed from a type, it is carried.
+[[case]]
+name = "slice_carries_both_words_through_a_forward"
+spec = ["7.2:24"]
+source = """
+fn ln(borrow s: [i64]) -> i32 {
+    @intCast(s.len())
+}
+fn head(borrow s: [i64]) -> i32 {
+    @intCast(s[0])
+}
+fn both(borrow s: [i64]) -> i32 {
+    head(borrow s) * 10 + ln(borrow s)
+}
+fn main() -> i32 {
+    let a: [i64; 2] = [4, 9];
+    both(borrow a)
+}
+"""
+exit_code = 42

@@ -49,7 +49,8 @@ argument-position coercion explicitly defined by that type's rules. Those
 coercions include the never type (3.4:3), a first-class `str` or string buffer
 viewed through a `borrow str` parameter, a caller-owned string buffer viewed
 through an `inout str` parameter (3.7:55, 3.7:58, 3.7:60), and the analogous
-fixed-array-to-slice coercion. View
+fixed-array-to-slice coercion (7.2:12, whose operand, element-type, and
+element-layout requirements are 7.2:13 and 7.2:14). View
 materialization may change the physical calling convention — for example, a
 borrowed two-word view is passed by value — but it does not admit an unrelated
 source type or change the exact source-level argument-mode rule (4.10:3). No
