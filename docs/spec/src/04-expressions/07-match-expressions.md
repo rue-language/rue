@@ -231,9 +231,22 @@ A tuple-variant pattern binds the variant's payload into fresh names:
 `EnumName.Variant(a, b)` matches a value of that variant and binds `a`, `b`
 to its payload fields in order. A binding position may instead be the wildcard
 `_`, which matches and discards that field without binding it; unlike a name it
-introduces nothing and so may repeat (`Rect(_, _)`). A discarded field is not
-moved out of the scrutinee and is dropped together with it. The number of
-binding positions **MUST** equal the variant's payload arity (see spec 6.3).
+introduces nothing and so may repeat (`Rect(_, _)`). The number of binding
+positions **MUST** equal the variant's payload arity (see spec 6.3), with one
+carve-out: a *bare* variant pattern that supplies no binding list at all —
+`EnumName.Variant` on a variant of arity one or more — **is** the all-wildcard
+form `EnumName.Variant(_, ..., _)` and is therefore exempt from the arity rule
+(4.7:34 says the same value-context consumption applies to it).
+
+A discarded field — one covered by `_`, or by the bare form — is bound to a
+fresh *unnameable* binding: it is moved out of the scrutinee like any other
+payload binding, but no expression can name it. Consequently it is **dropped at
+the end of its arm**, interleaved with the arm's named bindings in the usual
+reverse-declaration order (3.9:4), not before the arm's body and not as part of
+the scrutinee. A discarded field whose type carries a linear value is a
+compile-time error: nothing can name that binding, so its must-consume
+obligation (3.8:50) could never be discharged. Bind such a field by name and
+consume it — `@drop` (3.9:37) is the explicit-discard escape hatch.
 
 {{ rule(id="4.7:31", cat="normative") }}
 
@@ -273,10 +286,11 @@ the match has already used.
 {{ rule(id="4.7:34", cat="legality-rule") }}
 
 A move-type scrutinee is consumed by the match independently of whether the matched
-arm binds a payload. A match whose selected arm binds nothing — a bare variant
-pattern, a wildcard `_`, or a literal pattern — still moves a move-type scrutinee,
-because the scrutinee occurs in value context regardless of the pattern. Using the
-scrutinee after such a match is therefore a use-after-move error (3.8:5).
+arm binds a payload *by name*. A match whose selected arm introduces no name — a
+bare variant pattern (which is the all-wildcard form, 4.7:30), a wildcard `_`, or a
+literal pattern — still moves a move-type scrutinee, because the scrutinee occurs in
+value context regardless of the pattern. Using the scrutinee after such a match is
+therefore a use-after-move error (3.8:5).
 
 {{ rule(id="4.7:35", cat="example") }}
 
@@ -306,7 +320,7 @@ fn use_again(e: E) -> i32 { 0 }
 fn main() -> i32 {
     let e = E.A(Big { value: 7 });   // move type: Big is not Copy
     let r = match e {
-        E.A => 1,                    // binds nothing, yet consumes `e`
+        E.A => 1,                    // introduces no name, yet consumes `e`
         E.B => 2,
     };
     r + use_again(e)                  // ERROR: use of moved value 'e'

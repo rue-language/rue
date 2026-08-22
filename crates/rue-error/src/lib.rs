@@ -280,6 +280,14 @@ impl ErrorCode {
     /// 9.1:12, ADR-0028); taking the "address" of a temporary value would
     /// reinterpret the value's bits as a pointer (RUE-274).
     pub const RAW_REQUIRES_PLACE: Self = Self(485);
+    /// A match-arm payload position that binds nothing — an explicit `_`
+    /// discard, or a position covered by the all-wildcard bare variant
+    /// pattern `E.A` — names a payload field whose type carries a linear
+    /// value (RUE-1592, spec 4.7:30). Such a position is a fresh *unnameable*
+    /// binding (formal core §2 elaboration note), so its must-consume
+    /// obligation (3.8:52) could never be discharged. Bind the field by name
+    /// and consume it — or `@drop` it (E0478's escape hatch, RUE-187).
+    pub const LINEAR_PAYLOAD_DISCARDED: Self = Self(486);
     /// A slice type `[T]` was written in return position (`fn f(...) -> [T]`).
     /// A slice is a *second-class* fat-pointer view (ADR-0037, ADR-0043,
     /// RUE-322): it is valid only in argument position and may not be
@@ -1335,6 +1343,16 @@ pub enum ErrorKind {
     /// body result) carries a linear value, which would be implicitly dropped
     #[error("discarded value of type '{type_name}' carries a linear value and must be consumed")]
     LinearValueDiscarded { type_name: String },
+    /// A match-arm payload position that binds nothing — a `_` discard, or a
+    /// position covered by the all-wildcard bare variant pattern — names a
+    /// payload field whose type carries a linear value (RUE-1592, spec
+    /// 4.7:30). Such a position elaborates to a fresh *unnameable* binding
+    /// (formal core §2), and an unnameable binding can never be consumed, so
+    /// the must-consume obligation of 3.8:52 could never be discharged.
+    #[error(
+        "discarded payload {position} carries a linear value of type '{type_name}' and must be consumed"
+    )]
+    LinearPayloadDiscarded { position: String, type_name: String },
     /// Assignment to a place holding a live linear value (RUE-387): the
     /// overwrite would implicitly drop the old linear value.
     #[error("assignment would overwrite a live linear value of type '{type_name}'")]
@@ -2103,6 +2121,7 @@ impl ErrorKind {
                 ErrorCode::LINEAR_VALUE_NOT_CONSUMED_ON_ALL_PATHS
             }
             ErrorKind::LinearValueDiscarded { .. } => ErrorCode::LINEAR_VALUE_DISCARDED,
+            ErrorKind::LinearPayloadDiscarded { .. } => ErrorCode::LINEAR_PAYLOAD_DISCARDED,
             ErrorKind::LinearValueOverwritten { .. } => ErrorCode::LINEAR_VALUE_OVERWRITTEN,
             ErrorKind::LinearValueOverwrittenThroughInout { .. } => {
                 ErrorCode::LINEAR_VALUE_OVERWRITTEN_THROUGH_INOUT
@@ -3143,7 +3162,8 @@ mod tests {
             ErrorKind::SliceEscapesScope.code(),
             ErrorCode::SLICE_ESCAPES_SCOPE
         );
-        // Codes are contiguous with the not-yet-implemented gate (E0486).
+        // Codes are contiguous with the discarded-linear-payload gate
+        // (E0486, RUE-1592).
         assert_eq!(ErrorCode::SLICE_RETURN_NOT_ALLOWED.0, 487);
         assert_eq!(ErrorCode::SLICE_IN_AGGREGATE_FIELD.0, 488);
         assert_eq!(ErrorCode::SLICE_ESCAPES_SCOPE.0, 489);
