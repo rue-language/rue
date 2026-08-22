@@ -432,6 +432,10 @@ impl ErrorCode {
     pub const ARRAY_REPEAT_NON_COPY: Self = Self(905);
     pub const TYPE_TOO_LARGE: Self = Self(906);
     pub const FUNCTION_FRAME_TOO_LARGE: Self = Self(907);
+    /// A frame array with non-slot-width elements cannot yet be borrowed as a
+    /// slice because slice pointer semantics use the compact element image
+    /// while frames keep a full-slot representation (RUE-1595).
+    pub const SLICE_FRAME_ARRAY_NOT_SUPPORTED: Self = Self(908);
 
     // ------------------------------------------------------------------
     // Bit-reinterpretation errors (E0950-E0959)
@@ -1805,6 +1809,14 @@ pub enum ErrorKind {
          ({max_bytes} bytes)"
     )]
     FunctionFrameTooLarge { max_bytes: u64 },
+    /// A frame-resident array whose element's compact memory image differs from
+    /// its full-slot frame representation cannot yet be coerced to a borrowed
+    /// slice. The source-level coercion is rejected before it synthesizes a
+    /// pointer that would mix those representations (RUE-1595).
+    #[error(
+        "a frame array with non-slot-width elements cannot yet coerce or borrow as a slice `[T]` (element type `{element_type}`)"
+    )]
+    SliceFrameArrayNotSupported { element_type: String },
     /// Assignment into an array (element write, or a write through an element)
     /// while one or more of its elements are moved out (RUE-186). Reinstating
     /// per-element ownership through writes is not supported; the whole array
@@ -2209,6 +2221,9 @@ impl ErrorKind {
             ErrorKind::ArrayRepeatNonCopy { .. } => ErrorCode::ARRAY_REPEAT_NON_COPY,
             ErrorKind::TypeTooLarge { .. } => ErrorCode::TYPE_TOO_LARGE,
             ErrorKind::FunctionFrameTooLarge { .. } => ErrorCode::FUNCTION_FRAME_TOO_LARGE,
+            ErrorKind::SliceFrameArrayNotSupported { .. } => {
+                ErrorCode::SLICE_FRAME_ARRAY_NOT_SUPPORTED
+            }
             ErrorKind::AssignToPartiallyMovedArray { .. } => {
                 ErrorCode::ASSIGN_TO_PARTIALLY_MOVED_ARRAY
             }

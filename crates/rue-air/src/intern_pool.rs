@@ -4140,6 +4140,9 @@ impl crate::ffi_predicates::FfiTypePool for TypeInternPool {
             .map(|f| (f.name.clone(), f.ty))
             .collect()
     }
+    fn ffi_struct_field_types(&self, id: StructId) -> Vec<Type> {
+        self.struct_def(id).fields.iter().map(|f| f.ty).collect()
+    }
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
         self.array_def(id).0
     }
@@ -4161,6 +4164,9 @@ impl crate::ffi_predicates::FfiTypePool for FrozenTypeInternPool {
             .iter()
             .map(|f| (f.name.clone(), f.ty))
             .collect()
+    }
+    fn ffi_struct_field_types(&self, id: StructId) -> Vec<Type> {
+        self.struct_def(id).fields.iter().map(|f| f.ty).collect()
     }
     fn ffi_array_element(&self, id: ArrayTypeId) -> Type {
         self.array_def(id).0

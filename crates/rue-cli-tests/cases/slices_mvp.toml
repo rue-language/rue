@@ -114,12 +114,12 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 exit_code = 6
 
-# A `[u8]` view over a frame array is refused under the compact layout: the
-# slice would stride `@ptr_offset` by the compact element size (1) while the
-# frame stores each `u8` element in an 8-byte slot, so the pointer walk crosses
-# mismatched storage. The refusal is loud (RUE-987 / RUE-1035 M2) and names the
-# frame aggregate. A slot-identical element (see the i64 cases above) is exact;
-# a heap-backed narrow slice awaits compact frames (RUE-975) / a heap slice API.
+# A narrow-element view over a frame array is refused at the source-level
+# coercion boundary: the compact element stride differs from the frame slot
+# stride. The stable diagnostic names the actual restriction and does not leak
+# the backend's raw-pointer implementation. A slot-identical element (see the
+# i64 cases above) is exact; a heap-backed narrow slice awaits compact frames
+# (RUE-975) / a heap slice API.
 [[case]]
 name = "slice_param_narrow_frame_refused"
 files = [{ path = "main.rue", source = """
@@ -139,7 +139,32 @@ fn main() -> i32 {
 """ }]
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
-error_contains = ["raw pointer", "frame-resident aggregate"]
+error_contains = ["E0908", "frame array", "non-slot-width", "coerce or borrow", "u8"]
+compile_stderr_not_contains = ["E9001", "@raw", "@ptr_offset", "@alloc", "heap"]
+
+# The same source-level restriction applies to a four-byte element. Keep this
+# separate from the u8 case so both compact widths remain covered.
+[[case]]
+name = "slice_param_i32_narrow_frame_refused"
+files = [{ path = "main.rue", source = """
+fn sum(borrow s: [i32]) -> i32 {
+    let mut t: i32 = 0;
+    let mut i: u64 = 0;
+    while i < s.len() {
+        t = t + s[i];
+        i = i + 1;
+    }
+    t
+}
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 3];
+    sum(borrow a)
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = ["E0908", "frame array", "non-slot-width", "coerce or borrow", "i32"]
+compile_stderr_not_contains = ["E9001", "@raw", "@ptr_offset", "@alloc", "heap"]
 
 # Borrowing a zero-length fixed array still produces a valid zero-length slice:
 # the pointer word is never dereferenced because `len()` is 0. This used to ICE

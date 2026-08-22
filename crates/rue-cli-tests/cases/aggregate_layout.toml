@@ -1239,7 +1239,7 @@ fn main() -> i32 {
 }
 """ }]
 compile_fail = true
-error_contains = ["raw pointer", "frame-resident aggregate"]
+error_contains = ["E9001", "raw pointer", "frame-resident aggregate"]
 
 # --- RUE-1037: heterogeneous enum images via per-variant tag dispatch ---------
 # An enum whose variants' payload layouts DISAGREE (e.g. Ok(struct{i32,i32,i32})

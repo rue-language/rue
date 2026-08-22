@@ -638,14 +638,16 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
                 @ptr_to_int(p) + s.len()
             }
         }
+        fn route(borrow s: [i32]) -> u64 {
+            slice_len(borrow s) + user_pointer(borrow s)
+        }
         fn offset_probe() -> u64 {
             let a = [1, 2];
             checked { @ptr_to_int(@ptr_offset(@raw(a[0]), 1)) }
         }
         fn main() -> i32 {
             let empty: [i32; 0] = [];
-            let values = [1, 2];
-            @intCast(slice_len(borrow empty) + user_pointer(borrow values) + offset_probe())
+            @intCast(route(borrow empty) + offset_probe())
         }"#;
     let state = query_cfg_state(source).expect("pointer provenance probe must compile");
     let interp = Interp {

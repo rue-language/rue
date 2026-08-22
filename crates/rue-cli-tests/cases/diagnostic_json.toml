@@ -68,6 +68,26 @@ compile_stderr_not_contains = [
 ]
 
 [[case]]
+name = "narrow_frame_array_slice_error_has_source_span"
+description = "RUE-1595: whole-array borrowing into a slice reports the stable source-level E0908 diagnostic with the coercion argument's primary span, rather than the backend's spanless E9001."
+files = [{ path = "main.rue", source = """
+fn take(borrow s: [i32]) -> i32 { 0 }
+fn main() -> i32 {
+    let a: [i32; 3] = [1, 2, 3];
+    take(borrow a)
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0908 main.rue:4:17"]
+error_contains = [
+  '"code":"E0908"',
+  '"message":"a frame array with non-slot-width elements cannot yet coerce or borrow as a slice `[T]` (element type `i32`)"',
+  '"primary":true',
+]
+
+[[case]]
 name = "error_batch_order_follows_source_order"
 description = """
 RUE-436: four errors in one file must be published in a single JSON array in
