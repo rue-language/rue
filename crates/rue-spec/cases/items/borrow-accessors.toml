@@ -894,7 +894,7 @@ error_contains = ["E0258"]
 
 [[case]]
 name = "arraybuf_get_ref_projects_drop_glue_element_in_place"
-spec = ["6.6:7", "6.6:8", "6.6:11", "6.6:12"]
+spec = ["4.13:5a", "6.6:7", "6.6:8", "6.6:11", "6.6:12"]
 description = "The trusted ArrayBuf bridge yields a receiver-rooted place, so a destructor-bearing element can be projected without copying its owner."
 real_std = true
 source = """

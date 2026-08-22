@@ -37,14 +37,17 @@ It is a compile-time error to use an unknown intrinsic name.
 
 {{ rule(id="4.13:5a", cat="informative") }}
 
-The following tables list every intrinsic the compiler recognizes, grouped by
-whether the intrinsic may appear in any expression position (expression
-intrinsics) or only inside a `checked` block (unchecked intrinsics, specified in
-§9.2). This inventory is kept in sync with the compiler's intrinsic registry:
-the pre-interned names in `crates/rue-air/src/sema/known_symbols.rs` and the
-dispatch on them in `crates/rue-air/src/sema/analysis.rs`. A name that is absent
-from that registry is rejected as an unknown intrinsic (rule 4.13:5), so any
-intrinsic the compiler accepts **MUST** appear here.
+This Quick Reference documents every source-spelled intrinsic name the compiler
+recognizes. The tables below group names that may appear in any expression
+position (expression intrinsics), only inside a `checked` block (unchecked
+intrinsics, specified in §9.2), or only as an internal checked bridge. Rule
+4.13:5b separately records frontend-reserved names whose surface syntax is not
+fully stabilized. This inventory is kept in sync with the compiler's
+source-intrinsic recognition paths: the RIR type-intrinsic forms, the
+pre-interned names in `crates/rue-air/src/sema/known_symbols.rs`, and the
+semantic dispatch on them. A name absent from those paths is rejected as an
+unknown intrinsic (rule 4.13:5), so every intrinsic the compiler recognizes
+**MUST** appear either in a table or in the reserved-name notes below.
 
 Expression intrinsics (usable in any expression position):
 
@@ -53,6 +56,8 @@ Expression intrinsics (usable in any expression position):
 | `@dbg` | Print debug output | 1 expression (int, bool, or string) | `()` |
 | `@size_of` | Get type size in bytes | 1 type | `i32` |
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
+| `@require_droppable` | Enforce the owning-container element-type gate | 1 type | `()` |
+| `@require_trivially_droppable` | Enforce the by-copy container-read element-type gate | 1 type | `()` |
 | `@int_max` | Largest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@int_min` | Smallest value of an integer type (§4.13:126) | 1 type (integer) | that integer type |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
@@ -106,12 +111,20 @@ full semantics):
 | `@arg_ptr` | Pointer to argument `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 | `@env_ptr` | Pointer to environment entry `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 
+Internal checked bridge (recognized only as the direct expression of the single
+trailing `yield checked { ... }` in a trusted standard-library accessor body;
+see rule [6.6:7](@/06-items/06-borrow-accessors.md)):
+
+| Intrinsic | Purpose | Arguments | Result |
+|-----------|---------|-----------|--------|
+| `@place` | Internal pointer-to-place accessor bridge; not user-invocable | 1 `@ptr_offset(<self field chain>, ...)` expression | operand pointer; the enclosing `yield` treats its pointee as the accessor place |
+
 {{ rule(id="4.13:5b", cat="informative") }}
 
 The compiler frontend additionally reserves the names `@cast`, `@panic`,
 `@assert`, and `@test_preview_gate`. Their surface syntax is not yet fully
-stabilized, so they are omitted from the normative inventory above, but they
-are no longer no-ops (RUE-319):
+stabilized, so they are listed separately from the signature tables above, but
+they are no longer no-ops (RUE-319):
 
 - `@panic(msg?: text)` has type `!` (never): it aborts the process and never
   returns. The optional message may use any canonical text rung; unrelated
@@ -1038,10 +1051,15 @@ The return type of `@import` is a module struct type containing all `pub` declar
 
 {{ rule(id="4.13:82", cat="normative") }}
 
-Module path resolution follows this order:
-1. Standard library: `@import("std")` resolves to the bundled standard library
-2. A file `{path}.rue` relative to the importing file's directory
-3. A directory module: a directory `{path}/` containing the facade file `_{basename}.rue`, which is the module's root
+Module path resolution is defined authoritatively by rule
+[10.2:1](@/10-modules/02-import-resolution.md). The reserved specifier
+`"std"` follows rule [10.2:6](@/10-modules/02-import-resolution.md), not
+importer-relative resolution. For any other path, a `.rue`-suffixed `P` selects
+exactly the file `{P}` relative to the importing file's directory, while
+extensionless `P` selects only the facade `{P}/_{basename}.rue`; rule
+[10.2:2](@/10-modules/02-import-resolution.md) defines that single base
+directory. These spellings are extension-sensitive: neither spelling falls
+back to the other, and no file/facade ambiguity is diagnosed.
 
 {{ rule(id="4.13:83", cat="legality-rule") }}
 
@@ -1147,7 +1165,7 @@ mathematical result modulo `2^N` and lies within the range of the result type.
 
 A wrapping-arithmetic intrinsic never traps: for every combination of operand
 values, including those for which the checked operator would trap on overflow,
-it produces the reduced value defined by 4.13:93. Because the low `N` bits of a
+it produces the reduced value defined by 4.13:99. Because the low `N` bits of a
 two's-complement product do not depend on the signedness of the operands,
 `@wrapping_mul` yields the same bit pattern for a signed and an unsigned type
 of the same width.
